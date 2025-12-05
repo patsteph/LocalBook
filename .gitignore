@@ -1,0 +1,83 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+.npm
+dist-ssr/
+*.local
+
+# Rust
+target/
+Cargo.lock
+
+# IDEs
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# App data
+data/
+*.db
+*.sqlite
+
+# Secrets
+.env
+.env.local
+*.key
+*.pem
+
+# ML Models (too large for git)
+*.gguf
+*.bin
+*.safetensors
+# Exclude large model downloads but keep code
+/models/
+sentence_transformers_cache/
+.cache/
+
+# Generated files
+generated/
+*.mp3
+*.mp4
+*.m4a
+*.aiff
+*.wav
+
+# Internal planning and progress tracking (keep local)
+ROADMAP.md
+REBUILD_PROGRESS.md
+**/REBUILD_PROGRESS.md
+
+# Test files (keep local)
+test_*.py
+tests/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+/tmp/
+
+# Audio test files
+backend/data/audio/test_*
+
+# Tauri binaries (compiled executables)
+src-tauri/binaries/

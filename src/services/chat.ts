@@ -1,0 +1,75 @@
+// Chat API service
+import api from './api';
+import { ChatQuery, ChatResponse, Citation } from '../types';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+export interface StreamCallbacks {
+  onCitations?: (citations: Citation[], sources: string[], lowConfidence: boolean) => void;
+  onToken?: (token: string) => void;
+  onDone?: (followUpQuestions: string[]) => void;
+  onError?: (error: string) => void;
+}
+
+export const chatService = {
+  async query(query: ChatQuery): Promise<ChatResponse> {
+    const response = await api.post('/chat/query', query);
+    return response.data;
+  },
+
+  async queryStream(query: ChatQuery, callbacks: StreamCallbacks): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/chat/query/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(query),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('No response body');
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            
+            if (data.error) {
+              callbacks.onError?.(data.error);
+            } else if (data.type === 'citations') {
+              callbacks.onCitations?.(data.citations, data.sources, data.low_confidence);
+            } else if (data.type === 'token') {
+              callbacks.onToken?.(data.content);
+            } else if (data.type === 'done') {
+              callbacks.onDone?.(data.follow_up_questions || []);
+            }
+          } catch (e) {
+            console.error('Failed to parse SSE data:', e);
+          }
+        }
+      }
+    }
+  },
+
+  async getSuggestedQuestions(notebookId: string): Promise<string[]> {
+    const response = await api.get(`/chat/suggested-questions/${notebookId}`);
+    return response.data.questions;
+  },
+};
