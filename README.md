@@ -63,6 +63,7 @@ A privacy-first, local alternative to Google's NotebookLM. Chat with your docume
 - **Node.js 18+**
 - **Rust** (for Tauri desktop app)
 - **Ollama** (for local LLM inference)
+- **ffmpeg** (required for audio/video transcription)
 
 ### Step 1: Install System Dependencies
 
@@ -79,6 +80,9 @@ source $HOME/.cargo/env
 
 # Install Node.js (if not installed)
 brew install node
+
+# Install ffmpeg (required for audio/video transcription)
+brew install ffmpeg
 ```
 
 ### Step 2: Set Up Ollama
@@ -87,8 +91,9 @@ brew install node
 # Start Ollama service (keep this running in a terminal)
 ollama serve
 
-# In a new terminal, pull the recommended model
-ollama pull mistral-nemo
+# In a new terminal, pull the required models
+ollama pull mistral-nemo  # Main LLM for answers
+ollama pull phi4-mini     # Fast model for follow-up questions
 ```
 
 ### Step 3: Clone and Set Up Backend
@@ -105,6 +110,9 @@ source .venv/bin/activate
 
 # Install Python dependencies
 pip install -r requirements.txt
+
+# (Optional) Copy and customize environment config
+cp .env.example .env
 
 # Start the backend server (production)
 python main.py
@@ -192,13 +200,20 @@ To set up Brave Search:
 
 ### LLM Model Selection
 
-**Default Model: mistral-nemo**
+**Dual-Model Architecture:**
+- **mistral-nemo** (main): Generates detailed, well-cited answers
+- **phi4-mini** (fast): Generates follow-up questions in parallel
+
+This dual-model approach speeds up the overall response by running follow-up question generation concurrently with the main answer.
+
+**Main Model: mistral-nemo**
 - **Why**: Best balance of speed, quality, and local privacy
 - **Performance**: ~14-18s per query with detailed, well-cited answers
 - **GPU Usage**: 100% utilization on Apple Silicon
 
 **Model Choice Reasoning:**
-- ✅ **mistral-nemo**: Optimal quality/speed balance (recommended)
+- ✅ **mistral-nemo**: Optimal quality/speed balance (recommended for main answers)
+- ✅ **phi4-mini**: Fast and lightweight (used for follow-up questions)
 - ❌ **gemma3**: Fast (~10s) but poor answer quality and citation accuracy
 - ❌ **ministral-3:8b**: Very slow (60-114s) - not recommended
 - ❌ **minitron**: Unstable - hangs indefinitely
@@ -231,10 +246,41 @@ top_k: Optional[int] = 5  # Lower = faster (3-7 recommended)
 - **Larger models**: Remove `num_predict` limit, increase `top_k` to 7-10
 - **Speed vs Quality**: Lower `top_k` (fewer citations) = faster but less context
 
+### Advanced Performance Tuning
+
+Configuration can be customized via `backend/.env` (copy from `.env.example`):
+
+```bash
+# Key settings in backend/.env
+CHUNK_SIZE=1000        # Smaller = more precise retrieval, larger = more context per chunk
+CHUNK_OVERLAP=200      # Higher = better context continuity, but more storage
+EMBEDDING_MODEL=BAAI/bge-small-en-v1.5  # Change requires re-indexing documents
+OLLAMA_MODEL=mistral-nemo               # Main LLM model
+```
+
+**Chunking Strategy:**
+| Use Case | CHUNK_SIZE | CHUNK_OVERLAP | Notes |
+|----------|------------|---------------|-------|
+| Technical docs | 800 | 150 | Smaller chunks for precise code/API answers |
+| Long narratives | 1200 | 250 | Larger chunks preserve story context |
+| Mixed content | 1000 | 200 | Default balanced setting |
+
+**First Query Performance:**
+- The first query after starting the backend takes longer (~30-60s) because:
+  1. Embedding model downloads on first use (~100MB)
+  2. Model loads into memory
+- Subsequent queries are much faster (~14-18s)
+
+**Memory Optimization:**
+- Each Ollama model uses 4-8GB VRAM
+- Running both `mistral-nemo` and `phi4-mini` requires ~10GB
+- On systems with <16GB RAM, consider using only `mistral-nemo` (edit `rag_engine.py` to use same model for follow-ups)
+
 ### LLM Providers
 Configure in Settings:
 - **Ollama** (default): Local, private, free
-  - Default model: `mistral-nemo`
+  - Main model: `mistral-nemo`
+  - Follow-up model: `phi4-mini`
 - **OpenAI**: GPT-4, GPT-3.5
   - Requires API key
 - **Anthropic**: Claude models
@@ -316,8 +362,13 @@ See `backend/requirements.txt` for complete list. Key dependencies:
 
 ### System Requirements
 - **macOS**: Required for audio generation (macOS Say command)
-- **Memory**: 8GB+ RAM (16GB recommended for larger documents)
-- **Storage**: ~2GB for models + document storage
+- **Memory**: 16GB+ RAM recommended (8GB minimum, but may be slow)
+- **Storage**: ~5GB for models + document storage
+  - Ollama models: ~4GB each for mistral-nemo
+  - Embedding model: ~100MB (downloads on first use)
+  - Documents: varies by usage
+- **GPU**: Apple Silicon recommended for best performance
+  - Intel Macs work but are significantly slower
 
 ## Troubleshooting
 
@@ -332,7 +383,30 @@ curl http://localhost:11434/api/tags
 
 # Restart Ollama
 ollama serve
+
+# Verify models are installed
+ollama list
+# Should show: mistral-nemo, phi4-mini
 ```
+
+### Slow First Query
+The first query after starting is slow because the embedding model downloads and loads:
+```bash
+# Pre-warm the embedding model by making a test query
+# Or wait ~30-60s on first query - subsequent queries will be faster
+```
+
+### Model Not Found Error
+```bash
+# If you see "model not found" errors, pull the required models:
+ollama pull mistral-nemo
+ollama pull phi4-mini
+```
+
+### Out of Memory
+- Close other applications using GPU memory
+- Use a smaller model: `ollama pull mistral:7b` and update `backend/config.py`
+- Reduce `top_k` in queries (fewer citations = less context to process)
 
 ### Port Already in Use
 ```bash
