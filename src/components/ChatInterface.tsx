@@ -189,9 +189,27 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
         },
         {
           onCitations: (citations, _sources, lowConfidence) => {
-            // Store citations but don't show yet - wait for first token
+            // Store citations but don't show yet - wait for quick summary
             currentCitations = citations;
             isLowConfidence = lowConfidence;
+          },
+          onQuickSummary: (summary) => {
+            // Show quick summary immediately - this gives user fast feedback
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (updated[lastIdx]?.role === 'assistant') {
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  quickSummary: summary,
+                  citations: currentCitations,
+                };
+              }
+              return updated;
+            });
+            
+            // Stop showing loading indicator once we have quick summary
+            setLoading(false);
           },
           onToken: (token) => {
             tokenBuffer += token;
@@ -316,7 +334,28 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 <p className="text-sm whitespace-pre-wrap">{message.content}</p>
               ) : (
                 <>
-                  {renderMessageWithCitations(message.content, message.citations)}
+                  {/* Quick Summary - shown first for fast feedback */}
+                  {message.quickSummary && (
+                    <div className="mb-3 pb-3 border-b border-gray-200 dark:border-gray-600">
+                      <div className="flex items-center gap-1.5 mb-1.5">
+                        <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">⚡ Quick Answer</span>
+                      </div>
+                      {renderMessageWithCitations(message.quickSummary, message.citations)}
+                    </div>
+                  )}
+                  
+                  {/* Detailed Answer - streams in after quick summary */}
+                  {message.content && (
+                    <>
+                      {message.quickSummary && (
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">📝 Detailed Answer</span>
+                        </div>
+                      )}
+                      {renderMessageWithCitations(message.content, message.citations)}
+                    </>
+                  )}
+                  
                   {message.citations && message.citations.length > 0 && (
                     <CitationList citations={message.citations} onViewSource={handleViewSource} />
                   )}

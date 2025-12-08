@@ -15,13 +15,14 @@ class Settings(BaseSettings):
     # LLM settings
     llm_provider: str = "ollama"  # ollama, openai, or anthropic
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "mistral-nemo"
+    ollama_model: str = "mistral-nemo:12b-instruct-2407-q4_K_M"  # Q4_K_M quantization for better quality
+    ollama_fast_model: str = "phi4-mini"  # Fast model for quick summaries
     openai_api_key: str = ""
     anthropic_api_key: str = ""
 
     # Embedding settings
-    # bge-small-en-v1.5: Better retrieval accuracy than MiniLM, same speed, 384 dims
-    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    # all-MiniLM-L6-v2: Fastest option, good quality, 384 dims
+    embedding_model: str = "all-MiniLM-L6-v2"
     chunk_size: int = 1000
     chunk_overlap: int = 200
 

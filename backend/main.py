@@ -1,10 +1,12 @@
 """FastAPI main application"""
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex
 from config import settings
+from services.model_warmup import start_warmup_task, stop_warmup_task
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -12,7 +14,15 @@ async def lifespan(app: FastAPI):
     print(f"🚀 LocalBook API starting on {settings.api_host}:{settings.api_port}")
     print(f"📁 Data directory: {settings.data_dir}")
     print(f"🤖 LLM Provider: {settings.llm_provider}")
+    print(f"🔥 Model: {settings.ollama_model}")
+    
+    # Start background task to keep models warm
+    await start_warmup_task()
+    
     yield
+    
+    # Stop warmup task on shutdown
+    await stop_warmup_task()
     print("👋 LocalBook API shutting down")
 
 app = FastAPI(

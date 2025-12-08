@@ -6,6 +6,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export interface StreamCallbacks {
   onCitations?: (citations: Citation[], sources: string[], lowConfidence: boolean) => void;
+  onQuickSummary?: (summary: string) => void;
   onToken?: (token: string) => void;
   onDone?: (followUpQuestions: string[]) => void;
   onError?: (error: string) => void;
@@ -55,6 +56,8 @@ export const chatService = {
               callbacks.onError?.(data.error);
             } else if (data.type === 'citations') {
               callbacks.onCitations?.(data.citations, data.sources, data.low_confidence);
+            } else if (data.type === 'quick_summary') {
+              callbacks.onQuickSummary?.(data.content);
             } else if (data.type === 'token') {
               callbacks.onToken?.(data.content);
             } else if (data.type === 'done') {

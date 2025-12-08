@@ -106,6 +106,81 @@ async def reindex_notebook(notebook_id: str, force: bool = False):
     )
 
 
+@router.post("/all")
+async def reindex_all_notebooks(force: bool = True):
+    """Re-index all sources in all notebooks.
+    
+    Useful after changing embedding models.
+    
+    Args:
+        force: If True (default), reindex all sources even if they already have chunks
+    """
+    notebooks = await notebook_store.list()
+    
+    total_processed = 0
+    total_failed = 0
+    notebook_results = []
+    
+    for notebook in notebooks:
+        notebook_id = notebook.get("id")
+        sources = await source_store.list(notebook_id)
+        
+        processed = 0
+        failed = 0
+        
+        for source in sources:
+            source_id = source.get("id")
+            filename = source.get("filename", "Unknown")
+            
+            content_data = await source_store.get_content(notebook_id, source_id)
+            
+            if not content_data or not content_data.get("content"):
+                continue
+            
+            text = content_data["content"]
+            
+            if not force and source.get("chunks", 0) > 0:
+                continue
+            
+            try:
+                source_type = source.get("type", source.get("format", "document"))
+                result = await rag_service.ingest_document(
+                    notebook_id=notebook_id,
+                    source_id=source_id,
+                    text=text,
+                    filename=filename,
+                    source_type=source_type
+                )
+                
+                await source_store.update(notebook_id, source_id, {
+                    "chunks": result.get("chunks", 0),
+                    "characters": result.get("characters", len(text)),
+                    "status": "completed"
+                })
+                
+                processed += 1
+                
+            except Exception as e:
+                failed += 1
+                print(f"Failed to reindex {filename}: {e}")
+        
+        total_processed += processed
+        total_failed += failed
+        notebook_results.append({
+            "notebook_id": notebook_id,
+            "title": notebook.get("title", "Unknown"),
+            "processed": processed,
+            "failed": failed
+        })
+    
+    return {
+        "message": f"Re-indexed {total_processed} sources across {len(notebooks)} notebooks, {total_failed} failed",
+        "total_processed": total_processed,
+        "total_failed": total_failed,
+        "notebooks": notebook_results
+    }
+
+
 @router.get("/status/{notebook_id}")
 async def get_index_status(notebook_id: str):
     """Get indexing status for all sources in a notebook"""

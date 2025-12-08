@@ -14,7 +14,7 @@ class ChatQuery(BaseModel):
     notebook_id: str
     question: str  # Frontend uses 'question', not 'query'
     source_ids: Optional[List[str]] = None
-    top_k: Optional[int] = 5
+    top_k: Optional[int] = 4  # Reduced from 5 for faster LLM response
     enable_web_search: Optional[bool] = False
     llm_provider: Optional[str] = None
 
@@ -57,7 +57,7 @@ async def query(chat_query: ChatQuery):
             notebook_id=chat_query.notebook_id,
             question=chat_query.question,
             source_ids=chat_query.source_ids,
-            top_k=chat_query.top_k or 5,
+            top_k=chat_query.top_k or 4,
             enable_web_search=chat_query.enable_web_search,
             llm_provider=chat_query.llm_provider
         )
@@ -78,7 +78,7 @@ async def query_stream(chat_query: ChatQuery):
                 notebook_id=chat_query.notebook_id,
                 question=chat_query.question,
                 source_ids=chat_query.source_ids,
-                top_k=chat_query.top_k or 5,
+                top_k=chat_query.top_k or 4,
                 llm_provider=chat_query.llm_provider
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"

@@ -38,6 +38,7 @@ export interface WebSource {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  quickSummary?: string;  // Quick summary from fast model (shown before detailed answer)
   citations?: Citation[];
   web_sources?: WebSource[];
   follow_up_questions?: string[];

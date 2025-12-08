@@ -80,17 +80,17 @@ This step downloads the AI models (~4GB each). Time varies by internet speed.
 ollama serve
 
 # In a NEW terminal, pull the required models
-# mistral-nemo: ~4.1GB download, used for main answers
-ollama pull mistral-nemo
+# mistral-nemo Q4_K_M: ~7GB download, used for main detailed answers (better quality quantization)
+ollama pull mistral-nemo:12b-instruct-2407-q4_K_M
 
-# phi4-mini: ~2.5GB download, used for fast follow-up questions  
+# phi4-mini: ~2.5GB download, used for fast quick summaries and follow-up questions  
 ollama pull phi4-mini
 ```
 
 **Verify models are installed:**
 ```bash
 ollama list
-# Should show both: mistral-nemo and phi4-mini
+# Should show: mistral-nemo:12b-instruct-2407-q4_K_M and phi4-mini
 ```
 
 > **Note:** Keep `ollama serve` running in a terminal whenever you use LocalBook.
@@ -290,20 +290,21 @@ To set up Brave Search:
 
 ### LLM Model Selection
 
-**Dual-Model Architecture:**
-- **mistral-nemo** (main): Generates detailed, well-cited answers
-- **phi4-mini** (fast): Generates follow-up questions in parallel
+**Progressive Response Architecture:**
+- **phi4-mini** (fast): Generates quick 2-3 sentence summary (~3s)
+- **mistral-nemo** (main): Streams detailed, well-cited answer after
+- **phi4-mini** (parallel): Generates follow-up questions while main answer streams
 
-This dual-model approach speeds up the overall response by running follow-up question generation concurrently with the main answer.
+This architecture provides immediate value with a quick summary, then streams the detailed answer for users who want more depth.
 
-**Main Model: mistral-nemo**
+**Main Model: mistral-nemo:12b-instruct-2407-q4_K_M**
 - **Why**: Best balance of speed, quality, and local privacy
-- **Performance**: ~14-18s per query with detailed, well-cited answers
+- **Performance**: Quick summary in ~3s, detailed answer in ~12-20s
 - **GPU Usage**: 100% utilization on Apple Silicon
 
 **Model Choice Reasoning:**
-- ✅ **mistral-nemo**: Optimal quality/speed balance (recommended for main answers)
-- ✅ **phi4-mini**: Fast and lightweight (used for follow-up questions)
+- ✅ **mistral-nemo:12b-instruct-2407-q4_K_M**: Q4_K_M quantization for better quality (main detailed answers)
+- ✅ **phi4-mini**: Fast and lightweight (quick summaries + follow-up questions)
 - ❌ **gemma3**: Fast (~10s) but poor answer quality and citation accuracy
 - ❌ **ministral-3:8b**: Very slow (60-114s) - not recommended
 - ❌ **minitron**: Unstable - hangs indefinitely
@@ -344,8 +345,8 @@ Configuration can be customized via `backend/.env` (copy from `.env.example`):
 # Key settings in backend/.env
 CHUNK_SIZE=1000        # Smaller = more precise retrieval, larger = more context per chunk
 CHUNK_OVERLAP=200      # Higher = better context continuity, but more storage
-EMBEDDING_MODEL=BAAI/bge-small-en-v1.5  # Change requires re-indexing documents
-OLLAMA_MODEL=mistral-nemo               # Main LLM model
+EMBEDDING_MODEL=all-MiniLM-L6-v2        # Fastest option (change requires re-indexing)
+OLLAMA_MODEL=mistral-nemo:12b-instruct-2407-q4_K_M  # Main LLM model (Q4_K_M quantization)
 ```
 
 **Chunking Strategy:**
@@ -356,10 +357,10 @@ OLLAMA_MODEL=mistral-nemo               # Main LLM model
 | Mixed content | 1000 | 200 | Default balanced setting |
 
 **First Query Performance:**
-- The first query after starting the backend takes longer (~30-60s) because:
-  1. Embedding model downloads on first use (~100MB)
-  2. Model loads into memory
-- Subsequent queries are much faster (~14-18s)
+- LocalBook automatically keeps models warm in memory, eliminating cold start delays
+- Models stay loaded for 30 minutes between queries
+- First query after app start: ~5s (models pre-loaded)
+- Subsequent queries: Quick summary in ~3s, detailed answer streams after
 
 **Memory Optimization:**
 - Each Ollama model uses 4-8GB VRAM
@@ -369,8 +370,8 @@ OLLAMA_MODEL=mistral-nemo               # Main LLM model
 ### LLM Providers
 Configure in Settings:
 - **Ollama** (default): Local, private, free
-  - Main model: `mistral-nemo`
-  - Follow-up model: `phi4-mini`
+  - Main model: `mistral-nemo:12b-instruct-2407-q4_K_M` (detailed answers)
+  - Fast model: `phi4-mini` (quick summaries + follow-ups)
 - **OpenAI**: GPT-4, GPT-3.5
   - Requires API key
 - **Anthropic**: Claude models

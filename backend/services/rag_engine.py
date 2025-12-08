@@ -17,6 +17,12 @@ class RAGEngine:
         self.embedding_model = None  # Lazy load
         self.db = None
     
+    def _load_embedding_model(self):
+        """Force load the embedding model (used for warmup)"""
+        if self.embedding_model is None:
+            self.embedding_model = SentenceTransformer(settings.embedding_model)
+        return self.embedding_model
+    
     def _get_embedding_model(self):
         """Lazy load embedding model"""
         if self.embedding_model is None:
@@ -211,8 +217,8 @@ class RAGEngine:
         
         citations = quality_citations
 
-        # Low confidence if fewer than 3 quality citations
-        low_confidence = len(citations) < 3
+        # Low confidence if fewer than 2 quality citations (adjusted for 4-chunk retrieval)
+        low_confidence = len(citations) < 2
         num_citations = len(citations)
         print(f"[RAG] Step 4 - Build context & citations: {time.time() - step_start:.2f}s")
         print(f"[RAG] Quality citations: {num_citations} (filtered from {len(all_citations)})")
@@ -339,8 +345,8 @@ class RAGEngine:
         
         citations = quality_citations
         
-        # Low confidence if fewer than 3 quality citations
-        low_confidence = len(citations) < 3
+        # Low confidence if fewer than 2 quality citations (adjusted for 4-chunk retrieval)
+        low_confidence = len(citations) < 2
         # Build context with explicit citation numbers
         numbered_context = []
         for i, citation in enumerate(citations):
@@ -359,12 +365,23 @@ class RAGEngine:
             "low_confidence": low_confidence
         }
 
-        # Step 4: Start follow-up generation in background (parallel)
+        # Step 4: Generate quick summary with fast model (phi4-mini)
+        step_start = time.time()
+        quick_summary = await self._generate_quick_summary(question, context, num_citations)
+        print(f"[RAG STREAM] Step 4 - Quick summary (phi4): {time.time() - step_start:.2f}s")
+        
+        # Send quick summary immediately
+        yield {
+            "type": "quick_summary",
+            "content": quick_summary
+        }
+
+        # Step 5: Start follow-up generation in background (parallel with detailed answer)
         followup_task = asyncio.create_task(
             self._generate_follow_up_questions_fast(question, context)
         )
 
-        # Step 5: Stream the answer - concise prompt for faster response
+        # Step 6: Stream the detailed answer with main model (mistral-nemo)
         system_prompt = f"""Answer using sources [1]-[{num_citations}]. Be concise (1-2 paragraphs). Inline citations only. No reference list at end."""
 
         prompt = f"""Sources:
@@ -380,12 +397,12 @@ Answer concisely with inline [N] citations:"""
             full_answer += token
             yield {"type": "token", "content": token}
         
-        print(f"[RAG STREAM] Step 4 - LLM streaming complete: {time.time() - step_start:.2f}s")
+        print(f"[RAG STREAM] Step 6 - LLM streaming complete: {time.time() - step_start:.2f}s")
 
-        # Step 6: Wait for follow-up questions (should be done or nearly done)
+        # Step 7: Wait for follow-up questions (should be done or nearly done)
         step_start = time.time()
         follow_up_questions = await followup_task
-        print(f"[RAG STREAM] Step 5 - Follow-ups ready: {time.time() - step_start:.2f}s")
+        print(f"[RAG STREAM] Step 7 - Follow-ups ready: {time.time() - step_start:.2f}s")
 
         # Send completion with follow-up questions
         yield {
@@ -398,14 +415,37 @@ Answer concisely with inline [N] citations:"""
         print(f"[RAG STREAM] TOTAL time: {total_time:.2f}s")
         print(f"{'='*60}\n")
 
+    async def _generate_quick_summary(self, question: str, context: str, num_citations: int) -> str:
+        """Generate a quick 2-3 sentence summary using fast model (phi4-mini)"""
+        try:
+            system_prompt = f"""You are a helpful assistant. Provide a brief 2-3 sentence summary answering the question.
+Use inline citations like [1], [2] etc. to reference the sources. Be direct and concise."""
+            
+            # Use truncated context for speed
+            truncated_context = context[:2000] if len(context) > 2000 else context
+            
+            prompt = f"""Sources:
+{truncated_context}
+
+Question: {question}
+
+Brief summary (2-3 sentences with [N] citations):"""
+            
+            # Use fast model for quick summary
+            response = await self._call_ollama(system_prompt, prompt, model=settings.ollama_fast_model)
+            return response.strip()
+        except Exception as e:
+            print(f"Failed to generate quick summary: {e}")
+            return ""
+
     async def _generate_follow_up_questions_fast(self, question: str, context: str) -> List[str]:
         """Generate follow-up questions using fast model (phi4-mini)"""
         try:
             system_prompt = "Generate 3 brief follow-up questions based on the context. One question per line."
             prompt = f"Topic: {question}\n\nContext summary: {context[:1000]}\n\nQuestions:"
             
-            # Use phi4-mini for fast follow-up generation
-            response = await self._call_ollama(system_prompt, prompt, model="phi4-mini")
+            # Use fast model for follow-up generation
+            response = await self._call_ollama(system_prompt, prompt, model=settings.ollama_fast_model)
             
             questions = [q.strip() for q in response.strip().split('\n') if q.strip()]
             questions = [q.lstrip('0123456789.-) ') for q in questions]
