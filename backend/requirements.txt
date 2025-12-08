@@ -34,7 +34,9 @@ youtube-transcript-api>=0.6.0
 moviepy>=2.1.0
 
 # Audio/Video transcription (requires ffmpeg: brew install ffmpeg)
-faster-whisper>=1.1.0
+# Using onnxruntime-silicon for Apple Silicon Macs (M1/M2/M3)
+onnxruntime-silicon>=1.14.0
+faster-whisper>=1.0.0,<1.2.0  # Pin to avoid onnxruntime conflicts
 
 # Utilities
 python-dotenv>=1.0.0
