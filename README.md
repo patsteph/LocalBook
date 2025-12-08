@@ -1,154 +1,218 @@
 # LocalBook
 
-A privacy-first, local alternative to Google's NotebookLM. Chat with your documents using RAG, get cited answers, generate podcasts, and more — all running locally on your machine.
+**Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
 ![LocalBook](https://img.shields.io/badge/Platform-macOS-blue) ![Python](https://img.shields.io/badge/Python-3.11+-green) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-## Features
+![LocalBook Screenshot](docs/screenshot.png)
 
-### Core Capabilities
-- **RAG (Retrieval Augmented Generation)**: Ask questions about your documents with accurate citations
-- **Multi-Format Support**: PDF, DOCX, PPTX, XLSX, web pages, and YouTube videos
-- **Web Search Integration**: Combine local document knowledge with real-time web search
-- **Audio/Podcast Generation**: Convert your documents into conversational podcasts with natural-sounding voices
-- **Timeline Visualization**: Automatically extract and visualize dates and events from your documents
-- **Smart Document Chunking**: Intelligent chunking for better context preservation
-- **Multi-LLM Support**: Use Ollama (local), OpenAI, or Anthropic models
+## What is LocalBook?
 
-### Document Processing
-- **PDFs**: Full text extraction with page numbers and metadata
-- **Office Documents**: Word (DOCX), PowerPoint (PPTX), Excel (XLSX)
-- **Web Pages**: Extract and process web content with metadata
-- **YouTube Videos**: Automatic transcript extraction and processing
-- **Tables**: Smart table extraction and processing
+LocalBook lets you **chat with your documents** using AI — completely offline and private. Upload PDFs, Word docs, web pages, or YouTube videos, then ask questions and get answers with exact citations.
 
-### AI-Powered Features
-- **Conversational Chat**: Ask questions in natural language
-- **Citation Tracking**: Every answer includes sources with page numbers and snippets
-- **Web Search**: Optional web search to supplement local knowledge
-- **Suggested Questions**: Auto-generated starter questions for each notebook
-- **Custom Skills**: Create custom prompts for specialized tasks
-- **Export Options**: Export notebooks and conversations
+**Think of it like ChatGPT, but:**
+- 🔒 **100% Private** — Everything runs on your Mac, nothing sent to the cloud
+- 📚 **Your Documents** — AI answers come from YOUR files, not the internet
+- 🎙️ **Podcast Generator** — Turn your documents into conversational audio podcasts
+- 💰 **Free** — No subscriptions, no API costs (uses free local AI models)
 
-### Audio Studio
-- **Podcast Generation**: Create conversational two-host podcasts from your documents
-- **Premium Voices**: High-quality macOS voices (Ava Premium, Evan Enhanced)
-- **Voice Customization**: Choose gender and accent (US/UK) for each host
-- **Background Processing**: Audio generation happens in the background
+### What Can You Do?
 
-## Tech Stack
+| Feature | Description |
+|---------|-------------|
+| 💬 **Ask Questions** | Chat with your documents in plain English, get answers with page citations |
+| 📄 **Upload Anything** | PDFs, Word, PowerPoint, Excel, web pages, YouTube videos |
+| 🎙️ **Generate Podcasts** | Create two-host audio discussions from your documents |
+| 🔍 **Web Search** | Optionally combine your docs with real-time web results |
+| 📅 **Timeline View** | Automatically extract and visualize dates/events |
 
-### Frontend
-- **Framework**: React 19 + TypeScript
-- **UI**: TailwindCSS + Lucide Icons
-- **Desktop**: Tauri 2 (native desktop app)
-- **State Management**: Zustand
-- **Build Tool**: Vite
+---
 
-### Backend
-- **API**: FastAPI (Python)
-- **Vector Database**: LanceDB
-- **Embeddings**: sentence-transformers
-- **LLM Support**: Ollama, OpenAI, Anthropic
-- **Audio**: macOS Say command with premium voices
-- **Document Processing**: PyMuPDF, python-docx, pdfplumber, trafilatura
-- **Video**: moviepy, youtube-transcript-api
-- **Audio Transcription**: faster-whisper
+## Installation
 
-## Quick Start
+> **⏱️ Total Setup Time: ~20-30 minutes** (one-time setup, then instant launches)
 
-### Prerequisites
-- **macOS** (required for audio generation features)
-- **Python 3.11+** (3.13 recommended)
-- **Node.js 18+**
-- **Rust** (for Tauri desktop app)
-- **Ollama** (for local LLM inference)
-- **ffmpeg** (required for audio/video transcription)
+<details>
+<summary><strong>📋 What You'll Need Before Starting (click to expand)</strong></summary>
 
-### Step 1: Install System Dependencies
+- **macOS** (required for audio features)
+- **Python 3.11+** — check: `python3 --version`
+- **Git** — check: `git --version`  
+- **~10GB free disk space**
+
+The following will be installed automatically during setup:
+- Node.js, Rust, Ollama, ffmpeg
+
+</details>
+
+### Step 1: Install System Dependencies ⏱️ ~5 minutes
 
 ```bash
-# Install Homebrew if not already installed
+# Install Homebrew if not already installed (skip if you have it)
+# Check first: brew --version
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # Install Ollama for local LLM
 brew install ollama
 
-# Install Rust (required for Tauri)
+# Install Rust (required for Tauri) - follow the prompts, select default installation
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 
-# Install Node.js (if not installed)
+# Install Node.js (if not installed - check first: node --version)
 brew install node
 
 # Install ffmpeg (required for audio/video transcription)
 brew install ffmpeg
 ```
 
-### Step 2: Set Up Ollama
+**Verify installations:**
+```bash
+ollama --version && node --version && rustc --version && ffmpeg -version | head -1
+```
+
+### Step 2: Download AI Models ⏱️ ~10-15 minutes
+
+This step downloads the AI models (~4GB each). Time varies by internet speed.
 
 ```bash
 # Start Ollama service (keep this running in a terminal)
 ollama serve
 
-# In a new terminal, pull the required models
-ollama pull mistral-nemo  # Main LLM for answers
-ollama pull phi4-mini     # Fast model for follow-up questions
+# In a NEW terminal, pull the required models
+# mistral-nemo: ~4.1GB download, used for main answers
+ollama pull mistral-nemo
+
+# phi4-mini: ~2.5GB download, used for fast follow-up questions  
+ollama pull phi4-mini
 ```
 
-### Step 3: Clone and Set Up Backend
+**Verify models are installed:**
+```bash
+ollama list
+# Should show both: mistral-nemo and phi4-mini
+```
+
+> **Note:** Keep `ollama serve` running in a terminal whenever you use LocalBook.
+
+### Step 3: Clone and Set Up Backend ⏱️ ~3-5 minutes
+
+#### Option A: Clone via Command Line (Recommended)
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/LocalBook.git
-cd LocalBook
+# First, navigate to where you want to store the project
+# Common locations: ~/Projects, ~/Developer, ~/Code, or ~/Desktop
+cd ~/Projects  # or wherever you prefer
 
-# Create and activate Python virtual environment
+# Clone the repository (downloads the code to your computer)
+git clone https://github.com/patsteph/LocalBook.git
+
+# Enter the project folder
+cd LocalBook
+```
+
+#### Option B: Download ZIP (Alternative for Git Beginners)
+
+1. Go to https://github.com/patsteph/LocalBook
+2. Click the green **"Code"** button
+3. Select **"Download ZIP"**
+4. Extract the ZIP file to your preferred location (e.g., `~/Projects`)
+5. Open Terminal and navigate to the extracted folder:
+   ```bash
+   cd ~/Projects/LocalBook-main  # Note: ZIP extracts with "-main" suffix
+   ```
+
+---
+
+#### Set Up the Backend
+
+```bash
+# Verify you're in the right directory
+ls -la
+# Should see: backend/, src/, src-tauri/, package.json, README.md, etc.
+
+# Navigate to the backend folder
 cd backend
+
+# Create a Python virtual environment
+# (This keeps LocalBook's dependencies separate from other Python projects)
 python3 -m venv .venv
+
+# Activate the virtual environment
 source .venv/bin/activate
 
-# Install Python dependencies
+# Your terminal prompt should now show (.venv) at the start
+# Example: (.venv) user@mac backend %
+# This confirms the virtual environment is active!
+
+# Install Python dependencies (~2-3 minutes)
 pip install -r requirements.txt
 
 # (Optional) Copy and customize environment config
 cp .env.example .env
 
-# Start the backend server (production)
+# Start the backend server
 python main.py
-
-# Or for development with auto-reload:
-# python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+# You should see: "Uvicorn running on http://0.0.0.0:8000"
+# Keep this terminal running!
 ```
 
-### Step 4: Set Up Frontend
+> **Tip:** If you see import errors, make sure your virtual environment is activated (you should see `(.venv)` in your prompt). Run `source .venv/bin/activate` to activate it.
+
+### Step 4: Set Up Frontend ⏱️ ~3-5 minutes
 
 ```bash
-# In a new terminal, from the LocalBook root directory
-cd LocalBook
+# Open a NEW terminal (keep the backend running in the previous one)
+# Navigate to the LocalBook root directory (not backend/)
+# Replace with your actual path from Step 3, for example:
+cd ~/Projects/LocalBook
 
-# Install Node.js dependencies
+# Install Node.js dependencies (~1-2 minutes)
 npm install
 
-# Run the desktop app in development mode
+# Build and run the desktop app (~2-3 minutes for first build)
 npm run tauri dev
 ```
 
-### Step 5: (Optional) Install Premium Voices for Audio
+**First launch notes:**
+- The first build takes longer as Rust compiles the Tauri app
+- A desktop window should open automatically when ready
+- If you see "Waiting for localhost:8000", make sure the backend is running (Step 3)
+
+> **🎉 Success!** You should now see the LocalBook app. Create a notebook and add some documents to get started!
+
+---
+
+### ✅ Setup Complete Checklist
+
+Before moving on, verify you have these **3 terminals running**:
+
+| Terminal | What's Running | You Should See |
+|----------|----------------|----------------|
+| 1️⃣ | `ollama serve` | "Listening on 127.0.0.1:11434" |
+| 2️⃣ | `python main.py` (in backend/) | "Uvicorn running on http://0.0.0.0:8000" |
+| 3️⃣ | `npm run tauri dev` | LocalBook app window opens |
+
+**Quick test:** Create a notebook, upload a PDF, and ask a question. Your first query may take 30-60 seconds (model loading), but subsequent queries will be much faster (~15 seconds).
+
+---
+
+### Step 5: (Optional) Install Premium Voices for Audio ⏱️ ~5 minutes
 
 For the best audio podcast quality, install premium macOS voices:
 
 1. Open **System Settings** → **Accessibility** → **Spoken Content**
 2. Click **System Voice** → **Manage Voices**
-3. Download these recommended voices:
+3. Download these recommended voices (~100-200MB each):
    - **Ava (Premium)** - Female US voice
    - **Evan (Enhanced)** - Male US voice
    - **Zoe (Premium)** - Female US voice (variety)
    - **Tom (Enhanced)** - Male US voice (variety)
 
-You can verify installed voices with:
+Verify installed voices:
 ```bash
 say -v '?'
+# Look for "Ava (Premium)", "Evan (Enhanced)", etc.
 ```
 
 ### Step 6: (Optional) Set Up Web Search
@@ -195,6 +259,32 @@ To set up Brave Search:
 1. Go to "Skills" in the sidebar
 2. Create custom prompts for specialized tasks
 3. Use skills when generating audio or content
+
+---
+
+## Tech Stack
+
+<details>
+<summary><strong>Click to expand technical details</strong></summary>
+
+### Frontend
+- **Framework**: React 19 + TypeScript
+- **UI**: TailwindCSS + Lucide Icons
+- **Desktop**: Tauri 2 (native desktop app)
+- **State Management**: Zustand
+- **Build Tool**: Vite
+
+### Backend
+- **API**: FastAPI (Python)
+- **Vector Database**: LanceDB
+- **Embeddings**: sentence-transformers
+- **LLM Support**: Ollama, OpenAI, Anthropic
+- **Audio**: macOS Say command with premium voices
+- **Document Processing**: PyMuPDF, python-docx, pdfplumber, trafilatura
+- **Video**: moviepy, youtube-transcript-api
+- **Audio Transcription**: faster-whisper
+
+</details>
 
 ## Configuration
 
