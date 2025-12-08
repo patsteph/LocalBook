@@ -506,6 +506,22 @@ python -m uvicorn main:app --reload --port 8001
 # Frontend will auto-detect backend port
 ```
 
+### Pip Install Fails (torch/dependency conflicts)
+If you see errors about torch versions or dependency conflicts:
+```bash
+# Option 1: Install torch first, then other requirements
+pip install torch
+pip install -r requirements.txt
+
+# Option 2: Create a fresh virtual environment
+cd backend
+rm -rf .venv
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
 ## Privacy & Security
 
 - **100% Local Processing**: All document processing happens on your machine

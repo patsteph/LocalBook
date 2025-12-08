@@ -1,42 +1,43 @@
 # FastAPI and server
-fastapi==0.115.5
-uvicorn[standard]==0.32.1
-python-multipart==0.0.20
-pydantic==2.10.3
-pydantic-settings==2.6.1
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.20
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
 
 # Vector database and embeddings
-lancedb==0.18.0
-sentence-transformers==3.3.1
-torch==2.5.1
+# Note: Install torch FIRST if you have issues (pip install torch)
+lancedb>=0.18.0
+sentence-transformers>=3.3.0
+torch>=2.5.0  # Works with 2.5.x through 2.9.x
 
 # LLM integrations
-anthropic==0.40.0
-openai==1.56.0
+anthropic>=0.40.0
+openai>=1.56.0
 
 # Document processing
-PyMuPDF==1.25.1
-python-docx==1.1.2
-pdfplumber==0.11.4
-python-pptx==1.0.2
-openpyxl==3.1.5
-xlrd==2.0.2
-pandas==2.2.3
+PyMuPDF>=1.25.0
+python-docx>=1.1.0
+pdfplumber>=0.11.0
+python-pptx>=1.0.0
+openpyxl>=3.1.0
+xlrd>=2.0.0
+pandas>=2.2.0
 
 # Web scraping
-trafilatura==1.12.2
-requests==2.32.3
-beautifulsoup4==4.12.3
+trafilatura>=1.12.0
+requests>=2.32.0
+beautifulsoup4>=4.12.0
 
 # YouTube
-youtube-transcript-api==0.6.3
-moviepy==2.1.1
+youtube-transcript-api>=0.6.0
+moviepy>=2.1.0
 
 # Audio/Video transcription (requires ffmpeg: brew install ffmpeg)
-faster-whisper==1.1.0
+faster-whisper>=1.1.0
 
 # Utilities
-python-dotenv==1.0.1
-httpx==0.28.1
-keyring==25.5.0
-dateparser==1.2.0
+python-dotenv>=1.0.0
+httpx>=0.28.0
+keyring>=25.5.0
+dateparser>=1.2.0
