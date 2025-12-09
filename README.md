@@ -30,174 +30,118 @@ LocalBook lets you **chat with your documents** using AI — completely offline 
 
 ## Installation
 
-> **⏱️ Total Setup Time: ~20-30 minutes** (one-time setup, then instant launches)
+> **⏱️ First-time setup: ~10-15 minutes** (mostly downloading AI models). After that, start with one command!
+
+### Quick Start (After First-Time Setup)
+
+```bash
+cd LocalBook
+./start.sh
+```
+
+That's it! The script handles everything automatically.
+
+---
+
+### First-Time Setup
 
 <details>
-<summary><strong>📋 What You'll Need Before Starting (click to expand)</strong></summary>
+<summary><strong>📋 Prerequisites (click to expand)</strong></summary>
 
-- **macOS** (required for audio features)
+- **macOS 12+** (required for audio features)
 - **Python 3.11+** — check: `python3 --version`
 - **Git** — check: `git --version`  
 - **~10GB free disk space**
 
-The following will be installed automatically during setup:
-- Node.js, Rust, Ollama, ffmpeg
-
 </details>
 
-### Step 1: Install System Dependencies ⏱️ ~5 minutes
+#### Step 1: Install Dependencies ⏱️ ~5 minutes
 
 ```bash
-# Install Homebrew if not already installed (skip if you have it)
-# Check first: brew --version
+# Install Homebrew (skip if you have it: brew --version)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-# Install Ollama for local LLM
-brew install ollama
+# Install all dependencies
+brew install ollama node ffmpeg
 
-# Install Rust (required for Tauri) - follow the prompts, select default installation
+# Install Rust (follow prompts, select default)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
-
-# Install Node.js (if not installed - check first: node --version)
-brew install node
-
-# Install ffmpeg (required for audio/video transcription)
-brew install ffmpeg
 ```
 
-**Verify installations:**
+#### Step 2: Clone and Run ⏱️ ~10 minutes (first run downloads AI models)
+
 ```bash
-ollama --version && node --version && rustc --version && ffmpeg -version | head -1
+# Clone the repository
+git clone https://github.com/patsteph/LocalBook.git
+cd LocalBook
+
+# Run LocalBook (handles everything automatically)
+./start.sh
 ```
 
-### Step 2: Download AI Models ⏱️ ~10-15 minutes
+The start script will:
+- ✅ Start Ollama service
+- ✅ Download AI models if needed (~7GB, first run only)
+- ✅ Set up Python environment (first run only)
+- ✅ Install dependencies (first run only)
+- ✅ Launch the app
 
-This step downloads the AI models (~4GB each). Time varies by internet speed.
+> **🎉 Done!** The LocalBook app window will open automatically. Press `Ctrl+C` to stop.
+
+---
+
+### Alternative: Manual Setup
+
+<details>
+<summary><strong>Click to expand manual setup instructions</strong></summary>
+
+If you prefer to run services manually or the start script doesn't work:
+
+#### Download AI Models
 
 ```bash
-# Start Ollama service (keep this running in a terminal)
+# Start Ollama service
 ollama serve
 
-# In a NEW terminal, pull the required models
-# mistral-nemo Q4_K_M: ~7GB download, used for main detailed answers (better quality quantization)
+# In a NEW terminal, download models
 ollama pull mistral-nemo:12b-instruct-2407-q4_K_M
-
-# phi4-mini: ~2.5GB download, used for fast quick summaries and follow-up questions  
 ollama pull phi4-mini
 ```
 
-**Verify models are installed:**
-```bash
-ollama list
-# Should show: mistral-nemo:12b-instruct-2407-q4_K_M and phi4-mini
-```
-
-> **Note:** Keep `ollama serve` running in a terminal whenever you use LocalBook.
-
-### Step 3: Clone and Set Up Backend ⏱️ ~3-5 minutes
-
-#### Option A: Clone via Command Line (Recommended)
+#### Set Up Backend
 
 ```bash
-# First, navigate to where you want to store the project
-# Common locations: ~/Projects, ~/Developer, ~/Code, or ~/Desktop
-cd ~/Projects  # or wherever you prefer
-
-# Clone the repository (downloads the code to your computer)
-git clone https://github.com/patsteph/LocalBook.git
-
-# Enter the project folder
-cd LocalBook
-```
-
-#### Option B: Download ZIP (Alternative for Git Beginners)
-
-1. Go to https://github.com/patsteph/LocalBook
-2. Click the green **"Code"** button
-3. Select **"Download ZIP"**
-4. Extract the ZIP file to your preferred location (e.g., `~/Projects`)
-5. Open Terminal and navigate to the extracted folder:
-   ```bash
-   cd ~/Projects/LocalBook-main  # Note: ZIP extracts with "-main" suffix
-   ```
-
----
-
-#### Set Up the Backend
-
-```bash
-# Verify you're in the right directory
-ls -la
-# Should see: backend/, src/, src-tauri/, package.json, README.md, etc.
-
-# Navigate to the backend folder
 cd backend
-
-# Create a Python virtual environment
-# (This keeps LocalBook's dependencies separate from other Python projects)
 python3 -m venv .venv
-
-# Activate the virtual environment
 source .venv/bin/activate
-
-# Your terminal prompt should now show (.venv) at the start
-# Example: (.venv) user@mac backend %
-# This confirms the virtual environment is active!
-
-# Install Python dependencies (~2-3 minutes)
 pip install -r requirements.txt
-
-# (Optional) Copy and customize environment config
-cp .env.example .env
-
-# Start the backend server
 python main.py
-# You should see: "Uvicorn running on http://0.0.0.0:8000"
-# Keep this terminal running!
+# Keep this running
 ```
 
-> **Tip:** If you see import errors, make sure your virtual environment is activated (you should see `(.venv)` in your prompt). Run `source .venv/bin/activate` to activate it.
-
-### Step 4: Set Up Frontend ⏱️ ~3-5 minutes
+#### Set Up Frontend
 
 ```bash
-# Open a NEW terminal (keep the backend running in the previous one)
-# Navigate to the LocalBook root directory (not backend/)
-# Replace with your actual path from Step 3, for example:
-cd ~/Projects/LocalBook
-
-# Install Node.js dependencies (~1-2 minutes)
+# In a NEW terminal
+cd LocalBook
 npm install
-
-# Build and run the desktop app (~2-3 minutes for first build)
 npm run tauri dev
 ```
 
-**First launch notes:**
-- The first build takes longer as Rust compiles the Tauri app
-- A desktop window should open automatically when ready
-- If you see "Waiting for localhost:8000", make sure the backend is running (Step 3)
+You'll need **3 terminals running**:
 
-> **🎉 Success!** You should now see the LocalBook app. Create a notebook and add some documents to get started!
+| Terminal | Command | Status |
+|----------|---------|--------|
+| 1 | `ollama serve` | "Listening on 127.0.0.1:11434" |
+| 2 | `python main.py` | "Uvicorn running on http://0.0.0.0:8000" |
+| 3 | `npm run tauri dev` | App window opens |
 
----
-
-### ✅ Setup Complete Checklist
-
-Before moving on, verify you have these **3 terminals running**:
-
-| Terminal | What's Running | You Should See |
-|----------|----------------|----------------|
-| 1️⃣ | `ollama serve` | "Listening on 127.0.0.1:11434" |
-| 2️⃣ | `python main.py` (in backend/) | "Uvicorn running on http://0.0.0.0:8000" |
-| 3️⃣ | `npm run tauri dev` | LocalBook app window opens |
-
-**Quick test:** Create a notebook, upload a PDF, and ask a question. Your first query may take 30-60 seconds (model loading), but subsequent queries will be much faster (~15 seconds).
+</details>
 
 ---
 
-### Step 5: (Optional) Install Premium Voices for Audio ⏱️ ~5 minutes
+### (Optional) Install Premium Voices for Audio
 
 For the best audio podcast quality, install premium macOS voices:
 
@@ -215,7 +159,7 @@ say -v '?'
 # Look for "Ava (Premium)", "Evan (Enhanced)", etc.
 ```
 
-### Step 6: (Optional) Set Up Web Search
+### (Optional) Set Up Web Search
 
 LocalBook supports web search to supplement your local documents:
 

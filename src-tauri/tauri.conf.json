@@ -44,9 +44,6 @@
     "category": "Education",
     "shortDescription": "Local NotebookLM alternative",
     "longDescription": "Privacy-focused document analysis and chat powered by local LLMs",
-    "externalBin": [
-      "binaries/localbook-backend"
-    ],
     "macOS": {
       "minimumSystemVersion": "12.0"
     }
