@@ -48,7 +48,7 @@ async fn start_backend(app_handle: &AppHandle) -> Result<Option<CommandChild>, S
     println!("Attempting to start backend sidecar...");
 
     // Try to get the sidecar command
-    match app_handle.shell().sidecar("localbooklm-backend") {
+    match app_handle.shell().sidecar("localbook-backend") {
         Ok(sidecar_command) => {
             // Spawn the sidecar process
             match sidecar_command.spawn() {
@@ -79,15 +79,14 @@ async fn start_backend(app_handle: &AppHandle) -> Result<Option<CommandChild>, S
                     Ok(Some(child))
                 }
                 Err(e) => {
-                    eprintln!("Failed to spawn sidecar: {}", e.to_string());
-                    println!("Assuming backend is running externally (dev mode)");
+                    println!("Sidecar not available: {}", e);
+                    println!("Running in dev mode - backend should be started externally");
                     Ok(None)
                 }
             }
         }
         Err(e) => {
-            eprintln!("Sidecar not found: {}", e);
-            println!("Running in dev mode - assuming backend is running externally");
+            println!("Sidecar not found: {} - running in dev mode", e);
             Ok(None)
         }
     }
@@ -134,7 +133,6 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
             Ok(child_opt) => {
                 if let Some(child) = child_opt {
                     println!("Backend sidecar process started");
-                    // Store the process handle
                     if let Ok(mut process) = process_ref.lock() {
                         *process = Some(child);
                     }
@@ -142,7 +140,7 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
                     println!("Backend running externally (dev mode)");
                 }
 
-                // Wait for backend to be ready (whether sidecar or external)
+                // Wait for backend to be ready
                 match wait_for_backend_ready(30).await {
                     Ok(_) => {
                         if let Ok(mut ready) = ready_ref.lock() {
@@ -152,14 +150,14 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
                     }
                     Err(e) => {
                         eprintln!("Failed to connect to backend: {}", e);
-                        eprintln!("Please ensure:");
-                        eprintln!("1. Backend is running (python backend/main.py)");
-                        eprintln!("2. Ollama is running (ollama serve)");
+                        eprintln!("");
+                        eprintln!("Please ensure the backend is running.");
+                        eprintln!("For dev mode: ./start.sh");
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Failed to start backend: {}", e.to_string());
+                eprintln!("Failed to start backend: {}", e);
             }
         }
     });

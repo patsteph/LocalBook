@@ -81,3 +81,6 @@ backend/data/audio/test_*
 
 # Tauri binaries (compiled executables)
 src-tauri/binaries/
+
+# Runtime logs
+backend.log

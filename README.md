@@ -376,12 +376,37 @@ When the backend is running, visit:
 - ReDoc: http://localhost:8000/redoc
 
 ### Building for Production
-```bash
-# Build desktop app
-npm run tauri:build
 
-# Output in src-tauri/target/release/
+Create a distributable `.app` and `.dmg`:
+
+```bash
+# Build everything (backend binary + Tauri app)
+./build.sh
+
+# Or rebuild backend binary from scratch
+./build.sh --rebuild
 ```
+
+**Output files:**
+- `src-tauri/target/release/bundle/macos/LocalBook.app`
+- `src-tauri/target/release/bundle/dmg/LocalBook_*.dmg`
+
+**Note:** The built app still requires users to have Ollama installed with the AI models:
+```bash
+brew install ollama
+ollama pull mistral-nemo:12b-instruct-2407-q4_K_M
+ollama pull phi4-mini
+```
+
+### Development Mode
+
+For development with hot-reload:
+
+```bash
+./start.sh
+```
+
+This starts the backend externally and runs `npm run tauri dev`.
 
 ## Requirements
 

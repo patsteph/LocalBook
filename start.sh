@@ -90,6 +90,24 @@ fi
 
 echo -e "${GREEN}✓ AI models ready${NC}"
 
+# Determine target triple for binary name
+ARCH=$(uname -m)
+if [ "$ARCH" = "arm64" ]; then
+    TARGET_TRIPLE="aarch64-apple-darwin"
+else
+    TARGET_TRIPLE="x86_64-apple-darwin"
+fi
+BACKEND_BINARY="src-tauri/binaries/localbook-backend-${TARGET_TRIPLE}"
+
+# Build backend binary if it doesn't exist
+if [ ! -f "$BACKEND_BINARY" ]; then
+    echo -e "${YELLOW}Building backend binary (first run only, ~5-10 minutes)...${NC}"
+    cd backend
+    ./build_backend.sh
+    cd ..
+    echo -e "${GREEN}✓ Backend binary built${NC}"
+fi
+
 # Set up Python virtual environment if needed
 if [ ! -d "backend/.venv" ]; then
     echo -e "${YELLOW}Setting up Python environment (first run only)...${NC}"
@@ -103,11 +121,14 @@ fi
 
 # Start backend
 echo -e "${YELLOW}Starting backend server...${NC}"
+BACKEND_LOG="$SCRIPT_DIR/backend.log"
 cd backend
 source .venv/bin/activate
-python main.py > /dev/null 2>&1 &
+python main.py > "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 cd ..
+sleep 3
+echo -e "${BLUE}Backend logs: $BACKEND_LOG${NC}"
 
 # Wait for backend to be ready
 for i in {1..30}; do
