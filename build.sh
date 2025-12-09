@@ -32,12 +32,19 @@ if ! command -v node &> /dev/null; then
     exit 1
 fi
 
+# Cargo only needed for full Tauri build, not just backend binary
 if ! command -v cargo &> /dev/null; then
-    echo -e "${RED}Error: Rust/Cargo not found${NC}"
-    exit 1
+    if [ "$1" != "--rebuild" ] && [ "$1" != "--backend-only" ]; then
+        echo -e "${RED}Error: Rust/Cargo not found. Install with:${NC}"
+        echo -e "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+        exit 1
+    else
+        echo -e "${YELLOW}Note: Cargo not found, skipping Tauri build${NC}"
+        SKIP_TAURI=true
+    fi
 fi
 
-echo -e "${GREEN}✓ All prerequisites found${NC}"
+echo -e "${GREEN}✓ Prerequisites checked${NC}"
 
 # Determine target triple
 ARCH=$(uname -m)
@@ -73,21 +80,32 @@ else
 fi
 
 # Step 2: Install frontend dependencies
-echo -e "\n${YELLOW}Step 2/3: Installing frontend dependencies...${NC}"
-npm install --silent
-echo -e "${GREEN}✓ Frontend dependencies ready${NC}"
+if [ "$SKIP_TAURI" != "true" ]; then
+    echo -e "\n${YELLOW}Step 2/3: Installing frontend dependencies...${NC}"
+    npm install --silent
+    echo -e "${GREEN}✓ Frontend dependencies ready${NC}"
 
-# Step 3: Build Tauri app
-echo -e "\n${YELLOW}Step 3/3: Building Tauri application...${NC}"
-npm run tauri build
+    # Step 3: Build Tauri app
+    echo -e "\n${YELLOW}Step 3/3: Building Tauri application...${NC}"
+    npm run tauri build
 
-echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}                    Build Complete!                          ${NC}"
-echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e ""
-echo -e "Output files:"
-echo -e "  ${BLUE}App:${NC} src-tauri/target/release/bundle/macos/LocalBook.app"
-echo -e "  ${BLUE}DMG:${NC} src-tauri/target/release/bundle/dmg/LocalBook_*.dmg"
+    echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}                    Build Complete!                          ${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e ""
+    echo -e "Output files:"
+    echo -e "  ${BLUE}App:${NC} src-tauri/target/release/bundle/macos/LocalBook.app"
+    echo -e "  ${BLUE}DMG:${NC} src-tauri/target/release/bundle/dmg/LocalBook_*.dmg"
+else
+    echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}              Backend Binary Built!                          ${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e ""
+    echo -e "Binary: ${BLUE}${BACKEND_BINARY}${NC}"
+    echo -e ""
+    echo -e "${YELLOW}To build the full Tauri app, install Rust:${NC}"
+    echo -e "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+fi
 echo -e ""
 echo -e "${YELLOW}Note: Users still need Ollama installed with models:${NC}"
 echo -e "  brew install ollama"
