@@ -62,6 +62,36 @@ pyinstaller \
     --specpath "./build" \
     --clean \
     --noconfirm \
+    --paths="." \
+    --hidden-import=api \
+    --hidden-import=api.notebooks \
+    --hidden-import=api.sources \
+    --hidden-import=api.chat \
+    --hidden-import=api.skills \
+    --hidden-import=api.audio \
+    --hidden-import=api.source_viewer \
+    --hidden-import=api.web \
+    --hidden-import=api.settings \
+    --hidden-import=api.embeddings \
+    --hidden-import=api.timeline \
+    --hidden-import=api.export \
+    --hidden-import=api.reindex \
+    --hidden-import=services \
+    --hidden-import=services.llm_service \
+    --hidden-import=services.rag_engine \
+    --hidden-import=services.document_processor \
+    --hidden-import=services.audio_generator \
+    --hidden-import=services.model_warmup \
+    --hidden-import=storage \
+    --hidden-import=storage.notebook_store \
+    --hidden-import=storage.source_store \
+    --hidden-import=storage.vector_store \
+    --hidden-import=storage.skill_store \
+    --hidden-import=storage.chat_store \
+    --hidden-import=models \
+    --hidden-import=models.chat \
+    --hidden-import=config \
+    --hidden-import=utils \
     --hidden-import=tiktoken_ext.openai_public \
     --hidden-import=tiktoken_ext \
     --hidden-import=sentence_transformers \
