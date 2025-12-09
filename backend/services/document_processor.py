@@ -196,7 +196,7 @@ class DocumentProcessor:
         import os
         
         try:
-            from faster_whisper import WhisperModel
+            import whisper
             
             # Save to temp file (whisper needs file path)
             with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as tmp:
@@ -204,16 +204,16 @@ class DocumentProcessor:
                 tmp_path = tmp.name
             
             try:
-                # Load faster-whisper model (uses 'base' for speed, can use 'small' or 'medium' for accuracy)
-                model = WhisperModel("base", device="cpu", compute_type="int8")
-                segments, _ = model.transcribe(tmp_path)
-                return " ".join([segment.text for segment in segments])
+                # Load openai-whisper model (uses 'base' for speed, can use 'small' or 'medium' for accuracy)
+                model = whisper.load_model("base")
+                result = model.transcribe(tmp_path)
+                return result["text"]
             finally:
                 # Clean up temp file
                 os.unlink(tmp_path)
                 
         except ImportError:
-            raise ValueError("Audio transcription requires faster-whisper. Install with: pip install faster-whisper")
+            raise ValueError("Audio transcription requires openai-whisper. Install with: pip install openai-whisper")
         except Exception as e:
             raise ValueError(f"Failed to transcribe audio: {str(e)}")
 
@@ -224,7 +224,7 @@ class DocumentProcessor:
         import os
         
         try:
-            from faster_whisper import WhisperModel
+            import whisper
             
             # Save video to temp file
             with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as tmp_video:
@@ -243,9 +243,9 @@ class DocumentProcessor:
                 )
                 
                 # Transcribe the extracted audio
-                model = WhisperModel("base", device="cpu", compute_type="int8")
-                segments, _ = model.transcribe(audio_path)
-                return " ".join([segment.text for segment in segments])
+                model = whisper.load_model("base")
+                result = model.transcribe(audio_path)
+                return result["text"]
                 
             finally:
                 # Clean up temp files
@@ -255,7 +255,7 @@ class DocumentProcessor:
                     os.unlink(audio_path)
                     
         except ImportError:
-            raise ValueError("Video transcription requires faster-whisper and ffmpeg. Install with: pip install faster-whisper")
+            raise ValueError("Video transcription requires openai-whisper and ffmpeg. Install with: pip install openai-whisper")
         except subprocess.CalledProcessError:
             raise ValueError("Video processing requires ffmpeg. Install with: brew install ffmpeg")
         except Exception as e:
