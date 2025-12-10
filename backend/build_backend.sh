@@ -49,13 +49,13 @@ pyinstaller \
     --specpath "./build" \
     --clean \
     --noconfirm \
-    --paths="." \
-    --add-data="api:api" \
-    --add-data="services:services" \
-    --add-data="storage:storage" \
-    --add-data="models:models" \
-    --add-data="utils:utils" \
-    --add-data="config.py:." \
+    --paths="$SCRIPT_DIR" \
+    --add-data="$SCRIPT_DIR/api:api" \
+    --add-data="$SCRIPT_DIR/services:services" \
+    --add-data="$SCRIPT_DIR/storage:storage" \
+    --add-data="$SCRIPT_DIR/models:models" \
+    --add-data="$SCRIPT_DIR/utils:utils" \
+    --add-data="$SCRIPT_DIR/config.py:." \
     --hidden-import=api \
     --hidden-import=api.notebooks \
     --hidden-import=api.sources \
