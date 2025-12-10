@@ -133,9 +133,13 @@ async fn start_backend(app_handle: &AppHandle) -> Result<Option<std::process::Ch
         // Production mode: run from bundled resources
         println!("Starting bundled backend...");
         
+        // Get the backend directory for working directory
+        let backend_dir = resource_path.parent().unwrap();
+        
         match std::process::Command::new(&resource_path)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .current_dir(backend_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
         {
             Ok(child) => {
