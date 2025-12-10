@@ -1,4 +1,11 @@
 """FastAPI main application"""
+import multiprocessing
+import sys
+
+# PyInstaller multiprocessing freeze support - must be at very top
+if getattr(sys, 'frozen', False):
+    multiprocessing.freeze_support()
+
 import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

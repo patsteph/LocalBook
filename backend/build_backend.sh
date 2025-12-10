@@ -78,22 +78,36 @@ pyinstaller \
     --hidden-import=storage \
     --hidden-import=storage.notebook_store \
     --hidden-import=storage.source_store \
-    --hidden-import=storage.vector_store \
-    --hidden-import=storage.skill_store \
-    --hidden-import=storage.chat_store \
+    --hidden-import=storage.audio_store \
+    --hidden-import=storage.highlights_store \
+    --hidden-import=storage.skills_store \
     --hidden-import=models \
     --hidden-import=models.chat \
     --hidden-import=config \
     --hidden-import=utils \
+    --hidden-import=services.web_scraper \
     --collect-all=sentence_transformers \
     --collect-all=torch \
     --collect-all=transformers \
     --collect-all=trafilatura \
+    --collect-all=whisper \
     --collect-data=lancedb \
     --collect-data=tiktoken \
     --hidden-import=trafilatura \
     --hidden-import=httpx \
     --hidden-import=youtube_transcript_api \
+    --hidden-import=keyring \
+    --hidden-import=dateparser \
+    --hidden-import=fitz \
+    --hidden-import=pdfplumber \
+    --hidden-import=docx \
+    --hidden-import=pptx \
+    --hidden-import=openpyxl \
+    --hidden-import=xlrd \
+    --hidden-import=moviepy \
+    --hidden-import=anthropic \
+    --hidden-import=openai \
+    --hidden-import=multiprocessing \
     main.py
 
 # Make the main executable... executable
