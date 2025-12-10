@@ -135,15 +135,17 @@ async fn start_backend(app_handle: &AppHandle) -> Result<Option<std::process::Ch
         
         // Get the backend directory for working directory
         let backend_dir = resource_path.parent().unwrap();
+        println!("Backend working directory: {:?}", backend_dir);
         
         match std::process::Command::new(&resource_path)
             .current_dir(backend_dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
         {
             Ok(child) => {
-                println!("Backend started successfully from: {:?}", resource_path);
+                println!("Backend spawned with PID: {:?}", child.id());
                 Ok(Some(child))
             }
             Err(e) => {
