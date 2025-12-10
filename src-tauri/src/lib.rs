@@ -122,6 +122,7 @@ async fn start_backend(app_handle: &AppHandle) -> Result<Option<std::process::Ch
         .path()
         .resource_dir()
         .map_err(|e| format!("Failed to get resource dir: {}", e))?
+        .join("resources")
         .join("backend")
         .join("localbook-backend")
         .join("localbook-backend");

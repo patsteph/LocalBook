@@ -45,7 +45,7 @@
     "shortDescription": "Local NotebookLM alternative",
     "longDescription": "Privacy-focused document analysis and chat powered by local LLMs",
     "resources": [
-      "resources/backend/**"
+      "resources/backend/localbook-backend/"
     ],
     "macOS": {
       "minimumSystemVersion": "12.0"
