@@ -88,8 +88,12 @@ pyinstaller \
     --collect-all=sentence_transformers \
     --collect-all=torch \
     --collect-all=transformers \
+    --collect-all=trafilatura \
     --collect-data=lancedb \
     --collect-data=tiktoken \
+    --hidden-import=trafilatura \
+    --hidden-import=httpx \
+    --hidden-import=youtube_transcript_api \
     main.py
 
 # Make the main executable... executable
