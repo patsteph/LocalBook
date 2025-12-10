@@ -42,8 +42,10 @@ cd LocalBook
 # Build the app (installs all dependencies automatically)
 ./build.sh
 
-# Copy to Applications
+# Install (either way works)
 cp -r LocalBook.app /Applications/
+# OR open the DMG installer:
+open src-tauri/target/release/bundle/dmg/LocalBook_*.dmg
 ```
 
 That's it! The build script automatically installs:
