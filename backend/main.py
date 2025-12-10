@@ -72,7 +72,7 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app",
+        app,  # Pass app object directly for PyInstaller compatibility
         host=settings.api_host,
         port=settings.api_port,
         log_level="warning"  # Reduce noise in production
