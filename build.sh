@@ -22,42 +22,55 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 # Check prerequisites
 echo -e "\n${YELLOW}Checking prerequisites...${NC}"
 
-if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}Error: Python 3 not found${NC}"
-    exit 1
-fi
-
-if ! command -v node &> /dev/null; then
-    echo -e "${RED}Error: Node.js not found${NC}"
-    exit 1
-fi
-
-# Cargo only needed for full Tauri build, not just backend binary
-if ! command -v cargo &> /dev/null; then
-    if [ "$1" != "--rebuild" ] && [ "$1" != "--backend-only" ]; then
-        echo -e "${RED}Error: Rust/Cargo not found. Install with:${NC}"
-        echo -e "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-        exit 1
-    else
-        echo -e "${YELLOW}Note: Cargo not found, skipping Tauri build${NC}"
-        SKIP_TAURI=true
+# Check for Homebrew (needed to install dependencies)
+if ! command -v brew &> /dev/null; then
+    echo -e "${YELLOW}Homebrew not found. Installing...${NC}"
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    
+    # Add brew to path for Apple Silicon
+    if [ -f "/opt/homebrew/bin/brew" ]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
     fi
+fi
+
+# Install Python if not found
+if ! command -v python3 &> /dev/null; then
+    echo -e "${YELLOW}Python not found. Installing...${NC}"
+    brew install python
+fi
+
+# Install Node.js if not found
+if ! command -v node &> /dev/null; then
+    echo -e "${YELLOW}Node.js not found. Installing...${NC}"
+    brew install node
+fi
+
+# Install Ollama if not found
+if ! command -v ollama &> /dev/null; then
+    echo -e "${YELLOW}Ollama not found. Installing...${NC}"
+    brew install ollama
+fi
+
+# Install Rust if not found
+if ! command -v cargo &> /dev/null; then
+    echo -e "${YELLOW}Rust not found. Installing automatically...${NC}"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source "$HOME/.cargo/env"
+    
+    if ! command -v cargo &> /dev/null; then
+        echo -e "${RED}Error: Failed to install Rust${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Rust installed${NC}"
 fi
 
 echo -e "${GREEN}✓ Prerequisites checked${NC}"
 
-# Determine target triple
-ARCH=$(uname -m)
-if [ "$ARCH" = "arm64" ]; then
-    TARGET_TRIPLE="aarch64-apple-darwin"
-else
-    TARGET_TRIPLE="x86_64-apple-darwin"
-fi
-BACKEND_BINARY="src-tauri/binaries/localbook-backend-${TARGET_TRIPLE}"
+BACKEND_DIR="src-tauri/resources/backend/localbook-backend"
 
-# Step 1: Build backend binary
-echo -e "\n${YELLOW}Step 1/3: Building backend binary...${NC}"
-if [ ! -f "$BACKEND_BINARY" ] || [ "$1" = "--rebuild" ]; then
+# Step 1: Build backend
+echo -e "\n${YELLOW}Step 1/3: Building backend...${NC}"
+if [ ! -d "$BACKEND_DIR" ] || [ "$1" = "--rebuild" ]; then
     cd backend
     
     # Ensure venv exists
@@ -80,34 +93,53 @@ else
 fi
 
 # Step 2: Install frontend dependencies
-if [ "$SKIP_TAURI" != "true" ]; then
-    echo -e "\n${YELLOW}Step 2/3: Installing frontend dependencies...${NC}"
-    npm install --silent
-    echo -e "${GREEN}✓ Frontend dependencies ready${NC}"
+echo -e "\n${YELLOW}Step 2/3: Installing frontend dependencies...${NC}"
+npm install --silent
+echo -e "${GREEN}✓ Frontend dependencies ready${NC}"
 
-    # Step 3: Build Tauri app
-    echo -e "\n${YELLOW}Step 3/3: Building Tauri application...${NC}"
-    npm run tauri build
+# Step 3: Build Tauri app
+echo -e "\n${YELLOW}Step 3/3: Building Tauri application...${NC}"
+npm run tauri build
 
-    echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}                    Build Complete!                          ${NC}"
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e ""
-    echo -e "Output files:"
-    echo -e "  ${BLUE}App:${NC} src-tauri/target/release/bundle/macos/LocalBook.app"
-    echo -e "  ${BLUE}DMG:${NC} src-tauri/target/release/bundle/dmg/LocalBook_*.dmg"
-else
-    echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}              Backend Binary Built!                          ${NC}"
-    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e ""
-    echo -e "Binary: ${BLUE}${BACKEND_BINARY}${NC}"
-    echo -e ""
-    echo -e "${YELLOW}To build the full Tauri app, install Rust:${NC}"
-    echo -e "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+# Copy app to easy location
+APP_PATH="src-tauri/target/release/bundle/macos/LocalBook.app"
+if [ -d "$APP_PATH" ]; then
+    cp -r "$APP_PATH" "./LocalBook.app"
 fi
+
+echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}                    Build Complete!                          ${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e ""
-echo -e "${YELLOW}Note: Users still need Ollama installed with models:${NC}"
-echo -e "  brew install ollama"
-echo -e "  ollama pull mistral-nemo:12b-instruct-2407-q4_K_M"
-echo -e "  ollama pull phi4-mini"
+echo -e "${GREEN}Your app is ready:${NC}"
+echo -e "  ${BLUE}./LocalBook.app${NC}"
+echo -e ""
+echo -e "To install, drag LocalBook.app to your Applications folder, or run:"
+echo -e "  ${BLUE}cp -r LocalBook.app /Applications/${NC}"
+echo -e ""
+
+# Download Ollama models if not present
+echo -e "${YELLOW}Checking AI models...${NC}"
+
+# Start Ollama if not running
+if ! curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+    ollama serve > /dev/null 2>&1 &
+    sleep 2
+fi
+
+MODELS=$(ollama list 2>/dev/null || echo "")
+if ! echo "$MODELS" | grep -q "mistral-nemo"; then
+    echo -e "${YELLOW}Downloading mistral-nemo model (~7GB)...${NC}"
+    ollama pull mistral-nemo:12b-instruct-2407-q4_K_M
+fi
+
+if ! echo "$MODELS" | grep -q "phi4-mini"; then
+    echo -e "${YELLOW}Downloading phi4-mini model (~2.5GB)...${NC}"
+    ollama pull phi4-mini
+fi
+
+echo -e "${GREEN}✓ AI models ready${NC}"
+echo -e ""
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}  Ready! Launch LocalBook.app or copy to /Applications       ${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

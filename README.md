@@ -30,114 +30,42 @@ LocalBook lets you **chat with your documents** using AI — completely offline 
 
 ## Installation
 
-> **⏱️ First-time setup: ~10-15 minutes** (mostly downloading AI models). After that, start with one command!
+> **⏱️ Build time: ~15-20 minutes** (first build only, mostly downloading dependencies and AI models)
 
-### Quick Start (After First-Time Setup)
-
-```bash
-cd LocalBook
-./start.sh
-```
-
-That's it! The script handles everything automatically.
-
----
-
-### First-Time Setup
-
-<details>
-<summary><strong>📋 Prerequisites (click to expand)</strong></summary>
-
-- **macOS 12+** (required for audio features)
-- **Python 3.11+** — check: `python3 --version`
-- **Git** — check: `git --version`  
-- **~10GB free disk space**
-
-</details>
-
-#### Step 1: Install Dependencies ⏱️ ~5 minutes
-
-```bash
-# Install Homebrew (skip if you have it: brew --version)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install all dependencies
-brew install ollama node ffmpeg
-
-# Install Rust (follow prompts, select default)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source $HOME/.cargo/env
-```
-
-#### Step 2: Clone and Run ⏱️ ~10 minutes (first run downloads AI models)
+### Build & Install
 
 ```bash
 # Clone the repository
 git clone https://github.com/patsteph/LocalBook.git
 cd LocalBook
 
-# Run LocalBook (handles everything automatically)
-./start.sh
+# Build the app (installs all dependencies automatically)
+./build.sh
+
+# Copy to Applications
+cp -r LocalBook.app /Applications/
 ```
 
-The start script will:
-- ✅ Start Ollama service
-- ✅ Download AI models if needed (~7GB, first run only)
-- ✅ Set up Python environment (first run only)
-- ✅ Install dependencies (first run only)
-- ✅ Launch the app
+That's it! The build script automatically installs:
+- ✅ Homebrew (if needed)
+- ✅ Python, Node.js, Rust (if needed)
+- ✅ Ollama + AI models (~10GB)
+- ✅ All project dependencies
+- ✅ Builds the complete app
 
-> **🎉 Done!** The LocalBook app window will open automatically. Press `Ctrl+C` to stop.
+### Running the App
+
+Just launch **LocalBook** from Applications — it automatically starts Ollama if needed.
 
 ---
 
-### Alternative: Manual Setup
+### Development Mode
 
-<details>
-<summary><strong>Click to expand manual setup instructions</strong></summary>
-
-If you prefer to run services manually or the start script doesn't work:
-
-#### Download AI Models
+For development with hot-reload:
 
 ```bash
-# Start Ollama service
-ollama serve
-
-# In a NEW terminal, download models
-ollama pull mistral-nemo:12b-instruct-2407-q4_K_M
-ollama pull phi4-mini
+./start.sh
 ```
-
-#### Set Up Backend
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python main.py
-# Keep this running
-```
-
-#### Set Up Frontend
-
-```bash
-# In a NEW terminal
-cd LocalBook
-npm install
-npm run tauri dev
-```
-
-You'll need **3 terminals running**:
-
-| Terminal | Command | Status |
-|----------|---------|--------|
-| 1 | `ollama serve` | "Listening on 127.0.0.1:11434" |
-| 2 | `python main.py` | "Uvicorn running on http://0.0.0.0:8000" |
-| 3 | `npm run tauri dev` | App window opens |
-
-</details>
 
 ---
 

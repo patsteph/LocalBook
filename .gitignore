@@ -79,8 +79,11 @@ tests/
 # Audio test files
 backend/data/audio/test_*
 
-# Tauri binaries (compiled executables)
-src-tauri/binaries/
+# Tauri bundled backend (PyInstaller output)
+src-tauri/resources/backend/
 
 # Runtime logs
 backend.log
+
+# Built app
+LocalBook.app

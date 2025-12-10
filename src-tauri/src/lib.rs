@@ -1,12 +1,10 @@
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 use std::time::Duration;
-use tauri_plugin_shell::ShellExt;
-use tauri_plugin_shell::process::CommandChild;
 
 // State to track the backend process
 struct BackendState {
-    process: Arc<Mutex<Option<CommandChild>>>,
+    process: Arc<Mutex<Option<std::process::Child>>>,
     ready: Arc<Mutex<bool>>,
 }
 
@@ -43,52 +41,116 @@ async fn check_health() -> Result<bool, Box<dyn std::error::Error>> {
     Ok(response.status().is_success())
 }
 
-// Function to start the backend sidecar
-async fn start_backend(app_handle: &AppHandle) -> Result<Option<CommandChild>, String> {
-    println!("Attempting to start backend sidecar...");
+// Function to check if Ollama is running
+async fn check_ollama() -> bool {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build();
+    
+    match client {
+        Ok(c) => c.get("http://localhost:11434/api/tags").send().await.is_ok(),
+        Err(_) => false,
+    }
+}
 
-    // Try to get the sidecar command
-    match app_handle.shell().sidecar("localbook-backend") {
-        Ok(sidecar_command) => {
-            // Spawn the sidecar process
-            match sidecar_command.spawn() {
-                Ok((mut rx, child)) => {
-                    println!("Backend sidecar started successfully");
+// Function to start Ollama if not running
+async fn ensure_ollama_running() {
+    if check_ollama().await {
+        println!("Ollama is already running");
+        return;
+    }
 
-                    // Log output in background
-                    tauri::async_runtime::spawn(async move {
-                        while let Some(event) = rx.recv().await {
-                            match event {
-                                tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
-                                    println!("[Backend] {}", String::from_utf8_lossy(&line));
-                                }
-                                tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
-                                    eprintln!("[Backend] {}", String::from_utf8_lossy(&line));
-                                }
-                                tauri_plugin_shell::process::CommandEvent::Error(err) => {
-                                    eprintln!("[Backend Error] {}", err);
-                                }
-                                tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
-                                    println!("[Backend] Process terminated with code: {:?}", payload.code);
-                                }
-                                _ => {}
-                            }
-                        }
-                    });
+    println!("Starting Ollama...");
+    
+    // Try common Ollama installation paths
+    let ollama_paths = [
+        "/opt/homebrew/bin/ollama",  // Apple Silicon Homebrew
+        "/usr/local/bin/ollama",      // Intel Homebrew
+        "/Applications/Ollama.app/Contents/Resources/ollama", // Ollama.app
+        "ollama",                      // Fallback to PATH
+    ];
 
-                    Ok(Some(child))
+    let mut result = None;
+    for path in &ollama_paths {
+        let attempt = std::process::Command::new(path)
+            .arg("serve")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        
+        if attempt.is_ok() {
+            result = Some(attempt);
+            println!("Started Ollama from: {}", path);
+            break;
+        }
+    }
+
+    let result = result.unwrap_or_else(|| {
+        std::process::Command::new("ollama")
+            .arg("serve")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    });
+
+    match result {
+        Ok(_) => {
+            // Wait for Ollama to be ready
+            for attempt in 1..=10 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if check_ollama().await {
+                    println!("Ollama started successfully");
+                    return;
                 }
-                Err(e) => {
-                    println!("Sidecar not available: {}", e);
-                    println!("Running in dev mode - backend should be started externally");
-                    Ok(None)
-                }
+                println!("Waiting for Ollama... attempt {}/10", attempt);
             }
+            eprintln!("Warning: Ollama may not have started properly");
         }
         Err(e) => {
-            println!("Sidecar not found: {} - running in dev mode", e);
-            Ok(None)
+            eprintln!("Could not start Ollama: {}", e);
+            eprintln!("Please start Ollama manually: ollama serve");
         }
+    }
+}
+
+// Function to start the backend from resources
+async fn start_backend(app_handle: &AppHandle) -> Result<Option<std::process::Child>, String> {
+    println!("Attempting to start backend...");
+
+    // Get the resource path for the backend executable
+    let resource_path = app_handle
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Failed to get resource dir: {}", e))?
+        .join("backend")
+        .join("localbook-backend")
+        .join("localbook-backend");
+
+    println!("Looking for backend at: {:?}", resource_path);
+
+    if resource_path.exists() {
+        // Production mode: run from bundled resources
+        println!("Starting bundled backend...");
+        
+        match std::process::Command::new(&resource_path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => {
+                println!("Backend started successfully from: {:?}", resource_path);
+                Ok(Some(child))
+            }
+            Err(e) => {
+                eprintln!("Failed to start backend: {}", e);
+                Err(format!("Failed to start backend: {}", e))
+            }
+        }
+    } else {
+        // Dev mode: backend should be started externally via start.sh
+        println!("Backend not found at {:?}", resource_path);
+        println!("Running in dev mode - backend should be started externally");
+        Ok(None)
     }
 }
 
@@ -129,10 +191,13 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
 
     // Spawn backend startup in background
     tauri::async_runtime::spawn(async move {
+        // Ensure Ollama is running first
+        ensure_ollama_running().await;
+
         match start_backend(&app_handle).await {
             Ok(child_opt) => {
                 if let Some(child) = child_opt {
-                    println!("Backend sidecar process started");
+                    println!("Backend process started");
                     if let Ok(mut process) = process_ref.lock() {
                         *process = Some(child);
                     }
