@@ -59,6 +59,18 @@ That's it! The build script automatically installs:
 
 Just launch **LocalBook** from Applications — it automatically starts Ollama if needed.
 
+### Clean Rebuild
+
+If you have a partial or broken install, clean everything and rebuild:
+
+```bash
+rm -rf src-tauri/resources/backend/
+rm -rf src-tauri/target/
+rm -rf node_modules/
+rm -rf backend/.venv/
+./build.sh
+```
+
 ---
 
 ### Development Mode
