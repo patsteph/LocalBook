@@ -340,16 +340,6 @@ ollama pull mistral-nemo:12b-instruct-2407-q4_K_M
 ollama pull phi4-mini
 ```
 
-### Development Mode
-
-For development with hot-reload:
-
-```bash
-./start.sh
-```
-
-This starts the backend externally and runs `npm run tauri dev`.
-
 ## Requirements
 
 ### Python Dependencies
