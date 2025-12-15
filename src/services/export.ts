@@ -5,8 +5,9 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import { jsPDF } from 'jspdf';
+import { API_BASE_URL } from './api';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = API_BASE_URL;
 
 export interface ExportFormat {
     id: string;

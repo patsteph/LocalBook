@@ -2,7 +2,9 @@
  * Settings service for managing API keys and configuration
  */
 
-const API_BASE = 'http://localhost:8000';
+import { API_BASE_URL } from './api';
+
+const API_BASE = API_BASE_URL;
 
 export interface APIKeysStatus {
     configured: {

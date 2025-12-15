@@ -13,7 +13,7 @@ LocalBook lets you **chat with your documents** using AI — completely offline 
 - � **Knowledge Constellation** — 3D visualization of concepts across documents
 - 🧠 **Memory System** — AI remembers your preferences and past conversations
 - 🎙️ **Podcast Generator** — Turn documents into audio discussions
-- � **Auto-Updates** — Check for and pull updates from GitHub
+- � **Auto-Updates** — Check for updates from GitHub (**under construction for packaged `.app` installs**)
 
 ---
 
@@ -30,6 +30,8 @@ cp -r LocalBook.app /Applications/
 ```
 
 The build script installs everything: Homebrew, Python, Node.js, Rust, Ollama, AI models (~10GB), and all dependencies.
+
+Note: `./build.sh` performs network downloads and may install system dependencies. It typically requires an admin-enabled Mac and may prompt for permissions.
 
 ---
 
@@ -142,6 +144,9 @@ ollama list                            # Verify models
 
 ### Clean Rebuild
 ```bash
+./build.sh --rebuild
+
+# If you still have issues, do a full clean wipe rebuild:
 rm -rf src-tauri/resources/backend/ src-tauri/target/ node_modules/ backend/.venv/
 ./build.sh
 ```

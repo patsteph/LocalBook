@@ -203,6 +203,10 @@ class MemoryStore:
         """Initialize SQLite database for recall memory"""
         conn = sqlite3.connect(str(self.recall_db_path))
         cursor = conn.cursor()
+
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
         
         # Conversation turns
         cursor.execute("""
@@ -248,7 +252,9 @@ class MemoryStore:
     
     def _get_recall_connection(self) -> sqlite3.Connection:
         """Get SQLite connection (thread-local)"""
-        return sqlite3.connect(str(self.recall_db_path))
+        conn = sqlite3.connect(str(self.recall_db_path))
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
     
     def add_recall_entry(self, entry: RecallMemoryEntry) -> None:
         """Add conversation turn to recall memory"""

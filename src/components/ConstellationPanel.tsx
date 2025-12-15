@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { API_BASE_URL } from '../services/api';
 
 interface GraphNode {
   id: string;
@@ -54,7 +55,7 @@ interface Props {
   notebookId: string | null;
 }
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = API_BASE_URL;
 
 const LINK_TYPE_COLORS: Record<string, string> = {
   references: '#3B82F6',
@@ -80,7 +81,6 @@ export function ConstellationPanel({ notebookId }: Props) {
   
   // Canvas refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   const animationRef = useRef<number | null>(null);
   const nodesRef = useRef<GraphNode[]>([]);
   const edgesRef = useRef<GraphEdge[]>([]);

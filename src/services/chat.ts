@@ -1,8 +1,6 @@
 // Chat API service
-import api from './api';
+import api, { API_BASE_URL } from './api';
 import { ChatQuery, ChatResponse, Citation } from '../types';
-
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export interface StreamCallbacks {
   onCitations?: (citations: Citation[], sources: string[], lowConfidence: boolean) => void;

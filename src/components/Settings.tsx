@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { settingsService } from '../services/settings';
 import { MemorySettings } from './MemorySettings';
+import { API_BASE_URL } from '../services/api';
 
 interface SettingsProps {
     onClose?: () => void;
@@ -106,7 +107,7 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
         setCheckingUpdates(true);
         setUpdateMessage(null);
         try {
-            const response = await fetch('http://localhost:8000/updates/check');
+            const response = await fetch(`${API_BASE_URL}/updates/check`);
             if (response.ok) {
                 const data = await response.json();
                 setUpdateInfo(data);
@@ -132,7 +133,7 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
         setPullingUpdate(true);
         setUpdateMessage(null);
         try {
-            const response = await fetch('http://localhost:8000/updates/pull', {
+            const response = await fetch(`${API_BASE_URL}/updates/pull`, {
                 method: 'POST'
             });
             if (response.ok) {

@@ -17,6 +17,7 @@ function App() {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
+  const [backendStatusMessage, setBackendStatusMessage] = useState<string>('Initializing backend services...');
   const [refreshSources, setRefreshSources] = useState(0);
   const [refreshNotebooks, setRefreshNotebooks] = useState(0);
   const [darkMode, setDarkMode] = useState(false);
@@ -72,6 +73,18 @@ function App() {
     // Check if backend is ready
     const checkBackend = async () => {
       try {
+        try {
+          const status = await invoke<{ stage: string; message: string; last_error: string | null }>('get_backend_status');
+          if (status?.message) {
+            setBackendStatusMessage(status.message);
+          }
+          if (status?.stage === 'error' && status.last_error) {
+            setBackendError(status.last_error);
+          }
+        } catch {
+          // Ignore status errors (older builds/dev)
+        }
+
         const ready = await invoke<boolean>('is_backend_ready');
         if (ready) {
           setBackendReady(true);
@@ -112,7 +125,7 @@ function App() {
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Starting LocalBookLM</h2>
-          <p className="text-gray-600">Initializing backend services...</p>
+          <p className="text-gray-600">{backendStatusMessage}</p>
           {backendError && (
             <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg max-w-md mx-auto">
               <p className="text-sm text-yellow-800">{backendError}</p>

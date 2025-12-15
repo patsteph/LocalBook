@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # API settings
     api_port: int = 8000
-    api_host: str = "0.0.0.0"
+    api_host: str = "127.0.0.1"
 
     # Data paths
     data_dir: Path = Path("data")

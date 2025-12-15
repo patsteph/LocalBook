@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Dict
 from config import settings
+from utils.json_io import atomic_write_json
 
 
 def local_iso_time() -> str:
@@ -29,8 +30,7 @@ class AudioStore:
 
     def _save_data(self, data: dict):
         """Save audio generations to storage"""
-        with open(self.storage_path, 'w') as f:
-            json.dump(data, f, indent=2)
+        atomic_write_json(self.storage_path, data)
 
     async def list(self, notebook_id: str) -> List[Dict]:
         """List all audio generations for a notebook"""

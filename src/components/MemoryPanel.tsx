@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { API_BASE_URL } from '../services/api';
 
 interface CoreMemoryEntry {
   id: string;
@@ -44,7 +45,7 @@ interface ArchivalSearchResult {
   created_at: string;
 }
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = API_BASE_URL;
 
 const CATEGORY_LABELS: Record<string, string> = {
   user_preference: '⚙️ Preferences',

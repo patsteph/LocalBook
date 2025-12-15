@@ -5,10 +5,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict
 from config import settings
+from utils.json_io import atomic_write_json
 
 class NotebookStore:
     def __init__(self):
         self.storage_path = settings.data_dir / "notebooks.json"
+        self._sources_count_cache: Optional[Dict[str, int]] = None
+        self._sources_count_cache_mtime: Optional[float] = None
         self._ensure_storage()
 
     def _ensure_storage(self):
@@ -23,26 +26,34 @@ class NotebookStore:
 
     def _save_data(self, data: dict):
         """Save notebooks to storage"""
-        with open(self.storage_path, 'w') as f:
-            json.dump(data, f, indent=2)
+        atomic_write_json(self.storage_path, data)
 
     async def list(self) -> List[Dict]:
         """List all notebooks with accurate source counts"""
         data = self._load_data()
         notebooks = list(data["notebooks"].values())
         
-        # Load sources to get accurate counts
+        # Load sources to get accurate counts (cached by file mtime)
         sources_path = settings.data_dir / "sources.json"
         if sources_path.exists():
-            with open(sources_path, 'r') as f:
-                sources_data = json.load(f)
-            
-            # Count sources per notebook
-            for notebook in notebooks:
-                notebook_id = notebook["id"]
-                count = sum(1 for s in sources_data.get("sources", {}).values() 
-                           if s.get("notebook_id") == notebook_id)
-                notebook["source_count"] = count
+            try:
+                mtime = sources_path.stat().st_mtime
+                if self._sources_count_cache is None or self._sources_count_cache_mtime != mtime:
+                    with open(sources_path, 'r') as f:
+                        sources_data = json.load(f)
+                    counts: Dict[str, int] = {}
+                    for s in sources_data.get("sources", {}).values():
+                        nbid = s.get("notebook_id")
+                        if nbid:
+                            counts[nbid] = counts.get(nbid, 0) + 1
+                    self._sources_count_cache = counts
+                    self._sources_count_cache_mtime = mtime
+
+                for notebook in notebooks:
+                    notebook_id = notebook["id"]
+                    notebook["source_count"] = (self._sources_count_cache or {}).get(notebook_id, 0)
+            except Exception:
+                pass
         
         return notebooks
 

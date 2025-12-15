@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { API_BASE_URL, WS_BASE_URL } from '../services/api';
 
 interface GraphNode {
   id: string;
@@ -54,7 +55,7 @@ interface Props {
   onAskAboutConcept?: (query: string) => void;  // Callback to switch to Chat with prefilled query
 }
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = API_BASE_URL;
 
 export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcept }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -736,7 +737,7 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
       }
       
       try {
-        const ws = new WebSocket('ws://localhost:8000/constellation/ws');
+        const ws = new WebSocket(`${WS_BASE_URL}/constellation/ws`);
         
         ws.onopen = () => {
           console.log('Constellation WebSocket connected');

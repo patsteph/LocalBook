@@ -12,6 +12,10 @@ from models.knowledge_graph import ConceptExtractionRequest
 import httpx
 import time
 import asyncio
+import os
+
+
+_concept_extraction_semaphore = asyncio.Semaphore(int(os.getenv("LOCALBOOK_KG_CONCURRENCY", "2")))
 
 class RAGEngine:
     """RAG engine for document Q&A"""
@@ -116,53 +120,54 @@ class RAGEngine:
         chunks: List[str]
     ):
         """Extract concepts from document chunks for knowledge graph (runs in background)"""
-        try:
-            # Import here to avoid circular imports
-            from services.knowledge_graph import knowledge_graph_service
-            from api.constellation_ws import notify_concept_added, notify_build_progress, notify_build_complete
-            
-            print(f"[KG] Starting concept extraction for source {source_id} ({len(chunks)} chunks)")
-            
-            total_concepts = 0
-            chunks_to_process = [i for i in range(len(chunks)) if i % 3 == 0]
-            
-            # Process every 3rd chunk to balance coverage vs speed
-            for idx, i in enumerate(chunks_to_process):
-                chunk = chunks[i]
-                    
-                request = ConceptExtractionRequest(
-                    text=chunk,
-                    source_id=source_id,
-                    chunk_index=i,
-                    notebook_id=notebook_id
-                )
+        async with _concept_extraction_semaphore:
+            try:
+                # Import here to avoid circular imports
+                from services.knowledge_graph import knowledge_graph_service
+                from api.constellation_ws import notify_concept_added, notify_build_progress, notify_build_complete
                 
-                result = await knowledge_graph_service.extract_concepts(request)
-                if result.concepts:
-                    total_concepts += len(result.concepts)
-                    print(f"[KG] Chunk {i}: extracted {len(result.concepts)} concepts, {len(result.links)} links")
-                    
-                    # Broadcast each new concept via WebSocket
-                    for concept in result.concepts:
-                        await notify_concept_added({
-                            "name": concept.name,
-                            "notebook_id": notebook_id,
-                            "source_id": source_id
-                        })
+                print(f"[KG] Starting concept extraction for source {source_id} ({len(chunks)} chunks)")
                 
-                # Broadcast progress
-                progress = (idx + 1) / len(chunks_to_process) * 100
-                await notify_build_progress({
-                    "source_id": source_id,
-                    "progress": round(progress, 1),
-                    "concepts_found": total_concepts
-                })
-            
-            print(f"[KG] Concept extraction complete for source {source_id}: {total_concepts} concepts")
-            await notify_build_complete()
-            
-        except Exception as e:
-            print(f"[KG] Concept extraction error: {e}")
+                total_concepts = 0
+                chunks_to_process = [i for i in range(len(chunks)) if i % 3 == 0]
+                
+                # Process every 3rd chunk to balance coverage vs speed
+                for idx, i in enumerate(chunks_to_process):
+                    chunk = chunks[i]
+                        
+                    request = ConceptExtractionRequest(
+                        text=chunk,
+                        source_id=source_id,
+                        chunk_index=i,
+                        notebook_id=notebook_id
+                    )
+                    
+                    result = await knowledge_graph_service.extract_concepts(request)
+                    if result.concepts:
+                        total_concepts += len(result.concepts)
+                        print(f"[KG] Chunk {i}: extracted {len(result.concepts)} concepts, {len(result.links)} links")
+                        
+                        # Broadcast each new concept via WebSocket
+                        for concept in result.concepts:
+                            await notify_concept_added({
+                                "name": concept.name,
+                                "notebook_id": notebook_id,
+                                "source_id": source_id
+                            })
+                    
+                    # Broadcast progress
+                    progress = (idx + 1) / len(chunks_to_process) * 100
+                    await notify_build_progress({
+                        "source_id": source_id,
+                        "progress": round(progress, 1),
+                        "concepts_found": total_concepts
+                    })
+                
+                print(f"[KG] Concept extraction complete for source {source_id}: {total_concepts} concepts")
+                await notify_build_complete()
+                
+            except Exception as e:
+                print(f"[KG] Concept extraction error: {e}")
 
     async def query(
         self,

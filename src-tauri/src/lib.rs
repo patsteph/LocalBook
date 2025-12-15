@@ -2,11 +2,20 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 use std::time::Duration;
 use std::path::PathBuf;
+use serde::Serialize;
 
 // State to track the backend process
 struct BackendState {
     process: Arc<Mutex<Option<std::process::Child>>>,
     ready: Arc<Mutex<bool>>,
+    status: Arc<Mutex<BackendStatus>>,
+}
+
+#[derive(Clone, Serialize)]
+struct BackendStatus {
+    stage: String,
+    message: String,
+    last_error: Option<String>,
 }
 
 // Tauri command to check if backend is ready
@@ -14,6 +23,12 @@ struct BackendState {
 async fn is_backend_ready(state: tauri::State<'_, BackendState>) -> Result<bool, String> {
     let ready = state.ready.lock().map_err(|e| e.to_string())?;
     Ok(*ready)
+}
+
+#[tauri::command]
+async fn get_backend_status(state: tauri::State<'_, BackendState>) -> Result<BackendStatus, String> {
+    let status = state.status.lock().map_err(|e| e.to_string())?;
+    Ok(status.clone())
 }
 
 // Tauri command to check backend health
@@ -211,16 +226,32 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
     let state = BackendState {
         process: Arc::new(Mutex::new(None)),
         ready: Arc::new(Mutex::new(false)),
+        status: Arc::new(Mutex::new(BackendStatus {
+            stage: "starting".to_string(),
+            message: "Initializing backend services...".to_string(),
+            last_error: None,
+        })),
     };
 
     let app_handle = app.clone();
     let process_ref = state.process.clone();
     let ready_ref = state.ready.clone();
+    let status_ref = state.status.clone();
 
     // Spawn backend startup in background
     tauri::async_runtime::spawn(async move {
+        if let Ok(mut status) = status_ref.lock() {
+            status.stage = "starting_ollama".to_string();
+            status.message = "Starting Ollama...".to_string();
+            status.last_error = None;
+        }
         // Ensure Ollama is running first
         ensure_ollama_running().await;
+
+        if let Ok(mut status) = status_ref.lock() {
+            status.stage = "starting_backend".to_string();
+            status.message = "Starting backend...".to_string();
+        }
 
         match start_backend(&app_handle).await {
             Ok(child_opt) => {
@@ -233,11 +264,21 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
                     println!("Backend running externally (dev mode)");
                 }
 
+                if let Ok(mut status) = status_ref.lock() {
+                    status.stage = "waiting_for_backend".to_string();
+                    status.message = "Waiting for backend to be ready...".to_string();
+                }
+
                 // Wait for backend to be ready
                 match wait_for_backend_ready(30).await {
                     Ok(_) => {
                         if let Ok(mut ready) = ready_ref.lock() {
                             *ready = true;
+                        }
+                        if let Ok(mut status) = status_ref.lock() {
+                            status.stage = "ready".to_string();
+                            status.message = "Backend ready".to_string();
+                            status.last_error = None;
                         }
                         println!("Backend initialization complete");
                     }
@@ -246,11 +287,21 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
                         eprintln!("");
                         eprintln!("Please ensure the backend is running.");
                         eprintln!("For dev mode: ./start.sh");
+                        if let Ok(mut status) = status_ref.lock() {
+                            status.stage = "error".to_string();
+                            status.message = "Backend failed to start".to_string();
+                            status.last_error = Some(e.to_string());
+                        }
                     }
                 }
             }
             Err(e) => {
                 eprintln!("Failed to start backend: {}", e);
+                if let Ok(mut status) = status_ref.lock() {
+                    status.stage = "error".to_string();
+                    status.message = "Backend failed to start".to_string();
+                    status.last_error = Some(e);
+                }
             }
         }
     });
@@ -272,7 +323,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             is_backend_ready,
-            check_backend_health
+            check_backend_health,
+            get_backend_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

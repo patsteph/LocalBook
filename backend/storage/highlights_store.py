@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict
 from config import settings
+from utils.json_io import atomic_write_json
 
 
 class HighlightsStore:
@@ -24,8 +25,7 @@ class HighlightsStore:
 
     def _save_data(self, data: dict):
         """Save highlights to storage"""
-        with open(self.storage_path, 'w') as f:
-            json.dump(data, f, indent=2)
+        atomic_write_json(self.storage_path, data)
 
     async def list(self, notebook_id: str, source_id: str) -> List[Dict]:
         """List all highlights for a source"""

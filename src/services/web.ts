@@ -2,7 +2,9 @@
  * Web search and scraping service
  */
 
-const API_BASE = 'http://localhost:8000';
+import { API_BASE_URL } from './api';
+
+const API_BASE = API_BASE_URL;
 
 export interface WebSearchResult {
     title: string;
