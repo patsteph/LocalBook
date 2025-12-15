@@ -71,8 +71,9 @@ pyinstaller \
     --hidden-import=api.reindex \
     --hidden-import=api.memory \
     --hidden-import=api.graph \
+    --hidden-import=api.constellation_ws \
+    --hidden-import=api.updates \
     --hidden-import=services \
-    --hidden-import=services.llm_service \
     --hidden-import=services.rag_engine \
     --hidden-import=services.document_processor \
     --hidden-import=services.audio_generator \
@@ -87,7 +88,6 @@ pyinstaller \
     --hidden-import=storage.skills_store \
     --hidden-import=storage.memory_store \
     --hidden-import=models \
-    --hidden-import=models.chat \
     --hidden-import=models.memory \
     --hidden-import=models.knowledge_graph \
     --hidden-import=config \
