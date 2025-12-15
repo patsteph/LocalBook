@@ -7,7 +7,6 @@ if getattr(sys, 'frozen', False):
     multiprocessing.freeze_support()
 
 import asyncio
-import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -41,18 +40,10 @@ app = FastAPI(
 )
 
 # CORS middleware
-
-cors_allow_all = os.getenv("LOCALBOOK_CORS_ALLOW_ALL", "").lower() in {"1", "true", "yes"}
-cors_origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "tauri://localhost",
-    "https://tauri.localhost",
-]
-
+# Allow all origins since backend binds to localhost only (not network-exposed)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if cors_allow_all else cors_origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
