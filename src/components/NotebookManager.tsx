@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { notebookService } from '../services/notebooks';
+import { notebookService, NOTEBOOK_COLORS } from '../services/notebooks';
 import { exportService } from '../services/export';
 import { sourceService } from '../services/sources';
 import { Notebook } from '../types';
@@ -30,6 +30,8 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   const [showExportModal, setShowExportModal] = useState(false);
   const [notebookToExport, setNotebookToExport] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [newNotebookColor, setNewNotebookColor] = useState(NOTEBOOK_COLORS[0]);
+  const [showColorPicker, setShowColorPicker] = useState<string | null>(null);
 
   useEffect(() => {
     console.log('NotebookManager mounted, loading notebooks...');
@@ -65,6 +67,20 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   const handleCreateClick = () => {
     setShowCreateModal(true);
     setNewNotebookTitle('');
+    setNewNotebookColor(NOTEBOOK_COLORS[0]);
+  };
+
+  const handleColorChange = async (notebookId: string, color: string) => {
+    try {
+      await notebookService.updateColor(notebookId, color);
+      setNotebooks(notebooks.map(nb => 
+        nb.id === notebookId ? { ...nb, color } : nb
+      ));
+      setShowColorPicker(null);
+    } catch (err) {
+      console.error('Failed to update color:', err);
+      setError('Failed to update notebook color');
+    }
   };
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
@@ -77,7 +93,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
     setCreating(true);
     setError(null);
     try {
-      const newNotebook = await notebookService.create(newNotebookTitle.trim());
+      const newNotebook = await notebookService.create(newNotebookTitle.trim(), undefined, newNotebookColor);
       setNotebooks([...notebooks, newNotebook]);
       onNotebookSelect(newNotebook.id);
       setShowCreateModal(false);
@@ -224,11 +240,53 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
               onClick={() => onNotebookSelect(notebook.id)}
             >
               <div className="flex items-center justify-between">
-                <div className="flex-1" onClick={() => onNotebookSelect(notebook.id)}>
-                  <h3 className="font-medium text-gray-900 dark:text-white">{notebook.title}</h3>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">
-                    {notebook.source_count} sources
-                  </p>
+                <div className="flex items-center gap-2 flex-1" onClick={() => onNotebookSelect(notebook.id)}>
+                  {/* Color indicator with picker */}
+                  <div className="relative">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowColorPicker(showColorPicker === notebook.id ? null : notebook.id);
+                      }}
+                      className="w-4 h-4 rounded-full border-2 border-white dark:border-gray-600 shadow-sm hover:scale-110 transition-transform"
+                      style={{ backgroundColor: notebook.color || '#3B82F6' }}
+                      title="Change color"
+                    />
+                    {showColorPicker === notebook.id && (
+                      <div 
+                        className="absolute left-6 top-0 z-50 bg-white dark:bg-gray-800 rounded-lg shadow-xl p-4 border border-gray-200 dark:border-gray-600"
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ minWidth: '200px' }}
+                      >
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">Choose color</p>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 32px)', gap: '12px' }}>
+                          {NOTEBOOK_COLORS.map((color) => (
+                            <button
+                              key={color}
+                              onClick={() => handleColorChange(notebook.id, color)}
+                              style={{ 
+                                backgroundColor: color,
+                                width: '32px',
+                                height: '32px',
+                                borderRadius: '50%',
+                                border: notebook.color === color ? '3px solid #3B82F6' : 'none',
+                                cursor: 'pointer',
+                                transition: 'transform 0.1s',
+                              }}
+                              onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
+                              onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <h3 className="font-medium text-gray-900 dark:text-white">{notebook.title}</h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                      {notebook.source_count} sources
+                    </p>
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -279,6 +337,24 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                 autoFocus
                 disabled={creating}
               />
+            </div>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Color
+              </label>
+              <div className="flex gap-2 flex-wrap">
+                {NOTEBOOK_COLORS.map((color) => (
+                  <button
+                    key={color}
+                    type="button"
+                    onClick={() => setNewNotebookColor(color)}
+                    className={`w-8 h-8 rounded-full hover:scale-110 transition-transform ${
+                      newNotebookColor === color ? 'ring-2 ring-offset-2 ring-blue-500' : ''
+                    }`}
+                    style={{ backgroundColor: color }}
+                  />
+                ))}
+              </div>
             </div>
             <div className="flex justify-end gap-2">
               <Button

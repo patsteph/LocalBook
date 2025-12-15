@@ -11,6 +11,7 @@ import { Settings } from './components/Settings';
 import { LLMSelector } from './components/LLMSelector';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
 import { Timeline } from './components/Timeline';
+import { Constellation3D } from './components/Constellation3D';
 
 function App() {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
@@ -30,7 +31,17 @@ function App() {
     // Load saved LLM provider preference
     return localStorage.getItem('llmProvider') || 'ollama';
   });
-  const [activeTab, setActiveTab] = useState<'chat' | 'timeline'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'constellation' | 'timeline'>('chat');
+  const [chatPrefillQuery, setChatPrefillQuery] = useState<string>('');
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+
+  // Handler for "Ask about this" from Constellation
+  const handleAskAboutConcept = (query: string) => {
+    setChatPrefillQuery(query);
+    setActiveTab('chat');
+    // Clear prefill after a short delay so it can be used again
+    setTimeout(() => setChatPrefillQuery(''), 100);
+  };
 
   useEffect(() => {
     // Check for saved theme preference
@@ -220,6 +231,11 @@ function App() {
                   key={`${selectedNotebookId}-${refreshSources}`}
                   notebookId={selectedNotebookId}
                   onSourcesChange={() => setRefreshNotebooks(prev => prev + 1)}
+                  selectedSourceId={selectedSourceId}
+                  onSourceSelect={(sourceId) => {
+                    // Toggle selection - click again to deselect
+                    setSelectedSourceId(prev => prev === sourceId ? null : sourceId);
+                  }}
                 />
               </div>
             </>
@@ -263,6 +279,19 @@ function App() {
               Chat
             </button>
             <button
+              onClick={() => setActiveTab('constellation')}
+              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors border-b-2 ${
+                activeTab === 'constellation'
+                  ? 'border-purple-600 text-purple-600 dark:text-purple-400 bg-white dark:bg-gray-800'
+                  : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+              </svg>
+              Constellation
+            </button>
+            <button
               onClick={() => setActiveTab('timeline')}
               className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors border-b-2 ${
                 activeTab === 'timeline'
@@ -277,7 +306,7 @@ function App() {
             </button>
           </div>
 
-          {/* Tab Content - Both rendered, visibility toggled to preserve state */}
+          {/* Tab Content - All rendered, visibility toggled to preserve state */}
           <div className="flex-1 overflow-hidden relative">
             <div className={`absolute inset-0 ${activeTab === 'chat' ? 'block' : 'hidden'}`}>
               <ChatInterface
@@ -287,6 +316,14 @@ function App() {
                   setWebSearchInitialQuery(query || '');
                   setIsWebSearchModalOpen(true);
                 }}
+                prefillQuery={chatPrefillQuery}
+              />
+            </div>
+            <div className={`absolute inset-0 ${activeTab === 'constellation' ? 'block' : 'hidden'}`}>
+              <Constellation3D 
+                notebookId={selectedNotebookId}
+                selectedSourceId={selectedSourceId}
+                onAskAboutConcept={handleAskAboutConcept}
               />
             </div>
             <div className={`absolute inset-0 ${activeTab === 'timeline' ? 'block' : 'hidden'}`}>

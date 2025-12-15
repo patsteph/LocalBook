@@ -41,6 +41,10 @@ python-dotenv>=1.0.0
 httpx>=0.28.0
 keyring>=25.5.0
 dateparser>=1.2.0
+tiktoken>=0.7.0  # Token counting for memory management
+hdbscan>=0.8.33  # Clustering for knowledge graph themes
+numpy>=1.26.0  # Numerical operations
+pyarrow>=14.0.0  # LanceDB data format
 
 # Build tools (for creating distributable binary)
 pyinstaller>=6.0.0

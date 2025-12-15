@@ -11,11 +11,19 @@ interface ChatInterfaceProps {
   notebookId: string | null;
   llmProvider: string;
   onOpenWebSearch?: (query?: string) => void;
+  prefillQuery?: string;  // Pre-fill the input from external sources (e.g., Constellation)
 }
 
-export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmProvider, onOpenWebSearch }) => {
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmProvider, onOpenWebSearch, prefillQuery }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
+  
+  // Handle prefill from external sources
+  useEffect(() => {
+    if (prefillQuery) {
+      setInput(prefillQuery);
+    }
+  }, [prefillQuery]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingMessage, setLoadingMessage] = useState('');
@@ -334,6 +342,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 <p className="text-sm whitespace-pre-wrap">{message.content}</p>
               ) : (
                 <>
+                  {/* Memory indicator - subtle tooltip when memory is used */}
+                  {message.memoryUsed && message.memoryUsed.length > 0 && (
+                    <div className="mb-2 flex items-center gap-1.5 group relative">
+                      <span className="text-xs text-purple-500 dark:text-purple-400 flex items-center gap-1 cursor-help">
+                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                          <path d="M10 2a8 8 0 100 16 8 8 0 000-16zm0 14a6 6 0 110-12 6 6 0 010 12zm-1-5h2v2H9v-2zm0-6h2v4H9V5z"/>
+                        </svg>
+                        Using context from our conversations
+                      </span>
+                      {message.memoryContextSummary && (
+                        <div className="absolute left-0 top-full mt-1 p-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-10 max-w-xs whitespace-normal">
+                          {message.memoryContextSummary}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
                   {/* Quick Summary - shown first for fast feedback */}
                   {message.quickSummary && (
                     <div className="mb-3 pb-3 border-b border-gray-200 dark:border-gray-600">
@@ -392,7 +417,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                           <button
                             key={idx}
                             onClick={() => handleFollowUpQuestion(question)}
-                            className="text-xs px-2.5 py-1 bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 rounded-full hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors border border-purple-200 dark:border-purple-700"
+                            className="text-xs px-2.5 py-1 bg-purple-100 dark:bg-purple-800/40 text-purple-800 dark:text-purple-200 rounded-full hover:bg-purple-200 dark:hover:bg-purple-700/50 transition-colors border border-purple-300 dark:border-purple-600"
                           >
                             {question}
                           </button>

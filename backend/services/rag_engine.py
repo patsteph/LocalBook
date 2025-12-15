@@ -1,10 +1,14 @@
 """RAG (Retrieval Augmented Generation) Engine"""
 import lancedb
+import uuid
 from pathlib import Path
 from typing import List, Dict, Optional, AsyncGenerator
 from sentence_transformers import SentenceTransformer
 from config import settings
 from storage.source_store import source_store
+from services.memory_agent import memory_agent
+from models.memory import MemoryExtractionRequest
+from models.knowledge_graph import ConceptExtractionRequest
 import httpx
 import time
 import asyncio
@@ -92,18 +96,80 @@ class RAGEngine:
         table = self._get_table(notebook_id)
         table.add(data)
 
+        # Extract concepts for knowledge graph (background task - don't block upload)
+        asyncio.create_task(self._extract_concepts_for_source(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            chunks=chunks
+        ))
+
         return {
             "source_id": source_id,
             "chunks": len(chunks),
             "characters": len(text)
         }
 
+    async def _extract_concepts_for_source(
+        self,
+        notebook_id: str,
+        source_id: str,
+        chunks: List[str]
+    ):
+        """Extract concepts from document chunks for knowledge graph (runs in background)"""
+        try:
+            # Import here to avoid circular imports
+            from services.knowledge_graph import knowledge_graph_service
+            from api.constellation_ws import notify_concept_added, notify_build_progress, notify_build_complete
+            
+            print(f"[KG] Starting concept extraction for source {source_id} ({len(chunks)} chunks)")
+            
+            total_concepts = 0
+            chunks_to_process = [i for i in range(len(chunks)) if i % 3 == 0]
+            
+            # Process every 3rd chunk to balance coverage vs speed
+            for idx, i in enumerate(chunks_to_process):
+                chunk = chunks[i]
+                    
+                request = ConceptExtractionRequest(
+                    text=chunk,
+                    source_id=source_id,
+                    chunk_index=i,
+                    notebook_id=notebook_id
+                )
+                
+                result = await knowledge_graph_service.extract_concepts(request)
+                if result.concepts:
+                    total_concepts += len(result.concepts)
+                    print(f"[KG] Chunk {i}: extracted {len(result.concepts)} concepts, {len(result.links)} links")
+                    
+                    # Broadcast each new concept via WebSocket
+                    for concept in result.concepts:
+                        await notify_concept_added({
+                            "name": concept.name,
+                            "notebook_id": notebook_id,
+                            "source_id": source_id
+                        })
+                
+                # Broadcast progress
+                progress = (idx + 1) / len(chunks_to_process) * 100
+                await notify_build_progress({
+                    "source_id": source_id,
+                    "progress": round(progress, 1),
+                    "concepts_found": total_concepts
+                })
+            
+            print(f"[KG] Concept extraction complete for source {source_id}: {total_concepts} concepts")
+            await notify_build_complete()
+            
+        except Exception as e:
+            print(f"[KG] Concept extraction error: {e}")
+
     async def query(
         self,
         notebook_id: str,
         question: str,
         source_ids: Optional[List[str]] = None,
-        top_k: int = 5,
+        top_k: int = 4,  # Reduced from 5 for speed
         enable_web_search: bool = False,
         llm_provider: Optional[str] = None
     ) -> Dict:
@@ -174,37 +240,37 @@ class RAGEngine:
                 source_data = await source_store.get(sid)
                 source_filenames[sid] = source_data.get("filename", "Unknown") if source_data else "Unknown"
 
-        # Build all citations first, then filter
+        # Build citations from search results
         all_citations = []
         for i, result in enumerate(results):
-            text = result["text"]
+            text = result.get("text", "")
             
-            # Calculate confidence based on distance (lower distance = higher confidence)
-            distance = result.get("_distance", 0.5)
-            confidence = max(0, min(1, 1 - distance))
-            
-            # Determine confidence level
-            if confidence >= 0.7:
-                confidence_level = "high"
-            elif confidence >= 0.4:
-                confidence_level = "medium"
-            else:
-                confidence_level = "low"
+            # LanceDB cosine distance is 0-2 range for normalized vectors
+            distance = result.get("_distance", 1.0)
+            # Convert to confidence: 0 dist = 100%, 1.0 dist = 50%, 2.0 dist = 0%
+            confidence = max(0, min(1, 1 - (distance / 2)))
+            confidence_level = "high" if confidence >= 0.6 else "medium" if confidence >= 0.4 else "low"
             
             all_citations.append({
-                "number": i + 1,  # Will be renumbered after filtering
-                "source_id": result["source_id"],
-                "filename": source_filenames.get(result["source_id"], "Unknown"),
-                "chunk_index": result["chunk_index"],
+                "number": i + 1,
+                "source_id": result.get("source_id", "unknown"),
+                "filename": source_filenames.get(result.get("source_id", ""), "Unknown"),
+                "chunk_index": result.get("chunk_index", 0),
                 "text": text,
                 "snippet": text[:150] + "..." if len(text) > 150 else text,
-                "page": result.get("metadata", {}).get("page"),
+                "page": result.get("metadata", {}).get("page") if isinstance(result.get("metadata"), dict) else None,
                 "confidence": round(confidence, 2),
                 "confidence_level": confidence_level
             })
 
-        # Filter out low confidence citations (< 40%)
-        quality_citations = [c for c in all_citations if c["confidence"] >= 0.4]
+        # Only filter out truly irrelevant results (< 35% confidence = distance > 1.3)
+        quality_citations = [c for c in all_citations if c["confidence"] >= 0.35]
+        
+        # If filtering removed everything, keep top 3 anyway
+        if len(quality_citations) == 0 and len(all_citations) > 0:
+            quality_citations = all_citations[:3]
+        
+        print(f"[RAG] Citations: {len(quality_citations)} used (from {len(all_citations)} found)")
         
         # Renumber citations after filtering
         for i, citation in enumerate(quality_citations):
@@ -217,8 +283,8 @@ class RAGEngine:
         
         citations = quality_citations
 
-        # Low confidence if fewer than 2 quality citations (adjusted for 4-chunk retrieval)
-        low_confidence = len(citations) < 2
+        # Low confidence only if NO quality citations at all
+        low_confidence = len(citations) == 0
         num_citations = len(citations)
         print(f"[RAG] Step 4 - Build context & citations: {time.time() - step_start:.2f}s")
         print(f"[RAG] Quality citations: {num_citations} (filtered from {len(all_citations)})")
@@ -230,16 +296,44 @@ class RAGEngine:
         context = "\n\n".join(numbered_context)
         print(f"[RAG] Context size: {len(context)} chars, {len(context.split())} words")
 
-        # Step 5: Generate answer using LLM
+        # Step 5: Generate answer using LLM (with memory augmentation)
         step_start = time.time()
-        answer = await self._generate_answer(question, context, num_citations, llm_provider)
+        conversation_id = str(uuid.uuid4())  # Generate conversation ID for memory tracking
+        answer_result = await self._generate_answer(question, context, num_citations, llm_provider, notebook_id, conversation_id)
+        answer = answer_result["answer"]
+        memory_used = answer_result.get("memory_used", [])
+        memory_context_summary = answer_result.get("memory_context_summary")
         llm_time = time.time() - step_start
         print(f"[RAG] Step 5 - LLM answer generation: {llm_time:.2f}s")
+        if memory_used:
+            print(f"[RAG] Memory used: {memory_used}")
         
-        # Step 6: Generate follow-up questions
+        # Step 6: Extract memories from the conversation (async, non-blocking)
+        step_start = time.time()
+        try:
+            # Extract from user question
+            await memory_agent.extract_memories(MemoryExtractionRequest(
+                message=question,
+                role="user",
+                conversation_id=conversation_id,
+                notebook_id=notebook_id
+            ))
+            # Extract from assistant answer
+            await memory_agent.extract_memories(MemoryExtractionRequest(
+                message=answer,
+                role="assistant",
+                conversation_id=conversation_id,
+                notebook_id=notebook_id,
+                context=question  # Provide question as context
+            ))
+            print(f"[RAG] Step 6 - Memory extraction: {time.time() - step_start:.2f}s")
+        except Exception as e:
+            print(f"[RAG] Memory extraction failed (non-fatal): {e}")
+        
+        # Step 7: Generate follow-up questions
         step_start = time.time()
         follow_up_questions = await self._generate_follow_up_questions(question, answer, context)
-        print(f"[RAG] Step 6 - Follow-up questions: {time.time() - step_start:.2f}s")
+        print(f"[RAG] Step 7 - Follow-up questions: {time.time() - step_start:.2f}s")
 
         total_time = time.time() - total_start
         print(f"{'='*60}")
@@ -252,7 +346,9 @@ class RAGEngine:
             "sources": list(sources),
             "web_sources": None,  # TODO: implement web search
             "follow_up_questions": follow_up_questions,
-            "low_confidence": low_confidence
+            "low_confidence": low_confidence,
+            "memory_used": memory_used,
+            "memory_context_summary": memory_context_summary
         }
 
     async def query_stream(
@@ -260,7 +356,7 @@ class RAGEngine:
         notebook_id: str,
         question: str,
         source_ids: Optional[List[str]] = None,
-        top_k: int = 5,
+        top_k: int = 4,  # Reduced from 5 for speed
         llm_provider: Optional[str] = None
     ) -> AsyncGenerator[Dict, None]:
         """Query the RAG system with streaming response"""
@@ -311,28 +407,38 @@ class RAGEngine:
                 source_data = await source_store.get(sid)
                 source_filenames[sid] = source_data.get("filename", "Unknown") if source_data else "Unknown"
 
-        # Build all citations first, then filter
+        # Build citations from search results
         all_citations = []
         for i, result in enumerate(results):
-            text = result["text"]
-            distance = result.get("_distance", 0.5)
-            confidence = max(0, min(1, 1 - distance))
-            confidence_level = "high" if confidence >= 0.7 else "medium" if confidence >= 0.4 else "low"
+            text = result.get("text", "")
+            
+            # LanceDB cosine distance is 0-2 range for normalized vectors
+            distance = result.get("_distance", 1.0)
+            # Convert to confidence: 0 dist = 100%, 1.0 dist = 50%, 2.0 dist = 0%
+            confidence = max(0, min(1, 1 - (distance / 2)))
+            confidence_level = "high" if confidence >= 0.6 else "medium" if confidence >= 0.4 else "low"
             
             all_citations.append({
-                "number": i + 1,  # Will be renumbered after filtering
-                "source_id": result["source_id"],
-                "filename": source_filenames.get(result["source_id"], "Unknown"),
-                "chunk_index": result["chunk_index"],
+                "number": i + 1,
+                "source_id": result.get("source_id", "unknown"),
+                "filename": source_filenames.get(result.get("source_id", ""), "Unknown"),
+                "chunk_index": result.get("chunk_index", 0),
                 "text": text,
                 "snippet": text[:150] + "..." if len(text) > 150 else text,
-                "page": result.get("metadata", {}).get("page"),
+                "page": result.get("metadata", {}).get("page") if isinstance(result.get("metadata"), dict) else None,
                 "confidence": round(confidence, 2),
                 "confidence_level": confidence_level
             })
 
-        # Filter out low confidence citations (< 40%)
-        quality_citations = [c for c in all_citations if c["confidence"] >= 0.4]
+        # Only filter out truly irrelevant results (< 35% confidence = distance > 1.3)
+        quality_citations = [c for c in all_citations if c["confidence"] >= 0.35]
+        
+        # If filtering removed everything, keep top 3 anyway
+        if len(quality_citations) == 0 and len(all_citations) > 0:
+            quality_citations = all_citations[:3]
+            print(f"[RAG STREAM] Low confidence fallback: using top 3 citations")
+        
+        print(f"[RAG STREAM] Citations: {len(quality_citations)} used (from {len(all_citations)} found)")
         
         # Renumber citations after filtering
         for i, citation in enumerate(quality_citations):
@@ -345,17 +451,17 @@ class RAGEngine:
         
         citations = quality_citations
         
-        # Low confidence if fewer than 2 quality citations (adjusted for 4-chunk retrieval)
-        low_confidence = len(citations) < 2
+        # Low confidence only if NO quality citations at all
+        low_confidence = len(citations) == 0
         # Build context with explicit citation numbers
         numbered_context = []
+        # Build context - use full chunks for accuracy (speed comes from top_k=4)
         for i, citation in enumerate(citations):
             numbered_context.append(f"[{i+1}] {citation['text']}")
         context = "\n\n".join(numbered_context)
         
         num_citations = len(citations)
-        print(f"[RAG STREAM] Step 3 - Context built: {time.time() - step_start:.2f}s, {len(context)} chars")
-        print(f"[RAG STREAM] Quality citations: {num_citations} (filtered from {len(all_citations)})")
+        print(f"[RAG STREAM] Context: {len(context)} chars, {num_citations} citations")
 
         # Send citations immediately so UI can show them
         yield {
@@ -410,6 +516,29 @@ Answer concisely with inline [N] citations:"""
             "follow_up_questions": follow_up_questions
         }
 
+        # Step 8: Extract memories from the conversation (async, non-blocking)
+        step_start = time.time()
+        try:
+            conversation_id = str(uuid.uuid4())
+            # Extract from user question
+            await memory_agent.extract_memories(MemoryExtractionRequest(
+                message=question,
+                role="user",
+                conversation_id=conversation_id,
+                notebook_id=notebook_id
+            ))
+            # Extract from assistant answer
+            await memory_agent.extract_memories(MemoryExtractionRequest(
+                message=full_answer,
+                role="assistant",
+                conversation_id=conversation_id,
+                notebook_id=notebook_id,
+                context=question
+            ))
+            print(f"[RAG STREAM] Step 8 - Memory extraction: {time.time() - step_start:.2f}s")
+        except Exception as e:
+            print(f"[RAG STREAM] Memory extraction failed (non-fatal): {e}")
+
         total_time = time.time() - total_start
         print(f"{'='*60}")
         print(f"[RAG STREAM] TOTAL time: {total_time:.2f}s")
@@ -419,7 +548,8 @@ Answer concisely with inline [N] citations:"""
         """Generate a quick 2-3 sentence summary using fast model (phi4-mini)"""
         try:
             system_prompt = f"""You are a helpful assistant. Provide a brief 2-3 sentence summary answering the question.
-Use inline citations like [1], [2] etc. to reference the sources. Be direct and concise."""
+Use inline citations like [1], [2] etc. to reference the sources. Be direct and concise.
+IMPORTANT: Do NOT add a References section at the end. Only use inline [N] citations within the text."""
             
             # Use truncated context for speed
             truncated_context = context[:2000] if len(context) > 2000 else context
@@ -429,7 +559,7 @@ Use inline citations like [1], [2] etc. to reference the sources. Be direct and 
 
 Question: {question}
 
-Brief summary (2-3 sentences with [N] citations):"""
+Brief summary (2-3 sentences with inline [N] citations only, NO references list):"""
             
             # Use fast model for quick summary
             response = await self._call_ollama(system_prompt, prompt, model=settings.ollama_fast_model)
@@ -463,15 +593,39 @@ Brief summary (2-3 sentences with [N] citations):"""
             "What are the most important findings?"
         ]
 
-    async def _generate_answer(self, question: str, context: str, num_citations: int = 5, llm_provider: Optional[str] = None) -> str:
-        """Generate answer using LLM"""
-
-        # Concise prompt for faster response
-        system_prompt = f"""Answer using sources [1]-[{num_citations}]. Be concise (1-2 paragraphs). Inline citations only. No reference list at end."""
+    async def _generate_answer(self, question: str, context: str, num_citations: int = 5, llm_provider: Optional[str] = None, notebook_id: Optional[str] = None, conversation_id: Optional[str] = None) -> Dict:
+        """Generate answer using LLM with memory augmentation. Returns dict with answer and memory_used info."""
+        
+        # Check if memory is enabled (frontend can disable via localStorage)
+        memory_used = []
+        
+        # Get memory context to augment the prompt
+        memory_context = await memory_agent.get_memory_context(
+            query=question,
+            notebook_id=notebook_id,
+            max_tokens=500  # Reserve tokens for memory
+        )
+        
+        # Build system prompt with memory
+        base_prompt = f"""Answer using sources [1]-[{num_citations}]. Be concise (1-2 paragraphs). Inline citations only. No reference list at end."""
+        
+        if memory_context.core_memory_block:
+            system_prompt = f"{memory_context.core_memory_block}\n\n{base_prompt}"
+            # Track that core memory was used
+            if memory_context.core_memory_block.strip():
+                memory_used.append("core_context")
+        else:
+            system_prompt = base_prompt
+        
+        # Add retrieved memories to context if available
+        memory_section = ""
+        if memory_context.retrieved_memories:
+            memory_section = "\n\nRelevant past context:\n" + "\n".join(memory_context.retrieved_memories) + "\n"
+            memory_used.append("retrieved_memories")
 
         prompt = f"""Sources:
 {context}
-
+{memory_section}
 Q: {question}
 
 Answer concisely with inline [N] citations:"""
@@ -481,13 +635,19 @@ Answer concisely with inline [N] citations:"""
 
         # Call LLM based on provider
         if provider == "ollama":
-            return await self._call_ollama(system_prompt, prompt)
+            answer = await self._call_ollama(system_prompt, prompt)
         elif provider == "openai":
-            return await self._call_openai(system_prompt, prompt)
+            answer = await self._call_openai(system_prompt, prompt)
         elif provider == "anthropic":
-            return await self._call_anthropic(system_prompt, prompt)
+            answer = await self._call_anthropic(system_prompt, prompt)
         else:
-            return await self._call_ollama(system_prompt, prompt)  # Default to ollama
+            answer = await self._call_ollama(system_prompt, prompt)  # Default to ollama
+        
+        return {
+            "answer": answer,
+            "memory_used": memory_used,
+            "memory_context_summary": memory_context.core_memory_block[:200] if memory_context.core_memory_block else None
+        }
     
     async def _generate_follow_up_questions(self, question: str, answer: str, context: str) -> List[str]:
         """Generate follow-up questions based on the conversation"""

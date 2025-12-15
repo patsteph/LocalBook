@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates
 from config import settings
 from services.model_warmup import start_warmup_task, stop_warmup_task
 
@@ -61,6 +61,10 @@ app.include_router(embeddings.router, prefix="/embeddings", tags=["embeddings"])
 app.include_router(timeline.router, prefix="/timeline", tags=["timeline"])
 app.include_router(export.router, prefix="/export", tags=["export"])
 app.include_router(reindex.router, prefix="/reindex", tags=["reindex"])
+app.include_router(memory.router, tags=["memory"])
+app.include_router(graph.router, tags=["knowledge-graph"])
+app.include_router(constellation_ws.router, tags=["constellation"])
+app.include_router(updates.router, tags=["updates"])
 
 @app.get("/")
 async def root():

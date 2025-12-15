@@ -47,6 +47,8 @@ class ChatResponse(BaseModel):
     web_sources: Optional[List[WebSource]] = None
     follow_up_questions: Optional[List[str]] = None
     low_confidence: Optional[bool] = False  # True when < 3 citations found
+    memory_used: Optional[List[str]] = None  # Types of memory used: "core_context", "retrieved_memories"
+    memory_context_summary: Optional[str] = None  # Brief summary of memory context used
 
 
 @router.post("/query", response_model=ChatResponse)

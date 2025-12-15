@@ -1,0 +1,1460 @@
+import { useEffect, useRef, useState, useCallback } from 'react';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+
+interface GraphNode {
+  id: string;
+  label: string;
+  type: string;
+  color?: string;
+  size: number;
+  notebook_id?: string;
+  metadata: Record<string, any>;
+  connections?: number;
+  isCluster?: boolean;  // Is this a cluster super-node?
+  clusterId?: string;   // Which cluster does this belong to?
+  childIds?: string[];  // Child node IDs if this is a cluster
+}
+
+interface GraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  label: string;
+  strength: number;
+  color?: string;
+  dashed: boolean;
+}
+
+interface ConceptCluster {
+  id: string;
+  name: string;
+  description?: string;
+  size: number;
+  coherence_score: number;
+  concept_ids: string[];
+  notebook_ids: string[];
+}
+
+interface GraphData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  clusters: ConceptCluster[];
+}
+
+interface GraphStats {
+  concepts: number;
+  links: number;
+  clusters: number;
+}
+
+interface Props {
+  notebookId: string | null;
+  selectedSourceId?: string | null;  // Filter to show only concepts from this source
+  onAskAboutConcept?: (query: string) => void;  // Callback to switch to Chat with prefilled query
+}
+
+const API_BASE = 'http://localhost:8000';
+
+export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcept }: Props) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
+  const nodesRef = useRef<Map<string, THREE.Mesh>>(new Map());
+  const labelsRef = useRef<Map<string, THREE.Sprite>>(new Map());
+  const edgesRef = useRef<Map<string, THREE.Line>>(new Map());  // Track edges for visibility control
+  const animationRef = useRef<number | null>(null);
+  
+  const [graphData, setGraphData] = useState<GraphData | null>(null);
+  const [stats, setStats] = useState<GraphStats | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [building, setBuilding] = useState(false);
+  const [buildProgress, setBuildProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  const [connectedNodeIds, setConnectedNodeIds] = useState<Set<string>>(new Set());
+  // Clusters state removed - using overlay panel instead
+  const [navigationHistory, setNavigationHistory] = useState<string[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
+  
+  // Simplified - always use current notebook
+  const crossNotebook = false;
+  
+  // Find connected nodes for a given node
+  const getConnectedNodes = useCallback((nodeId: string): Set<string> => {
+    const connected = new Set<string>();
+    if (!graphData) return connected;
+    
+    for (const edge of graphData.edges) {
+      if (edge.source === nodeId) {
+        connected.add(edge.target);
+      } else if (edge.target === nodeId) {
+        connected.add(edge.source);
+      }
+    }
+    return connected;
+  }, [graphData]);
+  
+  // Store original positions for animation
+  const originalPositionsRef = useRef<Map<string, THREE.Vector3>>(new Map());
+  
+  // Animate camera to focus on a node and bring connected nodes closer
+  const focusOnNode = useCallback((nodeId: string) => {
+    const mesh = nodesRef.current.get(nodeId);
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    const scene = sceneRef.current;
+    
+    if (!mesh || !camera || !controls || !scene) return;
+    
+    // Stop auto-rotate when focusing
+    controls.autoRotate = false;
+    
+    // Get connected nodes
+    const connected = getConnectedNodes(nodeId);
+    console.log(`Node ${nodeId} has ${connected.size} connections:`, Array.from(connected));
+    
+    // Store original positions if not already stored
+    if (originalPositionsRef.current.size === 0) {
+      nodesRef.current.forEach((m, id) => {
+        originalPositionsRef.current.set(id, m.position.clone());
+      });
+    }
+    
+    // Get focused node position
+    const focusedPos = mesh.position.clone();
+    
+    // Calculate camera position - zoom in CLOSE
+    const distance = 35;  // Closer zoom
+    const direction = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+    const newCameraPos = focusedPos.clone().add(direction.multiplyScalar(distance));
+    
+    // Animate camera AND connected nodes
+    const startCameraPos = camera.position.clone();
+    const startTarget = controls.target.clone();
+    const duration = 800;  // Slightly longer for smoother feel
+    const startTime = Date.now();
+    
+    // Store start positions for connected node animation
+    const nodeStartPositions = new Map<string, THREE.Vector3>();
+    const nodeTargetPositions = new Map<string, THREE.Vector3>();
+    
+    // Arrange connected nodes in a circle around focused node
+    const connectedArray = Array.from(connected);
+    const orbitRadius = 18;  // Close orbit
+    
+    nodesRef.current.forEach((m, id) => {
+      nodeStartPositions.set(id, m.position.clone());
+      
+      if (id === nodeId) {
+        // Focused node stays in place
+        nodeTargetPositions.set(id, focusedPos.clone());
+      } else if (connected.has(id)) {
+        // Arrange connected nodes in a circle around focused node
+        const idx = connectedArray.indexOf(id);
+        const angle = (idx / connectedArray.length) * Math.PI * 2;
+        const offset = new THREE.Vector3(
+          Math.cos(angle) * orbitRadius,
+          Math.sin(angle) * orbitRadius * 0.5,  // Flatter ellipse
+          Math.sin(angle) * orbitRadius * 0.3
+        );
+        nodeTargetPositions.set(id, focusedPos.clone().add(offset));
+      } else {
+        // Unconnected nodes stay where they are (just fade them)
+        nodeTargetPositions.set(id, m.position.clone());
+      }
+    });
+    
+    const animate = () => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      
+      // Ease out cubic for smooth deceleration
+      const eased = 1 - Math.pow(1 - progress, 3);
+      
+      // Animate camera
+      camera.position.lerpVectors(startCameraPos, newCameraPos, eased);
+      controls.target.lerpVectors(startTarget, focusedPos, eased);
+      controls.update();
+      
+      // Animate node positions
+      nodesRef.current.forEach((m, id) => {
+        const startPos = nodeStartPositions.get(id);
+        const targetPos = nodeTargetPositions.get(id);
+        if (startPos && targetPos) {
+          m.position.lerpVectors(startPos, targetPos, eased);
+        }
+        
+        // Also update label positions
+        const label = labelsRef.current.get(id);
+        if (label) {
+          label.position.copy(m.position);
+          label.position.y -= (m.geometry as THREE.SphereGeometry).parameters.radius + 8;
+        }
+      });
+      
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      }
+    };
+    
+    animate();
+    
+    // Update state
+    setConnectedNodeIds(connected);
+    setFocusedNodeId(nodeId);
+    
+    // Add to navigation history
+    setNavigationHistory(prev => {
+      const newHistory = [...prev.filter(id => id !== nodeId), nodeId];
+      return newHistory.slice(-10);
+    });
+    
+    // Show ALL connected nodes (not just top 15)
+    const visibleConnected = connected;
+    console.log(`Showing ${visibleConnected.size} connected nodes`);
+    
+    // Update visual appearance - nodes
+    nodesRef.current.forEach((m, id) => {
+      const material = m.material as THREE.MeshStandardMaterial;
+      const label = labelsRef.current.get(id);
+      
+      if (id === nodeId) {
+        // Focused node - bright, large, prominent label
+        material.emissiveIntensity = 1;
+        material.opacity = 1;
+        // Keep cluster color for focused node too
+        const focusedClusterColor = m.userData.clusterColor;
+        if (focusedClusterColor) {
+          material.color.setHex(focusedClusterColor);
+        }
+        m.scale.setScalar(1.5);
+        if (label) {
+          label.visible = true;
+          label.scale.set(45, 6, 1);  // Wide for full text
+        }
+      } else if (visibleConnected.has(id)) {
+        // Connected nodes - smaller to prevent blob, keep cluster color
+        material.emissiveIntensity = 0.8;
+        material.opacity = 1;
+        // Keep the node's cluster color (stored in userData)
+        const clusterColor = m.userData.clusterColor;
+        if (clusterColor) {
+          material.color.setHex(clusterColor);
+        }
+        m.scale.setScalar(0.8);  // Smaller to prevent overlap
+        if (label) {
+          label.visible = true;
+          label.scale.set(40, 5, 1);  // Wide for full text
+        }
+      } else {
+        // Other nodes - very faded, almost invisible
+        material.emissiveIntensity = 0.02;
+        material.opacity = 0.08;
+        m.scale.setScalar(0.3);
+        if (label) {
+          label.visible = false;
+        }
+      }
+    });
+    
+    // Update edge visibility and positions - only show edges connected to focused node
+    // Need to wait for node animation to complete, then update edge positions
+    setTimeout(() => {
+      edgesRef.current.forEach((line) => {
+        const { source, target } = line.userData;
+        const material = line.material as THREE.LineBasicMaterial;
+        
+        // Show edge if it connects focused node to a connected node
+        const isRelevant = (source === nodeId && visibleConnected.has(target)) ||
+                           (target === nodeId && visibleConnected.has(source));
+        
+        if (isRelevant) {
+          // Update edge geometry to match new node positions
+          const sourceNode = nodesRef.current.get(source);
+          const targetNode = nodesRef.current.get(target);
+          if (sourceNode && targetNode) {
+            const positions = line.geometry.attributes.position;
+            positions.setXYZ(0, sourceNode.position.x, sourceNode.position.y, sourceNode.position.z);
+            positions.setXYZ(1, targetNode.position.x, targetNode.position.y, targetNode.position.z);
+            positions.needsUpdate = true;
+          }
+          
+          material.opacity = 0.7;  // Bright, visible
+          material.color.setHex(0xA78BFA);  // Purple highlight
+          line.visible = true;
+        } else {
+          line.visible = false;
+        }
+      });
+    }, 850);  // After animation completes (800ms)
+    
+    // Find and select the node
+    const node = graphData?.nodes.find(n => n.id === nodeId);
+    if (node) setSelectedNode(node);
+  }, [graphData, getConnectedNodes]);
+  
+  // Navigate back in history
+  const navigateBack = useCallback(() => {
+    if (navigationHistory.length < 2) {
+      // Reset to full view
+      resetToFullView();
+      return;
+    }
+    
+    const newHistory = [...navigationHistory];
+    newHistory.pop();  // Remove current
+    const previousId = newHistory[newHistory.length - 1];
+    setNavigationHistory(newHistory);
+    
+    if (previousId) {
+      focusOnNode(previousId);
+    }
+  }, [navigationHistory, focusOnNode]);
+  
+  // Reset to full view
+  const resetToFullView = useCallback(() => {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    
+    if (!camera || !controls) return;
+    
+    // Animate back to default position
+    const startCameraPos = camera.position.clone();
+    const startTarget = controls.target.clone();
+    const endCameraPos = new THREE.Vector3(0, 0, 200);
+    const endTarget = new THREE.Vector3(0, 0, 0);
+    const duration = 600;
+    const startTime = Date.now();
+    
+    // Store current node positions for animation
+    const nodeStartPositions = new Map<string, THREE.Vector3>();
+    nodesRef.current.forEach((m, id) => {
+      nodeStartPositions.set(id, m.position.clone());
+    });
+    
+    const animateReset = () => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      
+      // Animate camera
+      camera.position.lerpVectors(startCameraPos, endCameraPos, eased);
+      controls.target.lerpVectors(startTarget, endTarget, eased);
+      controls.update();
+      
+      // Animate nodes back to original positions
+      nodesRef.current.forEach((m, id) => {
+        const startPos = nodeStartPositions.get(id);
+        const originalPos = originalPositionsRef.current.get(id);
+        if (startPos && originalPos) {
+          m.position.lerpVectors(startPos, originalPos, eased);
+        }
+        
+        // Update label positions
+        const label = labelsRef.current.get(id);
+        if (label) {
+          label.position.copy(m.position);
+          label.position.y -= (m.geometry as THREE.SphereGeometry).parameters.radius + 8;
+        }
+      });
+      
+      if (progress < 1) {
+        requestAnimationFrame(animateReset);
+      } else {
+        controls.autoRotate = true;
+      }
+    };
+    
+    animateReset();
+    
+    // Reset visual appearance - restore top 25 hierarchy
+    nodesRef.current.forEach((m, id) => {
+      const material = m.material as THREE.MeshStandardMaterial;
+      const isTopNode = m.userData.isTopNode;
+      const connections = m.userData.connections || 0;
+      const importance = connections / 10;  // Rough normalization
+      
+      if (isTopNode) {
+        material.emissiveIntensity = 0.4 + importance * 0.3;
+        material.opacity = 0.8 + importance * 0.2;
+      } else {
+        material.emissiveIntensity = 0.1;
+        material.opacity = 0.3;
+      }
+      m.scale.setScalar(1);
+      
+      // Only top 25 get labels in full view
+      const label = labelsRef.current.get(id);
+      if (label) {
+        label.visible = isTopNode;
+        label.scale.setScalar(1);
+      }
+      
+      // Reset to cluster color
+      const clusterColor = m.userData.clusterColor || 0x6366F1;
+      material.color.setHex(clusterColor);
+    });
+    
+    // Restore all edges to default visibility
+    edgesRef.current.forEach((line) => {
+      const material = line.material as THREE.LineBasicMaterial;
+      material.color.setHex(0x94A3B8);  // Original color
+      material.opacity = 0.1;  // Subtle
+      line.visible = true;
+    });
+    
+    setFocusedNodeId(null);
+    setConnectedNodeIds(new Set());
+    setSelectedNode(null);
+    setNavigationHistory([]);
+  }, []);
+  
+  // Filter nodes by selected source - fade out non-matching nodes
+  useEffect(() => {
+    if (!graphData || !nodesRef.current.size) return;
+    
+    nodesRef.current.forEach((mesh, nodeId) => {
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      const label = labelsRef.current.get(nodeId);
+      const node = graphData.nodes.find(n => n.id === nodeId);
+      
+      if (!selectedSourceId) {
+        // No filter - restore all nodes to normal
+        const clusterColor = mesh.userData.clusterColor || 0x6366F1;
+        material.color.setHex(clusterColor);
+        material.opacity = mesh.userData.isTopNode ? 0.85 : 0.3;
+        material.emissiveIntensity = mesh.userData.isTopNode ? 0.3 : 0.15;
+        mesh.scale.setScalar(1);
+        if (label) {
+          label.visible = mesh.userData.isTopNode;
+        }
+      } else {
+        // Check if node belongs to selected source
+        const sourceIds = node?.metadata?.source_ids || [];
+        const belongsToSource = sourceIds.includes(selectedSourceId);
+        
+        if (belongsToSource) {
+          // Highlight matching nodes
+          const clusterColor = mesh.userData.clusterColor || 0x6366F1;
+          material.color.setHex(clusterColor);
+          material.opacity = 1;
+          material.emissiveIntensity = 0.8;
+          mesh.scale.setScalar(1.2);
+          if (label) {
+            label.visible = true;
+          }
+        } else {
+          // Fade out non-matching nodes
+          material.color.setHex(0x666666);
+          material.opacity = 0.1;
+          material.emissiveIntensity = 0.02;
+          mesh.scale.setScalar(0.5);
+          if (label) {
+            label.visible = false;
+          }
+        }
+      }
+    });
+    
+    // Also filter edges
+    edgesRef.current.forEach((line, edgeId) => {
+      const material = line.material as THREE.LineBasicMaterial;
+      const [sourceId, targetId] = edgeId.split('->');
+      
+      if (!selectedSourceId) {
+        material.opacity = 0.1;
+        line.visible = true;
+      } else {
+        const sourceNode = graphData.nodes.find(n => n.id === sourceId);
+        const targetNode = graphData.nodes.find(n => n.id === targetId);
+        const sourceMatch = sourceNode?.metadata?.source_ids?.includes(selectedSourceId);
+        const targetMatch = targetNode?.metadata?.source_ids?.includes(selectedSourceId);
+        
+        if (sourceMatch && targetMatch) {
+          material.opacity = 0.5;
+          line.visible = true;
+        } else {
+          material.opacity = 0.02;
+          line.visible = false;
+        }
+      }
+    });
+  }, [selectedSourceId, graphData]);
+  
+  const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Track if scene is initialized
+  const sceneInitialized = useRef(false);
+
+  // Detect if dark mode is active
+  const isDarkMode = () => document.documentElement.classList.contains('dark');
+  
+  // Initialize Three.js scene ONCE
+  useEffect(() => {
+    if (!containerRef.current || sceneInitialized.current) return;
+    sceneInitialized.current = true;
+    
+    const container = containerRef.current;
+    const width = container.clientWidth || 800;
+    const height = container.clientHeight || 600;
+    
+    // Scene - use theme-appropriate background
+    const scene = new THREE.Scene();
+    const darkBg = 0x111827;  // gray-900
+    const lightBg = 0xf9fafb; // gray-50
+    const bgColor = isDarkMode() ? darkBg : lightBg;
+    scene.background = new THREE.Color(bgColor);
+    scene.fog = new THREE.Fog(bgColor, 200, 600);
+    sceneRef.current = scene;
+    
+    // Watch for theme changes
+    const themeObserver = new MutationObserver(() => {
+      const newBg = isDarkMode() ? darkBg : lightBg;
+      scene.background = new THREE.Color(newBg);
+      scene.fog = new THREE.Fog(newBg, 200, 600);
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    
+    // Camera
+    const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 1000);
+    camera.position.set(0, 0, 200);
+    cameraRef.current = camera;
+    
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    container.appendChild(renderer.domElement);
+    rendererRef.current = renderer;
+    
+    // Controls
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.rotateSpeed = 0.5;
+    controls.zoomSpeed = 0.8;
+    controls.minDistance = 50;
+    controls.maxDistance = 500;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.2;
+    controlsRef.current = controls;
+    
+    // Ambient light
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+    scene.add(ambientLight);
+    
+    // Point light at center
+    const pointLight = new THREE.PointLight(0x8B5CF6, 1, 300);
+    pointLight.position.set(0, 0, 0);
+    scene.add(pointLight);
+    
+    // Add subtle particle background (works in both light and dark mode)
+    const starGeometry = new THREE.BufferGeometry();
+    const starCount = 300;
+    const starPositions = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount * 3; i += 3) {
+      starPositions[i] = (Math.random() - 0.5) * 800;
+      starPositions[i + 1] = (Math.random() - 0.5) * 800;
+      starPositions[i + 2] = (Math.random() - 0.5) * 800;
+    }
+    starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+    const starColor = isDarkMode() ? 0xffffff : 0x6366F1;  // White in dark, indigo in light
+    const starMaterial = new THREE.PointsMaterial({ 
+      color: starColor, 
+      size: 0.5, 
+      transparent: true, 
+      opacity: isDarkMode() ? 0.3 : 0.15 
+    });
+    const stars = new THREE.Points(starGeometry, starMaterial);
+    scene.add(stars);
+    
+    // Update stars on theme change too
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    
+    // Animation loop
+    const animate = () => {
+      animationRef.current = requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    };
+    animate();
+    
+    // Handle resize
+    const handleResize = () => {
+      if (!containerRef.current) return;
+      const w = containerRef.current.clientWidth;
+      const h = containerRef.current.clientHeight;
+      if (w > 0 && h > 0) {
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    
+    // Use ResizeObserver to detect container size changes (e.g., when Studio panel closes)
+    const resizeObserver = new ResizeObserver(() => {
+      handleResize();
+    });
+    resizeObserver.observe(container);
+    
+    // Also resize after a short delay to catch initial layout
+    setTimeout(handleResize, 100);
+    
+    // Cleanup
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      resizeObserver.disconnect();
+      themeObserver.disconnect();
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      renderer.dispose();
+      if (container.contains(renderer.domElement)) {
+        container.removeChild(renderer.domElement);
+      }
+      sceneInitialized.current = false;
+    };
+  }, []);
+  
+  // Handle clicks and cursor changes
+  useEffect(() => {
+    const container = containerRef.current;
+    const camera = cameraRef.current;
+    const renderer = rendererRef.current;
+    if (!container || !camera || !renderer) return;
+    
+    const canvas = renderer.domElement;
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    let isDragging = false;
+    let mouseDownTime = 0;
+    let isMouseDown = false;
+    
+    const getMousePosition = (event: MouseEvent) => {
+      // Use the canvas element for accurate coordinates
+      const rect = canvas.getBoundingClientRect();
+      mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    };
+    
+    const updateCursor = (event: MouseEvent) => {
+      if (isMouseDown) {
+        canvas.style.cursor = 'grabbing';
+        return;
+      }
+      
+      getMousePosition(event);
+      raycaster.setFromCamera(mouse, camera);
+      const meshes = Array.from(nodesRef.current.values());
+      const intersects = raycaster.intersectObjects(meshes, false);
+      
+      canvas.style.cursor = intersects.length > 0 ? 'pointer' : 'grab';
+    };
+    
+    const handleMouseDown = () => {
+      isDragging = false;
+      mouseDownTime = Date.now();
+      isMouseDown = true;
+      canvas.style.cursor = 'grabbing';
+    };
+    
+    const handleMouseMove = (event: MouseEvent) => {
+      if (isMouseDown && Date.now() - mouseDownTime > 200) {
+        isDragging = true;
+      }
+      updateCursor(event);
+    };
+    
+    const handleMouseUp = () => {
+      isMouseDown = false;
+    };
+    
+    const handleClick = (event: MouseEvent) => {
+      if (isDragging) return;
+      
+      getMousePosition(event);
+      raycaster.setFromCamera(mouse, camera);
+      const meshes = Array.from(nodesRef.current.values());
+      
+      if (meshes.length === 0) return;
+      
+      const intersects = raycaster.intersectObjects(meshes, false);
+      
+      if (intersects.length > 0) {
+        const mesh = intersects[0].object as THREE.Mesh;
+        const nodeId = mesh.userData.nodeId;
+        focusOnNode(nodeId);
+      }
+    };
+    
+    const handleMouseLeave = () => {
+      isMouseDown = false;
+      canvas.style.cursor = 'grab';
+    };
+    
+    // Set initial cursor on canvas
+    canvas.style.cursor = 'grab';
+    
+    // Attach events to canvas, not container
+    canvas.addEventListener('mousedown', handleMouseDown);
+    canvas.addEventListener('mousemove', handleMouseMove);
+    canvas.addEventListener('mouseup', handleMouseUp);
+    canvas.addEventListener('mouseleave', handleMouseLeave);
+    canvas.addEventListener('click', handleClick);
+    
+    return () => {
+      canvas.removeEventListener('mousedown', handleMouseDown);
+      canvas.removeEventListener('mousemove', handleMouseMove);
+      canvas.removeEventListener('mouseup', handleMouseUp);
+      canvas.removeEventListener('mouseleave', handleMouseLeave);
+      canvas.removeEventListener('click', handleClick);
+    };
+  }, [graphData, focusOnNode]);
+  
+  // Update scene when graph data changes
+  useEffect(() => {
+    if (graphData && sceneRef.current) {
+      updateScene(graphData);
+    }
+  }, [graphData]);
+
+  // Load stats and connect WebSocket
+  useEffect(() => {
+    loadStats();
+    
+    // Connect to WebSocket for real-time updates (optional - falls back to polling)
+    let wsRetryCount = 0;
+    const maxRetries = 3;
+    
+    const connectWebSocket = () => {
+      if (wsRetryCount >= maxRetries) {
+        console.log('WebSocket not available, using polling fallback');
+        return;
+      }
+      
+      try {
+        const ws = new WebSocket('ws://localhost:8000/constellation/ws');
+        
+        ws.onopen = () => {
+          console.log('Constellation WebSocket connected');
+          wsRetryCount = 0;  // Reset on successful connection
+        };
+        
+        ws.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            console.log('WebSocket message:', message.type, message.data);
+            
+            switch (message.type) {
+              case 'connected':
+                console.log('WebSocket confirmed connected');
+                break;
+              case 'concept_added':
+                loadGraph();
+                loadStats();
+                break;
+              case 'build_progress':
+                console.log('Build progress:', message.data.progress);
+                // Only update if progress increases (prevents jumping backwards)
+                setBuildProgress(prev => Math.max(prev, message.data.progress));
+                break;
+              case 'build_complete':
+                setBuilding(false);
+                setBuildProgress(100);
+                loadGraph();
+                loadStats();
+                break;
+            }
+          } catch (err) {
+            console.error('WebSocket parse error:', err);
+          }
+        };
+        
+        ws.onclose = () => {
+          wsRetryCount++;
+          if (wsRetryCount < maxRetries) {
+            setTimeout(connectWebSocket, 5000);
+          }
+        };
+        
+        ws.onerror = () => {
+          // Silent - will trigger onclose
+        };
+        
+        wsRef.current = ws;
+      } catch {
+        // WebSocket not supported or blocked
+      }
+    };
+    
+    // Try WebSocket but don't block on it
+    setTimeout(connectWebSocket, 1000);
+    
+    return () => {
+      if (refreshIntervalRef.current) clearInterval(refreshIntervalRef.current);
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, []);
+
+  // Load graph when notebook changes
+  useEffect(() => {
+    if (notebookId || crossNotebook) {
+      loadGraph();
+    }
+  }, [notebookId, crossNotebook]);
+
+  // Auto-refresh while building
+  useEffect(() => {
+    if (building) {
+      refreshIntervalRef.current = setInterval(() => {
+        loadStats();
+        loadGraph();
+      }, 10000);
+    } else {
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+        refreshIntervalRef.current = null;
+      }
+    }
+    return () => {
+      if (refreshIntervalRef.current) clearInterval(refreshIntervalRef.current);
+    };
+  }, [building]);
+
+  const loadStats = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/graph/stats`);
+      if (response.ok) {
+        setStats(await response.json());
+      }
+    } catch (err) {
+      console.error('Failed to load stats:', err);
+    }
+  };
+
+  const loadGraph = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const params = new URLSearchParams({
+        include_clusters: 'true',
+        min_link_strength: '0.3',
+      });
+      
+      const endpoint = crossNotebook 
+        ? `${API_BASE}/graph/all?${params}`
+        : `${API_BASE}/graph/notebook/${notebookId}?${params}`;
+      
+      const response = await fetch(endpoint);
+      
+      if (response.ok) {
+        const data: GraphData = await response.json();
+        setGraphData(data);
+        updateScene(data);
+      } else {
+        setError('Failed to load graph');
+      }
+    } catch (err) {
+      setError('Failed to connect to server');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updateScene = useCallback((data: GraphData) => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    
+    // Clear existing tracked objects
+    nodesRef.current.forEach(mesh => {
+      scene.remove(mesh);
+      mesh.geometry.dispose();
+      (mesh.material as THREE.Material).dispose();
+    });
+    labelsRef.current.forEach(sprite => {
+      scene.remove(sprite);
+      sprite.material.dispose();
+    });
+    nodesRef.current.clear();
+    labelsRef.current.clear();
+    originalPositionsRef.current.clear();
+    
+    // Remove lines (they aren't tracked in refs)
+    const linesToRemove = scene.children.filter(child => child instanceof THREE.Line);
+    linesToRemove.forEach(line => {
+      scene.remove(line);
+      (line as THREE.Line).geometry.dispose();
+      ((line as THREE.Line).material as THREE.Material).dispose();
+    });
+    
+    if (data.nodes.length === 0) return;
+    
+    // Count connections and rank nodes
+    const connectionCounts: Record<string, number> = {};
+    for (const edge of data.edges) {
+      connectionCounts[edge.source] = (connectionCounts[edge.source] || 0) + 1;
+      connectionCounts[edge.target] = (connectionCounts[edge.target] || 0) + 1;
+    }
+    
+    // Sort nodes by connection count to find top 25 "membrane" nodes
+    const sortedByConnections = [...data.nodes].sort((a, b) => 
+      (connectionCounts[b.id] || 0) - (connectionCounts[a.id] || 0)
+    );
+    const top25Ids = new Set(sortedByConnections.slice(0, 25).map(n => n.id));
+    const maxConnections = Math.max(...Object.values(connectionCounts), 1);
+    
+    // Create cluster color mapping - each cluster gets a distinct color
+    const clusterColors: Record<string, number> = {};
+    const colorPalette = [
+      0x6366F1,  // Indigo
+      0x8B5CF6,  // Violet
+      0xEC4899,  // Pink
+      0x14B8A6,  // Teal
+      0xF59E0B,  // Amber
+      0x10B981,  // Emerald
+      0x3B82F6,  // Blue
+      0xEF4444,  // Red
+      0x06B6D4,  // Cyan
+      0x84CC16,  // Lime
+      0xA855F7,  // Purple
+      0xF97316,  // Orange
+    ];
+    
+    // Map each node to its cluster color
+    const nodeClusterColor: Record<string, number> = {};
+    if (data.clusters && data.clusters.length > 0) {
+      data.clusters.forEach((cluster, idx) => {
+        const color = colorPalette[idx % colorPalette.length];
+        clusterColors[cluster.id] = color;
+        cluster.concept_ids.forEach(conceptId => {
+          nodeClusterColor[conceptId] = color;
+        });
+      });
+    }
+    
+    // Position nodes - CELL METAPHOR
+    // Top 25 = outer membrane (visible shell)
+    // Minor nodes = inner cytoplasm (hidden until zoom)
+    const nodePositions: Record<string, THREE.Vector3> = {};
+    
+    // First, position top 25 on outer shell
+    let topIndex = 0;
+    const topNodes = data.nodes.filter(n => top25Ids.has(n.id));
+    const minorNodes = data.nodes.filter(n => !top25Ids.has(n.id));
+    
+    topNodes.forEach((node) => {
+      const connections = connectionCounts[node.id] || 0;
+      const importance = connections / maxConnections;
+      
+      // Evenly distribute on outer sphere
+      const outerRadius = 90;
+      const phi = Math.acos(-1 + (2 * topIndex + 1) / (topNodes.length + 1));
+      const theta = Math.PI * (1 + Math.sqrt(5)) * topIndex; // Golden angle
+      
+      const x = outerRadius * Math.sin(phi) * Math.cos(theta);
+      const y = outerRadius * Math.sin(phi) * Math.sin(theta);
+      const z = outerRadius * Math.cos(phi);
+      
+      nodePositions[node.id] = new THREE.Vector3(x, y, z);
+      topIndex++;
+      
+      // Clean, refined nodes
+      const nodeSize = 3 + (importance * 3);
+      const geometry = new THREE.SphereGeometry(nodeSize, 32, 32);
+      
+      // Use cluster/theme color for constellation visualization (shows theme relationships)
+      const clusterColor = nodeClusterColor[node.id] || 0x6366F1;
+      const baseColor = new THREE.Color(clusterColor);
+      const material = new THREE.MeshStandardMaterial({
+        color: baseColor,
+        emissive: baseColor,
+        emissiveIntensity: 0.25 + importance * 0.2,
+        metalness: 0.3,
+        roughness: 0.5,
+        transparent: true,
+        opacity: 0.75 + importance * 0.15,
+      });
+      
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.copy(nodePositions[node.id]);
+      mesh.userData = { nodeId: node.id, connections, isTopNode: true, clusterColor };
+      scene.add(mesh);
+      nodesRef.current.set(node.id, mesh);
+      
+      // Elegant label - use cluster color, full text with outline
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d')!;
+      canvas.width = 1024;  // Wider for full text
+      canvas.height = 128;
+      
+      const fontSize = 24 + (importance * 6);
+      ctx.font = `600 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      
+      // Draw outline first (contrasting color based on theme)
+      const isDark = document.documentElement.classList.contains('dark');
+      ctx.strokeStyle = isDark ? 'rgba(0, 0, 0, 0.8)' : 'rgba(255, 255, 255, 0.9)';
+      ctx.lineWidth = 4;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(node.label, 512, 64);
+      
+      // Then fill with cluster color
+      const colorHex = '#' + baseColor.getHexString();
+      ctx.fillStyle = colorHex;
+      ctx.fillText(node.label, 512, 64);
+      
+      const texture = new THREE.CanvasTexture(canvas);
+      const spriteMaterial = new THREE.SpriteMaterial({ 
+        map: texture, 
+        transparent: true,
+        depthTest: false,
+      });
+      const sprite = new THREE.Sprite(spriteMaterial);
+      sprite.position.copy(nodePositions[node.id]);
+      sprite.position.y -= nodeSize + 8;
+      sprite.scale.set(60, 8, 1);  // Wider for full text
+      sprite.visible = true;
+      sprite.raycast = () => {};  // Disable raycasting on labels
+      
+      scene.add(sprite);
+      labelsRef.current.set(node.id, sprite);
+    });
+    
+    // Position minor nodes inside - subtle interior
+    minorNodes.forEach((node, i) => {
+      const connections = connectionCounts[node.id] || 0;
+      const minorImportance = connections / maxConnections;
+      
+      // Distribute inside, with some variation
+      const innerRadius = 25 + Math.random() * 50;
+      const phi = Math.acos(-1 + (2 * i) / minorNodes.length);
+      const theta = Math.sqrt(minorNodes.length * Math.PI) * phi + Math.random() * 0.3;
+      
+      const x = innerRadius * Math.sin(phi) * Math.cos(theta);
+      const y = innerRadius * Math.sin(phi) * Math.sin(theta);
+      const z = innerRadius * Math.cos(phi);
+      
+      nodePositions[node.id] = new THREE.Vector3(x, y, z);
+      
+      // Small subtle dots - use cluster/theme color for visualization
+      const clusterColor = nodeClusterColor[node.id] || 0x6366F1;
+      const nodeSize = 1.5 + minorImportance * 1.5;
+      const geometry = new THREE.SphereGeometry(nodeSize, 12, 12);
+      const color = new THREE.Color(clusterColor);
+      const material = new THREE.MeshStandardMaterial({
+        color: color,
+        emissive: color,
+        emissiveIntensity: 0.15,
+        metalness: 0.5,
+        roughness: 0.4,
+        transparent: true,
+        opacity: 0.2 + minorImportance * 0.15,  // Subtle but visible
+      });
+      
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.copy(nodePositions[node.id]);
+      mesh.userData = { nodeId: node.id, connections, isTopNode: false, clusterColor };
+      scene.add(mesh);
+      nodesRef.current.set(node.id, mesh);
+      
+      // Create hidden label (shown on focus) - use cluster color, full text with outline
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d')!;
+      canvas.width = 1024;
+      canvas.height = 128;
+      ctx.font = '600 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      
+      // Draw outline first
+      const isDark = document.documentElement.classList.contains('dark');
+      ctx.strokeStyle = isDark ? 'rgba(0, 0, 0, 0.8)' : 'rgba(255, 255, 255, 0.9)';
+      ctx.lineWidth = 3;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(node.label, 512, 64);
+      
+      // Then fill with cluster color
+      const colorHex = '#' + color.getHexString();
+      ctx.fillStyle = colorHex;
+      ctx.fillText(node.label, 512, 64);
+      
+      const texture = new THREE.CanvasTexture(canvas);
+      const spriteMaterial = new THREE.SpriteMaterial({ 
+        map: texture, 
+        transparent: true,
+        depthTest: false,
+      });
+      const sprite = new THREE.Sprite(spriteMaterial);
+      sprite.position.copy(nodePositions[node.id]);
+      sprite.position.y -= nodeSize + 4;
+      sprite.scale.set(50, 6, 1);  // Wider for full text
+      sprite.visible = false;  // Hidden until focused
+      sprite.raycast = () => {};  // Disable raycasting on labels
+      
+      scene.add(sprite);
+      labelsRef.current.set(node.id, sprite);
+    });
+    
+    // Create edges - ALL thin lines, unified color, gradient opacity
+    // Calculate edge importance for gradient
+    const edgeImportance: Map<string, number> = new Map();
+    for (const edge of data.edges) {
+      const sourceConn = connectionCounts[edge.source] || 0;
+      const targetConn = connectionCounts[edge.target] || 0;
+      const avgConn = (sourceConn + targetConn) / 2;
+      edgeImportance.set(`${edge.source}-${edge.target}`, avgConn / maxConnections);
+    }
+    
+    // Clear old edges
+    edgesRef.current.forEach(line => {
+      scene.remove(line);
+      line.geometry.dispose();
+      (line.material as THREE.Material).dispose();
+    });
+    edgesRef.current.clear();
+    
+    for (const edge of data.edges) {
+      const sourcePos = nodePositions[edge.source];
+      const targetPos = nodePositions[edge.target];
+      
+      if (!sourcePos || !targetPos) continue;
+      
+      const points = [sourcePos, targetPos];
+      const geometry = new THREE.BufferGeometry().setFromPoints(points);
+      
+      // Single unified color - soft blue-gray
+      const color = 0x94A3B8;
+      
+      // Smooth gradient opacity based on connection importance
+      const importance = edgeImportance.get(`${edge.source}-${edge.target}`) || 0;
+      const opacity = 0.03 + (importance * 0.2);  // Range: 0.03 to 0.23
+      
+      const material = new THREE.LineBasicMaterial({
+        color: color,
+        transparent: true,
+        opacity: opacity,
+      });
+      
+      const line = new THREE.Line(geometry, material);
+      line.userData = { source: edge.source, target: edge.target };
+      scene.add(line);
+      edgesRef.current.set(`${edge.source}-${edge.target}`, line);
+    }
+  }, []);
+
+  const buildConstellation = async () => {
+    if (!notebookId) return;
+    
+    setBuilding(true);
+    try {
+      const response = await fetch(`${API_BASE}/graph/build/${notebookId}`, { method: 'POST' });
+      if (response.ok) {
+        console.log('Building constellation...');
+        setTimeout(() => {
+          setBuilding(false);
+          loadGraph();
+          loadStats();
+        }, 120000);
+      }
+    } catch (err) {
+      console.error('Failed to build:', err);
+      setBuilding(false);
+    }
+  };
+
+  const triggerClustering = async () => {
+    try {
+      await fetch(`${API_BASE}/graph/cluster`, { method: 'POST' });
+      setTimeout(loadGraph, 2000);
+      setTimeout(loadStats, 2000);
+    } catch (err) {
+      console.error('Failed to cluster:', err);
+    }
+  };
+
+  const resetCamera = () => {
+    if (cameraRef.current && controlsRef.current) {
+      cameraRef.current.position.set(0, 0, 200);
+      controlsRef.current.reset();
+    }
+  };
+
+
+  return (
+    <div className="h-full flex flex-col bg-gray-50 dark:bg-gray-900">
+      {/* Controls - Simplified */}
+      <div className="p-3 border-b border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-800/80 backdrop-blur">
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Build button - primary action */}
+          {notebookId && (
+            <button
+              onClick={async () => {
+                await buildConstellation();
+                setTimeout(triggerClustering, 5000);
+              }}
+              disabled={building}
+              className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm disabled:opacity-50 font-medium"
+            >
+              {building ? '✨ Building...' : '✨ Build Constellation'}
+            </button>
+          )}
+          
+          {/* Stats inline */}
+          {stats && stats.concepts > 0 && (
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              {stats.concepts} concepts • {stats.links} links
+            </span>
+          )}
+          
+          {/* Spacer */}
+          <div className="flex-1" />
+          
+          {/* Secondary controls - minimal */}
+          <button
+            onClick={() => {
+              resetCamera();
+              loadGraph();
+            }}
+            disabled={loading}
+            className="px-2 py-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-white text-xs"
+            title="Refresh and reset view"
+          >
+            ⟲ Reset
+          </button>
+          {/* Progress bar when building */}
+          {building && (
+            <div className="flex items-center gap-2">
+              <div className="w-24 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-purple-500 transition-all duration-300"
+                  style={{ width: `${buildProgress}%` }}
+                />
+              </div>
+              <span className="text-xs text-purple-400">{buildProgress.toFixed(0)}%</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Main content - responsive split (canvas takes most space, info panel is fixed width) */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* 3D Canvas - flexible, takes remaining space */}
+        <div className="flex-1 min-w-0 relative">
+          {!notebookId ? (
+            <div className="absolute inset-0 flex items-center justify-center text-gray-400">
+              <div className="text-center">
+                <p className="text-4xl mb-4">✨</p>
+                <p className="text-lg mb-2">Constellation</p>
+                <p className="text-sm">Select a notebook to view its knowledge map</p>
+              </div>
+            </div>
+          ) : loading && !graphData ? (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+            </div>
+          ) : error ? (
+            <div className="absolute inset-0 flex items-center justify-center text-red-500">
+              {error}
+            </div>
+          ) : graphData && graphData.nodes.length === 0 ? (
+            <div className="absolute inset-0 flex items-center justify-center text-gray-400">
+              <div className="text-center max-w-md">
+                <p className="text-4xl mb-4">✨</p>
+                <p className="text-lg font-medium mb-2">No concepts yet</p>
+                <p className="text-sm mb-4">
+                  Click "Build Constellation" to extract concepts from your sources.
+                </p>
+                {notebookId && (
+                  <button
+                    onClick={async () => {
+                      await buildConstellation();
+                      setTimeout(triggerClustering, 5000);
+                    }}
+                    disabled={building}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm"
+                  >
+                    {building ? '✨ Building...' : '✨ Build Constellation'}
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : null}
+          
+          <div 
+            ref={containerRef} 
+            className="w-full h-full"
+            style={{ minHeight: '400px' }}
+          />
+          
+          {/* Navigation controls overlay */}
+          {focusedNodeId && (
+            <div className="absolute top-4 left-4 flex gap-2">
+              <button
+                onClick={navigateBack}
+                className="px-3 py-1.5 bg-white/90 dark:bg-gray-800/90 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-white rounded text-sm flex items-center gap-1 shadow-sm"
+              >
+                ← Back
+              </button>
+              <button
+                onClick={resetToFullView}
+                className="px-3 py-1.5 bg-white/90 dark:bg-gray-800/90 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-white rounded text-sm shadow-sm"
+              >
+                ⟲ Full View
+              </button>
+            </div>
+          )}
+          
+          {/* Navigation hints - bottom left */}
+          <div className="absolute bottom-4 left-4 text-xs text-gray-600 dark:text-gray-400 bg-white/70 dark:bg-gray-800/70 px-3 py-2 rounded backdrop-blur-sm shadow-sm">
+            🖱️ Click node to focus • Drag to rotate • Scroll to zoom
+          </div>
+        </div>
+        
+        {/* Info Panel - fixed width, responsive */}
+        <div className="w-56 flex-shrink-0 border-l border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex flex-col overflow-hidden">
+          {/* Top Concepts - always visible at top */}
+          <div className="p-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+            <p className="text-xs text-gray-500 mb-2 uppercase tracking-wide">
+              Top Concepts ({Math.min(25, graphData?.nodes.length || 0)})
+            </p>
+            <div className="space-y-1 max-h-48 overflow-y-auto">
+              {(() => {
+                if (!graphData?.nodes.length) {
+                  return <p className="text-xs text-gray-500 text-center py-2">No concepts yet</p>;
+                }
+                
+                // Get connection counts
+                const connectionCounts: Record<string, number> = {};
+                graphData.edges.forEach(edge => {
+                  connectionCounts[edge.source] = (connectionCounts[edge.source] || 0) + 1;
+                  connectionCounts[edge.target] = (connectionCounts[edge.target] || 0) + 1;
+                });
+                
+                // Sort by connections and take top 25
+                return [...graphData.nodes]
+                  .map(node => ({ node, connections: connectionCounts[node.id] || 0 }))
+                  .sort((a, b) => b.connections - a.connections)
+                  .slice(0, 25)
+                  .map(({ node, connections }) => {
+                    const isSelected = selectedNode?.id === node.id;
+                    return (
+                      <button
+                        key={node.id}
+                        onClick={() => focusOnNode(node.id)}
+                        className={`w-full text-left px-2 py-1.5 rounded transition-colors group ${
+                          isSelected 
+                            ? 'bg-purple-100 dark:bg-purple-900/50 ring-1 ring-purple-500' 
+                            : 'bg-gray-100 dark:bg-gray-700/50 hover:bg-purple-100 dark:hover:bg-purple-900/50'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className={`text-xs truncate flex-1 ${
+                            isSelected 
+                              ? 'text-purple-700 dark:text-purple-300 font-medium' 
+                              : 'text-gray-700 dark:text-gray-200 group-hover:text-gray-900 dark:group-hover:text-white'
+                          }`}>
+                            {node.label}
+                          </span>
+                          <span className="text-xs text-purple-600 dark:text-purple-400 flex-shrink-0">
+                            {connections}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  });
+              })()}
+            </div>
+          </div>
+          
+          {/* Selected Node Info & Neighbors */}
+          <div className="flex-1 overflow-y-auto">
+            {selectedNode ? (
+              <div className="p-3">
+                {/* Selected node header */}
+                <div className="mb-3">
+                  <h3 className="font-semibold text-gray-900 dark:text-white text-sm leading-tight">{selectedNode.label}</h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
+                    {selectedNode.metadata?.description || 'No description'}
+                  </p>
+                </div>
+                
+                {/* Ask about this button */}
+                <button
+                  onClick={() => {
+                    const connectedNames = Array.from(connectedNodeIds)
+                      .map(id => graphData?.nodes.find(n => n.id === id)?.label)
+                      .filter(Boolean)
+                      .slice(0, 5)
+                      .join(', ');
+                    const query = connectedNames 
+                      ? `Tell me about ${selectedNode.label} and how it relates to ${connectedNames}`
+                      : `Tell me about ${selectedNode.label}`;
+                    
+                    if (onAskAboutConcept) {
+                      onAskAboutConcept(query);
+                    } else {
+                      navigator.clipboard.writeText(query);
+                      alert(`Copied to clipboard:\n\n"${query}"\n\nPaste this in the Chat tab!`);
+                    }
+                  }}
+                  className="w-full mb-3 px-2 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                >
+                  💬 Ask about this
+                </button>
+                
+                {/* Connected/Neighbor concepts */}
+                {connectedNodeIds.size > 0 ? (
+                  <>
+                    <p className="text-xs text-gray-500 mb-2 uppercase tracking-wide">
+                      Neighbors ({connectedNodeIds.size})
+                    </p>
+                    <div className="space-y-1">
+                      {Array.from(connectedNodeIds)
+                        .map(nodeId => {
+                          const node = graphData?.nodes.find(n => n.id === nodeId);
+                          const mesh = nodesRef.current.get(nodeId);
+                          const connections = mesh?.userData.connections || 0;
+                          return { nodeId, node, connections };
+                        })
+                        .filter(item => item.node)
+                        .sort((a, b) => b.connections - a.connections)
+                        .map(({ nodeId, node, connections }) => (
+                          <button
+                            key={nodeId}
+                            onClick={() => focusOnNode(nodeId)}
+                            className="w-full text-left px-2 py-1.5 bg-gray-100 dark:bg-gray-700/50 hover:bg-purple-100 dark:hover:bg-purple-900/50 rounded transition-colors group"
+                          >
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-xs text-gray-700 dark:text-gray-200 group-hover:text-gray-900 dark:group-hover:text-white truncate flex-1">
+                                {node!.label}
+                              </span>
+                              <span className="text-xs text-purple-600 dark:text-purple-400 flex-shrink-0">
+                                {connections}
+                              </span>
+                            </div>
+                          </button>
+                        ))}
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-gray-500 text-center py-2">
+                    No neighbors found
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="p-3 text-center text-gray-500 dark:text-gray-400">
+                <p className="text-xs">Select a concept above to explore</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -46,21 +46,48 @@ class NotebookStore:
         
         return notebooks
 
-    async def create(self, title: str, description: Optional[str] = None) -> Dict:
+    # Default color palette for notebooks
+    DEFAULT_COLORS = [
+        "#3B82F6",  # Blue
+        "#10B981",  # Green
+        "#F59E0B",  # Amber
+        "#EF4444",  # Red
+        "#8B5CF6",  # Purple
+        "#EC4899",  # Pink
+        "#06B6D4",  # Cyan
+        "#F97316",  # Orange
+    ]
+    
+    def _get_next_color(self, data: dict) -> str:
+        """Get the next color in rotation for a new notebook"""
+        used_colors = [n.get("color") for n in data["notebooks"].values() if n.get("color")]
+        for color in self.DEFAULT_COLORS:
+            if color not in used_colors:
+                return color
+        # If all colors used, start over
+        return self.DEFAULT_COLORS[len(data["notebooks"]) % len(self.DEFAULT_COLORS)]
+
+    async def create(self, title: str, description: Optional[str] = None, color: Optional[str] = None) -> Dict:
         """Create a new notebook"""
         notebook_id = str(uuid.uuid4())
         now = datetime.utcnow().isoformat()
+        
+        data = self._load_data()
+        
+        # Auto-assign color if not provided
+        if not color:
+            color = self._get_next_color(data)
 
         notebook = {
             "id": notebook_id,
             "title": title,
             "description": description,
+            "color": color,
             "created_at": now,
             "updated_at": now,
             "source_count": 0
         }
 
-        data = self._load_data()
         data["notebooks"][notebook_id] = notebook
         self._save_data(data)
 
@@ -99,5 +126,13 @@ class NotebookStore:
             data["notebooks"][notebook_id]["source_count"] = count
             data["notebooks"][notebook_id]["updated_at"] = datetime.utcnow().isoformat()
             self._save_data(data)
+    
+    async def update_color(self, notebook_id: str, color: str) -> Optional[Dict]:
+        """Update a notebook's color"""
+        return await self.update(notebook_id, {"color": color})
+    
+    def get_color_palette(self) -> List[str]:
+        """Get the available color palette"""
+        return self.DEFAULT_COLORS
 
 notebook_store = NotebookStore()

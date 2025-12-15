@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { settingsService } from '../services/settings';
+import { MemorySettings } from './MemorySettings';
 
 interface SettingsProps {
     onClose?: () => void;
@@ -67,6 +68,20 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
     const [customLLMApiKey, setCustomLLMApiKey] = useState('');
     const [customLLMModel, setCustomLLMModel] = useState('');
     const [customLLMConfigured, setCustomLLMConfigured] = useState(false);
+    const [activeSection, setActiveSection] = useState<'api-keys' | 'memory' | 'updates'>('api-keys');
+    
+    // Update checking state
+    const [updateInfo, setUpdateInfo] = useState<{
+        current_version: string;
+        latest_version?: string;
+        update_available: boolean;
+        release_notes?: string;
+        download_url?: string;
+        error?: string;
+    } | null>(null);
+    const [checkingUpdates, setCheckingUpdates] = useState(false);
+    const [pullingUpdate, setPullingUpdate] = useState(false);
+    const [updateMessage, setUpdateMessage] = useState<string | null>(null);
 
     useEffect(() => {
         loadKeysStatus();
@@ -84,6 +99,56 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
             setError(err instanceof Error ? err.message : 'Failed to load settings');
         } finally {
             setLoading(false);
+        }
+    };
+
+    const checkForUpdates = async () => {
+        setCheckingUpdates(true);
+        setUpdateMessage(null);
+        try {
+            const response = await fetch('http://localhost:8000/updates/check');
+            if (response.ok) {
+                const data = await response.json();
+                setUpdateInfo(data);
+            } else {
+                setUpdateInfo({
+                    current_version: '0.1.0',
+                    update_available: false,
+                    error: 'Failed to check for updates'
+                });
+            }
+        } catch (err) {
+            setUpdateInfo({
+                current_version: '0.1.0',
+                update_available: false,
+                error: 'Could not connect to server'
+            });
+        } finally {
+            setCheckingUpdates(false);
+        }
+    };
+
+    const pullUpdates = async () => {
+        setPullingUpdate(true);
+        setUpdateMessage(null);
+        try {
+            const response = await fetch('http://localhost:8000/updates/pull', {
+                method: 'POST'
+            });
+            if (response.ok) {
+                const data = await response.json();
+                setUpdateMessage(data.message);
+                if (data.success) {
+                    // Refresh update info
+                    await checkForUpdates();
+                }
+            } else {
+                setUpdateMessage('Failed to pull updates');
+            }
+        } catch (err) {
+            setUpdateMessage('Could not connect to server');
+        } finally {
+            setPullingUpdate(false);
         }
     };
 
@@ -207,6 +272,43 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                 )}
             </div>
 
+            {/* Settings Navigation */}
+            <div className="flex border-b dark:border-gray-700 mb-6">
+                <button
+                    onClick={() => setActiveSection('api-keys')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                        activeSection === 'api-keys'
+                            ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                            : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900'
+                    }`}
+                >
+                    🔑 API Keys
+                </button>
+                <button
+                    onClick={() => setActiveSection('memory')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                        activeSection === 'memory'
+                            ? 'border-purple-600 text-purple-600 dark:text-purple-400'
+                            : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900'
+                    }`}
+                >
+                    🧠 Memory
+                </button>
+                <button
+                    onClick={() => {
+                        setActiveSection('updates');
+                        checkForUpdates();
+                    }}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                        activeSection === 'updates'
+                            ? 'border-green-600 text-green-600 dark:text-green-400'
+                            : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900'
+                    }`}
+                >
+                    🔄 Updates
+                </button>
+            </div>
+
             {error && (
                 <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded text-sm text-red-700 dark:text-red-400">
                     {error}
@@ -219,6 +321,119 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                 </div>
             )}
 
+            {/* Memory Section */}
+            {activeSection === 'memory' && (
+                <MemorySettings />
+            )}
+
+            {/* Updates Section */}
+            {activeSection === 'updates' && (
+                <div className="space-y-6">
+                    <div>
+                        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Software Updates</h3>
+                        <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+                            Check for and install updates from GitHub.
+                        </p>
+                    </div>
+
+                    {/* Current Version */}
+                    <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h4 className="font-medium text-gray-900 dark:text-white">Current Version</h4>
+                                <p className="text-2xl font-bold text-blue-600 dark:text-blue-400 mt-1">
+                                    v{updateInfo?.current_version || '0.1.0'}
+                                </p>
+                            </div>
+                            <button
+                                onClick={checkForUpdates}
+                                disabled={checkingUpdates}
+                                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg text-sm font-medium transition-colors"
+                            >
+                                {checkingUpdates ? 'Checking...' : 'Check for Updates'}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Update Status */}
+                    {updateInfo && (
+                        <div className={`p-4 border rounded-lg ${
+                            updateInfo.update_available 
+                                ? 'border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20'
+                                : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'
+                        }`}>
+                            {updateInfo.error ? (
+                                <div className="text-red-600 dark:text-red-400">
+                                    <p className="font-medium">Error checking for updates</p>
+                                    <p className="text-sm mt-1">{updateInfo.error}</p>
+                                </div>
+                            ) : updateInfo.update_available ? (
+                                <div>
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <span className="text-green-600 dark:text-green-400 text-xl">🎉</span>
+                                        <h4 className="font-medium text-green-700 dark:text-green-300">
+                                            Update Available: v{updateInfo.latest_version}
+                                        </h4>
+                                    </div>
+                                    {updateInfo.release_notes && (
+                                        <div className="mb-4 p-3 bg-white dark:bg-gray-800 rounded text-sm text-gray-600 dark:text-gray-400">
+                                            <p className="font-medium text-gray-900 dark:text-white mb-1">Release Notes:</p>
+                                            <p className="whitespace-pre-wrap">{updateInfo.release_notes}</p>
+                                        </div>
+                                    )}
+                                    <div className="flex gap-3">
+                                        <button
+                                            onClick={pullUpdates}
+                                            disabled={pullingUpdate}
+                                            className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white rounded-lg text-sm font-medium transition-colors"
+                                        >
+                                            {pullingUpdate ? 'Updating...' : 'Pull Update'}
+                                        </button>
+                                        {updateInfo.download_url && (
+                                            <a
+                                                href={updateInfo.download_url}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                                            >
+                                                View on GitHub →
+                                            </a>
+                                        )}
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                                    <span className="text-xl">✅</span>
+                                    <p>You're running the latest version!</p>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Update Message */}
+                    {updateMessage && (
+                        <div className="p-4 border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                            <p className="text-blue-700 dark:text-blue-300">{updateMessage}</p>
+                        </div>
+                    )}
+
+                    {/* Manual Update Instructions */}
+                    <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+                        <h4 className="font-medium text-gray-900 dark:text-white mb-2">Manual Update</h4>
+                        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                            If automatic updates don't work, you can update manually:
+                        </p>
+                        <ol className="text-sm text-gray-600 dark:text-gray-400 space-y-1 list-decimal list-inside">
+                            <li>Open a terminal in the LocalBook directory</li>
+                            <li>Run: <code className="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">git pull origin main</code></li>
+                            <li>Restart the application</li>
+                        </ol>
+                    </div>
+                </div>
+            )}
+
+            {/* API Keys Section */}
+            {activeSection === 'api-keys' && (
             <div className="space-y-6">
                 <div>
                     <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">API Keys</h3>
@@ -450,6 +665,7 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                     </div>
                 </div>
             </div>
+            )}
         </div>
     );
 };

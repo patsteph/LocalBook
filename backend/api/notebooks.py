@@ -14,9 +14,13 @@ class Notebook(BaseModel):
     id: str
     title: str
     description: Optional[str] = None
+    color: Optional[str] = None
     created_at: str
     updated_at: str
     source_count: int = 0
+
+class NotebookColorUpdate(BaseModel):
+    color: str
 
 @router.get("/")
 async def list_notebooks():
@@ -45,3 +49,16 @@ async def delete_notebook(notebook_id: str):
     if not success:
         raise HTTPException(status_code=404, detail="Notebook not found")
     return {"message": "Notebook deleted successfully"}
+
+@router.put("/{notebook_id}/color")
+async def update_notebook_color(notebook_id: str, update: NotebookColorUpdate):
+    """Update a notebook's color"""
+    result = await notebook_store.update_color(notebook_id, update.color)
+    if not result:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+    return result
+
+@router.get("/colors/palette")
+async def get_color_palette():
+    """Get available color palette"""
+    return {"colors": notebook_store.get_color_palette()}

@@ -4,6 +4,7 @@ export interface Notebook {
   id: string;
   title: string;
   description?: string;
+  color?: string;
   created_at: string;
   source_count: number;
 }
@@ -44,6 +45,8 @@ export interface ChatMessage {
   follow_up_questions?: string[];
   timestamp: Date;
   lowConfidenceQuery?: string;  // The query to use for web search if low confidence
+  memoryUsed?: string[];  // Types of memory used: "core_context", "retrieved_memories"
+  memoryContextSummary?: string;  // Brief summary of memory context used
 }
 
 export interface ChatQuery {
@@ -62,6 +65,8 @@ export interface ChatResponse {
   web_sources?: WebSource[];
   follow_up_questions?: string[];
   low_confidence?: boolean;  // True when < 3 citations found
+  memory_used?: string[];  // Types of memory used
+  memory_context_summary?: string;  // Brief summary of memory context
 }
 
 export interface Skill {
