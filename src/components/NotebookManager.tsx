@@ -32,6 +32,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   const [exporting, setExporting] = useState(false);
   const [newNotebookColor, setNewNotebookColor] = useState(NOTEBOOK_COLORS[0]);
   const [showColorPicker, setShowColorPicker] = useState<string | null>(null);
+  const [showOtherNotebooks, setShowOtherNotebooks] = useState(false);
 
   useEffect(() => {
     console.log('NotebookManager mounted, loading notebooks...');
@@ -229,89 +230,170 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
         <p className="text-gray-500 dark:text-gray-400">No notebooks yet. Create one to get started!</p>
       ) : (
         <div className="space-y-2">
-          {notebooks.map((notebook) => (
-            <div
-              key={notebook.id}
-              className={`p-3 rounded border cursor-pointer transition ${
-                selectedNotebookId === notebook.id
-                  ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20 dark:border-blue-500'
-                  : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-700'
-              }`}
-              onClick={() => onNotebookSelect(notebook.id)}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 flex-1" onClick={() => onNotebookSelect(notebook.id)}>
-                  {/* Color indicator with picker */}
-                  <div className="relative">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowColorPicker(showColorPicker === notebook.id ? null : notebook.id);
-                      }}
-                      className="w-4 h-4 rounded-full border-2 border-white dark:border-gray-600 shadow-sm hover:scale-110 transition-transform"
-                      style={{ backgroundColor: notebook.color || '#3B82F6' }}
-                      title="Change color"
-                    />
-                    {showColorPicker === notebook.id && (
-                      <div 
-                        className="absolute left-6 top-0 z-50 bg-white dark:bg-gray-800 rounded-lg shadow-xl p-4 border border-gray-200 dark:border-gray-600"
-                        onClick={(e) => e.stopPropagation()}
-                        style={{ minWidth: '200px' }}
-                      >
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">Choose color</p>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 32px)', gap: '12px' }}>
-                          {NOTEBOOK_COLORS.map((color) => (
-                            <button
-                              key={color}
-                              onClick={() => handleColorChange(notebook.id, color)}
-                              style={{ 
-                                backgroundColor: color,
-                                width: '32px',
-                                height: '32px',
-                                borderRadius: '50%',
-                                border: notebook.color === color ? '3px solid #3B82F6' : 'none',
-                                cursor: 'pointer',
-                                transition: 'transform 0.1s',
-                              }}
-                              onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
-                              onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-                            />
-                          ))}
+          {/* Selected Notebook - Always visible and prominent */}
+          {(() => {
+            const selectedNotebook = notebooks.find(nb => nb.id === selectedNotebookId);
+            const otherNotebooks = notebooks.filter(nb => nb.id !== selectedNotebookId);
+            
+            return (
+              <>
+                {selectedNotebook && (
+                  <div
+                    className="p-3 rounded border-2 border-blue-600 bg-blue-50 dark:bg-blue-900/20 dark:border-blue-500"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 flex-1">
+                        {/* Color indicator with picker */}
+                        <div className="relative">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowColorPicker(showColorPicker === selectedNotebook.id ? null : selectedNotebook.id);
+                            }}
+                            className="w-5 h-5 rounded-full border-2 border-white dark:border-gray-600 shadow-sm hover:scale-110 transition-transform"
+                            style={{ backgroundColor: selectedNotebook.color || '#3B82F6' }}
+                            title="Change color"
+                          />
+                          {showColorPicker === selectedNotebook.id && (
+                            <div 
+                              className="absolute left-6 top-0 z-50 bg-white dark:bg-gray-800 rounded-lg shadow-xl p-4 border border-gray-200 dark:border-gray-600"
+                              onClick={(e) => e.stopPropagation()}
+                              style={{ minWidth: '200px' }}
+                            >
+                              <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">Choose color</p>
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 32px)', gap: '12px' }}>
+                                {NOTEBOOK_COLORS.map((color) => (
+                                  <button
+                                    key={color}
+                                    onClick={() => handleColorChange(selectedNotebook.id, color)}
+                                    style={{ 
+                                      backgroundColor: color,
+                                      width: '32px',
+                                      height: '32px',
+                                      borderRadius: '50%',
+                                      border: selectedNotebook.color === color ? '3px solid #3B82F6' : 'none',
+                                      cursor: 'pointer',
+                                      transition: 'transform 0.1s',
+                                    }}
+                                    onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
+                                    onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
+                        <div>
+                          <h3 className="font-semibold text-blue-900 dark:text-blue-100">{selectedNotebook.title}</h3>
+                          <p className="text-sm text-blue-700 dark:text-blue-300">
+                            {selectedNotebook.source_count} sources
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleExportClick(selectedNotebook.id);
+                          }}
+                          className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 text-sm px-2 py-1"
+                          title="Export notebook"
+                        >
+                          Export
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteClick(selectedNotebook.id);
+                          }}
+                          className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 text-sm px-2 py-1"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Other Notebooks - Collapsible */}
+                {otherNotebooks.length > 0 && (
+                  <div className="mt-2">
+                    <button
+                      onClick={() => setShowOtherNotebooks(!showOtherNotebooks)}
+                      className="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                    >
+                      <span className="flex items-center gap-2">
+                        <svg 
+                          className={`w-4 h-4 transition-transform ${showOtherNotebooks ? 'rotate-90' : ''}`} 
+                          fill="none" 
+                          stroke="currentColor" 
+                          viewBox="0 0 24 24"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                        Other Notebooks
+                      </span>
+                      <span className="bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-300 px-2 py-0.5 rounded-full text-xs">
+                        {otherNotebooks.length}
+                      </span>
+                    </button>
+                    
+                    {showOtherNotebooks && (
+                      <div className="mt-2 space-y-1 pl-2 border-l-2 border-gray-200 dark:border-gray-600">
+                        {otherNotebooks.map((notebook) => (
+                          <div
+                            key={notebook.id}
+                            className="p-2 rounded border border-gray-200 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-700 cursor-pointer transition"
+                            onClick={() => {
+                              onNotebookSelect(notebook.id);
+                              setShowOtherNotebooks(false);
+                            }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2 flex-1">
+                                <div
+                                  className="w-3 h-3 rounded-full"
+                                  style={{ backgroundColor: notebook.color || '#3B82F6' }}
+                                />
+                                <div>
+                                  <h3 className="font-medium text-sm text-gray-900 dark:text-white">{notebook.title}</h3>
+                                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                                    {notebook.source_count} sources
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleExportClick(notebook.id);
+                                  }}
+                                  className="text-blue-600 dark:text-blue-400 hover:text-blue-700 text-xs px-1"
+                                  title="Export"
+                                >
+                                  Export
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteClick(notebook.id);
+                                  }}
+                                  className="text-red-600 dark:text-red-400 hover:text-red-700 text-xs px-1"
+                                  title="Delete"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
-                  <div>
-                    <h3 className="font-medium text-gray-900 dark:text-white">{notebook.title}</h3>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                      {notebook.source_count} sources
-                    </p>
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleExportClick(notebook.id);
-                    }}
-                    className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 text-sm px-2 py-1"
-                    title="Export notebook"
-                  >
-                    Export
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteClick(notebook.id);
-                    }}
-                    className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 text-sm px-2 py-1"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -404,7 +486,6 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
       </Modal>
 
       {/* Export Modal */}
-      {console.log('Rendering export modal, isOpen:', showExportModal)}
       <Modal
         isOpen={showExportModal}
         onClose={() => {

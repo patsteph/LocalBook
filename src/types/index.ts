@@ -13,9 +13,13 @@ export interface Source {
   id: string;
   filename: string;
   format: string;
-  chunks: number;
-  characters: number;
+  chunks?: number;
+  characters?: number;
+  char_count?: number;  // Web sources use this field
+  word_count?: number;  // Web sources use this field
   status: string;
+  type?: string;
+  url?: string;
 }
 
 export interface Citation {

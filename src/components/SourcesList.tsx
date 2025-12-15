@@ -119,9 +119,9 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                       </p>
                     </div>
                     <div className="flex gap-3 mt-1 text-xs text-gray-600 dark:text-gray-400">
-                      <span>{source.format.toUpperCase()}</span>
-                      <span>{source.chunks} chunks</span>
-                      <span>{(source.characters / 1000).toFixed(1)}k chars</span>
+                      <span>{source.format?.toUpperCase() || 'FILE'}</span>
+                      {(source.chunks ?? 0) > 0 && <span>{source.chunks} chunks</span>}
+                      <span>{((source.char_count || source.characters || 0) / 1000).toFixed(1)}k chars</span>
                     </div>
                     <span className={`inline-block mt-1 px-2 py-0.5 text-xs rounded ${
                       source.status === 'completed'

@@ -11,7 +11,7 @@ import os
 router = APIRouter(prefix="/updates", tags=["updates"])
 
 # Current version - update this when releasing new versions
-CURRENT_VERSION = "0.1.0"
+CURRENT_VERSION = "0.1.1"
 
 # GitHub repo info
 GITHUB_OWNER = "patsteph"  # Update with your GitHub username
