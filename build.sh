@@ -67,10 +67,11 @@ fi
 echo -e "${GREEN}✓ Prerequisites checked${NC}"
 
 BACKEND_DIR="src-tauri/resources/backend/localbook-backend"
+BACKEND_EXE="$BACKEND_DIR/localbook-backend"
 
 # Step 1: Build backend
 echo -e "\n${YELLOW}Step 1/3: Building backend...${NC}"
-if [ ! -d "$BACKEND_DIR" ] || [ "$1" = "--rebuild" ]; then
+if [ ! -f "$BACKEND_EXE" ] || [ "$1" = "--rebuild" ]; then
     cd backend
     
     # Ensure venv exists
