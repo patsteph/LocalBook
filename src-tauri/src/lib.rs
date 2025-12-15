@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 use std::time::Duration;
+use std::path::PathBuf;
 
 // State to track the backend process
 struct BackendState {
@@ -117,27 +118,47 @@ async fn ensure_ollama_running() {
 async fn start_backend(app_handle: &AppHandle) -> Result<Option<std::process::Child>, String> {
     println!("Attempting to start backend...");
 
-    // Get the resource path for the backend executable
-    let resource_path = app_handle
+    let resource_dir = app_handle
         .path()
         .resource_dir()
-        .map_err(|e| format!("Failed to get resource dir: {}", e))?
-        .join("resources")
-        .join("backend")
-        .join("localbook-backend")
-        .join("localbook-backend");
+        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
 
-    println!("Looking for backend at: {:?}", resource_path);
+    let backend_exe_name = if cfg!(target_os = "windows") {
+        "localbook-backend.exe"
+    } else {
+        "localbook-backend"
+    };
 
-    if resource_path.exists() {
-        // Production mode: run from bundled resources
+    // In a packaged app, resource_dir() already points to the platform's Resources folder.
+    // Depending on bundling/layout, resources may land at either:
+    //   <resource_dir>/backend/localbook-backend/<exe>
+    // or (older/alternative layout):
+    //   <resource_dir>/resources/backend/localbook-backend/<exe>
+    let candidate_paths: Vec<PathBuf> = vec![
+        resource_dir
+            .join("backend")
+            .join("localbook-backend")
+            .join(backend_exe_name),
+        resource_dir
+            .join("resources")
+            .join("backend")
+            .join("localbook-backend")
+            .join(backend_exe_name),
+    ];
+
+    for candidate in candidate_paths {
+        println!("Looking for backend at: {:?}", candidate);
+        if !candidate.exists() {
+            continue;
+        }
+
         println!("Starting bundled backend...");
-        
-        // Get the backend directory for working directory
-        let backend_dir = resource_path.parent().unwrap();
+        let backend_dir = candidate
+            .parent()
+            .ok_or_else(|| "Backend path has no parent directory".to_string())?;
         println!("Backend working directory: {:?}", backend_dir);
-        
-        match std::process::Command::new(&resource_path)
+
+        return match std::process::Command::new(&candidate)
             .current_dir(backend_dir)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::inherit())
@@ -152,13 +173,13 @@ async fn start_backend(app_handle: &AppHandle) -> Result<Option<std::process::Ch
                 eprintln!("Failed to start backend: {}", e);
                 Err(format!("Failed to start backend: {}", e))
             }
-        }
-    } else {
-        // Dev mode: backend should be started externally via start.sh
-        println!("Backend not found at {:?}", resource_path);
-        println!("Running in dev mode - backend should be started externally");
-        Ok(None)
+        };
     }
+
+    // Dev mode: backend should be started externally via start.sh
+    println!("Bundled backend not found in resource dir: {:?}", resource_dir);
+    println!("Running in dev mode - backend should be started externally");
+    Ok(None)
 }
 
 // Function to wait for backend to be ready
