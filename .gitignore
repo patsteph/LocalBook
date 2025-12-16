@@ -65,6 +65,9 @@ generated/
 ROADMAP.md
 REBUILD_PROGRESS.md
 **/REBUILD_PROGRESS.md
+docs/local/
+.local/
+docs/ARCHITECTURE_LOCAL.md
 
 # Test files (keep local)
 test_*.py

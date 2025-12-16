@@ -111,16 +111,17 @@ export function ConstellationPanel({ notebookId }: Props) {
   useEffect(() => {
     if (notebookId || crossNotebook) {
       loadGraph();
+      loadStats();
     }
   }, [notebookId, crossNotebook, minStrength, showClusters]);
   
-  // Auto-refresh while building
+  // Auto-refresh while building (reduced frequency to save resources)
   useEffect(() => {
     if (building) {
       refreshIntervalRef.current = setInterval(() => {
         loadStats();
         loadGraph();
-      }, 10000); // Refresh every 10 seconds while building
+      }, 20000); // 20s instead of 10s to reduce network/CPU load
     } else {
       if (refreshIntervalRef.current) {
         clearInterval(refreshIntervalRef.current);
@@ -137,7 +138,8 @@ export function ConstellationPanel({ notebookId }: Props) {
 
   const loadStats = async () => {
     try {
-      const response = await fetch(`${API_BASE}/graph/stats`);
+      const params = notebookId ? `?notebook_id=${notebookId}` : '';
+      const response = await fetch(`${API_BASE}/graph/stats${params}`);
       if (response.ok) {
         const data = await response.json();
         setStats(data);

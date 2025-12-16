@@ -715,18 +715,43 @@ What theme or topic connects them? Respond with just a 2-4 word name:"""
     # Stats
     # =========================================================================
     
-    def get_stats(self) -> Dict[str, Any]:
-        """Get knowledge graph statistics"""
+    async def get_stats(self, notebook_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get knowledge graph statistics, optionally filtered by notebook"""
         try:
             concepts_table = self.db.open_table("concepts")
             links_table = self.db.open_table("links")
             clusters_table = self.db.open_table("clusters")
             
-            return {
-                "concepts": concepts_table.count_rows(),
-                "links": links_table.count_rows(),
-                "clusters": clusters_table.count_rows(),
-            }
+            if notebook_id:
+                # Filter by notebook
+                concepts_df = concepts_table.to_pandas()
+                concepts_count = len(concepts_df[
+                    concepts_df["source_notebook_ids"].apply(
+                        lambda x: notebook_id in json.loads(x)
+                    )
+                ])
+                
+                links_df = links_table.to_pandas()
+                links_count = len(links_df[links_df["source_notebook_id"] == notebook_id])
+                
+                clusters_df = clusters_table.to_pandas()
+                clusters_count = len(clusters_df[
+                    clusters_df["notebook_ids"].apply(
+                        lambda x: notebook_id in json.loads(x)
+                    )
+                ])
+                
+                return {
+                    "concepts": concepts_count,
+                    "links": links_count,
+                    "clusters": clusters_count,
+                }
+            else:
+                return {
+                    "concepts": concepts_table.count_rows(),
+                    "links": links_table.count_rows(),
+                    "clusters": clusters_table.count_rows(),
+                }
         except Exception:
             return {"concepts": 0, "links": 0, "clusters": 0}
     

@@ -3,9 +3,12 @@ Model Warmup Service
 
 Keeps LLM and embedding models warm in memory to eliminate cold start latency.
 Runs a background task that periodically pings the models with minimal requests.
+
+Resource optimization: Only warms models that have been recently used.
 """
 import asyncio
 import httpx
+import time
 from typing import Optional
 from config import settings
 
@@ -13,8 +16,33 @@ from config import settings
 _warmup_task: Optional[asyncio.Task] = None
 _should_run = True
 
-# Warmup interval in seconds (ping every 45s to keep models in memory)
-WARMUP_INTERVAL = 45
+# Warmup interval in seconds (ping every 2 minutes to keep models in memory)
+# Reduced from 45s to save resources - models stay warm for ~5min anyway
+WARMUP_INTERVAL = 120
+
+# Track last usage time for each model type (only warm if used in last 10 min)
+_last_main_model_use: float = 0
+_last_fast_model_use: float = 0
+_last_embedding_use: float = 0
+MODEL_IDLE_TIMEOUT = 600  # 10 minutes - don't warm if idle longer than this
+
+
+def mark_main_model_used():
+    """Call this when main LLM model is used"""
+    global _last_main_model_use
+    _last_main_model_use = time.time()
+
+
+def mark_fast_model_used():
+    """Call this when fast LLM model is used"""
+    global _last_fast_model_use
+    _last_fast_model_use = time.time()
+
+
+def mark_embedding_used():
+    """Call this when embedding model is used"""
+    global _last_embedding_use
+    _last_embedding_use = time.time()
 
 
 async def warm_ollama_model(model: str) -> bool:
@@ -57,39 +85,51 @@ async def warm_embedding_model() -> bool:
         return False
 
 
-async def warmup_cycle():
-    """Run one warmup cycle for all models"""
-    # Warm up main LLM model
-    main_ok = await warm_ollama_model(settings.ollama_model)
+async def warmup_cycle(force_all: bool = False):
+    """Run one warmup cycle for models that have been recently used"""
+    now = time.time()
+    main_ok = fast_ok = embed_ok = True
     
-    # Warm up fast model
-    fast_ok = await warm_ollama_model(settings.ollama_fast_model)
+    # Only warm main model if recently used (or forced on startup)
+    if force_all or (now - _last_main_model_use < MODEL_IDLE_TIMEOUT):
+        main_ok = await warm_ollama_model(settings.ollama_model)
     
-    # Warm up embedding model
-    embed_ok = await warm_embedding_model()
+    # Only warm fast model if recently used (or forced on startup)
+    if force_all or (now - _last_fast_model_use < MODEL_IDLE_TIMEOUT):
+        fast_ok = await warm_ollama_model(settings.ollama_fast_model)
+    
+    # Only warm embedding model if recently used (or forced on startup)
+    if force_all or (now - _last_embedding_use < MODEL_IDLE_TIMEOUT):
+        embed_ok = await warm_embedding_model()
     
     return main_ok, fast_ok, embed_ok
 
 
 async def warmup_loop():
     """Background loop that keeps models warm"""
-    global _should_run
+    global _should_run, _last_main_model_use, _last_fast_model_use, _last_embedding_use
     
     print("🔥 Starting model warmup service...")
     
-    # Initial warmup on startup
-    main_ok, fast_ok, embed_ok = await warmup_cycle()
+    # Mark all models as "used" at startup so initial warmup happens
+    now = time.time()
+    _last_main_model_use = now
+    _last_fast_model_use = now
+    _last_embedding_use = now
+    
+    # Initial warmup on startup (force all)
+    main_ok, fast_ok, embed_ok = await warmup_cycle(force_all=True)
     print(f"🔥 Initial warmup complete - Main: {'✓' if main_ok else '✗'}, Fast: {'✓' if fast_ok else '✗'}, Embed: {'✓' if embed_ok else '✗'}")
     
-    # Periodic warmup
+    # Periodic warmup - only warms recently-used models
     while _should_run:
         await asyncio.sleep(WARMUP_INTERVAL)
         
         if not _should_run:
             break
             
-        # Silent warmup (no logging unless there's an error)
-        await warmup_cycle()
+        # Only warm models that have been used recently
+        await warmup_cycle(force_all=False)
 
 
 async def start_warmup_task():

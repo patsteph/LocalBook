@@ -576,8 +576,21 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
     // Update stars on theme change too
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
     
-    // Animation loop
+    // Animation loop - pauses when tab is hidden to save GPU/CPU
+    let isTabVisible = true;
+    const handleVisibilityChange = () => {
+      isTabVisible = !document.hidden;
+      if (isTabVisible && !animationRef.current) {
+        animate(); // Resume animation when tab becomes visible
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
     const animate = () => {
+      if (!isTabVisible) {
+        animationRef.current = null;
+        return; // Stop animation when tab is hidden
+      }
       animationRef.current = requestAnimationFrame(animate);
       controls.update();
       renderer.render(scene, camera);
@@ -609,6 +622,7 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
     // Cleanup
     return () => {
       window.removeEventListener('resize', handleResize);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       resizeObserver.disconnect();
       themeObserver.disconnect();
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
@@ -800,20 +814,21 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
     };
   }, []);
 
-  // Load graph when notebook changes
+  // Load graph and stats when notebook changes
   useEffect(() => {
     if (notebookId || crossNotebook) {
       loadGraph();
+      loadStats();
     }
   }, [notebookId, crossNotebook]);
 
-  // Auto-refresh while building
+  // Auto-refresh while building (reduced frequency to save resources)
   useEffect(() => {
     if (building) {
       refreshIntervalRef.current = setInterval(() => {
         loadStats();
         loadGraph();
-      }, 10000);
+      }, 20000);  // 20s instead of 10s to reduce network/CPU load
     } else {
       if (refreshIntervalRef.current) {
         clearInterval(refreshIntervalRef.current);
@@ -827,7 +842,8 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
 
   const loadStats = async () => {
     try {
-      const response = await fetch(`${API_BASE}/graph/stats`);
+      const params = notebookId ? `?notebook_id=${notebookId}` : '';
+      const response = await fetch(`${API_BASE}/graph/stats${params}`);
       if (response.ok) {
         setStats(await response.json());
       }

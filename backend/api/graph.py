@@ -213,9 +213,9 @@ async def list_clusters(notebook_id: Optional[str] = None):
 # =============================================================================
 
 @router.get("/stats", response_model=GraphStatsResponse)
-async def get_graph_stats():
-    """Get knowledge graph statistics"""
-    stats = knowledge_graph_service.get_stats()
+async def get_graph_stats(notebook_id: Optional[str] = None):
+    """Get knowledge graph statistics, optionally filtered by notebook"""
+    stats = await knowledge_graph_service.get_stats(notebook_id=notebook_id)
     return GraphStatsResponse(**stats)
 
 
