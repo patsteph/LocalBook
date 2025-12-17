@@ -10,14 +10,27 @@ from api.settings import get_api_key
 class WebScraper:
     """Service for web search and scraping"""
 
-    async def search_web(self, query: str, max_results: int = 20) -> List[Dict]:
-        """Search the web using Brave Search API"""
+    async def search_web(self, query: str, max_results: int = 20, offset: int = 0, freshness: str = None) -> List[Dict]:
+        """Search the web using Brave Search API with pagination via freshness filters"""
         brave_api_key = get_api_key("brave_api_key")
 
         if not brave_api_key:
             raise ValueError("Brave Search API key not configured. Please add it in Settings.")
 
         try:
+            # Brave API max count is 20, offset max is 9 on free tier
+            # Use freshness filter as a workaround for more diverse results
+            api_count = min(max_results, 20)
+            
+            params = {
+                "q": query,
+                "count": api_count,
+            }
+            
+            # Add freshness filter if specified (pd=past day, pw=past week, pm=past month, py=past year)
+            if freshness:
+                params["freshness"] = freshness
+            
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     "https://api.search.brave.com/res/v1/web/search",
@@ -26,10 +39,7 @@ class WebScraper:
                         "Accept-Encoding": "gzip",
                         "X-Subscription-Token": brave_api_key
                     },
-                    params={
-                        "q": query,
-                        "count": max_results
-                    },
+                    params=params,
                     timeout=10.0
                 )
 

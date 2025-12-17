@@ -13,6 +13,8 @@ router = APIRouter()
 class WebSearchRequest(BaseModel):
     query: str
     max_results: int = 20
+    offset: int = 0  # For pagination - maps to freshness filter
+    freshness: str = None  # pd=past day, pw=past week, pm=past month, py=past year
 
 class WebSearchResult(BaseModel):
     title: str
@@ -23,6 +25,8 @@ class WebSearchResponse(BaseModel):
     query: str
     results: List[WebSearchResult]
     count: int
+    offset: int = 0
+    has_more: bool = False
 
 class WebScrapeRequest(BaseModel):
     urls: List[str]
@@ -50,16 +54,53 @@ class AddToNotebookRequest(BaseModel):
 
 @router.post("/search", response_model=WebSearchResponse)
 async def search(request: WebSearchRequest):
-    """Search the web using Tavily API"""
+    """Search the web using Brave Search API with freshness-based pagination"""
     try:
-        results = await web_scraper.search_web(request.query, request.max_results)
+        # Brave free tier: offset max is 9, so we use freshness filters for more results
+        # Order: initial (all time) -> past week -> past month -> past year (most recent first)
+        freshness_map = {0: None, 20: "pw", 40: "pm", 60: "py"}
+        freshness = request.freshness or freshness_map.get(request.offset)
+        
+        results = await web_scraper.search_web(
+            request.query, 
+            request.max_results,
+            freshness=freshness
+        )
+        
+        # More results available if we haven't exhausted freshness filters
+        has_more = len(results) >= request.max_results and request.offset < 60
+        
         return WebSearchResponse(
             query=request.query,
             results=[WebSearchResult(**r) for r in results],
-            count=len(results)
+            count=len(results),
+            offset=request.offset,
+            has_more=has_more
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+@router.get("/sources/{notebook_id}")
+async def get_web_sources(notebook_id: str):
+    """Get all web sources previously added to a notebook"""
+    try:
+        sources = await source_store.list(notebook_id)
+        # Filter to only web sources
+        web_sources = [
+            {
+                "id": s["id"],
+                "title": s.get("filename", s.get("name", "Unknown")),
+                "url": s.get("metadata", {}).get("url", ""),
+                "word_count": s.get("metadata", {}).get("word_count", 0),
+                "date_added": s.get("created_at", ""),
+                "type": s.get("metadata", {}).get("format", "web")
+            }
+            for s in sources
+            if s.get("metadata", {}).get("type") == "web"
+        ]
+        return {"sources": web_sources, "count": len(web_sources)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get web sources: {str(e)}")
 
 @router.post("/scrape", response_model=WebScrapeResponse)
 async def scrape(request: WebScrapeRequest):

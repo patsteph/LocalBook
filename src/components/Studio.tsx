@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { skillsService } from '../services/skills';
 import { audioService } from '../services/audio';
+import { contentService, ContentGeneration } from '../services/content';
 import { Skill, AudioGeneration } from '../types';
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
@@ -14,8 +15,13 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<string>('');
   const [audioGenerations, setAudioGenerations] = useState<AudioGeneration[]>([]);
+  const [contentGenerations, setContentGenerations] = useState<ContentGeneration[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [activeTab, setActiveTab] = useState<'text' | 'audio'>('text');
+  const [generatedContent, setGeneratedContent] = useState<string>('');
+  const [contentSkillName, setContentSkillName] = useState<string>('');
+  const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
 
   // Form state
   const [topic, setTopic] = useState('');
@@ -39,6 +45,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
   useEffect(() => {
     if (notebookId) {
       loadAudioGenerations();
+      loadContentGenerations();
     }
   }, [notebookId]);
 
@@ -55,10 +62,10 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
     try {
       const data = await skillsService.list();
       setSkills(data);
-      // Set default to podcast_script (audio only works for podcast)
-      const podcast = data.find(s => s.skill_id === 'podcast_script');
-      if (podcast) {
-        setSelectedSkill(podcast.skill_id);
+      // Set default to summary for text tab
+      const summary = data.find(s => s.skill_id === 'summary');
+      if (summary) {
+        setSelectedSkill(summary.skill_id);
       } else if (data.length > 0) {
         setSelectedSkill(data[0].skill_id);
       }
@@ -66,6 +73,19 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
       console.error('Failed to load skills:', err);
     }
   };
+
+  // Update selected skill when tab changes
+  useEffect(() => {
+    if (skills.length === 0) return;
+    const textDefault = skills.find(s => s.skill_id === 'summary');
+    const audioDefault = skills.find(s => s.skill_id === 'podcast_script');
+    
+    if (activeTab === 'text' && textDefault) {
+      setSelectedSkill(textDefault.skill_id);
+    } else if (activeTab === 'audio' && audioDefault) {
+      setSelectedSkill(audioDefault.skill_id);
+    }
+  }, [activeTab, skills]);
 
   const loadAudioGenerations = async () => {
     if (!notebookId) return;
@@ -75,6 +95,17 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
       setAudioGenerations(data);
     } catch (err) {
       console.error('Failed to load audio generations:', err);
+    }
+  };
+
+  const loadContentGenerations = async () => {
+    if (!notebookId) return;
+
+    try {
+      const data = await contentService.list(notebookId);
+      setContentGenerations(data);
+    } catch (err) {
+      console.error('Failed to load content generations:', err);
     }
   };
 
@@ -128,6 +159,44 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
     }
   };
 
+  // Text content generation (non-audio)
+  const handleGenerateText = async () => {
+    if (!notebookId || !selectedSkill) return;
+
+    setGenerating(true);
+    setError(null);
+    setGeneratedContent('');
+
+    try {
+      const result = await contentService.generate({
+        notebook_id: notebookId,
+        skill_id: selectedSkill,
+        topic: topic || undefined,
+      });
+
+      setGeneratedContent(result.content);
+      setContentSkillName(result.skill_name);
+      setSelectedContentId(null); // Clear selection since we just generated new
+      loadContentGenerations(); // Refresh list
+    } catch (err: any) {
+      console.error('Failed to generate:', err);
+      setError(err.message || 'Failed to generate content');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  // Skills that produce audio vs text-only
+  const audioSkillIds = ['podcast_script', 'debate'];
+  const textSkillIds = ['summary', 'study_guide', 'faq', 'briefing', 'deep_dive', 'explain'];
+  
+  // Filter skills based on active tab
+  const filteredSkills = skills.filter(s => 
+    activeTab === 'audio' 
+      ? audioSkillIds.includes(s.skill_id) || !textSkillIds.includes(s.skill_id)
+      : textSkillIds.includes(s.skill_id) || !audioSkillIds.includes(s.skill_id)
+  );
+
   if (!notebookId) {
     return (
       <div className="p-6 text-center text-gray-500 dark:text-gray-400">
@@ -137,15 +206,33 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
     );
   }
 
-  // All skills produce audio
-  const isAudioSkill = true;
-
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      {/* Header */}
-      <div className="p-4 border-b">
-        <h3 className="font-bold text-base mb-0.5 text-gray-900 dark:text-white">Studio</h3>
-        <p className="text-xs text-gray-600 dark:text-gray-400">Generate content from your research</p>
+      {/* Header with Tabs */}
+      <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+        <h3 className="font-bold text-base mb-2 text-gray-900 dark:text-white">Studio</h3>
+        <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+          <button
+            onClick={() => setActiveTab('text')}
+            className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              activeTab === 'text'
+                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+            }`}
+          >
+            📄 Documents
+          </button>
+          <button
+            onClick={() => setActiveTab('audio')}
+            className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              activeTab === 'audio'
+                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+            }`}
+          >
+            🎙️ Audio
+          </button>
+        </div>
       </div>
 
       {/* Main Content - Scrollable */}
@@ -173,15 +260,15 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
                 onChange={(e) => setSelectedSkill(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
               >
-                {skills.map((skill) => (
+                {filteredSkills.map((skill) => (
                   <option key={skill.skill_id} value={skill.skill_id}>
                     {skill.name}
                   </option>
                 ))}
               </select>
-              {skills.find((s) => s.skill_id === selectedSkill)?.description && (
+              {filteredSkills.find((s) => s.skill_id === selectedSkill)?.description && (
                 <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                  {skills.find((s) => s.skill_id === selectedSkill)?.description}
+                  {filteredSkills.find((s) => s.skill_id === selectedSkill)?.description}
                 </p>
               )}
             </>
@@ -248,7 +335,8 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
           />
         </div>
 
-        {/* Duration */}
+        {/* Duration - Only for audio tab */}
+        {activeTab === 'audio' && (
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Duration (minutes)
@@ -262,9 +350,10 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
           />
         </div>
+        )}
 
-        {/* Voice Configuration - Only for audio content types */}
-        {isAudioSkill && (
+        {/* Voice Configuration - Only for audio tab */}
+        {activeTab === 'audio' && (
         <details className="border border-gray-300 dark:border-gray-600 rounded-md" open>
           <summary className="px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 text-xs font-medium text-gray-700 dark:text-gray-300">
             Voice Configuration
@@ -312,14 +401,50 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
         </details>
         )}
 
-        {/* Generate Button */}
+        {/* Generate Button - different action based on tab */}
         <Button
-          onClick={handleGenerate}
+          onClick={activeTab === 'audio' ? handleGenerate : handleGenerateText}
           disabled={generating || !notebookId}
           className="w-full"
         >
-          {generating ? 'Generating...' : 'Generate'}
+          {generating ? 'Generating...' : activeTab === 'audio' ? 'Generate Audio' : 'Generate Document'}
         </Button>
+
+        {/* Generated Text Content (Documents tab) */}
+        {activeTab === 'text' && generatedContent && (
+          <div className="border border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 rounded-lg p-4">
+            <div className="flex justify-between items-center mb-3">
+              <h4 className="font-medium text-sm text-green-900 dark:text-green-100">
+                ✓ {contentSkillName} Generated
+              </h4>
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    try {
+                      await contentService.downloadAsPDF(generatedContent, contentSkillName, contentSkillName.toLowerCase().replace(/\s+/g, '-'));
+                    } catch (err) {
+                      console.error('PDF download failed:', err);
+                    }
+                  }}
+                  className="text-xs px-2 py-1 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30"
+                >
+                  📥 PDF
+                </button>
+                <button
+                  onClick={() => setGeneratedContent('')}
+                  className="text-xs text-gray-500 hover:text-gray-700"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div className="prose prose-sm dark:prose-invert max-w-none max-h-96 overflow-y-auto bg-white dark:bg-gray-800 p-4 rounded border border-gray-200 dark:border-gray-600">
+              <pre className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300 font-sans">
+                {generatedContent}
+              </pre>
+            </div>
+          </div>
+        )}
 
         {/* Generated Script Preview */}
         {generatedScript && showScript && (
@@ -347,9 +472,69 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
           </div>
         )}
 
-        {/* Previous Generations */}
+        {/* Previous Document Generations - Only for text tab */}
+        {activeTab === 'text' && contentGenerations.length > 0 && (
+          <div className="mt-4">
+            <h4 className="font-medium text-sm mb-3 text-gray-900 dark:text-white">Previous Documents</h4>
+            <div className="space-y-2">
+              {contentGenerations.map((gen) => (
+                <div
+                  key={gen.content_id}
+                  className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                    selectedContentId === gen.content_id
+                      ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20'
+                      : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+                  }`}
+                  onClick={() => {
+                    setSelectedContentId(gen.content_id);
+                    setGeneratedContent(gen.content);
+                    setContentSkillName(gen.skill_name);
+                  }}
+                >
+                  <div className="flex justify-between items-start">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm text-gray-900 dark:text-white truncate">
+                        {gen.skill_name}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {new Date(gen.created_at).toLocaleDateString()} • {gen.sources_used} sources
+                      </p>
+                      {gen.topic && (
+                        <p className="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                          Topic: {gen.topic}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try {
+                          await contentService.delete(gen.content_id);
+                          loadContentGenerations();
+                          if (selectedContentId === gen.content_id) {
+                            setGeneratedContent('');
+                            setSelectedContentId(null);
+                          }
+                        } catch (err) {
+                          console.error('Failed to delete:', err);
+                        }
+                      }}
+                      className="text-gray-400 hover:text-red-500 ml-2"
+                      title="Delete"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Previous Audio Generations - Only for audio tab */}
+        {activeTab === 'audio' && (
         <div>
-          <h4 className="font-medium text-sm mb-3 text-gray-900 dark:text-white">Previous Generations</h4>
+          <h4 className="font-medium text-sm mb-3 text-gray-900 dark:text-white">Previous Audio Generations</h4>
           {audioGenerations.length === 0 ? (
             <p className="text-sm text-gray-500 dark:text-gray-400">No generations yet</p>
           ) : (
@@ -374,9 +559,29 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
                         </span>
                       )}
                     </div>
-                    <span className="text-xs text-gray-500 dark:text-gray-400">
-                      {new Date(gen.created_at).toLocaleString()}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
+                        {new Date(gen.created_at).toLocaleString()}
+                      </span>
+                      <button
+                        onClick={async () => {
+                          if (confirm('Delete this audio generation?')) {
+                            try {
+                              await audioService.delete(gen.audio_id);
+                              loadAudioGenerations();
+                            } catch (err) {
+                              console.error('Failed to delete:', err);
+                            }
+                          }
+                        }}
+                        className="text-red-500 hover:text-red-700 p-1"
+                        title="Delete"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Audio Player */}
@@ -428,6 +633,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );

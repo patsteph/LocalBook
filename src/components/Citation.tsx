@@ -9,22 +9,41 @@ interface CitationProps {
 
 export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) => {
   const [showFull, setShowFull] = useState(false);
+  const [showHover, setShowHover] = useState(false);
 
   const confidenceBadge = {
-    high: { bg: 'bg-green-100', text: 'text-green-800', icon: '🟢', label: 'High Confidence' },
-    medium: { bg: 'bg-yellow-100', text: 'text-yellow-800', icon: '🟡', label: 'Medium Confidence' },
-    low: { bg: 'bg-red-100', text: 'text-red-800', icon: '🔴', label: 'Low Confidence' }
+    high: { bg: 'bg-green-100 dark:bg-green-900/30', text: 'text-green-800 dark:text-green-300', icon: '🟢', label: 'High Confidence', border: 'border-green-300 dark:border-green-700' },
+    medium: { bg: 'bg-yellow-100 dark:bg-yellow-900/30', text: 'text-yellow-800 dark:text-yellow-300', icon: '🟡', label: 'Medium Confidence', border: 'border-yellow-300 dark:border-yellow-700' },
+    low: { bg: 'bg-red-100 dark:bg-red-900/30', text: 'text-red-800 dark:text-red-300', icon: '🔴', label: 'Low Confidence', border: 'border-red-300 dark:border-red-700' }
   }[citation.confidence_level];
 
   return (
-    <>
+    <span className="relative inline-block">
       <button
         onClick={() => setShowFull(!showFull)}
-        className="text-blue-600 hover:text-blue-800 hover:underline font-medium mx-0.5"
-        title={`${citation.filename}${citation.page ? `, p.${citation.page}` : ''} - ${confidenceBadge.label}`}
+        onMouseEnter={() => setShowHover(true)}
+        onMouseLeave={() => setShowHover(false)}
+        className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:underline font-medium mx-0.5"
       >
         [{citation.number}]
       </button>
+
+      {/* Hover Preview Tooltip */}
+      {showHover && !showFull && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 z-40 pointer-events-none">
+          <div className={`bg-white dark:bg-gray-800 rounded-lg shadow-lg border ${confidenceBadge.border} p-3`}>
+            <div className="flex items-center gap-2 mb-2">
+              <span className={`px-1.5 py-0.5 text-xs rounded ${confidenceBadge.bg} ${confidenceBadge.text}`}>
+                {confidenceBadge.icon} {Math.round(citation.confidence * 100)}%
+              </span>
+              <span className="text-xs text-gray-500 dark:text-gray-400 truncate flex-1">{citation.filename}</span>
+            </div>
+            <p className="text-xs text-gray-700 dark:text-gray-300 line-clamp-4">{citation.snippet}</p>
+            <p className="text-xs text-gray-400 mt-1 italic">Click to view full citation</p>
+          </div>
+          <div className="absolute left-1/2 -translate-x-1/2 -bottom-1 w-2 h-2 bg-white dark:bg-gray-800 border-r border-b border-gray-200 dark:border-gray-700 transform rotate-45"></div>
+        </div>
+      )}
 
       {showFull && createPortal(
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -87,7 +106,7 @@ export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) =>
         </div>,
         document.body
       )}
-    </>
+    </span>
   );
 };
 

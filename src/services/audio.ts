@@ -21,4 +21,8 @@ export const audioService = {
   getDownloadUrl(audioId: string): string {
     return `${api.defaults.baseURL}/audio/download/${audioId}`;
   },
+
+  async delete(audioId: string): Promise<void> {
+    await api.delete(`/audio/remove/${audioId}`);
+  },
 };

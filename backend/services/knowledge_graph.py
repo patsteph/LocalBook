@@ -153,6 +153,22 @@ class KnowledgeGraphService:
             ])
             self.db.create_table("contradictions", schema=schema)
     
+    def _create_clusters_table(self) -> None:
+        """Create clusters table (used after dropping for reset)"""
+        if "clusters" not in self.db.table_names():
+            schema = pa.schema([
+                pa.field("id", pa.string()),
+                pa.field("name", pa.string()),
+                pa.field("description", pa.string()),
+                pa.field("concept_ids", pa.string()),  # JSON array
+                pa.field("coherence_score", pa.float32()),
+                pa.field("size", pa.int32()),
+                pa.field("notebook_ids", pa.string()),  # JSON array
+                pa.field("created_at", pa.string()),
+                pa.field("updated_at", pa.string()),
+            ])
+            self.db.create_table("clusters", schema=schema)
+    
     # =========================================================================
     # Concept Extraction
     # =========================================================================
@@ -221,6 +237,52 @@ Rules:
 
 Respond ONLY with JSON:"""
     
+    def _canonicalize_concept_name(self, name: str) -> str:
+        """
+        Canonicalize a concept name to handle semantic variations.
+        E.g., 'artificial intelligence (ai)' -> 'artificial intelligence'
+              'gen ai' -> 'generative ai'
+              'llms' -> 'large language models'
+        """
+        import re
+        
+        # Remove parenthetical clarifications like "(ai)", "(ml)", etc.
+        name = re.sub(r'\s*\([^)]*\)\s*', ' ', name).strip()
+        
+        # Common abbreviation expansions for better matching
+        abbreviations = {
+            'ai': 'artificial intelligence',
+            'ml': 'machine learning',
+            'llm': 'large language model',
+            'llms': 'large language model',
+            'nlp': 'natural language processing',
+            'gen ai': 'generative artificial intelligence',
+            'genai': 'generative artificial intelligence',
+            'rag': 'retrieval augmented generation',
+            'api': 'application programming interface',
+            'apis': 'application programming interface',
+            'ui': 'user interface',
+            'ux': 'user experience',
+            'saas': 'software as a service',
+            'paas': 'platform as a service',
+            'iaas': 'infrastructure as a service',
+        }
+        
+        # Normalize whitespace
+        name = " ".join(name.split())
+        
+        # Check if the whole name is an abbreviation
+        if name in abbreviations:
+            return abbreviations[name]
+        
+        # For compound terms, don't expand abbreviations within them
+        # (e.g., "ai ethics" should stay as "artificial intelligence ethics" only if "ai" is standalone)
+        words = name.split()
+        if len(words) == 1 and name in abbreviations:
+            return abbreviations[name]
+        
+        return name
+    
     async def _create_or_update_concept(
         self,
         name: str,
@@ -232,25 +294,64 @@ Respond ONLY with JSON:"""
         if not name or len(name) < 2:
             return None
         
-        name = name.lower().strip()
+        # Normalize name: lowercase, strip whitespace, collapse multiple spaces
+        name = " ".join(name.lower().strip().split())
         
-        # Check if concept exists
+        # Further normalize: remove parenthetical clarifications like "(ai)" 
+        # and common variations
+        canonical_name = self._canonicalize_concept_name(name)
+        
+        # Check if concept exists by exact name match first
         table = self.db.open_table("concepts")
-        existing = table.search(self.get_embedding(name)).limit(1).to_list()
         
-        if existing and existing[0].get("name", "").lower() == name:
+        # Search by embedding similarity but with stricter name matching
+        existing = table.search(self.get_embedding(canonical_name)).limit(10).to_list()
+        
+        # Find exact or semantically equivalent match
+        matched_record = None
+        for record in existing:
+            existing_name = " ".join(record.get("name", "").lower().strip().split())
+            existing_canonical = self._canonicalize_concept_name(existing_name)
+            # Match if canonical forms are the same
+            if existing_canonical == canonical_name:
+                matched_record = record
+                break
+        
+        if matched_record:
             # Update existing concept
-            record = existing[0]
+            record = matched_record
             chunk_ids = json.loads(record.get("source_chunk_ids", "[]"))
             notebook_ids = json.loads(record.get("source_notebook_ids", "[]"))
             
+            needs_update = False
             if chunk_id not in chunk_ids:
                 chunk_ids.append(chunk_id)
+                needs_update = True
             if notebook_id not in notebook_ids:
                 notebook_ids.append(notebook_id)
+                needs_update = True
             
-            # LanceDB doesn't support updates well, so we track frequency
-            # In production, you'd want a proper update mechanism
+            new_frequency = record.get("frequency", 1) + 1
+            
+            # Update the record in LanceDB if notebook_id or chunk_id changed
+            if needs_update:
+                concept_id = record["id"]
+                # LanceDB update: delete old record and add updated one
+                table.delete(f"id = '{concept_id}'")
+                updated_record = {
+                    "id": concept_id,
+                    "name": record["name"],
+                    "description": record.get("description", ""),
+                    "source_chunk_ids": json.dumps(chunk_ids),
+                    "source_notebook_ids": json.dumps(notebook_ids),
+                    "frequency": new_frequency,
+                    "importance": record.get("importance", 0.5),
+                    "cluster_id": record.get("cluster_id", ""),
+                    "created_at": record.get("created_at", ""),
+                    "updated_at": datetime.utcnow().isoformat(),
+                    "vector": record.get("vector", self.get_embedding(f"{record['name']}: {record.get('description', '')}")),
+                }
+                table.add([updated_record])
             
             return Concept(
                 id=record["id"],
@@ -258,7 +359,7 @@ Respond ONLY with JSON:"""
                 description=record.get("description"),
                 source_chunk_ids=chunk_ids,
                 source_notebook_ids=notebook_ids,
-                frequency=record.get("frequency", 1) + 1
+                frequency=new_frequency
             )
         
         # Create new concept
@@ -432,11 +533,21 @@ Respond ONLY with JSON:"""
         Run HDBSCAN clustering on concept embeddings to discover themes.
         Should be run periodically as a background job.
         """
+        import warnings
+        # Suppress sklearn internal deprecation warning about force_all_finite
+        # This is an sklearn internal issue that will be fixed in a future release
+        warnings.filterwarnings("ignore", message=".*force_all_finite.*")
+        
         try:
-            from hdbscan import HDBSCAN
+            # Use sklearn's built-in HDBSCAN (available since sklearn 1.3)
+            from sklearn.cluster import HDBSCAN
         except ImportError:
-            print("HDBSCAN not installed, skipping clustering")
-            return []
+            # Fallback to standalone hdbscan package
+            try:
+                from hdbscan import HDBSCAN
+            except ImportError:
+                print("HDBSCAN not available, skipping clustering")
+                return []
         
         # Get all concepts with embeddings
         concepts_table = self.db.open_table("concepts")
@@ -444,6 +555,17 @@ Respond ONLY with JSON:"""
         
         if len(all_concepts) < self.min_cluster_size:
             return []
+        
+        # Clear existing clusters before creating new ones
+        # This prevents duplicate clusters from accumulating
+        try:
+            if "clusters" in self.db.table_names():
+                self.db.drop_table("clusters")
+            # Recreate the empty clusters table
+            self._create_clusters_table()
+            print("[KnowledgeGraph] Cleared old clusters before re-clustering")
+        except Exception as e:
+            print(f"[KnowledgeGraph] Could not clear clusters: {e}")
         
         # Extract embeddings and normalize them
         # Using normalized embeddings with euclidean distance is equivalent to cosine distance
@@ -515,7 +637,7 @@ Respond ONLY with JSON:"""
         try:
             prompt = f"""These concepts are related: {', '.join(concept_names[:10])}
 
-What theme or topic connects them? Respond with just a 2-4 word name:"""
+What theme or topic connects them? Respond with just a 2-4 word name (no punctuation):"""
             
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -530,7 +652,12 @@ What theme or topic connects them? Respond with just a 2-4 word name:"""
                 
                 if response.status_code == 200:
                     result = response.json()
-                    return result.get("response", "").strip()[:50]
+                    name = result.get("response", "").strip()[:50]
+                    # Remove trailing punctuation
+                    name = name.rstrip('.,;:!?')
+                    # Remove quotes if wrapped
+                    name = name.strip('"\'')
+                    return name
         except Exception as e:
             print(f"Cluster naming error: {e}")
         
@@ -631,7 +758,7 @@ What theme or topic connects them? Respond with just a 2-4 word name:"""
                 edges.append(edge)
         
         # Get clusters if requested
-        if include_clusters:
+        if include_clusters and "clusters" in self.db.table_names():
             clusters_table = self.db.open_table("clusters")
             clusters_df = clusters_table.to_pandas()
             
@@ -756,6 +883,64 @@ What theme or topic connects them? Respond with just a 2-4 word name:"""
             return {"concepts": 0, "links": 0, "clusters": 0}
     
     # =========================================================================
+    # Data Management
+    # =========================================================================
+    
+    async def clear_notebook_data(self, notebook_id: str) -> int:
+        """
+        Clear all knowledge graph data for a specific notebook.
+        Returns the number of concepts cleared.
+        """
+        concepts_cleared = 0
+        
+        try:
+            # Clear concepts for this notebook
+            concepts_table = self.db.open_table("concepts")
+            concepts_df = concepts_table.to_pandas()
+            
+            # Find concepts belonging to this notebook
+            notebook_concepts = concepts_df[
+                concepts_df["source_notebook_ids"].apply(
+                    lambda x: notebook_id in json.loads(x)
+                )
+            ]
+            concepts_cleared = len(notebook_concepts)
+            
+            # Get IDs to delete
+            concept_ids_to_delete = notebook_concepts["id"].tolist()
+            
+            # Delete concepts (LanceDB delete by filter)
+            if concept_ids_to_delete:
+                concepts_table.delete(f"id IN {tuple(concept_ids_to_delete)}" if len(concept_ids_to_delete) > 1 else f"id = '{concept_ids_to_delete[0]}'")
+            
+            # Clear links for this notebook
+            if "links" in self.db.table_names():
+                links_table = self.db.open_table("links")
+                links_table.delete(f"source_notebook_id = '{notebook_id}'")
+            
+            # Clear clusters that include this notebook
+            if "clusters" in self.db.table_names():
+                clusters_table = self.db.open_table("clusters")
+                clusters_df = clusters_table.to_pandas()
+                if len(clusters_df) > 0:
+                    notebook_clusters = clusters_df[
+                        clusters_df["notebook_ids"].apply(
+                            lambda x: notebook_id in json.loads(x)
+                        )
+                    ]
+                    cluster_ids_to_delete = notebook_clusters["id"].tolist()
+                    if cluster_ids_to_delete:
+                        clusters_table.delete(f"id IN {tuple(cluster_ids_to_delete)}" if len(cluster_ids_to_delete) > 1 else f"id = '{cluster_ids_to_delete[0]}'")
+            
+            print(f"[KnowledgeGraph] Cleared {concepts_cleared} concepts for notebook {notebook_id}")
+            
+        except Exception as e:
+            print(f"[KnowledgeGraph] Error clearing notebook data: {e}")
+            raise
+        
+        return concepts_cleared
+    
+    # =========================================================================
     # LLM Helper
     # =========================================================================
     
@@ -777,12 +962,25 @@ What theme or topic connects them? Respond with just a 2-4 word name:"""
                     result = response.json()
                     text = result.get("response", "")
                     
-                    # Parse JSON from response
+                    # Parse JSON from response - try multiple strategies
                     json_match = re.search(r'\{[\s\S]*\}', text)
                     if json_match:
-                        return json.loads(json_match.group())
+                        json_str = json_match.group()
+                        try:
+                            return json.loads(json_str)
+                        except json.JSONDecodeError:
+                            # Try to fix common issues: trailing commas, unquoted keys
+                            # Remove trailing commas before } or ]
+                            fixed = re.sub(r',(\s*[}\]])', r'\1', json_str)
+                            try:
+                                return json.loads(fixed)
+                            except json.JSONDecodeError:
+                                # Silent fail - concept extraction is best-effort
+                                pass
         except Exception as e:
-            print(f"LLM call error: {e}")
+            # Only log non-JSON errors (network issues, etc.)
+            if "Expecting" not in str(e):
+                print(f"LLM call error: {e}")
         
         return None
 

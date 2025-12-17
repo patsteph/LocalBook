@@ -16,6 +16,8 @@ export interface WebSearchResponse {
     query: string;
     results: WebSearchResult[];
     count: number;
+    offset: number;
+    has_more: boolean;
 }
 
 export interface ScrapedContent {
@@ -38,9 +40,9 @@ export interface WebScrapeResponse {
 
 export const webService = {
     /**
-     * Search the web for a query
+     * Search the web for a query with pagination
      */
-    async search(query: string, maxResults: number = 20): Promise<WebSearchResponse> {
+    async search(query: string, maxResults: number = 20, offset: number = 0): Promise<WebSearchResponse> {
         const response = await fetch(`${API_BASE}/web/search`, {
             method: 'POST',
             headers: {
@@ -49,11 +51,25 @@ export const webService = {
             body: JSON.stringify({
                 query,
                 max_results: maxResults,
+                offset,
             }),
         });
 
         if (!response.ok) {
             throw new Error(`Search failed: ${response.statusText}`);
+        }
+
+        return response.json();
+    },
+
+    /**
+     * Get previously scraped web sources for a notebook
+     */
+    async getWebSources(notebookId: string): Promise<{ sources: Array<{ id: string; title: string; url: string; word_count: number; date_added: string; type: string }>; count: number }> {
+        const response = await fetch(`${API_BASE}/web/sources/${notebookId}`);
+
+        if (!response.ok) {
+            throw new Error(`Failed to get web sources: ${response.statusText}`);
         }
 
         return response.json();

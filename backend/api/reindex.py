@@ -107,14 +107,29 @@ async def reindex_notebook(notebook_id: str, force: bool = False):
 
 
 @router.post("/all")
-async def reindex_all_notebooks(force: bool = True):
+async def reindex_all_notebooks(force: bool = True, drop_tables: bool = False):
     """Re-index all sources in all notebooks.
     
     Useful after changing embedding models.
     
     Args:
         force: If True (default), reindex all sources even if they already have chunks
+        drop_tables: If True, drop existing LanceDB tables first (required when embedding dimensions change)
     """
+    # If drop_tables is True, clear all existing vector tables
+    if drop_tables:
+        try:
+            import lancedb
+            from config import settings
+            db = lancedb.connect(str(settings.db_path))
+            existing_tables = db.table_names()
+            for table_name in existing_tables:
+                if table_name.startswith("notebook_"):
+                    db.drop_table(table_name)
+                    print(f"Dropped table: {table_name}")
+        except Exception as e:
+            print(f"Error dropping tables: {e}")
+    
     notebooks = await notebook_store.list()
     
     total_processed = 0

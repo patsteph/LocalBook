@@ -52,12 +52,12 @@ interface GraphStats {
 interface Props {
   notebookId: string | null;
   selectedSourceId?: string | null;  // Filter to show only concepts from this source
-  onAskAboutConcept?: (query: string) => void;  // Callback to switch to Chat with prefilled query
+  rightSidebarCollapsed?: boolean;  // Whether right sidebar (Studio) is collapsed
 }
 
 const API_BASE = API_BASE_URL;
 
-export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcept }: Props) {
+export function Constellation3D({ notebookId, selectedSourceId, rightSidebarCollapsed = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -72,14 +72,23 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
   const [stats, setStats] = useState<GraphStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [building, setBuilding] = useState(false);
+  const [sceneReady, setSceneReady] = useState(false);
   const [buildProgress, setBuildProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [, setSelectedNode] = useState<GraphNode | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
-  const [connectedNodeIds, setConnectedNodeIds] = useState<Set<string>>(new Set());
+  const [, setConnectedNodeIds] = useState<Set<string>>(new Set());
   // Clusters state removed - using overlay panel instead
   const [navigationHistory, setNavigationHistory] = useState<string[]>([]);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const notebookIdRef = useRef<string | null>(notebookId);
+  
+  // Keep ref in sync with prop
+  useEffect(() => {
+    notebookIdRef.current = notebookId;
+  }, [notebookId]);
   
   // Simplified - always use current notebook
   const crossNotebook = false;
@@ -619,6 +628,9 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
     // Also resize after a short delay to catch initial layout
     setTimeout(handleResize, 100);
     
+    // Mark scene as ready to trigger graph load
+    setSceneReady(true);
+    
     // Cleanup
     return () => {
       window.removeEventListener('resize', handleResize);
@@ -729,12 +741,20 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
     };
   }, [graphData, focusOnNode]);
   
-  // Update scene when graph data changes
+  // Update scene when graph data changes OR when scene becomes available
   useEffect(() => {
     if (graphData && sceneRef.current) {
       updateScene(graphData);
     }
-  }, [graphData]);
+  }, [graphData, sceneReady]);
+  
+  // Load graph after scene is ready (fixes race condition)
+  useEffect(() => {
+    if (sceneReady && (notebookId || crossNotebook)) {
+      loadGraph();
+    }
+  }, [sceneReady, notebookId, crossNotebook]);
+  
 
   // Load stats and connect WebSocket
   useEffect(() => {
@@ -777,10 +797,21 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
                 setBuildProgress(prev => Math.max(prev, message.data.progress));
                 break;
               case 'build_complete':
+                console.log('Build complete - triggering clustering...');
                 setBuilding(false);
                 setBuildProgress(100);
                 loadGraph();
                 loadStats();
+                // Trigger clustering to assign colors
+                fetch(`${API_BASE}/graph/cluster`, { method: 'POST' })
+                  .then(() => {
+                    // Reload after clustering completes
+                    setTimeout(() => {
+                      loadGraph();
+                      loadStats();
+                    }, 5000);
+                  })
+                  .catch(err => console.error('Clustering failed:', err));
                 break;
             }
           } catch (err) {
@@ -814,10 +845,9 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
     };
   }, []);
 
-  // Load graph and stats when notebook changes
+  // Load stats when notebook changes (graph loading handled by sceneReady effect)
   useEffect(() => {
     if (notebookId || crossNotebook) {
-      loadGraph();
       loadStats();
     }
   }, [notebookId, crossNotebook]);
@@ -842,7 +872,9 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
 
   const loadStats = async () => {
     try {
-      const params = notebookId ? `?notebook_id=${notebookId}` : '';
+      // Use ref to get current notebookId (avoids stale closure in WebSocket callbacks)
+      const currentNotebookId = notebookIdRef.current;
+      const params = currentNotebookId ? `?notebook_id=${currentNotebookId}` : '';
       const response = await fetch(`${API_BASE}/graph/stats${params}`);
       if (response.ok) {
         setStats(await response.json());
@@ -853,6 +885,12 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
   };
 
   const loadGraph = async () => {
+    // Don't load if no notebook selected
+    if (!notebookId && !crossNotebook) {
+      console.log('[Constellation] No notebook selected, skipping load');
+      return;
+    }
+    
     setLoading(true);
     setError(null);
     
@@ -866,16 +904,23 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
         ? `${API_BASE}/graph/all?${params}`
         : `${API_BASE}/graph/notebook/${notebookId}?${params}`;
       
+      console.log('[Constellation] Loading graph from:', endpoint);
       const response = await fetch(endpoint);
       
       if (response.ok) {
         const data: GraphData = await response.json();
+        console.log('[Constellation] Loaded', data.nodes.length, 'nodes,', data.edges.length, 'edges,', data.clusters?.length || 0, 'clusters');
+        if (data.clusters && data.clusters.length > 0) {
+          console.log('[Constellation] Cluster colors will be applied:', data.clusters.map(c => c.name).join(', '));
+        }
         setGraphData(data);
         updateScene(data);
       } else {
+        console.error('[Constellation] Failed to load graph:', response.status);
         setError('Failed to load graph');
       }
     } catch (err) {
+      console.error('[Constellation] Error loading graph:', err);
       setError('Failed to connect to server');
     } finally {
       setLoading(false);
@@ -884,7 +929,11 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
 
   const updateScene = useCallback((data: GraphData) => {
     const scene = sceneRef.current;
-    if (!scene) return;
+    if (!scene) {
+      console.log('[Constellation] updateScene called but scene not ready');
+      return;
+    }
+    console.log('[Constellation] updateScene with', data.nodes.length, 'nodes');
     
     // Clear existing tracked objects
     nodesRef.current.forEach(mesh => {
@@ -1168,15 +1217,24 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
     if (!notebookId) return;
     
     setBuilding(true);
+    setBuildProgress(0);
     try {
       const response = await fetch(`${API_BASE}/graph/build/${notebookId}`, { method: 'POST' });
       if (response.ok) {
-        console.log('Building constellation...');
+        console.log('Building constellation - waiting for WebSocket updates...');
+        // The WebSocket handler will set building=false when build_complete is received
+        // But set a fallback timeout in case WebSocket isn't connected
         setTimeout(() => {
-          setBuilding(false);
-          loadGraph();
-          loadStats();
-        }, 120000);
+          if (building) {
+            console.log('Build timeout - checking results...');
+            setBuilding(false);
+            setBuildProgress(100);
+            loadGraph();
+            loadStats();
+            // Trigger clustering after build
+            triggerClustering();
+          }
+        }, 180000); // 3 minute fallback
       }
     } catch (err) {
       console.error('Failed to build:', err);
@@ -1186,9 +1244,18 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
 
   const triggerClustering = async () => {
     try {
+      console.log('Triggering clustering for color coding...');
       await fetch(`${API_BASE}/graph/cluster`, { method: 'POST' });
-      setTimeout(loadGraph, 2000);
-      setTimeout(loadStats, 2000);
+      // Reload graph after clustering to pick up cluster colors
+      setTimeout(() => {
+        loadGraph();
+        loadStats();
+      }, 3000);
+      // Reload again after more time for larger graphs
+      setTimeout(() => {
+        loadGraph();
+        loadStats();
+      }, 8000);
     } catch (err) {
       console.error('Failed to cluster:', err);
     }
@@ -1204,57 +1271,106 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
 
   return (
     <div className="h-full flex flex-col bg-gray-50 dark:bg-gray-900">
-      {/* Controls - Simplified */}
-      <div className="p-3 border-b border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-800/80 backdrop-blur">
-        <div className="flex items-center gap-3 flex-wrap">
-          {/* Build button - primary action */}
-          {notebookId && (
-            <button
-              onClick={async () => {
-                await buildConstellation();
-                setTimeout(triggerClustering, 5000);
-              }}
-              disabled={building}
-              className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm disabled:opacity-50 font-medium"
-            >
-              {building ? '✨ Building...' : '✨ Build Constellation'}
-            </button>
-          )}
-          
-          {/* Stats inline */}
-          {stats && stats.concepts > 0 && (
-            <span className="text-xs text-gray-500 dark:text-gray-400">
-              {stats.concepts} concepts • {stats.links} links
-            </span>
-          )}
-          
-          {/* Spacer */}
-          <div className="flex-1" />
-          
-          {/* Secondary controls - minimal */}
-          <button
-            onClick={() => {
-              resetCamera();
-              loadGraph();
-            }}
-            disabled={loading}
-            className="px-2 py-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-white text-xs"
-            title="Refresh and reset view"
-          >
-            ⟲ Reset
-          </button>
-          {/* Progress bar when building */}
-          {building && (
-            <div className="flex items-center gap-2">
-              <div className="w-24 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-purple-500 transition-all duration-300"
-                  style={{ width: `${buildProgress}%` }}
-                />
-              </div>
-              <span className="text-xs text-purple-400">{buildProgress.toFixed(0)}%</span>
+      {/* Controls - Responsive layout */}
+      <div className="p-2 border-b border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-800/80 backdrop-blur flex-shrink-0">
+        {/* Progress bar - full width when building */}
+        {building && (
+          <div className="mb-2 flex items-center gap-2">
+            <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-purple-500 transition-all duration-300"
+                style={{ width: `${buildProgress}%` }}
+              />
             </div>
-          )}
+            <span className="text-xs text-purple-600 dark:text-purple-400 font-medium min-w-[3rem]">{buildProgress.toFixed(0)}%</span>
+          </div>
+        )}
+        
+        <div className={`flex items-center gap-2 ${rightSidebarCollapsed ? 'justify-between' : 'flex-wrap'}`}>
+          {/* Left group - Build button and stats */}
+          <div className="flex items-center gap-2">
+            {notebookId && (
+              <button
+                onClick={async () => {
+                  setBuildProgress(0);
+                  await buildConstellation();
+                  setTimeout(triggerClustering, 5000);
+                }}
+                disabled={building}
+                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm disabled:opacity-50 font-medium whitespace-nowrap"
+              >
+                {building ? '✨ Building...' : '✨ Build Constellation'}
+              </button>
+            )}
+            
+            {stats && stats.concepts > 0 && (
+              <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                {stats.concepts} concepts • {stats.links} links
+              </span>
+            )}
+          </div>
+          
+          {/* Right group - Refresh and Reset (spread out when sidebar collapsed) */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                resetCamera();
+                loadGraph();
+                loadStats();
+              }}
+              disabled={loading}
+              className="px-2 py-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-white text-xs whitespace-nowrap"
+              title="Refresh and reset view"
+            >
+              ⟲ Refresh
+            </button>
+            
+            {/* Reset Knowledge Graph - with confirmation */}
+            {stats && stats.concepts > 0 && (
+              <>
+                {showResetConfirm ? (
+                  <div className="flex items-center gap-1 bg-red-50 dark:bg-red-900/30 px-2 py-1 rounded">
+                    <span className="text-xs text-red-600 dark:text-red-400">Clear?</span>
+                    <button
+                      onClick={async () => {
+                        if (!notebookId) return;
+                        setResetting(true);
+                        try {
+                          await fetch(`${API_BASE}/graph/reset/${notebookId}`, { method: 'DELETE' });
+                          setGraphData(null);
+                          setStats(null);
+                          loadGraph();
+                        } catch (err) {
+                          console.error('Failed to reset graph:', err);
+                        } finally {
+                          setResetting(false);
+                          setShowResetConfirm(false);
+                        }
+                      }}
+                      disabled={resetting}
+                      className="text-xs px-1.5 py-0.5 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+                    >
+                      {resetting ? '...' : 'Yes'}
+                    </button>
+                    <button
+                      onClick={() => setShowResetConfirm(false)}
+                      className="text-xs px-1.5 py-0.5 text-gray-600 dark:text-gray-400 hover:text-gray-800"
+                    >
+                      No
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowResetConfirm(true)}
+                    className="px-2 py-1 text-gray-400 hover:text-red-500 dark:text-gray-500 dark:hover:text-red-400 text-xs whitespace-nowrap"
+                    title="Reset knowledge graph"
+                  >
+                    🗑️ Reset
+                  </button>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1329,146 +1445,6 @@ export function Constellation3D({ notebookId, selectedSourceId, onAskAboutConcep
           {/* Navigation hints - bottom left */}
           <div className="absolute bottom-4 left-4 text-xs text-gray-600 dark:text-gray-400 bg-white/70 dark:bg-gray-800/70 px-3 py-2 rounded backdrop-blur-sm shadow-sm">
             🖱️ Click node to focus • Drag to rotate • Scroll to zoom
-          </div>
-        </div>
-        
-        {/* Info Panel - fixed width, responsive */}
-        <div className="w-56 flex-shrink-0 border-l border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex flex-col overflow-hidden">
-          {/* Top Concepts - always visible at top */}
-          <div className="p-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-            <p className="text-xs text-gray-500 mb-2 uppercase tracking-wide">
-              Top Concepts ({Math.min(25, graphData?.nodes.length || 0)})
-            </p>
-            <div className="space-y-1 max-h-48 overflow-y-auto">
-              {(() => {
-                if (!graphData?.nodes.length) {
-                  return <p className="text-xs text-gray-500 text-center py-2">No concepts yet</p>;
-                }
-                
-                // Get connection counts
-                const connectionCounts: Record<string, number> = {};
-                graphData.edges.forEach(edge => {
-                  connectionCounts[edge.source] = (connectionCounts[edge.source] || 0) + 1;
-                  connectionCounts[edge.target] = (connectionCounts[edge.target] || 0) + 1;
-                });
-                
-                // Sort by connections and take top 25
-                return [...graphData.nodes]
-                  .map(node => ({ node, connections: connectionCounts[node.id] || 0 }))
-                  .sort((a, b) => b.connections - a.connections)
-                  .slice(0, 25)
-                  .map(({ node, connections }) => {
-                    const isSelected = selectedNode?.id === node.id;
-                    return (
-                      <button
-                        key={node.id}
-                        onClick={() => focusOnNode(node.id)}
-                        className={`w-full text-left px-2 py-1.5 rounded transition-colors group ${
-                          isSelected 
-                            ? 'bg-purple-100 dark:bg-purple-900/50 ring-1 ring-purple-500' 
-                            : 'bg-gray-100 dark:bg-gray-700/50 hover:bg-purple-100 dark:hover:bg-purple-900/50'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-1">
-                          <span className={`text-xs truncate flex-1 ${
-                            isSelected 
-                              ? 'text-purple-700 dark:text-purple-300 font-medium' 
-                              : 'text-gray-700 dark:text-gray-200 group-hover:text-gray-900 dark:group-hover:text-white'
-                          }`}>
-                            {node.label}
-                          </span>
-                          <span className="text-xs text-purple-600 dark:text-purple-400 flex-shrink-0">
-                            {connections}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  });
-              })()}
-            </div>
-          </div>
-          
-          {/* Selected Node Info & Neighbors */}
-          <div className="flex-1 overflow-y-auto">
-            {selectedNode ? (
-              <div className="p-3">
-                {/* Selected node header */}
-                <div className="mb-3">
-                  <h3 className="font-semibold text-gray-900 dark:text-white text-sm leading-tight">{selectedNode.label}</h3>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
-                    {selectedNode.metadata?.description || 'No description'}
-                  </p>
-                </div>
-                
-                {/* Ask about this button */}
-                <button
-                  onClick={() => {
-                    const connectedNames = Array.from(connectedNodeIds)
-                      .map(id => graphData?.nodes.find(n => n.id === id)?.label)
-                      .filter(Boolean)
-                      .slice(0, 5)
-                      .join(', ');
-                    const query = connectedNames 
-                      ? `Tell me about ${selectedNode.label} and how it relates to ${connectedNames}`
-                      : `Tell me about ${selectedNode.label}`;
-                    
-                    if (onAskAboutConcept) {
-                      onAskAboutConcept(query);
-                    } else {
-                      navigator.clipboard.writeText(query);
-                      alert(`Copied to clipboard:\n\n"${query}"\n\nPaste this in the Chat tab!`);
-                    }
-                  }}
-                  className="w-full mb-3 px-2 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
-                >
-                  💬 Ask about this
-                </button>
-                
-                {/* Connected/Neighbor concepts */}
-                {connectedNodeIds.size > 0 ? (
-                  <>
-                    <p className="text-xs text-gray-500 mb-2 uppercase tracking-wide">
-                      Neighbors ({connectedNodeIds.size})
-                    </p>
-                    <div className="space-y-1">
-                      {Array.from(connectedNodeIds)
-                        .map(nodeId => {
-                          const node = graphData?.nodes.find(n => n.id === nodeId);
-                          const mesh = nodesRef.current.get(nodeId);
-                          const connections = mesh?.userData.connections || 0;
-                          return { nodeId, node, connections };
-                        })
-                        .filter(item => item.node)
-                        .sort((a, b) => b.connections - a.connections)
-                        .map(({ nodeId, node, connections }) => (
-                          <button
-                            key={nodeId}
-                            onClick={() => focusOnNode(nodeId)}
-                            className="w-full text-left px-2 py-1.5 bg-gray-100 dark:bg-gray-700/50 hover:bg-purple-100 dark:hover:bg-purple-900/50 rounded transition-colors group"
-                          >
-                            <div className="flex items-center justify-between gap-1">
-                              <span className="text-xs text-gray-700 dark:text-gray-200 group-hover:text-gray-900 dark:group-hover:text-white truncate flex-1">
-                                {node!.label}
-                              </span>
-                              <span className="text-xs text-purple-600 dark:text-purple-400 flex-shrink-0">
-                                {connections}
-                              </span>
-                            </div>
-                          </button>
-                        ))}
-                    </div>
-                  </>
-                ) : (
-                  <p className="text-xs text-gray-500 text-center py-2">
-                    No neighbors found
-                  </p>
-                )}
-              </div>
-            ) : (
-              <div className="p-3 text-center text-gray-500 dark:text-gray-400">
-                <p className="text-xs">Select a concept above to explore</p>
-              </div>
-            )}
           </div>
         </div>
       </div>

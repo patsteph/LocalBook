@@ -56,8 +56,9 @@ Note: `./build.sh` performs network downloads and may install system dependencie
 
 ### AI Models (pulled by build script)
 ```bash
-ollama pull mistral-nemo:12b-instruct-2407-q4_K_M  # Main model (~7GB)
-ollama pull phi4-mini                               # Fast model (~2GB)
+ollama pull phi4:14b           # System 2: Main model (~9GB)
+ollama pull llama3.2:3b        # System 1: Fast model (~2GB)
+ollama pull nomic-embed-text   # Embeddings (~300MB)
 ```
 
 ---
@@ -72,13 +73,21 @@ ollama pull phi4-mini                               # Fast model (~2GB)
 | 🔍 **Web Search** | Optionally supplement with real-time web results |
 | 📅 **Timeline** | Auto-extract and visualize dates/events |
 
-### New in v0.1.0
+### Latest Features (v0.2.0)
 | Feature | Description |
 |---------|-------------|
-| 🌌 **Constellation** | 3D knowledge graph showing concept relationships |
+| 🌌 **3D Constellation** | Interactive 3D knowledge graph with clustering and color-coded themes |
+| 🎯 **Key Themes** | Auto-discovered topic clusters from your documents |
+| 📊 **Top Concepts** | See your most frequently referenced concepts |
+| 🔄 **Real-time Updates** | Constellation and themes update live during builds |
+| ⚡ **Embedding Options** | Choose from multiple Ollama embedding models (Nomic, MixedBread, MiniLM, Snowflake) |
 | 🧠 **Memory** | AI remembers facts about you across sessions |
-| 🎨 **Notebook Colors** | Color-code notebooks for organization |
-| 🔄 **Updates** | Check for updates in Settings → Updates |
+| 📅 **Timeline** | Auto-extract and visualize dates/events from documents |
+
+### ⚠️ Upgrading from v0.1.0
+If upgrading from a previous version:
+1. **Re-embed documents** — The default embedding model changed to `nomic-embed-text`. Go to Settings → Embedding Model and click "Re-embed All Documents" for each notebook.
+2. **Rebuild Constellation** — Click Reset → Build Constellation to regenerate the knowledge graph with improved clustering.
 
 ---
 
@@ -115,8 +124,9 @@ When running: http://localhost:8000/docs
 
 ### Environment (`backend/.env`)
 ```bash
-OLLAMA_MODEL=mistral-nemo:12b-instruct-2407-q4_K_M
-OLLAMA_FAST_MODEL=phi4-mini
+OLLAMA_MODEL=phi4:14b              # System 2: Main reasoning model
+OLLAMA_FAST_MODEL=llama3.2:3b      # System 1: Fast responses
+EMBEDDING_MODEL=nomic-embed-text   # Document embeddings via Ollama
 CHUNK_SIZE=1000
 CHUNK_OVERLAP=200
 ```

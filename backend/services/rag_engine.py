@@ -1,41 +1,162 @@
 """RAG (Retrieval Augmented Generation) Engine"""
-import lancedb
-import uuid
-from pathlib import Path
-from typing import List, Dict, Optional, AsyncGenerator
-from sentence_transformers import SentenceTransformer
-from config import settings
-from storage.source_store import source_store
-from services.memory_agent import memory_agent
-from models.memory import MemoryExtractionRequest
-from models.knowledge_graph import ConceptExtractionRequest
-import httpx
-import time
 import asyncio
+import json
 import os
+import re
+import sys
+import time
+import traceback
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import List, Dict, Optional, AsyncGenerator, Tuple, Union
+
+import httpx
+import lancedb
+import numpy as np
+
+from config import settings
+from models.knowledge_graph import ConceptExtractionRequest
+from models.memory import MemoryExtractionRequest
+from services.memory_agent import memory_agent
+from storage.source_store import source_store
 
 
 _concept_extraction_semaphore = asyncio.Semaphore(int(os.getenv("LOCALBOOK_KG_CONCURRENCY", "2")))
+
+# Shared thread pool for LanceDB operations (avoids creating per-query)
+_search_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lancedb_search")
+
 
 class RAGEngine:
     """RAG engine for document Q&A"""
 
     def __init__(self):
         self.db_path = settings.db_path
-        self.embedding_model = None  # Lazy load
+        self.embedding_model = None  # Lazy load (for sentence-transformers fallback)
+        self.reranker = None  # Lazy load cross-encoder for reranking
         self.db = None
+        self._use_ollama_embeddings = settings.use_ollama_embeddings
+        self._use_reranker = settings.use_reranker
+    
+    def _get_reranker(self):
+        """Lazy load the cross-encoder reranker model"""
+        if self.reranker is None:
+            from sentence_transformers import CrossEncoder
+            reranker_model = settings.reranker_model
+            self.reranker = CrossEncoder(reranker_model, max_length=512)
+            print(f"[RAG] Loaded reranker: {reranker_model}")
+        return self.reranker
+    
+    def _load_reranker(self):
+        """Force load the reranker model (used for warmup)"""
+        if self._use_reranker:
+            return self._get_reranker()
+        return None
+    
+    def rerank(self, query: str, documents: List[Dict], top_k: int = 5) -> List[Dict]:
+        """Rerank documents using cross-encoder for better relevance"""
+        if not documents:
+            return documents
+        
+        reranker = self._get_reranker()
+        
+        # Create query-document pairs
+        pairs = [(query, doc.get("text", "")) for doc in documents]
+        
+        # Score all pairs
+        scores = reranker.predict(pairs)
+        
+        # Add scores to documents and sort
+        for doc, score in zip(documents, scores):
+            doc["rerank_score"] = float(score)
+        
+        # Sort by rerank score (higher is better) and take top_k
+        ranked = sorted(documents, key=lambda x: x.get("rerank_score", 0), reverse=True)
+        return ranked[:top_k]
     
     def _load_embedding_model(self):
         """Force load the embedding model (used for warmup)"""
+        if self._use_ollama_embeddings:
+            # For Ollama, we just need to make sure the model is pulled
+            # Warmup is handled by model_warmup.py
+            return None
         if self.embedding_model is None:
+            from sentence_transformers import SentenceTransformer
             self.embedding_model = SentenceTransformer(settings.embedding_model)
         return self.embedding_model
     
     def _get_embedding_model(self):
-        """Lazy load embedding model"""
+        """Lazy load embedding model (for sentence-transformers fallback)"""
+        if self._use_ollama_embeddings:
+            return None
         if self.embedding_model is None:
+            from sentence_transformers import SentenceTransformer
             self.embedding_model = SentenceTransformer(settings.embedding_model)
         return self.embedding_model
+    
+    def _get_ollama_embedding_sync(self, text: str) -> List[float]:
+        """Get embedding from Ollama synchronously"""
+        import requests
+        response = requests.post(
+            f"{settings.ollama_base_url}/api/embeddings",
+            json={
+                "model": settings.embedding_model,
+                "prompt": text
+            },
+            timeout=60
+        )
+        result = response.json()
+        return result.get("embedding", [])
+    
+    def _get_ollama_embeddings_batch_sync(self, texts: List[str]) -> List[List[float]]:
+        """Get embeddings for multiple texts from Ollama synchronously"""
+        embeddings = []
+        for text in texts:
+            embedding = self._get_ollama_embedding_sync(text)
+            embeddings.append(embedding)
+        return embeddings
+    
+    async def _get_ollama_embedding(self, text: str) -> List[float]:
+        """Get embedding from Ollama asynchronously"""
+        timeout = httpx.Timeout(60.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{settings.ollama_base_url}/api/embeddings",
+                json={
+                    "model": settings.embedding_model,
+                    "prompt": text
+                }
+            )
+            result = response.json()
+            return result.get("embedding", [])
+    
+    def encode(self, texts: Union[str, List[str]]) -> np.ndarray:
+        """Encode texts to embeddings (compatible with SentenceTransformer interface)"""
+        if isinstance(texts, str):
+            texts = [texts]
+        
+        if self._use_ollama_embeddings:
+            embeddings = self._get_ollama_embeddings_batch_sync(texts)
+            return np.array(embeddings)
+        else:
+            model = self._get_embedding_model()
+            return model.encode(texts)
+
+    def _get_stored_vector_dim(self, table) -> Optional[int]:
+        """Get the dimension of vectors stored in a table from schema"""
+        try:
+            schema = table.schema
+            for field in schema:
+                if field.name == "vector":
+                    type_str = str(field.type)
+                    if "fixed_size_list" in type_str:
+                        match = re.search(r'\[(\d+)\]', type_str)
+                        if match:
+                            return int(match.group(1))
+        except Exception:
+            pass
+        return None
 
     def _get_table(self, notebook_id: str):
         """Get or create LanceDB table for notebook"""
@@ -47,11 +168,11 @@ class RAGEngine:
         # Check if table exists
         if table_name not in self.db.table_names():
             # Create table with schema including useful metadata fields
-            model = self._get_embedding_model()
+            placeholder_embedding = self.encode("placeholder")[0].tolist()
             self.db.create_table(
                 table_name,
                 data=[{
-                    "vector": model.encode("placeholder").tolist(),
+                    "vector": placeholder_embedding,
                     "text": "placeholder",
                     "source_id": "placeholder",
                     "chunk_index": 0,
@@ -67,6 +188,70 @@ class RAGEngine:
 
         return table
 
+    async def _build_citations_and_context(
+        self, 
+        results: List[Dict], 
+        log_prefix: str = "[RAG]"
+    ) -> Tuple[List[Dict], set, str, bool]:
+        """Build citations and context from search results.
+        
+        Returns: (citations, sources_set, context_string, low_confidence)
+        """
+        # Get source filenames for citations
+        source_filenames = {}
+        for result in results:
+            sid = result["source_id"]
+            if sid not in source_filenames:
+                source_data = await source_store.get(sid)
+                source_filenames[sid] = source_data.get("filename", "Unknown") if source_data else "Unknown"
+
+        # Build citations from search results
+        all_citations = []
+        for i, result in enumerate(results):
+            text = result.get("text", "")
+            
+            # LanceDB cosine distance is 0-2 range for normalized vectors
+            distance = result.get("_distance", 1.0)
+            # Convert to confidence: 0 dist = 100%, 1.0 dist = 50%, 2.0 dist = 0%
+            confidence = max(0, min(1, 1 - (distance / 2)))
+            confidence_level = "high" if confidence >= 0.6 else "medium" if confidence >= 0.4 else "low"
+            
+            all_citations.append({
+                "number": i + 1,
+                "source_id": result.get("source_id", "unknown"),
+                "filename": source_filenames.get(result.get("source_id", ""), "Unknown"),
+                "chunk_index": result.get("chunk_index", 0),
+                "text": text,
+                "snippet": text[:150] + "..." if len(text) > 150 else text,
+                "page": result.get("metadata", {}).get("page") if isinstance(result.get("metadata"), dict) else None,
+                "confidence": round(confidence, 2),
+                "confidence_level": confidence_level
+            })
+
+        # Only filter out truly irrelevant results (< 35% confidence)
+        quality_citations = [c for c in all_citations if c["confidence"] >= 0.35]
+        
+        # If filtering removed everything, keep top 3 anyway
+        if len(quality_citations) == 0 and len(all_citations) > 0:
+            quality_citations = all_citations[:3]
+            print(f"{log_prefix} Low confidence fallback: using top 3 citations")
+        
+        print(f"{log_prefix} Citations: {len(quality_citations)} used (from {len(all_citations)} found)")
+        
+        # Renumber citations after filtering
+        sources = set()
+        for i, citation in enumerate(quality_citations):
+            citation["number"] = i + 1
+            sources.add(citation["source_id"])
+        
+        # Build numbered context
+        numbered_context = [f"[{i+1}] {c['text']}" for i, c in enumerate(quality_citations)]
+        context = "\n\n".join(numbered_context)
+        
+        low_confidence = len(quality_citations) == 0
+        
+        return quality_citations, sources, context, low_confidence
+
     async def ingest_document(
         self,
         notebook_id: str,
@@ -81,8 +266,7 @@ class RAGEngine:
         chunks = self._chunk_text(text)
 
         # Generate embeddings
-        model = self._get_embedding_model()
-        embeddings = model.encode(chunks)
+        embeddings = self.encode(chunks)
 
         # Prepare data for insertion with metadata
         data = []
@@ -174,11 +358,11 @@ class RAGEngine:
         notebook_id: str,
         question: str,
         source_ids: Optional[List[str]] = None,
-        top_k: int = 4,  # Reduced from 5 for speed
+        top_k: int = 4,
         enable_web_search: bool = False,
         llm_provider: Optional[str] = None
     ) -> Dict:
-        """Query the RAG system"""
+        """Query the RAG system (non-streaming)"""
         total_start = time.time()
         print(f"\n{'='*60}")
         print(f"[RAG] Starting query: '{question[:50]}...'")
@@ -186,159 +370,80 @@ class RAGEngine:
 
         # Step 1: Generate query embedding
         step_start = time.time()
-        model = self._get_embedding_model()
-        query_embedding = model.encode(question).tolist()
-        print(f"[RAG] Step 1 - Embedding generation: {time.time() - step_start:.2f}s")
+        query_embedding = self.encode(question)[0].tolist()
+        print(f"[RAG] Step 1 - Embedding: {time.time() - step_start:.2f}s")
 
-        # Step 2: Get/open vector database table
-        step_start = time.time()
+        # Step 2: Get table and check for data
         table = self._get_table(notebook_id)
-        print(f"[RAG] Step 2 - Open LanceDB table: {time.time() - step_start:.2f}s")
-        
-        # Check if table has any data
         try:
-            row_count = table.count_rows()
-            print(f"[RAG] Table has {row_count} rows")
-            if row_count == 0:
+            if table.count_rows() == 0:
                 return {
-                    "answer": "I don't have any documents to search yet. Please upload some documents first, or the documents may still be processing.",
-                    "citations": [],
-                    "sources": [],
-                    "web_sources": None,
-                    "follow_up_questions": [],
-                    "low_confidence": True
+                    "answer": "I don't have any documents to search yet. Please upload some documents first.",
+                    "citations": [], "sources": [], "web_sources": None,
+                    "follow_up_questions": [], "low_confidence": True
                 }
         except Exception:
-            pass  # If count fails, try the search anyway
-        
+            pass
+
         # Step 3: Vector search
         step_start = time.time()
+        overcollect_k = settings.retrieval_overcollect if self._use_reranker else top_k
         try:
-            results = table.search(query_embedding).limit(top_k).to_list()
-            print(f"[RAG] Step 3 - Vector search ({len(results)} results): {time.time() - step_start:.2f}s")
+            results = table.search(query_embedding).limit(overcollect_k).to_list()
+            print(f"[RAG] Step 2 - Search ({len(results)} results): {time.time() - step_start:.2f}s")
         except Exception as e:
             print(f"Search error: {e}")
             return {
-                "answer": "I encountered an error searching your documents. The documents may need to be re-indexed.",
-                "citations": [],
-                "sources": [],
-                "web_sources": None,
-                "follow_up_questions": [],
-                "low_confidence": True
+                "answer": "I encountered an error searching your documents.",
+                "citations": [], "sources": [], "web_sources": None,
+                "follow_up_questions": [], "low_confidence": True
             }
 
         # Filter by source_ids if specified
         if source_ids:
             results = [r for r in results if r["source_id"] in source_ids]
 
-        # Step 4: Build context and citations
+        # Step 3b: Rerank
+        if self._use_reranker and len(results) > top_k:
+            step_start = time.time()
+            results = self.rerank(question, results, top_k=top_k + 1)
+            print(f"[RAG] Step 3 - Reranking ({len(results)} results): {time.time() - step_start:.2f}s")
+
+        # Step 4: Build citations and context (shared helper)
         step_start = time.time()
-        context_chunks = []
-        citations = []
-        sources = set()
-        
-        # Get source filenames for citations
-        source_filenames = {}
-        for result in results:
-            sid = result["source_id"]
-            if sid not in source_filenames:
-                source_data = await source_store.get(sid)
-                source_filenames[sid] = source_data.get("filename", "Unknown") if source_data else "Unknown"
-
-        # Build citations from search results
-        all_citations = []
-        for i, result in enumerate(results):
-            text = result.get("text", "")
-            
-            # LanceDB cosine distance is 0-2 range for normalized vectors
-            distance = result.get("_distance", 1.0)
-            # Convert to confidence: 0 dist = 100%, 1.0 dist = 50%, 2.0 dist = 0%
-            confidence = max(0, min(1, 1 - (distance / 2)))
-            confidence_level = "high" if confidence >= 0.6 else "medium" if confidence >= 0.4 else "low"
-            
-            all_citations.append({
-                "number": i + 1,
-                "source_id": result.get("source_id", "unknown"),
-                "filename": source_filenames.get(result.get("source_id", ""), "Unknown"),
-                "chunk_index": result.get("chunk_index", 0),
-                "text": text,
-                "snippet": text[:150] + "..." if len(text) > 150 else text,
-                "page": result.get("metadata", {}).get("page") if isinstance(result.get("metadata"), dict) else None,
-                "confidence": round(confidence, 2),
-                "confidence_level": confidence_level
-            })
-
-        # Only filter out truly irrelevant results (< 35% confidence = distance > 1.3)
-        quality_citations = [c for c in all_citations if c["confidence"] >= 0.35]
-        
-        # If filtering removed everything, keep top 3 anyway
-        if len(quality_citations) == 0 and len(all_citations) > 0:
-            quality_citations = all_citations[:3]
-        
-        print(f"[RAG] Citations: {len(quality_citations)} used (from {len(all_citations)} found)")
-        
-        # Renumber citations after filtering
-        for i, citation in enumerate(quality_citations):
-            citation["number"] = i + 1
-        
-        # Build context only from quality citations
-        for citation in quality_citations:
-            context_chunks.append(citation["text"])
-            sources.add(citation["source_id"])
-        
-        citations = quality_citations
-
-        # Low confidence only if NO quality citations at all
-        low_confidence = len(citations) == 0
+        citations, sources, context, low_confidence = await self._build_citations_and_context(results, "[RAG]")
         num_citations = len(citations)
-        print(f"[RAG] Step 4 - Build context & citations: {time.time() - step_start:.2f}s")
-        print(f"[RAG] Quality citations: {num_citations} (filtered from {len(all_citations)})")
-        
-        # Build context with explicit citation numbers
-        numbered_context = []
-        for i, citation in enumerate(citations):
-            numbered_context.append(f"[{i+1}] {citation['text']}")
-        context = "\n\n".join(numbered_context)
-        print(f"[RAG] Context size: {len(context)} chars, {len(context.split())} words")
+        print(f"[RAG] Step 4 - Build context: {time.time() - step_start:.2f}s")
 
-        # Step 5: Generate answer using LLM (with memory augmentation)
+        # Step 5: Generate answer
         step_start = time.time()
-        conversation_id = str(uuid.uuid4())  # Generate conversation ID for memory tracking
+        conversation_id = str(uuid.uuid4())
         answer_result = await self._generate_answer(question, context, num_citations, llm_provider, notebook_id, conversation_id)
         answer = answer_result["answer"]
         memory_used = answer_result.get("memory_used", [])
         memory_context_summary = answer_result.get("memory_context_summary")
-        llm_time = time.time() - step_start
-        print(f"[RAG] Step 5 - LLM answer generation: {llm_time:.2f}s")
-        if memory_used:
-            print(f"[RAG] Memory used: {memory_used}")
-        
-        # Step 6: Extract memories from the conversation (async, non-blocking)
+        print(f"[RAG] Step 5 - LLM answer: {time.time() - step_start:.2f}s")
+
+        # Step 6: Generate follow-up questions
         step_start = time.time()
-        try:
-            # Extract from user question
-            await memory_agent.extract_memories(MemoryExtractionRequest(
-                message=question,
-                role="user",
-                conversation_id=conversation_id,
-                notebook_id=notebook_id
-            ))
-            # Extract from assistant answer
-            await memory_agent.extract_memories(MemoryExtractionRequest(
-                message=answer,
-                role="assistant",
-                conversation_id=conversation_id,
-                notebook_id=notebook_id,
-                context=question  # Provide question as context
-            ))
-            print(f"[RAG] Step 6 - Memory extraction: {time.time() - step_start:.2f}s")
-        except Exception as e:
-            print(f"[RAG] Memory extraction failed (non-fatal): {e}")
+        follow_up_questions = await self._generate_follow_up_questions_fast(question, context)
+        print(f"[RAG] Step 6 - Follow-ups: {time.time() - step_start:.2f}s")
+
+        # Step 7: Memory extraction (fire-and-forget)
+        async def _extract_memories_background():
+            try:
+                await memory_agent.extract_memories(MemoryExtractionRequest(
+                    message=question, role="user",
+                    conversation_id=conversation_id, notebook_id=notebook_id
+                ))
+                await memory_agent.extract_memories(MemoryExtractionRequest(
+                    message=answer, role="assistant",
+                    conversation_id=conversation_id, notebook_id=notebook_id, context=question
+                ))
+            except Exception as e:
+                print(f"[RAG] Memory extraction failed (non-fatal): {e}")
         
-        # Step 7: Generate follow-up questions
-        step_start = time.time()
-        follow_up_questions = await self._generate_follow_up_questions(question, answer, context)
-        print(f"[RAG] Step 7 - Follow-up questions: {time.time() - step_start:.2f}s")
+        asyncio.create_task(_extract_memories_background())
 
         total_time = time.time() - total_start
         print(f"{'='*60}")
@@ -349,7 +454,7 @@ class RAGEngine:
             "answer": answer,
             "citations": citations,
             "sources": list(sources),
-            "web_sources": None,  # TODO: implement web search
+            "web_sources": None,
             "follow_up_questions": follow_up_questions,
             "low_confidence": low_confidence,
             "memory_used": memory_used,
@@ -361,37 +466,46 @@ class RAGEngine:
         notebook_id: str,
         question: str,
         source_ids: Optional[List[str]] = None,
-        top_k: int = 4,  # Reduced from 5 for speed
-        llm_provider: Optional[str] = None
+        top_k: int = 4,
+        llm_provider: Optional[str] = None,
+        deep_think: bool = False
     ) -> AsyncGenerator[Dict, None]:
         """Query the RAG system with streaming response"""
         total_start = time.time()
+        mode_str = " [DEEP THINK]" if deep_think else " [FAST]"
         print(f"\n{'='*60}")
-        print(f"[RAG STREAM] Starting query: '{question[:50]}...'")
+        print(f"[RAG STREAM{mode_str}] Starting query: '{question[:50]}...'")
         print(f"{'='*60}")
 
         # Step 1: Generate query embedding
         step_start = time.time()
-        model = self._get_embedding_model()
-        query_embedding = model.encode(question).tolist()
+        query_embedding = self.encode(question)[0].tolist()
         print(f"[RAG STREAM] Step 1 - Embedding: {time.time() - step_start:.2f}s")
 
-        # Step 2: Get table and search
-        step_start = time.time()
+        # Step 2: Get table and check for data
         table = self._get_table(notebook_id)
-        
         try:
             row_count = table.count_rows()
+            print(f"[RAG STREAM] Table has {row_count} rows")
             if row_count == 0:
                 yield {"type": "error", "content": "No documents indexed yet."}
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[RAG STREAM] Error counting rows: {e}")
 
+        # Step 2b: Vector search (using shared thread pool)
+        step_start = time.time()
+        overcollect_k = settings.retrieval_overcollect if self._use_reranker else top_k
         try:
-            results = table.search(query_embedding).limit(top_k).to_list()
+            def do_search():
+                return table.search(query_embedding).limit(overcollect_k).to_list()
+            
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(_search_executor, do_search)
             print(f"[RAG STREAM] Step 2 - Search ({len(results)} results): {time.time() - step_start:.2f}s")
         except Exception as e:
+            print(f"[RAG STREAM] Search exception: {e}")
+            traceback.print_exc()
             yield {"type": "error", "content": f"Search error: {e}"}
             return
 
@@ -399,74 +513,17 @@ class RAGEngine:
         if source_ids:
             results = [r for r in results if r["source_id"] in source_ids]
 
-        # Step 3: Build context and citations
+        # Step 2c: Rerank
+        if self._use_reranker and len(results) > top_k:
+            step_start = time.time()
+            results = self.rerank(question, results, top_k=top_k + 1)
+            print(f"[RAG STREAM] Step 2c - Reranking ({len(results)} results): {time.time() - step_start:.2f}s")
+
+        # Step 3: Build citations and context (shared helper)
         step_start = time.time()
-        context_chunks = []
-        citations = []
-        sources = set()
-        
-        source_filenames = {}
-        for result in results:
-            sid = result["source_id"]
-            if sid not in source_filenames:
-                source_data = await source_store.get(sid)
-                source_filenames[sid] = source_data.get("filename", "Unknown") if source_data else "Unknown"
-
-        # Build citations from search results
-        all_citations = []
-        for i, result in enumerate(results):
-            text = result.get("text", "")
-            
-            # LanceDB cosine distance is 0-2 range for normalized vectors
-            distance = result.get("_distance", 1.0)
-            # Convert to confidence: 0 dist = 100%, 1.0 dist = 50%, 2.0 dist = 0%
-            confidence = max(0, min(1, 1 - (distance / 2)))
-            confidence_level = "high" if confidence >= 0.6 else "medium" if confidence >= 0.4 else "low"
-            
-            all_citations.append({
-                "number": i + 1,
-                "source_id": result.get("source_id", "unknown"),
-                "filename": source_filenames.get(result.get("source_id", ""), "Unknown"),
-                "chunk_index": result.get("chunk_index", 0),
-                "text": text,
-                "snippet": text[:150] + "..." if len(text) > 150 else text,
-                "page": result.get("metadata", {}).get("page") if isinstance(result.get("metadata"), dict) else None,
-                "confidence": round(confidence, 2),
-                "confidence_level": confidence_level
-            })
-
-        # Only filter out truly irrelevant results (< 35% confidence = distance > 1.3)
-        quality_citations = [c for c in all_citations if c["confidence"] >= 0.35]
-        
-        # If filtering removed everything, keep top 3 anyway
-        if len(quality_citations) == 0 and len(all_citations) > 0:
-            quality_citations = all_citations[:3]
-            print(f"[RAG STREAM] Low confidence fallback: using top 3 citations")
-        
-        print(f"[RAG STREAM] Citations: {len(quality_citations)} used (from {len(all_citations)} found)")
-        
-        # Renumber citations after filtering
-        for i, citation in enumerate(quality_citations):
-            citation["number"] = i + 1
-        
-        # Build context only from quality citations
-        for citation in quality_citations:
-            context_chunks.append(citation["text"])
-            sources.add(citation["source_id"])
-        
-        citations = quality_citations
-        
-        # Low confidence only if NO quality citations at all
-        low_confidence = len(citations) == 0
-        # Build context with explicit citation numbers
-        numbered_context = []
-        # Build context - use full chunks for accuracy (speed comes from top_k=4)
-        for i, citation in enumerate(citations):
-            numbered_context.append(f"[{i+1}] {citation['text']}")
-        context = "\n\n".join(numbered_context)
-        
+        citations, sources, context, low_confidence = await self._build_citations_and_context(results, "[RAG STREAM]")
         num_citations = len(citations)
-        print(f"[RAG STREAM] Context: {len(context)} chars, {num_citations} citations")
+        print(f"[RAG STREAM] Step 3 - Build context: {time.time() - step_start:.2f}s ({len(context)} chars)")
 
         # Send citations immediately so UI can show them
         yield {
@@ -476,73 +533,94 @@ class RAGEngine:
             "low_confidence": low_confidence
         }
 
-        # Step 4: Generate quick summary with fast model (phi4-mini)
+        # Step 4: Generate quick summary
         step_start = time.time()
         quick_summary = await self._generate_quick_summary(question, context, num_citations)
-        print(f"[RAG STREAM] Step 4 - Quick summary (phi4): {time.time() - step_start:.2f}s")
+        print(f"[RAG STREAM] Step 4 - Quick summary: {time.time() - step_start:.2f}s")
         
-        # Send quick summary immediately
-        yield {
-            "type": "quick_summary",
-            "content": quick_summary
-        }
+        yield {"type": "quick_summary", "content": quick_summary}
 
-        # Step 5: Start follow-up generation in background (parallel with detailed answer)
+        # Step 5: Start follow-up generation in background (parallel with main answer)
         followup_task = asyncio.create_task(
             self._generate_follow_up_questions_fast(question, context)
         )
 
-        # Step 6: Stream the detailed answer with main model (mistral-nemo)
-        system_prompt = f"""Answer using sources [1]-[{num_citations}]. Be concise (1-2 paragraphs). Inline citations only. No reference list at end."""
+        # Step 6: Stream the detailed answer
+        from api.settings import get_user_profile_sync, build_user_context
+        user_profile = get_user_profile_sync()
+        user_context = build_user_context(user_profile)
+        
+        # Build system prompt based on mode
+        if deep_think:
+            base_prompt = f"""You are in Deep Think mode. Think through this problem step by step:
+1. First, identify the key aspects of the question
+2. Consider relevant information from the sources
+3. Reason through the implications
+4. Synthesize your findings into a clear, well-reasoned answer
+
+Answer using sources [1]-[{num_citations}]. Use inline citations like [1], [2] within sentences. Be thorough and analytical.
+IMPORTANT: Do NOT add a References or Sources section at the end. Only use inline citations."""
+        else:
+            base_prompt = f"""Answer using sources [1]-[{num_citations}]. Be concise (1-2 paragraphs). Use inline citations like [1], [2] within sentences.
+IMPORTANT: Do NOT add a References or Sources section at the end. Only use inline citations."""
+        
+        system_prompt = f"User context: {user_context}\n\n{base_prompt}" if user_context else base_prompt
 
         prompt = f"""Sources:
 {context}
 
 Q: {question}
 
-Answer concisely with inline [N] citations:"""
+Answer {"thoroughly" if deep_think else "concisely"} with inline [N] citations (NO references list at end):"""
 
         step_start = time.time()
         full_answer = ""
-        async for token in self._stream_ollama(system_prompt, prompt):
-            full_answer += token
-            yield {"type": "token", "content": token}
+        use_fast = not deep_think
+        buffer = ""
+        references_started = False
         
-        print(f"[RAG STREAM] Step 6 - LLM streaming complete: {time.time() - step_start:.2f}s")
+        async for token in self._stream_ollama(system_prompt, prompt, deep_think=deep_think, use_fast_model=use_fast):
+            buffer += token
+            full_answer += token
+            
+            # Check if we've hit a References section - stop streaming if so
+            if not references_started:
+                lower_buffer = buffer.lower()
+                # Look for reference section headers (must be on their own line)
+                for marker in ["\nreferences:", "\nreferences\n", "\nsources:\n", "\ncitations:\n", "\n\n[1] "]:
+                    if marker in lower_buffer:
+                        references_started = True
+                        print(f"[RAG STREAM] Detected references section, stopping output")
+                        break
+            
+            if not references_started:
+                yield {"type": "token", "content": token}
+        
+        print(f"[RAG STREAM] Step 6 - LLM streaming: {time.time() - step_start:.2f}s")
 
-        # Step 7: Wait for follow-up questions (should be done or nearly done)
+        # Step 7: Wait for follow-up questions
         step_start = time.time()
         follow_up_questions = await followup_task
         print(f"[RAG STREAM] Step 7 - Follow-ups ready: {time.time() - step_start:.2f}s")
 
-        # Send completion with follow-up questions
-        yield {
-            "type": "done",
-            "follow_up_questions": follow_up_questions
-        }
+        yield {"type": "done", "follow_up_questions": follow_up_questions}
 
-        # Step 8: Extract memories from the conversation (async, non-blocking)
-        step_start = time.time()
-        try:
-            conversation_id = str(uuid.uuid4())
-            # Extract from user question
-            await memory_agent.extract_memories(MemoryExtractionRequest(
-                message=question,
-                role="user",
-                conversation_id=conversation_id,
-                notebook_id=notebook_id
-            ))
-            # Extract from assistant answer
-            await memory_agent.extract_memories(MemoryExtractionRequest(
-                message=full_answer,
-                role="assistant",
-                conversation_id=conversation_id,
-                notebook_id=notebook_id,
-                context=question
-            ))
-            print(f"[RAG STREAM] Step 8 - Memory extraction: {time.time() - step_start:.2f}s")
-        except Exception as e:
-            print(f"[RAG STREAM] Memory extraction failed (non-fatal): {e}")
+        # Step 8: Memory extraction (fire-and-forget)
+        async def _extract_memories_background():
+            try:
+                conversation_id = str(uuid.uuid4())
+                await memory_agent.extract_memories(MemoryExtractionRequest(
+                    message=question, role="user",
+                    conversation_id=conversation_id, notebook_id=notebook_id
+                ))
+                await memory_agent.extract_memories(MemoryExtractionRequest(
+                    message=full_answer, role="assistant",
+                    conversation_id=conversation_id, notebook_id=notebook_id, context=question
+                ))
+            except Exception as e:
+                print(f"[RAG STREAM] Memory extraction failed (non-fatal): {e}")
+        
+        asyncio.create_task(_extract_memories_background())
 
         total_time = time.time() - total_start
         print(f"{'='*60}")
@@ -574,16 +652,24 @@ Brief summary (2-3 sentences with inline [N] citations only, NO references list)
             return ""
 
     async def _generate_follow_up_questions_fast(self, question: str, context: str) -> List[str]:
-        """Generate follow-up questions using fast model (phi4-mini)"""
+        """Generate follow-up questions using fast model"""
         try:
-            system_prompt = "Generate 3 brief follow-up questions based on the context. One question per line."
-            prompt = f"Topic: {question}\n\nContext summary: {context[:1000]}\n\nQuestions:"
+            system_prompt = "Generate exactly 3 follow-up questions. Output ONLY the questions, one per line. No preamble."
+            prompt = f"Topic: {question}\n\nContext: {context[:1000]}\n\n3 questions:"
             
-            # Use fast model for follow-up generation
             response = await self._call_ollama(system_prompt, prompt, model=settings.ollama_fast_model)
             
-            questions = [q.strip() for q in response.strip().split('\n') if q.strip()]
-            questions = [q.lstrip('0123456789.-) ') for q in questions]
+            questions = []
+            for line in response.strip().split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                # Strip numbering/bullets
+                line = line.lstrip('0123456789.-) ')
+                # Only keep lines that end with ? (actual questions)
+                if line.endswith('?'):
+                    questions.append(line)
+            
             return questions[:3] if questions else []
         except Exception as e:
             print(f"Failed to generate follow-up questions: {e}")
@@ -598,11 +684,16 @@ Brief summary (2-3 sentences with inline [N] citations only, NO references list)
             "What are the most important findings?"
         ]
 
-    async def _generate_answer(self, question: str, context: str, num_citations: int = 5, llm_provider: Optional[str] = None, notebook_id: Optional[str] = None, conversation_id: Optional[str] = None) -> Dict:
-        """Generate answer using LLM with memory augmentation. Returns dict with answer and memory_used info."""
+    async def _generate_answer(self, question: str, context: str, num_citations: int = 5, llm_provider: Optional[str] = None, notebook_id: Optional[str] = None, conversation_id: Optional[str] = None, deep_think: bool = False) -> Dict:
+        """Generate answer using LLM with memory augmentation and user personalization. Returns dict with answer and memory_used info."""
         
         # Check if memory is enabled (frontend can disable via localStorage)
         memory_used = []
+        
+        # Get user profile for personalization
+        from api.settings import get_user_profile_sync, build_user_context
+        user_profile = get_user_profile_sync()
+        user_context = build_user_context(user_profile)
         
         # Get memory context to augment the prompt
         memory_context = await memory_agent.get_memory_context(
@@ -611,16 +702,31 @@ Brief summary (2-3 sentences with inline [N] citations only, NO references list)
             max_tokens=500  # Reserve tokens for memory
         )
         
-        # Build system prompt with memory
+        # Build system prompt with user context, memory, and mode
         base_prompt = f"""Answer using sources [1]-[{num_citations}]. Be concise (1-2 paragraphs). Inline citations only. No reference list at end."""
         
+        # Add Deep Think chain-of-thought instructions
+        if deep_think:
+            base_prompt = f"""You are in Deep Think mode. Think through this problem step by step:
+1. First, identify the key aspects of the question
+2. Consider relevant information from the sources
+3. Reason through the implications
+4. Synthesize your findings into a clear, well-reasoned answer
+
+Answer using sources [1]-[{num_citations}]. Use inline citations. Be thorough and analytical."""
+        
+        # Combine user context + memory + base prompt
+        system_parts = []
+        if user_context:
+            system_parts.append(f"User context: {user_context}")
+            memory_used.append("user_profile")
         if memory_context.core_memory_block:
-            system_prompt = f"{memory_context.core_memory_block}\n\n{base_prompt}"
-            # Track that core memory was used
+            system_parts.append(memory_context.core_memory_block)
             if memory_context.core_memory_block.strip():
                 memory_used.append("core_context")
-        else:
-            system_prompt = base_prompt
+        system_parts.append(base_prompt)
+        
+        system_prompt = "\n\n".join(system_parts)
         
         # Add retrieved memories to context if available
         memory_section = ""
@@ -654,31 +760,6 @@ Answer concisely with inline [N] citations:"""
             "memory_context_summary": memory_context.core_memory_block[:200] if memory_context.core_memory_block else None
         }
     
-    async def _generate_follow_up_questions(self, question: str, answer: str, context: str) -> List[str]:
-        """Generate follow-up questions based on the conversation"""
-        try:
-            system_prompt = """Based on the question asked and answer provided, generate exactly 3 short follow-up questions 
-that would help the user explore the topic further. Return ONLY the questions, one per line, no numbering or bullets."""
-
-            prompt = f"""Original question: {question}
-
-Answer provided: {answer[:500]}
-
-Generate 3 follow-up questions:"""
-
-            # Use ollama for follow-up generation (fast)
-            response = await self._call_ollama(system_prompt, prompt)
-            
-            # Parse response into list of questions
-            questions = [q.strip() for q in response.strip().split('\n') if q.strip()]
-            # Clean up any numbering or bullets
-            questions = [q.lstrip('0123456789.-) ') for q in questions]
-            # Return first 3 valid questions
-            return questions[:3] if questions else []
-        except Exception as e:
-            print(f"Failed to generate follow-up questions: {e}")
-            return []
-
     async def _call_ollama(self, system_prompt: str, prompt: str, model: str = None) -> str:
         """Call Ollama API"""
         # Use very long timeout - LLM generation can take minutes for complex queries
@@ -698,9 +779,27 @@ Generate 3 follow-up questions:"""
             print(f"Ollama response received, length: {len(result.get('response', ''))}")
             return result.get("response", "No response from LLM")
 
-    async def _stream_ollama(self, system_prompt: str, prompt: str) -> AsyncGenerator[str, None]:
-        """Stream response from Ollama API with stop sequences to prevent citation lists"""
+    async def _stream_ollama(self, system_prompt: str, prompt: str, deep_think: bool = False, use_fast_model: bool = False) -> AsyncGenerator[str, None]:
+        """Stream response from Ollama API with stop sequences to prevent citation lists
+        
+        Args:
+            deep_think: Use CoT prompting with lower temperature (System 2 deliberate)
+            use_fast_model: Use fast model (llama3.2:3b) instead of main model (phi4:14b)
+        """
         timeout = httpx.Timeout(10.0, read=600.0)
+        
+        # Select model based on mode
+        # Fast mode (bunny): use llama3.2:3b for quick conversational responses
+        # Deep think (brain): use phi4:14b for thorough analysis
+        if use_fast_model and not deep_think:
+            model = settings.ollama_fast_model
+            temperature = 0.7
+        elif deep_think:
+            model = settings.ollama_model
+            temperature = 0.4  # Lower temp for focused reasoning
+        else:
+            model = settings.ollama_model
+            temperature = 0.7
         
         # Stop sequences to prevent LLM from generating citation/reference lists
         stop_sequences = [
@@ -716,15 +815,19 @@ Generate 3 follow-up questions:"""
         ]
         
         async with httpx.AsyncClient(timeout=timeout) as client:
-            print(f"Streaming from Ollama with model: {settings.ollama_model}")
+            mode_str = " [Deep Think]" if deep_think else (" [Fast]" if use_fast_model else "")
+            print(f"Streaming from Ollama with model: {model}{mode_str} (temp={temperature})")
             async with client.stream(
                 "POST",
                 f"{settings.ollama_base_url}/api/generate",
                 json={
-                    "model": settings.ollama_model,
+                    "model": model,
                     "prompt": f"{system_prompt}\n\n{prompt}",
                     "stream": True,
-                    "stop": stop_sequences  # Stop sequences at top level for Ollama
+                    "stop": stop_sequences,
+                    "options": {
+                        "temperature": temperature
+                    }
                 }
             ) as response:
                 async for line in response.aiter_lines():
@@ -777,5 +880,54 @@ Generate 3 follow-up questions:"""
 
         return chunks
 
+    def get_current_embedding_dim(self) -> int:
+        """Get the dimension of the current embedding model"""
+        test_embedding = self.encode("test")[0]
+        return len(test_embedding)
+
+    def check_embedding_dimension_mismatch(self) -> List[str]:
+        """Check all notebook tables for embedding dimension mismatch.
+        Returns list of notebook IDs that need re-indexing."""
+        if self.db is None:
+            self.db = lancedb.connect(str(self.db_path))
+        
+        current_dim = self.get_current_embedding_dim()
+        mismatched_notebooks = []
+        
+        for table_name in self.db.table_names():
+            if table_name.startswith("notebook_"):
+                try:
+                    table = self.db.open_table(table_name)
+                    stored_dim = self._get_stored_vector_dim(table)
+                    if stored_dim is not None and stored_dim != current_dim:
+                        notebook_id = table_name.replace("notebook_", "")
+                        mismatched_notebooks.append(notebook_id)
+                        print(f"[RAG] Dimension mismatch: {table_name} has {stored_dim}-dim vectors, current model uses {current_dim}-dim")
+                except Exception as e:
+                    print(f"[RAG] Error checking {table_name}: {e}")
+        
+        return mismatched_notebooks
+
+
 # Global instance
 rag_service = RAGEngine()
+
+
+async def check_and_reindex_on_startup():
+    """Check for embedding dimension mismatch and auto-reindex if needed.
+    Called during app startup."""
+    print("[RAG] Checking for embedding dimension mismatches...")
+    
+    mismatched = rag_service.check_embedding_dimension_mismatch()
+    
+    if not mismatched:
+        print("[RAG] All notebooks have correct embedding dimensions")
+        return
+    
+    print(f"[RAG] Found {len(mismatched)} notebooks with dimension mismatch, auto-reindexing...")
+    
+    # Import here to avoid circular imports
+    from api.reindex import reindex_all_notebooks
+    
+    result = await reindex_all_notebooks(force=True, drop_tables=True)
+    print(f"[RAG] Auto-reindex complete: {result['message']}")

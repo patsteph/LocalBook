@@ -129,14 +129,23 @@ if ! curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
 fi
 
 MODELS=$(ollama list 2>/dev/null || echo "")
-if ! echo "$MODELS" | grep -q "mistral-nemo"; then
-    echo -e "${YELLOW}Downloading mistral-nemo model (~7GB)...${NC}"
-    ollama pull mistral-nemo:12b-instruct-2407-q4_K_M
+
+# System 2: Main model for conversation and reasoning
+if ! echo "$MODELS" | grep -q "phi4:14b"; then
+    echo -e "${YELLOW}Downloading phi4:14b model (~9GB)...${NC}"
+    ollama pull phi4:14b
 fi
 
-if ! echo "$MODELS" | grep -q "phi4-mini"; then
-    echo -e "${YELLOW}Downloading phi4-mini model (~2.5GB)...${NC}"
-    ollama pull phi4-mini
+# System 1: Fast model for quick responses
+if ! echo "$MODELS" | grep -q "llama3.2:3b"; then
+    echo -e "${YELLOW}Downloading llama3.2:3b model (~2GB)...${NC}"
+    ollama pull llama3.2:3b
+fi
+
+# Embedding model
+if ! echo "$MODELS" | grep -q "nomic-embed-text"; then
+    echo -e "${YELLOW}Downloading nomic-embed-text model (~300MB)...${NC}"
+    ollama pull nomic-embed-text
 fi
 
 echo -e "${GREEN}✓ AI models ready${NC}"

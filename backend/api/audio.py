@@ -51,7 +51,29 @@ async def generate_audio(request: AudioGenerateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# NOTE: /download route must come BEFORE /{notebook_id} to avoid route conflicts
+# NOTE: Specific routes must come BEFORE /{notebook_id} to avoid route conflicts
+@router.delete("/remove/{audio_id}")
+async def delete_audio(audio_id: str):
+    """Delete an audio generation and its files"""
+    try:
+        audio_dir = settings.data_dir / "audio"
+        deleted_files = []
+        for file_path in audio_dir.glob(f"{audio_id}*"):
+            file_path.unlink()
+            deleted_files.append(str(file_path.name))
+        
+        deleted = await audio_service.delete(audio_id)
+        
+        if not deleted and not deleted_files:
+            raise HTTPException(status_code=404, detail="Audio not found")
+        
+        return {"message": "Audio deleted", "files_removed": deleted_files}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/download/{audio_id}")
 async def download_audio(audio_id: str):
     """Download audio file"""
@@ -111,3 +133,5 @@ async def get_audio(notebook_id: str, audio_id: str):
     if not audio:
         raise HTTPException(status_code=404, detail="Audio not found")
     return audio
+
+

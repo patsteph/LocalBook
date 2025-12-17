@@ -11,9 +11,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration
+from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from config import settings
 from services.model_warmup import start_warmup_task, stop_warmup_task
+from services.rag_engine import check_and_reindex_on_startup
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -23,8 +25,26 @@ async def lifespan(app: FastAPI):
     print(f"🤖 LLM Provider: {settings.llm_provider}")
     print(f"🔥 Model: {settings.ollama_model}")
     
+    # Check if this is an upgrade
+    is_upgrade, previous_version = check_if_upgrade()
+    if is_upgrade:
+        print(f"⬆️ Upgrading from v{previous_version} to v{CURRENT_VERSION}")
+        set_startup_status("upgrading", f"Upgrading from v{previous_version} to v{CURRENT_VERSION}...", 10)
+    else:
+        set_startup_status("starting", "Starting LocalBook...", 10)
+    
     # Start background task to keep models warm
+    set_startup_status("starting", "Warming up AI models...", 30)
     await start_warmup_task()
+    
+    # Check for embedding dimension mismatch and auto-reindex if needed
+    if is_upgrade:
+        set_startup_status("reindexing", "Checking embeddings compatibility...", 50)
+    await check_and_reindex_on_startup()
+    
+    # Mark startup complete
+    mark_startup_complete()
+    print(f"✅ LocalBook v{CURRENT_VERSION} ready!")
     
     yield
     
@@ -35,7 +55,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="LocalBook API",
     description="Backend API for LocalBook - Your local NotebookLM alternative",
-    version="0.1.0",
+    version=CURRENT_VERSION,
     lifespan=lifespan
 )
 
@@ -66,13 +86,15 @@ app.include_router(memory.router, tags=["memory"])
 app.include_router(graph.router, tags=["knowledge-graph"])
 app.include_router(constellation_ws.router, tags=["constellation"])
 app.include_router(updates.router, tags=["updates"])
+app.include_router(content.router, prefix="/content", tags=["content"])
+app.include_router(exploration.router, tags=["exploration"])
 
 @app.get("/")
 async def root():
     """Root endpoint"""
     return {
         "message": "LocalBook API",
-        "version": "0.1.0",
+        "version": CURRENT_VERSION,
         "docs": "/docs"
     }
 

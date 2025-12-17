@@ -42,7 +42,7 @@ httpx>=0.28.0
 keyring>=25.5.0
 dateparser>=1.2.0
 tiktoken>=0.7.0  # Token counting for memory management
-hdbscan>=0.8.33  # Clustering for knowledge graph themes
+# hdbscan>=0.8.33  # Optional fallback - sklearn.cluster.HDBSCAN is preferred (sklearn 1.3+)
 numpy>=1.26.0  # Numerical operations
 pyarrow>=14.0.0  # LanceDB data format
 

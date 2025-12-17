@@ -129,9 +129,25 @@ async fn ensure_ollama_running() {
     }
 }
 
+// Function to kill any existing backend process
+fn kill_existing_backend() {
+    // Kill any existing localbook-backend processes to avoid port conflicts
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("pkill")
+            .args(["-9", "-f", "localbook-backend"])
+            .output();
+        // Give it a moment to release the port
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
 // Function to start the backend from resources
 async fn start_backend(app_handle: &AppHandle) -> Result<Option<std::process::Child>, String> {
     println!("Attempting to start backend...");
+    
+    // Kill any existing backend first to avoid port conflicts
+    kill_existing_backend();
 
     let resource_dir = app_handle
         .path()

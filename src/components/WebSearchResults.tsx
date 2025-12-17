@@ -6,6 +6,15 @@
 import React, { useState, useEffect } from 'react';
 import { webService, WebSearchResult, ScrapedContent } from '../services/web';
 
+interface WebSource {
+    id: string;
+    title: string;
+    url: string;
+    word_count: number;
+    date_added: string;
+    type: string;
+}
+
 interface WebSearchResultsProps {
     notebookId: string;
     onContentScraped?: (content: ScrapedContent[]) => void;
@@ -28,11 +37,26 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
         }
     }, [initialQuery]);
     const [results, setResults] = useState<WebSearchResult[]>([]);
-    const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set());
     const [scrapedContent, setScrapedContent] = useState<ScrapedContent[]>([]);
     const [isSearching, setIsSearching] = useState(false);
-    const [isAddingToNotebook, setIsAddingToNotebook] = useState(false);
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
+    const [addingUrls, setAddingUrls] = useState<Set<string>>(new Set());  // Track which URLs are being added
+    const [addedUrls, setAddedUrls] = useState<Set<string>>(new Set());    // Track which URLs have been added
     const [error, setError] = useState<string | null>(null);
+    const [currentOffset, setCurrentOffset] = useState(0);
+    const [hasMore, setHasMore] = useState(false);
+    const [lastQuery, setLastQuery] = useState('');
+    const [existingSources, setExistingSources] = useState<WebSource[]>([]);
+    const [showExisting, setShowExisting] = useState(false);
+
+    // Load existing web sources when component mounts
+    useEffect(() => {
+        if (notebookId) {
+            webService.getWebSources(notebookId)
+                .then(data => setExistingSources(data.sources))
+                .catch(err => console.error('Failed to load existing sources:', err));
+        }
+    }, [notebookId]);
 
     const isUrl = (text: string): boolean => {
         try {
@@ -52,8 +76,10 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
         setIsSearching(true);
         setError(null);
         setResults([]);
-        setSelectedUrls(new Set());
+        setAddedUrls(new Set());
         setScrapedContent([]);
+        setCurrentOffset(0);
+        setHasMore(false);
 
         try {
             // Check if input is a URL
@@ -66,11 +92,13 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                     snippet: isYouTube ? 'YouTube video transcript will be extracted' : 'Content will be scraped from this URL',
                     url: url
                 }]);
-                setSelectedUrls(new Set([url]));
             } else {
                 // Regular web search
-                const response = await webService.search(query, 20);
+                const response = await webService.search(query, 20, 0);
                 setResults(response.results);
+                setHasMore(response.has_more);
+                setCurrentOffset(20);
+                setLastQuery(query);
             }
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Search failed');
@@ -79,65 +107,108 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
         }
     };
 
-    const handleToggleUrl = (url: string) => {
-        const newSelected = new Set(selectedUrls);
-        if (newSelected.has(url)) {
-            newSelected.delete(url);
-        } else {
-            newSelected.add(url);
-        }
-        setSelectedUrls(newSelected);
+    // Map offset to freshness label for UI (order: initial → pw → pm → py)
+    const getFreshnessLabel = (offset: number): string => {
+        const labels: Record<number, string> = {
+            0: 'All Time',
+            20: 'Past Week',
+            40: 'Past Month', 
+            60: 'Past Year'
+        };
+        return labels[offset] || '';
     };
 
-    const handleSelectAll = () => {
-        if (selectedUrls.size === results.length) {
-            setSelectedUrls(new Set());
-        } else {
-            setSelectedUrls(new Set(results.map(r => r.url)));
-        }
-    };
-
-    const handleAddToNotebook = async () => {
-        if (selectedUrls.size === 0) {
-            setError('Please select at least one result');
-            return;
-        }
-
-        setIsAddingToNotebook(true);
+    const handleLoadMore = async () => {
+        if (!lastQuery || isLoadingMore) return;
+        
+        setIsLoadingMore(true);
         setError(null);
 
         try {
-            // Step 1: Scrape the selected URLs
-            const response = await webService.scrape(Array.from(selectedUrls));
-            setScrapedContent(response.results);
+            const response = await webService.search(lastQuery, 20, currentOffset);
+            // Filter out duplicates by URL
+            const existingUrls = new Set(results.map(r => r.url));
+            const newResults = response.results.filter(r => !existingUrls.has(r.url));
+            setResults(prev => [...prev, ...newResults]);
+            setHasMore(response.has_more);
+            setCurrentOffset(prev => prev + 20);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to load more results');
+        } finally {
+            setIsLoadingMore(false);
+        }
+    };
 
-            // Step 2: Add successful scrapes to notebook
+    // Add single article
+    const handleAddSingle = async (url: string) => {
+        if (addingUrls.has(url) || addedUrls.has(url)) return;
+        
+        setAddingUrls(prev => new Set(prev).add(url));
+        setError(null);
+
+        try {
+            const response = await webService.scrape([url]);
             const successfulScrapes = response.results.filter(c => c.success);
 
             if (successfulScrapes.length === 0) {
-                setError('Failed to scrape any content. Please try again.');
+                setError('Failed to scrape content');
                 return;
             }
 
-            await webService.addToNotebook(
-                notebookId,
-                Array.from(selectedUrls),
-                successfulScrapes
-            );
+            await webService.addToNotebook(notebookId, [url], successfulScrapes);
+            setAddedUrls(prev => new Set(prev).add(url));
+            
+            // Don't call onAddedToNotebook for single adds - it closes the modal
+            // Only refresh sources list silently
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to add');
+        } finally {
+            setAddingUrls(prev => {
+                const next = new Set(prev);
+                next.delete(url);
+                return next;
+            });
+        }
+    };
 
-            if (onAddedToNotebook) {
-                onAddedToNotebook();
+    // Add all articles
+    const handleAddAll = async () => {
+        const urlsToAdd = results.map(r => r.url).filter(url => !addedUrls.has(url));
+        if (urlsToAdd.length === 0) return;
+        
+        setAddingUrls(new Set(urlsToAdd));
+        setError(null);
+
+        try {
+            const response = await webService.scrape(urlsToAdd);
+            setScrapedContent(response.results);
+            const successfulScrapes = response.results.filter(c => c.success);
+
+            if (successfulScrapes.length === 0) {
+                setError('Failed to scrape any content');
+                return;
             }
 
-            // Reset state after successful addition
-            setResults([]);
-            setSelectedUrls(new Set());
-            setScrapedContent([]);
-            setQuery('');
+            await webService.addToNotebook(notebookId, urlsToAdd, successfulScrapes);
+            setAddedUrls(prev => new Set([...prev, ...urlsToAdd]));
+            
+            // Don't call onAddedToNotebook - it closes the modal
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to add to notebook');
         } finally {
-            setIsAddingToNotebook(false);
+            setAddingUrls(new Set());
+        }
+    };
+
+    // Open URL in browser for preview (use Tauri opener plugin)
+    const handlePreview = async (url: string) => {
+        try {
+            const { openUrl } = await import('@tauri-apps/plugin-opener');
+            await openUrl(url);
+        } catch (e) {
+            console.error('Failed to open URL:', e);
+            // Fallback for non-Tauri environment
+            window.open(url, '_blank', 'noopener,noreferrer');
         }
     };
 
@@ -191,62 +262,122 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
             <div className="flex-1 overflow-y-auto p-4">
                 {results.length > 0 && (
                     <>
-                        {/* Action Bar */}
-                        <div className="flex items-center justify-between mb-4 p-3 bg-gray-50 dark:bg-gray-750 rounded-lg">
-                            <div className="flex items-center gap-3">
-                                <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-                                    <input
-                                        type="checkbox"
-                                        checked={selectedUrls.size === results.length}
-                                        onChange={handleSelectAll}
-                                        className="rounded border-gray-300 dark:border-gray-600"
-                                    />
-                                    <span>
-                                        {selectedUrls.size === results.length ? 'Deselect All' : 'Select All'}
-                                    </span>
-                                </label>
-                                <span className="text-xs text-gray-500 dark:text-gray-400">
-                                    ({selectedUrls.size} of {results.length} selected)
-                                </span>
-                            </div>
-
+                        {/* Compact Action Bar */}
+                        <div className="flex items-center justify-between mb-3 text-xs text-gray-500 dark:text-gray-400">
                             <button
-                                onClick={handleAddToNotebook}
-                                disabled={selectedUrls.size === 0 || isAddingToNotebook}
-                                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded text-sm font-medium transition-colors"
+                                onClick={handleAddAll}
+                                disabled={addingUrls.size > 0 || addedUrls.size === results.length}
+                                className="flex items-center gap-1.5 hover:text-blue-600 dark:hover:text-blue-400 disabled:opacity-50 disabled:cursor-not-allowed group"
+                                title="Scrapes and adds all results to your notebook sources"
                             >
-                                {isAddingToNotebook ? 'Adding to Notebook...' : 'Add to Notebook'}
+                                <span className="w-5 h-5 flex items-center justify-center rounded bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 group-hover:bg-blue-200 dark:group-hover:bg-blue-900/50 text-sm font-bold">+</span>
+                                <span>Add All</span>
+                                <span className="text-gray-400">({results.length - addedUrls.size} remaining)</span>
                             </button>
+                            <span>
+                                {currentOffset > 20 ? `${getFreshnessLabel(0)} + ${getFreshnessLabel(20)}${currentOffset > 40 ? ` + ${getFreshnessLabel(40)}` : ''}` : `${results.length} results`}
+                            </span>
                         </div>
 
                         {/* Search Results List */}
                         <div className="space-y-2">
                             {results.map((result, idx) => (
-                                <label
+                                <div
                                     key={idx}
-                                    className="flex gap-3 p-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-750 cursor-pointer transition-colors"
+                                    className={`flex gap-3 p-3 border rounded-lg transition-colors ${
+                                        addedUrls.has(result.url)
+                                            ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+                                            : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-750'
+                                    }`}
                                 >
-                                    <input
-                                        type="checkbox"
-                                        checked={selectedUrls.has(result.url)}
-                                        onChange={() => handleToggleUrl(result.url)}
-                                        className="mt-1 rounded border-gray-300 dark:border-gray-600"
-                                    />
+                                    {/* Add Button */}
+                                    <button
+                                        onClick={() => handleAddSingle(result.url)}
+                                        disabled={addingUrls.has(result.url) || addedUrls.has(result.url)}
+                                        className={`w-6 h-6 flex-shrink-0 flex items-center justify-center rounded text-sm font-bold transition-all ${
+                                            addedUrls.has(result.url)
+                                                ? 'bg-green-500 text-white cursor-default'
+                                                : addingUrls.has(result.url)
+                                                ? 'bg-blue-200 dark:bg-blue-800 text-blue-600 dark:text-blue-300 animate-pulse'
+                                                : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 hover:text-blue-600 dark:hover:text-blue-400'
+                                        }`}
+                                        title={addedUrls.has(result.url) ? 'Added' : 'Add to notebook'}
+                                    >
+                                        {addedUrls.has(result.url) ? '✓' : addingUrls.has(result.url) ? '...' : '+'}
+                                    </button>
+                                    
+                                    {/* Content - click title to preview */}
                                     <div className="flex-1 min-w-0">
-                                        <p className="font-medium text-blue-700 dark:text-blue-400 text-sm mb-1">
+                                        <button
+                                            onClick={() => handlePreview(result.url)}
+                                            className="font-medium text-blue-700 dark:text-blue-400 text-sm mb-1 hover:underline text-left"
+                                        >
                                             {result.title}
-                                        </p>
-                                        <p className="text-xs text-gray-600 dark:text-gray-400 mb-1">
-                                            {result.snippet}
-                                        </p>
+                                        </button>
+                                        <p className="text-xs text-gray-600 dark:text-gray-400 mb-1" dangerouslySetInnerHTML={{ __html: result.snippet }} />
                                         <p className="text-xs text-gray-500 dark:text-gray-500 truncate">
                                             {result.url}
                                         </p>
                                     </div>
-                                </label>
+                                </div>
                             ))}
                         </div>
+
+                        {/* Load More Button */}
+                        {hasMore && (
+                            <div className="mt-4 text-center">
+                                <button
+                                    onClick={handleLoadMore}
+                                    disabled={isLoadingMore}
+                                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                                >
+                                    {isLoadingMore ? 'Loading...' : `Load More (${getFreshnessLabel(currentOffset)})`}
+                                </button>
+                            </div>
+                        )}
+
                     </>
+                )}
+
+                {/* Existing Web Sources */}
+                {existingSources.length > 0 && results.length === 0 && !isSearching && (
+                    <div className="mb-4">
+                        <button
+                            onClick={() => setShowExisting(!showExisting)}
+                            className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
+                        >
+                            <svg 
+                                className={`w-4 h-4 transition-transform ${showExisting ? 'rotate-90' : ''}`} 
+                                fill="none" 
+                                stroke="currentColor" 
+                                viewBox="0 0 24 24"
+                            >
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                            Previously Added ({existingSources.length} web sources)
+                        </button>
+                        
+                        {showExisting && (
+                            <div className="space-y-2 pl-6">
+                                {existingSources.map((source) => (
+                                    <div
+                                        key={source.id}
+                                        className="p-2 bg-gray-50 dark:bg-gray-750 border border-gray-200 dark:border-gray-700 rounded text-xs"
+                                    >
+                                        <p className="font-medium text-gray-800 dark:text-gray-200 truncate">
+                                            {source.title}
+                                        </p>
+                                        <p className="text-gray-500 dark:text-gray-400 truncate">
+                                            {source.url}
+                                        </p>
+                                        <p className="text-gray-400 dark:text-gray-500 mt-1">
+                                            {source.word_count.toLocaleString()} words • {source.type}
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
                 )}
 
                 {/* Empty State */}

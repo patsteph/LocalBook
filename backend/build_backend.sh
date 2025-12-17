@@ -100,7 +100,7 @@ pyinstaller \
     --collect-all=whisper \
     --collect-data=lancedb \
     --collect-data=tiktoken \
-    --hidden-import=hdbscan \
+    --hidden-import=sklearn.cluster \
     --hidden-import=trafilatura \
     --hidden-import=httpx \
     --hidden-import=youtube_transcript_api \

@@ -11,7 +11,52 @@ import os
 router = APIRouter(prefix="/updates", tags=["updates"])
 
 # Current version - update this when releasing new versions
-CURRENT_VERSION = "0.1.1"
+CURRENT_VERSION = "0.2.0"
+
+# Track startup state
+_startup_state = {
+    "status": "starting",  # starting, upgrading, reindexing, ready
+    "message": "Starting LocalBook...",
+    "progress": 0,
+    "previous_version": None,
+    "is_upgrade": False
+}
+
+def get_stored_version() -> Optional[str]:
+    """Get the previously stored version from data directory"""
+    version_file = Path("data/.version")
+    if version_file.exists():
+        return version_file.read_text().strip()
+    return None
+
+def store_current_version():
+    """Store the current version to data directory"""
+    version_file = Path("data/.version")
+    version_file.parent.mkdir(parents=True, exist_ok=True)
+    version_file.write_text(CURRENT_VERSION)
+
+def check_if_upgrade() -> tuple[bool, Optional[str]]:
+    """Check if this is an upgrade from a previous version"""
+    previous = get_stored_version()
+    if previous is None:
+        # First run or no version file
+        return False, None
+    if previous != CURRENT_VERSION:
+        return True, previous
+    return False, previous
+
+def set_startup_status(status: str, message: str, progress: int = 0):
+    """Update the startup status"""
+    _startup_state["status"] = status
+    _startup_state["message"] = message
+    _startup_state["progress"] = progress
+
+def mark_startup_complete():
+    """Mark startup as complete and store version"""
+    _startup_state["status"] = "ready"
+    _startup_state["message"] = "LocalBook is ready"
+    _startup_state["progress"] = 100
+    store_current_version()
 
 # GitHub repo info
 GITHUB_OWNER = "patsteph"  # Update with your GitHub username
@@ -84,6 +129,28 @@ async def check_for_updates():
 async def get_current_version():
     """Get the current version"""
     return {"version": CURRENT_VERSION}
+
+
+class StartupStatus(BaseModel):
+    status: str  # starting, upgrading, reindexing, ready
+    message: str
+    progress: int
+    current_version: str
+    previous_version: Optional[str] = None
+    is_upgrade: bool = False
+
+
+@router.get("/startup-status", response_model=StartupStatus)
+async def get_startup_status():
+    """Get the current startup status for splash screen"""
+    return StartupStatus(
+        status=_startup_state["status"],
+        message=_startup_state["message"],
+        progress=_startup_state["progress"],
+        current_version=CURRENT_VERSION,
+        previous_version=_startup_state["previous_version"],
+        is_upgrade=_startup_state["is_upgrade"]
+    )
 
 
 @router.post("/pull", response_model=UpdateResult)

@@ -415,6 +415,10 @@ Generate a {skill_name} formatted as a {duration_minutes}-minute audio narration
     async def get_by_id(self, audio_id: str) -> Optional[Dict]:
         """Get audio file info by ID only"""
         return await audio_store.get(audio_id)
+    
+    async def delete(self, audio_id: str) -> bool:
+        """Delete audio generation record"""
+        return await audio_store.delete(audio_id)
 
 
 audio_service = AudioGenerator()

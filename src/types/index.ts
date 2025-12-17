@@ -60,6 +60,7 @@ export interface ChatQuery {
   top_k?: number;
   enable_web_search?: boolean;
   llm_provider?: string;
+  deep_think?: boolean;  // Enable Deep Think mode with chain-of-thought reasoning
 }
 
 export interface ChatResponse {

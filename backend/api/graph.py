@@ -208,6 +208,87 @@ async def list_clusters(notebook_id: Optional[str] = None):
     }
 
 
+@router.get("/themes/{notebook_id}")
+async def get_notebook_themes(notebook_id: str, limit: int = 10):
+    """
+    Get key themes discovered in a notebook.
+    Returns deduplicated clusters with their associated concept names for display.
+    """
+    graph_data = await knowledge_graph_service.get_graph_data(
+        notebook_id=notebook_id,
+        include_clusters=True
+    )
+    
+    # Build concept lookup
+    concept_lookup = {node.id: node.label for node in graph_data.nodes if node.type == "concept"}
+    
+    # Deduplicate clusters by name - merge concepts from clusters with same name
+    merged_themes: Dict[str, Dict[str, Any]] = {}
+    for cluster in graph_data.clusters:
+        name = (cluster.name or "").strip().lower()
+        if not name:
+            continue
+            
+        if name not in merged_themes:
+            merged_themes[name] = {
+                "id": cluster.id,
+                "name": cluster.name,
+                "description": cluster.description,
+                "concept_ids": set(cluster.concept_ids),
+                "coherence_score": cluster.coherence_score
+            }
+        else:
+            # Merge concepts from duplicate cluster
+            merged_themes[name]["concept_ids"].update(cluster.concept_ids)
+            # Keep higher coherence score
+            if cluster.coherence_score > merged_themes[name]["coherence_score"]:
+                merged_themes[name]["coherence_score"] = cluster.coherence_score
+                merged_themes[name]["description"] = cluster.description
+    
+    # Build final themes list
+    themes = []
+    for theme_data in merged_themes.values():
+        concept_ids = list(theme_data["concept_ids"])
+        # Only include concepts that have names (filter out orphaned IDs)
+        concept_names = [concept_lookup[cid] for cid in concept_ids if cid in concept_lookup][:10]
+        if not concept_names:
+            continue  # Skip themes with no resolvable concepts
+        
+        # Clean theme name - remove trailing punctuation and quotes
+        theme_name = (theme_data["name"] or "").rstrip('.,;:!?').strip('"\'')
+        
+        themes.append({
+            "id": theme_data["id"],
+            "name": theme_name,
+            "description": theme_data["description"],
+            "concepts": concept_names,
+            "concept_count": len([cid for cid in concept_ids if cid in concept_lookup]),
+            "coherence_score": theme_data["coherence_score"]
+        })
+    
+    # Sort by concept count (most to least) and limit
+    themes = sorted(themes, key=lambda t: t["concept_count"], reverse=True)[:limit]
+    
+    # Also get top standalone concepts not in clusters
+    clustered_concept_ids = set()
+    for c in graph_data.clusters:
+        clustered_concept_ids.update(c.concept_ids)
+    
+    top_concepts = [
+        {"id": node.id, "name": node.label, "size": node.size}
+        for node in sorted(graph_data.nodes, key=lambda n: n.size, reverse=True)
+        if node.type == "concept" and node.id not in clustered_concept_ids
+    ][:20]
+    
+    return {
+        "notebook_id": notebook_id,
+        "themes": themes,
+        "theme_count": len(themes),
+        "top_concepts": top_concepts,
+        "total_concepts": len([n for n in graph_data.nodes if n.type == "concept"])
+    }
+
+
 # =============================================================================
 # Stats
 # =============================================================================
@@ -339,3 +420,22 @@ async def build_graph_for_notebook(notebook_id: str, background_tasks: Backgroun
         "status": "running",
         "sources": len(sources)
     }
+
+
+@router.delete("/reset/{notebook_id}")
+async def reset_knowledge_graph(notebook_id: str):
+    """
+    Reset the knowledge graph for a notebook.
+    Clears all concepts, links, and clusters to allow a fresh rebuild.
+    """
+    try:
+        # Clear concepts for this notebook
+        concepts_cleared = await knowledge_graph_service.clear_notebook_data(notebook_id)
+        
+        return {
+            "success": True,
+            "message": f"Knowledge graph reset for notebook {notebook_id}",
+            "concepts_cleared": concepts_cleared
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

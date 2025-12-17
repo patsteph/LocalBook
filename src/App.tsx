@@ -12,12 +12,17 @@ import { LLMSelector } from './components/LLMSelector';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
 import { Timeline } from './components/Timeline';
 import { Constellation3D } from './components/Constellation3D';
+import { ThemesPanel } from './components/ThemesPanel';
+import { ExplorationPanel } from './components/ExplorationPanel';
 
 function App() {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
   const [backendStatusMessage, setBackendStatusMessage] = useState<string>('Initializing backend services...');
+  const [startupProgress, setStartupProgress] = useState(0);
+  const [isUpgrade, setIsUpgrade] = useState(false);
+  const [currentVersion, setCurrentVersion] = useState<string | null>(null);
   const [refreshSources, setRefreshSources] = useState(0);
   const [refreshNotebooks, setRefreshNotebooks] = useState(0);
   const [darkMode, setDarkMode] = useState(false);
@@ -33,16 +38,10 @@ function App() {
     return localStorage.getItem('llmProvider') || 'ollama';
   });
   const [activeTab, setActiveTab] = useState<'chat' | 'constellation' | 'timeline'>('chat');
+  const [insightTab, setInsightTab] = useState<'themes' | 'journey'>('themes');
   const [chatPrefillQuery, setChatPrefillQuery] = useState<string>('');
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
 
-  // Handler for "Ask about this" from Constellation
-  const handleAskAboutConcept = (query: string) => {
-    setChatPrefillQuery(query);
-    setActiveTab('chat');
-    // Clear prefill after a short delay so it can be used again
-    setTimeout(() => setChatPrefillQuery(''), 100);
-  };
 
   useEffect(() => {
     // Check for saved theme preference
@@ -85,6 +84,22 @@ function App() {
           // Ignore status errors (older builds/dev)
         }
 
+        // Also try to get startup status from backend API for upgrade info
+        try {
+          const response = await fetch('http://localhost:8000/updates/startup-status');
+          if (response.ok) {
+            const startupStatus = await response.json();
+            setStartupProgress(startupStatus.progress);
+            setIsUpgrade(startupStatus.is_upgrade);
+            setCurrentVersion(startupStatus.current_version);
+            if (startupStatus.message) {
+              setBackendStatusMessage(startupStatus.message);
+            }
+          }
+        } catch {
+          // Backend not ready yet
+        }
+
         const ready = await invoke<boolean>('is_backend_ready');
         if (ready) {
           setBackendReady(true);
@@ -122,12 +137,32 @@ function App() {
   if (!backendReady) {
     return (
       <div className="h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-center">
+        <div className="text-center max-w-md">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">Starting LocalBookLM</h2>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">
+            {isUpgrade ? '⬆️ Upgrading LocalBook' : 'Starting LocalBook'}
+          </h2>
+          {currentVersion && (
+            <p className="text-sm text-blue-600 mb-2">v{currentVersion}</p>
+          )}
           <p className="text-gray-600">{backendStatusMessage}</p>
+          {startupProgress > 0 && (
+            <div className="mt-4 w-full bg-gray-200 rounded-full h-2">
+              <div 
+                className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                style={{ width: `${startupProgress}%` }}
+              />
+            </div>
+          )}
+          {isUpgrade && (
+            <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <p className="text-sm text-blue-800">
+                Checking for embedding compatibility and applying updates...
+              </p>
+            </div>
+          )}
           {backendError && (
-            <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg max-w-md mx-auto">
+            <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
               <p className="text-sm text-yellow-800">{backendError}</p>
             </div>
           )}
@@ -332,12 +367,69 @@ function App() {
                 prefillQuery={chatPrefillQuery}
               />
             </div>
-            <div className={`absolute inset-0 ${activeTab === 'constellation' ? 'block' : 'hidden'}`}>
-              <Constellation3D 
-                notebookId={selectedNotebookId}
-                selectedSourceId={selectedSourceId}
-                onAskAboutConcept={handleAskAboutConcept}
-              />
+            <div className={`absolute inset-0 ${activeTab === 'constellation' ? 'flex' : 'hidden'}`}>
+              {/* Insights Sidebar with Tabs */}
+              <div className="w-72 border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex-shrink-0 overflow-hidden flex flex-col">
+                {/* Sidebar Tabs */}
+                <div className="flex border-b border-gray-200 dark:border-gray-700">
+                  <button
+                    onClick={() => setInsightTab('themes')}
+                    className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+                      insightTab === 'themes'
+                        ? 'text-purple-600 dark:text-purple-400 border-b-2 border-purple-600'
+                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+                    }`}
+                  >
+                    🎯 Themes
+                  </button>
+                  <button
+                    onClick={() => setInsightTab('journey')}
+                    className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+                      insightTab === 'journey'
+                        ? 'text-blue-600 dark:text-blue-400 border-b-2 border-blue-600'
+                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+                    }`}
+                  >
+                    🧭 Journey
+                  </button>
+                </div>
+                {/* Panel Content */}
+                <div className="flex-1 overflow-hidden">
+                  {insightTab === 'themes' ? (
+                    <ThemesPanel 
+                      notebookId={selectedNotebookId}
+                      onConceptClick={(concept, relatedConcepts) => {
+                        // Generate a rich question like the old "Ask about this" did
+                        const query = relatedConcepts && relatedConcepts.length > 0
+                          ? `Tell me about ${concept} and how it relates to ${relatedConcepts.join(', ')}`
+                          : `Tell me about ${concept}`;
+                        setChatPrefillQuery(query);
+                        setActiveTab('chat');
+                      }}
+                    />
+                  ) : (
+                    <ExplorationPanel
+                      notebookId={selectedNotebookId}
+                      onQueryClick={(query) => {
+                        setChatPrefillQuery(query);
+                        setActiveTab('chat');
+                      }}
+                      onTopicClick={(topic) => {
+                        setChatPrefillQuery(`Tell me more about ${topic}`);
+                        setActiveTab('chat');
+                      }}
+                    />
+                  )}
+                </div>
+              </div>
+              {/* 3D Visualization */}
+              <div className="flex-1 relative">
+                <Constellation3D 
+                  notebookId={selectedNotebookId}
+                  selectedSourceId={selectedSourceId}
+                  rightSidebarCollapsed={rightSidebarCollapsed}
+                />
+              </div>
             </div>
             <div className={`absolute inset-0 ${activeTab === 'timeline' ? 'block' : 'hidden'}`}>
               <Timeline notebookId={selectedNotebookId} sourcesRefreshTrigger={refreshSources} />

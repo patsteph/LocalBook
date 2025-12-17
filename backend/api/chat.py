@@ -17,6 +17,7 @@ class ChatQuery(BaseModel):
     top_k: Optional[int] = 4  # Reduced from 5 for faster LLM response
     enable_web_search: Optional[bool] = False
     llm_provider: Optional[str] = None
+    deep_think: Optional[bool] = False  # Enable Deep Think mode with chain-of-thought reasoning
 
 
 class WebSource(BaseModel):
@@ -81,7 +82,8 @@ async def query_stream(chat_query: ChatQuery):
                 question=chat_query.question,
                 source_ids=chat_query.source_ids,
                 top_k=chat_query.top_k or 4,
-                llm_provider=chat_query.llm_provider
+                llm_provider=chat_query.llm_provider,
+                deep_think=chat_query.deep_think or False
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as e:

@@ -17,6 +17,7 @@ interface ChatInterfaceProps {
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmProvider, onOpenWebSearch, prefillQuery }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
+  const [deepThink, setDeepThink] = useState(false);  // Deep Think mode toggle
   
   // Handle prefill from external sources
   useEffect(() => {
@@ -194,6 +195,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
           top_k: 5,
           enable_web_search: false,
           llm_provider: llmProvider,
+          deep_think: deepThink,
         },
         {
           onCitations: (citations, _sources, lowConfidence) => {
@@ -475,12 +477,43 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       {/* Input area */}
       <div className="border-t dark:border-gray-700 p-4 bg-white dark:bg-gray-800 flex-shrink-0">
         <form onSubmit={handleSubmit}>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
+            {/* Quick/Deep Toggle - Rabbit vs Brain */}
+            <div 
+              className="relative flex items-center bg-gray-100 dark:bg-gray-700 rounded-full p-0.5"
+              title={deepThink ? "Deep Think: Thorough analysis (slower)" : "Quick: Fast, concise responses"}
+            >
+              <button
+                type="button"
+                onClick={() => setDeepThink(false)}
+                disabled={!notebookId || loading}
+                className={`px-2.5 py-1.5 rounded-full text-lg transition-all ${
+                  !deepThink
+                    ? 'bg-white dark:bg-gray-600 shadow-sm'
+                    : 'hover:bg-gray-200 dark:hover:bg-gray-600'
+                } disabled:opacity-50`}
+              >
+                🐇
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeepThink(true)}
+                disabled={!notebookId || loading}
+                className={`px-2.5 py-1.5 rounded-full text-lg transition-all ${
+                  deepThink
+                    ? 'bg-purple-500 shadow-sm'
+                    : 'hover:bg-gray-200 dark:hover:bg-gray-600'
+                } disabled:opacity-50`}
+              >
+                🧠
+              </button>
+            </div>
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder={notebookId ? "Ask a question..." : "Select a notebook first"}
+              title={deepThink ? "Deep Think mode: AI will analyze step-by-step for thorough answers" : "Quick mode: Fast, concise responses"}
               disabled={!notebookId || loading}
               className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-700 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
             />

@@ -18,42 +18,42 @@ interface EmbeddingModel {
 
 const EMBEDDING_MODELS: EmbeddingModel[] = [
   {
-    id: 'all-MiniLM-L6-v2',
-    name: 'Fast',
-    description: 'Fastest inference, good for large collections',
-    dimensions: 384,
-    size: '80MB',
-    icon: '⚡',
-  },
-  {
-    id: 'BAAI/bge-small-en-v1.5',
-    name: 'Balanced',
-    description: 'Best speed/quality tradeoff (Default)',
-    dimensions: 384,
-    size: '130MB',
+    id: 'nomic-embed-text',
+    name: 'Nomic Embed',
+    description: 'High quality via Ollama, 8K context (Default)',
+    dimensions: 768,
+    size: '274MB',
     icon: '⭐',
     isDefault: true,
   },
   {
-    id: 'BAAI/bge-base-en-v1.5',
-    name: 'Best Quality',
-    description: 'Highest accuracy for English documents',
-    dimensions: 768,
-    size: '430MB',
+    id: 'mxbai-embed-large',
+    name: 'MixedBread Large',
+    description: 'Best quality, outperforms OpenAI ada-002',
+    dimensions: 1024,
+    size: '670MB',
     icon: '🎯',
   },
   {
-    id: 'paraphrase-multilingual-MiniLM-L12-v2',
-    name: 'Multilingual',
-    description: 'Supports 50+ languages',
+    id: 'all-minilm',
+    name: 'MiniLM Fast',
+    description: 'Fastest inference via Ollama',
     dimensions: 384,
-    size: '420MB',
-    icon: '🌍',
+    size: '46MB',
+    icon: '⚡',
+  },
+  {
+    id: 'snowflake-arctic-embed',
+    name: 'Snowflake Arctic',
+    description: 'Excellent for retrieval tasks',
+    dimensions: 1024,
+    size: '670MB',
+    icon: '❄️',
   },
 ];
 
 export const EmbeddingSelector: React.FC<EmbeddingSelectorProps> = ({ notebookId, onModelChange }) => {
-  const [currentModel, setCurrentModel] = useState<string>('BAAI/bge-small-en-v1.5');
+  const [currentModel, setCurrentModel] = useState<string>('nomic-embed-text');
   const [loading, setLoading] = useState(true);
   const [changing, setChanging] = useState(false);
   const [reembedding, setReembedding] = useState(false);
@@ -79,7 +79,7 @@ export const EmbeddingSelector: React.FC<EmbeddingSelectorProps> = ({ notebookId
     } catch (err) {
       console.error('Failed to load current model:', err);
       // Default to the default model if loading fails
-      setCurrentModel('BAAI/bge-small-en-v1.5');
+      setCurrentModel('nomic-embed-text');
     } finally {
       setLoading(false);
     }

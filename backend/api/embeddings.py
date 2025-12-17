@@ -17,19 +17,19 @@ async def get_current_model(notebook_id: str):
         if not notebook:
             raise HTTPException(status_code=404, detail="Notebook not found")
 
-        # Get model from notebook metadata or use default
-        model_name = notebook.get("embedding_model", "BAAI/bge-small-en-v1.5")
+        # Get model from notebook metadata or use default (nomic-embed-text via Ollama)
+        model_name = notebook.get("embedding_model", "nomic-embed-text")
         needs_reembedding = notebook.get("needs_reembedding", False)
 
         # Get model dimensions based on model name
         dimensions_map = {
-            "all-MiniLM-L6-v2": 384,
-            "BAAI/bge-small-en-v1.5": 384,
-            "BAAI/bge-base-en-v1.5": 768,
-            "paraphrase-multilingual-MiniLM-L12-v2": 384,
+            "nomic-embed-text": 768,
+            "mxbai-embed-large": 1024,
+            "all-minilm": 384,
+            "snowflake-arctic-embed": 1024,
         }
 
-        dimensions = dimensions_map.get(model_name, 384)
+        dimensions = dimensions_map.get(model_name, 768)
 
         return {
             "model_name": model_name,
