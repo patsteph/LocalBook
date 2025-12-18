@@ -497,6 +497,7 @@ function App() {
             notebookId={selectedNotebookId}
             onContentScraped={() => {}}
             onAddedToNotebook={handleContentAddedToNotebook}
+            onSourceAdded={() => setRefreshSources(prev => prev + 1)}
             initialQuery={webSearchInitialQuery}
           />
         )}

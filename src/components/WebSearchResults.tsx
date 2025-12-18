@@ -19,6 +19,7 @@ interface WebSearchResultsProps {
     notebookId: string;
     onContentScraped?: (content: ScrapedContent[]) => void;
     onAddedToNotebook?: () => void;
+    onSourceAdded?: () => void;  // Called when a source is added (doesn't close modal)
     initialQuery?: string;
 }
 
@@ -26,6 +27,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
     notebookId,
     onContentScraped,
     onAddedToNotebook,
+    onSourceAdded,
     initialQuery = '',
 }) => {
     const [query, setQuery] = useState(initialQuery);
@@ -158,8 +160,10 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
             await webService.addToNotebook(notebookId, [url], successfulScrapes);
             setAddedUrls(prev => new Set(prev).add(url));
             
-            // Don't call onAddedToNotebook for single adds - it closes the modal
-            // Only refresh sources list silently
+            // Refresh sources list without closing modal
+            if (onSourceAdded) {
+                onSourceAdded();
+            }
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to add');
         } finally {

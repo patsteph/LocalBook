@@ -369,12 +369,25 @@ async def build_graph_for_notebook(notebook_id: str, background_tasks: Backgroun
         total_chunks = 0
         processed_chunks = 0
         
+        print(f"[KG Build] Starting build for notebook {notebook_id} with {len(sources)} sources")
+        
         # First, count total chunks to process
+        sources_with_content = 0
         for source in sources:
             content = source.get("content", "")
             if content:
+                sources_with_content += 1
                 chunks = rag_service._chunk_text(content)
                 total_chunks += len([c for i, c in enumerate(chunks) if i % 3 == 0])
+            else:
+                print(f"[KG Build] Source {source.get('filename', 'unknown')} has no content field")
+        
+        print(f"[KG Build] Found {sources_with_content} sources with content, {total_chunks} chunks to process")
+        
+        if total_chunks == 0:
+            print(f"[KG Build] No chunks to process - aborting")
+            await notify_build_complete()
+            return
         
         for source in sources:
             content = source.get("content", "")
