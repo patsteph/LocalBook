@@ -1,16 +1,65 @@
 """Application configuration"""
 import os
+import sys
 from pathlib import Path
 from pydantic_settings import BaseSettings
+
+def get_data_directory() -> Path:
+    """Get the appropriate data directory based on environment.
+    
+    - Development: ./data (relative to project)
+    - Production (bundled app): ~/Library/Application Support/LocalBook/
+    """
+    # Check if running as a bundled PyInstaller app
+    if getattr(sys, 'frozen', False):
+        # Running as bundled app - use Application Support
+        app_support = Path.home() / "Library" / "Application Support" / "LocalBook"
+        
+        # Auto-migrate from old bundle location if needed
+        _migrate_old_data(app_support)
+        
+        return app_support
+    else:
+        # Development mode - use relative path
+        return Path("data")
+
+
+def _migrate_old_data(new_data_dir: Path) -> None:
+    """Migrate data from old bundle location to Application Support.
+    
+    This handles users upgrading from versions that stored data inside the app bundle.
+    """
+    import shutil
+    
+    # Only migrate if new location is empty/missing
+    if new_data_dir.exists() and any(new_data_dir.iterdir()):
+        return  # Already has data, don't overwrite
+    
+    # Check for old data in bundle location (relative to frozen executable)
+    old_data_dir = Path(sys.executable).parent / "data"
+    
+    if old_data_dir.exists() and any(old_data_dir.iterdir()):
+        print(f"[Config] Migrating data from {old_data_dir} to {new_data_dir}")
+        try:
+            new_data_dir.mkdir(parents=True, exist_ok=True)
+            for item in old_data_dir.iterdir():
+                dest = new_data_dir / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, dest)
+            print(f"[Config] Migration complete!")
+        except Exception as e:
+            print(f"[Config] Migration failed: {e}")
 
 class Settings(BaseSettings):
     # API settings
     api_port: int = 8000
     api_host: str = "127.0.0.1"
 
-    # Data paths
-    data_dir: Path = Path("data")
-    db_path: Path = Path("data/lancedb")
+    # Data paths - computed based on environment
+    data_dir: Path = get_data_directory()
+    db_path: Path = get_data_directory() / "lancedb"
 
     # LLM settings
     llm_provider: str = "ollama"  # ollama, openai, or anthropic

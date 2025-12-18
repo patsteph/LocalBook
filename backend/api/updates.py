@@ -24,14 +24,16 @@ _startup_state = {
 
 def get_stored_version() -> Optional[str]:
     """Get the previously stored version from data directory"""
-    version_file = Path("data/.version")
+    from config import settings
+    version_file = settings.data_dir / ".version"
     if version_file.exists():
         return version_file.read_text().strip()
     return None
 
 def store_current_version():
     """Store the current version to data directory"""
-    version_file = Path("data/.version")
+    from config import settings
+    version_file = settings.data_dir / ".version"
     version_file.parent.mkdir(parents=True, exist_ok=True)
     version_file.write_text(CURRENT_VERSION)
 

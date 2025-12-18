@@ -105,6 +105,7 @@ npm run tauri build
 # Copy app to easy location
 APP_PATH="src-tauri/target/release/bundle/macos/LocalBook.app"
 if [ -d "$APP_PATH" ]; then
+    rm -rf "./LocalBook.app"
     cp -r "$APP_PATH" "./LocalBook.app"
 fi
 
