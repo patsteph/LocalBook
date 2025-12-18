@@ -69,6 +69,104 @@ async fn check_ollama() -> bool {
     }
 }
 
+// Function to check if a model is available in Ollama
+async fn check_model_available(model_name: &str) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+    
+    let response = client
+        .get("http://localhost:11434/api/tags")
+        .send()
+        .await;
+    
+    match response {
+        Ok(resp) => {
+            if let Ok(text) = resp.text().await {
+                // Check if model name appears in the response
+                text.contains(model_name)
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
+
+// Function to pull a model from Ollama
+async fn pull_ollama_model(model_name: &str) -> Result<(), String> {
+    println!("Pulling Ollama model: {}", model_name);
+    
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(600)) // 10 min timeout for large models
+        .build()
+        .map_err(|e| format!("Failed to create client: {}", e))?;
+    
+    let response = client
+        .post("http://localhost:11434/api/pull")
+        .json(&serde_json::json!({
+            "name": model_name,
+            "stream": false
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to pull model: {}", e))?;
+    
+    if response.status().is_success() {
+        println!("Successfully pulled model: {}", model_name);
+        Ok(())
+    } else {
+        Err(format!("Failed to pull model {}: HTTP {}", model_name, response.status()))
+    }
+}
+
+// Required models for LocalBook
+const REQUIRED_MODELS: &[(&str, &str)] = &[
+    ("phi4:14b", "Main AI model (~9GB)"),
+    ("llama3.2:3b", "Fast AI model (~2GB)"),
+    ("nomic-embed-text", "Embedding model (~300MB)"),
+];
+
+// Function to ensure all required models are available
+async fn ensure_required_models(status_ref: &Arc<Mutex<BackendStatus>>) {
+    println!("Checking required AI models...");
+    
+    for (model_name, description) in REQUIRED_MODELS {
+        if let Ok(mut status) = status_ref.lock() {
+            status.stage = "checking_models".to_string();
+            status.message = format!("Checking {}...", description);
+        }
+        
+        if !check_model_available(model_name).await {
+            println!("Model {} not found, downloading...", model_name);
+            
+            if let Ok(mut status) = status_ref.lock() {
+                status.stage = "downloading_model".to_string();
+                status.message = format!("Downloading {} (this may take several minutes)...", description);
+            }
+            
+            match pull_ollama_model(model_name).await {
+                Ok(_) => {
+                    println!("Model {} downloaded successfully", model_name);
+                }
+                Err(e) => {
+                    eprintln!("Failed to download model {}: {}", model_name, e);
+                    if let Ok(mut status) = status_ref.lock() {
+                        status.last_error = Some(format!("Failed to download {}: {}", model_name, e));
+                    }
+                }
+            }
+        } else {
+            println!("Model {} is available", model_name);
+        }
+    }
+    
+    println!("Model check complete");
+}
+
 // Function to start Ollama if not running
 async fn ensure_ollama_running() {
     if check_ollama().await {
@@ -263,6 +361,9 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
         }
         // Ensure Ollama is running first
         ensure_ollama_running().await;
+
+        // Check and download required models
+        ensure_required_models(&status_ref).await;
 
         if let Ok(mut status) = status_ref.lock() {
             status.stage = "starting_backend".to_string();
