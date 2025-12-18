@@ -16,7 +16,7 @@ import asyncio
 router = APIRouter(prefix="/updates", tags=["updates"])
 
 # Current version - update this when releasing new versions
-CURRENT_VERSION = "0.2.3"
+CURRENT_VERSION = "0.2.4"
 
 # Track startup state
 _startup_state = {

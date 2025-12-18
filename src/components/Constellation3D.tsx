@@ -85,10 +85,9 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
   const wsRef = useRef<WebSocket | null>(null);
   const notebookIdRef = useRef<string | null>(notebookId);
   
-  // Keep ref in sync with prop
-  useEffect(() => {
-    notebookIdRef.current = notebookId;
-  }, [notebookId]);
+  // Keep ref in sync with prop - update synchronously during render
+  // This ensures the ref is always current when WebSocket callbacks fire
+  notebookIdRef.current = notebookId;
   
   // Simplified - always use current notebook
   const crossNotebook = false;
@@ -885,9 +884,11 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
   };
 
   const loadGraph = async () => {
+    // Use ref to get current notebook ID (avoids stale closure issues)
+    const currentNotebookId = notebookIdRef.current;
+    
     // Don't load if no notebook selected
-    if (!notebookId && !crossNotebook) {
-      console.log('[Constellation] No notebook selected, skipping load');
+    if (!currentNotebookId && !crossNotebook) {
       return;
     }
     
@@ -902,7 +903,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
       
       const endpoint = crossNotebook 
         ? `${API_BASE}/graph/all?${params}`
-        : `${API_BASE}/graph/notebook/${notebookId}?${params}`;
+        : `${API_BASE}/graph/notebook/${currentNotebookId}?${params}`;
       
       console.log('[Constellation] Loading graph from:', endpoint);
       const response = await fetch(endpoint);
