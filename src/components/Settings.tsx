@@ -84,11 +84,19 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
         update_available: boolean;
         release_notes?: string;
         download_url?: string;
+        asset_download_url?: string;
         error?: string;
     } | null>(null);
     const [checkingUpdates, setCheckingUpdates] = useState(false);
     const [pullingUpdate, setPullingUpdate] = useState(false);
     const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+    const [downloadProgress, setDownloadProgress] = useState<{
+        downloading: boolean;
+        progress: number;
+        message: string;
+        error?: string;
+    } | null>(null);
+    const [readyToInstall, setReadyToInstall] = useState(false);
 
     useEffect(() => {
         loadKeysStatus();
@@ -198,6 +206,92 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
             setUpdateMessage('Could not connect to server');
         } finally {
             setPullingUpdate(false);
+        }
+    };
+
+    const downloadAndInstall = async () => {
+        setUpdateMessage(null);
+        setDownloadProgress({ downloading: true, progress: 0, message: 'Starting download...' });
+        setReadyToInstall(false);
+        
+        try {
+            // Start the download
+            const response = await fetch(`${API_BASE_URL}/updates/download-and-install`, {
+                method: 'POST'
+            });
+            
+            if (!response.ok) {
+                throw new Error('Failed to start download');
+            }
+            
+            // Poll for progress
+            const pollProgress = async () => {
+                const progressResponse = await fetch(`${API_BASE_URL}/updates/download-progress`);
+                if (progressResponse.ok) {
+                    const progress = await progressResponse.json();
+                    setDownloadProgress(progress);
+                    
+                    if (progress.error) {
+                        setUpdateMessage(`Error: ${progress.error}`);
+                        return false;
+                    }
+                    
+                    if (progress.progress >= 100) {
+                        setReadyToInstall(true);
+                        return false; // Stop polling
+                    }
+                    
+                    return progress.downloading; // Continue if still downloading
+                }
+                return false;
+            };
+            
+            // Poll every 500ms
+            while (await pollProgress()) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            
+            const result = await response.json();
+            if (result.success) {
+                setUpdateMessage(result.message);
+                setReadyToInstall(true);
+            } else {
+                setUpdateMessage(result.message);
+                setDownloadProgress(null);
+            }
+            
+        } catch (err) {
+            setUpdateMessage(err instanceof Error ? err.message : 'Download failed');
+            setDownloadProgress(null);
+        }
+    };
+
+    const installAndRestart = async () => {
+        setUpdateMessage('Installing update...');
+        try {
+            const response = await fetch(`${API_BASE_URL}/updates/install-and-restart`, {
+                method: 'POST'
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                setUpdateMessage(result.message);
+                
+                if (result.success) {
+                    // Quit the app - the install script will relaunch it
+                    setTimeout(() => {
+                        // @ts-ignore - Tauri API
+                        if (window.__TAURI__) {
+                            // @ts-ignore
+                            window.__TAURI__.process.exit(0);
+                        }
+                    }, 1000);
+                }
+            } else {
+                setUpdateMessage('Failed to install update');
+            }
+        } catch (err) {
+            setUpdateMessage(err instanceof Error ? err.message : 'Installation failed');
         }
     };
 
@@ -574,15 +668,41 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                                             <p className="whitespace-pre-wrap">{updateInfo.release_notes}</p>
                                         </div>
                                     )}
+                                    {/* Download Progress */}
+                                    {downloadProgress && downloadProgress.downloading && (
+                                        <div className="mb-4">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <span className="text-sm text-gray-600 dark:text-gray-400">{downloadProgress.message}</span>
+                                                <span className="text-sm font-medium text-gray-900 dark:text-white">{downloadProgress.progress}%</span>
+                                            </div>
+                                            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                                                <div 
+                                                    className="bg-green-600 h-2 rounded-full transition-all duration-300"
+                                                    style={{ width: `${downloadProgress.progress}%` }}
+                                                />
+                                            </div>
+                                        </div>
+                                    )}
+                                    
                                     <div className="flex gap-3">
-                                        <button
-                                            onClick={pullUpdates}
-                                            disabled={pullingUpdate}
-                                            className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white rounded-lg text-sm font-medium transition-colors"
-                                        >
-                                            {pullingUpdate ? 'Updating...' : 'Pull Update'}
-                                        </button>
-                                        {updateInfo.download_url && (
+                                        {/* Show Install & Restart if download is complete */}
+                                        {readyToInstall ? (
+                                            <button
+                                                onClick={installAndRestart}
+                                                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                                            >
+                                                <span>🚀</span> Install & Restart
+                                            </button>
+                                        ) : (
+                                            <button
+                                                onClick={downloadAndInstall}
+                                                disabled={downloadProgress?.downloading}
+                                                className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white rounded-lg text-sm font-medium transition-colors"
+                                            >
+                                                {downloadProgress?.downloading ? 'Downloading...' : 'Download & Install'}
+                                            </button>
+                                        )}
+                                        {updateInfo.download_url && !downloadProgress?.downloading && !readyToInstall && (
                                             <a
                                                 href={updateInfo.download_url}
                                                 target="_blank"
@@ -610,17 +730,13 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                         </div>
                     )}
 
-                    {/* Manual Update Instructions */}
+                    {/* Data Safety Note */}
                     <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800/50">
-                        <h4 className="font-medium text-gray-900 dark:text-white mb-2">Manual Update</h4>
-                        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
-                            If automatic updates don't work, you can update manually:
+                        <h4 className="font-medium text-gray-900 dark:text-white mb-2">💾 Your Data is Safe</h4>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                            All your notebooks, sources, and settings are stored separately from the app. 
+                            Updates will never affect your data.
                         </p>
-                        <ol className="text-sm text-gray-600 dark:text-gray-400 space-y-1 list-decimal list-inside">
-                            <li>Open a terminal in the LocalBook directory</li>
-                            <li>Run: <code className="px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">git pull origin main</code></li>
-                            <li>Restart the application</li>
-                        </ol>
                     </div>
                 </div>
             )}

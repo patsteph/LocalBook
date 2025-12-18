@@ -90,3 +90,4 @@ backend.log
 
 # Built app
 LocalBook.app
+LocalBook-v*.zip
