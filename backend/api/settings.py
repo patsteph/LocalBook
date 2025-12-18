@@ -147,14 +147,21 @@ def get_user_profile_sync() -> dict:
 
 
 def build_user_context(profile: dict) -> str:
-    """Build condensed user context for system prompt (~100 tokens)"""
+    """Build condensed user context for system prompt (~100 tokens).
+    
+    IMPORTANT: Personalization should be subtle and natural, not forced into every response.
+    The user's name and profession are background context, not something to repeat constantly.
+    """
     if not profile:
         return ""
     
     parts = []
     
+    # Core instruction: be natural, don't over-personalize
+    parts.append("PERSONALIZATION GUIDELINES: Use the user's background context naturally and sparingly. Do NOT start every response with their name or profession. Only reference personal details when directly relevant to the answer. Focus on answering the question first.")
+    
     if profile.get('name'):
-        parts.append(f"Address the user as {profile['name']}.")
+        parts.append(f"User's name: {profile['name']} (use occasionally, not every response).")
     
     if profile.get('response_style') == 'concise':
         parts.append("Keep responses brief and focused.")
@@ -167,7 +174,7 @@ def build_user_context(profile: dict) -> str:
         parts.append("Use casual, friendly language.")
     
     if profile.get('profession'):
-        parts.append(f"The user works as a {profile['profession']}.")
+        parts.append(f"User's profession: {profile['profession']} (background context, don't mention unless relevant).")
     
     if profile.get('expertise_level') == 'beginner':
         parts.append("Explain concepts simply, avoiding jargon.")
@@ -176,10 +183,10 @@ def build_user_context(profile: dict) -> str:
     
     if profile.get('interests'):
         interests = ', '.join(profile['interests'][:5])
-        parts.append(f"When giving examples, relate to their interests: {interests}.")
+        parts.append(f"User interests (for occasional relevant examples): {interests}.")
     
     if profile.get('goals'):
-        parts.append(f"Their goal: {profile['goals']}")
+        parts.append(f"User's goal: {profile['goals']}")
     
     if profile.get('custom_instructions'):
         parts.append(profile['custom_instructions'])

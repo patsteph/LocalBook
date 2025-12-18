@@ -210,10 +210,20 @@ class RAGEngine:
         for i, result in enumerate(results):
             text = result.get("text", "")
             
-            # LanceDB cosine distance is 0-2 range for normalized vectors
-            distance = result.get("_distance", 1.0)
-            # Convert to confidence: 0 dist = 100%, 1.0 dist = 50%, 2.0 dist = 0%
-            confidence = max(0, min(1, 1 - (distance / 2)))
+            # Use rerank_score if available (from cross-encoder), otherwise use vector distance
+            if "rerank_score" in result:
+                # Reranker scores are typically -10 to +10, normalize to 0-1
+                # Scores > 0 are relevant, < 0 are irrelevant
+                rerank_score = result.get("rerank_score", 0)
+                confidence = max(0, min(1, (rerank_score + 5) / 10))  # -5 -> 0%, +5 -> 100%
+                print(f"{log_prefix} Citation {i+1}: rerank_score={rerank_score:.2f} -> confidence={confidence:.0%}")
+            else:
+                # LanceDB cosine distance is 0-2 range for normalized vectors
+                distance = result.get("_distance", 1.0)
+                # Convert to confidence: 0 dist = 100%, 1.0 dist = 50%, 2.0 dist = 0%
+                confidence = max(0, min(1, 1 - (distance / 2)))
+                print(f"{log_prefix} Citation {i+1}: distance={distance:.2f} -> confidence={confidence:.0%}")
+            
             confidence_level = "high" if confidence >= 0.6 else "medium" if confidence >= 0.4 else "low"
             
             all_citations.append({
@@ -231,12 +241,20 @@ class RAGEngine:
         # Only filter out truly irrelevant results (< 35% confidence)
         quality_citations = [c for c in all_citations if c["confidence"] >= 0.35]
         
-        # If filtering removed everything, keep top 3 anyway
-        if len(quality_citations) == 0 and len(all_citations) > 0:
+        # Check if ALL citations are very low confidence (< 20%) - this means we have no relevant sources
+        max_confidence = max((c["confidence"] for c in all_citations), default=0)
+        very_low_confidence = max_confidence < 0.20
+        
+        # If filtering removed everything but we have some decent sources, keep top 3
+        if len(quality_citations) == 0 and len(all_citations) > 0 and not very_low_confidence:
             quality_citations = all_citations[:3]
             print(f"{log_prefix} Low confidence fallback: using top 3 citations")
+        elif very_low_confidence:
+            # All sources are essentially irrelevant - don't use any
+            print(f"{log_prefix} VERY LOW CONFIDENCE: max={max_confidence:.0%}, refusing to use sources")
+            quality_citations = []
         
-        print(f"{log_prefix} Citations: {len(quality_citations)} used (from {len(all_citations)} found)")
+        print(f"{log_prefix} Citations: {len(quality_citations)} used (from {len(all_citations)} found, max_conf={max_confidence:.0%})")
         
         # Renumber citations after filtering
         sources = set()
@@ -248,7 +266,8 @@ class RAGEngine:
         numbered_context = [f"[{i+1}] {c['text']}" for i, c in enumerate(quality_citations)]
         context = "\n\n".join(numbered_context)
         
-        low_confidence = len(quality_citations) == 0
+        # Mark as low confidence if no quality citations OR all sources are very low
+        low_confidence = len(quality_citations) == 0 or very_low_confidence
         
         return quality_citations, sources, context, low_confidence
 
@@ -533,7 +552,15 @@ class RAGEngine:
             "low_confidence": low_confidence
         }
 
-        # Step 4: Generate quick summary
+        # Step 4: Handle low confidence case - refuse to answer if no valid sources
+        if low_confidence or num_citations == 0 or not context.strip():
+            no_info_msg = "I don't have enough relevant information in your documents to answer this question accurately. Try uploading more documents related to this topic, or rephrase your question."
+            yield {"type": "quick_summary", "content": no_info_msg}
+            yield {"type": "token", "content": no_info_msg}
+            yield {"type": "done", "follow_up_questions": []}
+            return
+
+        # Step 4b: Generate quick summary
         step_start = time.time()
         quick_summary = await self._generate_quick_summary(question, context, num_citations)
         print(f"[RAG STREAM] Step 4 - Quick summary: {time.time() - step_start:.2f}s")
@@ -559,10 +586,14 @@ class RAGEngine:
 4. Synthesize your findings into a clear, well-reasoned answer
 
 Answer using sources [1]-[{num_citations}]. Use inline citations like [1], [2] within sentences. Be thorough and analytical.
-IMPORTANT: Do NOT add a References or Sources section at the end. Only use inline citations."""
+IMPORTANT: Do NOT add a References or Sources section at the end. Only use inline citations.
+IMPORTANT: Only answer based on the provided sources. If the sources don't contain relevant information, say so honestly.
+NEVER make up quotes or attribute statements to people unless those exact quotes appear in the sources. Do not fabricate attributions."""
         else:
             base_prompt = f"""Answer using sources [1]-[{num_citations}]. Be concise (1-2 paragraphs). Use inline citations like [1], [2] within sentences.
-IMPORTANT: Do NOT add a References or Sources section at the end. Only use inline citations."""
+IMPORTANT: Do NOT add a References or Sources section at the end. Only use inline citations.
+IMPORTANT: Only answer based on the provided sources. If the sources don't contain relevant information, say so honestly.
+NEVER make up quotes or attribute statements to people unless those exact quotes appear in the sources. Do not fabricate attributions."""
         
         system_prompt = f"User context: {user_context}\n\n{base_prompt}" if user_context else base_prompt
 
@@ -632,7 +663,8 @@ Answer {"thoroughly" if deep_think else "concisely"} with inline [N] citations (
         try:
             system_prompt = f"""You are a helpful assistant. Provide a brief 2-3 sentence summary answering the question.
 Use inline citations like [1], [2] etc. to reference the sources. Be direct and concise.
-IMPORTANT: Do NOT add a References section at the end. Only use inline [N] citations within the text."""
+IMPORTANT: Do NOT add a References section at the end. Only use inline [N] citations within the text.
+NEVER make up quotes or attribute statements to people unless those exact quotes appear in the sources."""
             
             # Use truncated context for speed
             truncated_context = context[:2000] if len(context) > 2000 else context
@@ -687,6 +719,14 @@ Brief summary (2-3 sentences with inline [N] citations only, NO references list)
     async def _generate_answer(self, question: str, context: str, num_citations: int = 5, llm_provider: Optional[str] = None, notebook_id: Optional[str] = None, conversation_id: Optional[str] = None, deep_think: bool = False) -> Dict:
         """Generate answer using LLM with memory augmentation and user personalization. Returns dict with answer and memory_used info."""
         
+        # If no citations/context, refuse to answer to prevent hallucination
+        if num_citations == 0 or not context.strip():
+            return {
+                "answer": "I don't have enough relevant information in your documents to answer this question accurately. Try uploading more documents related to this topic, or rephrase your question.",
+                "memory_used": [],
+                "memory_context_summary": None
+            }
+        
         # Check if memory is enabled (frontend can disable via localStorage)
         memory_used = []
         
@@ -703,7 +743,9 @@ Brief summary (2-3 sentences with inline [N] citations only, NO references list)
         )
         
         # Build system prompt with user context, memory, and mode
-        base_prompt = f"""Answer using sources [1]-[{num_citations}]. Be concise (1-2 paragraphs). Inline citations only. No reference list at end."""
+        base_prompt = f"""Answer using sources [1]-[{num_citations}]. Be concise (1-2 paragraphs). Inline citations only. No reference list at end.
+IMPORTANT: Only answer based on the provided sources. If the sources don't contain relevant information, say so honestly.
+NEVER make up quotes or attribute statements to people unless those exact quotes appear in the sources. Do not fabricate attributions."""
         
         # Add Deep Think chain-of-thought instructions
         if deep_think:
@@ -713,7 +755,8 @@ Brief summary (2-3 sentences with inline [N] citations only, NO references list)
 3. Reason through the implications
 4. Synthesize your findings into a clear, well-reasoned answer
 
-Answer using sources [1]-[{num_citations}]. Use inline citations. Be thorough and analytical."""
+Answer using sources [1]-[{num_citations}]. Use inline citations. Be thorough and analytical.
+IMPORTANT: Only use information from the provided sources. NEVER make up quotes or attribute statements to people unless those exact quotes appear in the sources."""
         
         # Combine user context + memory + base prompt
         system_parts = []
