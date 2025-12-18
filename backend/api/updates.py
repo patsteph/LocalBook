@@ -418,6 +418,9 @@ rm -rf "{current_app}"
 # Move new app into place
 mv "{new_app_path}" "{current_app}"
 
+# Remove quarantine flag (macOS Gatekeeper)
+xattr -cr "{current_app}"
+
 # Clean up
 rm -rf "{extract_dir}"
 rm -f "{download_path}"

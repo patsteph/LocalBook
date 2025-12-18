@@ -84,10 +84,24 @@ ollama pull nomic-embed-text   # Embeddings (~300MB)
 | 🧠 **Memory** | AI remembers facts about you across sessions |
 | 📅 **Timeline** | Auto-extract and visualize dates/events from documents |
 
-### ⚠️ Upgrading from v0.1.0
-If upgrading from a previous version:
-1. **Re-embed documents** — The default embedding model changed to `nomic-embed-text`. Go to Settings → Embedding Model and click "Re-embed All Documents" for each notebook.
-2. **Rebuild Constellation** — Click Reset → Build Constellation to regenerate the knowledge graph with improved clustering.
+### ⚠️ Upgrading from v0.1.x (IMPORTANT)
+If upgrading from v0.1.x, your data is stored inside the app bundle and **will be lost** if you simply replace the app.
+
+**Before replacing LocalBook.app, run this migration script:**
+```bash
+curl -sL https://raw.githubusercontent.com/patsteph/LocalBook/master/migrate_data.sh | bash
+```
+
+Or manually copy your data:
+```bash
+cp -R "/Applications/LocalBook.app/Contents/Resources/resources/backend/localbook-backend/_internal/data/"* ~/Library/Application\ Support/LocalBook/
+```
+
+**After upgrading:**
+1. **Re-embed documents** — The default embedding model changed. Go to Settings → Embedding Model and click "Re-embed All Documents".
+2. **Rebuild Constellation** — Click Reset → Build Constellation to regenerate the knowledge graph.
+
+**v0.2.2+ users:** Future updates are seamless via Settings → Updates → Download & Install.
 
 ---
 
