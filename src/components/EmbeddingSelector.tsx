@@ -120,7 +120,7 @@ export const EmbeddingSelector: React.FC<EmbeddingSelectorProps> = ({ notebookId
 
     try {
       // Start re-embedding process
-      const response = await embeddingService.reembedNotebook(notebookId);
+      await embeddingService.reembedNotebook(notebookId);
 
       // Poll for progress
       const pollInterval = setInterval(async () => {

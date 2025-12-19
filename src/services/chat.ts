@@ -3,6 +3,7 @@ import api, { API_BASE_URL } from './api';
 import { ChatQuery, ChatResponse, Citation } from '../types';
 
 export interface StreamCallbacks {
+  onMode?: (deepThink: boolean, autoUpgraded: boolean) => void;
   onCitations?: (citations: Citation[], sources: string[], lowConfidence: boolean) => void;
   onQuickSummary?: (summary: string) => void;
   onToken?: (token: string) => void;
@@ -37,6 +38,30 @@ export const chatService = {
     const decoder = new TextDecoder();
     let buffer = '';
 
+    const processLine = (line: string) => {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6));
+          
+          if (data.error) {
+            callbacks.onError?.(data.error);
+          } else if (data.type === 'mode') {
+            callbacks.onMode?.(data.deep_think, data.auto_upgraded);
+          } else if (data.type === 'citations') {
+            callbacks.onCitations?.(data.citations, data.sources, data.low_confidence);
+          } else if (data.type === 'quick_summary') {
+            callbacks.onQuickSummary?.(data.content);
+          } else if (data.type === 'token') {
+            callbacks.onToken?.(data.content);
+          } else if (data.type === 'done') {
+            callbacks.onDone?.(data.follow_up_questions || []);
+          }
+        } catch (e) {
+          console.error('Failed to parse SSE data:', e);
+        }
+      }
+    };
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -46,26 +71,13 @@ export const chatService = {
       buffer = lines.pop() || '';
 
       for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            
-            if (data.error) {
-              callbacks.onError?.(data.error);
-            } else if (data.type === 'citations') {
-              callbacks.onCitations?.(data.citations, data.sources, data.low_confidence);
-            } else if (data.type === 'quick_summary') {
-              callbacks.onQuickSummary?.(data.content);
-            } else if (data.type === 'token') {
-              callbacks.onToken?.(data.content);
-            } else if (data.type === 'done') {
-              callbacks.onDone?.(data.follow_up_questions || []);
-            }
-          } catch (e) {
-            console.error('Failed to parse SSE data:', e);
-          }
-        }
+        processLine(line);
       }
+    }
+
+    // Process any remaining data in the buffer after stream ends
+    if (buffer.trim()) {
+      processLine(buffer.trim());
     }
   },
 

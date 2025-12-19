@@ -10,6 +10,9 @@ interface ThemesPanelProps {
     onConceptClick?: (conceptName: string, relatedConcepts?: string[]) => void;
 }
 
+// Status states for the contextual badge
+type ThemeStatus = 'idle' | 'waiting' | 'discovering';
+
 export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptClick }) => {
     const [themes, setThemes] = useState<Theme[]>([]);
     const [topConcepts, setTopConcepts] = useState<TopConcept[]>([]);
@@ -17,6 +20,10 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [expandedTheme, setExpandedTheme] = useState<string | null>(null);
+    
+    // Status badge state
+    const [status, setStatus] = useState<ThemeStatus>('idle');
+    const [clusterProgress, setClusterProgress] = useState<{ phase: string; progress: number; total?: number } | null>(null);
 
     useEffect(() => {
         if (notebookId) {
@@ -33,23 +40,47 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
         
         const connectWebSocket = () => {
             try {
-                const ws = new WebSocket(`${WS_BASE_URL}/ws/graph/${notebookId}`);
+                // Connect to the same WebSocket as Constellation3D for synchronized updates
+                const ws = new WebSocket(`${WS_BASE_URL}/constellation/ws`);
                 
                 ws.onmessage = (event) => {
                     try {
                         const message = JSON.parse(event.data);
-                        // Refresh themes when concepts are added or build completes
-                        if (message.type === 'concept_added' || message.type === 'build_complete') {
+                        
+                        // Build is in progress - show "Waiting..." status
+                        if (message.type === 'build_progress') {
+                            setStatus('waiting');
+                            setClusterProgress(null);
+                            // Start auto-refresh during build progress (fallback)
+                            if (!refreshIntervalRef.current) {
+                                refreshIntervalRef.current = setInterval(loadThemes, 15000);
+                            }
+                        }
+                        
+                        // Build complete - concepts ready, clustering will start
+                        if (message.type === 'build_complete') {
+                            console.log('[ThemesPanel] Build complete, waiting for clustering');
+                            setStatus('waiting');
                             loadThemes();
+                            // Clear polling interval
+                            if (refreshIntervalRef.current) {
+                                clearInterval(refreshIntervalRef.current);
+                                refreshIntervalRef.current = null;
+                            }
                         }
-                        // Start auto-refresh during build progress
-                        if (message.type === 'build_progress' && !refreshIntervalRef.current) {
-                            refreshIntervalRef.current = setInterval(loadThemes, 10000);
+                        
+                        // Clustering in progress - show "Discovering..." status
+                        if (message.type === 'cluster_progress') {
+                            setStatus('discovering');
+                            setClusterProgress(message.data);
                         }
-                        // Stop auto-refresh when build completes
-                        if (message.type === 'build_complete' && refreshIntervalRef.current) {
-                            clearInterval(refreshIntervalRef.current);
-                            refreshIntervalRef.current = null;
+                        
+                        // Clustering complete - refresh and clear status
+                        if (message.type === 'cluster_complete') {
+                            console.log('[ThemesPanel] Cluster complete, refreshing themes');
+                            setStatus('idle');
+                            setClusterProgress(null);
+                            loadThemes();
                         }
                     } catch {
                         // Ignore parse errors
@@ -96,11 +127,16 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
 
     const handleRefresh = async () => {
         try {
+            setLoading(true);
             await themesService.runClustering();
-            // Wait a moment for clustering to complete
-            setTimeout(loadThemes, 2000);
+            // cluster_complete WebSocket event will trigger loadThemes automatically
+            // But set a fallback timeout just in case
+            setTimeout(() => {
+                if (loading) loadThemes();
+            }, 10000);
         } catch (err) {
             setError('Failed to refresh themes');
+            setLoading(false);
         }
     };
 
@@ -117,10 +153,31 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
             {/* Header */}
             <div className="p-4 border-b border-gray-200 dark:border-gray-700">
                 <div className="flex items-center justify-between mb-1">
-                    <h3 className="font-semibold text-gray-900 dark:text-white">Key Themes</h3>
+                    <div className="flex items-center gap-2">
+                        <h3 className="font-semibold text-gray-900 dark:text-white">Key Themes</h3>
+                        {/* Contextual Status Badge */}
+                        {status === 'waiting' && (
+                            <span 
+                                className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 text-xs rounded-full animate-pulse"
+                                title="Waiting for concepts to be extracted"
+                            >
+                                <span>⏳</span>
+                                <span>Waiting...</span>
+                            </span>
+                        )}
+                        {status === 'discovering' && (
+                            <span 
+                                className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 text-xs rounded-full"
+                                title={clusterProgress ? `Finding patterns (${clusterProgress.progress}%)` : "Finding patterns in your concepts"}
+                            >
+                                <span className="animate-pulse">✨</span>
+                                <span>Discovering{clusterProgress?.total ? ` ${clusterProgress.total}` : ''}...</span>
+                            </span>
+                        )}
+                    </div>
                     <button
                         onClick={handleRefresh}
-                        disabled={loading}
+                        disabled={loading || status !== 'idle'}
                         className="text-xs text-blue-600 hover:text-blue-700 disabled:opacity-50"
                         title="Refresh themes"
                     >

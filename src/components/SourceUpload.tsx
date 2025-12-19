@@ -1,6 +1,5 @@
 import React, { useState, useRef } from 'react';
 import { sourceService } from '../services/sources';
-import { Button } from './shared/Button';
 import { ErrorMessage } from './shared/ErrorMessage';
 
 interface SourceUploadProps {

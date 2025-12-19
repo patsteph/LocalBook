@@ -88,7 +88,6 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
         error?: string;
     } | null>(null);
     const [checkingUpdates, setCheckingUpdates] = useState(false);
-    const [pullingUpdate, setPullingUpdate] = useState(false);
     const [updateMessage, setUpdateMessage] = useState<string | null>(null);
     const [downloadProgress, setDownloadProgress] = useState<{
         downloading: boolean;
@@ -182,30 +181,6 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
             });
         } finally {
             setCheckingUpdates(false);
-        }
-    };
-
-    const pullUpdates = async () => {
-        setPullingUpdate(true);
-        setUpdateMessage(null);
-        try {
-            const response = await fetch(`${API_BASE_URL}/updates/pull`, {
-                method: 'POST'
-            });
-            if (response.ok) {
-                const data = await response.json();
-                setUpdateMessage(data.message);
-                if (data.success) {
-                    // Refresh update info
-                    await checkForUpdates();
-                }
-            } else {
-                setUpdateMessage('Failed to pull updates');
-            }
-        } catch (err) {
-            setUpdateMessage('Could not connect to server');
-        } finally {
-            setPullingUpdate(false);
         }
     };
 

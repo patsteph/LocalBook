@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     # LLM settings
     llm_provider: str = "ollama"  # ollama, openai, or anthropic
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "phi4:14b"  # System 2: Main model for conversation and reasoning
+    ollama_model: str = "olmo-3:7b-think"  # System 2: Main model - 64K context, strong reasoning, 50% smaller than phi4
     ollama_fast_model: str = "llama3.2:3b"  # System 1: Fast model for quick responses
     openai_api_key: str = ""
     anthropic_api_key: str = ""

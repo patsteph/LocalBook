@@ -792,7 +792,6 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                 break;
               case 'build_progress':
                 console.log('Build progress:', message.data.progress);
-                // Only update if progress increases (prevents jumping backwards)
                 setBuildProgress(prev => Math.max(prev, message.data.progress));
                 break;
               case 'build_complete':
@@ -801,16 +800,17 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                 setBuildProgress(100);
                 loadGraph();
                 loadStats();
-                // Trigger clustering to assign colors
+                // Trigger clustering - cluster_complete event will trigger final reload
                 fetch(`${API_BASE}/graph/cluster`, { method: 'POST' })
-                  .then(() => {
-                    // Reload after clustering completes
-                    setTimeout(() => {
-                      loadGraph();
-                      loadStats();
-                    }, 5000);
-                  })
                   .catch(err => console.error('Clustering failed:', err));
+                break;
+              case 'cluster_progress':
+                console.log('Clustering progress:', message.data.phase, message.data.progress);
+                break;
+              case 'cluster_complete':
+                console.log('Clustering complete - refreshing graph with theme colors');
+                loadGraph();
+                loadStats();
                 break;
             }
           } catch (err) {
@@ -1247,16 +1247,8 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
     try {
       console.log('Triggering clustering for color coding...');
       await fetch(`${API_BASE}/graph/cluster`, { method: 'POST' });
-      // Reload graph after clustering to pick up cluster colors
-      setTimeout(() => {
-        loadGraph();
-        loadStats();
-      }, 3000);
-      // Reload again after more time for larger graphs
-      setTimeout(() => {
-        loadGraph();
-        loadStats();
-      }, 8000);
+      // cluster_complete WebSocket event will trigger loadGraph/loadStats automatically
+      // No need for setTimeout - the event-driven approach is more reliable
     } catch (err) {
       console.error('Failed to cluster:', err);
     }

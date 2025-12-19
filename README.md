@@ -56,7 +56,7 @@ Note: `./build.sh` performs network downloads and may install system dependencie
 
 ### AI Models (pulled by build script)
 ```bash
-ollama pull phi4:14b           # System 2: Main model (~9GB)
+ollama pull olmo-3:7b-think    # System 2: Main reasoning model (~4GB)
 ollama pull llama3.2:3b        # System 1: Fast model (~2GB)
 ollama pull nomic-embed-text   # Embeddings (~300MB)
 ```
@@ -73,16 +73,16 @@ ollama pull nomic-embed-text   # Embeddings (~300MB)
 | 🔍 **Web Search** | Optionally supplement with real-time web results |
 | 📅 **Timeline** | Auto-extract and visualize dates/events |
 
-### Latest Features (v0.2.0)
+### Latest Features (v0.3.0)
 | Feature | Description |
 |---------|-------------|
+| 🚀 **Smart Startup** | Auto-verifies models, embeddings, and data on launch |
+| 🧠 **Auto-Routing** | Complex queries automatically use deep thinking mode |
+| 🔄 **Embedding Migration** | Seamless upgrade from 384→768 dim embeddings |
 | 🌌 **3D Constellation** | Interactive 3D knowledge graph with clustering and color-coded themes |
 | 🎯 **Key Themes** | Auto-discovered topic clusters from your documents |
-| 📊 **Top Concepts** | See your most frequently referenced concepts |
-| 🔄 **Real-time Updates** | Constellation and themes update live during builds |
-| ⚡ **Embedding Options** | Choose from multiple Ollama embedding models (Nomic, MixedBread, MiniLM, Snowflake) |
+| ⚡ **Deep Think Mode** | Toggle for complex reasoning with visual indicator |
 | 🧠 **Memory** | AI remembers facts about you across sessions |
-| 📅 **Timeline** | Auto-extract and visualize dates/events from documents |
 
 ### ⚠️ Upgrading from v0.1.x (IMPORTANT)
 If upgrading from v0.1.x, your data is stored inside the app bundle and **will be lost** if you simply replace the app.
@@ -92,16 +92,7 @@ If upgrading from v0.1.x, your data is stored inside the app bundle and **will b
 curl -sL https://raw.githubusercontent.com/patsteph/LocalBook/master/migrate_data.sh | bash
 ```
 
-Or manually copy your data:
-```bash
-cp -R "/Applications/LocalBook.app/Contents/Resources/resources/backend/localbook-backend/_internal/data/"* ~/Library/Application\ Support/LocalBook/
-```
-
-**After upgrading:**
-1. **Re-embed documents** — The default embedding model changed. Go to Settings → Embedding Model and click "Re-embed All Documents".
-2. **Rebuild Constellation** — Click Reset → Build Constellation to regenerate the knowledge graph.
-
-**v0.2.2+ users:** Future updates are seamless via Settings → Updates → Download & Install.
+**v0.2.x+ users:** v0.3.0 automatically migrates your embeddings to the new format on first launch. Just replace the app and restart.
 
 ---
 
@@ -138,9 +129,9 @@ When running: http://localhost:8000/docs
 
 ### Environment (`backend/.env`)
 ```bash
-OLLAMA_MODEL=phi4:14b              # System 2: Main reasoning model
-OLLAMA_FAST_MODEL=llama3.2:3b      # System 1: Fast responses
-EMBEDDING_MODEL=nomic-embed-text   # Document embeddings via Ollama
+OLLAMA_MODEL=olmo-3:7b-think       # System 2: Main reasoning model (64K context)
+OLLAMA_FAST_MODEL=llama3.2:3b      # System 1: Fast responses + concept extraction
+EMBEDDING_MODEL=nomic-embed-text   # Document embeddings (768 dims)
 CHUNK_SIZE=1000
 CHUNK_OVERLAP=200
 ```

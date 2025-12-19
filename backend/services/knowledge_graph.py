@@ -8,6 +8,7 @@ This service:
 4. Detects contradictions between sources
 5. Provides graph data for visualization
 """
+import asyncio
 import json
 import re
 from datetime import datetime
@@ -16,7 +17,6 @@ from pathlib import Path
 import threading
 import lancedb
 import pyarrow as pa
-from sentence_transformers import SentenceTransformer
 import httpx
 import numpy as np
 
@@ -59,8 +59,12 @@ class KnowledgeGraphService:
         self.db_path = self.graph_dir / "graph_db"
         self._init_db()
         
-        # Embedding model (lazy loaded)
-        self._embedding_model = None
+        # Embedding settings - use same model as RAG engine for semantic alignment
+        self.embedding_model_name = settings.embedding_model  # nomic-embed-text
+        
+        # In-memory concept name cache for fast deduplication
+        self._concept_name_cache: Dict[str, str] = {}  # canonical_name -> concept_id
+        self._cache_loaded = False
         
         # LLM settings
         self.ollama_url = settings.ollama_base_url
@@ -72,16 +76,43 @@ class KnowledgeGraphService:
         
         self._initialized = True
     
-    @property
-    def embedding_model(self) -> SentenceTransformer:
-        """Lazy load embedding model"""
-        if self._embedding_model is None:
-            self._embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        return self._embedding_model
+    async def get_embedding(self, text: str) -> List[float]:
+        """Generate embedding for text using Ollama (same model as RAG engine)"""
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{self.ollama_url}/api/embeddings",
+                    json={
+                        "model": self.embedding_model_name,
+                        "prompt": text
+                    }
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    embedding = result.get("embedding", [])
+                    if not embedding:
+                        print(f"[KG-Embed] Empty embedding returned for: {text[:50]}...")
+                    return embedding
+                else:
+                    print(f"[KG-Embed] Non-200 status: {response.status_code} for: {text[:50]}...")
+        except Exception as e:
+            print(f"[KG-Embed] Error: {e} for: {text[:50]}...")
+        return []
     
-    def get_embedding(self, text: str) -> List[float]:
-        """Generate embedding for text"""
-        return self.embedding_model.encode(text).tolist()
+    def _load_concept_cache(self) -> None:
+        """Load concept names into cache for fast deduplication"""
+        if self._cache_loaded:
+            return
+        try:
+            concepts_table = self.db.open_table("concepts")
+            concepts_df = concepts_table.to_pandas()
+            for _, row in concepts_df.iterrows():
+                canonical = self._canonicalize_concept_name(row["name"])
+                self._concept_name_cache[canonical] = row["id"]
+            self._cache_loaded = True
+            print(f"[KnowledgeGraph] Loaded {len(self._concept_name_cache)} concepts into cache")
+        except Exception:
+            pass  # Table may not exist yet
     
     def _init_db(self) -> None:
         """Initialize LanceDB tables for knowledge graph"""
@@ -100,7 +131,7 @@ class KnowledgeGraphService:
                 pa.field("cluster_id", pa.string()),
                 pa.field("created_at", pa.string()),
                 pa.field("updated_at", pa.string()),
-                pa.field("vector", pa.list_(pa.float32(), 384)),
+                pa.field("vector", pa.list_(pa.float32(), 768)),  # nomic-embed-text dimensions
             ])
             self.db.create_table("concepts", schema=schema)
         
@@ -184,9 +215,11 @@ class KnowledgeGraphService:
         extraction_prompt = self._build_concept_extraction_prompt(request.text)
         
         try:
+            print(f"[KG] Calling LLM for concept extraction (source={request.source_id}, chunk={request.chunk_index})")
             extracted = await self._call_llm(extraction_prompt)
             
             if extracted:
+                print(f"[KG] LLM returned {len(extracted.get('concepts', []))} concepts, {len(extracted.get('relationships', []))} relationships")
                 # Process extracted concepts
                 for concept_data in extracted.get("concepts", []):
                     concept = await self._create_or_update_concept(
@@ -207,9 +240,13 @@ class KnowledgeGraphService:
                     )
                     if link:
                         result.links.append(link)
+            else:
+                print(f"[KG] LLM returned None/empty for source={request.source_id}, chunk={request.chunk_index}")
         
         except Exception as e:
-            print(f"Concept extraction error: {e}")
+            import traceback
+            print(f"[KG] Concept extraction error: {e}")
+            traceback.print_exc()
         
         return result
     
@@ -301,21 +338,36 @@ Respond ONLY with JSON:"""
         # and common variations
         canonical_name = self._canonicalize_concept_name(name)
         
-        # Check if concept exists by exact name match first
+        # Load cache if not loaded
+        self._load_concept_cache()
+        
+        # FAST PATH: Check in-memory cache first (instant lookup)
         table = self.db.open_table("concepts")
-        
-        # Search by embedding similarity but with stricter name matching
-        existing = table.search(self.get_embedding(canonical_name)).limit(10).to_list()
-        
-        # Find exact or semantically equivalent match
         matched_record = None
-        for record in existing:
-            existing_name = " ".join(record.get("name", "").lower().strip().split())
-            existing_canonical = self._canonicalize_concept_name(existing_name)
-            # Match if canonical forms are the same
-            if existing_canonical == canonical_name:
-                matched_record = record
-                break
+        
+        if canonical_name in self._concept_name_cache:
+            concept_id = self._concept_name_cache[canonical_name]
+            # Fetch the record by ID
+            try:
+                existing = table.search().where(f"id = '{concept_id}'").limit(1).to_list()
+                if existing:
+                    matched_record = existing[0]
+            except Exception:
+                pass
+        
+        # SLOW PATH: If not in cache, do embedding search for fuzzy matching
+        if not matched_record:
+            embedding = await self.get_embedding(canonical_name)
+            if embedding:
+                existing = table.search(embedding).limit(10).to_list()
+                for record in existing:
+                    existing_name = " ".join(record.get("name", "").lower().strip().split())
+                    existing_canonical = self._canonicalize_concept_name(existing_name)
+                    if existing_canonical == canonical_name:
+                        matched_record = record
+                        # Add to cache for future lookups
+                        self._concept_name_cache[canonical_name] = record["id"]
+                        break
         
         if matched_record:
             # Update existing concept
@@ -349,7 +401,7 @@ Respond ONLY with JSON:"""
                     "cluster_id": record.get("cluster_id", ""),
                     "created_at": record.get("created_at", ""),
                     "updated_at": datetime.utcnow().isoformat(),
-                    "vector": record.get("vector", self.get_embedding(f"{record['name']}: {record.get('description', '')}")),
+                    "vector": record.get("vector", []),  # Keep existing vector
                 }
                 table.add([updated_record])
             
@@ -371,7 +423,15 @@ Respond ONLY with JSON:"""
         )
         
         # Store in LanceDB
-        embedding = self.get_embedding(f"{name}: {description or ''}")
+        embedding = await self.get_embedding(f"{name}: {description or ''}")
+        if not embedding:
+            print(f"[KG] Skipping concept '{name}' - embedding failed")
+            return None  # Skip if embedding failed
+        
+        print(f"[KG] Creating new concept: {name}")
+        
+        # Add to cache
+        self._concept_name_cache[canonical_name] = concept.id
         record = {
             "id": concept.id,
             "name": concept.name,
@@ -457,8 +517,10 @@ Respond ONLY with JSON:"""
         """
         links = []
         
-        # Get embedding for the chunk
-        chunk_embedding = self.get_embedding(chunk_text)
+        # Get embedding for the chunk (async)
+        chunk_embedding = await self.get_embedding(chunk_text)
+        if not chunk_embedding:
+            return links
         
         # Find similar concepts
         concepts_table = self.db.open_table("concepts")
@@ -531,71 +593,65 @@ Respond ONLY with JSON:"""
     async def run_clustering(self) -> List[ConceptCluster]:
         """
         Run HDBSCAN clustering on concept embeddings to discover themes.
-        Should be run periodically as a background job.
+        Uses atomic swap pattern to prevent UI flicker during rebuild.
+        Sends progress and completion events via WebSocket.
         """
+        from api.constellation_ws import notify_cluster_progress, notify_cluster_complete
+        
         import warnings
-        # Suppress sklearn internal deprecation warning about force_all_finite
-        # This is an sklearn internal issue that will be fixed in a future release
         warnings.filterwarnings("ignore", message=".*force_all_finite.*")
         
         try:
-            # Use sklearn's built-in HDBSCAN (available since sklearn 1.3)
             from sklearn.cluster import HDBSCAN
         except ImportError:
-            # Fallback to standalone hdbscan package
             try:
                 from hdbscan import HDBSCAN
             except ImportError:
                 print("HDBSCAN not available, skipping clustering")
+                await notify_cluster_complete({"clusters": 0, "error": "HDBSCAN not available"})
                 return []
         
-        # Get all concepts with embeddings
+        # Phase 1: Load concepts (old clusters still visible in UI)
+        await notify_cluster_progress({"phase": "loading", "progress": 5})
+        
         concepts_table = self.db.open_table("concepts")
         all_concepts = concepts_table.to_pandas()
         
         if len(all_concepts) < self.min_cluster_size:
+            await notify_cluster_complete({"clusters": 0, "message": "Not enough concepts"})
             return []
         
-        # Clear existing clusters before creating new ones
-        # This prevents duplicate clusters from accumulating
-        try:
-            if "clusters" in self.db.table_names():
-                self.db.drop_table("clusters")
-            # Recreate the empty clusters table
-            self._create_clusters_table()
-            print("[KnowledgeGraph] Cleared old clusters before re-clustering")
-        except Exception as e:
-            print(f"[KnowledgeGraph] Could not clear clusters: {e}")
+        # Phase 2: Compute clusters in memory (old clusters still visible)
+        await notify_cluster_progress({"phase": "analyzing", "progress": 15})
         
-        # Extract embeddings and normalize them
-        # Using normalized embeddings with euclidean distance is equivalent to cosine distance
         embeddings = np.array(all_concepts["vector"].tolist())
-        # Normalize embeddings to unit vectors
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        norms[norms == 0] = 1  # Avoid division by zero
+        norms[norms == 0] = 1
         normalized_embeddings = embeddings / norms
         
-        # Run HDBSCAN with euclidean metric on normalized vectors
         clusterer = HDBSCAN(
             min_cluster_size=self.min_cluster_size,
             min_samples=self.min_samples,
-            metric='euclidean'  # On normalized vectors, this approximates cosine distance
+            metric='euclidean'
         )
         cluster_labels = clusterer.fit_predict(normalized_embeddings)
         
-        # Create cluster objects
-        clusters = []
-        unique_labels = set(cluster_labels)
-        unique_labels.discard(-1)  # Remove noise label
+        await notify_cluster_progress({"phase": "analyzing", "progress": 30})
         
-        for label in unique_labels:
+        # Phase 3: Build cluster objects and generate names in memory
+        clusters = []
+        cluster_records = []
+        unique_labels = set(cluster_labels)
+        unique_labels.discard(-1)
+        total_labels = len(unique_labels)
+        
+        for idx, label in enumerate(unique_labels):
             mask = cluster_labels == label
             cluster_concepts = all_concepts[mask]
             
             concept_ids = cluster_concepts["id"].tolist()
             concept_names = cluster_concepts["name"].tolist()
             
-            # Get notebook IDs from concepts
             notebook_ids = set()
             for nids in cluster_concepts["source_notebook_ids"]:
                 notebook_ids.update(json.loads(nids))
@@ -612,9 +668,8 @@ Respond ONLY with JSON:"""
             )
             clusters.append(cluster)
             
-            # Store cluster
-            table = self.db.open_table("clusters")
-            record = {
+            # Prepare record for batch insert
+            cluster_records.append({
                 "id": cluster.id,
                 "name": cluster.name,
                 "description": cluster.description or "",
@@ -624,11 +679,30 @@ Respond ONLY with JSON:"""
                 "notebook_ids": json.dumps(cluster.notebook_ids),
                 "created_at": cluster.created_at.isoformat(),
                 "updated_at": cluster.updated_at.isoformat(),
-            }
-            table.add([record])
+            })
             
-            # Update concepts with cluster ID
-            # (LanceDB doesn't support updates well, so this is simplified)
+            # Update progress (30% to 90% during naming)
+            progress = 30 + int((idx + 1) / total_labels * 60)
+            await notify_cluster_progress({"phase": "naming", "progress": progress, "current": idx + 1, "total": total_labels})
+        
+        # Phase 4: Atomic swap - drop old, insert all new at once (instant)
+        await notify_cluster_progress({"phase": "saving", "progress": 95})
+        
+        try:
+            if "clusters" in self.db.table_names():
+                self.db.drop_table("clusters")
+            self._create_clusters_table()
+            
+            if cluster_records:
+                table = self.db.open_table("clusters")
+                table.add(cluster_records)
+            
+            print(f"[KnowledgeGraph] Created {len(clusters)} clusters")
+        except Exception as e:
+            print(f"[KnowledgeGraph] Error saving clusters: {e}")
+        
+        # Phase 5: Notify completion - frontend will refresh themes
+        await notify_cluster_complete({"clusters": len(clusters)})
         
         return clusters
     
@@ -944,43 +1018,70 @@ What theme or topic connects them? Respond with just a 2-4 word name (no punctua
     # LLM Helper
     # =========================================================================
     
-    async def _call_llm(self, prompt: str) -> Optional[Dict]:
-        """Call LLM and parse JSON response"""
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.ollama_url}/api/generate",
-                    json={
-                        "model": self.extraction_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.1, "num_predict": 500}
-                    }
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    text = result.get("response", "")
+    async def _call_llm(self, prompt: str, max_retries: int = 2) -> Optional[Dict]:
+        """Call LLM and parse JSON response with adaptive timeout and retry"""
+        for attempt in range(max_retries):
+            # Adaptive timeout: shorter first attempt, longer on retry
+            timeout = 15.0 if attempt == 0 else 30.0
+            
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    print(f"[KG-LLM] Calling {self.extraction_model} (attempt {attempt + 1}, timeout={timeout}s)")
+                    response = await client.post(
+                        f"{self.ollama_url}/api/generate",
+                        json={
+                            "model": self.extraction_model,
+                            "prompt": prompt,
+                            "stream": False,
+                            "options": {"temperature": 0.1, "num_predict": 500}
+                        }
+                    )
                     
-                    # Parse JSON from response - try multiple strategies
-                    json_match = re.search(r'\{[\s\S]*\}', text)
-                    if json_match:
-                        json_str = json_match.group()
-                        try:
-                            return json.loads(json_str)
-                        except json.JSONDecodeError:
-                            # Try to fix common issues: trailing commas, unquoted keys
-                            # Remove trailing commas before } or ]
-                            fixed = re.sub(r',(\s*[}\]])', r'\1', json_str)
+                    print(f"[KG-LLM] Response status: {response.status_code}")
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        text = result.get("response", "")
+                        print(f"[KG-LLM] Response length: {len(text)} chars")
+                        
+                        # Parse JSON from response - try multiple strategies
+                        json_match = re.search(r'\{[\s\S]*\}', text)
+                        if json_match:
+                            json_str = json_match.group()
                             try:
-                                return json.loads(fixed)
-                            except json.JSONDecodeError:
-                                # Silent fail - concept extraction is best-effort
-                                pass
-        except Exception as e:
-            # Only log non-JSON errors (network issues, etc.)
-            if "Expecting" not in str(e):
-                print(f"LLM call error: {e}")
+                                parsed = json.loads(json_str)
+                                print(f"[KG-LLM] Parsed JSON: {len(parsed.get('concepts', []))} concepts")
+                                return parsed
+                            except json.JSONDecodeError as e:
+                                print(f"[KG-LLM] JSON parse error: {e}")
+                                # Try to fix common issues: trailing commas
+                                fixed = re.sub(r',(\s*[}\]])', r'\1', json_str)
+                                try:
+                                    parsed = json.loads(fixed)
+                                    print(f"[KG-LLM] Fixed JSON: {len(parsed.get('concepts', []))} concepts")
+                                    return parsed
+                                except json.JSONDecodeError as e2:
+                                    print(f"[KG-LLM] Fixed JSON also failed: {e2}")
+                                    pass
+                        else:
+                            print(f"[KG-LLM] No JSON found in response: {text[:200]}...")
+                        # Got response but couldn't parse - don't retry
+                        return None
+                    else:
+                        print(f"[KG-LLM] Non-200 response: {response.status_code} - {response.text[:200]}")
+                        
+            except httpx.TimeoutException:
+                if attempt < max_retries - 1:
+                    print(f"[KG-LLM] Timeout (attempt {attempt + 1}), retrying with longer timeout...")
+                    continue
+                else:
+                    print(f"[KG-LLM] Timeout after {max_retries} attempts")
+                    return None
+            except Exception as e:
+                import traceback
+                print(f"[KG-LLM] Error: {e}")
+                traceback.print_exc()
+                return None
         
         return None
 

@@ -38,6 +38,9 @@ data/
 *.db
 *.sqlite
 
+# Internal documentation (offline troubleshooting)
+ARCHITECTURE.md
+
 # Secrets
 .env
 .env.local

@@ -22,7 +22,9 @@ from services.memory_agent import memory_agent
 from storage.source_store import source_store
 
 
-_concept_extraction_semaphore = asyncio.Semaphore(int(os.getenv("LOCALBOOK_KG_CONCURRENCY", "2")))
+_concept_extraction_semaphore = asyncio.Semaphore(int(os.getenv("LOCALBOOK_KG_CONCURRENCY", "4")))  # Increased from 2 to 4
+
+# Note: Debouncing removed - we now await extraction directly in ingest_document
 
 # Shared thread pool for LanceDB operations (avoids creating per-query)
 _search_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lancedb_search")
@@ -303,12 +305,22 @@ class RAGEngine:
         table = self._get_table(notebook_id)
         table.add(data)
 
-        # Extract concepts for knowledge graph (background task - don't block upload)
-        asyncio.create_task(self._extract_concepts_for_source(
-            notebook_id=notebook_id,
-            source_id=source_id,
-            chunks=chunks
-        ))
+        # Extract concepts for knowledge graph
+        # NOTE: We await this directly instead of using asyncio.create_task() because
+        # fire-and-forget tasks may not complete in the embedded Tauri backend context.
+        # This makes uploads slightly slower but guarantees concept extraction happens.
+        print(f"[RAG] About to extract concepts for source {source_id} ({len(chunks)} chunks)")
+        try:
+            await self._extract_concepts_for_source(
+                notebook_id=notebook_id,
+                source_id=source_id,
+                chunks=chunks
+            )
+            print(f"[RAG] Concept extraction completed for source {source_id}")
+        except Exception as e:
+            import traceback
+            print(f"[RAG] CRITICAL: Concept extraction failed for source {source_id}: {e}")
+            traceback.print_exc()
 
         return {
             "source_id": source_id,
@@ -322,33 +334,40 @@ class RAGEngine:
         source_id: str,
         chunks: List[str]
     ):
-        """Extract concepts from document chunks for knowledge graph (runs in background)"""
+        """Extract concepts from document chunks for knowledge graph.
+        
+        Now awaited directly during ingest_document to guarantee execution.
+        Uses semaphore to limit concurrent LLM calls.
+        """
         async with _concept_extraction_semaphore:
             try:
-                # Import here to avoid circular imports
                 from services.knowledge_graph import knowledge_graph_service
                 from api.constellation_ws import notify_concept_added, notify_build_progress, notify_build_complete
                 
                 print(f"[KG] Starting concept extraction for source {source_id} ({len(chunks)} chunks)")
                 
                 total_concepts = 0
-                chunks_to_process = [i for i in range(len(chunks)) if i % 3 == 0]
                 
-                # Process every 3rd chunk to balance coverage vs speed
-                for idx, i in enumerate(chunks_to_process):
-                    chunk = chunks[i]
-                        
+                # Process ALL chunks by batching 3 consecutive chunks into one LLM call
+                # This gives full coverage while keeping LLM calls manageable
+                batch_size = 3
+                batches = []
+                for i in range(0, len(chunks), batch_size):
+                    batch_text = "\n\n---\n\n".join(chunks[i:i+batch_size])
+                    batches.append((i, batch_text))
+                
+                for idx, (chunk_start_idx, batch_text) in enumerate(batches):
                     request = ConceptExtractionRequest(
-                        text=chunk,
+                        text=batch_text,
                         source_id=source_id,
-                        chunk_index=i,
+                        chunk_index=chunk_start_idx,
                         notebook_id=notebook_id
                     )
                     
                     result = await knowledge_graph_service.extract_concepts(request)
                     if result.concepts:
                         total_concepts += len(result.concepts)
-                        print(f"[KG] Chunk {i}: extracted {len(result.concepts)} concepts, {len(result.links)} links")
+                        print(f"[KG] Batch {idx}: extracted {len(result.concepts)} concepts, {len(result.links)} links")
                         
                         # Broadcast each new concept via WebSocket
                         for concept in result.concepts:
@@ -359,7 +378,7 @@ class RAGEngine:
                             })
                     
                     # Broadcast progress
-                    progress = (idx + 1) / len(chunks_to_process) * 100
+                    progress = (idx + 1) / len(batches) * 100
                     await notify_build_progress({
                         "source_id": source_id,
                         "progress": round(progress, 1),
@@ -367,10 +386,15 @@ class RAGEngine:
                     })
                 
                 print(f"[KG] Concept extraction complete for source {source_id}: {total_concepts} concepts")
+                
+                # Fire build_complete after each source extraction
+                # This triggers clustering and UI refresh
                 await notify_build_complete()
                 
             except Exception as e:
+                import traceback
                 print(f"[KG] Concept extraction error: {e}")
+                traceback.print_exc()
 
     async def query(
         self,
@@ -480,6 +504,41 @@ class RAGEngine:
             "memory_context_summary": memory_context_summary
         }
 
+    def _should_auto_upgrade_to_think(self, question: str) -> bool:
+        """Invisible auto-routing: detect if a 'fast' query should be upgraded to 'think' mode.
+        
+        This allows simple questions to stay fast while complex ones get better reasoning,
+        without requiring the user to manually toggle modes.
+        """
+        q_lower = question.lower()
+        
+        # Complexity signals that warrant deeper thinking
+        complexity_keywords = [
+            'compare', 'contrast', 'analyze', 'explain why', 'explain how',
+            'what are the differences', 'what are the similarities',
+            'summarize', 'synthesize', 'evaluate', 'assess',
+            'pros and cons', 'advantages and disadvantages',
+            'step by step', 'walk me through', 'break down',
+            'relationship between', 'how does', 'why does',
+            'implications', 'consequences', 'impact of',
+            'argue', 'debate', 'critique', 'review'
+        ]
+        
+        # Check for complexity keywords
+        for keyword in complexity_keywords:
+            if keyword in q_lower:
+                return True
+        
+        # Long questions (>100 chars) often need more thought
+        if len(question) > 100:
+            return True
+        
+        # Multiple question marks suggest compound questions
+        if question.count('?') > 1:
+            return True
+        
+        return False
+
     async def query_stream(
         self,
         notebook_id: str,
@@ -491,10 +550,26 @@ class RAGEngine:
     ) -> AsyncGenerator[Dict, None]:
         """Query the RAG system with streaming response"""
         total_start = time.time()
+        
+        # Auto-routing: upgrade fast queries to think mode if they're complex
+        auto_upgraded = False
+        if not deep_think and self._should_auto_upgrade_to_think(question):
+            deep_think = True
+            auto_upgraded = True
+        
         mode_str = " [DEEP THINK]" if deep_think else " [FAST]"
+        if auto_upgraded:
+            mode_str += " (auto-upgraded)"
         print(f"\n{'='*60}")
         print(f"[RAG STREAM{mode_str}] Starting query: '{question[:50]}...'")
         print(f"{'='*60}")
+
+        # Notify frontend of the actual mode being used (especially for auto-upgrades)
+        yield {
+            "type": "mode",
+            "deep_think": deep_think,
+            "auto_upgraded": auto_upgraded
+        }
 
         # Step 1: Generate query embedding
         step_start = time.time()
@@ -827,22 +902,26 @@ Answer concisely with inline [N] citations:"""
         
         Args:
             deep_think: Use CoT prompting with lower temperature (System 2 deliberate)
-            use_fast_model: Use fast model (llama3.2:3b) instead of main model (phi4:14b)
+            use_fast_model: Use fast model (llama3.2:3b) instead of main model (olmo-3:7b-think)
         """
         timeout = httpx.Timeout(10.0, read=600.0)
         
         # Select model based on mode
         # Fast mode (bunny): use llama3.2:3b for quick conversational responses
-        # Deep think (brain): use phi4:14b for thorough analysis
+        # Think mode (brain): use olmo-3:7b-think for thorough analysis (64K context, strong reasoning)
         if use_fast_model and not deep_think:
             model = settings.ollama_fast_model
             temperature = 0.7
+            top_p = 0.9
         elif deep_think:
             model = settings.ollama_model
-            temperature = 0.4  # Lower temp for focused reasoning
+            # OLMo-3-Think recommended settings: temp=0.6, top_p=0.95
+            temperature = 0.6
+            top_p = 0.95
         else:
             model = settings.ollama_model
-            temperature = 0.7
+            temperature = 0.6
+            top_p = 0.95
         
         # Stop sequences to prevent LLM from generating citation/reference lists
         stop_sequences = [
@@ -859,7 +938,7 @@ Answer concisely with inline [N] citations:"""
         
         async with httpx.AsyncClient(timeout=timeout) as client:
             mode_str = " [Deep Think]" if deep_think else (" [Fast]" if use_fast_model else "")
-            print(f"Streaming from Ollama with model: {model}{mode_str} (temp={temperature})")
+            print(f"Streaming from Ollama with model: {model}{mode_str} (temp={temperature}, top_p={top_p})")
             async with client.stream(
                 "POST",
                 f"{settings.ollama_base_url}/api/generate",
@@ -869,7 +948,8 @@ Answer concisely with inline [N] citations:"""
                     "stream": True,
                     "stop": stop_sequences,
                     "options": {
-                        "temperature": temperature
+                        "temperature": temperature,
+                        "top_p": top_p
                     }
                 }
             ) as response:
@@ -954,23 +1034,3 @@ Answer concisely with inline [N] citations:"""
 
 # Global instance
 rag_service = RAGEngine()
-
-
-async def check_and_reindex_on_startup():
-    """Check for embedding dimension mismatch and auto-reindex if needed.
-    Called during app startup."""
-    print("[RAG] Checking for embedding dimension mismatches...")
-    
-    mismatched = rag_service.check_embedding_dimension_mismatch()
-    
-    if not mismatched:
-        print("[RAG] All notebooks have correct embedding dimensions")
-        return
-    
-    print(f"[RAG] Found {len(mismatched)} notebooks with dimension mismatch, auto-reindexing...")
-    
-    # Import here to avoid circular imports
-    from api.reindex import reindex_all_notebooks
-    
-    result = await reindex_all_notebooks(force=True, drop_tables=True)
-    print(f"[RAG] Auto-reindex complete: {result['message']}")

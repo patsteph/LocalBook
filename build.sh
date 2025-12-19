@@ -132,9 +132,9 @@ fi
 MODELS=$(ollama list 2>/dev/null || echo "")
 
 # System 2: Main model for conversation and reasoning
-if ! echo "$MODELS" | grep -q "phi4:14b"; then
-    echo -e "${YELLOW}Downloading phi4:14b model (~9GB)...${NC}"
-    ollama pull phi4:14b
+if ! echo "$MODELS" | grep -q "olmo-3:7b-think"; then
+    echo -e "${YELLOW}Downloading olmo-3:7b-think model (~4GB)...${NC}"
+    ollama pull olmo-3:7b-think
 fi
 
 # System 1: Fast model for quick responses

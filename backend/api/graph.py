@@ -366,17 +366,19 @@ async def build_graph_for_notebook(notebook_id: str, background_tasks: Backgroun
     
     async def extract_all():
         total_concepts = 0
-        total_chunks = 0
-        processed_chunks = 0
+        total_batches = 0
+        processed_batches = 0
         
-        # First, count total chunks to process
+        # First, count total batches to process (batching 3 chunks per LLM call)
+        batch_size = 3
         for source in sources:
             content = source.get("content", "")
             if content:
                 chunks = rag_service._chunk_text(content)
-                total_chunks += len([c for i, c in enumerate(chunks) if i % 3 == 0])
+                # Calculate number of batches (ceiling division)
+                total_batches += (len(chunks) + batch_size - 1) // batch_size
         
-        if total_chunks == 0:
+        if total_batches == 0:
             await notify_build_complete()
             return
         
@@ -388,13 +390,13 @@ async def build_graph_for_notebook(notebook_id: str, background_tasks: Backgroun
             # Chunk the content
             chunks = rag_service._chunk_text(content)
             
-            # Extract concepts (every 3rd chunk for speed)
-            for i, chunk in enumerate(chunks):
-                if i % 3 != 0:
-                    continue
+            # Process ALL chunks by batching 3 consecutive chunks into one LLM call
+            # This matches the behavior of ingest_document for consistency
+            for i in range(0, len(chunks), batch_size):
+                batch_text = "\n\n---\n\n".join(chunks[i:i+batch_size])
                 
                 request = ConceptExtractionRequest(
-                    text=chunk,
+                    text=batch_text,
                     source_id=source["id"],
                     chunk_index=i,
                     notebook_id=notebook_id
@@ -402,16 +404,16 @@ async def build_graph_for_notebook(notebook_id: str, background_tasks: Backgroun
                 
                 result = await knowledge_graph_service.extract_concepts(request)
                 total_concepts += len(result.concepts)
-                processed_chunks += 1
+                processed_batches += 1
                 
                 # Send progress update
-                progress = (processed_chunks / total_chunks * 100) if total_chunks > 0 else 0
+                progress = (processed_batches / total_batches * 100) if total_batches > 0 else 0
                 await notify_build_progress({
                     "notebook_id": notebook_id,
                     "progress": round(progress, 1),
                     "concepts_found": total_concepts,
-                    "chunks_processed": processed_chunks,
-                    "total_chunks": total_chunks
+                    "batches_processed": processed_batches,
+                    "total_batches": total_batches
                 })
         
         print(f"[KG] Built graph for notebook {notebook_id}: {total_concepts} concepts extracted")

@@ -145,19 +145,17 @@ function App() {
           {currentVersion && (
             <p className="text-sm text-blue-600 mb-2">v{currentVersion}</p>
           )}
-          <p className="text-gray-600">{backendStatusMessage}</p>
-          {startupProgress > 0 && (
-            <div className="mt-4 w-full bg-gray-200 rounded-full h-2">
-              <div 
-                className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${startupProgress}%` }}
-              />
-            </div>
-          )}
+          <p className="text-gray-600 min-h-[24px] transition-all duration-200">{backendStatusMessage}</p>
+          <div className="mt-4 w-full bg-gray-200 rounded-full h-2">
+            <div 
+              className="bg-blue-600 h-2 rounded-full transition-all duration-500 ease-out"
+              style={{ width: `${Math.max(startupProgress, 5)}%` }}
+            />
+          </div>
           {isUpgrade && (
             <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
               <p className="text-sm text-blue-800">
-                Checking for embedding compatibility and applying updates...
+                Upgrading to v0.3.0 - checking models and embeddings...
               </p>
             </div>
           )}

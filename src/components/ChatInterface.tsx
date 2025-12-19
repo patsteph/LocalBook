@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { chatService } from '../services/chat';
+import { explorationService } from '../services/exploration';
 import { ChatMessage, Citation as CitationType } from '../types';
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
@@ -28,6 +29,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingMessage, setLoadingMessage] = useState('');
+  const [activeDeepThink, setActiveDeepThink] = useState(false);  // Actual mode being used (may differ from toggle due to auto-upgrade)
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Source viewer state
@@ -126,19 +128,27 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     );
   };
 
-  // Cycling loading messages
+  // Cycling loading messages - different messages for deep think mode
   useEffect(() => {
     if (!loading) {
       setLoadingMessage('');
       return;
     }
 
-    const messages = [
+    const fastMessages = [
       'Searching your sources...',
       'Analyzing relevant passages...',
-      'Thinking through the details...',
       'Crafting response...',
     ];
+    
+    const deepThinkMessages = [
+      '🧠 Thinking deeply...',
+      '🧠 Analyzing step by step...',
+      '🧠 Reasoning through details...',
+      '🧠 Synthesizing insights...',
+    ];
+    
+    const messages = activeDeepThink ? deepThinkMessages : fastMessages;
 
     let index = 0;
     setLoadingMessage(messages[0]);
@@ -149,7 +159,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     }, 3000); // Cycle every 3 seconds - not too fast
 
     return () => clearInterval(interval);
-  }, [loading]);
+  }, [loading, activeDeepThink]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -198,6 +208,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
           deep_think: deepThink,
         },
         {
+          onMode: (isDeepThink, _autoUpgraded) => {
+            // Track when deep think mode is active (manual or auto-upgraded)
+            setActiveDeepThink(isDeepThink);
+          },
           onCitations: (citations, _sources, lowConfidence) => {
             // Store citations but don't show yet - wait for quick summary
             currentCitations = citations;
@@ -280,6 +294,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               return updated;
             });
             setLoading(false);
+            setActiveDeepThink(false);  // Reset deep think indicator
+            
+            // Record query in exploration journey (fire and forget)
+            const topics = [...new Set(currentCitations.map(c => c.filename).filter(Boolean))];
+            const sourceIds = [...new Set(currentCitations.map(c => c.source_id))];
+            const confidence = isLowConfidence ? 0.3 : 0.7;
+            explorationService.recordQuery(
+              notebookId!,
+              currentQuestion,
+              topics.slice(0, 5),
+              sourceIds,
+              confidence,
+              currentContent.slice(0, 200)
+            ).catch(err => console.error('Failed to record query:', err));
           },
           onError: (errorMsg) => {
             console.error('Stream error:', errorMsg);

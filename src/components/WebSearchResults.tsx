@@ -25,11 +25,15 @@ interface WebSearchResultsProps {
 
 export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
     notebookId,
-    onContentScraped,
-    onAddedToNotebook,
+    onContentScraped: _onContentScraped,
+    onAddedToNotebook: _onAddedToNotebook,
     onSourceAdded,
     initialQuery = '',
 }) => {
+    // Note: onContentScraped and onAddedToNotebook are kept in interface for API compatibility
+    // but intentionally unused - onSourceAdded is the preferred callback
+    void _onContentScraped;
+    void _onAddedToNotebook;
     const [query, setQuery] = useState(initialQuery);
     
     // Update query when initialQuery changes (e.g., from chat low confidence)

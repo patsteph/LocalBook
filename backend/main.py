@@ -15,7 +15,7 @@ from api import notebooks, sources, chat, skills, audio, source_viewer, web, set
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from config import settings
 from services.model_warmup import start_warmup_task, stop_warmup_task
-from services.rag_engine import check_and_reindex_on_startup
+from services.startup_checks import run_all_startup_checks
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -23,24 +23,22 @@ async def lifespan(app: FastAPI):
     print(f"🚀 LocalBook API starting on {settings.api_host}:{settings.api_port}")
     print(f"📁 Data directory: {settings.data_dir}")
     print(f"🤖 LLM Provider: {settings.llm_provider}")
-    print(f"🔥 Model: {settings.ollama_model}")
+    print(f"🔥 Models: {settings.ollama_model} (think), {settings.ollama_fast_model} (fast)")
     
     # Check if this is an upgrade
     is_upgrade, previous_version = check_if_upgrade()
     if is_upgrade:
         print(f"⬆️ Upgrading from v{previous_version} to v{CURRENT_VERSION}")
-        set_startup_status("upgrading", f"Upgrading from v{previous_version} to v{CURRENT_VERSION}...", 10)
+        set_startup_status("upgrading", f"Upgrading from v{previous_version}...", 5)
     else:
-        set_startup_status("starting", "Starting LocalBook...", 10)
+        set_startup_status("starting", "Starting LocalBook...", 5)
+    
+    # Run comprehensive startup checks (data migration, models, embeddings)
+    await run_all_startup_checks(status_callback=set_startup_status)
     
     # Start background task to keep models warm
-    set_startup_status("starting", "Warming up AI models...", 30)
+    set_startup_status("starting", "Warming up AI models...", 90)
     await start_warmup_task()
-    
-    # Check for embedding dimension mismatch and auto-reindex if needed
-    if is_upgrade:
-        set_startup_status("reindexing", "Checking embeddings compatibility...", 50)
-    await check_and_reindex_on_startup()
     
     # Mark startup complete
     mark_startup_complete()
