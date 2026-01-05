@@ -128,4 +128,72 @@ class SourceStore:
             "created_at": datetime.utcnow().isoformat()
         }
 
+    # =========================================================================
+    # Document Tagging (v0.6.0)
+    # =========================================================================
+    
+    async def get_tags(self, notebook_id: str, source_id: str) -> List[str]:
+        """Get tags for a source"""
+        source = await self.get(source_id)
+        if source and source.get("notebook_id") == notebook_id:
+            return source.get("tags", [])
+        return []
+    
+    async def set_tags(self, notebook_id: str, source_id: str, tags: List[str]) -> bool:
+        """Set tags for a source (replaces existing tags)"""
+        data = self._load_data()
+        if source_id in data["sources"]:
+            source = data["sources"][source_id]
+            if source.get("notebook_id") == notebook_id:
+                # Normalize tags: lowercase, strip whitespace, remove duplicates
+                normalized_tags = list(set(tag.strip().lower() for tag in tags if tag.strip()))
+                source["tags"] = normalized_tags
+                source["tags_updated_at"] = datetime.utcnow().isoformat()
+                data["sources"][source_id] = source
+                self._save_data(data)
+                return True
+        return False
+    
+    async def add_tag(self, notebook_id: str, source_id: str, tag: str) -> bool:
+        """Add a single tag to a source"""
+        current_tags = await self.get_tags(notebook_id, source_id)
+        normalized_tag = tag.strip().lower()
+        if normalized_tag and normalized_tag not in current_tags:
+            current_tags.append(normalized_tag)
+            return await self.set_tags(notebook_id, source_id, current_tags)
+        return True  # Tag already exists or empty
+    
+    async def remove_tag(self, notebook_id: str, source_id: str, tag: str) -> bool:
+        """Remove a single tag from a source"""
+        current_tags = await self.get_tags(notebook_id, source_id)
+        normalized_tag = tag.strip().lower()
+        if normalized_tag in current_tags:
+            current_tags.remove(normalized_tag)
+            return await self.set_tags(notebook_id, source_id, current_tags)
+        return True  # Tag didn't exist
+    
+    async def get_all_tags(self, notebook_id: str) -> List[Dict]:
+        """Get all unique tags used in a notebook with counts"""
+        data = self._load_data()
+        tag_counts = {}
+        for source in data["sources"].values():
+            if source.get("notebook_id") == notebook_id:
+                for tag in source.get("tags", []):
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        
+        return [
+            {"tag": tag, "count": count}
+            for tag, count in sorted(tag_counts.items(), key=lambda x: (-x[1], x[0]))
+        ]
+    
+    async def get_sources_by_tag(self, notebook_id: str, tag: str) -> List[Dict]:
+        """Get all sources with a specific tag"""
+        data = self._load_data()
+        normalized_tag = tag.strip().lower()
+        return [
+            source for source in data["sources"].values()
+            if source.get("notebook_id") == notebook_id
+            and normalized_tag in source.get("tags", [])
+        ]
+
 source_store = SourceStore()

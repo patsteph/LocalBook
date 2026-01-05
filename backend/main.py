@@ -14,8 +14,9 @@ from contextlib import asynccontextmanager
 from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from config import settings
-from services.model_warmup import start_warmup_task, stop_warmup_task
+from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
 from services.startup_checks import run_all_startup_checks
+from services.migration_manager import check_and_migrate_on_startup
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,11 +34,37 @@ async def lifespan(app: FastAPI):
     else:
         set_startup_status("starting", "Starting LocalBook...", 5)
     
+    # v0.60: Check for data migration needs and run migration with progress updates
+    migration_status = await check_and_migrate_on_startup()
+    if migration_status.get("needs_migration"):
+        migration_type = migration_status.get('migration_type')
+        print(f"📦 Migration needed: {migration_type}")
+        
+        # Import migration manager and run with progress updates
+        from services.migration_manager import migration_manager
+        async for update in migration_manager.migrate():
+            progress = update.get("progress", 0)
+            status_msg = update.get("status", "Migrating...")
+            # Scale migration progress to 10-40% of startup
+            scaled_progress = 10 + int(progress * 0.3)
+            set_startup_status("migrating", status_msg, scaled_progress)
+            print(f"[Migration] {status_msg} ({progress}%)")
+            
+            # Check for errors
+            if update.get("error"):
+                print(f"[Migration] ERROR: {update.get('error')}")
+            if update.get("warning"):
+                print(f"[Migration] WARNING: {update.get('warning')}")
+    
     # Run comprehensive startup checks (data migration, models, embeddings)
     await run_all_startup_checks(status_callback=set_startup_status)
     
-    # Start background task to keep models warm
-    set_startup_status("starting", "Warming up AI models...", 90)
+    # Warm up models BEFORE marking startup complete (blocks until ready)
+    set_startup_status("starting", "Warming up AI models...", 85)
+    await initial_warmup()  # This blocks until models are loaded in VRAM
+    
+    # Start background task to keep models warm (periodic keep-alive)
+    set_startup_status("starting", "Starting background services...", 95)
     await start_warmup_task()
     
     # Mark startup complete
@@ -103,11 +130,13 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    config = uvicorn.Config(
+    
+    # Use uvicorn.run() directly - more reliable in PyInstaller bundles
+    # than creating Server instance manually
+    uvicorn.run(
         app,
         host=settings.api_host,
         port=settings.api_port,
-        log_level="warning"
+        log_level="warning",
+        loop="asyncio"  # Explicitly use asyncio loop for PyInstaller compatibility
     )
-    server = uvicorn.Server(config)
-    server.run()

@@ -3,8 +3,9 @@
  * Allows users to search, preview, and scrape web content
  */
 
-import React, { useState, useEffect } from 'react';
-import { webService, WebSearchResult, ScrapedContent } from '../services/web';
+import React, { useState, useEffect, useRef } from 'react';
+import { webService, WebSearchResult } from '../services/web';
+import { API_BASE_URL } from '../services/api';
 
 interface WebSource {
     id: string;
@@ -17,23 +18,15 @@ interface WebSource {
 
 interface WebSearchResultsProps {
     notebookId: string;
-    onContentScraped?: (content: ScrapedContent[]) => void;
-    onAddedToNotebook?: () => void;
     onSourceAdded?: () => void;  // Called when a source is added (doesn't close modal)
     initialQuery?: string;
 }
 
 export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
     notebookId,
-    onContentScraped: _onContentScraped,
-    onAddedToNotebook: _onAddedToNotebook,
     onSourceAdded,
     initialQuery = '',
 }) => {
-    // Note: onContentScraped and onAddedToNotebook are kept in interface for API compatibility
-    // but intentionally unused - onSourceAdded is the preferred callback
-    void _onContentScraped;
-    void _onAddedToNotebook;
     const [query, setQuery] = useState(initialQuery);
     
     // Update query when initialQuery changes (e.g., from chat low confidence)
@@ -43,12 +36,12 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
         }
     }, [initialQuery]);
     const [results, setResults] = useState<WebSearchResult[]>([]);
-    const [scrapedContent, setScrapedContent] = useState<ScrapedContent[]>([]);
     const [isSearching, setIsSearching] = useState(false);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
-    const [addingUrls, setAddingUrls] = useState<Set<string>>(new Set());  // Track which URLs are being added
     const [addedUrls, setAddedUrls] = useState<Set<string>>(new Set());    // Track which URLs have been added
+    const [failedUrls, setFailedUrls] = useState<Map<string, string>>(new Map()); // Track failed URLs with error message
     const [error, setError] = useState<string | null>(null);
+    const wsRef = useRef<WebSocket | null>(null);
     const [currentOffset, setCurrentOffset] = useState(0);
     const [hasMore, setHasMore] = useState(false);
     const [lastQuery, setLastQuery] = useState('');
@@ -63,6 +56,48 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                 .catch(err => console.error('Failed to load existing sources:', err));
         }
     }, [notebookId]);
+
+    // WebSocket to listen for source processing failures and update UI
+    useEffect(() => {
+        if (!notebookId) return;
+
+        const wsUrl = API_BASE_URL.replace('http', 'ws') + '/constellation/ws';
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                if (message.type === 'source_updated' && message.data?.notebook_id === notebookId) {
+                    const { status, title, error: errorMsg } = message.data;
+                    
+                    // Find the URL that matches this title (best effort)
+                    const matchingResult = results.find(r => r.title === title || r.url.includes(title));
+                    
+                    if (status === 'failed' && matchingResult) {
+                        // Mark as failed - remove from added, add to failed
+                        setAddedUrls(prev => {
+                            const next = new Set(prev);
+                            next.delete(matchingResult.url);
+                            return next;
+                        });
+                        setFailedUrls(prev => {
+                            const next = new Map(prev);
+                            next.set(matchingResult.url, errorMsg || 'Failed to process');
+                            return next;
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error('WebSocket message parse error:', e);
+            }
+        };
+
+        return () => {
+            ws.close();
+            wsRef.current = null;
+        };
+    }, [notebookId, results]);
 
     const isUrl = (text: string): boolean => {
         try {
@@ -83,7 +118,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
         setError(null);
         setResults([]);
         setAddedUrls(new Set());
-        setScrapedContent([]);
+        setFailedUrls(new Map());
         setCurrentOffset(0);
         setHasMore(false);
 
@@ -145,67 +180,72 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
         }
     };
 
-    // Add single article
+    // Add single article - OPTIMISTIC UI: show success immediately, fire-and-forget API call
     const handleAddSingle = async (url: string) => {
-        if (addingUrls.has(url) || addedUrls.has(url)) return;
+        // Allow retry if previously failed, otherwise skip if already added
+        if (addedUrls.has(url) && !failedUrls.has(url)) return;
         
-        setAddingUrls(prev => new Set(prev).add(url));
-        setError(null);
-
-        try {
-            const response = await webService.scrape([url]);
-            const successfulScrapes = response.results.filter(c => c.success);
-
-            if (successfulScrapes.length === 0) {
-                setError('Failed to scrape content');
-                return;
-            }
-
-            await webService.addToNotebook(notebookId, [url], successfulScrapes);
-            setAddedUrls(prev => new Set(prev).add(url));
-            
-            // Refresh sources list without closing modal
-            if (onSourceAdded) {
-                onSourceAdded();
-            }
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to add');
-        } finally {
-            setAddingUrls(prev => {
-                const next = new Set(prev);
+        // Find the title from results
+        const result = results.find(r => r.url === url);
+        const title = result?.title || url;
+        
+        // Clear any previous failure state for this URL
+        if (failedUrls.has(url)) {
+            setFailedUrls(prev => {
+                const next = new Map(prev);
                 next.delete(url);
                 return next;
             });
         }
+        
+        // OPTIMISTIC: Show success IMMEDIATELY (before API call)
+        setAddedUrls(prev => new Set(prev).add(url));
+        
+        // Refresh sources list to show new "processing" source
+        if (onSourceAdded) {
+            onSourceAdded();
+        }
+        
+        // Fire-and-forget: API call happens in background
+        // Only show error if it fails, don't block the UI
+        webService.quickAdd(notebookId, url, title).catch(err => {
+            // Rollback on failure
+            setAddedUrls(prev => {
+                const next = new Set(prev);
+                next.delete(url);
+                return next;
+            });
+            setError(err instanceof Error ? err.message : 'Failed to add');
+        });
     };
 
-    // Add all articles
+    // Add all articles - OPTIMISTIC UI: show success immediately for all
     const handleAddAll = async () => {
-        const urlsToAdd = results.map(r => r.url).filter(url => !addedUrls.has(url));
-        if (urlsToAdd.length === 0) return;
+        const resultsToAdd = results.filter(r => !addedUrls.has(r.url));
+        if (resultsToAdd.length === 0) return;
         
-        setAddingUrls(new Set(urlsToAdd));
-        setError(null);
-
-        try {
-            const response = await webService.scrape(urlsToAdd);
-            setScrapedContent(response.results);
-            const successfulScrapes = response.results.filter(c => c.success);
-
-            if (successfulScrapes.length === 0) {
-                setError('Failed to scrape any content');
-                return;
-            }
-
-            await webService.addToNotebook(notebookId, urlsToAdd, successfulScrapes);
-            setAddedUrls(prev => new Set([...prev, ...urlsToAdd]));
-            
-            // Don't call onAddedToNotebook - it closes the modal
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to add to notebook');
-        } finally {
-            setAddingUrls(new Set());
+        const urlsToAdd = resultsToAdd.map(r => r.url);
+        
+        // OPTIMISTIC: Show all as added IMMEDIATELY
+        setAddedUrls(prev => new Set([...prev, ...urlsToAdd]));
+        
+        // Refresh sources list
+        if (onSourceAdded) {
+            onSourceAdded();
         }
+        
+        // Fire-and-forget: API calls happen in background
+        resultsToAdd.forEach(r => {
+            webService.quickAdd(notebookId, r.url, r.title).catch(err => {
+                // Rollback this specific URL on failure
+                setAddedUrls(prev => {
+                    const next = new Set(prev);
+                    next.delete(r.url);
+                    return next;
+                });
+                console.error(`Failed to add ${r.url}:`, err);
+            });
+        });
     };
 
     // Open URL in browser for preview (use Tauri opener plugin)
@@ -274,7 +314,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                         <div className="flex items-center justify-between mb-3 text-xs text-gray-500 dark:text-gray-400">
                             <button
                                 onClick={handleAddAll}
-                                disabled={addingUrls.size > 0 || addedUrls.size === results.length}
+                                disabled={addedUrls.size === results.length}
                                 className="flex items-center gap-1.5 hover:text-blue-600 dark:hover:text-blue-400 disabled:opacity-50 disabled:cursor-not-allowed group"
                                 title="Scrapes and adds all results to your notebook sources"
                             >
@@ -293,25 +333,33 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                                 <div
                                     key={idx}
                                     className={`flex gap-3 p-3 border rounded-lg transition-colors ${
-                                        addedUrls.has(result.url)
+                                        failedUrls.has(result.url)
+                                            ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
+                                            : addedUrls.has(result.url)
                                             ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
                                             : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-750'
                                     }`}
                                 >
-                                    {/* Add Button */}
+                                    {/* Add Button - shows green for success, red for failed, gray for not added */}
                                     <button
                                         onClick={() => handleAddSingle(result.url)}
-                                        disabled={addingUrls.has(result.url) || addedUrls.has(result.url)}
+                                        disabled={addedUrls.has(result.url) && !failedUrls.has(result.url)}
                                         className={`w-6 h-6 flex-shrink-0 flex items-center justify-center rounded text-sm font-bold transition-all ${
-                                            addedUrls.has(result.url)
-                                                ? 'bg-green-500 text-white cursor-default'
-                                                : addingUrls.has(result.url)
-                                                ? 'bg-blue-200 dark:bg-blue-800 text-blue-600 dark:text-blue-300 animate-pulse'
-                                                : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 hover:text-blue-600 dark:hover:text-blue-400'
-                                        }`}
-                                        title={addedUrls.has(result.url) ? 'Added' : 'Add to notebook'}
+                                            failedUrls.has(result.url)
+                                                ? 'bg-red-500 text-white cursor-pointer hover:bg-red-600 scale-110'
+                                                : addedUrls.has(result.url)
+                                                ? 'bg-green-500 text-white cursor-default scale-110'
+                                                : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 hover:text-blue-600 dark:hover:text-blue-400 hover:scale-110'
+                                        } transition-transform duration-200`}
+                                        title={
+                                            failedUrls.has(result.url) 
+                                                ? `Failed: ${failedUrls.get(result.url)} - Click to retry` 
+                                                : addedUrls.has(result.url) 
+                                                ? 'Added' 
+                                                : 'Add to notebook'
+                                        }
                                     >
-                                        {addedUrls.has(result.url) ? '✓' : addingUrls.has(result.url) ? '...' : '+'}
+                                        {failedUrls.has(result.url) ? '✕' : addedUrls.has(result.url) ? '✓' : '+'}
                                     </button>
                                     
                                     {/* Content - click title to preview */}
@@ -412,36 +460,6 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                 )}
             </div>
 
-            {/* Scraped Content Preview */}
-            {scrapedContent.length > 0 && (
-                <div className="border-t border-gray-200 dark:border-gray-700 p-4 bg-gray-50 dark:bg-gray-750">
-                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-2">
-                        Scraped Content ({scrapedContent.filter(c => c.success).length} successful)
-                    </h3>
-                    <div className="max-h-40 overflow-y-auto space-y-2">
-                        {scrapedContent.map((content, idx) => (
-                            <div
-                                key={idx}
-                                className={`p-2 rounded text-xs ${
-                                    content.success
-                                        ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400'
-                                        : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'
-                                }`}
-                            >
-                                <p className="font-medium">{content.title || content.url}</p>
-                                {content.success && (
-                                    <p className="text-xs opacity-75 mt-1">
-                                        {content.word_count} words extracted
-                                    </p>
-                                )}
-                                {!content.success && (
-                                    <p className="text-xs opacity-75 mt-1">Error: {content.error}</p>
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
         </div>
     );
 };

@@ -51,6 +51,18 @@ if ! command -v ollama &> /dev/null; then
     brew install ollama
 fi
 
+# Install ffmpeg if not found (for audio/video transcription)
+if ! command -v ffmpeg &> /dev/null; then
+    echo -e "${YELLOW}ffmpeg not found. Installing...${NC}"
+    brew install ffmpeg
+fi
+
+# Install Tesseract if not found (for image OCR)
+if ! command -v tesseract &> /dev/null; then
+    echo -e "${YELLOW}Tesseract not found. Installing...${NC}"
+    brew install tesseract
+fi
+
 # Install Rust if not found
 if ! command -v cargo &> /dev/null; then
     echo -e "${YELLOW}Rust not found. Installing automatically...${NC}"
@@ -69,10 +81,26 @@ echo -e "${GREEN}✓ Prerequisites checked${NC}"
 BACKEND_DIR="src-tauri/resources/backend/localbook-backend"
 BACKEND_EXE="$BACKEND_DIR/localbook-backend"
 
+# Parse arguments
+DO_REBUILD=false
+DO_CLEAN=false
+for arg in "$@"; do
+    case $arg in
+        --rebuild) DO_REBUILD=true ;;
+        --clean) DO_CLEAN=true ;;
+    esac
+done
+
 # Step 1: Build backend
 echo -e "\n${YELLOW}Step 1/3: Building backend...${NC}"
-if [ ! -f "$BACKEND_EXE" ] || [ "$1" = "--rebuild" ]; then
+if [ ! -f "$BACKEND_EXE" ] || [ "$DO_REBUILD" = true ] || [ "$DO_CLEAN" = true ]; then
     cd backend
+    
+    # Clean rebuild: remove venv entirely to ensure fresh install
+    if [ "$DO_CLEAN" = true ]; then
+        echo -e "${YELLOW}Clean build: removing existing virtual environment...${NC}"
+        rm -rf .venv
+    fi
     
     # Ensure venv exists
     if [ ! -d ".venv" ]; then
@@ -82,15 +110,31 @@ if [ ! -f "$BACKEND_EXE" ] || [ "$1" = "--rebuild" ]; then
     
     source .venv/bin/activate
     
-    # Install dependencies
+    # Install/upgrade dependencies (no quiet mode - show errors)
     echo -e "${YELLOW}Installing dependencies...${NC}"
-    pip install -q -r requirements.txt
+    pip install --upgrade pip
+    pip install -r requirements.txt
+    
+    # Verify critical packages are installed
+    echo -e "${YELLOW}Verifying critical packages...${NC}"
+    MISSING=""
+    python -c "import rank_bm25" 2>/dev/null || MISSING="$MISSING rank-bm25"
+    python -c "import ebooklib" 2>/dev/null || MISSING="$MISSING ebooklib"
+    python -c "import odf" 2>/dev/null || MISSING="$MISSING odfpy"
+    python -c "import nbformat" 2>/dev/null || MISSING="$MISSING nbformat"
+    
+    if [ -n "$MISSING" ]; then
+        echo -e "${YELLOW}Installing missing packages:$MISSING${NC}"
+        pip install $MISSING
+    fi
+    
+    echo -e "${GREEN}✓ Dependencies installed${NC}"
     
     # Build binary
     ./build_backend.sh
     cd ..
 else
-    echo -e "${GREEN}✓ Backend binary already exists (use --rebuild to force)${NC}"
+    echo -e "${GREEN}✓ Backend binary already exists (use --rebuild to force, --clean for fresh venv)${NC}"
 fi
 
 # Step 2: Install frontend dependencies
@@ -131,22 +175,22 @@ fi
 
 MODELS=$(ollama list 2>/dev/null || echo "")
 
-# System 2: Main model for conversation and reasoning
-if ! echo "$MODELS" | grep -q "olmo-3:7b-think"; then
-    echo -e "${YELLOW}Downloading olmo-3:7b-think model (~4GB)...${NC}"
-    ollama pull olmo-3:7b-think
+# System 2: Main model for conversation and reasoning (64K context)
+if ! echo "$MODELS" | grep -q "olmo-3:7b-instruct"; then
+    echo -e "${YELLOW}Downloading olmo-3:7b-instruct model (~4GB)...${NC}"
+    ollama pull olmo-3:7b-instruct
 fi
 
-# System 1: Fast model for quick responses
-if ! echo "$MODELS" | grep -q "llama3.2:3b"; then
-    echo -e "${YELLOW}Downloading llama3.2:3b model (~2GB)...${NC}"
-    ollama pull llama3.2:3b
+# System 1: Fast model for quick responses (Microsoft Phi-4 mini)
+if ! echo "$MODELS" | grep -q "phi4-mini"; then
+    echo -e "${YELLOW}Downloading phi4-mini model (~2GB)...${NC}"
+    ollama pull phi4-mini
 fi
 
-# Embedding model
-if ! echo "$MODELS" | grep -q "nomic-embed-text"; then
-    echo -e "${YELLOW}Downloading nomic-embed-text model (~300MB)...${NC}"
-    ollama pull nomic-embed-text
+# Embedding model (1024 dims, frontier quality)
+if ! echo "$MODELS" | grep -q "snowflake-arctic-embed2"; then
+    echo -e "${YELLOW}Downloading snowflake-arctic-embed2 model (~500MB)...${NC}"
+    ollama pull snowflake-arctic-embed2
 fi
 
 echo -e "${GREEN}✓ AI models ready${NC}"

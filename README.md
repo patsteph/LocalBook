@@ -4,170 +4,184 @@
 
 ![LocalBook](https://img.shields.io/badge/Platform-macOS-blue) ![Python](https://img.shields.io/badge/Python-3.10+-green) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
+---
+
 ## What is LocalBook?
 
-LocalBook lets you **chat with your documents** using AI — completely offline and private. Upload PDFs, Word docs, web pages, or YouTube videos, then ask questions and get answers with exact citations.
+Chat with your documents using AI — completely offline and private. Upload PDFs, Word docs, web pages, or YouTube videos, then ask questions and get answers with exact citations.
 
-- 🔒 **100% Private** — Everything runs on your Mac
-- 📚 **Your Documents** — AI answers from YOUR files with citations
-- � **Knowledge Constellation** — 3D visualization of concepts across documents
-- 🧠 **Memory System** — AI remembers your preferences and past conversations
+- 🔒 **100% Private** — Everything runs locally on your Mac
+- 📚 **Cited Answers** — AI answers from YOUR files with source citations
+- 🌌 **Knowledge Constellation** — 3D visualization of concepts across documents
+- 🧠 **Memory System** — AI remembers your preferences across sessions
 - 🎙️ **Podcast Generator** — Turn documents into audio discussions
-- � **Auto-Updates** — Check for updates from GitHub (**under construction for packaged `.app` installs**)
+
+---
+
+## Requirements
+
+| Requirement | Details |
+|-------------|---------|
+| **macOS** | Required (Apple Silicon recommended, Intel supported) |
+| **RAM** | 16GB+ recommended (8GB minimum) |
+| **Storage** | ~15GB for models and app |
+| **Ollama** | Local LLM runtime ([ollama.ai](https://ollama.ai)) |
+
+### System Dependencies
+
+The build script installs these automatically, or install manually:
+
+```bash
+brew install ollama ffmpeg tesseract python@3.11 node
+```
 
 ---
 
 ## Quick Start
 
 ```bash
-# Clone and build (~15-20 min first time)
 git clone https://github.com/patsteph/LocalBook.git
 cd LocalBook
 ./build.sh
-
-# Install
 cp -r LocalBook.app /Applications/
 ```
 
-The build script installs everything: Homebrew, Python, Node.js, Rust, Ollama, AI models (~10GB), and all dependencies.
+Build takes ~15-20 minutes on first run (downloads models, installs dependencies).
 
-Note: `./build.sh` performs network downloads and may install system dependencies. It typically requires an admin-enabled Mac and may prompt for permissions.
+### ⚡ Speed Up First Launch
 
----
+Pre-download AI models before building to save time on first startup:
 
-## Requirements
-
-### System
-- **macOS** (required for audio generation)
-- **16GB+ RAM** recommended (8GB minimum)
-- **~15GB storage** for models and app
-- **Apple Silicon** recommended (Intel works but slower)
-
-### System Dependencies
-| Dependency | Purpose | Install |
-|------------|---------|--------|
-| **Ollama** | Local LLM inference | `brew install ollama` |
-| **ffmpeg** | Audio/video transcription | `brew install ffmpeg` |
-| **Python 3.10+** | Backend | `brew install python@3.11` |
-| **Node.js 18+** | Frontend build | `brew install node` |
-| **git** | Updates | Pre-installed on macOS |
-
-> The `build.sh` script installs all of these automatically.
-
-### AI Models (pulled by build script)
 ```bash
-ollama pull olmo-3:7b-think    # System 2: Main reasoning model (~4GB)
-ollama pull llama3.2:3b        # System 1: Fast model (~2GB)
-ollama pull nomic-embed-text   # Embeddings (~300MB)
+# Required models (~6GB total)
+ollama pull olmo-3:7b-instruct      # Main reasoning model
+ollama pull phi4-mini               # Fast model
+ollama pull snowflake-arctic-embed2 # Embeddings (1024 dims)
 ```
 
 ---
 
 ## Features
 
-### Core Features
 | Feature | Description |
 |---------|-------------|
 | 💬 **Chat** | Ask questions, get answers with citations |
-| 📄 **Multi-format** | PDF, Word, PowerPoint, Excel, web pages, YouTube |
-| 🔍 **Web Search** | Optionally supplement with real-time web results |
+| 📄 **Multi-format** | PDF, Word, PowerPoint, Excel, EPUB, Jupyter, Images (OCR), YouTube |
+| 🔍 **Web Search** | Supplement answers with real-time web results |
 | 📅 **Timeline** | Auto-extract and visualize dates/events |
+| 🌌 **Constellation** | 3D knowledge graph with clustering |
+| 🧠 **Memory** | AI remembers facts about you across sessions |
+| 🎙️ **Podcasts** | Generate audio discussions from documents |
 
-### Latest Features (v0.3.0)
+### What's New in v0.6
+
 | Feature | Description |
 |---------|-------------|
-| 🚀 **Smart Startup** | Auto-verifies models, embeddings, and data on launch |
-| 🧠 **Auto-Routing** | Complex queries automatically use deep thinking mode |
-| 🔄 **Embedding Migration** | Seamless upgrade from 384→768 dim embeddings |
-| 🌌 **3D Constellation** | Interactive 3D knowledge graph with clustering and color-coded themes |
-| 🎯 **Key Themes** | Auto-discovered topic clusters from your documents |
-| ⚡ **Deep Think Mode** | Toggle for complex reasoning with visual indicator |
-| 🧠 **Memory** | AI remembers facts about you across sessions |
+| 🎯 **Query Orchestrator** | Complex queries auto-decompose into sub-questions |
+| 📖 **Parent Document Retrieval** | Retrieves surrounding context for better answers |
+| 🕸️ **Entity Graph** | Tracks people, metrics, and relationships |
+| 🔄 **Migration Manager** | Seamless upgrades with progress notifications |
+| ❄️ **Snowflake Embeddings** | Upgraded to 1024-dim frontier embeddings |
+| ⚡ **Phi-4 Mini** | Faster responses with Microsoft's latest small model |
 
-### ⚠️ Upgrading from v0.1.x (IMPORTANT)
-If upgrading from v0.1.x, your data is stored inside the app bundle and **will be lost** if you simply replace the app.
+### What's New in v0.5
 
-**Before replacing LocalBook.app, run this migration script:**
-```bash
-curl -sL https://raw.githubusercontent.com/patsteph/LocalBook/master/migrate_data.sh | bash
-```
-
-**v0.2.x+ users:** v0.3.0 automatically migrates your embeddings to the new format on first launch. Just replace the app and restart.
+| Feature | Description |
+|---------|-------------|
+| 🎯 **Adaptive RAG** | Two-tier model routing (fast vs deep thinking) |
+| 🔀 **Hybrid Search** | Vector + BM25 keyword search combined |
+| 📊 **FlashRank Reranking** | Cross-encoder reranking for better retrieval |
+| ✨ **Cleaner Answers** | Improved prompt engineering, no artifacts |
 
 ---
 
-## Development
+## Upgrading
 
+### From v0.5
+Automatic incremental upgrade. Just replace the app and restart.
+
+### From v0.2/v0.3
+Automatic migration on first launch. Documents will be re-indexed with new embeddings.
+
+### From v0.1.x
+Data was stored inside the app bundle. Run this **before** replacing the app:
 ```bash
-# Run in development mode with hot-reload
-./start.sh
+curl -sL https://raw.githubusercontent.com/patsteph/LocalBook/master/migrate_data.sh | bash
 ```
-
-### Project Structure
-```
-LocalBook/
-├── backend/           # Python FastAPI backend
-│   ├── api/          # API endpoints
-│   ├── services/     # Business logic (RAG, memory, knowledge graph)
-│   └── storage/      # Database and vector storage
-├── src/              # React frontend
-├── src-tauri/        # Tauri desktop app
-└── data/             # Local data (gitignored)
-```
-
-### API Docs
-When running: http://localhost:8000/docs
 
 ---
 
 ## Configuration
 
-### Settings (in-app)
-- **API Keys**: Brave Search, OpenAI, Anthropic
-- **Memory**: View/manage AI memory
-- **Updates**: Check for new versions
+### In-App Settings
+- **API Keys** — Brave Search, OpenAI, Anthropic (optional)
+- **Memory** — View/manage what AI remembers
+- **Updates** — Check for new versions
 
 ### Environment (`backend/.env`)
 ```bash
-OLLAMA_MODEL=olmo-3:7b-think       # System 2: Main reasoning model (64K context)
-OLLAMA_FAST_MODEL=llama3.2:3b      # System 1: Fast responses + concept extraction
-EMBEDDING_MODEL=nomic-embed-text   # Document embeddings (768 dims)
-CHUNK_SIZE=1000
-CHUNK_OVERLAP=200
+OLLAMA_MODEL=olmo-3:7b-instruct       # Main reasoning (64K context)
+OLLAMA_FAST_MODEL=phi4-mini           # Fast responses
+EMBEDDING_MODEL=snowflake-arctic-embed2  # 1024-dim embeddings
 ```
 
 ---
 
 ## Data Storage
 
-All data stored locally in `data/` (gitignored):
-- `data/uploads/` — Your documents
-- `data/lancedb/` — Vector embeddings
-- `data/memory/` — AI memory (persists across updates)
-- `data/audio/` — Generated podcasts
+All data stored in `~/Library/Application Support/LocalBook/`:
+
+| Directory | Contents |
+|-----------|----------|
+| `uploads/` | Your documents |
+| `lancedb/` | Vector embeddings |
+| `memory/` | AI memory (persists across updates) |
+| `audio/` | Generated podcasts |
+| `backups/` | Pre-migration backups |
+
+---
+
+## Development
+
+```bash
+./start.sh  # Run with hot-reload
+```
+
+API docs available at http://localhost:8000/docs when running.
+
+### Project Structure
+```
+LocalBook/
+├── backend/           # Python FastAPI
+│   ├── api/          # REST endpoints
+│   ├── services/     # RAG, memory, knowledge graph
+│   └── storage/      # LanceDB, file storage
+├── src/              # React frontend
+└── src-tauri/        # Tauri desktop wrapper
+```
 
 ---
 
 ## Troubleshooting
 
-### Ollama Issues
+### Ollama Not Running
 ```bash
-curl http://localhost:11434/api/tags  # Check if running
-ollama serve                           # Start if not
-ollama list                            # Verify models
+ollama serve          # Start Ollama
+ollama list           # Verify models installed
+```
+
+### Models Missing
+```bash
+ollama pull olmo-3:7b-instruct
+ollama pull phi4-mini
+ollama pull snowflake-arctic-embed2
 ```
 
 ### Clean Rebuild
 ```bash
-./build.sh --rebuild
-
-# If you still have issues, do a full clean wipe rebuild:
 rm -rf src-tauri/resources/backend/ src-tauri/target/ node_modules/ backend/.venv/
 ./build.sh
 ```
-
-### Memory Not Working
-Restart the backend after updating. Memory is extracted from chat conversations automatically.
 
 ---
 
@@ -177,6 +191,4 @@ MIT — See LICENSE file.
 
 ---
 
-## Acknowledgments
-
-Inspired by Google's NotebookLM, built for privacy-conscious users who want local document AI.
+Built for privacy-conscious users who want local document AI. Inspired by Google's NotebookLM.

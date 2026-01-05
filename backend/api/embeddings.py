@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from storage.notebook_store import notebook_store
-from services.rag_engine import rag_service
+from services.rag_engine import rag_engine
 
 router = APIRouter()
 
@@ -17,19 +17,19 @@ async def get_current_model(notebook_id: str):
         if not notebook:
             raise HTTPException(status_code=404, detail="Notebook not found")
 
-        # Get model from notebook metadata or use default (nomic-embed-text via Ollama)
-        model_name = notebook.get("embedding_model", "nomic-embed-text")
+        # Get model from notebook metadata or use default (snowflake-arctic-embed2 via Ollama)
+        model_name = notebook.get("embedding_model", "snowflake-arctic-embed2")
         needs_reembedding = notebook.get("needs_reembedding", False)
 
         # Get model dimensions based on model name
         dimensions_map = {
+            "snowflake-arctic-embed2": 1024,
             "nomic-embed-text": 768,
             "mxbai-embed-large": 1024,
             "all-minilm": 384,
-            "snowflake-arctic-embed": 1024,
         }
 
-        dimensions = dimensions_map.get(model_name, 768)
+        dimensions = dimensions_map.get(model_name, 1024)
 
         return {
             "model_name": model_name,

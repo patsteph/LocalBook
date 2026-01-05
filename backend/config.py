@@ -5,23 +5,18 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 def get_data_directory() -> Path:
-    """Get the appropriate data directory based on environment.
+    """Get the data directory - ALWAYS uses production location.
     
-    - Development: ./data (relative to project)
-    - Production (bundled app): ~/Library/Application Support/LocalBook/
+    All environments (dev, bundled) use: ~/Library/Application Support/LocalBook/
+    This ensures consistent data across development and production.
     """
-    # Check if running as a bundled PyInstaller app
+    app_support = Path.home() / "Library" / "Application Support" / "LocalBook"
+    
+    # Auto-migrate from old bundle location if needed (for bundled apps)
     if getattr(sys, 'frozen', False):
-        # Running as bundled app - use Application Support
-        app_support = Path.home() / "Library" / "Application Support" / "LocalBook"
-        
-        # Auto-migrate from old bundle location if needed
         _migrate_old_data(app_support)
-        
-        return app_support
-    else:
-        # Development mode - use relative path
-        return Path("data")
+    
+    return app_support
 
 
 def _migrate_old_data(new_data_dir: Path) -> None:
@@ -64,21 +59,25 @@ class Settings(BaseSettings):
     # LLM settings
     llm_provider: str = "ollama"  # ollama, openai, or anthropic
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "olmo-3:7b-think"  # System 2: Main model - 64K context, strong reasoning, 50% smaller than phi4
-    ollama_fast_model: str = "llama3.2:3b"  # System 1: Fast model for quick responses
+    ollama_model: str = "olmo-3:7b-instruct"  # System 2: Main model - 64K context, chat/synthesis, streams properly
+    ollama_fast_model: str = "phi4-mini:latest"  # System 1: Fast model - Microsoft Phi-4 mini, better than llama3.2:3b
     openai_api_key: str = ""
     anthropic_api_key: str = ""
 
     # Embedding settings
-    # nomic-embed-text: 768 dims, 8192 context, outperforms OpenAI ada-002
-    embedding_model: str = "nomic-embed-text"  # Via Ollama
+    # snowflake-arctic-embed2: 1024 dims, frontier model, excellent retrieval quality
+    # Upgrade from nomic-embed-text (768 dims) for better semantic matching
+    embedding_model: str = "snowflake-arctic-embed2"  # Via Ollama - best balance of speed/quality
+    embedding_dim: int = 1024  # snowflake-arctic-embed2 uses 1024 dimensions
     use_ollama_embeddings: bool = True  # Use Ollama for embeddings instead of sentence-transformers
     chunk_size: int = 1000
     chunk_overlap: int = 200
     
     # Reranker settings (two-stage retrieval)
+    # FlashRank: Ultra-fast, no torch needed, runs on CPU, ~34MB
     use_reranker: bool = True  # Enable cross-encoder reranking for better retrieval
-    reranker_model: str = "BAAI/bge-reranker-v2-m3"  # Cross-encoder model
+    reranker_model: str = "ms-marco-MiniLM-L-12-v2"  # FlashRank model - best quality
+    reranker_type: str = "flashrank"  # "flashrank" (fast, CPU) or "cross-encoder" (slower, GPU)
     retrieval_overcollect: int = 12  # Candidates from vector search before reranking
     retrieval_top_k: int = 5  # Final chunks after reranking
 

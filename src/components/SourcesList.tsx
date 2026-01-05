@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { sourceService } from '../services/sources';
 import { Source } from '../types';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
 import { SourceNotesViewer } from './SourceNotesViewer';
+import { API_BASE_URL } from '../services/api';
 
 interface SourcesListProps {
   notebookId: string | null;
@@ -17,6 +18,35 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewingSource, setViewingSource] = useState<Source | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // WebSocket connection for real-time source updates
+  useEffect(() => {
+    if (!notebookId) return;
+
+    const wsUrl = API_BASE_URL.replace('http', 'ws') + '/constellation/ws';
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === 'source_updated' && message.data?.notebook_id === notebookId) {
+          // Refresh sources list when a source is updated
+          loadSources();
+        }
+      } catch (e) {
+        console.error('WebSocket message parse error:', e);
+      }
+    };
+
+    ws.onerror = (e) => console.error('WebSocket error:', e);
+
+    return () => {
+      ws.close();
+      wsRef.current = null;
+    };
+  }, [notebookId]);
 
   useEffect(() => {
     console.log('SourcesList useEffect triggered, notebookId:', notebookId);
@@ -123,6 +153,24 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                       {(source.chunks ?? 0) > 0 && <span>{source.chunks} chunks</span>}
                       <span>{((source.char_count || source.characters || 0) / 1000).toFixed(1)}k chars</span>
                     </div>
+                    {/* Tags display */}
+                    {source.tags && source.tags.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {source.tags.slice(0, 3).map((tag: string) => (
+                          <span
+                            key={tag}
+                            className="px-1.5 py-0.5 text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 rounded"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                        {source.tags.length > 3 && (
+                          <span className="px-1.5 py-0.5 text-xs text-gray-500 dark:text-gray-400">
+                            +{source.tags.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <span className={`inline-block mt-1 px-2 py-0.5 text-xs rounded ${
                       source.status === 'completed'
                         ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'

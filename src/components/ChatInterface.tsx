@@ -3,7 +3,7 @@ import { chatService } from '../services/chat';
 import { explorationService } from '../services/exploration';
 import { ChatMessage, Citation as CitationType } from '../types';
 import { Button } from './shared/Button';
-import { LoadingSpinner } from './shared/LoadingSpinner';
+// LoadingSpinner removed - now using statusMessage in message bubble
 import { ErrorMessage } from './shared/ErrorMessage';
 import { Citation, CitationList } from './Citation';
 import { SourceNotesViewer } from './SourceNotesViewer';
@@ -28,7 +28,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   }, [prefillQuery]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [loadingMessage, setLoadingMessage] = useState('');
+  // loadingMessage state removed - now using statusMessage from backend
   const [activeDeepThink, setActiveDeepThink] = useState(false);  // Actual mode being used (may differ from toggle due to auto-upgrade)
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -128,38 +128,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     );
   };
 
-  // Cycling loading messages - different messages for deep think mode
-  useEffect(() => {
-    if (!loading) {
-      setLoadingMessage('');
-      return;
-    }
-
-    const fastMessages = [
-      'Searching your sources...',
-      'Analyzing relevant passages...',
-      'Crafting response...',
-    ];
-    
-    const deepThinkMessages = [
-      '🧠 Thinking deeply...',
-      '🧠 Analyzing step by step...',
-      '🧠 Reasoning through details...',
-      '🧠 Synthesizing insights...',
-    ];
-    
-    const messages = activeDeepThink ? deepThinkMessages : fastMessages;
-
-    let index = 0;
-    setLoadingMessage(messages[0]);
-
-    const interval = setInterval(() => {
-      index = (index + 1) % messages.length;
-      setLoadingMessage(messages[index]);
-    }, 3000); // Cycle every 3 seconds - not too fast
-
-    return () => clearInterval(interval);
-  }, [loading, activeDeepThink]);
+  // Old cycling loading messages removed - now using statusMessage from backend (Phase 1.2)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -211,6 +180,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
           onMode: (isDeepThink, _autoUpgraded) => {
             // Track when deep think mode is active (manual or auto-upgraded)
             setActiveDeepThink(isDeepThink);
+          },
+          onStatus: (message, _queryType) => {
+            // Phase 1.2: Show progressive status updates
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (updated[lastIdx]?.role === 'assistant') {
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  statusMessage: message,
+                };
+              }
+              return updated;
+            });
           },
           onCitations: (citations, _sources, lowConfidence) => {
             // Store citations but don't show yet - wait for quick summary
@@ -372,6 +355,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 <p className="text-sm whitespace-pre-wrap">{message.content}</p>
               ) : (
                 <>
+                  {/* Status message - shown while processing (Phase 1.2) */}
+                  {message.statusMessage && !message.content && !message.quickSummary && (
+                    <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                      <span className="animate-pulse">{message.statusMessage}</span>
+                    </div>
+                  )}
+                  
                   {/* Memory indicator - subtle tooltip when memory is used */}
                   {message.memoryUsed && message.memoryUsed.length > 0 && (
                     <div className="mb-2 flex items-center gap-1.5 group relative">
@@ -389,8 +379,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                     </div>
                   )}
                   
-                  {/* Quick Summary - shown first for fast feedback */}
-                  {message.quickSummary && (
+                  {/* Quick Summary - only show if Detailed Answer is substantially longer */}
+                  {message.quickSummary && message.content && 
+                   message.content.length > message.quickSummary.length * 1.5 && (
                     <div className="mb-3 pb-3 border-b border-gray-200 dark:border-gray-600">
                       <div className="flex items-center gap-1.5 mb-1.5">
                         <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">⚡ Quick Answer</span>
@@ -399,10 +390,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                     </div>
                   )}
                   
-                  {/* Detailed Answer - streams in after quick summary */}
+                  {/* Detailed Answer - show with header only if Quick Answer is also shown */}
                   {message.content && (
                     <>
-                      {message.quickSummary && (
+                      {message.quickSummary && message.content.length > message.quickSummary.length * 1.5 && (
                         <div className="flex items-center gap-1.5 mb-1.5">
                           <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">📝 Detailed Answer</span>
                         </div>
@@ -488,16 +479,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
           </div>
         ))}
 
-        {loading && (
-          <div className="flex justify-start">
-            <div className="bg-gray-100 rounded-lg p-4">
-              <div className="flex items-center gap-3">
-                <LoadingSpinner size="sm" />
-                <p className="text-sm text-gray-600 italic">{loadingMessage}</p>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Old loading indicator removed - now using statusMessage in the message bubble */}
 
         <div ref={messagesEndRef} />
       </div>

@@ -1,12 +1,13 @@
 """Web search and scraping API endpoints"""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional
 import os
 import re
 from services.web_scraper import web_scraper
-from services.rag_engine import rag_service
+from services.rag_engine import rag_engine
 from storage.source_store import source_store
+from api.constellation_ws import notify_source_updated
 
 router = APIRouter()
 
@@ -51,6 +52,11 @@ class AddToNotebookRequest(BaseModel):
     notebook_id: str
     urls: List[str]
     scraped_content: List[dict]
+
+class QuickAddRequest(BaseModel):
+    notebook_id: str
+    url: str
+    title: str  # From search result
 
 @router.post("/search", response_model=WebSearchResponse)
 async def search(request: WebSearchRequest):
@@ -118,9 +124,58 @@ async def scrape(request: WebScrapeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scraping failed: {str(e)}")
 
+async def _process_web_source_background(notebook_id: str, source_id: str, text: str, title: str, url: str):
+    """Background task to ingest web content into RAG system"""
+    try:
+        source_type = "youtube" if "youtube.com" in url or "youtu.be" in url else "web"
+        result = await rag_engine.ingest_document(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            text=text,
+            filename=title,
+            source_type=source_type
+        )
+
+        # Update source with processing results
+        chunks = result.get("chunks", 0)
+        characters = result.get("characters", len(text))
+        await source_store.update(notebook_id, source_id, {
+            "chunks": chunks,
+            "characters": characters,
+            "status": "completed",
+            "content": text
+        })
+        print(f"[Web] Background ingestion complete for {title}: {chunks} chunks")
+        
+        # Notify frontend via WebSocket
+        await notify_source_updated({
+            "notebook_id": notebook_id,
+            "source_id": source_id,
+            "status": "completed",
+            "title": title,
+            "chunks": chunks,
+            "characters": characters
+        })
+    except Exception as e:
+        # Mark as failed but don't crash
+        print(f"[Web] Background ingestion failed for {title}: {e}")
+        await source_store.update(notebook_id, source_id, {
+            "status": "failed",
+            "error": str(e)[:200]
+        })
+        # Notify frontend of failure
+        await notify_source_updated({
+            "notebook_id": notebook_id,
+            "source_id": source_id,
+            "status": "failed",
+            "title": title,
+            "error": str(e)[:100]
+        })
+
+
 @router.post("/add-to-notebook")
-async def add_to_notebook(request: AddToNotebookRequest):
-    """Add scraped web content to a notebook"""
+async def add_to_notebook(request: AddToNotebookRequest, background_tasks: BackgroundTasks):
+    """Add scraped web content to a notebook - returns immediately, processes in background"""
     try:
         added_sources = []
 
@@ -132,7 +187,7 @@ async def add_to_notebook(request: AddToNotebookRequest):
             title = content.get("title", url)
             text = content["text"]
 
-            # Create source
+            # Create source record immediately (shows in UI as "processing")
             source = await source_store.create(
                 notebook_id=request.notebook_id,
                 filename=title,
@@ -148,38 +203,149 @@ async def add_to_notebook(request: AddToNotebookRequest):
                 }
             )
 
-            # Ingest into RAG with metadata
-            source_type = "youtube" if "youtube.com" in url or "youtu.be" in url else "web"
-            result = await rag_service.ingest_document(
-                notebook_id=request.notebook_id,
-                source_id=source["id"],
-                text=text,
-                filename=title,
-                source_type=source_type
+            # Queue RAG ingestion as background task - don't wait for it
+            background_tasks.add_task(
+                _process_web_source_background,
+                request.notebook_id,
+                source["id"],
+                text,
+                title,
+                url
             )
-
-            # Update source with processing results
-            chunks = result.get("chunks", 0)
-            characters = result.get("characters", len(text))
-            await source_store.update(request.notebook_id, source["id"], {
-                "chunks": chunks,
-                "characters": characters,
-                "status": "completed",
-                "content": text  # Save full text for viewing
-            })
 
             added_sources.append({
                 "source_id": source["id"],
                 "title": title,
                 "url": url,
-                "chunks": result.get("chunks", 0),
-                "characters": result.get("characters", len(text))
+                "status": "processing"
             })
 
         return {
-            "message": f"Added {len(added_sources)} sources to notebook",
+            "message": f"Added {len(added_sources)} sources (processing in background)",
             "notebook_id": request.notebook_id,
             "sources": added_sources
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to add to notebook: {str(e)}")
+
+
+async def _scrape_and_ingest_background(notebook_id: str, source_id: str, url: str, title: str):
+    """Background task: scrape URL and ingest into RAG - all in background"""
+    try:
+        # Step 1: Scrape the URL
+        print(f"[Web] Background scraping: {url}")
+        results = await web_scraper.scrape_urls([url])
+        
+        if not results or not results[0].get("success"):
+            error_msg = results[0].get("error", "Scrape failed") if results else "Scrape failed"
+            print(f"[Web] Scrape failed for {url}: {error_msg}")
+            await source_store.update(notebook_id, source_id, {
+                "status": "failed",
+                "error": error_msg
+            })
+            await notify_source_updated({
+                "notebook_id": notebook_id,
+                "source_id": source_id,
+                "status": "failed",
+                "title": title,
+                "error": error_msg
+            })
+            return
+        
+        scraped = results[0]
+        text = scraped.get("text", "")
+        actual_title = scraped.get("title", title)
+        
+        # Step 2: Ingest into RAG
+        print(f"[Web] Background ingesting: {actual_title}")
+        source_type = "youtube" if "youtube.com" in url or "youtu.be" in url else "web"
+        result = await rag_engine.ingest_document(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            text=text,
+            filename=actual_title,
+            source_type=source_type
+        )
+
+        # Step 3: Update source with results
+        chunks = result.get("chunks", 0)
+        characters = result.get("characters", len(text))
+        await source_store.update(notebook_id, source_id, {
+            "filename": actual_title,  # Update with actual scraped title
+            "chunks": chunks,
+            "characters": characters,
+            "status": "completed",
+            "content": text,
+            "metadata": {
+                "type": "web",
+                "format": "web",
+                "url": url,
+                "author": scraped.get("author"),
+                "date": scraped.get("date"),
+                "word_count": scraped.get("word_count"),
+                "char_count": scraped.get("char_count"),
+                "status": "completed"
+            }
+        })
+        
+        print(f"[Web] Background complete: {actual_title} ({chunks} chunks)")
+        await notify_source_updated({
+            "notebook_id": notebook_id,
+            "source_id": source_id,
+            "status": "completed",
+            "title": actual_title,
+            "chunks": chunks,
+            "characters": characters
+        })
+        
+    except Exception as e:
+        print(f"[Web] Background error for {url}: {e}")
+        await source_store.update(notebook_id, source_id, {
+            "status": "failed",
+            "error": str(e)[:200]
+        })
+        await notify_source_updated({
+            "notebook_id": notebook_id,
+            "source_id": source_id,
+            "status": "failed",
+            "title": title,
+            "error": str(e)[:100]
+        })
+
+
+@router.post("/quick-add")
+async def quick_add(request: QuickAddRequest, background_tasks: BackgroundTasks):
+    """Add a URL to notebook - returns INSTANTLY, scraping + ingestion happens in background
+    
+    This is the fast path: creates source record immediately, then scrapes and ingests in background.
+    Frontend shows green checkmark instantly, source appears as 'processing', updates when done.
+    """
+    try:
+        # Create source record immediately with "processing" status
+        source = await source_store.create(
+            notebook_id=request.notebook_id,
+            filename=request.title,
+            metadata={
+                "type": "web",
+                "format": "web",
+                "url": request.url,
+                "status": "processing"
+            }
+        )
+        
+        # Queue ALL work (scrape + ingest) as background task
+        background_tasks.add_task(
+            _scrape_and_ingest_background,
+            request.notebook_id,
+            source["id"],
+            request.url,
+            request.title
+        )
+        
+        return {
+            "message": "Added (processing in background)",
+            "source_id": source["id"],
+            "status": "processing"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to add: {str(e)}")

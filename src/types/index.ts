@@ -20,6 +20,7 @@ export interface Source {
   status: string;
   type?: string;
   url?: string;
+  tags?: string[];  // v0.6.0: Document tags
 }
 
 export interface Citation {
@@ -44,6 +45,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   quickSummary?: string;  // Quick summary from fast model (shown before detailed answer)
+  statusMessage?: string;  // Progressive status update (Phase 1.2)
   citations?: Citation[];
   web_sources?: WebSource[];
   follow_up_questions?: string[];

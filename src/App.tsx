@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { NotebookManager } from './components/NotebookManager';
 import { SourceUpload } from './components/SourceUpload';
@@ -14,6 +14,8 @@ import { Timeline } from './components/Timeline';
 import { Constellation3D } from './components/Constellation3D';
 import { ThemesPanel } from './components/ThemesPanel';
 import { ExplorationPanel } from './components/ExplorationPanel';
+import { ToastContainer, ToastMessage } from './components/shared/Toast';
+import { API_BASE_URL } from './services/api';
 
 function App() {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
@@ -41,7 +43,53 @@ function App() {
   const [insightTab, setInsightTab] = useState<'themes' | 'journey'>('themes');
   const [chatPrefillQuery, setChatPrefillQuery] = useState<string>('');
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
+  // Toast management
+  const addToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
+    const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    setToasts((prev) => [...prev, { ...toast, id }]);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  // WebSocket for background task notifications (source processing failures)
+  useEffect(() => {
+    if (!selectedNotebookId) return;
+
+    const wsUrl = API_BASE_URL.replace('http', 'ws') + '/constellation/ws';
+    const ws = new WebSocket(wsUrl);
+
+    ws.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === 'source_updated' && message.data?.notebook_id === selectedNotebookId) {
+          // Refresh sources list
+          setRefreshSources(prev => prev + 1);
+          
+          // Show toast for failures
+          if (message.data.status === 'failed') {
+            addToast({
+              type: 'error',
+              title: 'Failed to add source',
+              message: message.data.title || message.data.error || 'Unknown error',
+              duration: 8000,
+            });
+          }
+        }
+      } catch (e) {
+        console.error('WebSocket message parse error:', e);
+      }
+    };
+
+    ws.onerror = (e) => console.error('App WebSocket error:', e);
+
+    return () => {
+      ws.close();
+    };
+  }, [selectedNotebookId, addToast]);
 
   useEffect(() => {
     // Check for saved theme preference
@@ -125,13 +173,6 @@ function App() {
     setRefreshNotebooks(prev => prev + 1);
   };
 
-  const handleContentAddedToNotebook = () => {
-    console.log('Web content added - triggering sources and notebooks refresh');
-    // Refresh sources list, notebook count, and close modal
-    setRefreshSources(prev => prev + 1);
-    setRefreshNotebooks(prev => prev + 1);
-    setIsWebSearchModalOpen(false);
-  };
 
   // Show loading screen while backend starts
   if (!backendReady) {
@@ -152,10 +193,10 @@ function App() {
               style={{ width: `${Math.max(startupProgress, 5)}%` }}
             />
           </div>
-          {isUpgrade && (
+          {isUpgrade && currentVersion && (
             <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
               <p className="text-sm text-blue-800">
-                Upgrading to v0.3.0 - checking models and embeddings...
+                Upgrading to v{currentVersion} - please wait...
               </p>
             </div>
           )}
@@ -493,8 +534,6 @@ function App() {
         {selectedNotebookId && (
           <WebSearchResults
             notebookId={selectedNotebookId}
-            onContentScraped={() => {}}
-            onAddedToNotebook={handleContentAddedToNotebook}
             onSourceAdded={() => setRefreshSources(prev => prev + 1)}
             initialQuery={webSearchInitialQuery}
           />
@@ -541,6 +580,9 @@ function App() {
           }}
         />
       </Modal>
+
+      {/* Toast notifications for background events */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

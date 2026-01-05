@@ -355,7 +355,7 @@ async def build_graph_for_notebook(notebook_id: str, background_tasks: Backgroun
     Useful for existing notebooks that don't have graph data yet.
     """
     from storage.source_store import source_store
-    from services.rag_engine import rag_service
+    from services.rag_engine import rag_engine
     from api.constellation_ws import notify_build_progress, notify_build_complete
     
     # Get all sources for this notebook
@@ -374,7 +374,7 @@ async def build_graph_for_notebook(notebook_id: str, background_tasks: Backgroun
         for source in sources:
             content = source.get("content", "")
             if content:
-                chunks = rag_service._chunk_text(content)
+                chunks = rag_engine._chunk_text(content)
                 # Calculate number of batches (ceiling division)
                 total_batches += (len(chunks) + batch_size - 1) // batch_size
         
@@ -388,7 +388,7 @@ async def build_graph_for_notebook(notebook_id: str, background_tasks: Backgroun
                 continue
             
             # Chunk the content
-            chunks = rag_service._chunk_text(content)
+            chunks = rag_engine._chunk_text(content)
             
             # Process ALL chunks by batching 3 consecutive chunks into one LLM call
             # This matches the behavior of ingest_document for consistency

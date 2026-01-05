@@ -39,7 +39,7 @@ data/
 *.sqlite
 
 # Internal documentation (offline troubleshooting)
-ARCHITECTURE.md
+READFIRST/
 
 # Secrets
 .env
@@ -75,6 +75,8 @@ docs/ARCHITECTURE_LOCAL.md
 # Test files (keep local)
 test_*.py
 tests/
+verify_pipeline.py
+backend/verify_pipeline.py
 
 # Temporary files
 *.tmp

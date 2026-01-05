@@ -10,7 +10,7 @@ from config import settings
 from storage.audio_store import audio_store
 from storage.source_store import source_store
 from storage.skills_store import skills_store
-from services.rag_engine import rag_service
+from services.rag_engine import rag_engine
 
 # Dedicated thread pool for audio generation (max 2 concurrent)
 _audio_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="audio_gen")
@@ -160,7 +160,7 @@ Focus on: {topic or 'the main topics and insights'}"""
 
 Generate a {skill_name} formatted as a {duration_minutes}-minute audio narration:"""
 
-        script = await rag_service._call_ollama(system_prompt, prompt)
+        script = await rag_engine._call_ollama(system_prompt, prompt)
         return script
     
     def _is_audio_skill(self, skill_id: Optional[str]) -> bool:

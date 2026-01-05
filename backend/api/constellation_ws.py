@@ -57,6 +57,11 @@ async def notify_build_complete():
     await broadcast_update("build_complete", {})
 
 
+async def notify_source_updated(source: dict):
+    """Notify clients when a source's status changes (e.g., processing -> completed)"""
+    await broadcast_update("source_updated", source)
+
+
 async def notify_cluster_progress(progress: dict):
     """Notify clients of clustering progress"""
     await broadcast_update("cluster_progress", progress)

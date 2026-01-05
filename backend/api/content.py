@@ -8,7 +8,7 @@ import json
 from storage.skills_store import skills_store
 from storage.source_store import source_store
 from storage.content_store import content_store
-from services.rag_engine import rag_service
+from services.rag_engine import rag_engine
 
 router = APIRouter()
 
@@ -83,7 +83,7 @@ Use ONLY the provided source content. Do not make up information."""
 Generate the {skill_name}:"""
 
         # Generate content
-        content = await rag_service._call_ollama(system_prompt, user_prompt)
+        content = await rag_engine._call_ollama(system_prompt, user_prompt)
         
         # Save to content store for persistence
         await content_store.create(
@@ -153,7 +153,7 @@ Use ONLY the provided source content. Do not make up information."""
 Generate the {skill_name}:"""
 
         async def stream_generator():
-            async for chunk in rag_service._stream_ollama(system_prompt, user_prompt):
+            async for chunk in rag_engine._stream_ollama(system_prompt, user_prompt):
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             yield "data: [DONE]\n\n"
         

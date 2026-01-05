@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { sourceViewerService, SourceContent } from '../services/sourceViewer';
+import { sourceService } from '../services/sources';
 import { highlightService } from '../services/highlights';
 import { Highlight } from '../types';
 import { LoadingSpinner } from './shared/LoadingSpinner';
@@ -42,6 +43,11 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
   const [annotationText, setAnnotationText] = useState('');
   const [selectedColor, setSelectedColor] = useState('yellow');
 
+  // Tagging state (v0.6.0)
+  const [tags, setTags] = useState<string[]>([]);
+  const [newTag, setNewTag] = useState('');
+  const [showTagInput, setShowTagInput] = useState(false);
+
   useEffect(() => {
     loadData();
   }, [notebookId, sourceId]);
@@ -51,15 +57,17 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
     setError(null);
 
     try {
-      const [contentData, notesData, highlightsData] = await Promise.all([
+      const [contentData, notesData, highlightsData, tagsData] = await Promise.all([
         sourceViewerService.getContent(notebookId, sourceId),
         sourceViewerService.getNotes(notebookId, sourceId),
         highlightService.list(notebookId, sourceId),
+        sourceService.getTags(notebookId, sourceId),
       ]);
 
       setContent(contentData);
       setNotes(notesData);
       setHighlights(highlightsData);
+      setTags(tagsData);
     } catch (err: any) {
       console.error('Failed to load source data:', err);
       setError(err.response?.data?.detail || 'Failed to load source data');
@@ -198,6 +206,30 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
     }
   };
 
+  // Tag management handlers (v0.6.0)
+  const handleAddTag = async () => {
+    if (!newTag.trim()) return;
+    try {
+      const updatedTags = await sourceService.addTag(notebookId, sourceId, newTag.trim());
+      setTags(updatedTags);
+      setNewTag('');
+      setShowTagInput(false);
+    } catch (err) {
+      console.error('Failed to add tag:', err);
+      setError('Failed to add tag');
+    }
+  };
+
+  const handleRemoveTag = async (tag: string) => {
+    try {
+      const updatedTags = await sourceService.removeTag(notebookId, sourceId, tag);
+      setTags(updatedTags);
+    } catch (err) {
+      console.error('Failed to remove tag:', err);
+      setError('Failed to remove tag');
+    }
+  };
+
   // Render content with highlights applied
   const renderContentWithHighlights = (text: string) => {
     if (!text) return '';
@@ -266,6 +298,65 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
             <p className="text-sm text-gray-600 dark:text-gray-400">
               {content?.format} • {sourceId}
             </p>
+            {/* Tags section (v0.6.0) */}
+            <div className="flex flex-wrap items-center gap-1 mt-2">
+              {tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 rounded group"
+                >
+                  {tag}
+                  <button
+                    onClick={() => handleRemoveTag(tag)}
+                    className="text-blue-500 hover:text-red-500 opacity-50 group-hover:opacity-100"
+                    title="Remove tag"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {showTagInput ? (
+                <div className="inline-flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={newTag}
+                    onChange={(e) => setNewTag(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleAddTag();
+                      if (e.key === 'Escape') {
+                        setShowTagInput(false);
+                        setNewTag('');
+                      }
+                    }}
+                    placeholder="Add tag..."
+                    className="px-2 py-0.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 w-24"
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleAddTag}
+                    className="text-xs text-green-600 hover:text-green-800"
+                  >
+                    ✓
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowTagInput(false);
+                      setNewTag('');
+                    }}
+                    className="text-xs text-gray-400 hover:text-gray-600"
+                  >
+                    ×
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowTagInput(true)}
+                  className="px-2 py-0.5 text-xs text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded border border-dashed border-gray-300 hover:border-blue-400"
+                >
+                  + Tag
+                </button>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-4">
             {saving && <span className="text-sm text-gray-500 dark:text-gray-400">Saving...</span>}

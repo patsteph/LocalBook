@@ -76,50 +76,105 @@ export const webService = {
     },
 
     /**
-     * Scrape multiple URLs
+     * Scrape multiple URLs (with timeout)
      */
     async scrape(urls: string[]): Promise<WebScrapeResponse> {
-        const response = await fetch(`${API_BASE}/web/scrape`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                urls,
-            }),
-        });
+        // Create abort controller for timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+        
+        try {
+            const response = await fetch(`${API_BASE}/web/scrape`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    urls,
+                }),
+                signal: controller.signal,
+            });
 
-        if (!response.ok) {
-            throw new Error(`Scrape failed: ${response.statusText}`);
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                throw new Error(`Scrape failed: ${response.statusText}`);
+            }
+
+            return response.json();
+        } catch (error: any) {
+            clearTimeout(timeoutId);
+            if (error.name === 'AbortError') {
+                throw new Error('Scraping timed out after 60 seconds');
+            }
+            throw error;
         }
-
-        return response.json();
     },
 
     /**
-     * Add scraped content to a notebook
+     * Quick add a URL to notebook - returns INSTANTLY
+     * Scraping and ingestion happen in background, UI updates via WebSocket
      */
-    async addToNotebook(
-        notebookId: string,
-        urls: string[],
-        scrapedContent: ScrapedContent[]
-    ): Promise<any> {
-        const response = await fetch(`${API_BASE}/web/add-to-notebook`, {
+    async quickAdd(notebookId: string, url: string, title: string): Promise<{ source_id: string; status: string }> {
+        const response = await fetch(`${API_BASE}/web/quick-add`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
                 notebook_id: notebookId,
-                urls,
-                scraped_content: scrapedContent,
+                url,
+                title,
             }),
         });
 
         if (!response.ok) {
-            throw new Error(`Add to notebook failed: ${response.statusText}`);
+            throw new Error(`Failed to add: ${response.statusText}`);
         }
 
         return response.json();
+    },
+
+    /**
+     * Add scraped content to a notebook (with timeout)
+     * @deprecated Use quickAdd instead for instant response
+     */
+    async addToNotebook(
+        notebookId: string,
+        urls: string[],
+        scrapedContent: ScrapedContent[]
+    ): Promise<any> {
+        // Create abort controller for timeout (120s for RAG ingestion)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000);
+        
+        try {
+            const response = await fetch(`${API_BASE}/web/add-to-notebook`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    notebook_id: notebookId,
+                    urls,
+                    scraped_content: scrapedContent,
+                }),
+                signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                throw new Error(`Add to notebook failed: ${response.statusText}`);
+            }
+
+            return response.json();
+        } catch (error: any) {
+            clearTimeout(timeoutId);
+            if (error.name === 'AbortError') {
+                throw new Error('Adding to notebook timed out');
+            }
+            throw error;
+        }
     },
 };

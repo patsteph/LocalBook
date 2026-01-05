@@ -1,14 +1,24 @@
 """Web scraping and search service"""
+import asyncio
 import re
 from typing import List, Dict
 from urllib.parse import urlparse, parse_qs
 import trafilatura
 import httpx
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 from api.settings import get_api_key
+
+# Timeouts
+SCRAPE_TIMEOUT = 30.0   # total timeout per URL
+MAX_CONCURRENT = 5      # max parallel scrapes
+
 
 class WebScraper:
     """Service for web search and scraping"""
+
+    def __init__(self):
+        pass
 
     async def search_web(self, query: str, max_results: int = 20, offset: int = 0, freshness: str = None) -> List[Dict]:
         """Search the web using Brave Search API with pagination via freshness filters"""
@@ -18,8 +28,6 @@ class WebScraper:
             raise ValueError("Brave Search API key not configured. Please add it in Settings.")
 
         try:
-            # Brave API max count is 20, offset max is 9 on free tier
-            # Use freshness filter as a workaround for more diverse results
             api_count = min(max_results, 20)
             
             params = {
@@ -27,11 +35,10 @@ class WebScraper:
                 "count": api_count,
             }
             
-            # Add freshness filter if specified (pd=past day, pw=past week, pm=past month, py=past year)
             if freshness:
                 params["freshness"] = freshness
             
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
                     "https://api.search.brave.com/res/v1/web/search",
                     headers={
@@ -39,12 +46,11 @@ class WebScraper:
                         "Accept-Encoding": "gzip",
                         "X-Subscription-Token": brave_api_key
                     },
-                    params=params,
-                    timeout=10.0
+                    params=params
                 )
 
                 if response.status_code != 200:
-                    raise ValueError(f"Brave Search API returned status {response.status_code}: {response.text}")
+                    raise ValueError(f"Brave Search API returned status {response.status_code}")
 
                 data = response.json()
                 results = []
@@ -61,26 +67,49 @@ class WebScraper:
             raise ValueError(f"Web search failed: {str(e)}")
 
     async def scrape_urls(self, urls: List[str]) -> List[Dict]:
-        """Scrape content from URLs (including YouTube)"""
-        results = []
-
-        for url in urls:
+        """Scrape content from URLs in parallel with timeout protection"""
+        if not urls:
+            return []
+        
+        # Create tasks with individual timeouts
+        async def scrape_with_timeout(url: str) -> Dict:
             try:
-                # Check if it's a YouTube URL
-                if self._is_youtube_url(url):
-                    result = await self._scrape_youtube(url)
-                else:
-                    result = await self._scrape_web_page(url)
-
-                results.append(result)
+                return await asyncio.wait_for(
+                    self._scrape_single(url),
+                    timeout=SCRAPE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                return {
+                    "success": False,
+                    "url": url,
+                    "error": f"Timed out after {SCRAPE_TIMEOUT}s"
+                }
             except Exception as e:
-                results.append({
+                return {
                     "success": False,
                     "url": url,
                     "error": str(e)
-                })
-
-        return results
+                }
+        
+        # Use semaphore to limit concurrency
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+        
+        async def bounded_scrape(url: str) -> Dict:
+            async with semaphore:
+                return await scrape_with_timeout(url)
+        
+        # Run all scrapes in parallel (bounded by semaphore)
+        tasks = [bounded_scrape(url) for url in urls]
+        results = await asyncio.gather(*tasks)
+        
+        return list(results)
+    
+    async def _scrape_single(self, url: str) -> Dict:
+        """Scrape a single URL - routes to appropriate handler"""
+        if self._is_youtube_url(url):
+            return await self._scrape_youtube(url)
+        else:
+            return await self._scrape_web_page(url)
 
     def _is_youtube_url(self, url: str) -> bool:
         """Check if URL is a YouTube video"""
@@ -105,6 +134,19 @@ class WebScraper:
 
         return None
 
+    async def _get_youtube_title(self, video_id: str) -> str:
+        """Fetch YouTube video title using oEmbed API (no API key required)"""
+        try:
+            oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(oembed_url)
+                if response.status_code == 200:
+                    data = response.json()
+                    return data.get("title", f"YouTube Video {video_id}")
+        except Exception:
+            pass
+        return f"YouTube Video {video_id}"
+
     async def _scrape_youtube(self, url: str) -> Dict:
         """Scrape YouTube video transcript"""
         video_id = self._extract_youtube_id(url)
@@ -122,9 +164,8 @@ class WebScraper:
             transcript_list = ytt_api.fetch(video_id)
             transcript_text = " ".join([entry.text for entry in transcript_list])
 
-            # Get video title (we'd need youtube-dl or similar for full metadata)
-            # For now, use a simple title
-            title = f"YouTube Video {video_id}"
+            # Fetch actual video title using oEmbed API
+            title = await self._get_youtube_title(video_id)
 
             word_count = len(transcript_text.split())
             char_count = len(transcript_text)
@@ -139,11 +180,23 @@ class WebScraper:
                 "word_count": word_count,
                 "char_count": char_count
             }
-        except (TranscriptsDisabled, NoTranscriptFound) as e:
+        except TranscriptsDisabled:
             return {
                 "success": False,
                 "url": url,
-                "error": f"Transcript not available: {str(e)}"
+                "error": "Subtitles are disabled for this video"
+            }
+        except NoTranscriptFound:
+            return {
+                "success": False,
+                "url": url,
+                "error": "No transcript available for this video"
+            }
+        except VideoUnavailable:
+            return {
+                "success": False,
+                "url": url,
+                "error": "Video is unavailable or private"
             }
         except Exception as e:
             return {
@@ -155,6 +208,7 @@ class WebScraper:
     async def _scrape_web_page(self, url: str) -> Dict:
         """Scrape content from web page using trafilatura"""
         try:
+            # Use trafilatura's built-in fetch which works reliably in bundled app
             downloaded = trafilatura.fetch_url(url)
 
             if not downloaded:

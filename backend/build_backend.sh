@@ -98,6 +98,7 @@ pyinstaller \
     --collect-all=transformers \
     --collect-all=trafilatura \
     --collect-all=whisper \
+    --collect-submodules=pandas \
     --collect-data=lancedb \
     --collect-data=tiktoken \
     --hidden-import=sklearn.cluster \
@@ -112,16 +113,38 @@ pyinstaller \
     --hidden-import=pptx \
     --hidden-import=openpyxl \
     --hidden-import=xlrd \
+    --hidden-import=pandas._config \
     --hidden-import=moviepy \
     --hidden-import=anthropic \
     --hidden-import=openai \
     --hidden-import=multiprocessing \
+    --hidden-import=rank_bm25 \
+    --hidden-import=ebooklib \
+    --hidden-import=nbformat \
+    --hidden-import=odf \
+    --hidden-import=pytesseract \
+    --hidden-import=PIL \
     main.py
 
 # Make the main executable... executable
 chmod +x "$OUTPUT_DIR/localbook-backend/localbook-backend"
 
+# Fix pandas._config not being bundled by PyInstaller
+# This is a known PyInstaller issue with pandas - manually copy the _config module
+if [ -d ".venv/lib/python3.11/site-packages/pandas/_config" ]; then
+    echo -e "${YELLOW}Fixing pandas._config bundling issue...${NC}"
+    cp -r .venv/lib/python3.11/site-packages/pandas/_config "$OUTPUT_DIR/localbook-backend/_internal/pandas/" 2>/dev/null || true
+fi
+
 echo -e "${GREEN}✓ Backend built: $OUTPUT_DIR/localbook-backend/${NC}"
+
+# Sign all binaries for macOS Sequoia compatibility
+# macOS Sequoia requires proper code signing for all .so/.dylib files
+echo -e "${YELLOW}Signing binaries for macOS compatibility...${NC}"
+find "$OUTPUT_DIR/localbook-backend/_internal" -name "*.so" -exec codesign --force --sign - {} \; 2>/dev/null
+find "$OUTPUT_DIR/localbook-backend/_internal" -name "*.dylib" -exec codesign --force --sign - {} \; 2>/dev/null
+codesign --force --sign - "$OUTPUT_DIR/localbook-backend/localbook-backend" 2>/dev/null
+echo -e "${GREEN}✓ Code signing complete${NC}"
 
 # Show size
 SIZE=$(du -sh "$OUTPUT_DIR/localbook-backend" | cut -f1)

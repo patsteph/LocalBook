@@ -4,6 +4,7 @@ import { ChatQuery, ChatResponse, Citation } from '../types';
 
 export interface StreamCallbacks {
   onMode?: (deepThink: boolean, autoUpgraded: boolean) => void;
+  onStatus?: (message: string, queryType: string) => void;
   onCitations?: (citations: Citation[], sources: string[], lowConfidence: boolean) => void;
   onQuickSummary?: (summary: string) => void;
   onToken?: (token: string) => void;
@@ -47,6 +48,8 @@ export const chatService = {
             callbacks.onError?.(data.error);
           } else if (data.type === 'mode') {
             callbacks.onMode?.(data.deep_think, data.auto_upgraded);
+          } else if (data.type === 'status') {
+            callbacks.onStatus?.(data.message, data.query_type);
           } else if (data.type === 'citations') {
             callbacks.onCitations?.(data.citations, data.sources, data.low_confidence);
           } else if (data.type === 'quick_summary') {

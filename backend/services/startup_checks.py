@@ -1,10 +1,10 @@
 """
-Startup Checks Service for LocalBook v0.3.0
+Startup Checks Service for LocalBook v0.6.0
 
 Handles all first-launch and upgrade checks:
 1. Data migration to ~/Library/Application Support/LocalBook/
-2. Ollama model verification (olmo-3:7b-think, llama3.2:3b, nomic-embed-text)
-3. Embedding dimension migration (384 -> 768 for all tables)
+2. Ollama model verification (olmo-3:7b-instruct, phi4-mini, snowflake-arctic-embed2)
+3. Embedding dimension migration (768 -> 1024 for all tables)
 4. Knowledge graph table schema validation
 """
 import asyncio
@@ -15,15 +15,16 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 from config import settings
 
-# Required Ollama models for v0.3.0
+# Required Ollama models for v0.6.0
 REQUIRED_MODELS = [
-    ("olmo-3:7b-think", "Main reasoning model (7B parameters)"),
-    ("llama3.2:3b", "Fast response model (3B parameters)"),
-    ("nomic-embed-text", "Embedding model (768 dimensions)"),
+    ("olmo-3:7b-instruct", "Main model (7B parameters, chat/synthesis)"),
+    ("phi4-mini", "Fast response model for follow-ups"),
+    ("snowflake-arctic-embed2", "Embedding model (1024 dimensions)"),
 ]
 
-# Expected embedding dimension for nomic-embed-text
-EXPECTED_EMBEDDING_DIM = 768
+# Expected embedding dimension for snowflake-arctic-embed2
+# Updated from 768 (nomic-embed-text) to 1024 in v0.6.0
+EXPECTED_EMBEDDING_DIM = 1024
 
 
 async def run_all_startup_checks(status_callback=None) -> Dict[str, Any]:

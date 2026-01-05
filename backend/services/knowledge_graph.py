@@ -60,7 +60,7 @@ class KnowledgeGraphService:
         self._init_db()
         
         # Embedding settings - use same model as RAG engine for semantic alignment
-        self.embedding_model_name = settings.embedding_model  # nomic-embed-text
+        self.embedding_model_name = settings.embedding_model  # snowflake-arctic-embed2
         
         # In-memory concept name cache for fast deduplication
         self._concept_name_cache: Dict[str, str] = {}  # canonical_name -> concept_id
@@ -131,7 +131,7 @@ class KnowledgeGraphService:
                 pa.field("cluster_id", pa.string()),
                 pa.field("created_at", pa.string()),
                 pa.field("updated_at", pa.string()),
-                pa.field("vector", pa.list_(pa.float32(), 768)),  # nomic-embed-text dimensions
+                pa.field("vector", pa.list_(pa.float32(), 1024)),  # snowflake-arctic-embed2 dimensions
             ])
             self.db.create_table("concepts", schema=schema)
         
@@ -183,6 +183,36 @@ class KnowledgeGraphService:
                 pa.field("created_at", pa.string()),
             ])
             self.db.create_table("contradictions", schema=schema)
+        
+        # v0.60: Entities table for lightweight entity graph
+        if "entities" not in self.db.table_names():
+            schema = pa.schema([
+                pa.field("id", pa.string()),
+                pa.field("name", pa.string()),
+                pa.field("entity_type", pa.string()),  # person, document, metric, time_period
+                pa.field("aliases", pa.string()),  # JSON array of alternate names
+                pa.field("source_ids", pa.string()),  # JSON array of source documents
+                pa.field("notebook_id", pa.string()),
+                pa.field("metadata", pa.string()),  # JSON object for type-specific data
+                pa.field("created_at", pa.string()),
+                pa.field("updated_at", pa.string()),
+            ])
+            self.db.create_table("entities", schema=schema)
+        
+        # v0.60: Entity relationships table
+        if "entity_relationships" not in self.db.table_names():
+            schema = pa.schema([
+                pa.field("id", pa.string()),
+                pa.field("source_entity_id", pa.string()),
+                pa.field("target_entity_id", pa.string()),
+                pa.field("relationship_type", pa.string()),  # has_metric, mentioned_in, works_on, etc.
+                pa.field("value", pa.string()),  # Optional value (e.g., "7" for demo count)
+                pa.field("source_id", pa.string()),  # Document this came from
+                pa.field("notebook_id", pa.string()),
+                pa.field("confidence", pa.float32()),
+                pa.field("created_at", pa.string()),
+            ])
+            self.db.create_table("entity_relationships", schema=schema)
     
     def _create_clusters_table(self) -> None:
         """Create clusters table (used after dropping for reset)"""
@@ -1014,6 +1044,42 @@ What theme or topic connects them? Respond with just a 2-4 word name (no punctua
         
         return concepts_cleared
     
+    async def delete_source_concepts(self, notebook_id: str, source_id: str) -> int:
+        """Delete all concepts associated with a specific source.
+        
+        Called when a source is deleted to clean up the knowledge graph.
+        """
+        concepts_deleted = 0
+        try:
+            concepts_table = self.db.open_table("concepts")
+            
+            # Find concepts that reference this source in their chunk_ids
+            # chunk_ids are stored as JSON arrays like ["source_id_0", "source_id_1"]
+            concepts_df = concepts_table.to_pandas()
+            
+            for _, row in concepts_df.iterrows():
+                chunk_ids = json.loads(row["chunk_ids"]) if row["chunk_ids"] else []
+                # Filter out chunks from this source
+                new_chunk_ids = [cid for cid in chunk_ids if not cid.startswith(f"{source_id}_")]
+                
+                if len(new_chunk_ids) < len(chunk_ids):
+                    if len(new_chunk_ids) == 0:
+                        # No more chunks reference this concept - delete it
+                        concepts_table.delete(f"id = '{row['id']}'")
+                        concepts_deleted += 1
+                    else:
+                        # Update the concept with remaining chunk_ids
+                        # LanceDB doesn't have direct update, so we delete and re-add
+                        # For now, just leave it - the concept is still valid from other sources
+                        pass
+            
+            print(f"[KnowledgeGraph] Deleted {concepts_deleted} concepts for source {source_id}")
+            
+        except Exception as e:
+            print(f"[KnowledgeGraph] Error deleting source concepts: {e}")
+        
+        return concepts_deleted
+    
     # =========================================================================
     # LLM Helper
     # =========================================================================
@@ -1084,6 +1150,245 @@ What theme or topic connects them? Respond with just a 2-4 word name (no punctua
                 return None
         
         return None
+
+
+    # =========================================================================
+    # v0.60: Entity Graph Methods
+    # =========================================================================
+    
+    async def extract_entities_from_text(
+        self, 
+        text: str, 
+        source_id: str, 
+        notebook_id: str
+    ) -> Dict[str, Any]:
+        """v0.60: Extract entities (people, metrics, time periods) from text.
+        
+        Returns dict with 'entities' and 'relationships' lists.
+        """
+        prompt = f"""Extract entities and their relationships from this text.
+
+TEXT:
+{text[:2000]}
+
+OUTPUT JSON FORMAT:
+{{
+  "entities": [
+    {{"name": "Chris Norman", "type": "person", "aliases": ["Chris", "Christopher Norman"]}},
+    {{"name": "demos", "type": "metric", "value": "7"}},
+    {{"name": "Q1 2026", "type": "time_period"}}
+  ],
+  "relationships": [
+    {{"source": "Chris Norman", "target": "demos", "type": "has_metric", "value": "7"}},
+    {{"source": "Chris Norman", "target": "Q1 2026", "type": "active_during"}}
+  ]
+}}
+
+ENTITY TYPES: person, metric, document, time_period, organization
+RELATIONSHIP TYPES: has_metric, mentioned_in, active_during, works_on, reports_to
+
+JSON:"""
+
+        result = await self._call_llm(prompt)
+        if not result:
+            return {"entities": [], "relationships": []}
+        
+        return result
+    
+    async def upsert_entity(
+        self,
+        name: str,
+        entity_type: str,
+        notebook_id: str,
+        aliases: List[str] = None,
+        source_id: str = None,
+        metadata: Dict = None
+    ) -> Optional[str]:
+        """v0.60: Create or update an entity in the graph.
+        
+        Returns entity ID.
+        """
+        import uuid
+        from datetime import datetime
+        
+        try:
+            entities_table = self.db.open_table("entities")
+            
+            # Check if entity exists (by name and notebook)
+            existing = entities_table.search().where(
+                f"name = '{name}' AND notebook_id = '{notebook_id}'"
+            ).limit(1).to_list()
+            
+            now = datetime.utcnow().isoformat()
+            
+            if existing:
+                # Update existing entity
+                entity_id = existing[0]["id"]
+                current_sources = json.loads(existing[0].get("source_ids", "[]"))
+                if source_id and source_id not in current_sources:
+                    current_sources.append(source_id)
+                
+                current_aliases = json.loads(existing[0].get("aliases", "[]"))
+                if aliases:
+                    current_aliases = list(set(current_aliases + aliases))
+                
+                # LanceDB doesn't support update, so we delete and re-add
+                entities_table.delete(f"id = '{entity_id}'")
+                entities_table.add([{
+                    "id": entity_id,
+                    "name": name,
+                    "entity_type": entity_type,
+                    "aliases": json.dumps(current_aliases),
+                    "source_ids": json.dumps(current_sources),
+                    "notebook_id": notebook_id,
+                    "metadata": json.dumps(metadata or {}),
+                    "created_at": existing[0].get("created_at", now),
+                    "updated_at": now
+                }])
+                return entity_id
+            else:
+                # Create new entity
+                entity_id = str(uuid.uuid4())[:8]
+                entities_table.add([{
+                    "id": entity_id,
+                    "name": name,
+                    "entity_type": entity_type,
+                    "aliases": json.dumps(aliases or []),
+                    "source_ids": json.dumps([source_id] if source_id else []),
+                    "notebook_id": notebook_id,
+                    "metadata": json.dumps(metadata or {}),
+                    "created_at": now,
+                    "updated_at": now
+                }])
+                return entity_id
+                
+        except Exception as e:
+            print(f"[KG] Entity upsert error: {e}")
+            return None
+    
+    async def add_entity_relationship(
+        self,
+        source_entity_id: str,
+        target_entity_id: str,
+        relationship_type: str,
+        notebook_id: str,
+        value: str = None,
+        source_id: str = None,
+        confidence: float = 0.8
+    ) -> Optional[str]:
+        """v0.60: Add a relationship between two entities.
+        
+        Returns relationship ID.
+        """
+        import uuid
+        from datetime import datetime
+        
+        try:
+            rel_table = self.db.open_table("entity_relationships")
+            
+            rel_id = str(uuid.uuid4())[:8]
+            rel_table.add([{
+                "id": rel_id,
+                "source_entity_id": source_entity_id,
+                "target_entity_id": target_entity_id,
+                "relationship_type": relationship_type,
+                "value": value or "",
+                "source_id": source_id or "",
+                "notebook_id": notebook_id,
+                "confidence": confidence,
+                "created_at": datetime.utcnow().isoformat()
+            }])
+            return rel_id
+            
+        except Exception as e:
+            print(f"[KG] Relationship add error: {e}")
+            return None
+    
+    async def get_entity_relationships(
+        self,
+        entity_name: str,
+        notebook_id: str,
+        relationship_type: str = None
+    ) -> List[Dict]:
+        """v0.60: Get all relationships for an entity.
+        
+        Returns list of relationships with entity details.
+        """
+        try:
+            # First find the entity
+            entities_table = self.db.open_table("entities")
+            entity_results = entities_table.search().where(
+                f"notebook_id = '{notebook_id}'"
+            ).limit(100).to_list()
+            
+            # Find entity by name or alias
+            entity_id = None
+            for e in entity_results:
+                if e["name"].lower() == entity_name.lower():
+                    entity_id = e["id"]
+                    break
+                aliases = json.loads(e.get("aliases", "[]"))
+                if entity_name.lower() in [a.lower() for a in aliases]:
+                    entity_id = e["id"]
+                    break
+            
+            if not entity_id:
+                return []
+            
+            # Get relationships
+            rel_table = self.db.open_table("entity_relationships")
+            query = f"source_entity_id = '{entity_id}' AND notebook_id = '{notebook_id}'"
+            if relationship_type:
+                query += f" AND relationship_type = '{relationship_type}'"
+            
+            relationships = rel_table.search().where(query).limit(50).to_list()
+            
+            # Enrich with target entity names
+            result = []
+            for rel in relationships:
+                target_entity = next(
+                    (e for e in entity_results if e["id"] == rel["target_entity_id"]),
+                    None
+                )
+                result.append({
+                    "relationship_type": rel["relationship_type"],
+                    "target_name": target_entity["name"] if target_entity else "Unknown",
+                    "target_type": target_entity["entity_type"] if target_entity else "unknown",
+                    "value": rel.get("value", ""),
+                    "confidence": rel.get("confidence", 0.5)
+                })
+            
+            return result
+            
+        except Exception as e:
+            print(f"[KG] Get relationships error: {e}")
+            return []
+    
+    async def get_entities_by_type(
+        self,
+        notebook_id: str,
+        entity_type: str = None
+    ) -> List[Dict]:
+        """v0.60: Get all entities of a given type in a notebook."""
+        try:
+            entities_table = self.db.open_table("entities")
+            query = f"notebook_id = '{notebook_id}'"
+            if entity_type:
+                query += f" AND entity_type = '{entity_type}'"
+            
+            results = entities_table.search().where(query).limit(100).to_list()
+            
+            return [{
+                "id": e["id"],
+                "name": e["name"],
+                "type": e["entity_type"],
+                "aliases": json.loads(e.get("aliases", "[]")),
+                "source_count": len(json.loads(e.get("source_ids", "[]")))
+            } for e in results]
+            
+        except Exception as e:
+            print(f"[KG] Get entities error: {e}")
+            return []
 
 
 # Singleton instance

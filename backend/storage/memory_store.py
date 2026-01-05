@@ -475,7 +475,7 @@ class MemoryStore:
                 pa.field("created_at", pa.string()),
                 pa.field("last_accessed", pa.string()),
                 pa.field("access_count", pa.int32()),
-                pa.field("vector", pa.list_(pa.float32(), 768)),  # nomic-embed-text dimensions
+                pa.field("vector", pa.list_(pa.float32(), 1024)),  # snowflake-arctic-embed2 dimensions
             ])
             self.archival_db.create_table("archival_memories", schema=schema)
     

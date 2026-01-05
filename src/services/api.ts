@@ -15,9 +15,17 @@ export const WS_BASE_URL = (() => {
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  timeout: 300000, // 5 minute timeout for long operations (uploads, concept extraction)
+});
+
+// Request interceptor to set correct Content-Type
+api.interceptors.request.use((config) => {
+  // Let axios set the Content-Type automatically for FormData (includes boundary)
+  // Only set application/json for non-FormData requests
+  if (!(config.data instanceof FormData)) {
+    config.headers['Content-Type'] = 'application/json';
+  }
+  return config;
 });
 
 // Response interceptor for error handling

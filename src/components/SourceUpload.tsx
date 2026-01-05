@@ -172,7 +172,7 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
         type="file"
         onChange={handleFileSelect}
         className="hidden"
-        accept=".pdf,.docx,.txt,.md,.pptx,.xlsx,.mp3,.wav,.m4a,.aac,.ogg,.flac,.wma,.mp4,.mov,.avi,.mkv,.webm,.flv,.m4v"
+        accept=".pdf,.docx,.txt,.md,.pptx,.xlsx,.csv,.epub,.ipynb,.odt,.rtf,.tex,.bib,.png,.jpg,.jpeg,.tiff,.bmp,.gif,.mp3,.wav,.m4a,.aac,.ogg,.flac,.wma,.mp4,.mov,.avi,.mkv,.webm,.flv,.m4v"
         multiple
         disabled={uploading || !notebookId}
       />
@@ -213,7 +213,7 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
               {isDragging ? 'Drop files here' : 'Drag and drop files here, or click to browse'}
             </p>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-              Supports: PDF, DOCX, PPTX, XLSX, TXT, MD, Audio (MP3, WAV, etc.), Video (MP4, MOV, etc.)
+              Supports: PDF, DOCX, PPTX, XLSX, CSV, EPUB, Jupyter, ODT, RTF, LaTeX, Images (OCR), Audio, Video
             </p>
           </div>
           {!notebookId && (

@@ -91,15 +91,15 @@ async def warm_embedding_model() -> bool:
                 return response.status_code == 200
         else:
             # Import here to avoid circular imports
-            from services.rag_engine import rag_service
+            from services.rag_engine import rag_engine
             
             # This will load the model if not already loaded
-            if rag_service.embedding_model is None:
-                rag_service._load_embedding_model()
+            if rag_engine.embedding_model is None:
+                rag_engine._load_embedding_model()
             
             # Encode a short text to keep it warm
-            if rag_service.embedding_model:
-                _ = rag_service.embedding_model.encode("warmup", show_progress_bar=False)
+            if rag_engine.embedding_model:
+                _ = rag_engine.embedding_model.encode("warmup", show_progress_bar=False)
             return True
     except Exception as e:
         print(f"⚠️ Embedding warmup failed: {e}")
@@ -112,8 +112,8 @@ async def warm_reranker_model() -> bool:
         if not getattr(settings, 'use_reranker', True):
             return True  # Reranker disabled, skip
         
-        from services.rag_engine import rag_service
-        rag_service._load_reranker()
+        from services.rag_engine import rag_engine
+        rag_engine._load_reranker()
         return True
     except Exception as e:
         print(f"⚠️ Reranker warmup failed: {e}")
@@ -144,22 +144,11 @@ async def warmup_cycle(force_all: bool = False):
     return main_ok, fast_ok, embed_ok, rerank_ok
 
 
-async def warmup_loop():
-    """Background loop that keeps models warm"""
-    global _should_run, _last_main_model_use, _last_fast_model_use, _last_embedding_use, _last_reranker_use
+async def _warmup_loop_periodic():
+    """Background loop that keeps models warm (periodic keep-alive only)"""
+    global _should_run
     
-    print("🔥 Starting model warmup service...")
-    
-    # Mark all models as "used" at startup so initial warmup happens
-    now = time.time()
-    _last_main_model_use = now
-    _last_fast_model_use = now
-    _last_embedding_use = now
-    _last_reranker_use = now
-    
-    # Initial warmup on startup (force all)
-    main_ok, fast_ok, embed_ok, rerank_ok = await warmup_cycle(force_all=True)
-    print(f"🔥 Initial warmup complete - Main: {'✓' if main_ok else '✗'}, Fast: {'✓' if fast_ok else '✗'}, Embed: {'✓' if embed_ok else '✗'}, Rerank: {'✓' if rerank_ok else '✗'}")
+    print("🔥 Starting periodic model keep-alive service...")
     
     # Periodic warmup - only warms recently-used models
     while _should_run:
@@ -172,11 +161,31 @@ async def warmup_loop():
         await warmup_cycle(force_all=False)
 
 
+async def initial_warmup():
+    """Run initial warmup synchronously at startup - blocks until models are ready"""
+    global _last_main_model_use, _last_fast_model_use, _last_embedding_use, _last_reranker_use
+    
+    print("🔥 Warming up AI models (this ensures fast first query)...")
+    
+    # Mark all models as "used" so they get warmed
+    now = time.time()
+    _last_main_model_use = now
+    _last_fast_model_use = now
+    _last_embedding_use = now
+    _last_reranker_use = now
+    
+    # Run warmup and WAIT for it to complete
+    main_ok, fast_ok, embed_ok, rerank_ok = await warmup_cycle(force_all=True)
+    print(f"🔥 Models ready - Main: {'✓' if main_ok else '✗'}, Fast: {'✓' if fast_ok else '✗'}, Embed: {'✓' if embed_ok else '✗'}, Rerank: {'✓' if rerank_ok else '✗'}")
+    
+    return main_ok and embed_ok  # Main model and embeddings are critical
+
+
 async def start_warmup_task():
-    """Start the background warmup task"""
+    """Start the background warmup task (for periodic keep-alive, not initial warmup)"""
     global _warmup_task, _should_run
     _should_run = True
-    _warmup_task = asyncio.create_task(warmup_loop())
+    _warmup_task = asyncio.create_task(_warmup_loop_periodic())
 
 
 async def stop_warmup_task():
