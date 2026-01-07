@@ -133,6 +133,7 @@ function App() {
         }
 
         // Also try to get startup status from backend API for upgrade info
+        let startupComplete = false;
         try {
           const response = await fetch('http://localhost:8000/updates/startup-status');
           if (response.ok) {
@@ -143,13 +144,16 @@ function App() {
             if (startupStatus.message) {
               setBackendStatusMessage(startupStatus.message);
             }
+            // Check if startup tasks are complete (status === 'ready')
+            startupComplete = startupStatus.status === 'ready';
           }
         } catch {
           // Backend not ready yet
         }
 
         const ready = await invoke<boolean>('is_backend_ready');
-        if (ready) {
+        // Only mark as ready if BOTH Tauri says ready AND backend startup tasks are complete
+        if (ready && startupComplete) {
           setBackendReady(true);
         } else {
           // Keep checking every second

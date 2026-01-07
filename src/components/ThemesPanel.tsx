@@ -47,6 +47,19 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                     try {
                         const message = JSON.parse(event.data);
                         
+                        // v0.6.5: Topics updated from BERTopic - refresh themes
+                        // Handle both direct topics_updated event and legacy concept_added
+                        if (message.type === 'topics_updated') {
+                            console.log('[ThemesPanel] Topics updated, refreshing themes');
+                            loadThemes();
+                        }
+                        
+                        // Enhancement complete - refresh to show enhanced names
+                        if (message.type === 'enhancement_progress' && message.data?.status === 'complete') {
+                            console.log('[ThemesPanel] Enhancement complete, refreshing themes');
+                            loadThemes();
+                        }
+                        
                         // Build is in progress - show "Waiting..." status
                         if (message.type === 'build_progress') {
                             setStatus('waiting');
@@ -57,11 +70,12 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                             }
                         }
                         
-                        // Build complete - concepts ready, clustering will start
+                        // Build complete - topics ready
                         if (message.type === 'build_complete') {
-                            console.log('[ThemesPanel] Build complete, waiting for clustering');
-                            setStatus('waiting');
-                            loadThemes();
+                            console.log('[ThemesPanel] Build complete, refreshing themes');
+                            setStatus('idle');
+                            // Small delay to ensure topics are saved before fetching
+                            setTimeout(() => loadThemes(), 500);
                             // Clear polling interval
                             if (refreshIntervalRef.current) {
                                 clearInterval(refreshIntervalRef.current);
@@ -109,34 +123,56 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
     const loadThemes = async () => {
         if (!notebookId) return;
         
-        setLoading(true);
+        // Don't set loading=true if we already have themes (prevents blinking)
+        const hadThemes = themes.length > 0;
+        if (!hadThemes) {
+            setLoading(true);
+        }
         setError(null);
         
         try {
             const data = await themesService.getThemes(notebookId);
-            setThemes(data.themes);
-            setTopConcepts(data.top_concepts);
-            setTotalConcepts(data.total_concepts);
+            // Only update if we got valid data (prevents clearing on empty response)
+            if (data.themes && data.themes.length > 0) {
+                setThemes(data.themes);
+                setTopConcepts(data.top_concepts);
+                setTotalConcepts(data.total_concepts);
+            } else if (!hadThemes) {
+                // Only clear if we didn't have themes before
+                setThemes([]);
+                setTopConcepts([]);
+                setTotalConcepts(0);
+            }
+            // If we had themes and got empty response, keep existing themes
         } catch (err) {
             console.error('Failed to load themes:', err);
-            setError('Failed to load themes');
+            if (!hadThemes) {
+                setError('Failed to load themes');
+            }
         } finally {
             setLoading(false);
         }
     };
 
     const handleRefresh = async () => {
+        if (!notebookId) return;
+        
         try {
             setLoading(true);
-            await themesService.runClustering();
-            // cluster_complete WebSocket event will trigger loadThemes automatically
+            setStatus('waiting');
+            await themesService.rebuildThemes(notebookId);
+            // build_complete WebSocket event will trigger loadThemes automatically
             // But set a fallback timeout just in case
             setTimeout(() => {
-                if (loading) loadThemes();
-            }, 10000);
+                if (loading) {
+                    loadThemes();
+                    setStatus('idle');
+                }
+            }, 30000);
         } catch (err) {
-            setError('Failed to refresh themes');
+            setError('Failed to rebuild themes');
             setLoading(false);
+            setStatus('idle');
         }
     };
 
@@ -221,7 +257,7 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                                                 {theme.name || 'Unnamed Theme'}
                                             </h4>
                                             <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
-                                                {theme.concept_count} concepts
+                                                {theme.concept_count} related concepts
                                             </p>
                                         </div>
                                         <span className="text-gray-400 text-xs">

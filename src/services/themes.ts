@@ -10,6 +10,8 @@ export interface Theme {
     concepts: string[];
     concept_count: number;
     coherence_score: number;
+    topic_id?: number;  // v0.6.5: BERTopic topic ID
+    enhanced?: boolean;  // v0.6.5: Whether name has been LLM-enhanced
 }
 
 export interface TopConcept {
@@ -41,15 +43,16 @@ export const themesService = {
     },
 
     /**
-     * Trigger clustering to discover new themes
+     * Trigger rebuild of themes for a notebook
+     * v0.6.5: Now calls /graph/build/{notebookId} instead of deprecated /graph/cluster
      */
-    async runClustering(): Promise<{ message: string; status: string }> {
-        const response = await fetch(`${API_BASE_URL}/graph/cluster`, {
+    async rebuildThemes(notebookId: string): Promise<{ message: string; status: string }> {
+        const response = await fetch(`${API_BASE_URL}/graph/build/${notebookId}`, {
             method: 'POST',
         });
         
         if (!response.ok) {
-            throw new Error('Failed to start clustering');
+            throw new Error('Failed to rebuild themes');
         }
         
         return response.json();

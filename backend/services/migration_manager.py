@@ -1,13 +1,14 @@
-"""Migration Manager for v0.60
+"""Migration Manager for v0.6.5
 
-Handles seamless upgrades from any previous version to v0.60.
+Handles seamless upgrades from any previous version to v0.6.5.
 Detects current version, determines migration path, and executes with progress updates.
 
 Version History:
 - v0.2: nomic-embed-text (768 dims), basic RAG
 - v0.3: nomic-embed-text (768 dims), + BM25 hybrid
 - v0.5: snowflake-arctic-embed2 (1024 dims), + Adaptive RAG
-- v0.60: snowflake-arctic-embed2 (1024 dims), + Agentic RAG, Parent Docs, Entity Graph
+- v0.6.0: snowflake-arctic-embed2 (1024 dims), + Agentic RAG, Parent Docs, Entity Graph
+- v0.6.5: snowflake-arctic-embed2 (1024 dims), + BERTopic topic modeling (replaces custom concepts)
 """
 import asyncio
 import json
@@ -20,15 +21,16 @@ from config import settings
 
 
 class MigrationManager:
-    """Handle upgrades from any version to v0.6.0."""
+    """Handle upgrades from any version to v0.6.5."""
     
-    CURRENT_VERSION = "0.6.0"
+    CURRENT_VERSION = "0.6.5"
     
     VERSION_INFO = {
         "0.2": {"embedding_dim": 768, "embedding_model": "nomic-embed-text"},
         "0.3": {"embedding_dim": 768, "embedding_model": "nomic-embed-text"},
         "0.5": {"embedding_dim": 1024, "embedding_model": "snowflake-arctic-embed2"},
         "0.6.0": {"embedding_dim": 1024, "embedding_model": "snowflake-arctic-embed2"},
+        "0.6.5": {"embedding_dim": 1024, "embedding_model": "snowflake-arctic-embed2"},
     }
     
     def __init__(self):

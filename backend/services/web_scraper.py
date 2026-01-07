@@ -206,10 +206,15 @@ class WebScraper:
             }
 
     async def _scrape_web_page(self, url: str) -> Dict:
-        """Scrape content from web page using trafilatura"""
+        """Scrape content from web page using trafilatura.
+        
+        Runs blocking trafilatura calls in thread pool to avoid blocking event loop.
+        """
         try:
-            # Use trafilatura's built-in fetch which works reliably in bundled app
-            downloaded = trafilatura.fetch_url(url)
+            loop = asyncio.get_event_loop()
+            
+            # Run blocking trafilatura.fetch_url in thread pool
+            downloaded = await loop.run_in_executor(None, trafilatura.fetch_url, url)
 
             if not downloaded:
                 return {
@@ -218,13 +223,16 @@ class WebScraper:
                     "error": "Failed to download page"
                 }
 
-            # Extract text content
-            text = trafilatura.extract(
-                downloaded,
-                include_comments=False,
-                include_tables=True,
-                no_fallback=False
-            )
+            # Run blocking trafilatura.extract in thread pool
+            def extract_content(html):
+                return trafilatura.extract(
+                    html,
+                    include_comments=False,
+                    include_tables=True,
+                    no_fallback=False
+                )
+            
+            text = await loop.run_in_executor(None, extract_content, downloaded)
 
             if not text:
                 return {
@@ -233,8 +241,8 @@ class WebScraper:
                     "error": "Failed to extract text from page"
                 }
 
-            # Extract metadata
-            metadata = trafilatura.extract_metadata(downloaded)
+            # Run blocking metadata extraction in thread pool
+            metadata = await loop.run_in_executor(None, trafilatura.extract_metadata, downloaded)
 
             title = metadata.title if metadata and metadata.title else url
             author = metadata.author if metadata and metadata.author else None

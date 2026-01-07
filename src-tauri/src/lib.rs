@@ -433,6 +433,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let backend_state = setup_backend(&app.handle())?;
             app.manage(backend_state);

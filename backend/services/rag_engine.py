@@ -20,7 +20,7 @@ import lancedb
 import numpy as np
 
 from config import settings
-from models.knowledge_graph import ConceptExtractionRequest
+# v0.6.5: ConceptExtractionRequest no longer needed - using BERTopic
 from models.memory import MemoryExtractionRequest
 from services.memory_agent import memory_agent
 from storage.source_store import source_store
@@ -452,10 +452,13 @@ class RAGEngine:
         # Use source-type-aware chunking for better retrieval
         chunks = self._chunk_text_smart(text, source_type, filename)
 
-        # Phase 3.1: Generate document summary at ingestion time
-        summary = await self._generate_document_summary(text, filename, source_type)
-        if summary:
-            print(f"[RAG] Generated summary for {filename}: {len(summary)} chars")
+        # Skip summary for web sources (they have search snippets already)
+        # Only generate summaries for uploaded files (PDFs, docs, etc.)
+        summary = None
+        if source_type not in ['web', 'youtube']:
+            summary = await self._generate_document_summary(text, filename, source_type)
+            if summary:
+                print(f"[RAG] Generated summary for {filename}: {len(summary)} chars")
 
         # Generate embeddings
         embeddings = self.encode(chunks)
@@ -500,22 +503,17 @@ class RAGEngine:
 
         table.add(data)
 
-        # Extract concepts for knowledge graph
-        # NOTE: We await this directly instead of using asyncio.create_task() because
-        # fire-and-forget tasks may not complete in the embedded Tauri backend context.
-        # This makes uploads slightly slower but guarantees concept extraction happens.
-        print(f"[RAG] About to extract concepts for source {source_id} ({len(chunks)} chunks)")
-        try:
-            await self._extract_concepts_for_source(
-                notebook_id=notebook_id,
-                source_id=source_id,
-                chunks=chunks
-            )
-            print(f"[RAG] Concept extraction completed for source {source_id}")
-        except Exception as e:
-            import traceback
-            print(f"[RAG] CRITICAL: Concept extraction failed for source {source_id}: {e}")
-            traceback.print_exc()
+        # Fire-and-forget topic modeling in background
+        # Source is usable for RAG queries immediately after embedding
+        # Topics build in background for Knowledge Graph visualization
+        # v0.6.5: Use BERTopic with ALL chunks (no more 2000 char limit)
+        asyncio.create_task(self._add_to_topic_model(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            chunks=chunks,
+            embeddings=embeddings
+        ))
+        print(f"[RAG] Queued topic modeling for {filename} (background)")
 
         return {
             "source_id": source_id,
@@ -605,72 +603,45 @@ Summary:"""
         
         return None
 
-    async def _extract_concepts_for_source(
+    async def _add_to_topic_model(
         self,
         notebook_id: str,
         source_id: str,
-        chunks: List[str]
+        chunks: List[str],
+        embeddings: np.ndarray
     ):
-        """Extract concepts from document chunks for knowledge graph.
+        """Add document chunks to BERTopic model for topic discovery.
         
-        Now awaited directly during ingest_document to guarantee execution.
-        Uses semaphore to limit concurrent LLM calls.
+        v0.6.5: Replaces concept extraction with BERTopic topic modeling.
+        Uses ALL chunks (not limited to 2000 chars) for better topic discovery.
+        Two-stage naming: instant c-TF-IDF + background LLM enhancement.
         """
         async with _concept_extraction_semaphore:
             try:
-                from services.knowledge_graph import knowledge_graph_service
-                from api.constellation_ws import notify_concept_added, notify_build_progress, notify_build_complete
+                from services.topic_modeling import topic_modeling_service
                 
-                print(f"[KG] Starting concept extraction for source {source_id} ({len(chunks)} chunks)")
+                if not chunks:
+                    print(f"[TopicModel] No chunks for source {source_id}, skipping")
+                    return
                 
-                total_concepts = 0
+                print(f"[TopicModel] Adding {len(chunks)} chunks from source {source_id}")
                 
-                # Process ALL chunks by batching 3 consecutive chunks into one LLM call
-                # This gives full coverage while keeping LLM calls manageable
-                batch_size = 3
-                batches = []
-                for i in range(0, len(chunks), batch_size):
-                    batch_text = "\n\n---\n\n".join(chunks[i:i+batch_size])
-                    batches.append((i, batch_text))
+                result = await topic_modeling_service.add_documents(
+                    texts=chunks,
+                    source_id=source_id,
+                    notebook_id=notebook_id,
+                    embeddings=embeddings
+                )
                 
-                for idx, (chunk_start_idx, batch_text) in enumerate(batches):
-                    request = ConceptExtractionRequest(
-                        text=batch_text,
-                        source_id=source_id,
-                        chunk_index=chunk_start_idx,
-                        notebook_id=notebook_id
-                    )
-                    
-                    result = await knowledge_graph_service.extract_concepts(request)
-                    if result.concepts:
-                        total_concepts += len(result.concepts)
-                        print(f"[KG] Batch {idx}: extracted {len(result.concepts)} concepts, {len(result.links)} links")
-                        
-                        # Broadcast each new concept via WebSocket
-                        for concept in result.concepts:
-                            await notify_concept_added({
-                                "name": concept.name,
-                                "notebook_id": notebook_id,
-                                "source_id": source_id
-                            })
-                    
-                    # Broadcast progress
-                    progress = (idx + 1) / len(batches) * 100
-                    await notify_build_progress({
-                        "source_id": source_id,
-                        "progress": round(progress, 1),
-                        "concepts_found": total_concepts
-                    })
-                
-                print(f"[KG] Concept extraction complete for source {source_id}: {total_concepts} concepts")
-                
-                # Fire build_complete after each source extraction
-                # This triggers clustering and UI refresh
-                await notify_build_complete()
+                topic_count = len(result.get("topics", []))
+                if topic_count > 0:
+                    print(f"[TopicModel] Found {topic_count} topics for source {source_id}")
+                else:
+                    print(f"[TopicModel] No new topics for source {source_id} (status: {result.get('status', 'unknown')})")
                 
             except Exception as e:
                 import traceback
-                print(f"[KG] Concept extraction error: {e}")
+                print(f"[TopicModel] Error adding to topic model: {e}")
                 traceback.print_exc()
 
     async def query(
@@ -1888,10 +1859,10 @@ Answer with [N] citations:"""
                         break
             
             if not references_started:
-                # Clean LaTeX artifacts from token before sending
-                clean_token = self._clean_llm_output(token)
-                if clean_token:
-                    yield {"type": "token", "content": clean_token}
+                # Send token directly - don't clean individual tokens as it strips spaces
+                # _clean_llm_output is for complete text, not streaming tokens
+                if token:
+                    yield {"type": "token", "content": token}
             
             # Extract Quick Answer from first 1-2 complete sentences
             if not quick_answer_sent:

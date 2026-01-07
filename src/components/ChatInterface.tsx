@@ -29,7 +29,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // loadingMessage state removed - now using statusMessage from backend
-  const [activeDeepThink, setActiveDeepThink] = useState(false);  // Actual mode being used (may differ from toggle due to auto-upgrade)
+  const [, setActiveDeepThink] = useState(false);  // Actual mode being used (may differ from toggle due to auto-upgrade)
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Source viewer state

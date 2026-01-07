@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from storage.source_store import source_store
 from services.document_processor import document_processor
 from services.rag_engine import rag_engine
-from services.knowledge_graph import knowledge_graph_service as knowledge_graph
+from services.topic_modeling import topic_modeling_service
 
 router = APIRouter()
 
@@ -66,12 +66,12 @@ async def delete_source(notebook_id: str, source_id: str):
     except Exception as e:
         print(f"[SOURCES] Warning: Failed to delete from LanceDB: {e}")
     
-    # Delete from knowledge graph
+    # Delete from topic model
     try:
-        await knowledge_graph.delete_source_concepts(notebook_id, source_id)
-        print(f"[SOURCES] Deleted source {source_id} concepts from knowledge graph")
+        await topic_modeling_service.delete_source(source_id)
+        print(f"[SOURCES] Deleted source {source_id} from topic model")
     except Exception as e:
-        print(f"[SOURCES] Warning: Failed to delete from knowledge graph: {e}")
+        print(f"[SOURCES] Warning: Failed to delete from topic model: {e}")
     
     # Delete from sources.json
     success = await source_store.delete(notebook_id, source_id)

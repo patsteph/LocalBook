@@ -47,6 +47,9 @@ rank-bm25>=0.2.2  # BM25 keyword search for hybrid retrieval
 # Reranking (FlashRank - ultra-fast, no torch dependency, runs on CPU)
 flashrank>=0.2.0  # ~34MB, best quality reranker without heavy dependencies
 
+# Topic modeling (BERTopic - state-of-the-art topic discovery)
+bertopic>=0.16.0  # Includes HDBSCAN, UMAP, c-TF-IDF for automatic topic naming
+
 # Utilities
 python-dotenv>=1.0.0
 httpx>=0.28.0

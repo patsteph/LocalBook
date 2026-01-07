@@ -10,6 +10,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   const [mode, setMode] = useState<'local' | 'cloud'>('local');
   const [availableProviders, setAvailableProviders] = useState<{[key: string]: boolean}>({});
   const [currentModel, setCurrentModel] = useState<string>('mistral-nemo');
+  const [fastModel, setFastModel] = useState<string>('phi4-mini');
 
   useEffect(() => {
     loadAvailableProviders();
@@ -35,6 +36,9 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     try {
       const info = await settingsService.getLLMInfo();
       setCurrentModel(info.model_name);
+      if (info.fast_model_name) {
+        setFastModel(info.fast_model_name);
+      }
     } catch (err) {
       console.error('Failed to load LLM info:', err);
     }
@@ -108,7 +112,8 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
               <div className="text-3xl">🦙</div>
               <div className="flex-1 text-left">
                 <div className="font-semibold text-gray-900 dark:text-white">Ollama</div>
-                <div className="text-sm text-gray-600 dark:text-gray-400">Local Model: {currentModel}</div>
+                <div className="text-sm text-gray-600 dark:text-gray-400">Main: {currentModel}</div>
+                <div className="text-sm text-gray-500 dark:text-gray-500">Fast: {fastModel}</div>
               </div>
               {selectedProvider === 'ollama' && (
                 <svg className="w-6 h-6 text-blue-600" fill="currentColor" viewBox="0 0 20 20">

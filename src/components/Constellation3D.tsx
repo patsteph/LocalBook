@@ -72,6 +72,8 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
   const [stats, setStats] = useState<GraphStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [building, setBuilding] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);  // Background Ollama enhancement
+  const [enhanceProgress, setEnhanceProgress] = useState({ current: 0, total: 0 });
   const [sceneReady, setSceneReady] = useState(false);
   const [buildProgress, setBuildProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -795,14 +797,12 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                 setBuildProgress(prev => Math.max(prev, message.data.progress));
                 break;
               case 'build_complete':
-                console.log('Build complete - triggering clustering...');
+                // v0.6.5: BERTopic handles topic discovery automatically
+                console.log('Build complete - topics ready');
                 setBuilding(false);
                 setBuildProgress(100);
                 loadGraph();
                 loadStats();
-                // Trigger clustering - cluster_complete event will trigger final reload
-                fetch(`${API_BASE}/graph/cluster`, { method: 'POST' })
-                  .catch(err => console.error('Clustering failed:', err));
                 break;
               case 'cluster_progress':
                 console.log('Clustering progress:', message.data.phase, message.data.progress);
@@ -811,6 +811,18 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                 console.log('Clustering complete - refreshing graph with theme colors');
                 loadGraph();
                 loadStats();
+                break;
+              case 'enhancement_progress':
+                console.log('Enhancement progress:', message.data);
+                if (message.data.status === 'starting' || message.data.status === 'enhancing') {
+                  setEnhancing(true);
+                  setEnhanceProgress({ current: message.data.current, total: message.data.total });
+                } else if (message.data.status === 'complete') {
+                  setEnhancing(false);
+                  setEnhanceProgress({ current: 0, total: 0 });
+                  loadGraph();
+                  loadStats();
+                }
                 break;
             }
           } catch (err) {
@@ -1280,25 +1292,25 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
         )}
         
         <div className={`flex items-center gap-2 ${rightSidebarCollapsed ? 'justify-between' : 'flex-wrap'}`}>
-          {/* Left group - Build button and stats */}
+          {/* Left group - Rebuild button and stats */}
           <div className="flex items-center gap-2">
             {notebookId && (
               <button
                 onClick={async () => {
                   setBuildProgress(0);
                   await buildConstellation();
-                  setTimeout(triggerClustering, 5000);
                 }}
-                disabled={building}
-                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm disabled:opacity-50 font-medium whitespace-nowrap"
+                disabled={building || enhancing}
+                className="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded text-sm disabled:opacity-50 font-medium whitespace-nowrap"
+                title={enhancing ? `Enhancing theme names (${enhanceProgress.current}/${enhanceProgress.total})` : "Rebuild all topics from scratch"}
               >
-                {building ? '✨ Building...' : '✨ Build Constellation'}
+                {building ? '🔄 Rebuilding...' : enhancing ? `✨ Updating ${enhanceProgress.current}/${enhanceProgress.total}` : '🔄 Rebuild Topics'}
               </button>
             )}
             
             {stats && stats.concepts > 0 && (
               <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                {stats.concepts} concepts • {stats.links} links
+                {stats.concepts} themes • {stats.links} connections
               </span>
             )}
           </div>
@@ -1391,20 +1403,19 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
             <div className="absolute inset-0 flex items-center justify-center text-gray-400">
               <div className="text-center max-w-md">
                 <p className="text-4xl mb-4">✨</p>
-                <p className="text-lg font-medium mb-2">No concepts yet</p>
+                <p className="text-lg font-medium mb-2">No topics yet</p>
                 <p className="text-sm mb-4">
-                  Click "Build Constellation" to extract concepts from your sources.
+                  Topics will appear automatically as you add sources to your notebook.
                 </p>
                 {notebookId && (
                   <button
                     onClick={async () => {
                       await buildConstellation();
-                      setTimeout(triggerClustering, 5000);
                     }}
                     disabled={building}
-                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm"
+                    className="px-4 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-lg text-sm"
                   >
-                    {building ? '✨ Building...' : '✨ Build Constellation'}
+                    {building ? '🔄 Rebuilding...' : '🔄 Rebuild Topics'}
                   </button>
                 )}
               </div>

@@ -254,11 +254,13 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                 
                 if (result.success) {
                     // Quit the app - the install script will relaunch it
-                    setTimeout(() => {
-                        // @ts-ignore - Tauri API
-                        if (window.__TAURI__) {
-                            // @ts-ignore
-                            window.__TAURI__.process.exit(0);
+                    setTimeout(async () => {
+                        try {
+                            const { exit } = await import('@tauri-apps/plugin-process');
+                            await exit(0);
+                        } catch (e) {
+                            console.error('Failed to exit app:', e);
+                            setUpdateMessage('Please manually quit and reopen the app to complete the update.');
                         }
                     }, 1000);
                 }

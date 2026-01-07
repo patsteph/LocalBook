@@ -72,6 +72,11 @@ async def notify_cluster_complete(stats: dict = None):
     await broadcast_update("cluster_complete", stats or {})
 
 
+async def notify_topics_updated(data: dict = None):
+    """Notify clients when topics have been updated - triggers theme refresh"""
+    await broadcast_update("topics_updated", data or {})
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time constellation updates"""

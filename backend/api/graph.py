@@ -1,4 +1,11 @@
-"""Knowledge Graph API endpoints"""
+"""Knowledge Graph API endpoints
+
+v0.6.5: Now uses BERTopic for topic modeling instead of custom concept extraction.
+Topics are discovered automatically from document chunks with two-stage naming:
+1. Instant c-TF-IDF names at ingestion
+2. Background LLM enhancement for more readable names
+"""
+import asyncio
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -8,6 +15,7 @@ from models.knowledge_graph import (
     ConceptExtractionRequest, ConceptExtractionResult
 )
 from services.knowledge_graph import knowledge_graph_service
+from services.topic_modeling import topic_modeling_service
 
 
 router = APIRouter(prefix="/graph", tags=["knowledge-graph"])
@@ -39,26 +47,116 @@ class GraphStatsResponse(BaseModel):
 
 
 # =============================================================================
-# Graph Data Endpoints
+# Graph Data Endpoints (v0.6.5: Uses BERTopic topics)
 # =============================================================================
+
+# Color palette for topics
+TOPIC_COLORS = [
+    "#8B5CF6",  # Purple
+    "#3B82F6",  # Blue
+    "#10B981",  # Green
+    "#F59E0B",  # Amber
+    "#EF4444",  # Red
+    "#EC4899",  # Pink
+    "#6366F1",  # Indigo
+    "#14B8A6",  # Teal
+    "#F97316",  # Orange
+    "#84CC16",  # Lime
+]
+
+
+async def _build_graph_from_topics(notebook_id: Optional[str] = None) -> GraphData:
+    """Build GraphData from BERTopic topics for visualization."""
+    topics = await topic_modeling_service.get_topics(notebook_id)
+    
+    nodes = []
+    edges = []
+    clusters = []
+    
+    # Create a node for each topic
+    for i, topic in enumerate(topics):
+        color = TOPIC_COLORS[i % len(TOPIC_COLORS)]
+        
+        # Main topic node
+        node = GraphNode(
+            id=topic.id,
+            label=topic.display_name,
+            type="topic",
+            size=max(10, min(50, topic.document_count * 3)),
+            color=color,
+            metadata={
+                "topic_id": topic.topic_id,
+                "document_count": topic.document_count,
+                "keywords": [kw for kw, _ in topic.keywords[:5]],
+                "enhanced": topic.enhanced_name is not None
+            }
+        )
+        nodes.append(node)
+        
+        # Create keyword nodes for each topic
+        for j, (keyword, weight) in enumerate(topic.keywords[:5]):
+            kw_id = f"{topic.id}_kw_{j}"
+            kw_node = GraphNode(
+                id=kw_id,
+                label=keyword,
+                type="keyword",
+                size=max(5, min(20, weight * 200)),
+                color=color,
+                metadata={"weight": weight, "parent_topic": topic.id}
+            )
+            nodes.append(kw_node)
+            
+            # Edge from topic to keyword
+            edge = GraphEdge(
+                id=f"edge_{topic.id}_{kw_id}",
+                source=topic.id,
+                target=kw_id,
+                label="has_keyword",
+                strength=weight,
+                dashed=False
+            )
+            edges.append(edge)
+        
+        # Create cluster entry
+        cluster = ConceptCluster(
+            id=topic.id,
+            name=topic.display_name,
+            description=", ".join([kw for kw, _ in topic.keywords[:5]]),
+            concept_ids=[f"{topic.id}_kw_{j}" for j in range(min(5, len(topic.keywords)))],
+            size=topic.document_count,
+            coherence_score=0.8,
+            notebook_ids=topic.notebook_ids
+        )
+        clusters.append(cluster)
+    
+    # Add edges between topics that share keywords
+    for i, topic1 in enumerate(topics):
+        kw1 = set(kw for kw, _ in topic1.keywords[:10])
+        for j, topic2 in enumerate(topics[i+1:], i+1):
+            kw2 = set(kw for kw, _ in topic2.keywords[:10])
+            shared = kw1 & kw2
+            if len(shared) >= 2:
+                edge = GraphEdge(
+                    id=f"edge_{topic1.id}_{topic2.id}",
+                    source=topic1.id,
+                    target=topic2.id,
+                    label="related",
+                    strength=len(shared) / 10,
+                    dashed=True
+                )
+                edges.append(edge)
+    
+    return GraphData(nodes=nodes, edges=edges, clusters=clusters)
+
 
 @router.post("/query", response_model=GraphData)
 async def query_graph(params: GraphQueryParams):
     """
     Query the knowledge graph for visualization.
-    Returns nodes, edges, and clusters.
+    v0.6.5: Returns BERTopic topics as nodes with keyword children.
     """
     notebook_id = None if params.cross_notebook else params.notebook_id
-    
-    graph_data = await knowledge_graph_service.get_graph_data(
-        notebook_id=notebook_id,
-        center_node_id=params.center_node_id,
-        depth=params.depth,
-        include_clusters=params.include_clusters,
-        min_link_strength=params.min_link_strength
-    )
-    
-    return graph_data
+    return await _build_graph_from_topics(notebook_id)
 
 
 @router.get("/notebook/{notebook_id}", response_model=GraphData)
@@ -68,11 +166,7 @@ async def get_notebook_graph(
     min_link_strength: float = 0.3
 ):
     """Get the knowledge graph for a specific notebook"""
-    return await knowledge_graph_service.get_graph_data(
-        notebook_id=notebook_id,
-        include_clusters=include_clusters,
-        min_link_strength=min_link_strength
-    )
+    return await _build_graph_from_topics(notebook_id)
 
 
 @router.get("/all", response_model=GraphData)
@@ -81,11 +175,7 @@ async def get_full_graph(
     min_link_strength: float = 0.3
 ):
     """Get the complete knowledge graph across all notebooks"""
-    return await knowledge_graph_service.get_graph_data(
-        notebook_id=None,
-        include_clusters=include_clusters,
-        min_link_strength=min_link_strength
-    )
+    return await _build_graph_from_topics(None)
 
 
 # =============================================================================
@@ -100,28 +190,29 @@ async def get_source_connections(
 ):
     """
     Get connections for a specific source document.
-    Returns related sources, shared concepts, and cluster memberships.
+    v0.6.5: Returns topics associated with this source.
     """
-    connections = await knowledge_graph_service.get_connections_for_source(
-        source_id=source_id,
-        notebook_id=notebook_id,
-        limit=limit
-    )
-    return connections
+    topics = await topic_modeling_service.get_topics_for_source(source_id)
+    return {
+        "source_id": source_id,
+        "topics": [t.to_dict() for t in topics[:limit]],
+        "related_sources": [],  # Could be expanded later
+        "clusters": []
+    }
 
 
 # =============================================================================
 # Concept Management
 # =============================================================================
 
-@router.post("/extract", response_model=ConceptExtractionResult)
+@router.post("/extract")
 async def extract_concepts(request: ConceptExtractionRequest):
     """
     Extract concepts from text.
-    Usually called automatically during document ingestion.
+    v0.6.5: Deprecated - BERTopic handles topic discovery automatically.
+    This endpoint is kept for backwards compatibility but does nothing.
     """
-    result = await knowledge_graph_service.extract_concepts(request)
-    return result
+    return {"concepts": [], "links": [], "message": "v0.6.5: Use BERTopic topic modeling instead"}
 
 
 @router.get("/concepts")
@@ -129,22 +220,19 @@ async def list_concepts(
     notebook_id: Optional[str] = None,
     limit: int = 100
 ):
-    """List all concepts, optionally filtered by notebook"""
-    graph_data = await knowledge_graph_service.get_graph_data(
-        notebook_id=notebook_id,
-        include_clusters=False
-    )
+    """List all concepts (now topics and keywords)"""
+    # v0.6.5: Return topics and their keywords as "concepts"
+    graph_data = await _build_graph_from_topics(notebook_id)
     
     concepts = [
         {
             "id": node.id,
             "name": node.label,
-            "notebook_id": node.notebook_id,
+            "type": node.type,
             "size": node.size,
             "metadata": node.metadata
         }
         for node in graph_data.nodes
-        if node.type == "concept"
     ][:limit]
     
     return {"concepts": concepts}
@@ -152,22 +240,19 @@ async def list_concepts(
 
 @router.get("/concepts/search")
 async def search_concepts(query: str, limit: int = 20):
-    """Search concepts by name"""
-    # Get all concepts and filter by name
-    graph_data = await knowledge_graph_service.get_graph_data(include_clusters=False)
+    """Search topics and keywords by name"""
+    # v0.6.5: Search in BERTopic topics
+    results = await topic_modeling_service.find_topics(query)
     
-    query_lower = query.lower()
     matching = [
         {
-            "id": node.id,
-            "name": node.label,
-            "notebook_id": node.notebook_id
+            "topic_id": topic_id,
+            "score": score
         }
-        for node in graph_data.nodes
-        if query_lower in node.label.lower()
-    ][:limit]
+        for topic_id, score in results[:limit]
+    ]
     
-    return {"concepts": matching}
+    return {"results": matching}
 
 
 # =============================================================================
@@ -178,19 +263,17 @@ async def search_concepts(query: str, limit: int = 20):
 async def run_clustering(background_tasks: BackgroundTasks):
     """
     Trigger clustering to discover emergent themes.
-    Runs as a background task.
+    v0.6.5: Deprecated - BERTopic handles clustering automatically.
+    Use /build/{notebook_id} to rebuild topics instead.
     """
-    background_tasks.add_task(knowledge_graph_service.run_clustering)
-    return {"message": "Clustering started", "status": "running"}
+    return {"message": "v0.6.5: Clustering is automatic. Use Rebuild Topics instead.", "status": "deprecated"}
 
 
 @router.get("/clusters")
 async def list_clusters(notebook_id: Optional[str] = None):
-    """List all concept clusters"""
-    graph_data = await knowledge_graph_service.get_graph_data(
-        notebook_id=notebook_id,
-        include_clusters=True
-    )
+    """List all topic clusters"""
+    # v0.6.5: Return BERTopic topics as clusters
+    graph_data = await _build_graph_from_topics(notebook_id)
     
     return {
         "clusters": [
@@ -212,80 +295,38 @@ async def list_clusters(notebook_id: Optional[str] = None):
 async def get_notebook_themes(notebook_id: str, limit: int = 10):
     """
     Get key themes discovered in a notebook.
-    Returns deduplicated clusters with their associated concept names for display.
+    v0.6.5: Now uses BERTopic topics instead of custom concept clusters.
+    Returns topics with their keywords for display in ThemesPanel.
     """
-    graph_data = await knowledge_graph_service.get_graph_data(
-        notebook_id=notebook_id,
-        include_clusters=True
-    )
+    # Get topics from BERTopic service
+    topics = await topic_modeling_service.get_topics(notebook_id)
     
-    # Build concept lookup
-    concept_lookup = {node.id: node.label for node in graph_data.nodes if node.type == "concept"}
-    
-    # Deduplicate clusters by name - merge concepts from clusters with same name
-    merged_themes: Dict[str, Dict[str, Any]] = {}
-    for cluster in graph_data.clusters:
-        name = (cluster.name or "").strip().lower()
-        if not name:
-            continue
-            
-        if name not in merged_themes:
-            merged_themes[name] = {
-                "id": cluster.id,
-                "name": cluster.name,
-                "description": cluster.description,
-                "concept_ids": set(cluster.concept_ids),
-                "coherence_score": cluster.coherence_score
-            }
-        else:
-            # Merge concepts from duplicate cluster
-            merged_themes[name]["concept_ids"].update(cluster.concept_ids)
-            # Keep higher coherence score
-            if cluster.coherence_score > merged_themes[name]["coherence_score"]:
-                merged_themes[name]["coherence_score"] = cluster.coherence_score
-                merged_themes[name]["description"] = cluster.description
-    
-    # Build final themes list
+    # Build themes list from topics
     themes = []
-    for theme_data in merged_themes.values():
-        concept_ids = list(theme_data["concept_ids"])
-        # Only include concepts that have names (filter out orphaned IDs)
-        concept_names = [concept_lookup[cid] for cid in concept_ids if cid in concept_lookup][:10]
-        if not concept_names:
-            continue  # Skip themes with no resolvable concepts
-        
-        # Clean theme name - remove trailing punctuation and quotes
-        theme_name = (theme_data["name"] or "").rstrip('.,;:!?').strip('"\'')
+    for topic in topics[:limit]:
+        # Get keyword names for display
+        keywords = [kw for kw, _ in topic.keywords[:10]]
         
         themes.append({
-            "id": theme_data["id"],
-            "name": theme_name,
-            "description": theme_data["description"],
-            "concepts": concept_names,
-            "concept_count": len([cid for cid in concept_ids if cid in concept_lookup]),
-            "coherence_score": theme_data["coherence_score"]
+            "id": topic.id,
+            "name": topic.display_name,
+            "description": ", ".join(keywords[:5]),
+            "concepts": keywords,  # Keywords serve as "concepts" for click-to-chat
+            "concept_count": topic.document_count,
+            "coherence_score": 0.8,  # BERTopic doesn't provide this directly
+            "topic_id": topic.topic_id,
+            "enhanced": topic.enhanced_name is not None
         })
     
-    # Sort by concept count (most to least) and limit
-    themes = sorted(themes, key=lambda t: t["concept_count"], reverse=True)[:limit]
-    
-    # Also get top standalone concepts not in clusters
-    clustered_concept_ids = set()
-    for c in graph_data.clusters:
-        clustered_concept_ids.update(c.concept_ids)
-    
-    top_concepts = [
-        {"id": node.id, "name": node.label, "size": node.size}
-        for node in sorted(graph_data.nodes, key=lambda n: n.size, reverse=True)
-        if node.type == "concept" and node.id not in clustered_concept_ids
-    ][:20]
+    # Get stats
+    stats = await topic_modeling_service.get_stats(notebook_id)
     
     return {
         "notebook_id": notebook_id,
         "themes": themes,
         "theme_count": len(themes),
-        "top_concepts": top_concepts,
-        "total_concepts": len([n for n in graph_data.nodes if n.type == "concept"])
+        "top_concepts": [],  # No longer used - topics contain keywords
+        "total_concepts": stats.get("total_documents", 0)
     }
 
 
@@ -296,8 +337,14 @@ async def get_notebook_themes(notebook_id: str, limit: int = 10):
 @router.get("/stats", response_model=GraphStatsResponse)
 async def get_graph_stats(notebook_id: Optional[str] = None):
     """Get knowledge graph statistics, optionally filtered by notebook"""
-    stats = await knowledge_graph_service.get_stats(notebook_id=notebook_id)
-    return GraphStatsResponse(**stats)
+    # v0.6.5: Use BERTopic stats
+    stats = await topic_modeling_service.get_stats(notebook_id)
+    graph_data = await _build_graph_from_topics(notebook_id)
+    return GraphStatsResponse(
+        concepts=len([n for n in graph_data.nodes if n.type == "topic"]),
+        links=len(graph_data.edges),
+        clusters=len(graph_data.clusters)
+    )
 
 
 # =============================================================================
@@ -312,12 +359,10 @@ async def list_links(
     limit: int = 100
 ):
     """List all links in the knowledge graph"""
-    graph_data = await knowledge_graph_service.get_graph_data(
-        notebook_id=notebook_id,
-        min_link_strength=min_strength
-    )
+    # v0.6.5: Use BERTopic graph
+    graph_data = await _build_graph_from_topics(notebook_id)
     
-    edges = graph_data.edges
+    edges = [e for e in graph_data.edges if e.strength >= min_strength]
     if link_type:
         edges = [e for e in edges if e.label == link_type]
     
@@ -351,80 +396,140 @@ async def get_link_types():
 @router.post("/build/{notebook_id}")
 async def build_graph_for_notebook(notebook_id: str, background_tasks: BackgroundTasks):
     """
-    Build/rebuild the knowledge graph for a notebook by extracting concepts from all sources.
-    Useful for existing notebooks that don't have graph data yet.
+    Build/rebuild topics for a notebook.
+    v0.6.5: Processes all sources through BERTopic to discover topics.
     """
+    import threading
     from storage.source_store import source_store
     from services.rag_engine import rag_engine
     from api.constellation_ws import notify_build_progress, notify_build_complete
     
-    # Get all sources for this notebook
-    sources = await source_store.list(notebook_id)
+    def run_rebuild_sync():
+        """Synchronous wrapper to run async rebuild in a new event loop."""
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(rebuild_topics_async())
+        finally:
+            loop.close()
     
-    if not sources:
-        raise HTTPException(status_code=404, detail="No sources found in notebook")
-    
-    async def extract_all():
-        total_concepts = 0
-        total_batches = 0
-        processed_batches = 0
-        
-        # First, count total batches to process (batching 3 chunks per LLM call)
-        batch_size = 3
-        for source in sources:
-            content = source.get("content", "")
-            if content:
+    async def rebuild_topics_async():
+        try:
+            print(f"[TopicModel] Starting rebuild for notebook {notebook_id}")
+            
+            # Get all sources for this notebook
+            sources = await source_store.list(notebook_id)
+            if not sources:
+                print(f"[TopicModel] No sources found for notebook {notebook_id}")
+                await notify_build_complete()
+                return
+            
+            print(f"[TopicModel] Found {len(sources)} sources to process")
+            
+            await notify_build_progress({
+                "notebook_id": notebook_id,
+                "progress": 5,
+                "status": f"Collecting {len(sources)} sources..."
+            })
+            
+            # STEP 1: Collect ALL chunks and embeddings first
+            all_chunks = []
+            all_embeddings = []
+            chunk_metadata = []  # Track which source each chunk belongs to
+            
+            for i, source in enumerate(sources):
+                content = source.get("content", "")
+                if not content or len(content) < 100:
+                    print(f"[TopicModel] Skipping source {i+1}: no content or too short")
+                    continue
+                
+                source_id = source.get("id", "")
+                filename = source.get('filename', 'unknown')
+                print(f"[TopicModel] Chunking source {i+1}/{len(sources)}: {filename}")
+                
+                # Chunk the content
                 chunks = rag_engine._chunk_text(content)
-                # Calculate number of batches (ceiling division)
-                total_batches += (len(chunks) + batch_size - 1) // batch_size
-        
-        if total_batches == 0:
-            await notify_build_complete()
-            return
-        
-        for source in sources:
-            content = source.get("content", "")
-            if not content:
-                continue
-            
-            # Chunk the content
-            chunks = rag_engine._chunk_text(content)
-            
-            # Process ALL chunks by batching 3 consecutive chunks into one LLM call
-            # This matches the behavior of ingest_document for consistency
-            for i in range(0, len(chunks), batch_size):
-                batch_text = "\n\n---\n\n".join(chunks[i:i+batch_size])
+                if not chunks:
+                    print(f"[TopicModel] No chunks generated for source {i+1}")
+                    continue
                 
-                request = ConceptExtractionRequest(
-                    text=batch_text,
-                    source_id=source["id"],
-                    chunk_index=i,
-                    notebook_id=notebook_id
-                )
+                # Generate embeddings for chunks
+                embeddings = rag_engine.encode(chunks)
                 
-                result = await knowledge_graph_service.extract_concepts(request)
-                total_concepts += len(result.concepts)
-                processed_batches += 1
+                # Collect
+                all_chunks.extend(chunks)
+                all_embeddings.append(embeddings)
+                for chunk in chunks:
+                    chunk_metadata.append({"source_id": source_id, "notebook_id": notebook_id})
                 
-                # Send progress update
-                progress = (processed_batches / total_batches * 100) if total_batches > 0 else 0
+                progress = int(5 + (i + 1) / len(sources) * 40)
                 await notify_build_progress({
                     "notebook_id": notebook_id,
-                    "progress": round(progress, 1),
-                    "concepts_found": total_concepts,
-                    "batches_processed": processed_batches,
-                    "total_batches": total_batches
+                    "progress": progress,
+                    "status": f"Chunked {i + 1}/{len(sources)} sources ({len(all_chunks)} chunks)"
                 })
-        
-        print(f"[KG] Built graph for notebook {notebook_id}: {total_concepts} concepts extracted")
-        await notify_build_complete()
+                await asyncio.sleep(0.05)
+            
+            if not all_chunks:
+                print(f"[TopicModel] No chunks collected from any source")
+                await notify_build_complete()
+                return
+            
+            # Combine embeddings
+            import numpy as np
+            combined_embeddings = np.vstack(all_embeddings) if all_embeddings else None
+            
+            print(f"[TopicModel] Collected {len(all_chunks)} chunks, fitting BERTopic...")
+            
+            await notify_build_progress({
+                "notebook_id": notebook_id,
+                "progress": 50,
+                "status": f"Discovering topics from {len(all_chunks)} chunks..."
+            })
+            
+            # STEP 2: Fit BERTopic on ALL documents at once
+            result = await topic_modeling_service.fit_all(
+                texts=all_chunks,
+                embeddings=combined_embeddings,
+                metadata=chunk_metadata,
+                notebook_id=notebook_id
+            )
+            
+            print(f"[TopicModel] BERTopic fit complete: {result}")
+            
+            await notify_build_progress({
+                "notebook_id": notebook_id,
+                "progress": 95,
+                "status": f"Found {result.get('topics_found', 0)} topics"
+            })
+            
+            # Get final stats
+            stats = await topic_modeling_service.get_stats(notebook_id)
+            print(f"[TopicModel] Rebuild complete: {stats}")
+            
+            await notify_build_progress({
+                "notebook_id": notebook_id,
+                "progress": 100,
+                "topics_found": stats.get("total_topics", 0)
+            })
+            
+            print(f"[TopicModel] Built topics for notebook {notebook_id}: {stats}")
+            await notify_build_complete()
+            
+        except Exception as e:
+            import traceback
+            print(f"[TopicModel] Rebuild error: {e}")
+            traceback.print_exc()
+            await notify_build_complete()
     
-    background_tasks.add_task(extract_all)
+    # Use threading for reliable background execution in bundled app
+    thread = threading.Thread(target=run_rebuild_sync, daemon=True)
+    thread.start()
     
     return {
-        "message": f"Building graph for {len(sources)} sources",
-        "status": "running",
-        "sources": len(sources)
+        "message": "Building topics from sources",
+        "status": "running"
     }
 
 
@@ -432,16 +537,54 @@ async def build_graph_for_notebook(notebook_id: str, background_tasks: Backgroun
 async def reset_knowledge_graph(notebook_id: str):
     """
     Reset the knowledge graph for a notebook.
-    Clears all concepts, links, and clusters to allow a fresh rebuild.
+    v0.6.5: Clears topic model data for the notebook.
     """
     try:
-        # Clear concepts for this notebook
-        concepts_cleared = await knowledge_graph_service.clear_notebook_data(notebook_id)
+        # Clear topics (BERTopic doesn't support per-notebook reset easily,
+        # so we just rebuild from scratch)
+        await topic_modeling_service.reset()
         
         return {
             "success": True,
-            "message": f"Knowledge graph reset for notebook {notebook_id}",
-            "concepts_cleared": concepts_cleared
+            "message": f"Topic model reset for notebook {notebook_id}"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Topic-specific endpoints (v0.6.5)
+# =============================================================================
+
+@router.get("/topics/{notebook_id}")
+async def get_topics(notebook_id: str):
+    """
+    Get all topics for a notebook.
+    v0.6.5: Returns BERTopic-discovered topics.
+    """
+    topics = await topic_modeling_service.get_topics(notebook_id)
+    return {
+        "notebook_id": notebook_id,
+        "topics": [t.to_dict() for t in topics],
+        "count": len(topics)
+    }
+
+
+@router.get("/topic/{topic_id}")
+async def get_topic(topic_id: int):
+    """
+    Get details for a specific topic.
+    """
+    topic = await topic_modeling_service.get_topic(topic_id)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    return topic.to_dict()
+
+
+@router.get("/topic-stats")
+async def get_topic_stats(notebook_id: Optional[str] = None):
+    """
+    Get topic modeling statistics.
+    """
+    stats = await topic_modeling_service.get_stats(notebook_id)
+    return stats

@@ -14,6 +14,7 @@ export interface APIKeysStatus {
 
 export interface LLMInfo {
     model_name: string;
+    fast_model_name?: string;
     provider: string;
 }
 

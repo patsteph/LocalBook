@@ -18,9 +18,11 @@ from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup
 from services.startup_checks import run_all_startup_checks
 from services.migration_manager import check_and_migrate_on_startup
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Lifecycle manager for the application"""
+async def _run_startup_tasks():
+    """Run all startup tasks in background after HTTP server is ready.
+    
+    This allows the frontend to poll /updates/startup-status while we work.
+    """
     print(f"🚀 LocalBook API starting on {settings.api_host}:{settings.api_port}")
     print(f"📁 Data directory: {settings.data_dir}")
     print(f"🤖 LLM Provider: {settings.llm_provider}")
@@ -59,9 +61,9 @@ async def lifespan(app: FastAPI):
     # Run comprehensive startup checks (data migration, models, embeddings)
     await run_all_startup_checks(status_callback=set_startup_status)
     
-    # Warm up models BEFORE marking startup complete (blocks until ready)
+    # Warm up models (blocks until ready)
     set_startup_status("starting", "Warming up AI models...", 85)
-    await initial_warmup()  # This blocks until models are loaded in VRAM
+    await initial_warmup()
     
     # Start background task to keep models warm (periodic keep-alive)
     set_startup_status("starting", "Starting background services...", 95)
@@ -70,8 +72,33 @@ async def lifespan(app: FastAPI):
     # Mark startup complete
     mark_startup_complete()
     print(f"✅ LocalBook v{CURRENT_VERSION} ready!")
+
+
+# Background task reference for cleanup
+_startup_task = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifecycle manager for the application.
+    
+    IMPORTANT: We start the HTTP server FIRST, then run startup tasks in background.
+    This allows the frontend to poll /updates/startup-status for progress updates.
+    """
+    global _startup_task
+    
+    # Start startup tasks in background - HTTP server will be ready immediately
+    _startup_task = asyncio.create_task(_run_startup_tasks())
     
     yield
+    
+    # Wait for startup task to complete if still running
+    if _startup_task and not _startup_task.done():
+        _startup_task.cancel()
+        try:
+            await _startup_task
+        except asyncio.CancelledError:
+            pass
     
     # Stop warmup task on shutdown
     await stop_warmup_task()

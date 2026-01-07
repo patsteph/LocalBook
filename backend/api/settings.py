@@ -82,6 +82,7 @@ async def get_llm_info():
     """Get current LLM model information"""
     return {
         "model_name": settings.ollama_model,
+        "fast_model_name": settings.ollama_fast_model,
         "provider": settings.llm_provider
     }
 

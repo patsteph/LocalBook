@@ -80,6 +80,7 @@ pyinstaller \
     --hidden-import=services.model_warmup \
     --hidden-import=services.memory_agent \
     --hidden-import=services.knowledge_graph \
+    --hidden-import=services.topic_modeling \
     --hidden-import=storage \
     --hidden-import=storage.notebook_store \
     --hidden-import=storage.source_store \
@@ -97,7 +98,11 @@ pyinstaller \
     --collect-all=torch \
     --collect-all=transformers \
     --collect-all=trafilatura \
+    --collect-all=justext \
     --collect-all=whisper \
+    --collect-all=bertopic \
+    --collect-all=umap \
+    --collect-all=hdbscan \
     --collect-submodules=pandas \
     --collect-data=lancedb \
     --collect-data=tiktoken \

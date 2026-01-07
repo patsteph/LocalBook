@@ -3,11 +3,22 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from storage.notebook_store import notebook_store
 from services.rag_engine import rag_engine
+from config import settings
 
 router = APIRouter()
 
 class ChangeModelRequest(BaseModel):
     model_name: str
+
+@router.get("/info")
+async def get_embedding_info():
+    """Get current embedding and reranker configuration"""
+    return {
+        "model": settings.embedding_model,
+        "dimensions": settings.embedding_dim,
+        "reranker": settings.reranker_model,
+        "reranker_type": settings.reranker_type
+    }
 
 @router.get("/model/{notebook_id}")
 async def get_current_model(notebook_id: str):

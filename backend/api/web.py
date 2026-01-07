@@ -1,4 +1,5 @@
 """Web search and scraping API endpoints"""
+import asyncio
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional
@@ -10,6 +11,10 @@ from storage.source_store import source_store
 from api.constellation_ws import notify_source_updated
 
 router = APIRouter()
+
+# Semaphore to limit concurrent ingestion tasks (scrape + embed)
+# This prevents overwhelming Ollama with too many concurrent requests
+_ingestion_semaphore = asyncio.Semaphore(3)
 
 class WebSearchRequest(BaseModel):
     query: str
@@ -230,87 +235,92 @@ async def add_to_notebook(request: AddToNotebookRequest, background_tasks: Backg
 
 
 async def _scrape_and_ingest_background(notebook_id: str, source_id: str, url: str, title: str):
-    """Background task: scrape URL and ingest into RAG - all in background"""
-    try:
-        # Step 1: Scrape the URL
-        print(f"[Web] Background scraping: {url}")
-        results = await web_scraper.scrape_urls([url])
-        
-        if not results or not results[0].get("success"):
-            error_msg = results[0].get("error", "Scrape failed") if results else "Scrape failed"
-            print(f"[Web] Scrape failed for {url}: {error_msg}")
+    """Background task: scrape URL and ingest into RAG - all in background.
+    
+    Uses semaphore to limit concurrent ingestion to 3 at a time.
+    This allows parallel processing while not overwhelming Ollama.
+    """
+    async with _ingestion_semaphore:
+        try:
+            # Step 1: Scrape the URL
+            print(f"[Web] Background scraping: {url}")
+            results = await web_scraper.scrape_urls([url])
+            
+            if not results or not results[0].get("success"):
+                error_msg = results[0].get("error", "Scrape failed") if results else "Scrape failed"
+                print(f"[Web] Scrape failed for {url}: {error_msg}")
+                await source_store.update(notebook_id, source_id, {
+                    "status": "failed",
+                    "error": error_msg
+                })
+                await notify_source_updated({
+                    "notebook_id": notebook_id,
+                    "source_id": source_id,
+                    "status": "failed",
+                    "title": title,
+                    "error": error_msg
+                })
+                return
+            
+            scraped = results[0]
+            text = scraped.get("text", "")
+            actual_title = scraped.get("title", title)
+            
+            # Step 2: Ingest into RAG
+            print(f"[Web] Background ingesting: {actual_title}")
+            source_type = "youtube" if "youtube.com" in url or "youtu.be" in url else "web"
+            result = await rag_engine.ingest_document(
+                notebook_id=notebook_id,
+                source_id=source_id,
+                text=text,
+                filename=actual_title,
+                source_type=source_type
+            )
+
+            # Step 3: Update source with results
+            chunks = result.get("chunks", 0)
+            characters = result.get("characters", len(text))
+            await source_store.update(notebook_id, source_id, {
+                "filename": actual_title,  # Update with actual scraped title
+                "chunks": chunks,
+                "characters": characters,
+                "status": "completed",
+                "content": text,
+                "metadata": {
+                    "type": "web",
+                    "format": "web",
+                    "url": url,
+                    "author": scraped.get("author"),
+                    "date": scraped.get("date"),
+                    "word_count": scraped.get("word_count"),
+                    "char_count": scraped.get("char_count"),
+                    "status": "completed"
+                }
+            })
+            
+            print(f"[Web] Background complete: {actual_title} ({chunks} chunks)")
+            await notify_source_updated({
+                "notebook_id": notebook_id,
+                "source_id": source_id,
+                "status": "completed",
+                "title": actual_title,
+                "chunks": chunks,
+                "characters": characters
+            })
+            
+        except Exception as e:
+            print(f"[Web] Background error for {url}: {e}")
             await source_store.update(notebook_id, source_id, {
                 "status": "failed",
-                "error": error_msg
+                "error": str(e)[:200]
             })
             await notify_source_updated({
                 "notebook_id": notebook_id,
                 "source_id": source_id,
                 "status": "failed",
                 "title": title,
-                "error": error_msg
+                "error": str(e)[:100]
             })
-            return
-        
-        scraped = results[0]
-        text = scraped.get("text", "")
-        actual_title = scraped.get("title", title)
-        
-        # Step 2: Ingest into RAG
-        print(f"[Web] Background ingesting: {actual_title}")
-        source_type = "youtube" if "youtube.com" in url or "youtu.be" in url else "web"
-        result = await rag_engine.ingest_document(
-            notebook_id=notebook_id,
-            source_id=source_id,
-            text=text,
-            filename=actual_title,
-            source_type=source_type
-        )
-
-        # Step 3: Update source with results
-        chunks = result.get("chunks", 0)
-        characters = result.get("characters", len(text))
-        await source_store.update(notebook_id, source_id, {
-            "filename": actual_title,  # Update with actual scraped title
-            "chunks": chunks,
-            "characters": characters,
-            "status": "completed",
-            "content": text,
-            "metadata": {
-                "type": "web",
-                "format": "web",
-                "url": url,
-                "author": scraped.get("author"),
-                "date": scraped.get("date"),
-                "word_count": scraped.get("word_count"),
-                "char_count": scraped.get("char_count"),
-                "status": "completed"
-            }
-        })
-        
-        print(f"[Web] Background complete: {actual_title} ({chunks} chunks)")
-        await notify_source_updated({
-            "notebook_id": notebook_id,
-            "source_id": source_id,
-            "status": "completed",
-            "title": actual_title,
-            "chunks": chunks,
-            "characters": characters
-        })
-        
-    except Exception as e:
-        print(f"[Web] Background error for {url}: {e}")
-        await source_store.update(notebook_id, source_id, {
-            "status": "failed",
-            "error": str(e)[:200]
-        })
-        await notify_source_updated({
-            "notebook_id": notebook_id,
-            "source_id": source_id,
-            "status": "failed",
-            "title": title,
-            "error": str(e)[:100]
-        })
 
 
 @router.post("/quick-add")
