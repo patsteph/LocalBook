@@ -141,7 +141,7 @@ cd ..
 echo -e "  Verifying app bundle..."
 BUNDLE_OK=true
 [ -f "./LocalBook.app/Contents/MacOS/localbooklm" ] || BUNDLE_OK=false
-[ -d "./LocalBook.app/Contents/Resources/backend" ] || BUNDLE_OK=false
+[ -d "./LocalBook.app/Contents/Resources/resources/backend" ] || BUNDLE_OK=false
 
 if [ "$BUNDLE_OK" = true ]; then
     echo -e "${GREEN}  ✓ App bundle structure OK${NC}"

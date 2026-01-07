@@ -123,11 +123,11 @@ async fn pull_ollama_model(model_name: &str) -> Result<(), String> {
     }
 }
 
-// Required models for LocalBook
+// Required models for LocalBook - must match backend/config.py settings
 const REQUIRED_MODELS: &[(&str, &str)] = &[
-    ("phi4:14b", "Main AI model (~9GB)"),
-    ("llama3.2:3b", "Fast AI model (~2GB)"),
-    ("nomic-embed-text", "Embedding model (~300MB)"),
+    ("olmo-3:7b-instruct", "Main AI model (~4.5GB)"),
+    ("phi4-mini:latest", "Fast AI model (~2.5GB)"),
+    ("snowflake-arctic-embed2", "Embedding model (~1.2GB)"),
 ];
 
 // Function to ensure all required models are available
