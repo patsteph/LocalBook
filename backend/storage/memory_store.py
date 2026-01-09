@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 import threading
 import lancedb
-from sentence_transformers import SentenceTransformer
+import requests
 
 from models.memory import (
     CoreMemory, CoreMemoryEntry, MemoryCategory, MemoryImportance, MemorySourceType,
@@ -69,19 +69,29 @@ class MemoryStore:
         self._initialized = True
     
     # =========================================================================
-    # Embedding Model
+    # Embedding Model - Uses Ollama (same as RAG engine for consistency)
     # =========================================================================
     
-    @property
-    def embedding_model(self) -> SentenceTransformer:
-        """Lazy load embedding model"""
-        if self._embedding_model is None:
-            self._embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        return self._embedding_model
-    
     def get_embedding(self, text: str) -> List[float]:
-        """Generate embedding for text"""
-        return self.embedding_model.encode(text).tolist()
+        """Generate embedding using Ollama API (matches RAG engine)"""
+        try:
+            response = requests.post(
+                f"{settings.ollama_base_url}/api/embeddings",
+                json={
+                    "model": settings.embedding_model,  # snowflake-arctic-embed2
+                    "prompt": text
+                },
+                timeout=60
+            )
+            result = response.json()
+            embedding = result.get("embedding", [])
+            if embedding:
+                return embedding
+            # Fallback to zero vector if empty
+            return [0.0] * settings.embedding_dim
+        except Exception as e:
+            print(f"[MemoryStore] Embedding error: {e}")
+            return [0.0] * settings.embedding_dim
     
     # =========================================================================
     # Core Memory (JSON file)

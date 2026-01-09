@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from config import settings
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
@@ -140,6 +140,10 @@ app.include_router(constellation_ws.router, tags=["constellation"])
 app.include_router(updates.router, tags=["updates"])
 app.include_router(content.router, prefix="/content", tags=["content"])
 app.include_router(exploration.router, tags=["exploration"])
+app.include_router(quiz.router, tags=["quiz"])
+app.include_router(visual.router, tags=["visual"])
+app.include_router(writing.router, tags=["writing"])
+app.include_router(voice.router, tags=["voice"])
 
 @app.get("/")
 async def root():

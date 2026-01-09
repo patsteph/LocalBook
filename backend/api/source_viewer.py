@@ -118,3 +118,118 @@ async def delete_highlight(highlight_id: str):
     if not success:
         raise HTTPException(status_code=404, detail="Highlight not found")
     return {"message": "Highlight deleted successfully"}
+
+
+# ============ Highlights Aggregation & Content Generation ============
+
+@router.get("/highlights/notebook/{notebook_id}")
+async def list_notebook_highlights(notebook_id: str):
+    """List all highlights across all sources in a notebook."""
+    highlights = await highlights_store.list_by_notebook(notebook_id)
+    return {
+        "notebook_id": notebook_id,
+        "highlights": highlights,
+        "count": len(highlights)
+    }
+
+
+@router.post("/highlights/generate-quiz/{notebook_id}")
+async def generate_quiz_from_highlights(notebook_id: str, num_questions: int = 5):
+    """Generate a quiz from highlighted content only."""
+    from services.structured_llm import structured_llm
+    
+    highlights = await highlights_store.list_by_notebook(notebook_id)
+    if not highlights:
+        raise HTTPException(status_code=404, detail="No highlights found in notebook")
+    
+    # Collect highlighted text
+    content = "\n\n".join([h.get("highlighted_text", "") for h in highlights])
+    
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="No highlighted text to generate quiz from")
+    
+    result = await structured_llm.generate_quiz(
+        content=content,
+        num_questions=min(num_questions, len(highlights)),
+        difficulty="medium"
+    )
+    
+    return {
+        "notebook_id": notebook_id,
+        "highlights_used": len(highlights),
+        "quiz": {
+            "topic": result.topic,
+            "questions": [q.model_dump() for q in result.questions],
+            "source_summary": result.source_summary
+        }
+    }
+
+
+@router.post("/highlights/generate-summary/{notebook_id}")
+async def generate_summary_from_highlights(notebook_id: str):
+    """Generate a summary from highlighted content only."""
+    from services.structured_llm import structured_llm
+    
+    highlights = await highlights_store.list_by_notebook(notebook_id)
+    if not highlights:
+        raise HTTPException(status_code=404, detail="No highlights found in notebook")
+    
+    content = "\n\n".join([
+        f"- {h.get('highlighted_text', '')}" + 
+        (f" (Note: {h.get('annotation')})" if h.get('annotation') else "")
+        for h in highlights
+    ])
+    
+    result = await structured_llm.assist_writing(
+        content=f"Summarize these key highlights from the user's reading:\n\n{content}",
+        task="summarize",
+        format_style="professional"
+    )
+    
+    return {
+        "notebook_id": notebook_id,
+        "highlights_used": len(highlights),
+        "summary": result.content,
+        "word_count": result.word_count
+    }
+
+
+@router.get("/highlights/export/{notebook_id}")
+async def export_highlights(notebook_id: str, format: str = "markdown"):
+    """Export all highlights as markdown or plain text."""
+    highlights = await highlights_store.list_by_notebook(notebook_id)
+    
+    if format == "markdown":
+        lines = ["# Highlights\n"]
+        current_source = None
+        for h in highlights:
+            source_id = h.get("source_id", "")
+            if source_id != current_source:
+                lines.append(f"\n## Source: {source_id}\n")
+                current_source = source_id
+            
+            text = h.get("highlighted_text", "")
+            annotation = h.get("annotation", "")
+            lines.append(f"> {text}")
+            if annotation:
+                lines.append(f"\n*Note: {annotation}*")
+            lines.append("")
+        
+        content = "\n".join(lines)
+    else:
+        lines = []
+        for h in highlights:
+            text = h.get("highlighted_text", "")
+            annotation = h.get("annotation", "")
+            lines.append(text)
+            if annotation:
+                lines.append(f"  Note: {annotation}")
+            lines.append("")
+        content = "\n".join(lines)
+    
+    return {
+        "notebook_id": notebook_id,
+        "format": format,
+        "content": content,
+        "highlight_count": len(highlights)
+    }

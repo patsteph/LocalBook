@@ -220,3 +220,85 @@ def _determine_date_type(date_str: str) -> str:
     # Year only
     else:
         return "year"
+
+
+# =============================================================================
+# Enhanced Timeline Extraction (LLM-powered)
+# =============================================================================
+
+@router.post("/extract-smart/{notebook_id}")
+async def extract_timeline_smart(notebook_id: str):
+    """Extract timeline using LLM for better event understanding.
+    
+    Uses structured LLM output to identify events with context,
+    not just date patterns.
+    """
+    from services.structured_llm import structured_llm
+    
+    notebook = await notebook_store.get(notebook_id)
+    if not notebook:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+    
+    sources = await source_store.list(notebook_id)
+    if not sources:
+        raise HTTPException(status_code=404, detail="No sources in notebook")
+    
+    # Collect content from sources
+    content = "\n\n".join([
+        s.get("content", "")[:3000] for s in sources[:5]
+    ])
+    
+    # Use structured LLM to extract timeline
+    result = await structured_llm.extract_timeline(content)
+    
+    # Convert to timeline events format
+    events = []
+    for i, event in enumerate(result.events):
+        # Try to parse the date for timestamp
+        parsed_date = dateparser.parse(event.date)
+        timestamp = int(parsed_date.timestamp()) if parsed_date else 0
+        
+        events.append({
+            "event_id": f"smart_{notebook_id}_{i}",
+            "notebook_id": notebook_id,
+            "source_id": "multiple",
+            "date_timestamp": timestamp,
+            "date_string": event.date,
+            "date_type": "exact" if parsed_date else "approximate",
+            "event_text": event.title,
+            "context": event.description,
+            "importance": event.importance,
+            "confidence": 0.9,
+            "filename": "AI-extracted"
+        })
+    
+    # Store events
+    _timeline_data[notebook_id] = events
+    
+    return {
+        "notebook_id": notebook_id,
+        "events": events,
+        "time_span": result.time_span,
+        "context": result.context,
+        "count": len(events)
+    }
+
+
+async def extract_timeline_for_source(notebook_id: str, source_id: str, content: str, filename: str):
+    """Helper function to extract timeline for a single source.
+    
+    Can be called when a source is added to auto-extract timeline events.
+    """
+    events = _extract_dates_from_text(
+        text=content,
+        notebook_id=notebook_id,
+        source_id=source_id,
+        filename=filename
+    )
+    
+    # Append to existing timeline data
+    if notebook_id not in _timeline_data:
+        _timeline_data[notebook_id] = []
+    
+    _timeline_data[notebook_id].extend(events)
+    return len(events)

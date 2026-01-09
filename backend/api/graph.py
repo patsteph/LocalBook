@@ -14,7 +14,8 @@ from models.knowledge_graph import (
     GraphData, GraphNode, GraphEdge, ConceptCluster,
     ConceptExtractionRequest, ConceptExtractionResult
 )
-from services.knowledge_graph import knowledge_graph_service
+# NOTE: knowledge_graph_service is legacy (1395 lines) - replaced by BERTopic
+# Keeping services/knowledge_graph.py for now as migration_manager references it
 from services.topic_modeling import topic_modeling_service
 
 

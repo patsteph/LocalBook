@@ -1,7 +1,7 @@
 {
   "name": "localbooklm",
   "private": true,
-  "version": "0.6.6",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -23,8 +23,9 @@
     "@types/three": "^0.182.0",
     "axios": "^1.13.2",
     "clsx": "^2.1.1",
-    "jspdf": "^3.0.4",
+    "jspdf": "^4.0.0",
     "lucide-react": "^0.554.0",
+    "mermaid": "^11.4.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.9.6",

@@ -34,6 +34,14 @@ class HighlightsStore:
             h for h in data["highlights"].values()
             if h.get("notebook_id") == notebook_id and h.get("source_id") == source_id
         ]
+    
+    async def list_by_notebook(self, notebook_id: str) -> List[Dict]:
+        """List all highlights across all sources in a notebook"""
+        data = self._load_data()
+        return [
+            h for h in data["highlights"].values()
+            if h.get("notebook_id") == notebook_id
+        ]
 
     async def create(
         self,
