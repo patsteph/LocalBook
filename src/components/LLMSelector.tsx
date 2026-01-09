@@ -113,7 +113,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
               <div className="flex-1 text-left">
                 <div className="font-semibold text-gray-900 dark:text-white">Ollama</div>
                 <div className="text-sm text-gray-600 dark:text-gray-400">Main: {currentModel}</div>
-                <div className="text-sm text-gray-500 dark:text-gray-500">Fast: {fastModel}</div>
+                <div className="text-sm text-gray-500 dark:text-gray-400">Fast: {fastModel}</div>
               </div>
               {selectedProvider === 'ollama' && (
                 <svg className="w-6 h-6 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
@@ -159,7 +159,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                     <div className={`font-semibold ${
                       provider.available
                         ? 'text-gray-900 dark:text-white'
-                        : 'text-gray-500 dark:text-gray-500'
+                        : 'text-gray-400 dark:text-gray-500'
                     }`}>
                       {provider.name}
                     </div>
@@ -172,7 +172,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                   <div className={`text-sm ${
                     provider.available
                       ? 'text-gray-600 dark:text-gray-400'
-                      : 'text-gray-500 dark:text-gray-500'
+                      : 'text-gray-400 dark:text-gray-500'
                   }`}>
                     {provider.available ? provider.subtitle : 'Not configured'}
                   </div>

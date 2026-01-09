@@ -26,6 +26,7 @@ class GenerateQuizRequest(BaseModel):
     notebook_id: str
     num_questions: int = Field(default=5, ge=1, le=20)
     difficulty: str = Field(default="medium", pattern="^(easy|medium|hard)$")
+    topic: Optional[str] = None  # Focus quiz on a specific topic
     question_types: Optional[List[str]] = None
     source_ids: Optional[List[str]] = None  # Specific sources to quiz on
     from_highlights: bool = False  # Generate from user highlights only
@@ -168,15 +169,20 @@ async def generate_quiz(request: GenerateQuizRequest):
     if request.source_ids:
         sources = [s for s in sources if s.get("id") in request.source_ids]
     
-    # Collect content
+    # Collect content with source names for reference
+    source_names = [s.get("filename", s.get("title", "Unknown")) for s in sources[:5]]
     if request.from_highlights:
         # TODO: Get highlighted content from highlights API
-        content = "\n\n".join([s.get("content", "")[:2000] for s in sources[:5]])
+        content = "\n\n".join([f"[Source: {source_names[i]}]\n{s.get('content', '')[:2000]}" for i, s in enumerate(sources[:5])])
     else:
-        content = "\n\n".join([s.get("content", "")[:2000] for s in sources[:5]])
+        content = "\n\n".join([f"[Source: {source_names[i]}]\n{s.get('content', '')[:2000]}" for i, s in enumerate(sources[:5])])
     
     if not content.strip():
         raise HTTPException(status_code=400, detail="No content available to generate quiz")
+    
+    # Add topic focus if provided
+    if request.topic:
+        content = f"FOCUS TOPIC: {request.topic}\nGenerate questions specifically about this topic.\n\n{content}"
     
     # Generate quiz using structured LLM
     quiz_output = await structured_llm.generate_quiz(
@@ -199,7 +205,8 @@ async def generate_quiz(request: GenerateQuizRequest):
             explanation=q.explanation,
             difficulty=q.difficulty,
             question_type=q.question_type,
-            options=q.options
+            options=q.options,
+            source_reference=q.source_reference
         ))
     
     # Save questions as cards for spaced repetition

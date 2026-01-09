@@ -10,6 +10,7 @@ export interface WebSearchResult {
     title: string;
     snippet: string;
     url: string;
+    read_time?: string;  // Estimated reading time
 }
 
 export interface WebSearchResponse {

@@ -33,6 +33,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   const [newNotebookColor, setNewNotebookColor] = useState(NOTEBOOK_COLORS[0]);
   const [showColorPicker, setShowColorPicker] = useState<string | null>(null);
   const [showOtherNotebooks, setShowOtherNotebooks] = useState(false);
+  const [primaryNotebookId, setPrimaryNotebookId] = useState<string | null>(null);
 
   useEffect(() => {
     console.log('NotebookManager mounted, loading notebooks...');
@@ -57,11 +58,36 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
       if (data.length > 0 && !selectedNotebookId) {
         onNotebookSelect(data[0].id);
       }
+      
+      // Load primary notebook preference
+      try {
+        const prefsRes = await fetch('http://localhost:8000/settings/primary-notebook');
+        if (prefsRes.ok) {
+          const prefsData = await prefsRes.json();
+          setPrimaryNotebookId(prefsData.primary_notebook_id);
+        }
+      } catch (e) {
+        console.log('Failed to load primary notebook preference');
+      }
     } catch (err) {
       console.error('Failed to load notebooks:', err);
       setError('Failed to load notebooks. Please check if the backend is running.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSetPrimary = async (notebookId: string) => {
+    try {
+      const res = await fetch(`http://localhost:8000/settings/primary-notebook/${notebookId}`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        setPrimaryNotebookId(notebookId);
+      }
+    } catch (err) {
+      console.error('Failed to set primary notebook:', err);
+      setError('Failed to set primary notebook');
     }
   };
 
@@ -284,13 +310,35 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                           )}
                         </div>
                         <div>
-                          <h3 className="font-semibold text-blue-900 dark:text-blue-100">{selectedNotebook.title}</h3>
+                          <div className="flex items-center gap-1">
+                            <h3 className="font-semibold text-blue-900 dark:text-blue-100">{selectedNotebook.title}</h3>
+                            {primaryNotebookId === selectedNotebook.id && (
+                              <span 
+                                className="text-purple-500 dark:text-purple-400" 
+                                title="Primary notebook"
+                              >
+                                ★
+                              </span>
+                            )}
+                          </div>
                           <p className="text-sm text-blue-700 dark:text-blue-300">
                             {selectedNotebook.source_count} sources
                           </p>
                         </div>
                       </div>
                       <div className="flex gap-2">
+                        {primaryNotebookId !== selectedNotebook.id && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSetPrimary(selectedNotebook.id);
+                            }}
+                            className="text-purple-500 dark:text-purple-400 hover:text-purple-600 dark:hover:text-purple-300 text-sm px-2 py-1"
+                            title="Set as primary notebook (appears first in lists)"
+                          >
+                            ☆ Set Primary
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -356,13 +404,30 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                                   style={{ backgroundColor: notebook.color || '#3B82F6' }}
                                 />
                                 <div>
-                                  <h3 className="font-medium text-sm text-gray-900 dark:text-white">{notebook.title}</h3>
+                                  <div className="flex items-center gap-1">
+                                    <h3 className="font-medium text-sm text-gray-900 dark:text-white">{notebook.title}</h3>
+                                    {primaryNotebookId === notebook.id && (
+                                      <span className="text-purple-500 text-xs">★</span>
+                                    )}
+                                  </div>
                                   <p className="text-xs text-gray-500 dark:text-gray-400">
                                     {notebook.source_count} sources
                                   </p>
                                 </div>
                               </div>
                               <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                                {primaryNotebookId !== notebook.id && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleSetPrimary(notebook.id);
+                                    }}
+                                    className="text-purple-400 dark:text-purple-500 hover:text-purple-600 dark:hover:text-purple-400 text-xs px-1"
+                                    title="Set as primary"
+                                  >
+                                    ☆
+                                  </button>
+                                )}
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();

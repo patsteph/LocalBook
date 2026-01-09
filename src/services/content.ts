@@ -10,6 +10,7 @@ export interface ContentGenerateRequest {
     notebook_id: string;
     skill_id: string;
     topic?: string;
+    style?: string;  // Output style: professional, casual, academic, etc.
 }
 
 export interface ContentGenerateResponse {

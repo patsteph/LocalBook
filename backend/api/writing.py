@@ -186,6 +186,38 @@ async def write_from_sources(request: WriteFromSourcesRequest):
     )
 
 
+class TransformTextRequest(BaseModel):
+    text: str = Field(description="Text to transform")
+    task: str = Field(default="improve")
+    format_style: str = Field(default="professional")
+    max_words: Optional[int] = Field(default=500, ge=50, le=2000)
+
+
+@router.post("/transform", response_model=WritingResponse)
+async def transform_text(request: TransformTextRequest):
+    """Transform user-provided text directly (no sources needed)."""
+    
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+    
+    content = request.text
+    if request.max_words:
+        content = f"Target length: approximately {request.max_words} words\n\n{content}"
+    
+    result = await structured_llm.assist_writing(
+        content=content,
+        task=request.task,
+        format_style=request.format_style
+    )
+    
+    return WritingResponse(
+        content=result.content,
+        format_used=result.format_used,
+        word_count=result.word_count,
+        suggestions=result.suggestions
+    )
+
+
 @router.post("/quick-summary")
 async def quick_summary(notebook_id: str, max_sentences: int = 3):
     """Generate a quick summary of notebook content."""

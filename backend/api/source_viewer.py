@@ -133,6 +133,40 @@ async def list_notebook_highlights(notebook_id: str):
     }
 
 
+@router.get("/highlights/stats/{notebook_id}")
+async def get_highlight_stats(notebook_id: str):
+    """Get lightweight stats about highlights in a notebook - no heavy processing."""
+    highlights = await highlights_store.list_by_notebook(notebook_id)
+    
+    # Basic stats
+    total_count = len(highlights)
+    total_words = sum(len(h.get("highlighted_text", "").split()) for h in highlights)
+    
+    # Group by source
+    by_source = {}
+    for h in highlights:
+        source_id = h.get("source_id", "unknown")
+        if source_id not in by_source:
+            by_source[source_id] = {"count": 0, "words": 0}
+        by_source[source_id]["count"] += 1
+        by_source[source_id]["words"] += len(h.get("highlighted_text", "").split())
+    
+    # Group by color/tag
+    by_color = {}
+    for h in highlights:
+        color = h.get("color", "yellow")
+        by_color[color] = by_color.get(color, 0) + 1
+    
+    return {
+        "notebook_id": notebook_id,
+        "total_highlights": total_count,
+        "total_words_highlighted": total_words,
+        "by_source": by_source,
+        "by_color": by_color,
+        "avg_words_per_highlight": round(total_words / total_count, 1) if total_count > 0 else 0
+    }
+
+
 @router.post("/highlights/generate-quiz/{notebook_id}")
 async def generate_quiz_from_highlights(notebook_id: str, num_questions: int = 5):
     """Generate a quiz from highlighted content only."""

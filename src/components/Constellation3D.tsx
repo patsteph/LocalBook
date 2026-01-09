@@ -84,6 +84,9 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
   const [navigationHistory, setNavigationHistory] = useState<string[]>([]);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [insightCount, setInsightCount] = useState(0);
+  const [scanningInsights, setScanningInsights] = useState(false);
+  const [processingSources, setProcessingSources] = useState<Set<string>>(new Set());  // Track sources being processed
   const wsRef = useRef<WebSocket | null>(null);
   const notebookIdRef = useRef<string | null>(notebookId);
   
@@ -824,6 +827,26 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                   loadStats();
                 }
                 break;
+              case 'source_updated':
+                // Track source processing status
+                const sourceData = message.data;
+                if (sourceData.notebook_id === notebookIdRef.current) {
+                  if (sourceData.status === 'processing') {
+                    setProcessingSources(prev => new Set(prev).add(sourceData.source_id));
+                  } else if (sourceData.status === 'completed' || sourceData.status === 'failed') {
+                    setProcessingSources(prev => {
+                      const next = new Set(prev);
+                      next.delete(sourceData.source_id);
+                      return next;
+                    });
+                    // Refresh graph when source completes
+                    if (sourceData.status === 'completed') {
+                      loadGraph();
+                      loadStats();
+                    }
+                  }
+                }
+                break;
             }
           } catch (err) {
             console.error('WebSocket parse error:', err);
@@ -1278,16 +1301,22 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
     <div className="h-full flex flex-col bg-gray-50 dark:bg-gray-900">
       {/* Controls - Responsive layout */}
       <div className="p-2 border-b border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-gray-800/80 backdrop-blur flex-shrink-0">
-        {/* Progress bar - full width when building */}
-        {building && (
+        {/* Progress bar - full width when building or processing sources */}
+        {(building || processingSources.size > 0) && (
           <div className="mb-2 flex items-center gap-2">
             <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-purple-500 transition-all duration-300"
-                style={{ width: `${buildProgress}%` }}
-              />
+              {building ? (
+                <div 
+                  className="h-full bg-purple-500 transition-all duration-300"
+                  style={{ width: `${buildProgress}%` }}
+                />
+              ) : (
+                <div className="h-full bg-blue-500 animate-pulse w-full" />
+              )}
             </div>
-            <span className="text-xs text-purple-600 dark:text-purple-400 font-medium min-w-[3rem]">{buildProgress.toFixed(0)}%</span>
+            <span className="text-xs text-purple-600 dark:text-purple-400 font-medium min-w-[3rem]">
+              {building ? `${buildProgress.toFixed(0)}%` : `${processingSources.size} source(s)`}
+            </span>
           </div>
         )}
         
@@ -1300,11 +1329,11 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                   setBuildProgress(0);
                   await buildConstellation();
                 }}
-                disabled={building || enhancing}
+                disabled={building || enhancing || processingSources.size > 0}
                 className="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded text-sm disabled:opacity-50 font-medium whitespace-nowrap"
-                title={enhancing ? `Enhancing theme names (${enhanceProgress.current}/${enhanceProgress.total})` : "Rebuild all topics from scratch"}
+                title={processingSources.size > 0 ? `Processing ${processingSources.size} source(s)...` : enhancing ? `Enhancing theme names (${enhanceProgress.current}/${enhanceProgress.total})` : "Rebuild all topics from scratch"}
               >
-                {building ? '🔄 Rebuilding...' : enhancing ? `✨ Updating ${enhanceProgress.current}/${enhanceProgress.total}` : '🔄 Rebuild Topics'}
+                {building ? '🔄 Rebuilding...' : processingSources.size > 0 ? `📥 Processing ${processingSources.size} source(s)...` : enhancing ? `✨ Updating ${enhanceProgress.current}/${enhanceProgress.total}` : '🔄 Rebuild Topics'}
               </button>
             )}
             
@@ -1312,6 +1341,46 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
               <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
                 {stats.concepts} themes • {stats.links} connections
               </span>
+            )}
+            
+            {/* Insights Badge */}
+            {notebookId && (
+              <button
+                onClick={async () => {
+                  if (scanningInsights) return;
+                  setScanningInsights(true);
+                  try {
+                    const response = await fetch(`${API_BASE}/contradictions/scan/${notebookId}`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ force_rescan: false }),
+                    });
+                    if (response.ok) {
+                      const data = await response.json();
+                      setInsightCount(data.contradictions?.length || 0);
+                    }
+                  } catch (err) {
+                    console.error('Failed to scan for insights:', err);
+                  } finally {
+                    setScanningInsights(false);
+                  }
+                }}
+                disabled={scanningInsights}
+                className={`px-2 py-1 rounded text-xs whitespace-nowrap flex items-center gap-1 ${
+                  insightCount > 0 
+                    ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400' 
+                    : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
+                }`}
+                title={scanningInsights ? 'Scanning...' : insightCount > 0 ? `${insightCount} contradictions found` : 'Scan for contradictions'}
+              >
+                {scanningInsights ? (
+                  <span className="animate-spin">⟳</span>
+                ) : insightCount > 0 ? (
+                  <>⚠️ {insightCount}</>
+                ) : (
+                  <>🔍 Insights</>
+                )}
+              </button>
             )}
           </div>
           

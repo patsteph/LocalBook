@@ -1,4 +1,8 @@
-"""Content Generation API endpoints - Text-based skill outputs"""
+"""Content Generation API endpoints - Text-based skill outputs
+
+Uses professional-grade templates from output_templates.py to ensure
+world-class document quality across all output types.
+"""
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -9,6 +13,7 @@ from storage.skills_store import skills_store
 from storage.source_store import source_store
 from storage.content_store import content_store
 from services.rag_engine import rag_engine
+from services.output_templates import build_document_prompt, DOCUMENT_TEMPLATES
 
 router = APIRouter()
 
@@ -18,6 +23,7 @@ class ContentGenerateRequest(BaseModel):
     notebook_id: str
     skill_id: str
     topic: Optional[str] = None
+    style: Optional[str] = "professional"  # Output style: professional, casual, academic, etc.
 
 
 class ContentGenerateResponse(BaseModel):
@@ -60,27 +66,47 @@ async def generate_content(request: ContentGenerateRequest):
         
         context = "\n\n---\n\n".join(content_parts)
         
-        # Build prompt based on skill
-        skill_prompt = skill.get("system_prompt", "")
+        # Build prompt based on skill using professional templates
         skill_name = skill.get("name", "Content")
         topic_focus = request.topic or "the main topics and insights"
         
-        # Different formatting based on skill type
-        format_instructions = _get_format_instructions(request.skill_id)
-        
-        system_prompt = f"""{skill_prompt}
+        # Use professional template if available, otherwise fall back to skill's own prompt
+        if request.skill_id in DOCUMENT_TEMPLATES:
+            template_system, template_format = build_document_prompt(
+                request.skill_id, 
+                topic_focus, 
+                request.style or "professional",
+                len(content_parts)
+            )
+            system_prompt = f"""{template_system}
+
+{template_format}
+
+FOCUS: {topic_focus}
+
+CRITICAL: Use ONLY the provided source content. Synthesize across multiple sources.
+Do not make up information. Attribute insights to specific sources where possible."""
+        else:
+            # Fallback to skill's own prompt for custom skills
+            skill_prompt = skill.get("system_prompt", "")
+            format_instructions = _get_format_instructions(request.skill_id)
+            style_instructions = _get_style_instructions(request.style)
+            
+            system_prompt = f"""{skill_prompt}
 
 {format_instructions}
+
+{style_instructions}
 
 Focus on: {topic_focus}
 
 Use ONLY the provided source content. Do not make up information."""
 
-        user_prompt = f"""Based on the following research content, create a {skill_name}:
+        user_prompt = f"""Based on the following {len(content_parts)} source document(s), create a world-class {skill_name}:
 
 {context[:12000]}
 
-Generate the {skill_name}:"""
+Generate the {skill_name} now, ensuring you synthesize insights across ALL sources:"""
 
         # Generate content
         content = await rag_engine._call_ollama(system_prompt, user_prompt)
@@ -133,24 +159,45 @@ async def generate_content_stream(request: ContentGenerateRequest):
         
         context = "\n\n---\n\n".join(content_parts)
         
-        skill_prompt = skill.get("system_prompt", "")
         skill_name = skill.get("name", "Content")
         topic_focus = request.topic or "the main topics and insights"
-        format_instructions = _get_format_instructions(request.skill_id)
         
-        system_prompt = f"""{skill_prompt}
+        # Use professional template if available
+        if request.skill_id in DOCUMENT_TEMPLATES:
+            template_system, template_format = build_document_prompt(
+                request.skill_id, 
+                topic_focus, 
+                request.style or "professional",
+                len(content_parts)
+            )
+            system_prompt = f"""{template_system}
+
+{template_format}
+
+FOCUS: {topic_focus}
+
+CRITICAL: Use ONLY the provided source content. Synthesize across multiple sources.
+Do not make up information. Attribute insights to specific sources where possible."""
+        else:
+            skill_prompt = skill.get("system_prompt", "")
+            format_instructions = _get_format_instructions(request.skill_id)
+            style_instructions = _get_style_instructions(request.style)
+            
+            system_prompt = f"""{skill_prompt}
 
 {format_instructions}
+
+{style_instructions}
 
 Focus on: {topic_focus}
 
 Use ONLY the provided source content. Do not make up information."""
 
-        user_prompt = f"""Based on the following research content, create a {skill_name}:
+        user_prompt = f"""Based on the following {len(content_parts)} source document(s), create a world-class {skill_name}:
 
 {context[:12000]}
 
-Generate the {skill_name}:"""
+Generate the {skill_name} now, ensuring you synthesize insights across ALL sources:"""
 
         async def stream_generator():
             async for chunk in rag_engine._stream_ollama(system_prompt, user_prompt):
@@ -253,3 +300,17 @@ Avoid jargon and technical terms.""",
     }
     
     return formats.get(skill_id, "Format clearly with appropriate sections and markdown formatting.")
+
+
+def _get_style_instructions(style: str) -> str:
+    """Get writing style instructions"""
+    styles = {
+        "professional": "Write in a professional, business-appropriate tone. Be clear, concise, and authoritative.",
+        "casual": "Write in a friendly, conversational tone. Be approachable and easy to read.",
+        "academic": "Write in a formal academic style. Be precise, well-structured, and cite sources appropriately.",
+        "technical": "Write in a technical style for expert audiences. Include specific details and use domain terminology.",
+        "creative": "Write in an engaging, creative style. Use vivid language and compelling narratives.",
+        "concise": "Write in an extremely concise style. Minimize words while maximizing information density.",
+    }
+    
+    return styles.get(style, styles["professional"])

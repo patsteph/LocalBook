@@ -55,6 +55,7 @@ pyinstaller \
     --add-data="$SCRIPT_DIR/storage:storage" \
     --add-data="$SCRIPT_DIR/models:models" \
     --add-data="$SCRIPT_DIR/utils:utils" \
+    --add-data="$SCRIPT_DIR/agents:agents" \
     --add-data="$SCRIPT_DIR/config.py:." \
     --hidden-import=api \
     --hidden-import=api.notebooks \
@@ -93,6 +94,10 @@ pyinstaller \
     --hidden-import=models.knowledge_graph \
     --hidden-import=config \
     --hidden-import=utils \
+    --hidden-import=agents \
+    --hidden-import=agents.tools \
+    --hidden-import=agents.state \
+    --hidden-import=agents.supervisor \
     --hidden-import=services.web_scraper \
     --collect-all=sentence_transformers \
     --collect-all=torch \

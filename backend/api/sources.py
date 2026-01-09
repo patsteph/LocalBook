@@ -1,6 +1,7 @@
 """Sources API endpoints"""
+import asyncio
 from typing import List
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from storage.source_store import source_store
 from services.document_processor import document_processor
@@ -26,10 +27,12 @@ async def list_sources(notebook_id: str):
 @router.post("/upload")
 async def upload_source(
     file: UploadFile = File(...),
-    notebook_id: str = Form(...)
+    notebook_id: str = Form(...),
+    background_tasks: BackgroundTasks = None
 ):
     """Upload and process a document"""
     import traceback
+    from api.timeline import extract_timeline_for_source
 
     # Save file temporarily
     content = await file.read()
@@ -43,6 +46,21 @@ async def upload_source(
             filename=file.filename,
             notebook_id=notebook_id
         )
+        
+        # Auto-extract timeline in background (fire and forget)
+        if background_tasks and result.get("source_id"):
+            # Get the processed text content for timeline extraction
+            source = await source_store.get(result["source_id"])
+            if source and source.get("content"):
+                background_tasks.add_task(
+                    extract_timeline_for_source,
+                    notebook_id,
+                    result["source_id"],
+                    source["content"],
+                    file.filename
+                )
+                print(f"[UPLOAD] Queued timeline extraction for {file.filename}")
+        
         return result
     except Exception as e:
         error_msg = str(e)

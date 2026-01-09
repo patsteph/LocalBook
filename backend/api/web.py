@@ -26,6 +26,7 @@ class WebSearchResult(BaseModel):
     title: str
     snippet: str
     url: str
+    read_time: str = ""
 
 class WebSearchResponse(BaseModel):
     query: str

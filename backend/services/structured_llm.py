@@ -8,6 +8,7 @@ Provides type-safe, validated LLM outputs for features like:
 - Writing assistance
 
 Uses Ollama as the backend with automatic retry on validation failures.
+Uses professional-grade templates from output_templates.py for quality.
 """
 import asyncio
 from typing import List, Optional, Dict, Any
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 import httpx
 
 from config import settings
+from services.output_templates import VISUAL_TEMPLATES, build_visual_prompt
 
 
 # =============================================================================
@@ -25,10 +27,11 @@ class QuizQuestion(BaseModel):
     """A single quiz question with answer and explanation."""
     question: str = Field(description="The question text")
     answer: str = Field(description="The correct answer")
-    explanation: str = Field(description="Why this answer is correct, with source reference")
+    explanation: str = Field(description="Why this answer is correct")
     difficulty: str = Field(default="medium", description="easy, medium, or hard")
-    question_type: str = Field(default="short_answer", description="short_answer, multiple_choice, true_false")
-    options: Optional[List[str]] = Field(default=None, description="Options for multiple choice questions")
+    question_type: str = Field(default="multiple_choice", description="multiple_choice or true_false")
+    options: Optional[List[str]] = Field(default=None, description="Answer options - required for multiple_choice, ['True', 'False'] for true_false")
+    source_reference: Optional[str] = Field(default=None, description="Name of the source document this question is from")
 
 
 class QuizOutput(BaseModel):
@@ -130,33 +133,49 @@ class StructuredLLMService:
         difficulty: str = "medium",
         question_types: Optional[List[str]] = None
     ) -> QuizOutput:
-        """Generate a quiz from content with structured output."""
+        """Generate a professional-quality quiz from content with structured output."""
         
-        question_types = question_types or ["short_answer", "multiple_choice", "true_false"]
+        question_types = question_types or ["multiple_choice", "true_false"]
         
-        system_prompt = f"""You are a quiz generator. Create exactly {num_questions} questions based on the provided content.
-        
+        system_prompt = f"""You are an expert instructional designer creating assessment questions for mastery learning.
+
+Create exactly {num_questions} high-quality questions based on the provided content.
+
 Output a valid JSON object with this structure:
 {{
     "questions": [
         {{
-            "question": "string",
-            "answer": "string",
-            "explanation": "string referencing the source",
+            "question": "clear, unambiguous question text",
+            "answer": "the correct answer (must match one of the options exactly)",
+            "explanation": "why this is correct, referencing the source material",
             "difficulty": "{difficulty}",
-            "question_type": "one of {question_types}",
-            "options": ["array of options for multiple_choice, null otherwise"]
+            "question_type": "multiple_choice or true_false",
+            "options": ["array of 4 options for multiple_choice, or ['True', 'False'] for true_false"],
+            "source_reference": "name of source document this question comes from"
         }}
     ],
-    "topic": "main topic string",
-    "source_summary": "brief summary of source material"
+    "topic": "main topic being tested",
+    "source_summary": "brief summary of source material used"
 }}
 
-Rules:
-- Questions must be directly answerable from the content
-- Include source references in explanations
-- Vary question types as requested
-- Ensure answers are factually correct based on content"""
+QUESTION QUALITY REQUIREMENTS:
+1. Test UNDERSTANDING, not just recall of trivial facts
+2. Each question should assess a meaningful concept
+3. For multiple_choice:
+   - All 4 options must be plausible (no obviously wrong answers)
+   - Distractors should represent common misconceptions
+   - Options should be similar in length and structure
+   - Avoid "all of the above" or "none of the above"
+4. For true_false:
+   - Statement must be unambiguously true or false
+   - False statements should be plausibly incorrect
+5. Questions should span different topics from the source material
+6. Explanations should teach, not just state the answer
+
+DIFFICULTY GUIDELINES:
+- easy: Basic recall and comprehension
+- medium: Application and analysis
+- hard: Synthesis and evaluation across concepts"""
 
         for attempt in range(self.max_retries):
             try:
@@ -179,34 +198,49 @@ Rules:
         content: str,
         diagram_types: Optional[List[str]] = None
     ) -> VisualSummary:
-        """Generate visual summary with Mermaid diagrams."""
+        """Generate visual summary with Mermaid diagrams using professional templates."""
         
         diagram_types = diagram_types or ["mindmap", "flowchart"]
         
-        system_prompt = f"""You are a visual summary generator. Create Mermaid diagrams to visualize the content.
+        # Build enhanced prompts from templates
+        diagram_guidelines = []
+        for dtype in diagram_types:
+            if dtype in VISUAL_TEMPLATES:
+                template = VISUAL_TEMPLATES[dtype]
+                diagram_guidelines.append(f"""
+### {template['name']} ({dtype})
+{template['system_prompt']}
+
+Example syntax:
+```mermaid
+{template['example']}
+```
+""")
+        
+        system_prompt = f"""You are a professional visualization expert creating publication-quality diagrams.
 
 Output a valid JSON object with this structure:
 {{
     "diagrams": [
         {{
             "diagram_type": "one of {diagram_types}",
-            "code": "valid mermaid code",
-            "title": "diagram title",
-            "description": "what it shows"
+            "code": "valid mermaid code - MUST be syntactically correct",
+            "title": "descriptive diagram title",
+            "description": "what this diagram reveals about the content"
         }}
     ],
-    "key_points": ["list", "of", "key", "points"]
+    "key_points": ["list", "of", "key", "insights", "from the content"]
 }}
 
-Mermaid syntax examples:
-- Mindmap: mindmap\\n  root((Topic))\\n    Branch1\\n      Leaf1\\n    Branch2
-- Flowchart: flowchart TD\\n    A[Start] --> B{{Decision}}\\n    B -->|Yes| C[Action]
-- Timeline: timeline\\n    title Timeline\\n    2020 : Event 1\\n    2021 : Event 2
+DIAGRAM GUIDELINES:
+{chr(10).join(diagram_guidelines) if diagram_guidelines else "- Mindmap, Flowchart, Timeline diagram types supported"}
 
-Rules:
-- Use valid Mermaid syntax
-- Keep diagrams readable (not too complex)
-- Extract key relationships and hierarchies from content"""
+QUALITY REQUIREMENTS:
+- Diagrams must be readable at a glance (not overcrowded)
+- Use clear, concise labels (2-5 words per node)
+- Capture the essential structure, not every detail
+- Ensure Mermaid syntax is valid and will render correctly
+- Key points should be insights, not just facts"""
 
         for attempt in range(self.max_retries):
             try:

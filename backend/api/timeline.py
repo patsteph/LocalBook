@@ -302,3 +302,39 @@ async def extract_timeline_for_source(notebook_id: str, source_id: str, content:
     
     _timeline_data[notebook_id].extend(events)
     return len(events)
+
+
+@router.post("/{notebook_id}/extract-all")
+async def extract_all_timelines(notebook_id: str):
+    """Extract timelines from ALL existing sources in a notebook.
+    
+    This backfills timeline data for sources that existed before auto-extraction.
+    """
+    sources = await source_store.list(notebook_id)
+    if not sources:
+        raise HTTPException(status_code=404, detail="No sources found in notebook")
+    
+    # Clear existing timeline for this notebook to avoid duplicates
+    _timeline_data[notebook_id] = []
+    
+    total_events = 0
+    processed = 0
+    
+    for source in sources:
+        source_id = source.get("id")
+        content = source.get("content", "")
+        filename = source.get("filename", "Unknown")
+        
+        if content:
+            count = await extract_timeline_for_source(
+                notebook_id, source_id, content, filename
+            )
+            total_events += count
+        processed += 1
+    
+    return {
+        "notebook_id": notebook_id,
+        "sources_processed": processed,
+        "events_extracted": total_events,
+        "message": f"Extracted {total_events} timeline events from {processed} sources"
+    }

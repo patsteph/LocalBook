@@ -15,6 +15,9 @@ SERVICE_NAME = "LocalBook"
 # User profile storage path
 USER_PROFILE_PATH = settings.data_dir / "user_profile.json"
 
+# App preferences storage path
+APP_PREFERENCES_PATH = settings.data_dir / "app_preferences.json"
+
 class SetAPIKeyRequest(BaseModel):
     key_name: str
     value: str
@@ -31,6 +34,10 @@ class UserProfile(BaseModel):
     favorite_topics: Optional[List[str]] = None
     goals: Optional[str] = None
     custom_instructions: Optional[str] = None
+
+class AppPreferences(BaseModel):
+    """App-wide preferences"""
+    primary_notebook_id: Optional[str] = None
 
 class APIKeysStatusResponse(BaseModel):
     configured: dict[str, bool]
@@ -193,3 +200,65 @@ def build_user_context(profile: dict) -> str:
         parts.append(profile['custom_instructions'])
     
     return ' '.join(parts)
+
+
+# ==================== App Preferences Endpoints ====================
+
+def _load_app_preferences() -> dict:
+    """Load app preferences from disk"""
+    try:
+        if APP_PREFERENCES_PATH.exists():
+            with open(APP_PREFERENCES_PATH, 'r') as f:
+                return json.load(f)
+        return {}
+    except Exception:
+        return {}
+
+
+def _save_app_preferences(prefs: dict):
+    """Save app preferences to disk"""
+    APP_PREFERENCES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(APP_PREFERENCES_PATH, 'w') as f:
+        json.dump(prefs, f, indent=2)
+
+
+@router.get("/preferences", response_model=AppPreferences)
+async def get_app_preferences():
+    """Get app preferences"""
+    data = _load_app_preferences()
+    return AppPreferences(**data)
+
+
+@router.post("/preferences")
+async def save_app_preferences(prefs: AppPreferences):
+    """Save app preferences"""
+    try:
+        _save_app_preferences(prefs.model_dump(exclude_none=True))
+        return {"message": "Preferences saved"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/primary-notebook")
+async def get_primary_notebook():
+    """Get the primary notebook ID"""
+    prefs = _load_app_preferences()
+    return {"primary_notebook_id": prefs.get("primary_notebook_id")}
+
+
+@router.post("/primary-notebook/{notebook_id}")
+async def set_primary_notebook(notebook_id: str):
+    """Set the primary notebook"""
+    prefs = _load_app_preferences()
+    prefs["primary_notebook_id"] = notebook_id
+    _save_app_preferences(prefs)
+    return {"message": "Primary notebook set", "primary_notebook_id": notebook_id}
+
+
+@router.delete("/primary-notebook")
+async def clear_primary_notebook():
+    """Clear the primary notebook"""
+    prefs = _load_app_preferences()
+    prefs.pop("primary_notebook_id", None)
+    _save_app_preferences(prefs)
+    return {"message": "Primary notebook cleared"}

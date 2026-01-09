@@ -179,6 +179,69 @@ async def get_full_graph(
     return await _build_graph_from_topics(None)
 
 
+@router.get("/notebook/{notebook_id}/with-insights", response_model=GraphData)
+async def get_notebook_graph_with_insights(notebook_id: str):
+    """
+    Get knowledge graph with insight nodes (contradictions, gaps).
+    
+    Adds special node types:
+    - type="conflict": Red nodes for detected contradictions
+    - type="gap": Yellow nodes for knowledge gaps (topics mentioned but not covered)
+    """
+    from services.contradiction_detector import contradiction_detector
+    
+    # Get base graph
+    graph = await _build_graph_from_topics(notebook_id)
+    
+    # Get contradictions
+    report = await contradiction_detector.get_cached_report(notebook_id)
+    
+    if report and report.contradictions:
+        for contra in report.contradictions:
+            if contra.dismissed:
+                continue
+            
+            # Create conflict node
+            conflict_node = GraphNode(
+                id=f"conflict_{contra.id}",
+                label=f"⚠️ {contra.contradiction_type.title()} Conflict",
+                type="conflict",
+                size=25,
+                color="#EF4444",  # Red
+                metadata={
+                    "explanation": contra.explanation,
+                    "severity": contra.severity,
+                    "source_a": contra.claim_a.source_name,
+                    "source_b": contra.claim_b.source_name,
+                    "claim_a": contra.claim_a.text,
+                    "claim_b": contra.claim_b.text,
+                    "resolution_hint": contra.resolution_hint,
+                }
+            )
+            graph.nodes.append(conflict_node)
+            
+            # Try to link to related topic nodes
+            for node in graph.nodes:
+                if node.type == "topic":
+                    # Check if topic keywords relate to the conflict
+                    keywords = node.metadata.get("keywords", [])
+                    claim_words = set((contra.claim_a.text + " " + contra.claim_b.text).lower().split())
+                    if any(kw.lower() in claim_words for kw in keywords):
+                        edge = GraphEdge(
+                            id=f"edge_conflict_{contra.id}_{node.id}",
+                            source=f"conflict_{contra.id}",
+                            target=node.id,
+                            label="conflicts_with",
+                            strength=0.8,
+                            color="#EF4444",
+                            dashed=False
+                        )
+                        graph.edges.append(edge)
+                        break  # Just link to first matching topic
+    
+    return graph
+
+
 # =============================================================================
 # Source Connections
 # =============================================================================

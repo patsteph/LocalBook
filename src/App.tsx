@@ -7,6 +7,7 @@ import { ChatInterface } from './components/ChatInterface';
 import { Studio } from './components/Studio';
 import { Modal } from './components/shared/Modal';
 import { WebSearchResults } from './components/WebSearchResults';
+import { SiteSearch } from './components/SiteSearch';
 import { Settings } from './components/Settings';
 import { LLMSelector } from './components/LLMSelector';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
@@ -32,6 +33,7 @@ function App() {
   const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(false);
   const [isWebSearchModalOpen, setIsWebSearchModalOpen] = useState(false);
   const [webSearchInitialQuery, setWebSearchInitialQuery] = useState('');
+  const [webSearchTab, setWebSearchTab] = useState<'web' | 'site'>('web');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLLMSelectorOpen, setIsLLMSelectorOpen] = useState(false);
   const [isEmbeddingSelectorOpen, setIsEmbeddingSelectorOpen] = useState(false);
@@ -135,7 +137,7 @@ function App() {
         // Also try to get startup status from backend API for upgrade info
         let startupComplete = false;
         try {
-          const response = await fetch('http://localhost:8000/updates/startup-status');
+          const response = await fetch(`${API_BASE_URL}/updates/startup-status`);
           if (response.ok) {
             const startupStatus = await response.json();
             setStartupProgress(startupStatus.progress);
@@ -531,16 +533,54 @@ function App() {
         onClose={() => {
           setIsWebSearchModalOpen(false);
           setWebSearchInitialQuery('');
+          setWebSearchTab('web');
         }}
         title="Web Research - Add Sources"
         size="xl"
       >
         {selectedNotebookId && (
-          <WebSearchResults
-            notebookId={selectedNotebookId}
-            onSourceAdded={() => setRefreshSources(prev => prev + 1)}
-            initialQuery={webSearchInitialQuery}
-          />
+          <div className="flex flex-col h-[70vh]">
+            {/* Tab Selector */}
+            <div className="flex border-b border-gray-200 dark:border-gray-700 mb-0">
+              <button
+                onClick={() => setWebSearchTab('web')}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                  webSearchTab === 'web'
+                    ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+                }`}
+              >
+                🌐 Web Search
+              </button>
+              <button
+                onClick={() => setWebSearchTab('site')}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                  webSearchTab === 'site'
+                    ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+                }`}
+              >
+                🎯 Site Search
+              </button>
+            </div>
+            
+            {/* Tab Content */}
+            <div className="flex-1 overflow-hidden">
+              {webSearchTab === 'web' ? (
+                <WebSearchResults
+                  notebookId={selectedNotebookId}
+                  onSourceAdded={() => setRefreshSources(prev => prev + 1)}
+                  initialQuery={webSearchInitialQuery}
+                />
+              ) : (
+                <SiteSearch
+                  notebookId={selectedNotebookId}
+                  onSourceAdded={() => setRefreshSources(prev => prev + 1)}
+                  initialQuery={webSearchInitialQuery}
+                />
+              )}
+            </div>
+          </div>
         )}
       </Modal>
 

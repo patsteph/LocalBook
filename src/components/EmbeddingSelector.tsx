@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_BASE_URL } from '../services/api';
 
 interface EmbeddingSelectorProps {
   notebookId: string | null;
@@ -23,7 +24,7 @@ export const EmbeddingSelector: React.FC<EmbeddingSelectorProps> = () => {
   const loadEmbeddingInfo = async () => {
     try {
       setLoading(true);
-      const response = await fetch('http://localhost:8000/embeddings/info');
+      const response = await fetch(`${API_BASE_URL}/embeddings/info`);
       if (response.ok) {
         const info = await response.json();
         setEmbeddingInfo(info);

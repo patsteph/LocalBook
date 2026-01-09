@@ -1,42 +1,40 @@
-"""Audio generation service for podcasts"""
+"""Audio generation service for podcasts
+
+Uses LFM2.5-Audio (Liquid AI) for high-quality text-to-speech generation.
+This provides phenomenal audio quality with native speech synthesis.
+"""
 import asyncio
 import subprocess
-import os
 from pathlib import Path
 from typing import Dict, List, Optional
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
 from config import settings
 from storage.audio_store import audio_store
 from storage.source_store import source_store
 from storage.skills_store import skills_store
 from services.rag_engine import rag_engine
 
-# Dedicated thread pool for audio generation (max 2 concurrent)
-_audio_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="audio_gen")
-
-
 class AudioGenerator:
-    """Generate podcast audio from notebooks"""
+    """Generate podcast audio from notebooks using LFM2.5-Audio"""
 
     def __init__(self):
         self.audio_dir = settings.data_dir / "audio"
         self.audio_dir.mkdir(parents=True, exist_ok=True)
         self._background_tasks = set()
         
-        # Voice mappings for macOS say command - using premium/enhanced voices
-        # Multiple voices per gender for variety
+        # Voice options for LFM2.5-Audio - rotate through for variety
+        # Available voices: us_male, us_female, uk_male, uk_female
         self.voices = {
             "us": {
-                "male": ["Evan (Enhanced)", "Tom (Enhanced)", "Alex"],
-                "female": ["Ava (Premium)", "Zoe (Premium)", "Samantha"]
+                "male": "us_male",
+                "female": "us_female"
             },
             "uk": {
-                "male": ["Daniel (Enhanced)"],
-                "female": ["Jamie (Premium)"]
+                "male": "uk_male", 
+                "female": "uk_female"
             }
         }
-        self._voice_index = 0  # Track which voice to use next
+        
+        self._voice_index = 0  # Track voice rotation for variety
 
     async def generate(
         self,
@@ -176,54 +174,49 @@ Generate a {skill_name} formatted as a {duration_minutes}-minute audio narration
         accent: str,
         is_two_host: bool = True
     ):
-        """Background task to generate audio using macOS TTS"""
-        import asyncio
+        """Background task to generate audio using LFM2.5-Audio"""
         import traceback
+        from services.audio_llm import audio_llm
         
-        print(f"🎤 _generate_audio_async started for {audio_id}")
+        print(f"🎤 Starting LFM2.5-Audio generation for {audio_id}")
         
-        # Run in dedicated executor to not block the event loop
-        loop = asyncio.get_event_loop()
         try:
-            print(f"   Running TTS in dedicated executor...")
-            final_audio_path = await loop.run_in_executor(
-                _audio_executor, 
-                lambda: self._generate_audio_sync(
-                    audio_id, script, host1_gender, host2_gender, accent, is_two_host
-                )
+            # Initialize audio model if needed
+            await audio_llm.initialize()
+            
+            if not audio_llm.is_available:
+                raise RuntimeError("LFM2.5-Audio model not available. Please install: pip install liquid-audio torchaudio")
+            
+            # Limit script length for reasonable generation time
+            max_script_length = 5000  # ~3-4 minutes of audio
+            if len(script) > max_script_length:
+                script = script[:max_script_length] + "... [Content truncated]"
+                print(f"   Script truncated to {max_script_length} chars")
+            
+            # Get voice based on gender and accent
+            voice = self.voices.get(accent, self.voices["us"]).get(host1_gender, "us_male")
+            print(f"   Using voice: {voice}")
+            
+            # Generate audio
+            output_path = self.audio_dir / f"{audio_id}.wav"
+            
+            audio_path = await audio_llm.text_to_speech(
+                text=script,
+                voice=voice,
+                output_path=str(output_path)
             )
-            print(f"   Executor returned: {final_audio_path}")
             
-            # Check for any audio file that was created
-            # Handle both relative and absolute paths
-            final_audio = None
-            if final_audio_path:
-                audio_path = Path(final_audio_path)
-                if not audio_path.is_absolute():
-                    # Convert relative path to absolute using audio_dir parent
-                    audio_path = settings.data_dir.parent / final_audio_path
-                if audio_path.exists():
-                    final_audio = audio_path
-                    print(f"   Found audio at: {final_audio}")
-            
-            # Fallback: look for any audio file with this ID
-            if not final_audio:
-                print(f"   Looking for fallback audio files...")
-                for ext in ['.aiff', '.mp3', '.m4a']:
-                    candidate = self.audio_dir / f"{audio_id}{ext}"
-                    if candidate.exists():
-                        final_audio = candidate
-                        print(f"   Found fallback: {final_audio}")
-                        break
-            
-            duration_seconds = self._get_audio_duration(final_audio) if final_audio and final_audio.exists() else 0
-            
-            await audio_store.update(audio_id, {
-                "status": "completed",
-                "audio_file_path": str(final_audio) if final_audio and final_audio.exists() else None,
-                "duration_seconds": duration_seconds
-            })
-            print(f"✅ Audio generated: {audio_id} -> {final_audio}")
+            if audio_path and Path(audio_path).exists():
+                duration_seconds = self._get_audio_duration(Path(audio_path))
+                
+                await audio_store.update(audio_id, {
+                    "status": "completed",
+                    "audio_file_path": audio_path,
+                    "duration_seconds": duration_seconds
+                })
+                print(f"✅ Audio generated: {audio_id} -> {audio_path}")
+            else:
+                raise RuntimeError("Audio file was not created")
             
         except Exception as e:
             print(f"❌ Audio generation failed: {e}")
@@ -232,101 +225,6 @@ Generate a {skill_name} formatted as a {duration_minutes}-minute audio narration
                 "status": "failed",
                 "error_message": str(e)
             })
-
-    def _generate_audio_sync(
-        self,
-        audio_id: str,
-        script: str,
-        host1_gender: str,
-        host2_gender: str,
-        accent: str,
-        is_two_host: bool = True
-    ) -> str:
-        """Synchronous audio generation - runs in thread pool. Returns path to final audio file."""
-        import tempfile
-        
-        # Use absolute path for audio directory
-        audio_dir = self.audio_dir.resolve()
-        print(f"🎙️ Starting audio generation for {audio_id}")
-        print(f"   Audio dir: {audio_dir}")
-        print(f"   Script length: {len(script)} chars")
-        
-        try:
-            # Limit script length for faster generation
-            max_script_length = 5000  # ~3-4 minutes of audio
-            if len(script) > max_script_length:
-                script = script[:max_script_length] + "... [Content truncated]"
-                print(f"   Script truncated to {max_script_length} chars")
-            
-            # Get voice name - rotate through available voices
-            voice_list = self.voices.get(accent, self.voices["us"]).get(host1_gender, ["Alex"])
-            if isinstance(voice_list, str):
-                voice_list = [voice_list]
-            host1_voice = voice_list[self._voice_index % len(voice_list)]
-            self._voice_index += 1  # Rotate for next generation
-            print(f"   Using voice: {host1_voice}")
-            
-            # Generate single audio file directly (simpler and faster)
-            output_file = audio_dir / f"{audio_id}.aiff"
-            print(f"   Output file: {output_file}")
-            
-            # Write script to temp file to avoid shell escaping issues
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                f.write(script)
-                script_file = f.name
-            
-            try:
-                # Use macOS say command with file input
-                result = subprocess.run(
-                    ["say", "-v", host1_voice, "-o", str(output_file), "-f", script_file],
-                    check=True,
-                    timeout=120,  # 2 min timeout for longer scripts
-                    capture_output=True
-                )
-                
-                # Clean up temp file
-                os.unlink(script_file)
-                
-                if output_file.exists():
-                    size = output_file.stat().st_size
-                    print(f"   ✓ AIFF created: {output_file} ({size} bytes)")
-                    
-                    # Convert to M4A using macOS built-in afconvert (more reliable than ffmpeg)
-                    m4a_file = audio_dir / f"{audio_id}.m4a"
-                    try:
-                        subprocess.run(
-                            ["afconvert", "-f", "mp4f", "-d", "aac ",
-                             str(output_file), str(m4a_file)],
-                            check=True,
-                            timeout=60,
-                            capture_output=True
-                        )
-                        # Remove the AIFF file
-                        output_file.unlink()
-                        print(f"   ✓ Converted to M4A: {m4a_file}")
-                        return str(m4a_file)
-                    except Exception as e:
-                        print(f"   ✗ Conversion failed: {e}")
-                        # Return AIFF as fallback
-                        return str(output_file)
-                else:
-                    print(f"   ✗ Audio file not created")
-                    return None
-                    
-            except subprocess.TimeoutExpired:
-                print(f"   ✗ TTS timeout after 120s")
-                os.unlink(script_file)
-                return None
-            except subprocess.CalledProcessError as e:
-                print(f"   ✗ TTS error: {e.stderr.decode() if e.stderr else e}")
-                os.unlink(script_file)
-                return None
-
-        except Exception as e:
-            print(f"   ✗ Error in audio generation: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
 
     def _parse_script(self, script: str) -> List[tuple]:
         """Parse script into speaker segments"""

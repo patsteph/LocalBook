@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { chatService } from '../services/chat';
 import { explorationService } from '../services/exploration';
+import { voiceService } from '../services/voice';
 import { ChatMessage, Citation as CitationType } from '../types';
 import { Button } from './shared/Button';
 // LoadingSpinner removed - now using statusMessage in message bubble
 import { ErrorMessage } from './shared/ErrorMessage';
 import { Citation, CitationList } from './Citation';
 import { SourceNotesViewer } from './SourceNotesViewer';
+import { MermaidRenderer } from './shared/MermaidRenderer';
 
 interface ChatInterfaceProps {
   notebookId: string | null;
@@ -31,6 +33,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   // loadingMessage state removed - now using statusMessage from backend
   const [, setActiveDeepThink] = useState(false);  // Actual mode being used (may differ from toggle due to auto-upgrade)
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  
+  // Voice input state
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   // Source viewer state
   const [sourceViewerOpen, setSourceViewerOpen] = useState(false);
@@ -82,49 +90,90 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     return result.trim();
   };
 
-  // Render message content with inline clickable citations
+  // Render message content with inline clickable citations and mermaid diagrams
   const renderMessageWithCitations = (content: string, citations?: CitationType[]) => {
-    if (!citations || citations.length === 0) {
-      return <p className="text-sm whitespace-pre-wrap">{content}</p>;
-    }
-
-    // Parse the content and replace [N] with clickable citation components
-    const parts: (string | React.ReactElement)[] = [];
+    // First, detect and extract mermaid code blocks
+    const mermaidBlockRegex = /```mermaid\s*([\s\S]*?)```/g;
+    const segments: { type: 'text' | 'mermaid'; content: string }[] = [];
     let lastIndex = 0;
-    const citationRegex = /\[(\d+)\]/g;
-    let match;
+    let mermaidMatch;
 
-    while ((match = citationRegex.exec(content)) !== null) {
-      const citationNumber = parseInt(match[1], 10);
-      const citation = citations.find(c => c.number === citationNumber);
-
-      // Add text before the citation
-      if (match.index > lastIndex) {
-        parts.push(content.substring(lastIndex, match.index));
+    while ((mermaidMatch = mermaidBlockRegex.exec(content)) !== null) {
+      // Add text before the mermaid block
+      if (mermaidMatch.index > lastIndex) {
+        segments.push({ type: 'text', content: content.substring(lastIndex, mermaidMatch.index) });
       }
-
-      // Add the clickable citation
-      if (citation) {
-        parts.push(<Citation key={`cite-${citationNumber}-${match.index}`} citation={citation} onViewSource={handleViewSource} />);
-      } else {
-        // If citation not found, just show the number
-        parts.push(match[0]);
-      }
-
-      lastIndex = match.index + match[0].length;
+      // Add the mermaid block
+      segments.push({ type: 'mermaid', content: mermaidMatch[1].trim() });
+      lastIndex = mermaidMatch.index + mermaidMatch[0].length;
     }
 
     // Add remaining text
     if (lastIndex < content.length) {
-      parts.push(content.substring(lastIndex));
+      segments.push({ type: 'text', content: content.substring(lastIndex) });
     }
 
+    // If no mermaid blocks and no citations, return simple text
+    if (segments.length === 1 && segments[0].type === 'text' && (!citations || citations.length === 0)) {
+      return <p className="text-sm whitespace-pre-wrap">{content}</p>;
+    }
+
+    // Render each segment
     return (
-      <p className="text-sm whitespace-pre-wrap">
-        {parts.map((part, i) =>
-          typeof part === 'string' ? <span key={i}>{part}</span> : part
-        )}
-      </p>
+      <div className="space-y-3">
+        {segments.map((segment, segIndex) => {
+          if (segment.type === 'mermaid') {
+            return (
+              <div key={segIndex} className="my-3">
+                <MermaidRenderer code={segment.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+              </div>
+            );
+          }
+
+          // For text segments, handle citations
+          const textContent = segment.content;
+          if (!citations || citations.length === 0) {
+            return textContent.trim() ? (
+              <p key={segIndex} className="text-sm whitespace-pre-wrap">{textContent}</p>
+            ) : null;
+          }
+
+          // Parse citations within text
+          const parts: (string | React.ReactElement)[] = [];
+          let textLastIndex = 0;
+          const citationRegex = /\[(\d+)\]/g;
+          let match;
+
+          while ((match = citationRegex.exec(textContent)) !== null) {
+            const citationNumber = parseInt(match[1], 10);
+            const citation = citations.find(c => c.number === citationNumber);
+
+            if (match.index > textLastIndex) {
+              parts.push(textContent.substring(textLastIndex, match.index));
+            }
+
+            if (citation) {
+              parts.push(<Citation key={`cite-${segIndex}-${citationNumber}-${match.index}`} citation={citation} onViewSource={handleViewSource} />);
+            } else {
+              parts.push(match[0]);
+            }
+
+            textLastIndex = match.index + match[0].length;
+          }
+
+          if (textLastIndex < textContent.length) {
+            parts.push(textContent.substring(textLastIndex));
+          }
+
+          return parts.length > 0 ? (
+            <p key={segIndex} className="text-sm whitespace-pre-wrap">
+              {parts.map((part, i) =>
+                typeof part === 'string' ? <span key={i}>{part}</span> : part
+              )}
+            </p>
+          ) : null;
+        })}
+      </div>
     );
   };
 
@@ -261,8 +310,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 let finalContent = stripTrailingCitations(currentContent);
                 let lowConfidenceQuery: string | undefined;
                 
-                if (isLowConfidence) {
-                  finalContent += "\n\n---\n\n**I found limited information in your sources.** Would you like me to search the web for more information?";
+                // Detect low confidence from flag OR from response content patterns
+                const contentLower = finalContent.toLowerCase();
+                const hasNoAnswerPattern = 
+                  contentLower.includes("couldn't find") ||
+                  contentLower.includes("could not find") ||
+                  contentLower.includes("can't find") ||
+                  contentLower.includes("cannot find") ||
+                  contentLower.includes("no relevant information") ||
+                  contentLower.includes("don't have enough") ||
+                  contentLower.includes("unable to find");
+                
+                const effectiveLowConfidence = isLowConfidence || hasNoAnswerPattern;
+                
+                if (effectiveLowConfidence) {
+                  // Don't duplicate the message if it's already there
+                  if (!contentLower.includes("would you like me to search")) {
+                    finalContent += "\n\n---\n\n**Would you like me to search the web for more information?**";
+                  }
                   lowConfidenceQuery = currentQuestion;
                 }
                 
@@ -282,7 +347,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
             // Record query in exploration journey (fire and forget)
             const topics = [...new Set(currentCitations.map(c => c.filename).filter(Boolean))];
             const sourceIds = [...new Set(currentCitations.map(c => c.source_id))];
-            const confidence = isLowConfidence ? 0.3 : 0.7;
+            // Use the effective low confidence check from the message update above
+            const contentForCheck = stripTrailingCitations(currentContent).toLowerCase();
+            const effectiveIsLow = isLowConfidence || 
+              contentForCheck.includes("couldn't find") ||
+              contentForCheck.includes("could not find") ||
+              contentForCheck.includes("can't find") ||
+              contentForCheck.includes("no relevant information");
+            const confidence = effectiveIsLow ? 0.3 : 0.7;
             explorationService.recordQuery(
               notebookId!,
               currentQuestion,
@@ -320,6 +392,58 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const handleViewSource = (sourceId: string, sourceName: string, searchTerm: string) => {
     setSelectedSource({ sourceId, sourceName, searchTerm });
     setSourceViewerOpen(true);
+  };
+
+  // Voice recording handlers
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        stream.getTracks().forEach(track => track.stop());
+        
+        // Transcribe the audio
+        setIsTranscribing(true);
+        try {
+          const result = await voiceService.transcribe(
+            new File([audioBlob], 'recording.webm', { type: 'audio/webm' }),
+            notebookId || '',
+            undefined,
+            false // Don't add as source, just transcribe
+          );
+          // Set the transcribed text as input
+          setInput(prev => prev + (prev ? ' ' : '') + result.text);
+        } catch (err) {
+          console.error('Transcription failed:', err);
+          setError('Failed to transcribe audio. Is Whisper running?');
+        } finally {
+          setIsTranscribing(false);
+        }
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error('Failed to start recording:', err);
+      setError('Microphone access denied');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
   };
 
   return (
@@ -463,7 +587,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                           onClick={() => {
                             // Remove the low confidence prompt from this message
                             setMessages(prev => prev.map(m => 
-                              m === message ? { ...m, lowConfidenceQuery: undefined, content: m.content.replace(/\n\n---\n\n\*\*I found limited information.*$/, '') } : m
+                              m === message ? { ...m, lowConfidenceQuery: undefined, content: m.content.replace(/\n\n---\n\n\*\*(Would you like me to search|I found limited information).*$/s, '') } : m
                             ));
                           }}
                           className="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-xs rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors font-medium"
@@ -522,11 +646,34 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={notebookId ? "Ask a question..." : "Select a notebook first"}
+              placeholder={notebookId ? (isTranscribing ? "Transcribing..." : "Ask a question...") : "Select a notebook first"}
               title={deepThink ? "Deep Think mode: AI will analyze step-by-step for thorough answers" : "Quick mode: Fast, concise responses"}
-              disabled={!notebookId || loading}
+              disabled={!notebookId || loading || isTranscribing}
               className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-700 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
             />
+            {/* Mic button for voice input */}
+            <button
+              type="button"
+              onClick={isRecording ? stopRecording : startRecording}
+              disabled={!notebookId || loading || isTranscribing}
+              title={isRecording ? "Stop recording" : "Voice input (Whisper)"}
+              className={`p-2 rounded-lg transition-colors ${
+                isRecording 
+                  ? 'bg-red-500 text-white animate-pulse' 
+                  : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
+              } disabled:opacity-50`}
+            >
+              {isTranscribing ? (
+                <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              ) : (
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" />
+                </svg>
+              )}
+            </button>
             <Button
               type="submit"
               disabled={!input.trim() || !notebookId || loading}

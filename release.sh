@@ -46,13 +46,17 @@ if [ "$NEW_VERSION" != "$CURRENT_VERSION" ]; then
     # Update tauri.conf.json
     sed -i '' "s/\"version\": \"${CURRENT_VERSION}\"/\"version\": \"${NEW_VERSION}\"/" src-tauri/tauri.conf.json
     
-    echo -e "${GREEN}✓ Version updated to ${NEW_VERSION}${NC}"
+    # Update extension version to match app version
+    EXT_CURRENT=$(grep '"version"' extension/package.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')
+    sed -i '' "s/\"version\": \"${EXT_CURRENT}\"/\"version\": \"${NEW_VERSION}\"/" extension/package.json
+    
+    echo -e "${GREEN}✓ Version updated to ${NEW_VERSION} (including extension)${NC}"
 fi
 
 # =============================================================================
 # Step 1: Pre-flight Checks
 # =============================================================================
-echo -e "\n${YELLOW}Step 1/6: Pre-flight checks...${NC}"
+echo -e "\n${YELLOW}Step 1/7: Pre-flight checks...${NC}"
 
 ERRORS=0
 
@@ -113,7 +117,7 @@ echo -e "${GREEN}✓ Pre-flight checks passed${NC}"
 # =============================================================================
 # Step 2: Clean Build
 # =============================================================================
-echo -e "\n${YELLOW}Step 2/6: Building application...${NC}"
+echo -e "\n${YELLOW}Step 2/7: Building application...${NC}"
 
 ./build.sh --rebuild
 
@@ -125,9 +129,26 @@ fi
 echo -e "${GREEN}✓ Build complete${NC}"
 
 # =============================================================================
-# Step 3: Smoke Test
+# Step 3: Build Browser Extension
 # =============================================================================
-echo -e "\n${YELLOW}Step 3/6: Running smoke tests...${NC}"
+echo -e "\n${YELLOW}Step 3/7: Building browser extension...${NC}"
+
+cd extension
+npm install --silent
+npm run build
+
+if [ -d "build/LocalBook-Extension" ]; then
+    echo -e "${GREEN}✓ Browser extension built${NC}"
+else
+    echo -e "${RED}✗ Browser extension build failed${NC}"
+    exit 1
+fi
+cd ..
+
+# =============================================================================
+# Step 4: Smoke Test
+# =============================================================================
+echo -e "\n${YELLOW}Step 4/7: Running smoke tests...${NC}"
 
 # Test backend can start
 echo -e "  Testing backend startup..."
@@ -150,28 +171,50 @@ else
     exit 1
 fi
 
+# Test extension build
+echo -e "  Verifying extension build..."
+if [ -d "extension/build/LocalBook-Extension" ]; then
+    EXT_FILES=$(ls extension/build/LocalBook-Extension/*.js 2>/dev/null | wc -l)
+    if [ "$EXT_FILES" -gt 0 ]; then
+        echo -e "${GREEN}  ✓ Extension build OK (${EXT_FILES} JS files)${NC}"
+    else
+        echo -e "${RED}  ✗ Extension build incomplete - no JS files${NC}"
+        exit 1
+    fi
+else
+    echo -e "${RED}  ✗ Extension build directory missing${NC}"
+    exit 1
+fi
+
 echo -e "${GREEN}✓ Smoke tests passed${NC}"
 
 # =============================================================================
-# Step 4: Create Release Archive
+# Step 5: Create Release Archive
 # =============================================================================
-echo -e "\n${YELLOW}Step 4/6: Creating release archive...${NC}"
+echo -e "\n${YELLOW}Step 5/7: Creating release archive...${NC}"
 
 ARCHIVE_NAME="LocalBook-v${NEW_VERSION}.zip"
+EXTENSION_ARCHIVE="LocalBook-Extension-v${NEW_VERSION}.zip"
 
-# Remove old archive if exists
-rm -f "$ARCHIVE_NAME"
+# Remove old archives if exist
+rm -f "$ARCHIVE_NAME" "$EXTENSION_ARCHIVE"
 
-# Create zip (excluding .DS_Store files)
+# Create main app zip
 ditto -c -k --sequesterRsrc --keepParent "./LocalBook.app" "$ARCHIVE_NAME"
-
 ARCHIVE_SIZE=$(du -h "$ARCHIVE_NAME" | cut -f1)
 echo -e "${GREEN}✓ Created ${ARCHIVE_NAME} (${ARCHIVE_SIZE})${NC}"
 
+# Create browser extension zip
+cd extension/build
+ditto -c -k --sequesterRsrc "LocalBook-Extension" "../../$EXTENSION_ARCHIVE"
+cd ../..
+EXT_SIZE=$(du -h "$EXTENSION_ARCHIVE" | cut -f1)
+echo -e "${GREEN}✓ Created ${EXTENSION_ARCHIVE} (${EXT_SIZE})${NC}"
+
 # =============================================================================
-# Step 5: Git Operations
+# Step 6: Git Operations
 # =============================================================================
-echo -e "\n${YELLOW}Step 5/6: Git operations...${NC}"
+echo -e "\n${YELLOW}Step 6/7: Git operations...${NC}"
 
 # Commit version changes if any
 if [ -n "$(git status --porcelain package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json 2>/dev/null)" ]; then
@@ -191,18 +234,19 @@ fi
 echo -e "${GREEN}✓ Git operations complete${NC}"
 
 # =============================================================================
-# Step 6: Summary
+# Step 7: Summary
 # =============================================================================
 echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}              Release v${NEW_VERSION} Ready!                  ${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e ""
 echo -e "${BLUE}Files ready for upload:${NC}"
-echo -e "  📦 ${ARCHIVE_NAME}"
+echo -e "  📦 ${ARCHIVE_NAME} (main app)"
+echo -e "  🧩 ${EXTENSION_ARCHIVE} (browser extension)"
 echo -e ""
 echo -e "${BLUE}Next steps:${NC}"
 echo -e "  1. Push to GitHub:  ${YELLOW}git push origin main --tags${NC}"
 echo -e "  2. Create GitHub Release at: ${YELLOW}https://github.com/patsteph/LocalBook/releases/new${NC}"
-echo -e "  3. Upload ${ARCHIVE_NAME} to the release"
+echo -e "  3. Upload both archives to the release"
 echo -e ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

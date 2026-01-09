@@ -107,7 +107,7 @@ export const ExplorationPanel: React.FC<ExplorationPanelProps> = ({
             {/* Content */}
             <div className="flex-1 overflow-y-auto p-4">
                 {loading && queries.length === 0 && (
-                    <div className="text-center py-8 text-gray-500 animate-pulse">
+                    <div className="text-center py-8 text-gray-500 dark:text-gray-400 animate-pulse">
                         Loading...
                     </div>
                 )}
@@ -123,7 +123,7 @@ export const ExplorationPanel: React.FC<ExplorationPanelProps> = ({
                                     </svg>
                                 </div>
                                 <p className="text-sm text-gray-500 dark:text-gray-400">No questions yet</p>
-                                <p className="text-xs text-gray-400 mt-1">Start asking questions to track your journey</p>
+                                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Start asking questions to track your journey</p>
                             </div>
                         ) : (
                             queries.map((query) => (
@@ -158,7 +158,7 @@ export const ExplorationPanel: React.FC<ExplorationPanelProps> = ({
                                         <span className={`px-1.5 py-0.5 text-xs rounded ${getConfidenceColor(query.confidence)}`}>
                                             {Math.round(query.confidence * 100)}% confident
                                         </span>
-                                        <span className="text-xs text-gray-400">
+                                        <span className="text-xs text-gray-400 dark:text-gray-500">
                                             {query.sources_used.length} sources
                                         </span>
                                     </div>
@@ -190,7 +190,7 @@ export const ExplorationPanel: React.FC<ExplorationPanelProps> = ({
                                             {topic.name}
                                         </span>
                                     </div>
-                                    <span className="text-xs text-gray-400">
+                                    <span className="text-xs text-gray-400 dark:text-gray-500">
                                         {formatTime(topic.last_seen)}
                                     </span>
                                 </button>

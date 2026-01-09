@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from storage.notebook_store import notebook_store
+from api.settings import _load_app_preferences
 
 router = APIRouter()
 
@@ -18,15 +19,30 @@ class Notebook(BaseModel):
     created_at: str
     updated_at: str
     source_count: int = 0
+    is_primary: bool = False
 
 class NotebookColorUpdate(BaseModel):
     color: str
 
 @router.get("/")
 async def list_notebooks():
-    """List all notebooks"""
+    """List all notebooks, with primary notebook first"""
     notebooks = await notebook_store.list()
-    return {"notebooks": notebooks}
+    
+    # Get primary notebook ID
+    prefs = _load_app_preferences()
+    primary_id = prefs.get("primary_notebook_id")
+    
+    # Mark primary and sort to top
+    for nb in notebooks:
+        nb["is_primary"] = nb.get("id") == primary_id
+    
+    # Sort: primary first, then by updated_at desc
+    notebooks.sort(key=lambda x: (not x.get("is_primary", False), x.get("updated_at", "")), reverse=False)
+    # Fix: primary=True should be first (not False sorts before not True)
+    notebooks.sort(key=lambda x: (0 if x.get("is_primary") else 1, x.get("title", "").lower()))
+    
+    return {"notebooks": notebooks, "primary_notebook_id": primary_id}
 
 @router.post("/", response_model=Notebook)
 async def create_notebook(notebook: NotebookCreate):

@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, audio_llm
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from config import settings
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
@@ -144,6 +144,12 @@ app.include_router(quiz.router, tags=["quiz"])
 app.include_router(visual.router, tags=["visual"])
 app.include_router(writing.router, tags=["writing"])
 app.include_router(voice.router, tags=["voice"])
+app.include_router(site_search.router, tags=["site-search"])
+app.include_router(contradictions.router, tags=["contradictions"])
+app.include_router(credentials.router, tags=["credentials"])
+app.include_router(agent.router, tags=["agent"])
+app.include_router(browser.router, tags=["browser"])
+app.include_router(audio_llm.router, tags=["audio-llm"])
 
 @app.get("/")
 async def root():

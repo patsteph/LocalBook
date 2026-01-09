@@ -320,60 +320,79 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                             >
                                 <span className="w-5 h-5 flex items-center justify-center rounded bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 group-hover:bg-blue-200 dark:group-hover:bg-blue-900/50 text-sm font-bold">+</span>
                                 <span>Add All</span>
-                                <span className="text-gray-400">({results.length - addedUrls.size} remaining)</span>
+                                <span className="text-gray-400 dark:text-gray-500">({results.length - addedUrls.size} remaining)</span>
                             </button>
                             <span>
                                 {currentOffset > 20 ? `${getFreshnessLabel(0)} + ${getFreshnessLabel(20)}${currentOffset > 40 ? ` + ${getFreshnessLabel(40)}` : ''}` : `${results.length} results`}
                             </span>
                         </div>
 
-                        {/* Search Results List */}
-                        <div className="space-y-2">
+                        {/* Search Results List - Unified format matching Site Search */}
+                        <div className="space-y-3">
                             {results.map((result, idx) => (
                                 <div
                                     key={idx}
-                                    className={`flex gap-3 p-3 border rounded-lg transition-colors ${
+                                    className={`p-3 border rounded-lg transition-colors ${
                                         failedUrls.has(result.url)
                                             ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
                                             : addedUrls.has(result.url)
                                             ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
-                                            : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-750'
+                                            : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-blue-300 dark:hover:border-blue-600'
                                     }`}
                                 >
-                                    {/* Add Button - shows green for success, red for failed, gray for not added */}
-                                    <button
-                                        onClick={() => handleAddSingle(result.url)}
-                                        disabled={addedUrls.has(result.url) && !failedUrls.has(result.url)}
-                                        className={`w-6 h-6 flex-shrink-0 flex items-center justify-center rounded text-sm font-bold transition-all ${
-                                            failedUrls.has(result.url)
-                                                ? 'bg-red-500 text-white cursor-pointer hover:bg-red-600 scale-110'
-                                                : addedUrls.has(result.url)
-                                                ? 'bg-green-500 text-white cursor-default scale-110'
-                                                : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 hover:text-blue-600 dark:hover:text-blue-400 hover:scale-110'
-                                        } transition-transform duration-200`}
-                                        title={
-                                            failedUrls.has(result.url) 
-                                                ? `Failed: ${failedUrls.get(result.url)} - Click to retry` 
-                                                : addedUrls.has(result.url) 
-                                                ? 'Added' 
-                                                : 'Add to notebook'
-                                        }
-                                    >
-                                        {failedUrls.has(result.url) ? '✕' : addedUrls.has(result.url) ? '✓' : '+'}
-                                    </button>
-                                    
-                                    {/* Content - click title to preview */}
-                                    <div className="flex-1 min-w-0">
+                                    <div className="flex justify-between items-start gap-2">
+                                        <div className="flex-1 min-w-0">
+                                            {/* Title */}
+                                            <button
+                                                onClick={() => handlePreview(result.url)}
+                                                className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline text-left line-clamp-2"
+                                            >
+                                                {result.title}
+                                            </button>
+                                            
+                                            {/* Source badge and read time */}
+                                            <div className="flex items-center gap-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                                <span className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
+                                                    {(() => {
+                                                        try {
+                                                            return new URL(result.url).hostname.replace('www.', '');
+                                                        } catch {
+                                                            return 'Web';
+                                                        }
+                                                    })()}
+                                                </span>
+                                                {result.read_time && (
+                                                    <span className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
+                                                        📖 {result.read_time}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            
+                                            {/* Snippet */}
+                                            <p className="mt-1 text-xs text-gray-600 dark:text-gray-300 line-clamp-2" dangerouslySetInnerHTML={{ __html: result.snippet }} />
+                                        </div>
+                                        
+                                        {/* Add Button - positioned like Site Search action */}
                                         <button
-                                            onClick={() => handlePreview(result.url)}
-                                            className="font-medium text-blue-700 dark:text-blue-400 text-sm mb-1 hover:underline text-left"
+                                            onClick={() => handleAddSingle(result.url)}
+                                            disabled={addedUrls.has(result.url) && !failedUrls.has(result.url)}
+                                            className={`w-7 h-7 flex-shrink-0 flex items-center justify-center rounded text-sm font-bold transition-all ${
+                                                failedUrls.has(result.url)
+                                                    ? 'bg-red-500 text-white cursor-pointer hover:bg-red-600'
+                                                    : addedUrls.has(result.url)
+                                                    ? 'bg-green-500 text-white cursor-default'
+                                                    : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 hover:text-blue-600 dark:hover:text-blue-400'
+                                            }`}
+                                            title={
+                                                failedUrls.has(result.url) 
+                                                    ? `Failed: ${failedUrls.get(result.url)} - Click to retry` 
+                                                    : addedUrls.has(result.url) 
+                                                    ? 'Added' 
+                                                    : 'Add to notebook'
+                                            }
                                         >
-                                            {result.title}
+                                            {failedUrls.has(result.url) ? '✕' : addedUrls.has(result.url) ? '✓' : '+'}
                                         </button>
-                                        <p className="text-xs text-gray-600 dark:text-gray-400 mb-1" dangerouslySetInnerHTML={{ __html: result.snippet }} />
-                                        <p className="text-xs text-gray-500 dark:text-gray-500 truncate">
-                                            {result.url}
-                                        </p>
                                     </div>
                                 </div>
                             ))}

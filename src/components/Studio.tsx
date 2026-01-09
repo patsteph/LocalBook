@@ -2,10 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { skillsService } from '../services/skills';
 import { audioService } from '../services/audio';
 import { contentService, ContentGeneration } from '../services/content';
+import { writingService, FormatOption } from '../services/writing';
 import { Skill, AudioGeneration } from '../types';
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
+import { QuizPanel } from './QuizPanel';
+import { VisualPanel } from './VisualPanel';
+import { WritingPanel } from './WritingPanel';
 
 interface StudioProps {
   notebookId: string | null;
@@ -18,10 +22,14 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
   const [contentGenerations, setContentGenerations] = useState<ContentGeneration[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [activeTab, setActiveTab] = useState<'text' | 'audio'>('text');
+  const [activeTab, setActiveTab] = useState<'documents' | 'audio' | 'quiz' | 'visual' | 'writing'>('documents');
   const [generatedContent, setGeneratedContent] = useState<string>('');
   const [contentSkillName, setContentSkillName] = useState<string>('');
   const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
+  
+  // Style options for Docs tab
+  const [styleFormats, setStyleFormats] = useState<FormatOption[]>([]);
+  const [selectedStyle, setSelectedStyle] = useState<string>('professional');
 
   // Form state
   const [topic, setTopic] = useState('');
@@ -40,7 +48,17 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
 
   useEffect(() => {
     loadSkills();
+    loadStyleFormats();
   }, []);
+  
+  const loadStyleFormats = async () => {
+    try {
+      const formats = await writingService.getFormats();
+      setStyleFormats(formats);
+    } catch (err) {
+      console.error('Failed to load style formats:', err);
+    }
+  };
 
   useEffect(() => {
     if (notebookId) {
@@ -78,12 +96,9 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
   useEffect(() => {
     if (skills.length === 0) return;
     const textDefault = skills.find(s => s.skill_id === 'summary');
-    const audioDefault = skills.find(s => s.skill_id === 'podcast_script');
     
-    if (activeTab === 'text' && textDefault) {
+    if (activeTab === 'documents' && textDefault) {
       setSelectedSkill(textDefault.skill_id);
-    } else if (activeTab === 'audio' && audioDefault) {
-      setSelectedSkill(audioDefault.skill_id);
     }
   }, [activeTab, skills]);
 
@@ -172,6 +187,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
         notebook_id: notebookId,
         skill_id: selectedSkill,
         topic: topic || undefined,
+        style: selectedStyle,
       });
 
       setGeneratedContent(result.content);
@@ -192,9 +208,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
   
   // Filter skills based on active tab
   const filteredSkills = skills.filter(s => 
-    activeTab === 'audio' 
-      ? audioSkillIds.includes(s.skill_id) || !textSkillIds.includes(s.skill_id)
-      : textSkillIds.includes(s.skill_id) || !audioSkillIds.includes(s.skill_id)
+    textSkillIds.includes(s.skill_id) || !audioSkillIds.includes(s.skill_id)
   );
 
   if (!notebookId) {
@@ -211,27 +225,27 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
       {/* Header with Tabs */}
       <div className="p-4 border-b border-gray-200 dark:border-gray-700">
         <h3 className="font-bold text-base mb-2 text-gray-900 dark:text-white">Studio</h3>
-        <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
-          <button
-            onClick={() => setActiveTab('text')}
-            className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              activeTab === 'text'
-                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
-                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-            }`}
-          >
-            📄 Documents
-          </button>
-          <button
-            onClick={() => setActiveTab('audio')}
-            className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              activeTab === 'audio'
-                ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
-                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-            }`}
-          >
-            🎙️ Audio
-          </button>
+        <div className="grid grid-cols-5 gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+          {[
+            { id: 'documents' as const, icon: '📄', label: 'Docs' },
+            { id: 'audio' as const, icon: '🎙️', label: 'Audio' },
+            { id: 'quiz' as const, icon: '🎯', label: 'Quiz' },
+            { id: 'visual' as const, icon: '🧠', label: 'Visual' },
+            { id: 'writing' as const, icon: '✍️', label: 'Write' },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors flex flex-col items-center ${
+                activeTab === tab.id
+                  ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              <span>{tab.icon}</span>
+              <span className="mt-0.5">{tab.label}</span>
+            </button>
+          ))}
         </div>
       </div>
 
@@ -239,6 +253,9 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
       <div className="flex-1 overflow-y-auto p-6 pb-12 space-y-6">
         {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
 
+        {/* Documents & Audio Tab Content */}
+        {(activeTab === 'documents' || activeTab === 'audio') && (
+        <>
         {/* Skills Selection */}
         <div>
           <div className="flex justify-between items-center mb-2">
@@ -335,6 +352,31 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
           />
         </div>
 
+        {/* Style Selection - Only for documents tab */}
+        {activeTab === 'documents' && styleFormats.length > 0 && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Output Style
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {styleFormats.slice(0, 6).map((format) => (
+                <button
+                  key={format.value}
+                  onClick={() => setSelectedStyle(format.value)}
+                  className={`px-2 py-1.5 text-xs rounded-md border text-left transition-colors ${
+                    selectedStyle === format.value
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300'
+                      : 'border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300'
+                  }`}
+                  title={format.description}
+                >
+                  {format.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Duration - Only for audio tab */}
         {activeTab === 'audio' && (
         <div>
@@ -407,11 +449,11 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
           disabled={generating || !notebookId}
           className="w-full"
         >
-          {generating ? 'Generating...' : activeTab === 'audio' ? 'Generate Audio' : 'Generate Document'}
+          {generating ? 'Generating...' : activeTab === 'audio' ? 'Generate Podcast' : 'Generate Document'}
         </Button>
 
         {/* Generated Text Content (Documents tab) */}
-        {activeTab === 'text' && generatedContent && (
+        {activeTab === 'documents' && generatedContent && (
           <div className="border border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 rounded-lg p-4">
             <div className="flex justify-between items-center mb-3">
               <h4 className="font-medium text-sm text-green-900 dark:text-green-100">
@@ -432,7 +474,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
                 </button>
                 <button
                   onClick={() => setGeneratedContent('')}
-                  className="text-xs text-gray-500 hover:text-gray-700"
+                  className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
                 >
                   Clear
                 </button>
@@ -446,8 +488,8 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
           </div>
         )}
 
-        {/* Generated Script Preview */}
-        {generatedScript && showScript && (
+        {/* Generated Script Preview - Only show on Audio tab */}
+        {activeTab === 'audio' && generatedScript && showScript && (
           <div className="border border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 rounded-lg p-4">
             <div className="flex justify-between items-center mb-2">
               <h4 className="font-medium text-sm text-green-900 dark:text-green-100">✓ Content Generated Successfully</h4>
@@ -473,7 +515,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
         )}
 
         {/* Previous Document Generations - Only for text tab */}
-        {activeTab === 'text' && contentGenerations.length > 0 && (
+        {activeTab === 'documents' && contentGenerations.length > 0 && (
           <div className="mt-4">
             <h4 className="font-medium text-sm mb-3 text-gray-900 dark:text-white">Previous Documents</h4>
             <div className="space-y-2">
@@ -529,6 +571,9 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
               ))}
             </div>
           </div>
+        )}
+
+        </>
         )}
 
         {/* Previous Audio Generations - Only for audio tab */}
@@ -634,6 +679,24 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
           )}
         </div>
         )}
+
+        {/* Quiz Panel */}
+        {activeTab === 'quiz' && (
+          <QuizPanel notebookId={notebookId} />
+        )}
+
+        {/* Visual Panel */}
+        {activeTab === 'visual' && (
+          <VisualPanel notebookId={notebookId} />
+        )}
+
+        {/* Writing Panel */}
+        {activeTab === 'writing' && (
+          <WritingPanel notebookId={notebookId} />
+        )}
+
+        {/* Voice Panel */}
+        {/* Voice/Whisper moved to Audio tab - VoicePanel available for future use */}
       </div>
     </div>
   );

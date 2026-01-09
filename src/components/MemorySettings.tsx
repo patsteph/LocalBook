@@ -294,7 +294,7 @@ export const MemorySettings: React.FC = () => {
                             <p className="text-gray-600 dark:text-gray-300 text-sm">
                               {memory.value}
                             </p>
-                            <div className="mt-1 text-xs text-gray-400">
+                            <div className="mt-1 text-xs text-gray-400 dark:text-gray-500">
                               {SOURCE_TYPE_LABELS[memory.source_type] || memory.source_type} • 
                               {new Date(memory.updated_at).toLocaleDateString()}
                             </div>

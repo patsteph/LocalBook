@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { settingsService, UserProfile } from '../services/settings';
 import { MemorySettings } from './MemorySettings';
+import { CredentialLocker } from './CredentialLocker';
 import { API_BASE_URL } from '../services/api';
 
 interface SettingsProps {
@@ -54,6 +55,14 @@ const API_KEY_CONFIGS: APIKeyConfig[] = [
         placeholder: 'AI...',
         getKeyUrl: 'https://aistudio.google.com/app/apikey',
     },
+    {
+        name: 'YouTube',
+        key: 'youtube_api_key',
+        label: 'YouTube Data API Key',
+        description: 'For YouTube site-specific search (free tier available)',
+        placeholder: 'AIza...',
+        getKeyUrl: 'https://console.cloud.google.com/apis/credentials',
+    },
 ];
 
 export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
@@ -69,7 +78,7 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
     const [customLLMApiKey, setCustomLLMApiKey] = useState('');
     const [customLLMModel, setCustomLLMModel] = useState('');
     const [customLLMConfigured, setCustomLLMConfigured] = useState(false);
-    const [activeSection, setActiveSection] = useState<'profile' | 'api-keys' | 'memory' | 'updates'>('api-keys');
+    const [activeSection, setActiveSection] = useState<'profile' | 'api-keys' | 'credentials' | 'memory' | 'updates'>('api-keys');
     
     // User Profile state
     const [userProfile, setUserProfile] = useState<UserProfile>({});
@@ -415,6 +424,16 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                     🔑 API Keys
                 </button>
                 <button
+                    onClick={() => setActiveSection('credentials')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                        activeSection === 'credentials'
+                            ? 'border-amber-600 text-amber-600 dark:text-amber-400'
+                            : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900'
+                    }`}
+                >
+                    🔐 Site Logins
+                </button>
+                <button
                     onClick={() => setActiveSection('memory')}
                     className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                         activeSection === 'memory'
@@ -583,6 +602,11 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                         </div>
                     )}
                 </div>
+            )}
+
+            {/* Credentials Section */}
+            {activeSection === 'credentials' && (
+                <CredentialLocker />
             )}
 
             {/* Memory Section */}
