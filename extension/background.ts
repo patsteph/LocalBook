@@ -179,9 +179,17 @@ async function capturePage(tab: chrome.tabs.Tab, notebookId: string) {
     })
     
     const result = await res.json()
-    showNotification(result.success ? `Captured! ${result.word_count} words` : "Capture failed")
-  } catch (e) {
-    showNotification("Failed to capture page")
+    if (result.success) {
+      showNotification(`Captured! ${result.word_count} words`)
+    } else {
+      // Show meaningful error to user
+      const errorMsg = result.error || "Capture failed"
+      console.error("[LocalBook] Capture failed:", errorMsg)
+      showNotification(errorMsg.length > 80 ? errorMsg.substring(0, 77) + "..." : errorMsg)
+    }
+  } catch (e: any) {
+    console.error("[LocalBook] Capture error:", e)
+    showNotification("Failed to capture page - check if LocalBook is running")
   }
 }
 

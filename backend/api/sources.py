@@ -71,32 +71,53 @@ async def upload_source(
 
 @router.delete("/{notebook_id}/{source_id}")
 async def delete_source(notebook_id: str, source_id: str):
-    """Delete a source and all its indexed data"""
+    """Delete a source and all its indexed data.
+    
+    This is designed to be robust - even if some cleanup steps fail
+    (e.g., for sources that were never fully indexed), the source
+    will still be removed from the sources list.
+    """
     # First verify the source exists
     source = await source_store.get(source_id)
     if not source or source.get("notebook_id") != notebook_id:
         raise HTTPException(status_code=404, detail="Source not found")
     
-    # Delete from LanceDB (vector embeddings)
+    errors = []
+    
+    # Delete from LanceDB (vector embeddings) - non-blocking
     try:
         await rag_engine.delete_source(notebook_id, source_id)
         print(f"[SOURCES] Deleted source {source_id} from LanceDB")
     except Exception as e:
-        print(f"[SOURCES] Warning: Failed to delete from LanceDB: {e}")
+        # This can fail for sources that were never indexed (e.g., empty content)
+        print(f"[SOURCES] Note: LanceDB cleanup skipped for {source_id}: {e}")
+        errors.append(f"LanceDB: {e}")
     
-    # Delete from topic model
+    # Delete from topic model - non-blocking
     try:
         await topic_modeling_service.delete_source(source_id)
         print(f"[SOURCES] Deleted source {source_id} from topic model")
     except Exception as e:
-        print(f"[SOURCES] Warning: Failed to delete from topic model: {e}")
+        print(f"[SOURCES] Note: Topic model cleanup skipped for {source_id}: {e}")
+        errors.append(f"Topic model: {e}")
     
-    # Delete from sources.json
-    success = await source_store.delete(notebook_id, source_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Source not found")
+    # Delete from sources.json - this is the critical step
+    try:
+        success = await source_store.delete(notebook_id, source_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Source not found in storage")
+        print(f"[SOURCES] Deleted source {source_id} from sources.json")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[SOURCES] Critical error deleting from sources.json: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete source: {e}")
     
-    return {"message": "Source deleted successfully"}
+    # Return success even if some cleanup steps had non-critical errors
+    return {
+        "message": "Source deleted successfully",
+        "cleanup_notes": errors if errors else None
+    }
 
 
 # =========================================================================

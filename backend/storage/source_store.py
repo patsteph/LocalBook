@@ -35,8 +35,13 @@ class SourceStore:
         ]
 
     async def create(self, notebook_id: str, filename: str, metadata: dict) -> Dict:
-        """Create a new source"""
-        source_id = str(uuid.uuid4())
+        """Create a new source.
+        
+        If metadata contains an 'id' field, that ID will be used.
+        Otherwise, a new UUID is generated.
+        """
+        # Use provided ID or generate new one
+        source_id = metadata.get("id") or str(uuid.uuid4())
         now = datetime.utcnow().isoformat()
 
         source = {
@@ -46,6 +51,8 @@ class SourceStore:
             "created_at": now,
             **metadata
         }
+        # Ensure id field matches the key (in case metadata had a different id)
+        source["id"] = source_id
 
         data = self._load_data()
         data["sources"][source_id] = source

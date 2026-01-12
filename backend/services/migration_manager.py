@@ -18,12 +18,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, AsyncGenerator, Tuple
 
 from config import settings
+from version import DATA_SCHEMA_VERSION
 
 
 class MigrationManager:
     """Handle upgrades from any version to v0.6.5."""
     
-    CURRENT_VERSION = "0.6.5"
+    CURRENT_VERSION = DATA_SCHEMA_VERSION
     
     VERSION_INFO = {
         "0.2": {"embedding_dim": 768, "embedding_model": "nomic-embed-text"},

@@ -12,6 +12,8 @@ import uuid
 
 router = APIRouter(prefix="/browser", tags=["browser"])
 
+from version import APP_VERSION
+
 
 class PageCaptureRequest(BaseModel):
     """Request to capture a web page."""
@@ -76,7 +78,7 @@ async def get_status():
     """Check if LocalBook backend is running."""
     return {
         "status": "online",
-        "version": "0.9.0",
+        "version": APP_VERSION,
         "timestamp": datetime.now().isoformat()
     }
 
@@ -106,50 +108,111 @@ async def list_notebooks_for_extension():
 
 @router.post("/capture", response_model=CaptureResponse)
 async def capture_page(request: PageCaptureRequest):
-    """Capture a web page to a notebook with summarization."""
+    """Capture a web page to a notebook with summarization.
+    
+    Uses trafilatura for robust content extraction from HTML when available,
+    matching the quality of the web research panel scraping.
+    """
     try:
         from storage.source_store import source_store
         from services.rag_engine import rag_engine
         from agents.tools import summarize_page_tool, extract_page_metadata_tool
+        import trafilatura
+        import asyncio
+        
+        # Try to extract content using trafilatura (same as web research panel)
+        # This is MUCH more robust than the extension's document.body.innerText
+        content = ""
+        if request.html_content:
+            print(f"[BROWSER] Using trafilatura for robust extraction: {request.url}")
+            loop = asyncio.get_event_loop()
+            
+            # Extract main content using trafilatura (runs in thread pool)
+            def extract_with_trafilatura(html):
+                return trafilatura.extract(
+                    html,
+                    include_comments=False,
+                    include_tables=True,
+                    no_fallback=False,  # Use fallback extractors if main fails
+                    favor_precision=False  # Favor recall - get more content
+                )
+            
+            extracted = await loop.run_in_executor(None, extract_with_trafilatura, request.html_content)
+            
+            if extracted and len(extracted.strip()) > 100:
+                content = extracted.strip()
+                print(f"[BROWSER] Trafilatura extracted {len(content.split())} words")
+            else:
+                # Fallback to extension-provided content
+                print(f"[BROWSER] Trafilatura returned insufficient content, using extension content")
+                content = request.content.strip() if request.content else ""
+        else:
+            # No HTML provided, use extension content directly
+            content = request.content.strip() if request.content else ""
+        
+        word_count = len(content.split()) if content else 0
+        char_count = len(content) if content else 0
+        
+        if word_count < 10:
+            print(f"[BROWSER] Capture rejected: content too short ({word_count} words) for {request.url}")
+            return CaptureResponse(
+                success=False,
+                title=request.title,
+                word_count=word_count,
+                reading_time_minutes=0,
+                error=f"Page content is empty or too short ({word_count} words). This may be a JavaScript-rendered page that requires the page to fully load, or a page that blocks content extraction."
+            )
         
         source_id = str(uuid.uuid4())
+        print(f"[BROWSER] Capturing page: {request.url} ({word_count} words)")
         
-        # Extract metadata if HTML provided
+        # Extract metadata if HTML provided (non-critical, continue on failure)
         metadata = {}
-        if request.html_content:
-            metadata = await extract_page_metadata_tool.ainvoke({
-                "html_content": request.html_content,
-                "url": request.url
-            })
+        try:
+            if request.html_content:
+                metadata = await extract_page_metadata_tool.ainvoke({
+                    "html_content": request.html_content,
+                    "url": request.url
+                })
+        except Exception as meta_err:
+            print(f"[BROWSER] Metadata extraction failed (non-critical): {meta_err}")
         
         # Calculate reading time
-        word_count = len(request.content.split())
         reading_time = metadata.get("reading_time_minutes", max(1, word_count // 200))
         
-        # Summarize content and extract key concepts
-        summary_result = await summarize_page_tool.ainvoke({
-            "content": request.content,
-            "url": request.url
-        })
+        # Summarize content and extract key concepts (non-critical, continue on failure)
+        summary = ""
+        key_concepts = []
+        try:
+            summary_result = await summarize_page_tool.ainvoke({
+                "content": content,
+                "url": request.url
+            })
+            summary = summary_result.get("summary", "")
+            key_concepts = summary_result.get("key_concepts", [])
+        except Exception as sum_err:
+            print(f"[BROWSER] Summarization failed (non-critical): {sum_err}")
         
-        summary = summary_result.get("summary", "")
-        key_concepts = summary_result.get("key_concepts", [])
-        
-        # Create source
+        # Create source with initial status
         source_data = {
             "id": source_id,
             "notebook_id": request.notebook_id,
             "type": "web",
+            "format": "web",
             "url": request.url,
             "title": request.title,
             "filename": request.title,
-            "content": request.content,
+            "content": content,
             "summary": summary,
             "key_concepts": key_concepts,
             "word_count": word_count,
+            "char_count": char_count,
+            "characters": char_count,
             "reading_time_minutes": reading_time,
             "meta_tags": metadata,
             "capture_type": request.capture_type,
+            "status": "processing",
+            "chunks": 0,
             "created_at": datetime.now().isoformat()
         }
         
@@ -160,14 +223,22 @@ async def capture_page(request: PageCaptureRequest):
         )
         
         # Index in RAG
-        await rag_engine.ingest_document(
+        rag_result = await rag_engine.ingest_document(
             notebook_id=request.notebook_id,
             source_id=source_id,
-            text=request.content,
+            text=content,
             filename=request.title,
             source_type="web"
         )
         
+        # Update source with RAG results (same as document_processor does)
+        chunks = rag_result.get("chunks", 0) if rag_result else 0
+        await source_store.update(request.notebook_id, source_id, {
+            "chunks": chunks,
+            "status": "completed"
+        })
+        
+        print(f"[BROWSER] Successfully captured: {request.title} ({chunks} chunks)")
         return CaptureResponse(
             success=True,
             source_id=source_id,
@@ -179,6 +250,9 @@ async def capture_page(request: PageCaptureRequest):
         )
         
     except Exception as e:
+        import traceback
+        print(f"[BROWSER] Capture failed for {request.url}: {e}")
+        traceback.print_exc()
         return CaptureResponse(
             success=False,
             title=request.title,
@@ -197,21 +271,27 @@ async def capture_selection(request: SelectionCaptureRequest):
         
         source_id = str(uuid.uuid4())
         word_count = len(request.selected_text.split())
+        char_count = len(request.selected_text)
         reading_time = max(1, word_count // 200)
         
-        # Create source
+        # Create source with initial status
         source_data = {
             "id": source_id,
             "notebook_id": request.notebook_id,
             "type": "web_selection",
+            "format": "web",
             "url": request.url,
             "title": f"Selection from: {request.title}",
             "filename": f"Selection: {request.title[:50]}",
             "content": request.selected_text,
             "context": request.context,
             "word_count": word_count,
+            "char_count": char_count,
+            "characters": char_count,
             "reading_time_minutes": reading_time,
             "capture_type": "selection",
+            "status": "processing",
+            "chunks": 0,
             "created_at": datetime.now().isoformat()
         }
         
@@ -222,13 +302,20 @@ async def capture_selection(request: SelectionCaptureRequest):
         )
         
         # Index in RAG
-        await rag_engine.ingest_document(
+        rag_result = await rag_engine.ingest_document(
             notebook_id=request.notebook_id,
             source_id=source_id,
             text=request.selected_text,
             filename=f"Selection: {request.title[:50]}",
             source_type="web"
         )
+        
+        # Update source with RAG results
+        chunks = rag_result.get("chunks", 0) if rag_result else 0
+        await source_store.update(request.notebook_id, source_id, {
+            "chunks": chunks,
+            "status": "completed"
+        })
         
         return CaptureResponse(
             success=True,
@@ -271,21 +358,27 @@ async def capture_youtube(request: YouTubeCaptureRequest):
             content += f"Transcript:\n{transcript}"
         
         word_count = len(content.split())
+        char_count = len(content)
         reading_time = max(1, word_count // 200)
         
-        # Create source
+        # Create source with initial status
         source_data = {
             "id": source_id,
             "notebook_id": request.notebook_id,
             "type": "youtube",
+            "format": "youtube",
             "url": request.video_url,
             "title": video_info.get("title", "YouTube Video"),
             "filename": video_info.get("title", "YouTube Video"),
             "content": content,
             "video_info": video_info,
             "word_count": word_count,
+            "char_count": char_count,
+            "characters": char_count,
             "reading_time_minutes": reading_time,
             "capture_type": "youtube",
+            "status": "processing",
+            "chunks": 0,
             "created_at": datetime.now().isoformat()
         }
         
@@ -296,13 +389,20 @@ async def capture_youtube(request: YouTubeCaptureRequest):
         )
         
         # Index in RAG
-        await rag_engine.ingest_document(
+        rag_result = await rag_engine.ingest_document(
             notebook_id=request.notebook_id,
             source_id=source_id,
             text=content,
             filename=video_info.get("title", "YouTube Video"),
             source_type="youtube"
         )
+        
+        # Update source with RAG results
+        chunks = rag_result.get("chunks", 0) if rag_result else 0
+        await source_store.update(request.notebook_id, source_id, {
+            "chunks": chunks,
+            "status": "completed"
+        })
         
         return CaptureResponse(
             success=True,

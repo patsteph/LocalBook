@@ -124,6 +124,8 @@ async def transcribe_audio(
         
         # Add as source if requested
         if add_as_source and text:
+            from services.rag_engine import rag_engine
+            
             # Generate title if not provided
             if not title:
                 # Use first few words of transcription
@@ -131,20 +133,43 @@ async def transcribe_audio(
                 title = " ".join(words) + "..." if len(words) == 5 else " ".join(words)
                 title = f"Voice Note: {title}"
             
-            # Create source
+            source_id = str(uuid.uuid4())
+            char_count = len(text)
+            
+            # Create source with proper metadata
             source = await source_store.create(
                 notebook_id=notebook_id,
                 filename=title,
-                file_type="voice_note",
-                content=text,
                 metadata={
+                    "id": source_id,
                     "type": "voice_note",
+                    "format": "voice_note",
+                    "content": text,
+                    "char_count": char_count,
+                    "characters": char_count,
                     "duration_seconds": duration,
                     "language": language,
+                    "status": "processing",
+                    "chunks": 0,
                     "transcribed_at": datetime.utcnow().isoformat()
                 }
             )
-            source_id = source.get("id")
+            
+            # Index in RAG
+            rag_result = await rag_engine.ingest_document(
+                notebook_id=notebook_id,
+                source_id=source_id,
+                text=text,
+                filename=title,
+                source_type="voice_note"
+            )
+            
+            # Update source with RAG results
+            chunks = rag_result.get("chunks", 0) if rag_result else 0
+            await source_store.update(notebook_id, source_id, {
+                "chunks": chunks,
+                "status": "completed"
+            })
         
         return TranscriptionResult(
             text=text,

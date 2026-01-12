@@ -78,14 +78,19 @@ fi
 echo -e "${YELLOW}Checking AI models...${NC}"
 MODELS=$(ollama list 2>/dev/null || echo "")
 
-if ! echo "$MODELS" | grep -q "mistral-nemo"; then
-    echo -e "${YELLOW}Downloading mistral-nemo model (this may take a few minutes)...${NC}"
-    ollama pull mistral-nemo:12b-instruct-2407-q4_K_M
-fi
-
 if ! echo "$MODELS" | grep -q "phi4-mini"; then
     echo -e "${YELLOW}Downloading phi4-mini model...${NC}"
     ollama pull phi4-mini
+fi
+
+if ! echo "$MODELS" | grep -q "olmo-3:7b-instruct"; then
+    echo -e "${YELLOW}Downloading olmo-3:7b-instruct model (this may take a few minutes)...${NC}"
+    ollama pull olmo-3:7b-instruct
+fi
+
+if ! echo "$MODELS" | grep -q "snowflake-arctic-embed2"; then
+    echo -e "${YELLOW}Downloading snowflake-arctic-embed2 model...${NC}"
+    ollama pull snowflake-arctic-embed2
 fi
 
 echo -e "${GREEN}✓ AI models ready${NC}"

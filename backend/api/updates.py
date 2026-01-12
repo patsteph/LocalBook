@@ -13,10 +13,13 @@ import zipfile
 import shutil
 import asyncio
 
+from version import APP_VERSION, DATA_SCHEMA_VERSION
+
 router = APIRouter(prefix="/updates", tags=["updates"])
 
 # Current version - update this when releasing new versions
-CURRENT_VERSION = "0.6.5"
+CURRENT_VERSION = APP_VERSION
+DATA_VERSION = DATA_SCHEMA_VERSION
 
 # Track startup state
 _startup_state = {
@@ -72,6 +75,7 @@ GITHUB_REPO = "LocalBook"
 
 class VersionInfo(BaseModel):
     current_version: str
+    data_version: str
     latest_version: Optional[str] = None
     update_available: bool = False
     release_notes: Optional[str] = None
@@ -126,6 +130,7 @@ async def check_for_updates():
                 
                 return VersionInfo(
                     current_version=CURRENT_VERSION,
+                    data_version=DATA_VERSION,
                     latest_version=latest_version,
                     update_available=update_available,
                     release_notes=release_notes[:500] if release_notes else None,
@@ -136,6 +141,7 @@ async def check_for_updates():
                 # No releases yet
                 return VersionInfo(
                     current_version=CURRENT_VERSION,
+                    data_version=DATA_VERSION,
                     latest_version=None,
                     update_available=False,
                     error="No releases found on GitHub"
@@ -143,11 +149,13 @@ async def check_for_updates():
             else:
                 return VersionInfo(
                     current_version=CURRENT_VERSION,
+                    data_version=DATA_VERSION,
                     error=f"GitHub API error: {response.status_code}"
                 )
     except Exception as e:
         return VersionInfo(
             current_version=CURRENT_VERSION,
+            data_version=DATA_VERSION,
             error=f"Failed to check for updates: {str(e)}"
         )
 
@@ -163,6 +171,7 @@ class StartupStatus(BaseModel):
     message: str
     progress: int
     current_version: str
+    data_version: str
     previous_version: Optional[str] = None
     is_upgrade: bool = False
 
@@ -175,6 +184,7 @@ async def get_startup_status():
         message=_startup_state["message"],
         progress=_startup_state["progress"],
         current_version=CURRENT_VERSION,
+        data_version=DATA_VERSION,
         previous_version=_startup_state["previous_version"],
         is_upgrade=_startup_state["is_upgrade"]
     )

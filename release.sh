@@ -49,8 +49,11 @@ if [ "$NEW_VERSION" != "$CURRENT_VERSION" ]; then
     # Update extension version to match app version
     EXT_CURRENT=$(grep '"version"' extension/package.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')
     sed -i '' "s/\"version\": \"${EXT_CURRENT}\"/\"version\": \"${NEW_VERSION}\"/" extension/package.json
+
+    # Update backend version (single source of truth for backend-reported app version)
+    sed -i '' "s/^APP_VERSION = \".*\"/APP_VERSION = \"${NEW_VERSION}\"/" backend/version.py
     
-    echo -e "${GREEN}✓ Version updated to ${NEW_VERSION} (including extension)${NC}"
+    echo -e "${GREEN}✓ Version updated to ${NEW_VERSION} (app, extension, backend)${NC}"
 fi
 
 # =============================================================================
@@ -217,9 +220,9 @@ echo -e "${GREEN}✓ Created ${EXTENSION_ARCHIVE} (${EXT_SIZE})${NC}"
 echo -e "\n${YELLOW}Step 6/7: Git operations...${NC}"
 
 # Commit version changes if any
-if [ -n "$(git status --porcelain package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json 2>/dev/null)" ]; then
+if [ -n "$(git status --porcelain package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json extension/package.json backend/version.py 2>/dev/null)" ]; then
     echo -e "  Committing version bump..."
-    git add package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json
+    git add package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json extension/package.json backend/version.py
     git commit -m "chore: bump version to ${NEW_VERSION}"
     echo -e "${GREEN}  ✓ Version bump committed${NC}"
 fi

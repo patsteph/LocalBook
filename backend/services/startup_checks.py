@@ -22,6 +22,9 @@ REQUIRED_MODELS = [
     ("snowflake-arctic-embed2", "Embedding model (1024 dimensions)"),
 ]
 
+# Minimum Ollama version required for OLMO model support
+MIN_OLLAMA_VERSION = "0.5.0"
+
 # Expected embedding dimension for snowflake-arctic-embed2
 # Updated from 768 (nomic-embed-text) to 1024 in v0.6.0
 EXPECTED_EMBEDDING_DIM = 1024
@@ -56,7 +59,18 @@ async def run_all_startup_checks(status_callback=None) -> Dict[str, Any]:
         update_status("checking", "Verifying data directory...", 10)
         results["data_migration"] = verify_data_directory()
         
-        # Step 2: Check Ollama models
+        # Step 2: Check Ollama version (required for OLMO support)
+        update_status("checking", "Checking Ollama version...", 15)
+        version_ok, current_version, min_version = await check_ollama_version()
+        results["ollama_version"] = current_version
+        results["ollama_version_ok"] = version_ok
+        
+        if not version_ok:
+            error_msg = f"Ollama version {current_version} is too old. Please update to {min_version}+ for OLMO support. Run: ollama --version to check, then update Ollama from ollama.ai"
+            results["errors"].append(error_msg)
+            update_status("error", error_msg, 20)
+        
+        # Step 3: Check Ollama models
         update_status("checking", "Checking AI models...", 20)
         available, missing = await check_ollama_models()
         results["models_verified"] = len(missing) == 0
@@ -121,6 +135,46 @@ def verify_data_directory() -> bool:
     except Exception as e:
         print(f"[Startup] Data directory error: {e}")
         return False
+
+
+def parse_version(version_str: str) -> Tuple[int, int, int]:
+    """Parse a version string like '0.5.1' into a tuple (0, 5, 1)."""
+    try:
+        parts = version_str.strip().split('.')
+        return tuple(int(p) for p in parts[:3])
+    except:
+        return (0, 0, 0)
+
+
+async def check_ollama_version() -> Tuple[bool, str, str]:
+    """
+    Check if Ollama version meets minimum requirements for OLMO support.
+    
+    Returns:
+        Tuple of (version_ok, current_version, min_version)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{settings.ollama_base_url}/api/version")
+            if response.status_code == 200:
+                data = response.json()
+                current = data.get("version", "0.0.0")
+                current_tuple = parse_version(current)
+                min_tuple = parse_version(MIN_OLLAMA_VERSION)
+                
+                version_ok = current_tuple >= min_tuple
+                if not version_ok:
+                    print(f"[Startup] Ollama version {current} is below minimum {MIN_OLLAMA_VERSION} required for OLMO")
+                else:
+                    print(f"[Startup] Ollama version {current} meets requirements")
+                
+                return version_ok, current, MIN_OLLAMA_VERSION
+            else:
+                print(f"[Startup] Could not get Ollama version: {response.status_code}")
+                return False, "unknown", MIN_OLLAMA_VERSION
+    except Exception as e:
+        print(f"[Startup] Could not check Ollama version: {e}")
+        return False, "unknown", MIN_OLLAMA_VERSION
 
 
 async def check_ollama_models() -> Tuple[List[str], List[Tuple[str, str]]]:

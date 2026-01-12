@@ -577,16 +577,31 @@ class RAGEngine:
         """Delete all chunks for a source from LanceDB.
         
         This should be called when a source is deleted to clean up vector embeddings.
+        Designed to be robust - returns True even if source was never indexed.
         """
         try:
-            table = self._get_table(notebook_id)
+            if self.db is None:
+                self.db = lancedb.connect(str(self.db_path))
+            
+            table_name = f"notebook_{notebook_id}"
+            
+            # Check if table even exists - if not, nothing to delete
+            if table_name not in self.db.table_names():
+                print(f"[RAG] No table exists for notebook {notebook_id}, nothing to delete")
+                return True
+            
+            table = self.db.open_table(table_name)
+            
             # LanceDB delete uses SQL-like filter syntax
+            # This is safe even if no matching rows exist
             table.delete(f"source_id = '{source_id}'")
             print(f"[RAG] Deleted all chunks for source {source_id} from LanceDB")
             return True
         except Exception as e:
             print(f"[RAG] Error deleting source {source_id} from LanceDB: {e}")
-            return False
+            # Return True anyway - the source might never have been indexed
+            # (e.g., empty content). Don't block source deletion.
+            return True
 
     async def _generate_document_summary(self, text: str, filename: str, source_type: str) -> Optional[str]:
         """Phase 3.1: Generate a summary of the document at ingestion time.

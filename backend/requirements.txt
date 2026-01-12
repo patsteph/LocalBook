@@ -55,7 +55,7 @@ rank-bm25>=0.2.2  # BM25 keyword search for hybrid retrieval
 # Reranking (FlashRank - ultra-fast, runs on CPU)
 # NOTE: flashrank requires onnxruntime which may not be available on all platforms
 # If installation fails, comment out and the app will use cross-encoder fallback
-flashrank>=0.2.0; platform_machine != "aarch64"  # Skip on ARM Linux where onnxruntime unavailable
+flashrank; platform_machine != "aarch64"  # Skip on ARM Linux where onnxruntime unavailable
 
 # Topic modeling (BERTopic - state-of-the-art topic discovery)
 bertopic>=0.16.0  # Includes HDBSCAN, UMAP, c-TF-IDF for automatic topic naming

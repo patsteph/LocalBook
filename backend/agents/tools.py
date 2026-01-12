@@ -242,18 +242,24 @@ async def capture_page_tool(
     word_count = len(content.split())
     reading_time = max(1, word_count // 200)
     
-    # Create source
+    # Create source with proper metadata
+    char_count = len(content)
     source_data = {
         "id": source_id,
         "notebook_id": notebook_id,
         "type": "web",
+        "format": "web",
         "url": url,
         "title": title,
         "filename": title,
         "content": content,
         "word_count": word_count,
+        "char_count": char_count,
+        "characters": char_count,
         "reading_time_minutes": reading_time,
         "meta_tags": meta_tags or {},
+        "status": "processing",
+        "chunks": 0,
         "created_at": datetime.now().isoformat()
     }
     
@@ -264,13 +270,20 @@ async def capture_page_tool(
     )
     
     # Index in RAG
-    await rag_engine.ingest_document(
+    rag_result = await rag_engine.ingest_document(
         notebook_id=notebook_id,
         source_id=source_id,
         text=content,
         filename=title,
         source_type="web"
     )
+    
+    # Update source with RAG results
+    chunks = rag_result.get("chunks", 0) if rag_result else 0
+    await source_store.update(notebook_id, source_id, {
+        "chunks": chunks,
+        "status": "completed"
+    })
     
     return {
         "success": True,
