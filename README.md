@@ -27,7 +27,7 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 ### Visual Studio Improvements
 | Feature | Description |
 |---------|-------------|
-| 🎨 **AI Visual Generator** | 3 diverse options to choose from with intelligent type selection |
+| 🎨 **AI Visual Generator** | Options to choose from with intelligent type selection |
 | 🔍 **Lightbox View** | Click diagrams to view full-size with export options |
 | 🌈 **Vibrant Theming** | Beautiful color palette for light and dark modes |
 | 📊 **Horizontal Steps** | New template for simple step sequences |

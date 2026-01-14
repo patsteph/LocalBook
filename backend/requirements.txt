@@ -47,6 +47,8 @@ beautifulsoup4>=4.12.0
 youtube-transcript-api>=0.6.0
 
 # Audio/Video transcription (requires ffmpeg: brew install ffmpeg)
+# Pin setuptools to avoid openai-whisper build failure (KeyError: '__version__')
+setuptools<81
 openai-whisper  # Version varies by platform, don't pin
 
 # System monitoring
