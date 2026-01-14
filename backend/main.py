@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, audio_llm
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, audio_llm, rag_health, health_portal
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from config import settings
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
@@ -102,6 +102,11 @@ async def lifespan(app: FastAPI):
     
     # Stop warmup task on shutdown
     await stop_warmup_task()
+    
+    # Save RAG metrics on shutdown
+    from services.rag_metrics import rag_metrics
+    rag_metrics.force_save()
+    
     print("👋 LocalBook API shutting down")
 
 app = FastAPI(
@@ -150,6 +155,8 @@ app.include_router(credentials.router, tags=["credentials"])
 app.include_router(agent.router, tags=["agent"])
 app.include_router(browser.router, tags=["browser"])
 app.include_router(audio_llm.router, tags=["audio-llm"])
+app.include_router(rag_health.router, tags=["rag-health"])
+app.include_router(health_portal.router, tags=["health-portal"])
 
 @app.get("/")
 async def root():

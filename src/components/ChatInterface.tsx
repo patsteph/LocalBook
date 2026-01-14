@@ -570,6 +570,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                       </div>
                     </div>
                   )}
+                  {/* Create Visual from this response */}
+                  {message.content && message.content.length > 100 && (
+                    <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
+                      <button
+                        onClick={() => {
+                          // Store content for visual creation and navigate to Studio
+                          sessionStorage.setItem('visualContent', message.content.substring(0, 2000));
+                          window.dispatchEvent(new CustomEvent('openStudioVisual', { detail: { content: message.content.substring(0, 2000) } }));
+                        }}
+                        className="text-xs px-2.5 py-1 bg-green-100 dark:bg-green-800/40 text-green-800 dark:text-green-200 rounded-full hover:bg-green-200 dark:hover:bg-green-700/50 transition-colors border border-green-300 dark:border-green-600 flex items-center gap-1"
+                      >
+                        🎨 Create Visual from this
+                      </button>
+                    </div>
+                  )}
                   {message.lowConfidenceQuery && (
                     <div className="mt-3 pt-2 border-t border-gray-200 dark:border-gray-700">
                       <div className="flex gap-2">

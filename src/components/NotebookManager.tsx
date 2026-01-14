@@ -265,10 +265,10 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
               <>
                 {selectedNotebook && (
                   <div
-                    className="p-3 rounded border-2 border-blue-600 bg-blue-50 dark:bg-blue-900/20 dark:border-blue-500"
+                    className="group p-3 rounded-lg border border-blue-500/30 bg-gradient-to-r from-blue-50 to-blue-100/50 dark:from-blue-900/30 dark:to-blue-800/20 dark:border-blue-500/40 hover:border-blue-500/50 transition-all"
                   >
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 flex-1">
+                      <div className="flex items-center gap-3 flex-1">
                         {/* Color indicator with picker */}
                         <div className="relative">
                           <button
@@ -276,7 +276,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                               e.stopPropagation();
                               setShowColorPicker(showColorPicker === selectedNotebook.id ? null : selectedNotebook.id);
                             }}
-                            className="w-5 h-5 rounded-full border-2 border-white dark:border-gray-600 shadow-sm hover:scale-110 transition-transform"
+                            className="w-4 h-4 rounded-full ring-2 ring-white dark:ring-gray-700 shadow-sm hover:scale-110 transition-transform"
                             style={{ backgroundColor: selectedNotebook.color || '#3B82F6' }}
                             title="Change color"
                           />
@@ -310,53 +310,51 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                           )}
                         </div>
                         <div>
-                          <div className="flex items-center gap-1">
-                            <h3 className="font-semibold text-blue-900 dark:text-blue-100">{selectedNotebook.title}</h3>
-                            {primaryNotebookId === selectedNotebook.id && (
-                              <span 
-                                className="text-purple-500 dark:text-purple-400" 
-                                title="Primary notebook"
-                              >
-                                ★
-                              </span>
-                            )}
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-medium text-gray-900 dark:text-white">{selectedNotebook.title}</h3>
                           </div>
-                          <p className="text-sm text-blue-700 dark:text-blue-300">
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
                             {selectedNotebook.source_count} sources
                           </p>
                         </div>
                       </div>
-                      <div className="flex gap-2">
-                        {primaryNotebookId !== selectedNotebook.id && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
+                      {/* Actions - visible on hover */}
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (primaryNotebookId !== selectedNotebook.id) {
                               handleSetPrimary(selectedNotebook.id);
-                            }}
-                            className="text-purple-500 dark:text-purple-400 hover:text-purple-600 dark:hover:text-purple-300 text-sm px-2 py-1"
-                            title="Set as primary notebook (appears first in lists)"
-                          >
-                            ☆ Set Primary
-                          </button>
-                        )}
+                            }
+                          }}
+                          className={`text-xs px-2 py-1 rounded transition-colors ${
+                            primaryNotebookId === selectedNotebook.id
+                              ? 'text-purple-500 cursor-default'
+                              : 'text-purple-500 hover:text-purple-600 hover:bg-purple-100 dark:hover:bg-purple-900/30 cursor-pointer'
+                          }`}
+                          title={primaryNotebookId === selectedNotebook.id ? "Primary notebook" : "Set as primary"}
+                        >
+                          {primaryNotebookId === selectedNotebook.id ? '★' : '☆'}
+                        </button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             handleExportClick(selectedNotebook.id);
                           }}
-                          className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 text-sm px-2 py-1"
-                          title="Export notebook"
+                          className="text-gray-500 hover:text-blue-600 text-xs px-2 py-1 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+                          title="Export"
                         >
-                          Export
+                          ↓
                         </button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             handleDeleteClick(selectedNotebook.id);
                           }}
-                          className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 text-sm px-2 py-1"
+                          className="text-gray-500 hover:text-red-600 text-xs px-2 py-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+                          title="Delete"
                         >
-                          Delete
+                          ✕
                         </button>
                       </div>
                     </div>
@@ -406,28 +404,29 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                                 <div>
                                   <div className="flex items-center gap-1">
                                     <h3 className="font-medium text-sm text-gray-900 dark:text-white">{notebook.title}</h3>
-                                    {primaryNotebookId === notebook.id && (
-                                      <span className="text-purple-500 text-xs">★</span>
-                                    )}
                                   </div>
                                   <p className="text-xs text-gray-500 dark:text-gray-400">
                                     {notebook.source_count} sources
                                   </p>
                                 </div>
                               </div>
-                              <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-                                {primaryNotebookId !== notebook.id && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
+                              <div className="flex gap-1 items-center" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (primaryNotebookId !== notebook.id) {
                                       handleSetPrimary(notebook.id);
-                                    }}
-                                    className="text-purple-400 dark:text-purple-500 hover:text-purple-600 dark:hover:text-purple-400 text-xs px-1"
-                                    title="Set as primary"
-                                  >
-                                    ☆
-                                  </button>
-                                )}
+                                    }
+                                  }}
+                                  className={`text-xs px-1 ${
+                                    primaryNotebookId === notebook.id
+                                      ? 'text-purple-500 cursor-default'
+                                      : 'text-purple-400 dark:text-purple-500 hover:text-purple-600 dark:hover:text-purple-400 cursor-pointer'
+                                  }`}
+                                  title={primaryNotebookId === notebook.id ? "Primary notebook" : "Set as primary"}
+                                >
+                                  {primaryNotebookId === notebook.id ? '★' : '☆'}
+                                </button>
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();

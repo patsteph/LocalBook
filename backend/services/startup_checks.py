@@ -20,6 +20,7 @@ REQUIRED_MODELS = [
     ("olmo-3:7b-instruct", "Main model (7B parameters, chat/synthesis)"),
     ("phi4-mini", "Fast response model for follow-ups"),
     ("snowflake-arctic-embed2", "Embedding model (1024 dimensions)"),
+    ("granite3.2-vision:2b", "Vision model for PDF image/chart extraction"),
 ]
 
 # Minimum Ollama version required for OLMO model support
@@ -319,7 +320,7 @@ async def reset_knowledge_graph_tables():
                 db.drop_table(table_name)
                 print(f"[Startup] Dropped KG table: {table_name}")
         
-        # Recreate concepts table with 768 dimensions
+        # Recreate concepts table with correct embedding dimensions
         schema = pa.schema([
             pa.field("id", pa.string()),
             pa.field("name", pa.string()),
@@ -381,7 +382,7 @@ async def reset_knowledge_graph_tables():
         ])
         db.create_table("contradictions", schema=schema)
         
-        print("[Startup] Knowledge graph tables recreated with 768-dim schema")
+        print(f"[Startup] Knowledge graph tables recreated with {EXPECTED_EMBEDDING_DIM}-dim schema")
         
         # Reset the singleton service state
         try:
@@ -442,7 +443,7 @@ async def reset_memory_store_tables():
             db.drop_table("archival_memories")
             print("[Startup] Dropped archival_memories table")
         
-        # Recreate with 768 dimensions
+        # Recreate with correct embedding dimensions
         schema = pa.schema([
             pa.field("id", pa.string()),
             pa.field("content", pa.string()),
@@ -459,7 +460,7 @@ async def reset_memory_store_tables():
             pa.field("vector", pa.list_(pa.float32(), EXPECTED_EMBEDDING_DIM)),
         ])
         db.create_table("archival_memories", schema=schema)
-        print("[Startup] Memory store table recreated with 768-dim schema")
+        print(f"[Startup] Memory store table recreated with {EXPECTED_EMBEDDING_DIM}-dim schema")
         
     except Exception as e:
         print(f"[Startup] Error resetting memory tables: {e}")

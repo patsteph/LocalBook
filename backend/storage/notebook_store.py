@@ -33,25 +33,21 @@ class NotebookStore:
         data = self._load_data()
         notebooks = list(data["notebooks"].values())
         
-        # Load sources to get accurate counts (cached by file mtime)
+        # Always read fresh source counts for UI accuracy
         sources_path = settings.data_dir / "sources.json"
         if sources_path.exists():
             try:
-                mtime = sources_path.stat().st_mtime
-                if self._sources_count_cache is None or self._sources_count_cache_mtime != mtime:
-                    with open(sources_path, 'r') as f:
-                        sources_data = json.load(f)
-                    counts: Dict[str, int] = {}
-                    for s in sources_data.get("sources", {}).values():
-                        nbid = s.get("notebook_id")
-                        if nbid:
-                            counts[nbid] = counts.get(nbid, 0) + 1
-                    self._sources_count_cache = counts
-                    self._sources_count_cache_mtime = mtime
+                with open(sources_path, 'r') as f:
+                    sources_data = json.load(f)
+                counts: Dict[str, int] = {}
+                for s in sources_data.get("sources", {}).values():
+                    nbid = s.get("notebook_id")
+                    if nbid:
+                        counts[nbid] = counts.get(nbid, 0) + 1
 
                 for notebook in notebooks:
                     notebook_id = notebook["id"]
-                    notebook["source_count"] = (self._sources_count_cache or {}).get(notebook_id, 0)
+                    notebook["source_count"] = counts.get(notebook_id, 0)
             except Exception:
                 pass
         

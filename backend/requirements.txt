@@ -49,6 +49,9 @@ youtube-transcript-api>=0.6.0
 # Audio/Video transcription (requires ffmpeg: brew install ffmpeg)
 openai-whisper  # Version varies by platform, don't pin
 
+# System monitoring
+psutil>=5.9.0  # For health portal system info
+
 # Hybrid search (BM25 + Vector)
 rank-bm25>=0.2.2  # BM25 keyword search for hybrid retrieval
 

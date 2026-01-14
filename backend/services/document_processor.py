@@ -94,7 +94,7 @@ class DocumentProcessor:
         file_type = self._get_file_type(filename, content)
 
         if file_type == "pdf":
-            return await self._extract_from_pdf(content)
+            return await self._extract_from_pdf(content, filename=filename)
         elif file_type == "docx":
             return await self._extract_from_docx(content)
         elif file_type == "doc":
@@ -133,10 +133,11 @@ class DocumentProcessor:
             # Universal fallback: try multiple extraction strategies
             return await self._extract_with_fallback(content, filename, file_type)
 
-    async def _extract_from_pdf(self, content: bytes) -> str:
+    async def _extract_from_pdf(self, content: bytes, source_id: str = "", filename: str = "") -> str:
         """Extract text from PDF with page markers and table handling.
         
         Uses PyMuPDF's table detection when available for better structured data extraction.
+        v1.0.5: Two-phase processing - text extracted immediately, images processed in background.
         """
         try:
             import fitz  # PyMuPDF
@@ -164,9 +165,63 @@ class DocumentProcessor:
                 
                 text_parts.append("\n".join(page_content))
             
-            return "\n\n".join(text_parts)
+            doc.close()
+            text = "\n\n".join(text_parts)
+            
+            # Note: Image extraction now happens in background via process_images_background()
+            # Text is returned immediately so user can start chatting
+            
+            return text
         except Exception as e:
             raise ValueError(f"Failed to process PDF: {str(e)}")
+    
+    async def process_images_background(
+        self,
+        content: bytes,
+        notebook_id: str,
+        source_id: str,
+        filename: str
+    ) -> None:
+        """Process images from PDF in background and append to existing index.
+        
+        This runs after text is indexed so user can start chatting immediately.
+        Image descriptions are appended to the source's indexed content.
+        """
+        try:
+            from services.multimodal_extractor import multimodal_extractor
+            
+            print(f"[DocProcessor] Starting background image processing for {filename}")
+            
+            # Extract and describe images with parallel processing
+            image_descriptions = await multimodal_extractor.extract_and_describe(
+                content, source_id, filename
+            )
+            
+            if not image_descriptions:
+                print(f"[DocProcessor] No images found in {filename}")
+                return
+            
+            # Format image descriptions for indexing
+            image_text = multimodal_extractor.format_for_indexing(image_descriptions)
+            
+            # Append image descriptions to the RAG index
+            await rag_engine.append_to_document(
+                notebook_id=notebook_id,
+                source_id=source_id,
+                text=image_text,
+                chunk_prefix="[IMAGE] "
+            )
+            
+            # Update source metadata to indicate images were processed
+            await source_store.update(notebook_id, source_id, {
+                "images_processed": len(image_descriptions),
+                "has_visual_content": True
+            })
+            
+            print(f"[DocProcessor] Background: Added {len(image_descriptions)} image descriptions for {filename}")
+            
+        except Exception as e:
+            print(f"[DocProcessor] Background image processing failed for {filename}: {e}")
     
     def _extract_pdf_table(self, table) -> str:
         """Extract table from PDF and convert to searchable text."""

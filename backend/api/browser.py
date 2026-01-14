@@ -2,9 +2,11 @@
 
 API for the LocalBook browser extension to capture pages,
 extract metadata, and sync with the main application.
+
+v1.0.5: Added multimodal image extraction for web captures.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
@@ -13,6 +15,7 @@ import uuid
 router = APIRouter(prefix="/browser", tags=["browser"])
 
 from version import APP_VERSION
+from api.constellation_ws import notify_source_updated
 
 
 class PageCaptureRequest(BaseModel):
@@ -106,12 +109,62 @@ async def list_notebooks_for_extension():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def process_web_images_background(
+    notebook_id: str,
+    source_id: str,
+    html_content: str,
+    base_url: str,
+    page_title: str
+):
+    """Background task to extract and describe images from web page.
+    
+    v1.0.5: Added for multimodal web capture - extracts images from HTML,
+    describes them with vision model, and appends to the indexed source.
+    """
+    try:
+        from services.multimodal_extractor import multimodal_extractor
+        from services.rag_engine import rag_engine
+        
+        print(f"[BROWSER] Starting background image extraction for {page_title}")
+        
+        # Extract and describe images
+        image_descriptions = await multimodal_extractor.extract_and_describe_html(
+            html_content=html_content,
+            source_id=source_id,
+            base_url=base_url,
+            page_title=page_title
+        )
+        
+        if not image_descriptions:
+            print(f"[BROWSER] No meaningful images found in {page_title}")
+            return
+        
+        # Format for indexing
+        image_text = multimodal_extractor.format_for_indexing(image_descriptions)
+        
+        if image_text:
+            # Append to existing document in RAG
+            result = await rag_engine.append_to_document(
+                notebook_id=notebook_id,
+                source_id=source_id,
+                text=image_text
+            )
+            print(f"[BROWSER] Added {result.get('chunks_added', 0)} image chunks to {page_title}")
+        
+    except Exception as e:
+        print(f"[BROWSER] Background image extraction failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 @router.post("/capture", response_model=CaptureResponse)
-async def capture_page(request: PageCaptureRequest):
+async def capture_page(request: PageCaptureRequest, background_tasks: BackgroundTasks):
     """Capture a web page to a notebook with summarization.
     
     Uses trafilatura for robust content extraction from HTML when available,
     matching the quality of the web research panel scraping.
+    
+    v1.0.5: Now triggers background image extraction for multimodal content.
     """
     try:
         from storage.source_store import source_store
@@ -180,6 +233,18 @@ async def capture_page(request: PageCaptureRequest):
         # Calculate reading time
         reading_time = metadata.get("reading_time_minutes", max(1, word_count // 200))
         
+        # Use metadata title if available and better than request title
+        # This fixes Medium and other sites where document.title is generic but og:title has the article title
+        best_title = request.title
+        metadata_title = metadata.get("title", "")
+        if metadata_title and len(metadata_title) > 5:
+            # Prefer metadata title if request title is too generic (site name only)
+            generic_titles = ["medium", "linkedin", "twitter", "facebook", "youtube", "substack", "reddit"]
+            request_lower = request.title.lower().strip() if request.title else ""
+            if not request.title or request_lower in generic_titles or len(request_lower) < 10:
+                best_title = metadata_title
+                print(f"[BROWSER] Using metadata title: '{best_title}' (request was: '{request.title}')")
+        
         # Summarize content and extract key concepts (non-critical, continue on failure)
         summary = ""
         key_concepts = []
@@ -200,8 +265,8 @@ async def capture_page(request: PageCaptureRequest):
             "type": "web",
             "format": "web",
             "url": request.url,
-            "title": request.title,
-            "filename": request.title,
+            "title": best_title,
+            "filename": best_title,
             "content": content,
             "summary": summary,
             "key_concepts": key_concepts,
@@ -218,7 +283,7 @@ async def capture_page(request: PageCaptureRequest):
         
         await source_store.create(
             notebook_id=request.notebook_id,
-            filename=request.title,
+            filename=best_title,
             metadata=source_data
         )
         
@@ -227,7 +292,7 @@ async def capture_page(request: PageCaptureRequest):
             notebook_id=request.notebook_id,
             source_id=source_id,
             text=content,
-            filename=request.title,
+            filename=best_title,
             source_type="web"
         )
         
@@ -238,11 +303,31 @@ async def capture_page(request: PageCaptureRequest):
             "status": "completed"
         })
         
-        print(f"[BROWSER] Successfully captured: {request.title} ({chunks} chunks)")
+        # Notify frontend via WebSocket to refresh notebook counts
+        await notify_source_updated({
+            "notebook_id": request.notebook_id,
+            "source_id": source_id,
+            "status": "completed",
+            "chunks": chunks
+        })
+        
+        # v1.0.5: Trigger background image extraction for multimodal content
+        if request.html_content and len(request.html_content) > 1000:
+            background_tasks.add_task(
+                process_web_images_background,
+                notebook_id=request.notebook_id,
+                source_id=source_id,
+                html_content=request.html_content,
+                base_url=request.url,
+                page_title=best_title
+            )
+            print(f"[BROWSER] Queued background image extraction for: {best_title}")
+        
+        print(f"[BROWSER] Successfully captured: {best_title} ({chunks} chunks)")
         return CaptureResponse(
             success=True,
             source_id=source_id,
-            title=request.title,
+            title=best_title,
             word_count=word_count,
             reading_time_minutes=reading_time,
             summary=summary[:500] if summary else None,
@@ -315,6 +400,14 @@ async def capture_selection(request: SelectionCaptureRequest):
         await source_store.update(request.notebook_id, source_id, {
             "chunks": chunks,
             "status": "completed"
+        })
+        
+        # Notify frontend via WebSocket to refresh notebook counts
+        await notify_source_updated({
+            "notebook_id": request.notebook_id,
+            "source_id": source_id,
+            "status": "completed",
+            "chunks": chunks
         })
         
         return CaptureResponse(
@@ -402,6 +495,14 @@ async def capture_youtube(request: YouTubeCaptureRequest):
         await source_store.update(request.notebook_id, source_id, {
             "chunks": chunks,
             "status": "completed"
+        })
+        
+        # Notify frontend via WebSocket to refresh notebook counts
+        await notify_source_updated({
+            "notebook_id": request.notebook_id,
+            "source_id": source_id,
+            "status": "completed",
+            "chunks": chunks
         })
         
         return CaptureResponse(

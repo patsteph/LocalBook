@@ -11,6 +11,7 @@ Uses Ollama as the backend with automatic retry on validation failures.
 Uses professional-grade templates from output_templates.py for quality.
 """
 import asyncio
+import re
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 import httpx
@@ -217,7 +218,7 @@ Example syntax:
 ```
 """)
         
-        system_prompt = f"""You are a professional visualization expert creating publication-quality diagrams.
+        system_prompt = f"""You are a professional visualization expert creating BEAUTIFUL, publication-quality diagrams like Napkin.ai.
 
 Output a valid JSON object with this structure:
 {{
@@ -235,16 +236,158 @@ Output a valid JSON object with this structure:
 DIAGRAM GUIDELINES:
 {chr(10).join(diagram_guidelines) if diagram_guidelines else "- Mindmap, Flowchart, Timeline diagram types supported"}
 
+⚠️ CRITICAL - DATA INTEGRITY RULES:
+1. NEVER invent, fabricate, or add data that is NOT in the provided content
+2. Do NOT add fake dates, years, percentages, or numbers unless explicitly provided
+3. Do NOT add extra categories, stages, or branches beyond what is described
+4. Use ONLY the exact labels, names, and descriptions from the content
+5. If content says "5 stages" or "6 processes" - create EXACTLY that many items
+6. NEVER use placeholder labels like "Key Process 1", "Item A", "Stage 1" - use ACTUAL content words
+7. Keep diagrams SIMPLE: 3-8 nodes maximum for clarity
+
+⚠️ CRITICAL - LAYOUT INSTRUCTIONS:
+- If user requests "side by side columns" or "horizontal" - use flowchart LR (left to right)
+- If user requests "vertical" - use flowchart TB (top to bottom)
+- For N items side-by-side: flowchart LR with A --> B --> C --> D --> E pattern
+
+⚠️ CRITICAL - DIAGRAM TYPE SELECTION:
+- quadrantChart: For 2x2 matrices, comparisons on 2 dimensions, priority grids - NEVER use flowchart for these!
+- flowchart: For processes, steps, sequences, progressions
+- mindmap: For hierarchies, categories, concept overviews
+- timeline: For chronological events
+- pie: For proportions/percentages
+
+📊 QUADRANTCHART SYNTAX (for 2x2 matrices - MUST USE THIS FORMAT):
+"code": "quadrantChart\\n    title Matrix Title\\n    x-axis Low Dimension1 --> High Dimension1\\n    y-axis Low Dimension2 --> High Dimension2\\n    quadrant-1 Top Right Label\\n    quadrant-2 Top Left Label\\n    quadrant-3 Bottom Left Label\\n    quadrant-4 Bottom Right Label\\n    Item A: [0.8, 0.9]\\n    Item B: [0.3, 0.7]\\n    Item C: [0.6, 0.2]\\n    Item D: [0.2, 0.4]"
+- Coordinates are [x, y] from 0.0 to 1.0
+- quadrant-1 is TOP RIGHT (high x, high y)
+- quadrant-2 is TOP LEFT (low x, high y)
+- quadrant-3 is BOTTOM LEFT (low x, low y)
+- quadrant-4 is BOTTOM RIGHT (high x, low y)
+
+🎨 NAPKIN.AI-STYLE VISUAL DESIGN (REQUIRED):
+- ALWAYS add colorful styling to EVERY node using distinct, vibrant colors
+- Use this color palette for variety:
+  * Blue: fill:#3b82f6,color:#fff
+  * Green: fill:#22c55e,color:#fff  
+  * Orange: fill:#f59e0b,color:#000
+  * Purple: fill:#8b5cf6,color:#fff
+  * Pink: fill:#ec4899,color:#fff
+  * Teal: fill:#14b8a6,color:#fff
+  * Red: fill:#ef4444,color:#fff
+  * Indigo: fill:#6366f1,color:#fff
+- Each node should have a DIFFERENT color for visual appeal
+- Use rounded corners with border-radius where possible
+- Keep labels SHORT (2-4 words max) but descriptive
+
 QUALITY REQUIREMENTS:
 - Diagrams must be readable at a glance (not overcrowded)
-- Use clear, concise labels (2-5 words per node)
-- Capture the essential structure, not every detail
-- Ensure Mermaid syntax is valid and will render correctly
-- Key points should be insights, not just facts"""
+- Use clear, concise labels (2-4 words per node)
+- Capture ONLY the structure described, nothing more
+- Make it VISUALLY APPEALING - this is crucial
 
+CRITICAL CODE FORMAT:
+- The "code" field must contain ONLY raw Mermaid code - NO markdown fences
+- Each statement MUST be on its own line with proper newlines (\\n)
+- EXAMPLE for 5 horizontal stages (COPY THIS PATTERN):
+  "code": "flowchart LR\\n    A[AI Assistant] --> B[Co-Pilot]\\n    B --> C[Modular Tasks]\\n    C --> D[Autonomous Systems]\\n    D --> E[Full Replacement]\\n    style A fill:#3b82f6,color:#fff,stroke:#2563eb,stroke-width:2px\\n    style B fill:#22c55e,color:#fff,stroke:#16a34a,stroke-width:2px\\n    style C fill:#f59e0b,color:#000,stroke:#d97706,stroke-width:2px\\n    style D fill:#8b5cf6,color:#fff,stroke:#7c3aed,stroke-width:2px\\n    style E fill:#ec4899,color:#fff,stroke:#db2777,stroke-width:2px"
+- NEVER put the entire diagram on a single line
+- ALWAYS include style statements for EVERY node"""
+
+        def clean_mermaid_code(code: str) -> str:
+            """Clean mermaid code from LLM output."""
+            if not code:
+                return code
+            # Remove markdown fences
+            code = code.strip()
+            code = re.sub(r'^```mermaid\s*', '', code, flags=re.IGNORECASE)
+            code = re.sub(r'^```\s*', '', code)
+            code = re.sub(r'```\s*$', '', code)
+            
+            # Ensure proper newlines if code is single-line
+            if '\n' not in code and len(code) > 50:
+                # Add newlines after diagram declarations
+                code = re.sub(r'(flowchart\s+(?:LR|RL|TB|TD|BT))\s+', r'\1\n    ', code, flags=re.IGNORECASE)
+                code = re.sub(r'(mindmap)\s+', r'\1\n    ', code, flags=re.IGNORECASE)
+                code = re.sub(r'(timeline)\s+', r'\1\n    ', code, flags=re.IGNORECASE)
+                code = re.sub(r'(quadrantChart)\s+', r'\1\n    ', code, flags=re.IGNORECASE)
+                # Add newlines before style statements
+                code = re.sub(r'\s+(style\s+)', r'\n    \1', code, flags=re.IGNORECASE)
+                # Add newlines for quadrantChart elements
+                code = re.sub(r'\s+(x-axis\s+)', r'\n    \1', code, flags=re.IGNORECASE)
+                code = re.sub(r'\s+(y-axis\s+)', r'\n    \1', code, flags=re.IGNORECASE)
+                code = re.sub(r'\s+(quadrant-\d\s+)', r'\n    \1', code, flags=re.IGNORECASE)
+            
+            # Fix malformed style statements (style with multiple IDs like "style 3,4,6")
+            # These are invalid - remove them entirely as they cause parse errors
+            code = re.sub(r'^\s*style\s+[\d,\s]+.*$', '', code, flags=re.MULTILINE | re.IGNORECASE)
+            
+            # Fix style statements with invalid characters in node IDs
+            # Valid: style A fill:#fff   Invalid: style 3,4 fill:#fff
+            code = re.sub(r'^\s*style\s+[^A-Za-z_].*$', '', code, flags=re.MULTILINE)
+            
+            # Remove empty lines that may have been created
+            code = re.sub(r'\n\s*\n', '\n', code)
+            
+            return code.strip()
+        
+        async def validate_and_repair_mermaid(code: str, diagram_type: str) -> str:
+            """Validate Mermaid code and attempt repair if invalid.
+            Based on Microsoft GenAIScript's auto-repair pattern.
+            """
+            # Basic syntax validation
+            errors = []
+            lines = code.split('\n')
+            
+            # Check for common issues
+            if not lines or not lines[0].strip():
+                errors.append("Empty diagram code")
+            
+            first_line = lines[0].strip().lower() if lines else ""
+            valid_starts = ['flowchart', 'mindmap', 'timeline', 'pie', 'quadrantchart', 'graph']
+            if not any(first_line.startswith(s) for s in valid_starts):
+                errors.append(f"Invalid diagram start: '{first_line[:20]}...'")
+            
+            # Check for placeholder labels that should be replaced
+            placeholder_patterns = ['Key Process', 'Item A', 'Item B', 'Stage 1', 'Step 1', 'Node 1']
+            for pattern in placeholder_patterns:
+                if pattern in code:
+                    errors.append(f"Contains placeholder label: '{pattern}'")
+            
+            if errors:
+                # Attempt repair by asking LLM to fix
+                repair_prompt = f"""Fix these errors in the Mermaid diagram:
+Errors: {', '.join(errors)}
+
+Original code:
+{code}
+
+Return ONLY the fixed Mermaid code, no explanation."""
+                try:
+                    repair_result = await self._call_ollama_json(
+                        "You fix Mermaid diagram syntax errors. Return JSON: {\"fixed_code\": \"...\"}",
+                        repair_prompt
+                    )
+                    if repair_result.get("fixed_code"):
+                        return clean_mermaid_code(repair_result["fixed_code"])
+                except:
+                    pass  # Return original if repair fails
+            
+            return code
+        
         for attempt in range(self.max_retries):
             try:
                 result = await self._call_ollama_json(system_prompt, f"Content:\n{content[:8000]}")
+                # Clean and validate the diagram codes
+                if result.get("diagrams"):
+                    for diagram in result["diagrams"]:
+                        if "code" in diagram:
+                            diagram["code"] = clean_mermaid_code(diagram["code"])
+                            # Validate and repair if needed
+                            diagram["code"] = await validate_and_repair_mermaid(
+                                diagram["code"], 
+                                diagram.get("diagram_type", "flowchart")
+                            )
                 return VisualSummary(**result)
             except Exception as e:
                 if attempt == self.max_retries - 1:

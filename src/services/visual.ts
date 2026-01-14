@@ -83,4 +83,20 @@ export const visualService = {
     if (!response.ok) throw new Error('Failed to compare documents');
     return response.json();
   },
+
+  async generateSmart(
+    notebookId: string,
+    topic: string
+  ): Promise<VisualSummary> {
+    const response = await fetch(`${API_BASE}/visual/smart`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        notebook_id: notebookId,
+        topic: topic,
+      }),
+    });
+    if (!response.ok) throw new Error('Failed to generate smart visual');
+    return response.json();
+  },
 };

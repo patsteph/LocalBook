@@ -60,6 +60,19 @@ async def upload_source(
                     file.filename
                 )
                 print(f"[UPLOAD] Queued timeline extraction for {file.filename}")
+            
+            # v1.0.5: Background image processing for PDFs/PPTs
+            # Text is indexed immediately, images processed in parallel in background
+            file_ext = file.filename.lower().split('.')[-1] if '.' in file.filename else ''
+            if file_ext in ['pdf', 'pptx']:
+                background_tasks.add_task(
+                    document_processor.process_images_background,
+                    content,
+                    notebook_id,
+                    result["source_id"],
+                    file.filename
+                )
+                print(f"[UPLOAD] Queued background image processing for {file.filename}")
         
         return result
     except Exception as e:

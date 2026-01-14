@@ -2,7 +2,7 @@
 
 **Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/patsteph/LocalBook/releases)
+[![Version](https://img.shields.io/badge/version-1.0.3-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -22,9 +22,30 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v1.0.0
+## 🎉 What's New in v1.0.5
 
-This is our first stable release! Here are the highlights:
+### Visual Studio Improvements
+| Feature | Description |
+|---------|-------------|
+| 🎨 **AI Visual Generator** | 3 diverse options to choose from with intelligent type selection |
+| 🔍 **Lightbox View** | Click diagrams to view full-size with export options |
+| 🌈 **Vibrant Theming** | Beautiful color palette for light and dark modes |
+| 📊 **Horizontal Steps** | New template for simple step sequences |
+
+### Performance & Reliability
+| Feature | Description |
+|---------|-------------|
+| ⚡ **Mermaid Prewarm** | Instant diagram rendering (no cold start) |
+| 💾 **Metrics Persistence** | Query stats survive restarts |
+| 🔧 **Code Auto-fix** | Malformed LLM output automatically corrected |
+
+See [CHANGELOG.md](CHANGELOG.md) for full release history.
+
+---
+
+## v1.0.0 Highlights
+
+The foundation release includes:
 
 ### Browser Extension: LocalBook Companion
 | Feature | Description |
@@ -86,7 +107,7 @@ brew install ollama ffmpeg tesseract python@3.11 node
 
 ### Option 1: Download Release (Recommended)
 
-1. Download `LocalBook-v1.0.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-v1.0.3.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip and drag `LocalBook.app` to `/Applications`
 3. Launch LocalBook — it will download required AI models on first run
 

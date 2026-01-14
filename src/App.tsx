@@ -11,12 +11,14 @@ import { SiteSearch } from './components/SiteSearch';
 import { Settings } from './components/Settings';
 import { LLMSelector } from './components/LLMSelector';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { Timeline } from './components/Timeline';
 import { Constellation3D } from './components/Constellation3D';
 import { ThemesPanel } from './components/ThemesPanel';
 import { ExplorationPanel } from './components/ExplorationPanel';
 import { ToastContainer, ToastMessage } from './components/shared/Toast';
 import { API_BASE_URL } from './services/api';
+import { prewarmMermaid } from './components/shared/MermaidRenderer';
 
 function App() {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
@@ -46,6 +48,8 @@ function App() {
   const [chatPrefillQuery, setChatPrefillQuery] = useState<string>('');
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [visualContent, setVisualContent] = useState<string>('');
+  const [studioTab, setStudioTab] = useState<'documents' | 'audio' | 'quiz' | 'visual' | 'writing'>('documents');
 
   // Toast management
   const addToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
@@ -107,6 +111,20 @@ function App() {
     localStorage.setItem('llmProvider', selectedLLMProvider);
   }, [selectedLLMProvider]);
 
+  // Listen for "Create Visual from this" events from ChatInterface
+  useEffect(() => {
+    const handleOpenStudioVisual = (event: CustomEvent<{ content: string }>) => {
+      setVisualContent(event.detail.content);
+      setStudioTab('visual');
+      setRightSidebarCollapsed(false); // Ensure Studio is visible
+    };
+
+    window.addEventListener('openStudioVisual', handleOpenStudioVisual as EventListener);
+    return () => {
+      window.removeEventListener('openStudioVisual', handleOpenStudioVisual as EventListener);
+    };
+  }, []);
+
   const toggleDarkMode = () => {
     setDarkMode(!darkMode);
     if (!darkMode) {
@@ -157,6 +175,8 @@ function App() {
         // Only mark as ready if BOTH Tauri says ready AND backend startup tasks are complete
         if (ready && startupComplete) {
           setBackendReady(true);
+          // Prewarm mermaid renderer in background
+          prewarmMermaid();
         } else {
           // Keep checking every second
           setTimeout(checkBackend, 1000);
@@ -242,6 +262,16 @@ function App() {
           >
             <svg className="w-6 h-6 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+          </button>
+          {/* System Health button - opens in browser */}
+          <button
+            onClick={() => openUrl(`${API_BASE_URL}/health/portal`)}
+            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            title="System Health"
+          >
+            <svg className="w-6 h-6 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
             </svg>
           </button>
           {/* Settings button */}
@@ -502,7 +532,12 @@ function App() {
           </div>
           {!rightSidebarCollapsed ? (
             <div className="flex-1 overflow-y-auto">
-              <Studio notebookId={selectedNotebookId} />
+              <Studio 
+                notebookId={selectedNotebookId} 
+                initialVisualContent={visualContent}
+                initialTab={studioTab}
+                onTabChange={setStudioTab}
+              />
             </div>
           ) : (
             <div className="flex flex-col items-center gap-4 mt-4">
@@ -569,13 +604,19 @@ function App() {
               {webSearchTab === 'web' ? (
                 <WebSearchResults
                   notebookId={selectedNotebookId}
-                  onSourceAdded={() => setRefreshSources(prev => prev + 1)}
+                  onSourceAdded={() => {
+                    setRefreshSources(prev => prev + 1);
+                    setRefreshNotebooks(prev => prev + 1);
+                  }}
                   initialQuery={webSearchInitialQuery}
                 />
               ) : (
                 <SiteSearch
                   notebookId={selectedNotebookId}
-                  onSourceAdded={() => setRefreshSources(prev => prev + 1)}
+                  onSourceAdded={() => {
+                    setRefreshSources(prev => prev + 1);
+                    setRefreshNotebooks(prev => prev + 1);
+                  }}
                   initialQuery={webSearchInitialQuery}
                 />
               )}

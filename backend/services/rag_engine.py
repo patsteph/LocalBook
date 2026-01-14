@@ -25,6 +25,16 @@ from models.memory import MemoryExtractionRequest
 from services.memory_agent import memory_agent
 from storage.source_store import source_store
 
+# v1.0.3: RAG metrics and caching for performance monitoring
+from services.rag_metrics import rag_metrics, RAGStage, SearchStrategy
+from services.rag_cache import embedding_cache, answer_cache, context_compressor
+from services.web_fallback import web_fallback
+from services.query_decomposer import query_decomposer
+from services.entity_extractor import entity_extractor
+from services.source_router import source_router
+from services.entity_graph import entity_graph
+from services.community_detection import community_detector
+
 # BM25 for hybrid search
 try:
     from rank_bm25 import BM25Okapi
@@ -69,11 +79,15 @@ class RAGEngine:
         # Prefer FlashRank (ultra-fast, no torch)
         if HAS_FLASHRANK and settings.reranker_type == "flashrank":
             if self.flashrank_reranker is None:
+                # Use persistent cache dir (not /tmp which gets cleared on reboot)
+                cache_dir = settings.data_dir / "models" / "flashrank"
+                cache_dir.mkdir(parents=True, exist_ok=True)
                 self.flashrank_reranker = FlashRanker(
                     model_name=settings.reranker_model,
+                    cache_dir=str(cache_dir),
                     max_length=256  # Optimized for typical chunk sizes
                 )
-                print(f"[RAG] Loaded FlashRank reranker: {settings.reranker_model}")
+                print(f"[RAG] Loaded FlashRank reranker: {settings.reranker_model} (cache: {cache_dir})")
             return self.flashrank_reranker
         
         # Fallback to cross-encoder (slower but works without FlashRank)
@@ -566,12 +580,111 @@ class RAGEngine:
         ))
         print(f"[RAG] Queued topic modeling for {filename} (background)")
 
+        # v1.0.3: Entity extraction + relationship mapping in background
+        async def _extract_entities_and_relationships_background():
+            try:
+                entities = await entity_extractor.extract_from_text(
+                    text=text[:8000],  # Limit for speed
+                    notebook_id=notebook_id,
+                    source_id=source_id,
+                    use_llm=len(text) > 500  # Only use LLM for substantial docs
+                )
+                if entities:
+                    print(f"[RAG] Extracted {len(entities)} entities from {filename}")
+                    
+                    # v1.0.4: Extract relationships between entities (Phase 2 Graph RAG)
+                    if len(entities) >= 2:
+                        entity_dicts = [{"name": e.name, "type": e.type} for e in entities]
+                        relationships = await entity_graph.extract_relationships(
+                            text=text[:4000],
+                            notebook_id=notebook_id,
+                            source_id=source_id,
+                            entities=entity_dicts
+                        )
+                        if relationships:
+                            print(f"[RAG] Extracted {len(relationships)} relationships from {filename}")
+            except Exception as e:
+                print(f"[RAG] Entity/relationship extraction failed (non-fatal): {e}")
+        
+        asyncio.create_task(_extract_entities_and_relationships_background())
+
         return {
             "source_id": source_id,
             "chunks": len(chunks),
             "characters": len(text),
             "summary": summary
         }
+
+    async def append_to_document(
+        self,
+        notebook_id: str,
+        source_id: str,
+        text: str,
+        chunk_prefix: str = ""
+    ) -> Dict:
+        """Append additional content to an existing source's index.
+        
+        Used for background processing (e.g., image descriptions) that should
+        be added to an already-indexed document without re-processing everything.
+        
+        Args:
+            notebook_id: The notebook containing the source
+            source_id: The source to append to
+            text: Additional text to chunk and index
+            chunk_prefix: Optional prefix for chunk text (e.g., "[IMAGE] ")
+        
+        Returns: Dict with chunks added count
+        """
+        if not text or not text.strip():
+            return {"chunks_added": 0}
+        
+        # Chunk the new text
+        chunks = self._chunk_text_smart(text, "supplementary", "background")
+        
+        if not chunks:
+            return {"chunks_added": 0}
+        
+        # Add prefix to chunks if specified
+        if chunk_prefix:
+            chunks = [f"{chunk_prefix}{chunk}" for chunk in chunks]
+        
+        # Generate embeddings
+        embeddings = self.encode(chunks)
+        
+        # Get existing table
+        table = self._get_table(notebook_id)
+        
+        # Get existing chunk count for this source to continue numbering
+        try:
+            existing = table.search([0.0] * self.embedding_dim).where(
+                f"source_id = '{source_id}'"
+            ).limit(1000).to_list()
+            max_chunk_index = max((r.get("chunk_index", 0) for r in existing), default=0)
+        except Exception:
+            max_chunk_index = 0
+        
+        # Check if table supports parent_text
+        has_parent_text = self._table_has_parent_text(table)
+        
+        # Prepare data for insertion
+        data = []
+        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            row = {
+                "vector": embedding.tolist(),
+                "text": chunk,
+                "source_id": source_id,
+                "chunk_index": max_chunk_index + i + 1,
+                "filename": "background_content",
+                "source_type": "supplementary"
+            }
+            if has_parent_text:
+                row["parent_text"] = ""
+            data.append(row)
+        
+        table.add(data)
+        
+        print(f"[RAG] Appended {len(chunks)} chunks to source {source_id}")
+        return {"chunks_added": len(chunks)}
 
     async def delete_source(self, notebook_id: str, source_id: str) -> bool:
         """Delete all chunks for a source from LanceDB.
@@ -596,6 +709,10 @@ class RAGEngine:
             # This is safe even if no matching rows exist
             table.delete(f"source_id = '{source_id}'")
             print(f"[RAG] Deleted all chunks for source {source_id} from LanceDB")
+            
+            # v1.0.3: Clean up entities for this source
+            entity_extractor.delete_source_entities(notebook_id, source_id)
+            
             return True
         except Exception as e:
             print(f"[RAG] Error deleting source {source_id} from LanceDB: {e}")
@@ -721,25 +838,45 @@ Summary:"""
     ) -> Dict:
         """Query the RAG system (non-streaming)"""
         total_start = time.time()
+        query_id = str(uuid.uuid4())
+        query_type = self._classify_query(question)
+        
+        # v1.0.3: Start metrics tracking
+        rag_metrics.start_query(query_id, notebook_id, question, query_type)
+        
         print(f"\n{'='*60}")
         print(f"[RAG] Starting query: '{question[:50]}...'")
         print(f"{'='*60}")
 
         # Step 1: PARALLEL query analysis + embedding (0ms added latency)
+        rag_metrics.start_stage(RAGStage.QUERY_ANALYSIS)
         step_start = time.time()
         
         # Check query pattern cache first
         cache_key = question.lower().strip()[:100]
         cached_analysis = self._query_pattern_cache.get(cache_key)
+        query_cache_hit = cached_analysis is not None
+        rag_metrics.record_cache_hit("query", query_cache_hit)
         
         if cached_analysis:
             query_analysis = cached_analysis
         else:
             analysis_task = asyncio.create_task(self._analyze_query_with_llm(question))
         
-        # Generate embedding in parallel
+        # Generate embedding with cache
+        rag_metrics.start_stage(RAGStage.EMBEDDING)
         basic_expanded = self._expand_query(question)
-        query_embedding = self.encode(basic_expanded)[0].tolist()
+        
+        # v1.0.3: Use embedding cache
+        cached_emb = embedding_cache.get(basic_expanded)
+        if cached_emb is not None:
+            query_embedding = cached_emb
+            rag_metrics.record_cache_hit("embedding", True)
+        else:
+            query_embedding = self.encode(basic_expanded)[0].tolist()
+            embedding_cache.put(basic_expanded, query_embedding)
+            rag_metrics.record_cache_hit("embedding", False)
+        rag_metrics.end_stage(RAGStage.EMBEDDING)
         
         if not cached_analysis:
             query_analysis = await analysis_task
@@ -748,8 +885,27 @@ Summary:"""
                 keys = list(self._query_pattern_cache.keys())
                 for k in keys[:20]:
                     del self._query_pattern_cache[k]
+        rag_metrics.end_stage(RAGStage.QUERY_ANALYSIS)
         
         print(f"[RAG] Step 1 - Parallel Analysis+Embedding: {time.time() - step_start:.2f}s")
+        
+        # v1.0.3: Check answer cache EARLY (before expensive search)
+        cached_answer = await answer_cache.get(question, notebook_id, query_embedding)
+        if cached_answer is not None:
+            rag_metrics.record_cache_hit("answer", True)
+            total_time = (time.time() - total_start) * 1000
+            await rag_metrics.end_query(total_time)
+            print(f"[RAG] ⚡ Answer cache hit ({cached_answer.get('cache_type', 'unknown')}) - {total_time:.0f}ms")
+            return {
+                "answer": cached_answer["answer"],
+                "citations": cached_answer["citations"],
+                "sources": list(set(c.get("source_id", "") for c in cached_answer["citations"])),
+                "web_sources": None,
+                "follow_up_questions": [],
+                "low_confidence": False,
+                "cache_hit": True
+            }
+        rag_metrics.record_cache_hit("answer", False)
         
         # Build optimized search query
         expanded_query = self._build_search_query(query_analysis, question)
@@ -767,15 +923,54 @@ Summary:"""
         except Exception:
             pass
 
+        # Step 2b: Query decomposition for complex queries
+        is_complex, complexity_type = query_decomposer.is_complex_query(question)
+        sub_questions = None
+        if is_complex:
+            sub_questions = await query_decomposer.decompose(question)
+            if len(sub_questions) > 1:
+                print(f"[RAG] Query decomposed into {len(sub_questions)} sub-questions ({complexity_type})")
+
         # Step 3: Adaptive search with multiple strategies
+        rag_metrics.start_stage(RAGStage.VECTOR_SEARCH)
         step_start = time.time()
         overcollect_k = settings.retrieval_overcollect if self._use_reranker else top_k
+        
         try:
-            results = await self._adaptive_search(
-                table, question, query_embedding, query_analysis, overcollect_k
-            )
+            if sub_questions and len(sub_questions) > 1:
+                # Search for each sub-question and merge results
+                all_results = []
+                seen_ids = set()
+                per_query_k = max(2, overcollect_k // len(sub_questions))
+                
+                for sub_q in sub_questions:
+                    sub_embedding = embedding_cache.get(sub_q)
+                    if sub_embedding is None:
+                        sub_embedding = self.encode(sub_q)[0].tolist()
+                        embedding_cache.put(sub_q, sub_embedding)
+                    
+                    sub_results = await self._adaptive_search(
+                        table, sub_q, sub_embedding, query_analysis, per_query_k
+                    )
+                    
+                    for r in sub_results:
+                        r_id = r.get('chunk_id', hash(r.get('text', '')[:100]))
+                        if r_id not in seen_ids:
+                            all_results.append(r)
+                            seen_ids.add(r_id)
+                
+                results = all_results
+                print(f"[RAG] Merged {len(results)} results from {len(sub_questions)} sub-queries")
+            else:
+                results = await self._adaptive_search(
+                    table, question, query_embedding, query_analysis, overcollect_k
+                )
+            
+            rag_metrics.end_stage(RAGStage.VECTOR_SEARCH)
             print(f"[RAG] Step 2 - Adaptive Search ({len(results)} results): {time.time() - step_start:.2f}s")
         except Exception as e:
+            rag_metrics.record_error(str(e), RAGStage.VECTOR_SEARCH)
+            await rag_metrics.end_query((time.time() - total_start) * 1000)
             print(f"Search error: {e}")
             return {
                 "answer": "I encountered an error searching your documents.",
@@ -789,30 +984,98 @@ Summary:"""
 
         # Step 3b: Rerank
         if self._use_reranker and len(results) > top_k:
+            rag_metrics.start_stage(RAGStage.RERANKING)
             step_start = time.time()
             results = self.rerank(question, results, top_k=top_k + 1)
+            rag_metrics.end_stage(RAGStage.RERANKING)
             print(f"[RAG] Step 3 - Reranking ({len(results)} results): {time.time() - step_start:.2f}s")
 
+        # Step 3c: Entity-aware boost
+        # Boost results that contain entities mentioned in the query
+        results = entity_extractor.boost_results_by_entity(notebook_id, question, results)
+        
+        # Get entity context for LLM prompt enhancement
+        entity_context = entity_extractor.get_entity_context_for_query(notebook_id, question)
+
+        # Step 3d: Source-type routing boost
+        # Boost tabular sources for numeric queries, text sources for explanatory queries
+        routing_decision = source_router.route(question)
+        results = source_router.apply_routing_boost(results, routing_decision)
+
         # Step 4: Build citations and context (shared helper)
+        rag_metrics.start_stage(RAGStage.CONTEXT_BUILD)
         step_start = time.time()
         citations, sources, context, low_confidence = await self._build_citations_and_context(results, "[RAG]")
         num_citations = len(citations)
+        
+        # v1.0.3: Record retrieval metrics
+        confidences = [c.get("confidence", 0) for c in citations]
+        max_conf = max(confidences) if confidences else 0
+        avg_conf = sum(confidences) / len(confidences) if confidences else 0
+        rag_metrics.record_retrieval(
+            chunks_retrieved=len(results),
+            chunks_after_rerank=len(results),
+            citations_used=num_citations,
+            sources_used=len(sources),
+            max_confidence=max_conf,
+            avg_confidence=avg_conf,
+            low_confidence=low_confidence
+        )
+        
+        # v1.0.3: Build context from chunks (NO compression - let LLM see full data)
+        # Previous compression was causing data loss on specific queries
+        chunk_texts = [c.get("text", "") for c in citations]
+        context = "\n\n".join(f"[{i+1}] {text}" for i, text in enumerate(chunk_texts))
+        
+        # v1.0.3: Append (not prepend) supplementary context to avoid overshadowing source data
+        supplementary = []
+        
+        if entity_context:
+            supplementary.append(f"Entity background: {entity_context[:500]}")
+        
+        # v1.0.4: Add graph relationship context for connected entity queries
+        found_entities = entity_extractor.find_entities_in_query(notebook_id, question)
+        if found_entities:
+            entity_names = [e.name for e in found_entities]
+            graph_context = entity_graph.get_context_for_query(notebook_id, entity_names)
+            if graph_context:
+                supplementary.append(f"Related entities: {graph_context[:500]}")
+            
+            # v1.0.5: Add community context for holistic queries (Phase 3)
+            if community_detector.is_holistic_query(question):
+                community_context = community_detector.get_community_context(notebook_id, entity_names)
+                if community_context:
+                    supplementary.append(f"Topic overview: {community_context[:500]}")
+        
+        # Append supplementary at the end so source data comes first
+        if supplementary:
+            context += "\n\n---\nAdditional context:\n" + "\n".join(supplementary)
+            print(f"[RAG] Added {len(supplementary)} supplementary context sections")
+        
+        rag_metrics.end_stage(RAGStage.CONTEXT_BUILD)
         print(f"[RAG] Step 4 - Build context: {time.time() - step_start:.2f}s")
 
         # Step 5: Generate answer
+        rag_metrics.start_stage(RAGStage.LLM_GENERATION)
         step_start = time.time()
         conversation_id = str(uuid.uuid4())
-        query_type = self._classify_query(question)
         answer_result = await self._generate_answer(question, context, num_citations, llm_provider, notebook_id, conversation_id)
         answer = answer_result["answer"]
         memory_used = answer_result.get("memory_used", [])
         memory_context_summary = answer_result.get("memory_context_summary")
+        rag_metrics.end_stage(RAGStage.LLM_GENERATION)
         print(f"[RAG] Step 5 - LLM answer: {time.time() - step_start:.2f}s")
         
         # Step 5b: Quality check + corrective retrieval if needed
+        rag_metrics.start_stage(RAGStage.QUALITY_CHECK)
         quality_ok, quality_reason = self._check_answer_quality(question, answer, query_type)
+        rag_metrics.record_quality_check(quality_ok, quality_reason)
+        rag_metrics.end_stage(RAGStage.QUALITY_CHECK)
+        
         if not quality_ok:
             print(f"[RAG] Quality check failed: {quality_reason}")
+            rag_metrics.start_stage(RAGStage.CORRECTIVE_RETRIEVAL)
+            rag_metrics.record_corrective_retrieval(True)
             step_start = time.time()
             
             # Corrective retrieval with query variants
@@ -837,12 +1100,51 @@ Summary:"""
                 )
                 answer = answer_result["answer"]
                 print(f"[RAG] Step 5b - Corrective retrieval + re-answer: {time.time() - step_start:.2f}s")
+            rag_metrics.end_stage(RAGStage.CORRECTIVE_RETRIEVAL)
         else:
+            rag_metrics.record_corrective_retrieval(False)
             print(f"[RAG] Quality check passed")
 
+        # Step 5c: Web search fallback if confidence still too low
+        web_sources = None
+        if enable_web_search or (low_confidence and max_conf < 0.25):
+            should_fallback, fallback_reason = web_fallback.should_use_web_fallback(
+                max_confidence=max_conf,
+                citations_count=num_citations,
+                low_confidence_flag=low_confidence
+            )
+            
+            if should_fallback:
+                print(f"[RAG] Triggering web fallback (reason: {fallback_reason})")
+                step_start = time.time()
+                
+                try:
+                    web_context, web_sources = await web_fallback.get_web_context(question)
+                    
+                    if web_context:
+                        # Combine local and web context
+                        combined_context = context
+                        if combined_context:
+                            combined_context += "\n\n--- WEB SOURCES ---\n\n" + web_context
+                        else:
+                            combined_context = web_context
+                        
+                        # Regenerate answer with web context
+                        answer_result = await self._generate_answer(
+                            question, combined_context, num_citations + len(web_sources),
+                            llm_provider, notebook_id, conversation_id
+                        )
+                        answer = answer_result["answer"]
+                        low_confidence = False  # Web augmented, no longer low confidence
+                        print(f"[RAG] Step 5c - Web fallback ({len(web_sources)} sources): {time.time() - step_start:.2f}s")
+                except Exception as e:
+                    print(f"[RAG] Web fallback error (continuing without): {e}")
+
         # Step 6: Generate follow-up questions
+        rag_metrics.start_stage(RAGStage.FOLLOWUP_GENERATION)
         step_start = time.time()
         follow_up_questions = await self._generate_follow_up_questions_fast(question, context)
+        rag_metrics.end_stage(RAGStage.FOLLOWUP_GENERATION)
         print(f"[RAG] Step 6 - Follow-ups: {time.time() - step_start:.2f}s")
 
         # Step 7: Memory extraction (fire-and-forget)
@@ -861,16 +1163,22 @@ Summary:"""
         
         asyncio.create_task(_extract_memories_background())
 
-        total_time = time.time() - total_start
+        # v1.0.3: Cache this answer for future similar queries
+        await answer_cache.put(question, notebook_id, query_embedding, answer, citations)
+
+        # v1.0.3: Finalize metrics
+        total_time_ms = (time.time() - total_start) * 1000
+        await rag_metrics.end_query(total_time_ms)
+        
         print(f"{'='*60}")
-        print(f"[RAG] TOTAL query time: {total_time:.2f}s")
+        print(f"[RAG] TOTAL query time: {total_time_ms/1000:.2f}s")
         print(f"{'='*60}\n")
 
         return {
             "answer": answer,
             "citations": citations,
             "sources": list(sources),
-            "web_sources": None,
+            "web_sources": web_sources,
             "follow_up_questions": follow_up_questions,
             "low_confidence": low_confidence,
             "memory_used": memory_used,
@@ -1591,7 +1899,7 @@ JSON:"""
         
         for variant in variants[1:]:  # Skip original (index 0)
             # Generate embedding for variant
-            embedding = await self._get_embedding(variant)
+            embedding = self.encode(variant)[0].tolist()
             
             # Search with variant
             if HAS_BM25:
@@ -1692,6 +2000,11 @@ BAD: "Chris Norman conducted 7 demos in Q1 2026 [1]. [References] Source: ..." "
     ) -> AsyncGenerator[Dict, None]:
         """Query the RAG system with streaming response"""
         total_start = time.time()
+        query_id = str(uuid.uuid4())
+        query_type = self._classify_query(question)
+        
+        # v1.0.6: Start metrics tracking for streaming queries
+        rag_metrics.start_query(query_id, notebook_id, question, query_type)
         
         # Auto-detect if user mentions specific source files
         if not source_ids:
@@ -1765,6 +2078,7 @@ BAD: "Chris Norman conducted 7 demos in Q1 2026 [1]. [References] Source: ..." "
             row_count = table.count_rows()
             print(f"[RAG STREAM] Table has {row_count} rows")
             if row_count == 0:
+                await rag_metrics.end_query((time.time() - total_start) * 1000)
                 yield {"type": "error", "content": "No documents indexed yet."}
                 return
         except Exception as e:
@@ -1785,6 +2099,8 @@ BAD: "Chris Norman conducted 7 demos in Q1 2026 [1]. [References] Source: ..." "
         except Exception as e:
             print(f"[RAG STREAM] Search exception: {e}")
             traceback.print_exc()
+            rag_metrics.record_error(str(e), RAGStage.VECTOR_SEARCH)
+            await rag_metrics.end_query((time.time() - total_start) * 1000)
             yield {"type": "error", "content": f"Search error: {e}"}
             return
 
@@ -1979,9 +2295,12 @@ Answer with [N] citations:"""
         
         asyncio.create_task(_extract_memories_background())
 
-        total_time = time.time() - total_start
+        # v1.0.6: Finalize metrics for streaming query
+        total_time_ms = (time.time() - total_start) * 1000
+        await rag_metrics.end_query(total_time_ms)
+        
         print(f"{'='*60}")
-        print(f"[RAG STREAM] TOTAL time: {total_time:.2f}s")
+        print(f"[RAG STREAM] TOTAL time: {total_time_ms/1000:.2f}s")
         print(f"{'='*60}\n")
 
     def _clean_llm_output(self, text: str) -> str:
@@ -2436,9 +2755,11 @@ Answer concisely with inline [N] citations:"""
         
         Different file types need different chunking strategies:
         - Tabular data (xlsx, csv): Keep rows together, include headers in each chunk
-        - Documents (pdf, docx): Split by paragraphs/sections
+        - Documents (pdf, docx): Hierarchical chunking by sections/paragraphs
         - Code: Split by functions/classes
         - Transcripts: Split by speaker turns or time segments
+        
+        v1.0.5: Added hierarchical chunking for structured documents.
         """
         filename_lower = filename.lower()
         
@@ -2453,7 +2774,60 @@ Answer concisely with inline [N] citations:"""
         if is_tabular:
             return self._chunk_tabular_data(text)
         
+        # v1.0.5: Use hierarchical chunking for structured documents (PDFs, docx)
+        # This preserves document structure and enables multi-granularity retrieval
+        is_structured_doc = source_type in ['pdf', 'docx', 'doc', 'pptx'] or \
+                           filename_lower.endswith(('.pdf', '.docx', '.doc', '.pptx'))
+        
+        if is_structured_doc and len(text) > 2000:
+            return self._chunk_hierarchical(text, filename)
+        
         # Default: use standard semantic chunking
+        return self._chunk_text(text)
+    
+    def _chunk_hierarchical(self, text: str, filename: str) -> List[str]:
+        """Hierarchical chunking for structured documents.
+        
+        Creates chunks at section and paragraph levels while preserving
+        document structure. Each chunk includes section context for better retrieval.
+        
+        v1.0.5: New hierarchical chunking strategy.
+        """
+        try:
+            from services.hierarchical_chunker import HierarchicalChunker
+            
+            chunker = HierarchicalChunker()
+            hier_chunks = chunker.chunk_document(
+                text=text,
+                source_id="temp",  # Chunk IDs assigned later
+                filename=filename,
+                include_sentences=False  # Skip sentence level for now
+            )
+            
+            # Convert hierarchical chunks to flat list of text strings
+            # We keep section and paragraph level chunks (levels 1 and 2)
+            # Level 0 (doc summary) is handled separately in ingest_document
+            result = []
+            for chunk in hier_chunks:
+                if chunk.level in [1, 2]:  # Section and paragraph level
+                    # Add section context prefix for better retrieval
+                    if chunk.section_title and chunk.level == 2:
+                        chunk_text = f"[{chunk.section_title}]\n{chunk.text}"
+                    else:
+                        chunk_text = chunk.text
+                    
+                    # Ensure chunk meets minimum size
+                    if len(chunk_text) >= 100:
+                        result.append(chunk_text)
+            
+            if result:
+                print(f"[RAG] Hierarchical chunking: {len(result)} chunks from {len(hier_chunks)} total levels")
+                return result
+            
+        except Exception as e:
+            print(f"[RAG] Hierarchical chunking failed, falling back to standard: {e}")
+        
+        # Fallback to standard chunking
         return self._chunk_text(text)
     
     def _chunk_tabular_data(self, text: str) -> List[str]:

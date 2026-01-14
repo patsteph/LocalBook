@@ -495,13 +495,43 @@ async def extract_page_metadata_tool(
     
     soup = BeautifulSoup(html_content, 'html.parser')
     
-    # Title
+    # Title - try multiple sources in priority order
     title = ""
-    if soup.title:
-        title = soup.title.string or ""
+    
+    # Priority 1: og:title (usually the cleanest article title)
     og_title = soup.find("meta", property="og:title")
-    if og_title:
-        title = og_title.get("content", title)
+    if og_title and og_title.get("content"):
+        title = og_title.get("content", "").strip()
+    
+    # Priority 2: twitter:title
+    if not title:
+        twitter_title = soup.find("meta", attrs={"name": "twitter:title"})
+        if twitter_title and twitter_title.get("content"):
+            title = twitter_title.get("content", "").strip()
+    
+    # Priority 3: <h1> tag (often the article title on Medium, Substack, etc.)
+    if not title:
+        h1 = soup.find("h1")
+        if h1:
+            title = h1.get_text(strip=True)
+    
+    # Priority 4: article:title meta tag
+    if not title:
+        article_title = soup.find("meta", property="article:title")
+        if article_title and article_title.get("content"):
+            title = article_title.get("content", "").strip()
+    
+    # Priority 5: <title> tag (fallback, often includes site name)
+    if not title and soup.title:
+        title = soup.title.string or ""
+        # Clean up common suffixes like " | Medium" or " - Substack"
+        for suffix in [" | Medium", " - Medium", " | Substack", " - Substack", 
+                       " | LinkedIn", " - LinkedIn", " | by ", " — "]:
+            if suffix in title:
+                title = title.split(suffix)[0].strip()
+    
+    # Ensure title is clean
+    title = title.strip() if title else ""
     
     # Description
     description = ""

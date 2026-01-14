@@ -56,6 +56,7 @@ pyinstaller \
     --add-data="$SCRIPT_DIR/models:models" \
     --add-data="$SCRIPT_DIR/utils:utils" \
     --add-data="$SCRIPT_DIR/agents:agents" \
+    --add-data="$SCRIPT_DIR/static:static" \
     --add-data="$SCRIPT_DIR/config.py:." \
     --hidden-import=api \
     --hidden-import=api.notebooks \

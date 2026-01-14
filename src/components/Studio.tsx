@@ -13,16 +13,40 @@ import { WritingPanel } from './WritingPanel';
 
 interface StudioProps {
   notebookId: string | null;
+  initialVisualContent?: string;
+  initialTab?: 'documents' | 'audio' | 'quiz' | 'visual' | 'writing';
+  onTabChange?: (tab: 'documents' | 'audio' | 'quiz' | 'visual' | 'writing') => void;
 }
 
-export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
+export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent, initialTab, onTabChange }) => {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<string>('');
   const [audioGenerations, setAudioGenerations] = useState<AudioGeneration[]>([]);
   const [contentGenerations, setContentGenerations] = useState<ContentGeneration[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [activeTab, setActiveTab] = useState<'documents' | 'audio' | 'quiz' | 'visual' | 'writing'>('documents');
+  const [activeTab, setActiveTab] = useState<'documents' | 'audio' | 'quiz' | 'visual' | 'writing'>(initialTab || 'documents');
+  const [visualContentFromChat, setVisualContentFromChat] = useState<string>(initialVisualContent || '');
+
+  // Sync with parent tab control
+  useEffect(() => {
+    if (initialTab && initialTab !== activeTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
+
+  // Sync visual content from chat
+  useEffect(() => {
+    if (initialVisualContent) {
+      setVisualContentFromChat(initialVisualContent);
+    }
+  }, [initialVisualContent]);
+
+  // Notify parent of tab changes
+  const handleTabChange = (tab: typeof activeTab) => {
+    setActiveTab(tab);
+    onTabChange?.(tab);
+  };
   const [generatedContent, setGeneratedContent] = useState<string>('');
   const [contentSkillName, setContentSkillName] = useState<string>('');
   const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
@@ -235,7 +259,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
           ].map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => handleTabChange(tab.id)}
               className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors flex flex-col items-center ${
                 activeTab === tab.id
                   ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
@@ -687,7 +711,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId }) => {
 
         {/* Visual Panel */}
         {activeTab === 'visual' && (
-          <VisualPanel notebookId={notebookId} />
+          <VisualPanel notebookId={notebookId} initialContent={visualContentFromChat} />
         )}
 
         {/* Writing Panel */}

@@ -34,6 +34,8 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
         if (message.type === 'source_updated' && message.data?.notebook_id === notebookId) {
           // Refresh sources list when a source is updated
           loadSources();
+          // Also refresh notebook counts in header
+          onSourcesChange?.();
         }
       } catch (e) {
         console.error('WebSocket message parse error:', e);
@@ -46,7 +48,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
       ws.close();
       wsRef.current = null;
     };
-  }, [notebookId]);
+  }, [notebookId, onSourcesChange]);
 
   useEffect(() => {
     console.log('SourcesList useEffect triggered, notebookId:', notebookId);

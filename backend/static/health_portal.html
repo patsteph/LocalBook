@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LocalBook Smoke Screen Portal</title>
+    <style>
+        :root {
+            --bg-primary: #f8fafc;
+            --bg-secondary: #ffffff;
+            --bg-card: #f1f5f9;
+            --text-primary: #1e293b;
+            --text-secondary: #64748b;
+            --border-color: #e2e8f0;
+            --green: #22c55e;
+            --yellow: #eab308;
+            --red: #ef4444;
+            --blue: #3b82f6;
+        }
+        
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-primary: #0f172a;
+                --bg-secondary: #1e293b;
+                --bg-card: #334155;
+                --text-primary: #f1f5f9;
+                --text-secondary: #94a3b8;
+                --border-color: #475569;
+            }
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 24px;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+        
+        header h1 {
+            font-size: 28px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        
+        header p {
+            color: var(--text-secondary);
+        }
+        
+        .status-banner {
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .status-banner.healthy { border-color: var(--green); background: rgba(34, 197, 94, 0.1); }
+        .status-banner.degraded { border-color: var(--yellow); background: rgba(234, 179, 8, 0.1); }
+        .status-banner.critical { border-color: var(--red); background: rgba(239, 68, 68, 0.1); }
+        
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .status-dot {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--text-secondary);
+        }
+        
+        .status-dot.healthy { background: var(--green); }
+        .status-dot.degraded { background: var(--yellow); }
+        .status-dot.critical { background: var(--red); }
+        .status-dot.pending { background: var(--text-secondary); animation: pulse 1.5s infinite; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .status-text {
+            font-size: 18px;
+            font-weight: 500;
+        }
+        
+        .btn {
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background: var(--blue);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+        
+        .btn-primary:disabled {
+            background: var(--text-secondary);
+            cursor: not-allowed;
+        }
+        
+        .btn-secondary {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+        
+        .btn-secondary:hover {
+            background: var(--border-color);
+        }
+        
+        .btn-repair {
+            background: var(--blue);
+            color: white;
+            padding: 8px 16px;
+            font-size: 13px;
+        }
+        
+        .checks-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        
+        .check-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 16px;
+        }
+        
+        .check-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        
+        .check-name {
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .check-icon {
+            width: 20px;
+            height: 20px;
+        }
+        
+        .check-status {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--text-secondary);
+        }
+        
+        .check-status.pass { background: var(--green); }
+        .check-status.warn { background: var(--yellow); }
+        .check-status.fail { background: var(--red); }
+        
+        .check-details {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        
+        .check-detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+        }
+        
+        .issues-section {
+            margin-bottom: 24px;
+        }
+        
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .issue-card {
+            background: var(--bg-secondary);
+            border-left: 4px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+        
+        .issue-card.critical { border-left-color: var(--red); background: rgba(239, 68, 68, 0.05); }
+        .issue-card.high { border-left-color: #f97316; background: rgba(249, 115, 22, 0.05); }
+        .issue-card.medium { border-left-color: var(--yellow); background: rgba(234, 179, 8, 0.05); }
+        .issue-card.low { border-left-color: var(--blue); background: rgba(59, 130, 246, 0.05); }
+        
+        .issue-content h4 {
+            font-size: 15px;
+            margin-bottom: 4px;
+        }
+        
+        .issue-content p {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        
+        .system-info {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+        
+        .system-info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+        }
+        
+        .system-stat {
+            text-align: center;
+        }
+        
+        .system-stat-value {
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .system-stat-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+        }
+        
+        .progress-bar {
+            height: 8px;
+            background: var(--bg-card);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            transition: width 0.3s;
+        }
+        
+        .progress-fill.good { background: var(--green); }
+        .progress-fill.warn { background: var(--yellow); }
+        .progress-fill.danger { background: var(--red); }
+        
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--text-secondary);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .hidden { display: none !important; }
+        
+        /* Collapsible Sections */
+        .section-header {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 16px 20px;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .section-header:hover {
+            background: var(--bg-card);
+        }
+        
+        .section-arrow {
+            font-size: 12px;
+            color: var(--text-secondary);
+            transition: transform 0.2s;
+        }
+        
+        .section-arrow.expanded {
+            transform: rotate(90deg);
+        }
+        
+        .section-icon {
+            font-size: 18px;
+        }
+        
+        .section-name {
+            font-weight: 500;
+            flex: 1;
+        }
+        
+        .section-count {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-right: 8px;
+        }
+        
+        .section-status {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--text-secondary);
+        }
+        
+        .section-status.pass { background: var(--green); }
+        .section-status.warn { background: var(--yellow); }
+        .section-status.fail { background: var(--red); }
+        
+        .section-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-top: none;
+            border-radius: 0 0 10px 10px;
+            margin-top: -4px;
+            margin-bottom: 12px;
+            padding: 12px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }
+        
+        .section-check {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .section-check-name {
+            font-size: 13px;
+            font-weight: 500;
+        }
+        
+        .section-check-status {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+        
+        .section-check-status.pass { background: var(--green); }
+        .section-check-status.warn { background: var(--yellow); }
+        .section-check-status.fail { background: var(--red); }
+        
+        #sectionsContainer {
+            margin-bottom: 24px;
+        }
+        
+        /* Console/Log Window */
+        .console-section {
+            margin-top: 24px;
+        }
+        
+        .console-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        
+        .console-filters {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .filter-btn {
+            padding: 4px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .filter-btn:hover {
+            background: var(--bg-card);
+        }
+        
+        .filter-btn.active {
+            background: var(--blue);
+            color: white;
+            border-color: var(--blue);
+        }
+        
+        .filter-btn.error { border-left: 3px solid var(--red); }
+        .filter-btn.warn { border-left: 3px solid var(--yellow); }
+        .filter-btn.info { border-left: 3px solid var(--blue); }
+        
+        .console-window {
+            background: #1e1e1e;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+            height: 200px;
+            overflow-y: auto;
+            padding: 12px;
+        }
+        
+        .console-line {
+            display: flex;
+            gap: 12px;
+            padding: 2px 0;
+            border-bottom: 1px solid #333;
+        }
+        
+        .console-time {
+            color: #888;
+            flex-shrink: 0;
+        }
+        
+        .console-level {
+            flex-shrink: 0;
+            width: 50px;
+            font-weight: 600;
+        }
+        
+        .console-level.ERROR { color: #f87171; }
+        .console-level.WARN { color: #fbbf24; }
+        .console-level.INFO { color: #60a5fa; }
+        .console-level.DEBUG { color: #a78bfa; }
+        
+        .console-message {
+            color: #e5e5e5;
+            word-break: break-word;
+        }
+        
+        .console-source {
+            color: #888;
+            font-size: 11px;
+            margin-left: auto;
+            flex-shrink: 0;
+        }
+        
+        .console-empty {
+            color: #666;
+            text-align: center;
+            padding: 40px;
+        }
+        
+        .console-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .console-btn {
+            padding: 4px 8px;
+            border: none;
+            border-radius: 4px;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 12px;
+            cursor: pointer;
+        }
+        
+        .console-btn:hover {
+            background: var(--bg-card);
+        }
+        
+        footer {
+            text-align: center;
+            padding: 24px;
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🛡️ LocalBook Smoke Screen Portal</h1>
+            <p>System Health & Diagnostics</p>
+        </header>
+        
+        <!-- Status Banner -->
+        <div id="statusBanner" class="status-banner">
+            <div class="status-indicator">
+                <div id="statusDot" class="status-dot pending"></div>
+                <span id="statusText" class="status-text">Click "Run Health Check" to begin</span>
+            </div>
+            <div style="display: flex; gap: 12px;">
+                <button id="runCheckBtn" class="btn btn-primary" onclick="runHealthCheck()">
+                    🔍 Run Health Check
+                </button>
+                <button class="btn btn-secondary" onclick="exportDiagnostics()">
+                    📋 Export
+                </button>
+            </div>
+        </div>
+        
+        <!-- System Info -->
+        <div class="system-info">
+            <h3 class="section-title" style="margin-bottom: 16px;">System Resources</h3>
+            <div class="system-info-grid">
+                <div class="system-stat">
+                    <div id="memoryValue" class="system-stat-value">--</div>
+                    <div class="system-stat-label">Memory Available</div>
+                    <div class="progress-bar">
+                        <div id="memoryBar" class="progress-fill good" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="system-stat">
+                    <div id="diskValue" class="system-stat-value">--</div>
+                    <div class="system-stat-label">Disk Free</div>
+                    <div class="progress-bar">
+                        <div id="diskBar" class="progress-fill good" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="system-stat">
+                    <div id="queriesValue" class="system-stat-value">--</div>
+                    <div class="system-stat-label">Queries (24h)</div>
+                </div>
+                <div class="system-stat">
+                    <div id="latencyValue" class="system-stat-value">--</div>
+                    <div class="system-stat-label">Avg Latency</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Health Check Sections (Collapsible) -->
+        <div id="sectionsContainer">
+            <!-- Sections will be populated by JS -->
+            <div class="section-header" onclick="toggleSection('core_services')">
+                <span class="section-arrow" id="arrow-core_services">▶</span>
+                <span class="section-icon">🔌</span>
+                <span class="section-name">Core Services</span>
+                <span class="section-count" id="count-core_services">--</span>
+                <div class="section-status" id="status-core_services"></div>
+            </div>
+            <div class="section-content hidden" id="content-core_services"></div>
+            
+            <div class="section-header" onclick="toggleSection('ai_models')">
+                <span class="section-arrow" id="arrow-ai_models">▶</span>
+                <span class="section-icon">🧠</span>
+                <span class="section-name">AI & Models</span>
+                <span class="section-count" id="count-ai_models">--</span>
+                <div class="section-status" id="status-ai_models"></div>
+            </div>
+            <div class="section-content hidden" id="content-ai_models"></div>
+            
+            <div class="section-header" onclick="toggleSection('data_integrity')">
+                <span class="section-arrow" id="arrow-data_integrity">▶</span>
+                <span class="section-icon">📊</span>
+                <span class="section-name">Data Integrity</span>
+                <span class="section-count" id="count-data_integrity">--</span>
+                <div class="section-status" id="status-data_integrity"></div>
+            </div>
+            <div class="section-content hidden" id="content-data_integrity"></div>
+            
+            <div class="section-header" onclick="toggleSection('configuration')">
+                <span class="section-arrow" id="arrow-configuration">▶</span>
+                <span class="section-icon">⚙️</span>
+                <span class="section-name">Configuration</span>
+                <span class="section-count" id="count-configuration">--</span>
+                <div class="section-status" id="status-configuration"></div>
+            </div>
+            <div class="section-content hidden" id="content-configuration"></div>
+        </div>
+        
+        <!-- Issues Section -->
+        <div id="issuesSection" class="issues-section hidden">
+            <h3 class="section-title">⚠️ Issues Detected</h3>
+            <div id="issuesList"></div>
+        </div>
+        
+        <!-- Console/Log Window -->
+        <div class="console-section">
+            <div class="console-header">
+                <h3 class="section-title">📟 Console</h3>
+                <div class="console-filters">
+                    <button class="filter-btn active" onclick="setLogFilter('all')" id="filter-all">All</button>
+                    <button class="filter-btn error" onclick="setLogFilter('ERROR')" id="filter-error">Errors</button>
+                    <button class="filter-btn warn" onclick="setLogFilter('WARN')" id="filter-warn">Warnings</button>
+                    <button class="filter-btn info" onclick="setLogFilter('INFO')" id="filter-info">Info</button>
+                </div>
+                <div class="console-actions">
+                    <button class="console-btn" onclick="refreshLogs()">🔄 Refresh</button>
+                    <button class="console-btn" onclick="clearLogs()">🗑️ Clear</button>
+                </div>
+            </div>
+            <div class="console-window" id="consoleWindow">
+                <div class="console-empty">Run a health check to see logs</div>
+            </div>
+        </div>
+        
+        <footer>
+            <span id="lastChecked">Last checked: Never</span> • LocalBook Smoke Screen Portal
+        </footer>
+    </div>
+    
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        
+        async function runHealthCheck() {
+            const btn = document.getElementById('runCheckBtn');
+            const statusDot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            const banner = document.getElementById('statusBanner');
+            
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> Running...';
+            statusDot.className = 'status-dot pending';
+            statusText.textContent = 'Running health checks...';
+            
+            try {
+                const resp = await fetch(`${API_BASE}/health/full`);
+                const data = await resp.json();
+                
+                updateUI(data);
+                
+            } catch (err) {
+                statusDot.className = 'status-dot critical';
+                statusText.textContent = 'Failed to connect to backend';
+                banner.className = 'status-banner critical';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '🔍 Run Health Check';
+            }
+        }
+        
+        function updateUI(data) {
+            const statusDot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            const banner = document.getElementById('statusBanner');
+            
+            // Update status banner
+            statusDot.className = `status-dot ${data.overall}`;
+            banner.className = `status-banner ${data.overall}`;
+            
+            if (data.overall === 'healthy') {
+                statusText.textContent = 'All Systems Operational';
+            } else if (data.overall === 'degraded') {
+                statusText.textContent = `${data.issues.length} Issue${data.issues.length !== 1 ? 's' : ''} Detected`;
+            } else {
+                statusText.textContent = 'Critical Issues Detected';
+            }
+            
+            // Update system info
+            if (data.system) {
+                document.getElementById('memoryValue').textContent = `${data.system.memory_available_gb?.toFixed(1) || '--'} GB`;
+                document.getElementById('diskValue').textContent = `${data.system.disk_free_gb?.toFixed(0) || '--'} GB`;
+                
+                const memUsed = data.system.memory_percent_used || 0;
+                const memBar = document.getElementById('memoryBar');
+                memBar.style.width = `${100 - memUsed}%`;
+                memBar.className = `progress-fill ${memUsed > 90 ? 'danger' : memUsed > 80 ? 'warn' : 'good'}`;
+                
+                const diskUsed = data.system.disk_percent_used || 0;
+                const diskBar = document.getElementById('diskBar');
+                diskBar.style.width = `${100 - diskUsed}%`;
+                diskBar.className = `progress-fill ${diskUsed > 90 ? 'danger' : diskUsed > 80 ? 'warn' : 'good'}`;
+            }
+            
+            // Update metrics
+            if (data.metrics) {
+                document.getElementById('queriesValue').textContent = data.metrics.queries_24h || '0';
+                document.getElementById('latencyValue').textContent = data.metrics.avg_latency_ms 
+                    ? `${(data.metrics.avg_latency_ms / 1000).toFixed(1)}s` 
+                    : '--';
+            }
+            
+            // Update sections
+            if (data.sections) {
+                updateSections(data.sections);
+            }
+            
+            // Update issues
+            updateIssues(data.issues);
+            
+            // Update timestamp
+            document.getElementById('lastChecked').textContent = `Last checked: ${new Date().toLocaleTimeString()}`;
+        }
+        
+        function updateSections(sections) {
+            for (const [key, section] of Object.entries(sections)) {
+                // Update section status indicator
+                const statusEl = document.getElementById(`status-${key}`);
+                if (statusEl) {
+                    statusEl.className = `section-status ${section.status}`;
+                }
+                
+                // Update section count
+                const countEl = document.getElementById(`count-${key}`);
+                if (countEl) {
+                    const passing = section.checks.filter(c => c.status === 'pass').length;
+                    countEl.textContent = `${passing}/${section.checks.length} passing`;
+                }
+                
+                // Populate section content
+                const contentEl = document.getElementById(`content-${key}`);
+                if (contentEl) {
+                    contentEl.innerHTML = '';
+                    section.checks.forEach(check => {
+                        const div = document.createElement('div');
+                        div.className = 'section-check';
+                        div.innerHTML = `
+                            <span class="section-check-name">${check.display}</span>
+                            <div class="section-check-status ${check.status}" title="${check.error || 'OK'}"></div>
+                        `;
+                        contentEl.appendChild(div);
+                    });
+                }
+                
+                // Auto-expand sections with issues
+                if (section.status !== 'pass') {
+                    const contentEl = document.getElementById(`content-${key}`);
+                    const arrowEl = document.getElementById(`arrow-${key}`);
+                    if (contentEl && arrowEl) {
+                        contentEl.classList.remove('hidden');
+                        arrowEl.classList.add('expanded');
+                    }
+                }
+            }
+        }
+        
+        function toggleSection(key) {
+            const content = document.getElementById(`content-${key}`);
+            const arrow = document.getElementById(`arrow-${key}`);
+            
+            if (content.classList.contains('hidden')) {
+                content.classList.remove('hidden');
+                arrow.classList.add('expanded');
+            } else {
+                content.classList.add('hidden');
+                arrow.classList.remove('expanded');
+            }
+        }
+        
+        function updateIssues(issues) {
+            const section = document.getElementById('issuesSection');
+            const list = document.getElementById('issuesList');
+            
+            if (!issues || issues.length === 0) {
+                section.classList.add('hidden');
+                return;
+            }
+            
+            section.classList.remove('hidden');
+            list.innerHTML = '';
+            
+            issues.forEach(issue => {
+                const div = document.createElement('div');
+                div.className = `issue-card ${issue.severity}`;
+                div.innerHTML = `
+                    <div class="issue-content">
+                        <h4>${issue.title}</h4>
+                        <p>${issue.message}</p>
+                    </div>
+                    ${issue.repair ? `
+                        <button class="btn btn-repair" onclick="executeRepair('${issue.repair}', ${JSON.stringify(issue.repair_params || {}).replace(/"/g, '&quot;')})">
+                            🔧 Repair
+                        </button>
+                    ` : ''}
+                `;
+                list.appendChild(div);
+            });
+        }
+        
+        async function executeRepair(action, params) {
+            const statusText = document.getElementById('statusText');
+            const originalStatus = statusText.textContent;
+            
+            try {
+                statusText.textContent = 'Running repair...';
+                
+                const resp = await fetch(`${API_BASE}/health/repair`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action, params })
+                });
+                const result = await resp.json();
+                
+                // Show result
+                statusText.textContent = result.message || 'Repair completed';
+                
+                // Countdown before re-running health check (give services time to stabilize)
+                const delaySeconds = action === 'warmup_model' ? 5 : 3;
+                for (let i = delaySeconds; i > 0; i--) {
+                    statusText.textContent = `${result.message} — Verifying in ${i}s...`;
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+                
+                // Re-run health check
+                statusText.textContent = 'Re-checking...';
+                await runHealthCheck();
+            } catch (err) {
+                statusText.textContent = originalStatus;
+                alert('Repair failed: ' + err.message);
+            }
+        }
+        
+        async function exportDiagnostics() {
+            try {
+                const resp = await fetch(`${API_BASE}/health/export`);
+                const data = await resp.json();
+                
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `localbook-diagnostics-${new Date().toISOString().split('T')[0]}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (err) {
+                alert('Export failed: ' + err.message);
+            }
+        }
+        
+        // Console/Log Functions
+        let allLogs = [];
+        let currentFilter = 'all';
+        
+        async function refreshLogs() {
+            try {
+                const resp = await fetch(`${API_BASE}/health/logs?limit=200`);
+                const data = await resp.json();
+                allLogs = data.logs || [];
+                renderLogs();
+            } catch (err) {
+                console.error('Failed to fetch logs:', err);
+            }
+        }
+        
+        function setLogFilter(level) {
+            currentFilter = level;
+            
+            // Update button states
+            document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(`filter-${level.toLowerCase()}`).classList.add('active');
+            
+            renderLogs();
+        }
+        
+        function renderLogs() {
+            const consoleEl = document.getElementById('consoleWindow');
+            
+            // Filter logs
+            const filtered = currentFilter === 'all' 
+                ? allLogs 
+                : allLogs.filter(log => log.level === currentFilter);
+            
+            if (filtered.length === 0) {
+                consoleEl.innerHTML = '<div class="console-empty">No logs to display</div>';
+                return;
+            }
+            
+            consoleEl.innerHTML = '';
+            
+            // Show newest first
+            [...filtered].reverse().forEach(log => {
+                const div = document.createElement('div');
+                div.className = 'console-line';
+                
+                const time = new Date(log.timestamp).toLocaleTimeString();
+                
+                div.innerHTML = `
+                    <span class="console-time">${time}</span>
+                    <span class="console-level ${log.level}">${log.level}</span>
+                    <span class="console-message">${escapeHtml(log.message)}</span>
+                    <span class="console-source">${log.source || ''}</span>
+                `;
+                consoleEl.appendChild(div);
+            });
+            
+            // Scroll to top (newest)
+            consoleEl.scrollTop = 0;
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        async function clearLogs() {
+            try {
+                await fetch(`${API_BASE}/health/logs`, { method: 'DELETE' });
+                allLogs = [];
+                renderLogs();
+            } catch (err) {
+                console.error('Failed to clear logs:', err);
+            }
+        }
+        
+        // Auto-refresh logs after health check
+        const originalRunHealthCheck = runHealthCheck;
+        runHealthCheck = async function() {
+            await originalRunHealthCheck();
+            await refreshLogs();
+        };
+        
+        // Initialize on page load - fetch logs immediately and run health check
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Load logs first so user sees activity immediately
+            await refreshLogs();
+            // Then run health check
+            await runHealthCheck();
+        });
+    </script>
+</body>
+</html>

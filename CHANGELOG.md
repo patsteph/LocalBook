@@ -2,6 +2,55 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## [1.0.3] - 2025-01-14
+
+### ✨ New Features
+
+#### Visual Studio Enhancements
+- **AI Visual Generator** — Intelligent visual type selection with 3 options to choose from
+- **Horizontal Steps Template** — New simple left-to-right step sequence visualization
+- **Lightbox View** — Click any diagram to view full-size in a modal overlay
+- **Vibrant Theming** — New color palette that works beautifully in light and dark modes
+- **Smart Regeneration** — Clear UX hint to edit input and regenerate visuals
+
+#### Performance & Reliability
+- **Mermaid Prewarm** — Renderer preloads on app start for instant diagram generation
+- **Metrics Persistence** — Query stats (24h count, avg latency) now persist across restarts
+- **Graceful Shutdown** — Metrics auto-save when backend stops
+
+### 🔧 Improvements
+
+- **Mermaid Code Cleaning** — Auto-fix malformed LLM output (single-line code, markdown fences)
+- **Template Diversity** — Visual generator ensures different diagram types in options
+- **Export in Lightbox** — Copy/PNG/SVG buttons available in expanded view
+
+### 🐛 Bug Fixes
+
+- Fixed Mermaid rendering failures from LLM outputting single-line code
+- Fixed query stats resetting to 0 after every rebuild
+- Fixed visual panel not stripping citation markers from chat content
+
+---
+
+## [1.0.2] - 2025-01-12
+
+### 🔧 Improvements
+- Health portal smoke screen enhancements
+- Reranker and main model health check repairs
+- Console auto-load with countdown timer
+- FlashRank reranker persistent cache fix
+
+---
+
+## [1.0.1] - 2025-01-10
+
+### 🔧 Improvements
+- Web multimodal capture implementation
+- Notebook list UI fixes (star and source count)
+- "Create Visual from this" button in chat
+
+---
+
 ## [1.0.0] - 2025-01-09
 
 ### 🎉 First Stable Release
