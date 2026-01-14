@@ -47,8 +47,8 @@ beautifulsoup4>=4.12.0
 youtube-transcript-api>=0.6.0
 
 # Audio/Video transcription (requires ffmpeg: brew install ffmpeg)
-# Install from GitHub - PyPI version doesn't support Python 3.12+
-openai-whisper @ git+https://github.com/openai/whisper.git
+# IMPORTANT: openai-whisper requires Python 3.11 (not 3.12+)
+openai-whisper
 
 # System monitoring
 psutil>=5.9.0  # For health portal system info

@@ -4,7 +4,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.0.3-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
-[![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org)
+[![Python](https://img.shields.io/badge/python-3.11-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -89,6 +89,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full release notes.
 | Requirement | Details |
 |-------------|---------|
 | **macOS** | 12.0+ (Apple Silicon recommended, Intel supported) |
+| **Python** | 3.11 required (openai-whisper dependency) |
 | **RAM** | 16GB+ recommended (8GB minimum) |
 | **Storage** | ~15GB for models and app |
 | **Ollama** | Local LLM runtime ([ollama.ai](https://ollama.ai)) |
@@ -113,7 +114,13 @@ brew install ollama ffmpeg tesseract python@3.11 node
 
 ### Option 2: Build from Source
 
+**⚠️ Requires Python 3.11** (not 3.12+). The `openai-whisper` dependency does not support newer Python versions.
+
 ```bash
+# Ensure Python 3.11 is installed
+brew install python@3.11
+
+# Clone and build
 git clone https://github.com/patsteph/LocalBook.git
 cd LocalBook
 ./build.sh

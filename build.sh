@@ -33,11 +33,24 @@ if ! command -v brew &> /dev/null; then
     fi
 fi
 
-# Install Python if not found
-if ! command -v python3 &> /dev/null; then
-    echo -e "${YELLOW}Python not found. Installing...${NC}"
-    brew install python
+# Require Python 3.11 (openai-whisper doesn't support 3.12+)
+PYTHON_CMD=""
+if command -v python3.11 &> /dev/null; then
+    PYTHON_CMD="python3.11"
+elif [ -f "/opt/homebrew/bin/python3.11" ]; then
+    PYTHON_CMD="/opt/homebrew/bin/python3.11"
+elif [ -f "/usr/local/bin/python3.11" ]; then
+    PYTHON_CMD="/usr/local/bin/python3.11"
 fi
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo -e "${YELLOW}Python 3.11 not found. Installing...${NC}"
+    brew install python@3.11
+    PYTHON_CMD="/opt/homebrew/bin/python3.11"
+    [ -f "$PYTHON_CMD" ] || PYTHON_CMD="/usr/local/bin/python3.11"
+fi
+
+echo -e "${GREEN}Using Python: $PYTHON_CMD${NC}"
 
 # Install Node.js if not found
 if ! command -v node &> /dev/null; then
@@ -102,10 +115,10 @@ if [ ! -f "$BACKEND_EXE" ] || [ "$DO_REBUILD" = true ] || [ "$DO_CLEAN" = true ]
         rm -rf .venv
     fi
     
-    # Ensure venv exists
+    # Ensure venv exists with Python 3.11
     if [ ! -d ".venv" ]; then
-        echo -e "${YELLOW}Creating virtual environment...${NC}"
-        python3 -m venv .venv
+        echo -e "${YELLOW}Creating virtual environment with Python 3.11...${NC}"
+        $PYTHON_CMD -m venv .venv
     fi
     
     source .venv/bin/activate
