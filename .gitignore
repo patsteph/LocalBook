@@ -79,6 +79,10 @@ tests/
 verify_pipeline.py
 backend/verify_pipeline.py
 
+# Local testing scripts for dependency validation and bundle verification
+backend/scripts/local/
+bundle_test_results.json
+
 # Temporary files
 *.tmp
 *.temp
@@ -94,6 +98,9 @@ src-tauri/resources/backend/
 # Runtime logs
 backend.log
 
-# Built app
-LocalBook.app
+# Built app and release archives
+LocalBook.app/
+*.app/
 LocalBook-v*.zip
+LocalBook-Extension-v*.zip
+*.zip

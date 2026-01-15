@@ -651,7 +651,7 @@ class DocumentProcessor:
         """
         try:
             from pptx import Presentation
-            from pptx.shapes.table import Table
+            from pptx.table import Table
             
             prs = Presentation(io.BytesIO(content))
             text_parts = []

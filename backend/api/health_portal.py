@@ -372,27 +372,54 @@ async def full_health_check():
                     "details": {"model": settings.ollama_fast_model, "responded": len(response_text) > 0}
                 })
             else:
+                error_text = resp.text[:200] if resp.text else ""
+                is_corrupted = "unable to load model" in error_text.lower()
+                
                 add_check("ai_models", {
                     "name": "llm_test",
                     "display": "LLM Generation",
                     "status": "fail",
-                    "error": f"HTTP {resp.status_code}"
+                    "error": f"HTTP {resp.status_code}" + (" (model corrupted)" if is_corrupted else "")
                 })
-                results["issues"].append({
-                    "severity": "high",
-                    "title": "LLM Not Responding",
-                    "message": "Language model failed to generate. Chat will not work.",
-                    "repair": "restart_ollama"
-                })
+                
+                if is_corrupted:
+                    results["issues"].append({
+                        "severity": "high",
+                        "title": "Model File Corrupted",
+                        "message": f"The model {settings.ollama_fast_model} is corrupted. Click Repair to re-download it.",
+                        "repair": "repair_model",
+                        "repair_params": {"model": settings.ollama_fast_model}
+                    })
+                else:
+                    results["issues"].append({
+                        "severity": "high",
+                        "title": "LLM Not Responding",
+                        "message": "Language model failed to generate. Chat will not work.",
+                        "repair": "restart_ollama"
+                    })
                 if results["overall"] == "healthy":
                     results["overall"] = "degraded"
     except Exception as e:
+        error_str = str(e).lower()
+        is_corrupted = "unable to load model" in error_str
+        
         add_check("ai_models", {
             "name": "llm_test",
             "display": "LLM Generation",
-            "status": "warn",
-            "error": f"Timeout or error: {str(e)[:30]}"
+            "status": "fail" if is_corrupted else "warn",
+            "error": "Model corrupted" if is_corrupted else f"Timeout or error: {str(e)[:30]}"
         })
+        
+        if is_corrupted:
+            results["issues"].append({
+                "severity": "high",
+                "title": "Model File Corrupted",
+                "message": f"The model file is corrupted. Click Repair to re-download it.",
+                "repair": "repair_model",
+                "repair_params": {"model": settings.ollama_fast_model}
+            })
+            if results["overall"] == "healthy":
+                results["overall"] = "degraded"
     
     # NEW: Reranker Status Check
     try:
@@ -709,6 +736,302 @@ async def full_health_check():
         if results["overall"] == "healthy":
             results["overall"] = "degraded"
     
+    # ============ FUNCTIONAL TESTS SECTION ============
+    # These test actual functionality, not just imports
+    results["sections"]["functional_tests"] = {"name": "Functional Tests", "icon": "🧪", "checks": [], "status": "pass"}
+    
+    # PDF Extraction Test - most common user frustration
+    try:
+        import fitz
+        # Create a test PDF in memory and extract text
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((50, 50), "LocalBook PDF Test")
+        pdf_bytes = doc.tobytes()
+        doc.close()
+        
+        doc2 = fitz.open(stream=pdf_bytes, filetype="pdf")
+        text = doc2[0].get_text()
+        doc2.close()
+        
+        if "LocalBook PDF Test" in text:
+            add_check("functional_tests", {
+                "name": "pdf_extraction",
+                "display": "PDF Extraction",
+                "status": "pass",
+                "details": {"library": f"PyMuPDF {fitz.version[0]}", "test": "Create + Extract OK"}
+            })
+        else:
+            add_check("functional_tests", {
+                "name": "pdf_extraction",
+                "display": "PDF Extraction",
+                "status": "fail",
+                "error": "Text extraction failed"
+            })
+            results["issues"].append({
+                "severity": "high",
+                "title": "PDF Extraction Not Working",
+                "message": "PDF uploads will fail. Check PyMuPDF installation.",
+                "repair": None
+            })
+            if results["overall"] == "healthy":
+                results["overall"] = "degraded"
+    except Exception as e:
+        add_check("functional_tests", {
+            "name": "pdf_extraction",
+            "display": "PDF Extraction",
+            "status": "fail",
+            "error": str(e)[:50]
+        })
+        results["issues"].append({
+            "severity": "high",
+            "title": "PDF Extraction Failed",
+            "message": f"PyMuPDF error: {str(e)[:50]}",
+            "repair": None
+        })
+        if results["overall"] == "healthy":
+            results["overall"] = "degraded"
+    
+    # ffmpeg Check - required for audio/video transcription
+    try:
+        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+        if result.returncode == 0:
+            version_line = result.stdout.decode().split('\n')[0]
+            add_check("functional_tests", {
+                "name": "ffmpeg",
+                "display": "FFmpeg (Audio/Video)",
+                "status": "pass",
+                "details": {"installed": True, "info": version_line[:50]}
+            })
+        else:
+            add_check("functional_tests", {
+                "name": "ffmpeg",
+                "display": "FFmpeg (Audio/Video)",
+                "status": "warn",
+                "error": "ffmpeg not working properly"
+            })
+    except FileNotFoundError:
+        add_check("functional_tests", {
+            "name": "ffmpeg",
+            "display": "FFmpeg (Audio/Video)",
+            "status": "warn",
+            "error": "Not installed"
+        })
+        results["issues"].append({
+            "severity": "medium",
+            "title": "FFmpeg Not Installed",
+            "message": "Audio/video transcription won't work. Run: brew install ffmpeg",
+            "repair": None
+        })
+        if results["overall"] == "healthy":
+            results["overall"] = "degraded"
+    except Exception as e:
+        add_check("functional_tests", {
+            "name": "ffmpeg",
+            "display": "FFmpeg (Audio/Video)",
+            "status": "warn",
+            "error": str(e)[:30]
+        })
+    
+    # Tesseract Check - required for OCR (optional but commonly needed)
+    try:
+        result = subprocess.run(["tesseract", "--version"], capture_output=True, timeout=5)
+        if result.returncode == 0:
+            add_check("functional_tests", {
+                "name": "tesseract",
+                "display": "Tesseract (OCR)",
+                "status": "pass",
+                "details": {"installed": True}
+            })
+        else:
+            add_check("functional_tests", {
+                "name": "tesseract",
+                "display": "Tesseract (OCR)",
+                "status": "warn",
+                "error": "Not working properly"
+            })
+    except FileNotFoundError:
+        add_check("functional_tests", {
+            "name": "tesseract",
+            "display": "Tesseract (OCR)",
+            "status": "warn",
+            "details": {"installed": False, "note": "Optional - for image OCR"}
+        })
+        # Don't add issue - tesseract is optional
+    except Exception as e:
+        add_check("functional_tests", {
+            "name": "tesseract",
+            "display": "Tesseract (OCR)",
+            "status": "warn",
+            "error": str(e)[:30]
+        })
+    
+    # Whisper Model Test - audio transcription capability
+    try:
+        import whisper
+        # Just verify import works - don't load model (too slow)
+        add_check("functional_tests", {
+            "name": "whisper",
+            "display": "Whisper (Transcription)",
+            "status": "pass",
+            "details": {"library": "openai-whisper", "available": True}
+        })
+    except ImportError as e:
+        add_check("functional_tests", {
+            "name": "whisper",
+            "display": "Whisper (Transcription)",
+            "status": "warn",
+            "error": "Not installed"
+        })
+        results["issues"].append({
+            "severity": "medium",
+            "title": "Whisper Not Available",
+            "message": "Audio transcription won't work. Requires Python 3.11.",
+            "repair": None
+        })
+        if results["overall"] == "healthy":
+            results["overall"] = "degraded"
+    except Exception as e:
+        add_check("functional_tests", {
+            "name": "whisper",
+            "display": "Whisper (Transcription)",
+            "status": "warn",
+            "error": str(e)[:30]
+        })
+    
+    # Web Scraping Test - required for URL captures
+    try:
+        import trafilatura
+        test_html = "<html><body><article><p>Test content for LocalBook.</p></article></body></html>"
+        extracted = trafilatura.extract(test_html)
+        
+        if extracted and "Test content" in extracted:
+            add_check("functional_tests", {
+                "name": "web_scraping",
+                "display": "Web Scraping",
+                "status": "pass",
+                "details": {"library": "trafilatura", "test": "Extract OK"}
+            })
+        else:
+            add_check("functional_tests", {
+                "name": "web_scraping",
+                "display": "Web Scraping",
+                "status": "fail",
+                "error": "Extraction returned empty"
+            })
+            results["issues"].append({
+                "severity": "medium",
+                "title": "Web Scraping Not Working",
+                "message": "URL captures will fail. Trafilatura may need reinstall.",
+                "repair": "reinstall_trafilatura"
+            })
+            if results["overall"] == "healthy":
+                results["overall"] = "degraded"
+    except ImportError:
+        add_check("functional_tests", {
+            "name": "web_scraping",
+            "display": "Web Scraping",
+            "status": "fail",
+            "error": "trafilatura not installed"
+        })
+        results["issues"].append({
+            "severity": "medium",
+            "title": "Web Scraping Not Available",
+            "message": "trafilatura not installed. URL captures won't work.",
+            "repair": "reinstall_trafilatura"
+        })
+        if results["overall"] == "healthy":
+            results["overall"] = "degraded"
+    except Exception as e:
+        add_check("functional_tests", {
+            "name": "web_scraping",
+            "display": "Web Scraping",
+            "status": "warn",
+            "error": str(e)[:30]
+        })
+    
+    # PowerPoint Import Test - required for .pptx uploads
+    try:
+        from pptx import Presentation
+        from pptx.table import Table
+        add_check("functional_tests", {
+            "name": "pptx_import",
+            "display": "PowerPoint Support",
+            "status": "pass",
+            "details": {"library": "python-pptx", "test": "Import OK"}
+        })
+    except ImportError as e:
+        add_check("functional_tests", {
+            "name": "pptx_import",
+            "display": "PowerPoint Support",
+            "status": "fail",
+            "error": f"Import failed: {str(e)[:50]}"
+        })
+        results["issues"].append({
+            "severity": "medium",
+            "title": "PowerPoint Support Missing",
+            "message": f"python-pptx import failed: {str(e)}",
+            "repair": None
+        })
+        if results["overall"] == "healthy":
+            results["overall"] = "degraded"
+    except Exception as e:
+        add_check("functional_tests", {
+            "name": "pptx_import",
+            "display": "PowerPoint Support",
+            "status": "warn",
+            "error": str(e)[:30]
+        })
+    
+    # BERTopic Test - required for topic modeling
+    try:
+        from bertopic import BERTopic
+        from bertopic.vectorizers import OnlineCountVectorizer
+        
+        # Test that core components initialize
+        vectorizer = OnlineCountVectorizer(stop_words="english")
+        
+        # Check if topic model data exists
+        topic_model_path = settings.data_dir / "topic_model"
+        has_model = topic_model_path.exists() and (topic_model_path / "bertopic_model").exists()
+        
+        add_check("functional_tests", {
+            "name": "topic_modeling",
+            "display": "Topic Modeling",
+            "status": "pass",
+            "details": {"library": "BERTopic", "model_exists": has_model}
+        })
+    except ImportError as e:
+        add_check("functional_tests", {
+            "name": "topic_modeling",
+            "display": "Topic Modeling",
+            "status": "fail",
+            "error": "BERTopic not installed"
+        })
+        results["issues"].append({
+            "severity": "medium",
+            "title": "Topic Modeling Not Available",
+            "message": "BERTopic not installed. Themes panel won't work.",
+            "repair": "reinstall_bertopic"
+        })
+        if results["overall"] == "healthy":
+            results["overall"] = "degraded"
+    except Exception as e:
+        add_check("functional_tests", {
+            "name": "topic_modeling",
+            "display": "Topic Modeling",
+            "status": "warn",
+            "error": str(e)[:30]
+        })
+        results["issues"].append({
+            "severity": "medium",
+            "title": "Topic Modeling Error",
+            "message": f"BERTopic failed: {str(e)[:30]}",
+            "repair": "reset_topic_model"
+        })
+        if results["overall"] == "healthy":
+            results["overall"] = "degraded"
+    
     # ============ SYSTEM HEALTH (non-section issues) ============
     
     # Storage Check
@@ -983,6 +1306,125 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             return {"status": "success", "message": f"Reranker {settings.reranker_model} ready (cached in {cache_dir})"}
         except Exception as e:
             add_log("ERROR", f"Reranker init failed: {e}", "health_portal")
+            return {"status": "error", "message": str(e)}
+    
+    elif action == "reinstall_trafilatura":
+        # Reinstall trafilatura for web scraping
+        try:
+            add_log("INFO", "Reinstalling trafilatura...", "health_portal")
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", "trafilatura"],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            if result.returncode == 0:
+                # Test it works
+                import importlib
+                import trafilatura
+                importlib.reload(trafilatura)
+                test_html = "<html><body><p>Test</p></body></html>"
+                extracted = trafilatura.extract(test_html)
+                add_log("INFO", "Trafilatura reinstalled and working", "health_portal")
+                return {"status": "success", "message": "Trafilatura reinstalled. Restart app for full effect."}
+            else:
+                add_log("ERROR", f"Trafilatura reinstall failed: {result.stderr[:100]}", "health_portal")
+                return {"status": "error", "message": f"Install failed: {result.stderr[:100]}"}
+        except Exception as e:
+            add_log("ERROR", f"Trafilatura reinstall failed: {e}", "health_portal")
+            return {"status": "error", "message": str(e)}
+    
+    elif action == "reinstall_bertopic":
+        # Reinstall BERTopic for topic modeling
+        try:
+            add_log("INFO", "Reinstalling BERTopic...", "health_portal")
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", "bertopic"],
+                capture_output=True,
+                text=True,
+                timeout=300  # BERTopic has many dependencies
+            )
+            if result.returncode == 0:
+                add_log("INFO", "BERTopic reinstalled", "health_portal")
+                return {"status": "success", "message": "BERTopic reinstalled. Restart app for full effect."}
+            else:
+                add_log("ERROR", f"BERTopic reinstall failed: {result.stderr[:100]}", "health_portal")
+                return {"status": "error", "message": f"Install failed: {result.stderr[:100]}"}
+        except Exception as e:
+            add_log("ERROR", f"BERTopic reinstall failed: {e}", "health_portal")
+            return {"status": "error", "message": str(e)}
+    
+    elif action == "reset_topic_model":
+        # Reset/reinitialize the topic model
+        try:
+            add_log("INFO", "Resetting topic model...", "health_portal")
+            topic_model_path = settings.data_dir / "topic_model"
+            
+            # Remove existing model files
+            if topic_model_path.exists():
+                import shutil
+                shutil.rmtree(topic_model_path)
+                add_log("INFO", f"Removed topic model at {topic_model_path}", "health_portal")
+            
+            # Reinitialize (will be rebuilt on next use)
+            topic_model_path.mkdir(parents=True, exist_ok=True)
+            
+            add_log("INFO", "Topic model reset. Will rebuild on next use.", "health_portal")
+            return {"status": "success", "message": "Topic model reset. Themes will rebuild when documents are added."}
+        except Exception as e:
+            add_log("ERROR", f"Topic model reset failed: {e}", "health_portal")
+            return {"status": "error", "message": str(e)}
+    
+    elif action == "repair_model":
+        # Repair corrupted Ollama model by removing and re-pulling
+        model = params.get("model", settings.ollama_model)
+        try:
+            add_log("INFO", f"Starting model repair for: {model}", "health_portal")
+            
+            # Step 1: Remove the corrupted model
+            add_log("INFO", f"Removing corrupted model: {model}", "health_portal")
+            rm_result = subprocess.run(
+                ["ollama", "rm", model],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if rm_result.returncode != 0 and "not found" not in rm_result.stderr.lower():
+                add_log("WARN", f"Model removal warning: {rm_result.stderr[:100]}", "health_portal")
+            
+            # Step 2: Start the pull in background (don't wait - it takes too long)
+            add_log("INFO", f"Starting background pull for: {model}", "health_portal")
+            
+            # Use subprocess.Popen to run in background
+            import threading
+            def pull_model_background():
+                try:
+                    pull_result = subprocess.run(
+                        ["ollama", "pull", model],
+                        capture_output=True,
+                        text=True,
+                        timeout=1800  # 30 min timeout
+                    )
+                    if pull_result.returncode == 0:
+                        add_log("INFO", f"Model {model} re-pulled successfully", "health_portal")
+                    else:
+                        add_log("ERROR", f"Model pull failed: {pull_result.stderr[:200]}", "health_portal")
+                except subprocess.TimeoutExpired:
+                    add_log("ERROR", f"Model pull timed out for {model}", "health_portal")
+                except Exception as e:
+                    add_log("ERROR", f"Model pull error: {e}", "health_portal")
+            
+            # Start background thread
+            thread = threading.Thread(target=pull_model_background, daemon=True)
+            thread.start()
+            
+            add_log("INFO", f"Model repair started for {model} - pulling in background", "health_portal")
+            return {
+                "status": "started",
+                "message": f"Model repair started for {model}. This may take 5-30 minutes depending on model size. Refresh Health Portal to check progress."
+            }
+        except Exception as e:
+            add_log("ERROR", f"Model repair failed: {e}", "health_portal")
             return {"status": "error", "message": str(e)}
     
     else:

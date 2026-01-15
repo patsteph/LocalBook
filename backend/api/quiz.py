@@ -3,12 +3,16 @@
 Generates quizzes from notebook content using structured LLM outputs.
 Tracks user performance with FSRS (Free Spaced Repetition Scheduler).
 """
+import logging
+import traceback
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 import json
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from config import settings
 from services.structured_llm import structured_llm, QuizQuestion
@@ -159,79 +163,89 @@ def fsrs_next_interval(stability: float) -> int:
 @router.post("/generate", response_model=QuizResponse)
 async def generate_quiz(request: GenerateQuizRequest):
     """Generate a quiz from notebook content."""
-    
-    # Get sources for the notebook
-    sources = await source_store.list(request.notebook_id)
-    if not sources:
-        raise HTTPException(status_code=404, detail="No sources found in notebook")
-    
-    # Filter by specific source IDs if provided
-    if request.source_ids:
-        sources = [s for s in sources if s.get("id") in request.source_ids]
-    
-    # Collect content with source names for reference
-    source_names = [s.get("filename", s.get("title", "Unknown")) for s in sources[:5]]
-    if request.from_highlights:
-        # TODO: Get highlighted content from highlights API
-        content = "\n\n".join([f"[Source: {source_names[i]}]\n{s.get('content', '')[:2000]}" for i, s in enumerate(sources[:5])])
-    else:
-        content = "\n\n".join([f"[Source: {source_names[i]}]\n{s.get('content', '')[:2000]}" for i, s in enumerate(sources[:5])])
-    
-    if not content.strip():
-        raise HTTPException(status_code=400, detail="No content available to generate quiz")
-    
-    # Add topic focus if provided
-    if request.topic:
-        content = f"FOCUS TOPIC: {request.topic}\nGenerate questions specifically about this topic.\n\n{content}"
-    
-    # Generate quiz using structured LLM
-    quiz_output = await structured_llm.generate_quiz(
-        content=content,
-        num_questions=request.num_questions,
-        difficulty=request.difficulty,
-        question_types=request.question_types
-    )
-    
-    # Create quiz response
-    import uuid
-    quiz_id = str(uuid.uuid4())[:8]
-    
-    questions = []
-    for i, q in enumerate(quiz_output.questions):
-        questions.append(QuizQuestionResponse(
-            id=f"{quiz_id}_q{i}",
-            question=q.question,
-            answer=q.answer,
-            explanation=q.explanation,
-            difficulty=q.difficulty,
-            question_type=q.question_type,
-            options=q.options,
-            source_reference=q.source_reference
-        ))
-    
-    # Save questions as cards for spaced repetition
-    cards_data = _load_cards(request.notebook_id)
-    for q in questions:
-        cards_data["cards"][q.id] = {
-            "question": q.question,
-            "answer": q.answer,
-            "explanation": q.explanation,
-            "difficulty": 5.0,  # Initial FSRS difficulty
-            "stability": 0.0,  # Will be set on first review
-            "reps": 0,
-            "due": datetime.utcnow().isoformat(),
-            "created": datetime.utcnow().isoformat()
-        }
-    _save_cards(request.notebook_id, cards_data)
-    
-    return QuizResponse(
-        quiz_id=quiz_id,
-        notebook_id=request.notebook_id,
-        topic=quiz_output.topic,
-        questions=questions,
-        generated_at=datetime.utcnow().isoformat(),
-        source_summary=quiz_output.source_summary
-    )
+    try:
+        logger.info(f"[STUDIO] Quiz generation started for notebook={request.notebook_id}, questions={request.num_questions}")
+        
+        # Get sources for the notebook
+        sources = await source_store.list(request.notebook_id)
+        if not sources:
+            raise HTTPException(status_code=404, detail="No sources found in notebook")
+        
+        # Filter by specific source IDs if provided
+        if request.source_ids:
+            sources = [s for s in sources if s.get("id") in request.source_ids]
+        
+        # Collect content with source names for reference
+        source_names = [s.get("filename", s.get("title", "Unknown")) for s in sources[:5]]
+        if request.from_highlights:
+            # TODO: Get highlighted content from highlights API
+            content = "\n\n".join([f"[Source: {source_names[i]}]\n{s.get('content', '')[:2000]}" for i, s in enumerate(sources[:5])])
+        else:
+            content = "\n\n".join([f"[Source: {source_names[i]}]\n{s.get('content', '')[:2000]}" for i, s in enumerate(sources[:5])])
+        
+        if not content.strip():
+            raise HTTPException(status_code=400, detail="No content available to generate quiz")
+        
+        # Add topic focus if provided
+        if request.topic:
+            content = f"FOCUS TOPIC: {request.topic}\nGenerate questions specifically about this topic.\n\n{content}"
+        
+        # Generate quiz using structured LLM
+        quiz_output = await structured_llm.generate_quiz(
+            content=content,
+            num_questions=request.num_questions,
+            difficulty=request.difficulty,
+            question_types=request.question_types
+        )
+        
+        # Create quiz response
+        import uuid
+        quiz_id = str(uuid.uuid4())[:8]
+        
+        questions = []
+        for i, q in enumerate(quiz_output.questions):
+            questions.append(QuizQuestionResponse(
+                id=f"{quiz_id}_q{i}",
+                question=q.question,
+                answer=q.answer,
+                explanation=q.explanation,
+                difficulty=q.difficulty,
+                question_type=q.question_type,
+                options=q.options,
+                source_reference=q.source_reference
+            ))
+        
+        # Save questions as cards for spaced repetition
+        cards_data = _load_cards(request.notebook_id)
+        for q in questions:
+            cards_data["cards"][q.id] = {
+                "question": q.question,
+                "answer": q.answer,
+                "explanation": q.explanation,
+                "difficulty": 5.0,  # Initial FSRS difficulty
+                "stability": 0.0,  # Will be set on first review
+                "reps": 0,
+                "due": datetime.utcnow().isoformat(),
+                "created": datetime.utcnow().isoformat()
+            }
+        _save_cards(request.notebook_id, cards_data)
+        
+        logger.info(f"[STUDIO] Quiz generated successfully: {len(questions)} questions")
+        return QuizResponse(
+            quiz_id=quiz_id,
+            notebook_id=request.notebook_id,
+            topic=quiz_output.topic,
+            questions=questions,
+            generated_at=datetime.utcnow().isoformat(),
+            source_summary=quiz_output.source_summary
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[STUDIO] Quiz generation failed for notebook={request.notebook_id}")
+        logger.error(f"[STUDIO] Error: {type(e).__name__}: {str(e)}")
+        logger.error(f"[STUDIO] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Quiz generation failed: {str(e)}")
 
 
 @router.post("/answer", response_model=AnswerResult)

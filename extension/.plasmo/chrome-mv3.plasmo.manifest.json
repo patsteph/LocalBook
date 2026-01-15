@@ -17,7 +17,7 @@
     },
     "default_popup": "./popup.html"
   },
-  "version": "1.0.5",
+  "version": "1.0.6",
   "name": "LocalBook Companion",
   "description": "Your research companion - capture, summarize, and explore web content with LocalBook",
   "background": {

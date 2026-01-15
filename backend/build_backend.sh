@@ -122,6 +122,10 @@ pyinstaller \
     --hidden-import=pdfplumber \
     --hidden-import=docx \
     --hidden-import=pptx \
+    --collect-all=pptx \
+    --hidden-import=lxml \
+    --collect-all=lxml \
+    --hidden-import=XlsxWriter \
     --hidden-import=openpyxl \
     --hidden-import=xlrd \
     --hidden-import=pandas._config \

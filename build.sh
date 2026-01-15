@@ -123,10 +123,18 @@ if [ ! -f "$BACKEND_EXE" ] || [ "$DO_REBUILD" = true ] || [ "$DO_CLEAN" = true ]
     
     source .venv/bin/activate
     
-    # Install/upgrade dependencies (no quiet mode - show errors)
+    # Install/upgrade dependencies using pip-sync for exact reproducibility
     echo -e "${YELLOW}Installing dependencies...${NC}"
-    pip install --upgrade pip
-    pip install -r requirements.txt
+    pip install --upgrade pip pip-tools
+    
+    # Use pip-sync for exact version matching (removes extra packages too)
+    # Falls back to pip install if pip-sync fails (e.g., hash mismatch on new platform)
+    if pip-sync requirements.txt 2>/dev/null; then
+        echo -e "${GREEN}✓ Dependencies synced exactly${NC}"
+    else
+        echo -e "${YELLOW}pip-sync failed, falling back to pip install...${NC}"
+        pip install -r requirements.txt
+    fi
     
     # Verify critical packages are installed
     echo -e "${YELLOW}Verifying critical packages...${NC}"
@@ -151,12 +159,18 @@ else
 fi
 
 # Step 2: Install frontend dependencies
-echo -e "\n${YELLOW}Step 2/3: Installing frontend dependencies...${NC}"
+echo -e "\n${YELLOW}Step 2/4: Installing frontend dependencies...${NC}"
 npm install --silent
 echo -e "${GREEN}✓ Frontend dependencies ready${NC}"
 
-# Step 3: Build Tauri app
-echo -e "\n${YELLOW}Step 3/3: Building Tauri application...${NC}"
+# Step 3: Clean and rebuild frontend (prevents stale cache issues)
+echo -e "\n${YELLOW}Step 3/4: Rebuilding frontend (clean)...${NC}"
+rm -rf dist/
+npm run build
+echo -e "${GREEN}✓ Frontend rebuilt${NC}"
+
+# Step 4: Build Tauri app
+echo -e "\n${YELLOW}Step 4/4: Building Tauri application...${NC}"
 npm run tauri build
 
 # Copy app to easy location

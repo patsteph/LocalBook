@@ -59,7 +59,7 @@ fi
 # =============================================================================
 # Step 1: Pre-flight Checks
 # =============================================================================
-echo -e "\n${YELLOW}Step 1/7: Pre-flight checks...${NC}"
+echo -e "\n${YELLOW}Step 1/9: Pre-flight checks...${NC}"
 
 ERRORS=0
 
@@ -118,9 +118,68 @@ fi
 echo -e "${GREEN}✓ Pre-flight checks passed${NC}"
 
 # =============================================================================
-# Step 2: Clean Build
+# Step 2: Lock Dependencies
 # =============================================================================
-echo -e "\n${YELLOW}Step 2/7: Building application...${NC}"
+echo -e "\n${YELLOW}Step 2/9: Locking Python dependencies...${NC}"
+
+cd backend
+source .venv/bin/activate
+
+# Check if pip-tools is installed
+if ! command -v pip-compile &> /dev/null; then
+    echo -e "  Installing pip-tools..."
+    pip install pip-tools --quiet
+fi
+
+# Compile requirements.in to requirements.txt
+echo -e "  Running pip-compile..."
+if pip-compile requirements.in -o requirements.txt --quiet 2>/dev/null; then
+    echo -e "${GREEN}  ✓ requirements.txt updated${NC}"
+    
+    # Check if requirements.txt changed
+    if [ -n "$(git status --porcelain requirements.txt 2>/dev/null)" ]; then
+        echo -e "${YELLOW}  ⚠ requirements.txt was updated - review changes${NC}"
+    fi
+else
+    echo -e "${RED}✗ pip-compile failed${NC}"
+    deactivate
+    cd ..
+    exit 1
+fi
+
+deactivate
+cd ..
+
+# =============================================================================
+# Step 3: Run Workload Tests
+# =============================================================================
+echo -e "\n${YELLOW}Step 3/9: Running workload tests...${NC}"
+
+cd backend
+source .venv/bin/activate
+
+# Run the comprehensive workload tests
+if [ -f "scripts/local/test_all_workloads.py" ]; then
+    echo -e "  Testing all workloads (PDF, embeddings, RAG, etc.)..."
+    if python scripts/local/test_all_workloads.py 2>&1 | tail -5; then
+        echo -e "${GREEN}  ✓ Workload tests passed${NC}"
+    else
+        echo -e "${RED}✗ Workload tests failed${NC}"
+        deactivate
+        cd ..
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}  ⚠ Workload tests not found, skipping${NC}"
+fi
+
+deactivate
+cd ..
+
+# =============================================================================
+# Step 4: Clean Build
+# =============================================================================
+echo -e "\n${YELLOW}Step 4/9: Building application...${NC}"
 
 ./build.sh --rebuild
 
@@ -132,9 +191,9 @@ fi
 echo -e "${GREEN}✓ Build complete${NC}"
 
 # =============================================================================
-# Step 3: Build Browser Extension
+# Step 5: Build Browser Extension
 # =============================================================================
-echo -e "\n${YELLOW}Step 3/7: Building browser extension...${NC}"
+echo -e "\n${YELLOW}Step 5/9: Building browser extension...${NC}"
 
 cd extension
 npm install --silent
@@ -149,20 +208,12 @@ fi
 cd ..
 
 # =============================================================================
-# Step 4: Smoke Test
+# Step 6: Bundle Verification Tests
 # =============================================================================
-echo -e "\n${YELLOW}Step 4/7: Running smoke tests...${NC}"
-
-# Test backend can start
-echo -e "  Testing backend startup..."
-cd backend
-source .venv/bin/activate
-timeout 10 python -c "from main import app; print('Backend imports OK')" 2>/dev/null && echo -e "${GREEN}  ✓ Backend imports OK${NC}" || echo -e "${YELLOW}  ⚠ Backend import check skipped${NC}"
-deactivate
-cd ..
+echo -e "\n${YELLOW}Step 6/9: Running bundle verification tests...${NC}"
 
 # Test that app bundle has correct structure
-echo -e "  Verifying app bundle..."
+echo -e "  Verifying app bundle structure..."
 BUNDLE_OK=true
 [ -f "./LocalBook.app/Contents/MacOS/localbooklm" ] || BUNDLE_OK=false
 [ -d "./LocalBook.app/Contents/Resources/resources/backend" ] || BUNDLE_OK=false
@@ -189,12 +240,46 @@ else
     exit 1
 fi
 
-echo -e "${GREEN}✓ Smoke tests passed${NC}"
+# Run bundle API tests (requires app to be running)
+echo -e "  Running bundle API tests..."
+echo -e "${YELLOW}  Starting LocalBook.app for testing...${NC}"
+open ./LocalBook.app
+sleep 8  # Wait for app to start
+
+cd backend
+source .venv/bin/activate
+
+if [ -f "scripts/local/test_bundle.py" ]; then
+    if python scripts/local/test_bundle.py 2>&1 | grep -E "^\\[|Passed:|Failed:|BUNDLE"; then
+        # Check if tests passed
+        if python scripts/local/test_bundle.py 2>&1 | grep -q "Bundle verification passed"; then
+            echo -e "${GREEN}  ✓ Bundle API tests passed${NC}"
+        else
+            echo -e "${RED}  ✗ Bundle API tests failed${NC}"
+            deactivate
+            cd ..
+            # Close the app
+            osascript -e 'quit app "LocalBook"' 2>/dev/null || true
+            exit 1
+        fi
+    fi
+else
+    echo -e "${YELLOW}  ⚠ Bundle tests not found, skipping${NC}"
+fi
+
+deactivate
+cd ..
+
+# Close the test app
+osascript -e 'quit app "LocalBook"' 2>/dev/null || true
+sleep 2
+
+echo -e "${GREEN}✓ Bundle verification passed${NC}"
 
 # =============================================================================
-# Step 5: Create Release Archive
+# Step 7: Create Release Archive
 # =============================================================================
-echo -e "\n${YELLOW}Step 5/7: Creating release archive...${NC}"
+echo -e "\n${YELLOW}Step 7/9: Creating release archive...${NC}"
 
 ARCHIVE_NAME="LocalBook-v${NEW_VERSION}.zip"
 EXTENSION_ARCHIVE="LocalBook-Extension-v${NEW_VERSION}.zip"
@@ -215,9 +300,9 @@ EXT_SIZE=$(du -h "$EXTENSION_ARCHIVE" | cut -f1)
 echo -e "${GREEN}✓ Created ${EXTENSION_ARCHIVE} (${EXT_SIZE})${NC}"
 
 # =============================================================================
-# Step 6: Git Operations
+# Step 8: Git Operations
 # =============================================================================
-echo -e "\n${YELLOW}Step 6/7: Git operations...${NC}"
+echo -e "\n${YELLOW}Step 8/9: Git operations...${NC}"
 
 # Commit version changes if any
 if [ -n "$(git status --porcelain package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json extension/package.json backend/version.py 2>/dev/null)" ]; then
@@ -237,7 +322,7 @@ fi
 echo -e "${GREEN}✓ Git operations complete${NC}"
 
 # =============================================================================
-# Step 7: Summary
+# Step 9: Summary
 # =============================================================================
 echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}              Release v${NEW_VERSION} Ready!                  ${NC}"

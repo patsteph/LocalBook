@@ -3,11 +3,15 @@
 Uses professional-grade templates from output_templates.py to ensure
 world-class document quality across all output types.
 """
+import logging
+import traceback
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import json
+
+logger = logging.getLogger(__name__)
 
 from storage.skills_store import skills_store
 from storage.source_store import source_store
@@ -132,7 +136,10 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[STUDIO] Content generation failed for skill={request.skill_id}, notebook={request.notebook_id}")
+        logger.error(f"[STUDIO] Error: {type(e).__name__}: {str(e)}")
+        logger.error(f"[STUDIO] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Content generation failed: {str(e)}")
 
 
 @router.post("/generate/stream")
@@ -212,7 +219,9 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[STUDIO] Content streaming failed for skill={request.skill_id}, notebook={request.notebook_id}")
+        logger.error(f"[STUDIO] Error: {type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Content streaming failed: {str(e)}")
 
 
 @router.get("/list/{notebook_id}")

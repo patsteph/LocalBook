@@ -7,9 +7,13 @@ Generates visual summaries including:
 
 v1.0.5: Added content analysis and smart template routing
 """
+import logging
+import traceback
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 from services.structured_llm import structured_llm, MermaidDiagram
 from services.visual_analyzer import visual_analyzer
@@ -67,43 +71,53 @@ class FlowchartRequest(BaseModel):
 @router.post("/summary", response_model=VisualSummaryResponse)
 async def generate_visual_summary(request: GenerateVisualRequest):
     """Generate a visual summary with multiple diagram types."""
-    
-    # Get sources
-    sources = await source_store.list(request.notebook_id)
-    if not sources:
-        raise HTTPException(status_code=404, detail="No sources found in notebook")
-    
-    # Filter by source IDs if provided
-    if request.source_ids:
-        sources = [s for s in sources if s.get("id") in request.source_ids]
-    
-    # Collect content
-    content = "\n\n".join([s.get("content", "")[:3000] for s in sources[:5]])
-    
-    if request.focus_topic:
-        content = f"Focus on: {request.focus_topic}\n\n{content}"
-    
-    # Generate visual summary
-    result = await structured_llm.generate_visual_summary(
-        content=content,
-        diagram_types=request.diagram_types
-    )
-    
-    diagrams = [
-        DiagramResponse(
-            diagram_type=d.diagram_type,
-            code=d.code,
-            title=d.title,
-            description=d.description
+    try:
+        logger.info(f"[STUDIO] Visual summary started for notebook={request.notebook_id}, types={request.diagram_types}")
+        
+        # Get sources
+        sources = await source_store.list(request.notebook_id)
+        if not sources:
+            raise HTTPException(status_code=404, detail="No sources found in notebook")
+        
+        # Filter by source IDs if provided
+        if request.source_ids:
+            sources = [s for s in sources if s.get("id") in request.source_ids]
+        
+        # Collect content
+        content = "\n\n".join([s.get("content", "")[:3000] for s in sources[:5]])
+        
+        if request.focus_topic:
+            content = f"Focus on: {request.focus_topic}\n\n{content}"
+        
+        # Generate visual summary
+        result = await structured_llm.generate_visual_summary(
+            content=content,
+            diagram_types=request.diagram_types
         )
-        for d in result.diagrams
-    ]
-    
-    return VisualSummaryResponse(
-        notebook_id=request.notebook_id,
-        diagrams=diagrams,
-        key_points=result.key_points
-    )
+        
+        diagrams = [
+            DiagramResponse(
+                diagram_type=d.diagram_type,
+                code=d.code,
+                title=d.title,
+                description=d.description
+            )
+            for d in result.diagrams
+        ]
+        
+        logger.info(f"[STUDIO] Visual summary completed: {len(diagrams)} diagrams generated")
+        return VisualSummaryResponse(
+            notebook_id=request.notebook_id,
+            diagrams=diagrams,
+            key_points=result.key_points
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[STUDIO] Visual summary failed for notebook={request.notebook_id}")
+        logger.error(f"[STUDIO] Error: {type(e).__name__}: {str(e)}")
+        logger.error(f"[STUDIO] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Visual generation failed: {str(e)}")
 
 
 @router.post("/mindmap")

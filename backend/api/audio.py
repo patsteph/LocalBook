@@ -1,4 +1,6 @@
 """Audio API endpoints"""
+import logging
+import traceback
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -6,6 +8,8 @@ from typing import Optional, List
 from pathlib import Path
 from services.audio_generator import audio_service
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -37,6 +41,7 @@ class AudioGeneration(BaseModel):
 async def generate_audio(request: AudioGenerateRequest):
     """Generate podcast audio from notebook"""
     try:
+        logger.info(f"[STUDIO] Podcast generation started for notebook={request.notebook_id}, duration={request.duration_minutes}min")
         result = await audio_service.generate(
             notebook_id=request.notebook_id,
             topic=request.topic,
@@ -46,9 +51,13 @@ async def generate_audio(request: AudioGenerateRequest):
             host2_gender=request.host2_gender,
             accent=request.accent
         )
+        logger.info(f"[STUDIO] Podcast generation completed: audio_id={result.get('audio_id', 'unknown')}")
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[STUDIO] Podcast generation failed for notebook={request.notebook_id}")
+        logger.error(f"[STUDIO] Error: {type(e).__name__}: {str(e)}")
+        logger.error(f"[STUDIO] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Podcast generation failed: {str(e)}")
 
 
 # NOTE: Specific routes must come BEFORE /{notebook_id} to avoid route conflicts
