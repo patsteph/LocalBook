@@ -60,6 +60,10 @@ async def query(chat_query: ChatQuery):
     
     v0.60: Automatically detects complex queries and uses orchestrator for decomposition.
     """
+    # Clear visual cache when new question is asked
+    from services.visual_cache import visual_cache
+    await visual_cache.clear_notebook(chat_query.notebook_id)
+    
     try:
         # v0.60: Use orchestrator for complex query detection and decomposition
         if chat_query.use_orchestrator:
@@ -94,6 +98,13 @@ async def query(chat_query: ChatQuery):
 @router.post("/query/stream")
 async def query_stream(chat_query: ChatQuery):
     """Query the RAG system with streaming response"""
+    
+    # CRITICAL: Clear visual cache for this notebook when new question is asked
+    # This prevents stale visuals from a previous question being shown
+    from services.visual_cache import visual_cache
+    cleared = await visual_cache.clear_notebook(chat_query.notebook_id)
+    if cleared > 0:
+        print(f"[Chat] Cleared {cleared} stale visual cache entries for notebook {chat_query.notebook_id}")
     
     async def generate():
         try:

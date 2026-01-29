@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { quizService, Quiz, ReviewCard, QuizStats } from '../services/quiz';
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
+import { BookmarkButton } from './shared/BookmarkButton';
 
 interface QuizPanelProps {
   notebookId: string;
@@ -415,9 +416,26 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId }) => {
             })}
           </div>
 
-          <Button onClick={() => { setQuiz(null); setQuizComplete(false); }} className="w-full">
-            Generate New Quiz
-          </Button>
+          <div className="flex gap-2">
+            <BookmarkButton
+              notebookId={notebookId}
+              type="note"
+              title={`Quiz: ${getScore().correct}/${getScore().total} - ${topic || 'General'}`}
+              content={{
+                text: `Quiz Results: ${getScore().correct}/${getScore().total} (${Math.round((getScore().correct / getScore().total) * 100)}%)`,
+                topic: topic || 'General',
+                difficulty,
+                questions: quiz.questions.map(q => ({
+                  question: q.question,
+                  answer: q.answer,
+                  correct: quizResults.find(r => r.questionId === q.id)?.correct,
+                })),
+              }}
+            />
+            <Button onClick={() => { setQuiz(null); setQuizComplete(false); }} className="flex-1">
+              Generate New Quiz
+            </Button>
+          </div>
         </div>
       )}
 

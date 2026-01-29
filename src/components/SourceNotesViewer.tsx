@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { sourceViewerService, SourceContent } from '../services/sourceViewer';
 import { sourceService } from '../services/sources';
 import { highlightService } from '../services/highlights';
+import { findingsService } from '../services/findings';
 import { Highlight } from '../types';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
@@ -187,6 +188,21 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
       });
 
       setHighlights([...highlights, newHighlight]);
+      
+      // Also save to Findings for unified bookmark view
+      await findingsService.saveHighlight(
+        notebookId,
+        annotationText || pendingHighlight.text.substring(0, 50) + (pendingHighlight.text.length > 50 ? '...' : ''),
+        {
+          text: pendingHighlight.text,
+          source_id: sourceId,
+          source_name: sourceName,
+        }
+      );
+      
+      // Dispatch event to refresh Findings panel
+      window.dispatchEvent(new CustomEvent('findingsUpdated'));
+      
       setShowAnnotationModal(false);
       setPendingHighlight(null);
       setAnnotationText('');

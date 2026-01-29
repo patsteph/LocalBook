@@ -108,7 +108,10 @@ class MemoryAgent:
         return result
     
     def _build_extraction_prompt(self, request: MemoryExtractionRequest) -> str:
-        """Build prompt for memory extraction"""
+        """Build prompt for memory extraction.
+        
+        v1.1.0: Added example for better small model performance per PROMPT_AUDIT.md
+        """
         return f"""Analyze this user message and extract any memorable information.
 
 User message: "{request.message}"
@@ -131,6 +134,11 @@ Rules:
 - user_facts should be concise key-value pairs
 - importance: critical=always remember, high=usually relevant, medium=sometimes useful, low=nice to know
 - If nothing memorable, return empty arrays and null
+
+EXAMPLE:
+Input: "I'm working on the Q2 product launch with Sarah. The deadline is March 15th."
+Output:
+{{"user_facts": [{{"key": "current_project", "value": "Q2 product launch", "category": "project_context", "importance": "high"}}, {{"key": "deadline", "value": "March 15th", "category": "important_date", "importance": "critical"}}], "topics_mentioned": ["product launch", "Q2"], "entities_mentioned": ["Sarah"], "should_remember_long_term": "User is working on Q2 product launch with Sarah, deadline March 15th"}}
 
 Respond ONLY with the JSON, no other text."""
     

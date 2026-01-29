@@ -4,12 +4,96 @@ import { visualService, Diagram } from '../services/visual';
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { MermaidRenderer } from './shared/MermaidRenderer';
+import { SVGRenderer } from './shared/SVGRenderer';
+import { BookmarkButton } from './shared/BookmarkButton';
+
+// Phase 4: Refinement Chat Component
+interface RefinementChatProps {
+  notebookId: string;
+  currentCode: string;
+  colorTheme: string;
+  onRefined: (newCode: string) => void;
+}
+
+const QUICK_REFINEMENTS = [
+  { label: '✂️ Simpler', instruction: 'make it simpler with fewer nodes' },
+  { label: '📝 More Detail', instruction: 'add more detail and sub-items' },
+  { label: '↔️ Horizontal', instruction: 'change to horizontal layout' },
+  { label: '↕️ Vertical', instruction: 'change to vertical layout' },
+];
+
+const RefinementChat: React.FC<RefinementChatProps> = ({ notebookId, currentCode, colorTheme, onRefined }) => {
+  const [refineInput, setRefineInput] = useState('');
+  const [refining, setRefining] = useState(false);
+  const [lastChange, setLastChange] = useState<string | null>(null);
+
+  const handleRefine = async (instruction: string) => {
+    if (!instruction.trim()) return;
+    setRefining(true);
+    setLastChange(null);
+    try {
+      const result = await visualService.refineVisual(notebookId, currentCode, instruction, colorTheme);
+      if (result.success && result.code !== currentCode) {
+        onRefined(result.code);
+        setLastChange(result.changes_made);
+        setRefineInput('');
+      }
+    } catch (err) {
+      console.error('Refinement failed:', err);
+    } finally {
+      setRefining(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 space-y-2">
+      <div className="flex gap-1 flex-wrap">
+        {QUICK_REFINEMENTS.map((r) => (
+          <button
+            key={r.label}
+            onClick={() => handleRefine(r.instruction)}
+            disabled={refining}
+            className="px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50"
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={refineInput}
+          onChange={(e) => setRefineInput(e.target.value)}
+          placeholder="Refine: 'focus on X', 'add connections'..."
+          className="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+          onKeyDown={(e) => e.key === 'Enter' && handleRefine(refineInput)}
+        />
+        <button
+          onClick={() => handleRefine(refineInput)}
+          disabled={refining || !refineInput.trim()}
+          className="px-3 py-1 text-xs rounded bg-purple-500 text-white hover:bg-purple-600 disabled:opacity-50"
+        >
+          {refining ? '...' : '✨'}
+        </button>
+      </div>
+      {lastChange && (
+        <p className="text-xs text-green-600 dark:text-green-400">✓ {lastChange}</p>
+      )}
+    </div>
+  );
+};
 
 // Helper to clean mermaid code and remove malformed statements
 const cleanMermaidCode = (code: string): string => {
   if (!code) return code;
   return code
     .split('\n')
+    .map(line => {
+      // Fix spacing issues: "Branch1 ((text))" -> "Branch1((text))"
+      // Also handles "Item (text)" -> "Item(text)" for mindmap nodes
+      return line.replace(/(\w)\s+\(\(/g, '$1((')  // Fix double parens
+                 .replace(/(\w)\s+\(/g, '$1(');     // Fix single parens
+    })
     .filter(line => {
       const trimmed = line.trim().toLowerCase();
       // Remove style lines that start with numbers (invalid syntax)
@@ -92,6 +176,19 @@ const ADVANCED_TEMPLATES = {
   ],
 };
 
+// Color themes for diagrams - Napkin.ai style palettes
+type ColorTheme = 'auto' | 'vibrant' | 'ocean' | 'sunset' | 'forest' | 'monochrome' | 'pastel';
+
+const COLOR_THEMES: { id: ColorTheme; icon: string; label: string; colors: string[] }[] = [
+  { id: 'auto', icon: '✨', label: 'Auto', colors: ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6'] },
+  { id: 'vibrant', icon: '🌈', label: 'Vibrant', colors: ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6'] },
+  { id: 'ocean', icon: '🌊', label: 'Ocean', colors: ['#0ea5e9', '#06b6d4', '#14b8a6', '#0d9488', '#0891b2'] },
+  { id: 'sunset', icon: '🌅', label: 'Sunset', colors: ['#f97316', '#fb923c', '#fbbf24', '#f59e0b', '#dc2626'] },
+  { id: 'forest', icon: '🌲', label: 'Forest', colors: ['#22c55e', '#16a34a', '#15803d', '#84cc16', '#65a30d'] },
+  { id: 'monochrome', icon: '⬛', label: 'Mono', colors: ['#1f2937', '#374151', '#4b5563', '#6b7280', '#9ca3af'] },
+  { id: 'pastel', icon: '🎀', label: 'Pastel', colors: ['#fecaca', '#fed7aa', '#fef08a', '#bbf7d0', '#bfdbfe', '#ddd6fe'] },
+];
+
 // Example prompts to show users what they can type
 const EXAMPLE_PROMPTS = [
   'Compare AWS, Azure, and GCP on price and scalability',
@@ -103,6 +200,7 @@ const EXAMPLE_PROMPTS = [
 
 export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialContent = '' }) => {
   const [loading, setLoading] = useState(false);
+  const [loadingAlternatives, setLoadingAlternatives] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diagrams, setDiagrams] = useState<Diagram[]>([]);
   const [keyPoints, setKeyPoints] = useState<string[]>([]);
@@ -113,6 +211,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [showLightbox, setShowLightbox] = useState(false);
+  const [colorTheme, setColorTheme] = useState<ColorTheme>('auto');
   const diagramRef = useRef<HTMLDivElement>(null);
   const lightboxRef = useRef<HTMLDivElement>(null);
 
@@ -137,19 +236,25 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
     try {
       // Use selected template or diagram type
       const templateToUse = selectedTemplate || diagramType;
-      const result = await visualService.generateSummary(notebookId, [templateToUse], topic || undefined);
+      const result = await visualService.generateSummary(notebookId, [templateToUse], topic || undefined, colorTheme);
       
       // Validate diagrams before showing - filter out ones that won't render
       const rawDiagrams = result.diagrams || [];
       const validatedDiagrams: Diagram[] = [];
       
       for (const diagram of rawDiagrams) {
-        const cleanedCode = cleanMermaidCode(diagram.code);
-        const isValid = await validateMermaidCode(cleanedCode);
-        if (isValid) {
-          validatedDiagrams.push({ ...diagram, code: cleanedCode });
-        } else {
-          console.warn('[Visual] Filtered out invalid diagram:', diagram.diagram_type);
+        // SVG diagrams don't need Mermaid validation
+        if (diagram.svg || diagram.render_type === 'svg') {
+          validatedDiagrams.push(diagram);
+        } else if (diagram.code) {
+          // Validate Mermaid code
+          const cleanedCode = cleanMermaidCode(diagram.code);
+          const isValid = await validateMermaidCode(cleanedCode);
+          if (isValid) {
+            validatedDiagrams.push({ ...diagram, code: cleanedCode });
+          } else {
+            console.warn('[Visual] Filtered out invalid diagram:', diagram.diagram_type);
+          }
         }
       }
       
@@ -174,36 +279,69 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
     }
     setLoading(true);
     setError(null);
+    setDiagrams([]);
+    setSelectedDiagram(null);
+    
     try {
-      // Call the smart endpoint that auto-picks the best template
-      const result = await visualService.generateSmart(notebookId, topic);
-      
-      // Validate diagrams before showing - filter out ones that won't render
-      const rawDiagrams = result.diagrams || [];
-      const validatedDiagrams: Diagram[] = [];
-      
-      for (const diagram of rawDiagrams) {
-        // Clean the code first
-        const cleanedCode = cleanMermaidCode(diagram.code);
-        const isValid = await validateMermaidCode(cleanedCode);
-        if (isValid) {
-          validatedDiagrams.push({ ...diagram, code: cleanedCode });
-        } else {
-          console.warn('[Visual] Filtered out invalid diagram:', diagram.diagram_type);
+      // Use streaming endpoint - primary appears first, alternatives follow
+      await visualService.generateSmartStream(
+        notebookId,
+        topic,
+        colorTheme,
+        // onPrimary - show immediately, then start loading alternatives
+        async (diagram) => {
+          // SVG diagrams don't need Mermaid validation
+          if (diagram.svg || diagram.render_type === 'svg') {
+            setDiagrams([diagram]);
+            setSelectedDiagram(diagram);
+            setLoading(false);
+            setLoadingAlternatives(true); // Start loading alternatives indicator
+            return;
+          }
+          
+          // Mermaid diagrams need validation
+          const cleanedCode = cleanMermaidCode(diagram.code || '');
+          const isValid = await validateMermaidCode(cleanedCode);
+          if (isValid) {
+            const validDiagram = { ...diagram, code: cleanedCode };
+            setDiagrams([validDiagram]);
+            setSelectedDiagram(validDiagram);
+            setLoading(false);
+          } else {
+            console.warn('[Visual] Primary diagram failed validation:', cleanedCode.substring(0, 200));
+            const rawDiagram = { ...diagram, code: cleanedCode };
+            setDiagrams([rawDiagram]);
+            setSelectedDiagram(rawDiagram);
+            setLoading(false);
+          }
+        },
+        // onAlternative - add to list
+        async (diagram) => {
+          // SVG diagrams don't need validation
+          if (diagram.svg || diagram.render_type === 'svg') {
+            setDiagrams(prev => [...prev, diagram]);
+            return;
+          }
+          
+          const cleanedCode = cleanMermaidCode(diagram.code || '');
+          const isValid = await validateMermaidCode(cleanedCode);
+          if (isValid) {
+            setDiagrams(prev => [...prev, { ...diagram, code: cleanedCode }]);
+          }
+        },
+        // onDone
+        () => {
+          setLoading(false);
+          setLoadingAlternatives(false);
+        },
+        // onError
+        (errorMsg) => {
+          setError(errorMsg);
+          setLoading(false);
         }
-      }
-      
-      setDiagrams(validatedDiagrams);
-      setKeyPoints(result.key_points || []);
-      if (validatedDiagrams.length > 0) {
-        setSelectedDiagram(validatedDiagrams[0]);
-      } else if (rawDiagrams.length > 0) {
-        // All diagrams failed validation - show error
-        setError('Generated diagrams had syntax errors. Try regenerating.');
-      }
+      );
     } catch (err: any) {
       setError(err.message || 'Failed to generate visual');
-    } finally {
       setLoading(false);
     }
   };
@@ -354,6 +492,30 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
           ))}
         </div>
         
+        {/* Color Theme Selector */}
+        <div className="flex items-center gap-1 mt-2">
+          <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">Theme:</span>
+          {COLOR_THEMES.map((theme) => (
+            <button
+              key={theme.id}
+              onClick={() => setColorTheme(theme.id)}
+              title={theme.label}
+              className={`w-6 h-6 rounded-full flex items-center justify-center text-xs transition-all ${
+                colorTheme === theme.id
+                  ? 'ring-2 ring-offset-1 ring-purple-500 scale-110'
+                  : 'hover:scale-105 opacity-70 hover:opacity-100'
+              }`}
+              style={{
+                background: theme.id === 'auto' 
+                  ? 'linear-gradient(135deg, #3b82f6, #22c55e, #f59e0b)' 
+                  : `linear-gradient(135deg, ${theme.colors[0]}, ${theme.colors[Math.floor(theme.colors.length/2)]})`
+              }}
+            >
+              <span className="sr-only">{theme.label}</span>
+            </button>
+          ))}
+        </div>
+
         {/* More Templates Toggle */}
         <button
           onClick={() => setShowAdvanced(!showAdvanced)}
@@ -462,12 +624,22 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
                 🎨 SVG
               </button>
               <button
-                onClick={() => copyCodeToClipboard(selectedDiagram.code)}
+                onClick={() => copyCodeToClipboard(selectedDiagram.code || selectedDiagram.svg || '')}
                 className="px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
-                title="Copy Mermaid code"
+                title="Copy code"
               >
                 {copied === 'code' ? '✓ Copied!' : '📝 Code'}
               </button>
+              <BookmarkButton
+                notebookId={notebookId}
+                type="visual"
+                title={selectedDiagram.title || 'Visual'}
+                content={{
+                  type: selectedDiagram.svg ? 'svg' : 'mermaid',
+                  code: selectedDiagram.svg || selectedDiagram.code || '',
+                  description: selectedDiagram.description,
+                }}
+              />
             </div>
           </div>
           
@@ -482,7 +654,12 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
             className="cursor-zoom-in relative group"
             title="Click to view larger"
           >
-            <MermaidRenderer code={selectedDiagram.code} className="border border-gray-200 dark:border-gray-700" />
+            {/* Use SVGRenderer for SVG visuals, MermaidRenderer for legacy Mermaid code */}
+            {selectedDiagram.svg ? (
+              <SVGRenderer svg={selectedDiagram.svg} className="border border-gray-200 dark:border-gray-700 rounded-lg" />
+            ) : (
+              <MermaidRenderer code={selectedDiagram.code || ''} className="border border-gray-200 dark:border-gray-700" />
+            )}
             <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 dark:group-hover:bg-white/5 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
               <span className="bg-black/70 text-white text-xs px-2 py-1 rounded">
                 🔍 Click to expand
@@ -490,30 +667,44 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
             </div>
           </div>
           
-          {/* Regenerate hint */}
-          <p className="text-xs text-gray-400 dark:text-gray-500 text-center mt-2">
-            💡 Edit your description above and click Generate again to refine
-          </p>
+          {/* Phase 4: Refinement Chat - only for Mermaid diagrams */}
+          {selectedDiagram.code && !selectedDiagram.svg && (
+            <RefinementChat 
+              notebookId={notebookId}
+              currentCode={selectedDiagram.code}
+              colorTheme={colorTheme}
+              onRefined={(newCode) => {
+                setSelectedDiagram({ ...selectedDiagram, code: newCode });
+              }}
+            />
+          )}
 
-          {/* Mermaid Code Block (collapsible) */}
+          {/* Code Block (collapsible) - shows Mermaid code or SVG code */}
           <details className="mt-2">
             <summary className="text-xs text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-300">
-              📝 View Mermaid code
+              📝 View {selectedDiagram.svg ? 'SVG' : 'Mermaid'} code
             </summary>
             <div className="bg-gray-900 rounded-lg p-3 overflow-x-auto mt-2">
-              <pre className="text-xs text-green-400 font-mono whitespace-pre-wrap">
-                {selectedDiagram.code}
+              <pre className="text-xs text-green-400 font-mono whitespace-pre-wrap max-h-60 overflow-y-auto">
+                {selectedDiagram.code || selectedDiagram.svg || ''}
               </pre>
             </div>
           </details>
         </div>
       )}
 
-      {/* Visual Options Selector - Shows when we have multiple options */}
-      {diagrams.length > 1 && (
+      {/* Visual Options Selector - Shows when we have options or loading alternatives */}
+      {(diagrams.length > 1 || loadingAlternatives) && (
         <div className="space-y-2">
           <label className="block text-xs font-medium text-gray-500 dark:text-gray-400">
-            Choose a style ({diagrams.length} options)
+            {loadingAlternatives ? (
+              <span className="flex items-center gap-2">
+                <span className="animate-pulse">●</span>
+                Loading alternative styles...
+              </span>
+            ) : (
+              `Choose a style (${diagrams.length} options)`
+            )}
           </label>
           <div className="grid grid-cols-3 gap-2">
             {diagrams.map((d, i) => (
@@ -530,10 +721,22 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
                   {(d as any).template_name || d.diagram_type}
                 </div>
                 <div className="text-gray-500 dark:text-gray-400 text-[10px] mt-0.5">
-                  {d.diagram_type}
+                  {i === 0 ? '⭐ Recommended' : d.diagram_type}
                 </div>
               </button>
             ))}
+            {loadingAlternatives && (
+              <>
+                <div className="p-2 text-xs rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 animate-pulse">
+                  <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4 mb-1"></div>
+                  <div className="h-3 bg-gray-100 dark:bg-gray-800 rounded w-1/2"></div>
+                </div>
+                <div className="p-2 text-xs rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 animate-pulse">
+                  <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4 mb-1"></div>
+                  <div className="h-3 bg-gray-100 dark:bg-gray-800 rounded w-1/2"></div>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -571,7 +774,11 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
             
             {/* Full-size diagram */}
             <div className="min-w-[600px]">
-              <MermaidRenderer code={selectedDiagram.code} className="border border-gray-200 dark:border-gray-700" />
+              {selectedDiagram.svg ? (
+                <SVGRenderer svg={selectedDiagram.svg} className="border border-gray-200 dark:border-gray-700 rounded-lg" />
+              ) : (
+                <MermaidRenderer code={selectedDiagram.code || ''} className="border border-gray-200 dark:border-gray-700" />
+              )}
             </div>
             
             {/* Export buttons in lightbox */}

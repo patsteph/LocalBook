@@ -277,81 +277,284 @@ class VisualAnalyzer:
         return "concept_map", 0.3
     
     async def analyze_with_llm(self, text: str) -> dict:
-        """Use LLM to semantically understand content and suggest the best visualization.
+        """Napkin-style two-stage content analysis.
         
-        This is for when regex patterns don't detect enough - we use AI to "understand"
-        what the user is describing and suggest the most appropriate visual.
+        Stage 1: Extract what's IN the content (themes, entities, relationships, sequences, dates)
+        Stage 2: Pick visual types based on what was actually found
+        
+        This is smarter than asking "what type?" - we first understand the content structure.
         
         Returns: dict with visual_type, reasoning, and suggested_template
         """
         import httpx
         from config import settings
         
-        prompt = f"""Analyze this content and determine the BEST way to visualize it.
+        # Stage 1: Extract content structure (what's actually in the text)
+        # SIMPLIFIED extraction - focus on getting the main sections/themes right
+        
+        # ROBUST SECTION DETECTION - comprehensive patterns for any format
+        detected_sections = []
+        detection_method = None
+        
+        # All patterns to try - order matters (more specific first)
+        patterns = [
+            # Roman numerals: I. Title, II. Title
+            (r'^[IVX]+\.\s*(.+?)(?:\n|$)', "roman-numeral"),
+            # Bold numbered: **1. Title**
+            (r'\*\*\d+\.\s*([^*\n]+)\*\*', "numbered-bold"),
+            # Numbered at line start: 1. Title or 1. **Title**
+            (r'^\d+\.\s*\*?\*?([^*\n]+)', "numbered-plain"),
+            # Letter lists: A. Title, B. Title or a) Title, b) Title
+            (r'^[A-Za-z][.)]\s*\*?\*?([^*\n]+)', "letter-list"),
+            # Emoji bullets: 🔹 Title, ✅ Title, 📌 Title (common LLM patterns)
+            (r'^[\U0001F300-\U0001F9FF\u2600-\u26FF\u2700-\u27BF]+\s*\*?\*?(.+?)(?:\n|$)', "emoji-bullet"),
+            # Bold bullets: - **Title** or * **Title**
+            (r'^[-*]\s*\*\*([^*\n]+)\*\*', "bullet-bold"),
+            # Plain bullets with content: - Title (at least 10 chars)
+            (r'^[-*•]\s+([A-Z][^*\n]{10,})', "bullet-plain"),
+            # Markdown headers: ### Title or ## Title
+            (r'^#{2,4}\s*(.+)$', "headers"),
+        ]
+        
+        for pattern, method in patterns:
+            detected_sections = re.findall(pattern, text, re.MULTILINE)
+            if detected_sections and len(detected_sections) >= 2:
+                detection_method = method
+                break
+            detected_sections = []  # Reset for next pattern
+        
+        # Clean up extracted sections
+        detected_sections = [s.strip().rstrip('*').strip() for s in detected_sections if s.strip() and len(s.strip()) > 3]
+        
+        if detected_sections:
+            print(f"[Visual Extraction] ✅ DETECTED {len(detected_sections)} SECTIONS via {detection_method}: {detected_sections[:6]}")
+        else:
+            print(f"[Visual Extraction] ⚠️ No structured sections found in text ({len(text)} chars)")
+        
+        # Keep reference for fallback
+        numbered_sections = detected_sections
+        
+        extraction_prompt = f"""Extract the main themes from this content. Return ONLY valid JSON.
 
 Content:
-{text[:1500]}
+{text[:3000]}
 
-What is this content describing? Choose the BEST visualization type:
+Return JSON:
+{{
+  "title": "3-5 word title",
+  "themes": ["point 1", "point 2", "point 3", "...all points found..."],
+  "pros": ["positive 1", "positive 2", "..."],
+  "cons": ["challenge 1", "challenge 2", "..."],
+  "recommendations": ["action 1", "action 2", "..."]
+}}
 
-1. PROGRESSION - Sequential stages, phases, evolution, journey (use horizontal flowchart)
-2. HIERARCHY - Categories, types, parent-child relationships (use mindmap)
-3. PROCESS - How something works, steps to complete (use flowchart)
-4. COMPARISON - Differences between things, pros/cons (use side-by-side or quadrant)
-5. TIMELINE - Events over time, history (use timeline)
-6. DISTRIBUTION - Parts of a whole, percentages (use pie chart)
-7. RELATIONSHIPS - How things connect, cause/effect (use concept map)
-8. LIST - Simple enumeration of items (use mindmap with items as branches)
-
-Respond with ONLY a JSON object:
-{{"visual_type": "PROGRESSION|HIERARCHY|PROCESS|COMPARISON|TIMELINE|DISTRIBUTION|RELATIONSHIPS|LIST", "key_items": ["item1", "item2", ...], "title": "suggested title"}}"""
+RULES:
+- themes: Extract ALL main points from the content - NO LIMIT. If numbered sections exist (1. xxx, 2. yyy), use ALL of them.
+- Each theme MUST be 4-6 words MAX (short noun phrases only!)
+- NO citation markers like [1] or [2]
+- NO incomplete sentences - every theme must be a complete phrase
+- Return ONLY the JSON, nothing else"""
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            import json
+            import re
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Stage 1: Extract content structure using FAST model for speed
+                # This runs in background after query - speed is critical
                 response = await client.post(
                     f"{settings.ollama_base_url}/api/generate",
                     json={
-                        "model": settings.ollama_model,
-                        "prompt": prompt,
+                        "model": settings.ollama_fast_model,  # Use fast model (phi4-mini)
+                        "prompt": extraction_prompt,
                         "stream": False,
-                        "options": {"num_predict": 200, "temperature": 0}
+                        "options": {"num_predict": 1200, "temperature": 0}  # More tokens for deeper extraction
                     }
                 )
                 result = response.json().get("response", "{}")
+                print(f"[Visual Extraction] Raw LLM response ({len(result)} chars): {result[:500]}...")
                 
-                # Parse JSON from response
-                import json
-                import re
-                json_match = re.search(r'\{[^}]+\}', result, re.DOTALL)
-                if json_match:
-                    parsed = json.loads(json_match.group())
-                    
-                    # Map visual_type to template
-                    type_to_template = {
-                        "PROGRESSION": "stages_progression",
-                        "HIERARCHY": "mindmap", 
-                        "PROCESS": "horizontal_steps",
-                        "COMPARISON": "side_by_side",
-                        "TIMELINE": "timeline",
-                        "DISTRIBUTION": "pie",
-                        "RELATIONSHIPS": "concept_map",
-                        "LIST": "mindmap",
-                    }
-                    
-                    visual_type = parsed.get("visual_type", "HIERARCHY")
-                    return {
-                        "visual_type": visual_type,
-                        "suggested_template": type_to_template.get(visual_type, "mindmap"),
-                        "key_items": parsed.get("key_items", []),
-                        "title": parsed.get("title", ""),
-                    }
+                # Parse the structure extraction with robust JSON handling
+                json_match = re.search(r'\{[\s\S]*\}', result)
+                if not json_match:
+                    raise ValueError("No JSON found in extraction response")
+                
+                json_str = json_match.group()
+                # Fix common LLM JSON errors: trailing commas, single quotes
+                json_str = re.sub(r',\s*}', '}', json_str)
+                json_str = re.sub(r',\s*]', ']', json_str)
+                
+                try:
+                    structure = json.loads(json_str)
+                except json.JSONDecodeError:
+                    # Try to extract at least themes from malformed JSON
+                    themes_match = re.findall(r'"themes"\s*:\s*\[(.*?)\]', json_str, re.DOTALL)
+                    if themes_match:
+                        theme_items = re.findall(r'"([^"]+)"', themes_match[0])
+                        structure = {"themes": theme_items}
+                    else:
+                        structure = {}
+                
+                # CRITICAL: If we detected numbered sections in the content, ALWAYS use them
+                # They are more reliable than LLM extraction
+                if numbered_sections and len(numbered_sections) >= 2:
+                    print(f"[Visual Extraction] ✅ USING DETECTED SECTIONS (more reliable than LLM)")
+                    structure["themes"] = numbered_sections[:8]
+                    print(f"[Visual Extraction] Themes from sections: {structure['themes']}")
+                    # Generate a better title from the content if LLM didn't provide one
+                    if not structure.get("title") or len(structure.get("title", "")) < 5:
+                        # Try to extract title from first line or use generic
+                        first_line = text.split('\n')[0][:50].strip()
+                        if first_line and not first_line.startswith('*'):
+                            structure["title"] = first_line
+                        else:
+                            structure["title"] = "Key Themes"
+                elif len(structure.get("themes", [])) < 3:
+                    # LLM also failed - log this
+                    print(f"[Visual Extraction] ⚠️ NO numbered sections AND LLM returned only {len(structure.get('themes', []))} themes")
+                    # Last resort: extract first few sentences as themes
+                    sentences = re.split(r'[.!?]\s+', text[:1000])
+                    fallback_themes = [s.strip()[:60] for s in sentences[:4] if len(s.strip()) > 20]
+                    if fallback_themes:
+                        structure["themes"] = fallback_themes
+                        print(f"[Visual Extraction] 🔄 Using sentence fallback: {fallback_themes}")
+                
+                # DEBUG: Show full extracted structure
+                print(f"[Visual Extraction] PARSED STRUCTURE:")
+                print(f"  themes ({len(structure.get('themes', []))}): {structure.get('themes', [])}")
+                print(f"  tensions ({len(structure.get('tensions', []))}): {structure.get('tensions', [])}")
+                print(f"  gaps ({len(structure.get('gaps', []))}): {structure.get('gaps', [])}")
+                print(f"  relationships ({len(structure.get('relationships', []))}): {structure.get('relationships', [])}")
+                print(f"  pros ({len(structure.get('pros', []))}): {structure.get('pros', [])}")
+                print(f"  cons ({len(structure.get('cons', []))}): {structure.get('cons', [])}")
+                print(f"  recommendations ({len(structure.get('recommendations', []))}): {structure.get('recommendations', [])}")
+                
+                # Stage 2: Pick visual type based on what we found
+                themes = structure.get("themes", [])
+                entities = structure.get("entities", [])
+                relationships = structure.get("relationships", [])
+                tensions = structure.get("tensions", [])
+                gaps = structure.get("gaps", [])
+                sequence = structure.get("sequence", [])
+                dates_events = structure.get("dates_events", [])
+                comparisons = structure.get("comparisons", [])
+                numbers = structure.get("numbers", [])
+                pros = structure.get("pros", [])
+                cons = structure.get("cons", [])
+                recommendations = structure.get("recommendations", [])
+                components = structure.get("components", [])
+                rankings = structure.get("rankings", [])
+                
+                # Decision logic based on extracted structure
+                # Priority order matches template specificity (most specific first)
+                visual_type = "THEMES"  # Default
+                suggested_template = "key_takeaways"
+                
+                # === HIGH SPECIFICITY MATCHES ===
+                # NEW: Tensions/gaps indicate narrative arc - use force field or gap analysis
+                if len(tensions) >= 2 or (len(gaps) >= 2 and len(themes) >= 3):
+                    visual_type = "TENSION_GAP"
+                    suggested_template = "force_field"  # Shows opposing forces
+                elif len(pros) >= 2 and len(cons) >= 2:
+                    # Explicit pros/cons found
+                    visual_type = "PROS_CONS"
+                    suggested_template = "pros_cons"
+                elif len(rankings) >= 3:
+                    # Ranked/ordered items
+                    visual_type = "RANKING"
+                    suggested_template = "ranking"
+                elif len(recommendations) >= 2:
+                    # Action items / recommendations
+                    visual_type = "RECOMMENDATIONS"
+                    suggested_template = "recommendation_stack"
+                elif len(dates_events) >= 3:
+                    # Timeline with actual dated events
+                    visual_type = "TIMELINE"
+                    suggested_template = "timeline"
+                elif len(comparisons) >= 1:
+                    # Explicit A vs B comparisons
+                    visual_type = "COMPARISON"
+                    suggested_template = "side_by_side"
+                elif len(sequence) >= 3:
+                    # Process/progression with steps
+                    visual_type = "PROGRESSION"
+                    suggested_template = "horizontal_steps"
+                elif len(components) >= 3:
+                    # System/concept breakdown
+                    visual_type = "ANATOMY"
+                    suggested_template = "anatomy"
+                elif len(relationships) >= 3:
+                    # Multiple relationships - concept map
+                    visual_type = "RELATIONSHIPS"
+                    suggested_template = "concept_map"
+                elif len(numbers) >= 3:
+                    # Stats/metrics - key stats or distribution
+                    visual_type = "STATS"
+                    suggested_template = "key_stats"
+                elif len(themes) >= 2:
+                    # Themes found - choose template based on COUNT for visual quality
+                    visual_type = "THEMES"
+                    if len(themes) >= 7:
+                        # 7+ themes: exec_summary (two-column) shows all, hub-spoke truncates
+                        suggested_template = "exec_summary"
+                    elif len(themes) >= 5:
+                        # 5-6 themes: hub-spoke works well
+                        suggested_template = "key_takeaways"
+                    else:
+                        # 2-4 themes: hub-spoke or MECE both work
+                        suggested_template = "key_takeaways"
+                elif len(entities) >= 3:
+                    # Entities found - overview map
+                    visual_type = "OVERVIEW"
+                    suggested_template = "overview_map"
+                
+                # Phase 4: Detect multiple visual types for multi-visual generation
+                secondary_types = []
+                has_multiple = False
+                
+                # Check for secondary structures
+                if visual_type != "THEMES" and len(themes) >= 2:
+                    secondary_types.append("THEMES")
+                if visual_type != "TIMELINE" and len(dates_events) >= 3:
+                    secondary_types.append("TIMELINE")
+                if visual_type != "RELATIONSHIPS" and len(relationships) >= 2:
+                    secondary_types.append("RELATIONSHIPS")
+                if visual_type != "PROGRESSION" and len(sequence) >= 3:
+                    secondary_types.append("PROGRESSION")
+                
+                has_multiple = len(secondary_types) > 0
+                
+                print(f"[VisualAnalyzer] Napkin-style analysis: themes={len(themes)}, entities={len(entities)}, "
+                      f"relationships={len(relationships)}, sequence={len(sequence)}, dates={len(dates_events)} "
+                      f"-> {visual_type} ({suggested_template})" + 
+                      (f" + {secondary_types}" if secondary_types else ""))
+                
+                # Use extracted title from LLM, fallback to generic
+                extracted_title = structure.get("title", "")
+                if not extracted_title or len(extracted_title) > 40:
+                    # Fallback: create short title from first theme
+                    extracted_title = themes[0][:30] if themes else "Key Insights"
+                
+                print(f"[VisualAnalyzer] Using title: {extracted_title}")
+                
+                return {
+                    "visual_type": visual_type,
+                    "suggested_template": suggested_template,
+                    "key_items": themes[:5] or entities[:5] or sequence[:5],
+                    "title": extracted_title,
+                    "structure": structure,  # Include raw structure for debugging
+                    "secondary_types": secondary_types,
+                    "has_multiple_structures": has_multiple,
+                }
+                
         except Exception as e:
             print(f"[VisualAnalyzer] LLM analysis failed: {e}")
+            import traceback
+            traceback.print_exc()
         
-        # Fallback
+        # Fallback - default to themes/mindmap for overview content
         return {
-            "visual_type": "HIERARCHY",
-            "suggested_template": "mindmap",
+            "visual_type": "THEMES",
+            "suggested_template": "key_takeaways",
             "key_items": [],
             "title": "",
         }
@@ -381,6 +584,143 @@ Respond with ONLY a JSON object:
                 ))
         
         return recommendations
+    
+    async def pre_classify_fast(
+        self, 
+        notebook_id: str, 
+        query: str, 
+        answer: str
+    ) -> None:
+        """FAST pre-classification using regex extraction (~2ms).
+        
+        Called INLINE after RAG stream completes. Guarantees cache is ready
+        before user can click "Create Visual".
+        
+        Uses regex extraction (instant) instead of LLM analysis (slow).
+        """
+        from services.visual_cache import visual_cache, VisualClassification
+        from services.theme_extractor import (
+            extract_themes_regex, extract_title_from_count, is_valid_extraction,
+            extract_subpoints_for_themes
+        )
+        
+        try:
+            import time
+            start = time.time()
+            
+            # Strip citation markers [1], [2], etc
+            clean_answer = re.sub(r'\[\d+\]', '', answer)
+            clean_answer = re.sub(r'[ \t]+', ' ', clean_answer)
+            clean_answer = re.sub(r'\n\s*\n', '\n\n', clean_answer)
+            
+            # FAST regex extraction (~2ms)
+            themes = extract_themes_regex(clean_answer)
+            title = extract_title_from_count(clean_answer) or "Key Themes"
+            
+            # Extract subpoints for each theme (adds depth for mindmap/hub-spoke)
+            subpoints = extract_subpoints_for_themes(clean_answer, themes)
+            
+            # Extract insight/summary sentence from last paragraph - keep SHORT for visual display
+            insight = None
+            last_para = clean_answer.split('\n\n')[-1] if '\n\n' in clean_answer else clean_answer[-500:]
+            insight_match = re.search(r'((?:These|This|Overall|In summary|Together|Collectively)[^.]{20,}\.)', last_para, re.IGNORECASE)
+            if insight_match:
+                raw_insight = re.sub(r'\[\d+\]', '', insight_match.group(1)).strip()
+                # Smart truncate to 60 chars (fits one line) at word boundary, add ellipsis
+                if len(raw_insight) > 60:
+                    insight = raw_insight[:60].rsplit(' ', 1)[0].rstrip('.,;:') + '...'
+                else:
+                    insight = raw_insight
+            
+            elapsed_ms = (time.time() - start) * 1000
+            
+            if is_valid_extraction(themes):
+                # Template selection based on ITEM COUNT for visual quality
+                has_good_subpoints = subpoints and len(subpoints) >= 2 and any(len(subs) >= 2 for subs in subpoints.values())
+                
+                if len(themes) >= 7:
+                    # 7+ themes: exec_summary (two-column) or mindmap shows all
+                    suggested_template = "mindmap" if has_good_subpoints else "exec_summary"
+                elif has_good_subpoints:
+                    suggested_template = "mindmap"
+                else:
+                    suggested_template = "key_takeaways"
+                
+                # Cache the regex-extracted themes WITH subpoints and insight
+                classification = VisualClassification(
+                    query=query,
+                    answer_preview=answer[:500],
+                    visual_type="THEMES",
+                    suggested_template=suggested_template,
+                    key_items=themes,
+                    title=title,
+                    structure={
+                        "themes": themes, 
+                        "title": title,
+                        "subpoints": subpoints,
+                        "insight": insight,
+                    },
+                    notebook_id=notebook_id,
+                    secondary_types=["key_takeaways", "ranking"] if suggested_template == "mindmap" else ["mindmap", "ranking"],
+                    has_multiple_structures=bool(subpoints),
+                )
+                await visual_cache.set(classification)
+                print(f"[VisualAnalyzer] ⚡ FAST pre-cache ({elapsed_ms:.0f}ms): {len(themes)} themes, {len(subpoints)} with subpoints -> {suggested_template}")
+            else:
+                print(f"[VisualAnalyzer] ⚠️ Regex extraction invalid, skipping cache")
+            
+        except Exception as e:
+            print(f"[VisualAnalyzer] Fast pre-classification failed: {e}")
+
+    async def pre_classify_for_cache(
+        self, 
+        notebook_id: str, 
+        query: str, 
+        answer: str
+    ) -> None:
+        """Pre-classify content and store in cache for instant visual generation.
+        
+        Called in background after RAG query completes. When user clicks 
+        "Create Visual", the classification is already done.
+        """
+        from services.visual_cache import visual_cache, VisualClassification
+        
+        try:
+            # CRITICAL: Strip citation markers [1], [2], etc BEFORE extraction
+            # These leak into visual labels and look terrible
+            clean_answer = re.sub(r'\[\d+\]', '', answer)
+            # Collapse multiple spaces but PRESERVE newlines (needed for section detection)
+            clean_answer = re.sub(r'[ \t]+', ' ', clean_answer)  # Only horizontal whitespace
+            clean_answer = re.sub(r'\n\s*\n', '\n\n', clean_answer)  # Normalize paragraph breaks
+            
+            # DEBUG: Show what answer we're extracting from
+            print(f"[VisualAnalyzer] PRE-CLASSIFY INPUT ({len(clean_answer)} chars):")
+            print(f"  Query: {query}")
+            print(f"  Answer preview: {clean_answer[:500]}...")
+            
+            # Run the Napkin-style analysis
+            result = await self.analyze_with_llm(clean_answer)
+            
+            # Store in cache with multi-visual support
+            classification = VisualClassification(
+                query=query,
+                answer_preview=answer[:500],
+                visual_type=result.get("visual_type", "THEMES"),
+                suggested_template=result.get("suggested_template", "key_takeaways"),
+                key_items=result.get("key_items", []),
+                title=result.get("title", ""),
+                structure=result.get("structure", {}),
+                notebook_id=notebook_id,
+                secondary_types=result.get("secondary_types", []),
+                has_multiple_structures=result.get("has_multiple_structures", False),
+            )
+            await visual_cache.set(classification)
+            
+            print(f"[VisualAnalyzer] Pre-cached classification for notebook {notebook_id}: "
+                  f"{classification.visual_type} -> {classification.suggested_template}")
+            
+        except Exception as e:
+            print(f"[VisualAnalyzer] Pre-classification failed (non-blocking): {e}")
 
 
 # Singleton instance

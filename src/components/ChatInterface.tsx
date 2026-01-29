@@ -1,14 +1,18 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { chatService } from '../services/chat';
 import { explorationService } from '../services/exploration';
 import { voiceService } from '../services/voice';
-import { ChatMessage, Citation as CitationType } from '../types';
+import { visualService } from '../services/visual';
+import { findingsService } from '../services/findings';
+import { ChatMessage, Citation as CitationType, InlineVisualData } from '../types';
 import { Button } from './shared/Button';
 // LoadingSpinner removed - now using statusMessage in message bubble
 import { ErrorMessage } from './shared/ErrorMessage';
 import { Citation, CitationList } from './Citation';
 import { SourceNotesViewer } from './SourceNotesViewer';
 import { MermaidRenderer } from './shared/MermaidRenderer';
+import { InlineVisual } from './visual';
+import { BookmarkButton } from './shared/BookmarkButton';
 
 interface ChatInterfaceProps {
   notebookId: string | null;
@@ -47,6 +51,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     sourceName: string;
     searchTerm: string;
   } | null>(null);
+
 
   useEffect(() => {
     scrollToBottom();
@@ -244,6 +249,42 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               return updated;
             });
           },
+          onRetrievalStart: (queryAnalysis) => {
+            // v1.1.0: Show what the system understood from the query
+            const entities = queryAnalysis.entities?.length > 0 
+              ? `Looking for: ${queryAnalysis.entities.slice(0, 3).join(', ')}` 
+              : '';
+            if (entities) {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const lastIdx = updated.length - 1;
+                if (updated[lastIdx]?.role === 'assistant') {
+                  updated[lastIdx] = {
+                    ...updated[lastIdx],
+                    statusMessage: `🔍 ${entities}...`,
+                  };
+                }
+                return updated;
+              });
+            }
+          },
+          onRetrievalProgress: (progress) => {
+            // v1.1.0: Show retrieval progress with strategy info
+            const strategyLabel = progress.strategies_tried.length > 1 
+              ? `(tried ${progress.strategies_tried.length} strategies)` 
+              : '';
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (updated[lastIdx]?.role === 'assistant') {
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  statusMessage: `📄 Found ${progress.chunks_found} relevant sections ${strategyLabel}`,
+                };
+              }
+              return updated;
+            });
+          },
           onCitations: (citations, _sources, lowConfidence) => {
             // Store citations but don't show yet - wait for quick summary
             currentCitations = citations;
@@ -363,6 +404,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               confidence,
               currentContent.slice(0, 200)
             ).catch(err => console.error('Failed to record query:', err));
+            
           },
           onError: (errorMsg) => {
             console.error('Stream error:', errorMsg);
@@ -445,6 +487,201 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       setIsRecording(false);
     }
   };
+
+  // Generate inline visual for a message (with optional guidance for refinement, optional palette)
+  const generateInlineVisual = useCallback(async (messageIndex: number, content: string, guidance?: string, palette?: string) => {
+    if (!notebookId) return;
+    
+    // Mark as loading and clear previous alternatives
+    const loadingMsg = guidance ? 'Analyzing your guidance...' : palette ? 'Applying new colors...' : 'Creating visual...';
+    setMessages(prev => prev.map((m, i) => 
+      i === messageIndex ? { ...m, visualLoading: true, visualLoadingMessage: loadingMsg, alternativeVisuals: [] } : m
+    ));
+
+    try {
+      // Use streaming API for visual generation
+      // Send FULL answer content - don't truncate on frontend
+      // Backend handles extraction limits; pre-cache should have structure from full answer
+      // For research use cases, answers can be very long with themes spread throughout
+      await visualService.generateSmartStream(
+        notebookId,
+        content,  // Full content - backend decides what to extract
+        palette || 'auto', // colorTheme - use selected palette or auto
+        // onPrimary
+        (diagram) => {
+          // Convert to InlineVisualData format
+          const visual: InlineVisualData = {
+            id: `inline-${messageIndex}-${Date.now()}`,
+            type: diagram.svg ? 'svg' : 'mermaid',
+            code: diagram.svg || diagram.code || '',
+            title: diagram.title || 'Visual',
+            template_id: diagram.template_id,
+            pattern: diagram.diagram_type,
+            tagline: diagram.tagline,  // Editable summary line
+          };
+          
+          setMessages(prev => prev.map((m, i) => 
+            i === messageIndex ? { ...m, inlineVisual: visual, visualLoading: false } : m
+          ));
+        },
+        // onAlternative - collect alternative visuals
+        (diagram) => {
+          const altVisual: InlineVisualData = {
+            id: `alt-${messageIndex}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+            type: diagram.svg ? 'svg' : 'mermaid',
+            code: diagram.svg || diagram.code || '',
+            title: diagram.title || 'Alternative',
+            template_id: diagram.template_id,
+            pattern: diagram.diagram_type,
+            tagline: diagram.tagline,  // Editable summary line
+          };
+          
+          setMessages(prev => prev.map((m, i) => 
+            i === messageIndex 
+              ? { ...m, alternativeVisuals: [...(m.alternativeVisuals || []), altVisual].slice(0, 3) }
+              : m
+          ));
+        },
+        // onDone
+        () => {
+          setMessages(prev => prev.map((m, i) => 
+            i === messageIndex ? { ...m, visualLoading: false } : m
+          ));
+        },
+        // onError
+        (err: string) => {
+          console.error('Inline visual generation failed:', err);
+          setMessages(prev => prev.map((m, i) => 
+            i === messageIndex ? { ...m, visualLoading: false } : m
+          ));
+        },
+        undefined, // templateId
+        guidance   // user refinement guidance
+      );
+    } catch (err) {
+      console.error('Failed to generate inline visual:', err);
+      setMessages(prev => prev.map((m, i) => 
+        i === messageIndex ? { ...m, visualLoading: false } : m
+      ));
+    }
+  }, [notebookId]);
+
+  // Open visual in Studio for full editing
+  const openVisualInStudio = useCallback((content: string) => {
+    sessionStorage.setItem('visualContent', content.substring(0, 2000));
+    window.dispatchEvent(new CustomEvent('openStudioVisual', { 
+      detail: { content: content.substring(0, 2000) } 
+    }));
+  }, []);
+
+  // Save visual to Findings
+  const saveVisualToFindings = useCallback(async (visual: InlineVisualData) => {
+    if (!notebookId || !visual) return;
+    
+    try {
+      await findingsService.saveVisual(
+        notebookId,
+        visual.title || 'Saved Visual',
+        {
+          type: visual.type,
+          code: visual.code,
+          template_id: visual.template_id,
+        }
+      );
+      console.log('[Chat] Visual saved to Findings');
+      // Dispatch event to refresh Findings panel
+      window.dispatchEvent(new CustomEvent('findingsUpdated'));
+    } catch (err) {
+      console.error('Failed to save visual:', err);
+    }
+  }, [notebookId]);
+
+  // Export visual as PNG or SVG
+  const exportVisual = useCallback(async (visual: InlineVisualData, format: 'png' | 'svg') => {
+    if (!visual || !visual.code) return;
+
+    const filename = `${visual.title || 'visual'}-${Date.now()}`;
+
+    if (format === 'svg') {
+      // For SVG: Get the rendered SVG from the DOM or use the code directly
+      let svgContent = visual.code;
+      
+      // If it's mermaid, we need to get the rendered SVG from the DOM
+      if (visual.type === 'mermaid') {
+        const svgElement = document.querySelector('.mermaid svg');
+        if (svgElement) {
+          svgContent = svgElement.outerHTML;
+        }
+      }
+      
+      // Create blob and download
+      const blob = new Blob([svgContent], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${filename}.svg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      console.log('[Chat] Exported visual as SVG');
+    } else {
+      // For PNG: Render SVG to canvas then export
+      let svgContent = visual.code;
+      
+      if (visual.type === 'mermaid') {
+        const svgElement = document.querySelector('.mermaid svg');
+        if (svgElement) {
+          svgContent = svgElement.outerHTML;
+        }
+      }
+
+      // Create an image from SVG
+      const svgBlob = new Blob([svgContent], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(svgBlob);
+      const img = new Image();
+      
+      img.onload = () => {
+        // Create canvas with proper dimensions
+        const canvas = document.createElement('canvas');
+        const scale = 2; // Higher resolution
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          // White background
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.scale(scale, scale);
+          ctx.drawImage(img, 0, 0);
+          
+          // Export as PNG
+          canvas.toBlob((blob) => {
+            if (blob) {
+              const pngUrl = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = pngUrl;
+              a.download = `${filename}.png`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(pngUrl);
+              console.log('[Chat] Exported visual as PNG');
+            }
+          }, 'image/png');
+        }
+        URL.revokeObjectURL(url);
+      };
+      
+      img.onerror = () => {
+        console.error('Failed to load SVG for PNG export');
+        URL.revokeObjectURL(url);
+      };
+      
+      img.src = url;
+    }
+  }, []);
 
   return (
     <div className="flex flex-col h-full">
@@ -570,19 +807,103 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                       </div>
                     </div>
                   )}
-                  {/* Create Visual from this response */}
-                  {message.content && message.content.length > 100 && (
-                    <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
-                      <button
-                        onClick={() => {
-                          // Store content for visual creation and navigate to Studio
-                          sessionStorage.setItem('visualContent', message.content.substring(0, 2000));
-                          window.dispatchEvent(new CustomEvent('openStudioVisual', { detail: { content: message.content.substring(0, 2000) } }));
-                        }}
-                        className="text-xs px-2.5 py-1 bg-green-100 dark:bg-green-800/40 text-green-800 dark:text-green-200 rounded-full hover:bg-green-200 dark:hover:bg-green-700/50 transition-colors border border-green-300 dark:border-green-600 flex items-center gap-1"
-                      >
-                        🎨 Create Visual from this
-                      </button>
+                  {/* Inline Visual - Canvas feature */}
+                  {(message.inlineVisual || message.visualLoading) && (
+                    <InlineVisual
+                      visual={message.inlineVisual ? {
+                        id: message.inlineVisual.id,
+                        type: message.inlineVisual.type,
+                        code: message.inlineVisual.code,
+                        title: message.inlineVisual.title,
+                        template_id: message.inlineVisual.template_id,
+                        pattern: message.inlineVisual.pattern,
+                        tagline: message.inlineVisual.tagline,
+                      } : null}
+                      alternatives={(message.alternativeVisuals || []).map(alt => ({
+                        id: alt.id,
+                        type: alt.type,
+                        code: alt.code,
+                        title: alt.title,
+                        template_id: alt.template_id,
+                        pattern: alt.pattern,
+                      }))}
+                      loading={message.visualLoading}
+                      loadingMessage={message.visualLoadingMessage || 'Creating visual...'}
+                      onSaveToFindings={message.inlineVisual ? () => saveVisualToFindings(message.inlineVisual!) : undefined}
+                      onOpenInStudio={() => openVisualInStudio(message.content)}
+                      onExport={message.inlineVisual ? (format) => exportVisual(message.inlineVisual!, format) : undefined}
+                      onRegenerate={() => generateInlineVisual(index, message.content)}
+                      onRegenerateWithGuidance={(guidance) => generateInlineVisual(index, message.content, guidance)}
+                      onRegenerateWithPalette={(palette) => generateInlineVisual(index, message.content, undefined, palette)}
+                      onSelectAlternative={(alt) => {
+                        // Swap: move current primary to alternatives, make selected alt the primary
+                        const currentPrimary = message.inlineVisual;
+                        const remainingAlts = (message.alternativeVisuals || []).filter(a => a.id !== alt.id);
+                        const newAlts = currentPrimary ? [currentPrimary, ...remainingAlts].slice(0, 3) : remainingAlts;
+                        
+                        setMessages(prev => prev.map((m, i) => 
+                          i === index 
+                            ? { 
+                                ...m, 
+                                inlineVisual: { 
+                                  id: alt.id, 
+                                  type: alt.type as 'svg' | 'mermaid', 
+                                  code: alt.code, 
+                                  title: alt.title, 
+                                  template_id: alt.template_id, 
+                                  pattern: alt.pattern 
+                                },
+                                alternativeVisuals: newAlts.map(a => ({
+                                  id: a.id,
+                                  type: a.type as 'svg' | 'mermaid',
+                                  code: a.code,
+                                  title: a.title,
+                                  template_id: a.template_id,
+                                  pattern: a.pattern,
+                                }))
+                              }
+                            : m
+                        ));
+                      }}
+                      onTaglineChange={(newTagline) => {
+                        // Update tagline in message state
+                        setMessages(prev => prev.map((m, i) => 
+                          i === index && m.inlineVisual
+                            ? { 
+                                ...m, 
+                                inlineVisual: { ...m.inlineVisual, tagline: newTagline }
+                              }
+                            : m
+                        ));
+                      }}
+                    />
+                  )}
+                  
+                  {/* Action buttons row - Create Visual & Bookmark */}
+                  {message.content && message.content.length > 50 && (
+                    <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 flex items-center gap-2">
+                      {/* Create Visual button - shows when no inline visual exists */}
+                      {message.content.length > 100 && !message.inlineVisual && !message.visualLoading && (
+                        <button
+                          onClick={() => generateInlineVisual(index, message.content)}
+                          className="text-xs px-2.5 py-1 bg-green-100 dark:bg-green-800/40 text-green-800 dark:text-green-200 rounded-full hover:bg-green-200 dark:hover:bg-green-700/50 transition-colors border border-green-300 dark:border-green-600 flex items-center gap-1"
+                        >
+                          🎨 Create Visual
+                        </button>
+                      )}
+                      {/* Bookmark answer to Findings */}
+                      {notebookId && (
+                        <BookmarkButton
+                          notebookId={notebookId}
+                          type="answer"
+                          title={message.content.substring(0, 60) + (message.content.length > 60 ? '...' : '')}
+                          content={{
+                            question: messages[index - 1]?.content || 'Research question',
+                            answer: message.content,
+                            citations: message.citations,
+                          }}
+                        />
+                      )}
                     </div>
                   )}
                   {message.lowConfidenceQuery && (

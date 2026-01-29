@@ -123,6 +123,27 @@ VISUAL_TEMPLATES: Dict[str, VisualTemplate] = {
         best_for=["hierarchy", "categories"]
     ),
     
+    "mindmap": VisualTemplate(
+        id="mindmap",
+        name="Mind Map",
+        category=TemplateCategory.CONTEXT,
+        description="Hierarchical breakdown with sub-branches for themes with details",
+        mermaid_type="mindmap",
+        prompt_enhancement="Show central concept with main branches and sub-branches. Best for breaking down themes with supporting details.",
+        example_code="""mindmap
+  root((Central Theme))
+    Theme 1
+      Detail A
+      Detail B
+    Theme 2
+      Detail C
+      Detail D
+    Theme 3
+      Detail E
+      Detail F""",
+        best_for=["themes", "concepts", "breakdown", "hierarchy"]
+    ),
+    
     # === CATEGORY 2: EXPLAIN HOW ===
     
     "horizontal_steps": VisualTemplate(
@@ -779,16 +800,16 @@ class VisualRouter:
                         break
         
         # ALWAYS fill to count with diverse fallbacks - this guarantees multiple options
-        # Order by visual diversity and quality
+        # Order by visual diversity and quality - prioritize mindmap for themes/overviews
         diverse_fallbacks = [
-            ("mindmap", "Hierarchical concept overview"),
-            ("timeline", "Chronological progression"),
-            ("quadrant", "Two-dimensional comparison"),
-            ("horizontal_steps", "Step-by-step process flow"),
-            ("pie", "Proportional distribution"),
+            ("key_takeaways", "Key themes and insights overview"),
             ("concept_map", "Interconnected concepts"),
+            ("horizontal_steps", "Step-by-step process flow"),
+            ("quadrant", "Two-dimensional comparison"),
             ("stages_progression", "Sequential stages"),
             ("side_by_side", "Parallel comparison"),
+            ("timeline", "Chronological progression"),
+            ("pie", "Proportional distribution"),
         ]
         
         for fallback_id, reason in diverse_fallbacks:

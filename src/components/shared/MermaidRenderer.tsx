@@ -266,10 +266,109 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, classNam
   return (
     <div 
       ref={containerRef}
-      className={`mermaid-container bg-white dark:bg-gray-800 rounded-lg p-4 overflow-x-auto ${className}`}
+      className={`mermaid-container bg-white dark:bg-gray-800 rounded-lg p-4 overflow-x-auto animate-fade-in ${className}`}
+      style={{
+        animation: 'fadeInScale 0.4s ease-out forwards',
+      }}
       dangerouslySetInnerHTML={{ __html: svgContent }}
     />
   );
 };
+
+// Add CSS animation keyframes and interactive styles to document head (runs once)
+if (typeof document !== 'undefined' && !document.getElementById('mermaid-animations')) {
+  const style = document.createElement('style');
+  style.id = 'mermaid-animations';
+  style.textContent = `
+    @keyframes fadeInScale {
+      from {
+        opacity: 0;
+        transform: scale(0.95);
+      }
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+    
+    @keyframes nodeReveal {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    
+    .mermaid-container svg .node,
+    .mermaid-container svg .cluster,
+    .mermaid-container svg .edgePath {
+      animation: nodeReveal 0.3s ease-out forwards;
+      animation-delay: calc(var(--node-index, 0) * 0.05s);
+    }
+    
+    .mermaid-container svg .node:nth-child(1) { --node-index: 1; }
+    .mermaid-container svg .node:nth-child(2) { --node-index: 2; }
+    .mermaid-container svg .node:nth-child(3) { --node-index: 3; }
+    .mermaid-container svg .node:nth-child(4) { --node-index: 4; }
+    .mermaid-container svg .node:nth-child(5) { --node-index: 5; }
+    .mermaid-container svg .node:nth-child(6) { --node-index: 6; }
+    .mermaid-container svg .node:nth-child(7) { --node-index: 7; }
+    .mermaid-container svg .node:nth-child(8) { --node-index: 8; }
+    
+    .mermaid-container svg .edgePath:nth-child(1) { --node-index: 2; }
+    .mermaid-container svg .edgePath:nth-child(2) { --node-index: 3; }
+    .mermaid-container svg .edgePath:nth-child(3) { --node-index: 4; }
+    .mermaid-container svg .edgePath:nth-child(4) { --node-index: 5; }
+    .mermaid-container svg .edgePath:nth-child(5) { --node-index: 6; }
+    
+    /* Phase 5: Interactive node styles */
+    .mermaid-container svg .node {
+      cursor: pointer;
+      transition: transform 0.15s ease, filter 0.15s ease;
+    }
+    
+    .mermaid-container svg .node:hover {
+      transform: scale(1.05);
+      filter: brightness(1.1) drop-shadow(0 4px 8px rgba(0,0,0,0.2));
+    }
+    
+    .mermaid-container svg .node:active {
+      transform: scale(0.98);
+    }
+    
+    .mermaid-container svg .node.highlighted {
+      filter: brightness(1.2) drop-shadow(0 0 12px rgba(99, 102, 241, 0.6));
+      animation: pulse 1s ease-in-out infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { filter: brightness(1.2) drop-shadow(0 0 12px rgba(99, 102, 241, 0.6)); }
+      50% { filter: brightness(1.3) drop-shadow(0 0 20px rgba(99, 102, 241, 0.8)); }
+    }
+    
+    /* Tooltip for nodes */
+    .mermaid-tooltip {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.85);
+      color: white;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      max-width: 200px;
+      pointer-events: none;
+      z-index: 1000;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+    
+    .mermaid-tooltip.visible {
+      opacity: 1;
+    }
+  `;
+  document.head.appendChild(style);
+}
 
 export default MermaidRenderer;

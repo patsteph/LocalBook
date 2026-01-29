@@ -136,9 +136,40 @@ class DocumentProcessor:
     async def _extract_from_pdf(self, content: bytes, source_id: str = "", filename: str = "") -> str:
         """Extract text from PDF with page markers and table handling.
         
-        Uses PyMuPDF's table detection when available for better structured data extraction.
+        v1.1.0: Uses pymupdf4llm for RAG-optimized Markdown extraction when available.
+        Falls back to PyMuPDF's table detection for structured data extraction.
         v1.0.5: Two-phase processing - text extracted immediately, images processed in background.
         """
+        # Try pymupdf4llm first (better for RAG - produces clean Markdown)
+        try:
+            import pymupdf4llm
+            import fitz
+            
+            doc = fitz.open(stream=content, filetype="pdf")
+            md_text = pymupdf4llm.to_markdown(doc, page_chunks=True)
+            doc.close()
+            
+            # pymupdf4llm returns list of page chunks when page_chunks=True
+            if isinstance(md_text, list):
+                text_parts = []
+                for i, page_data in enumerate(md_text, 1):
+                    page_text = page_data.get("text", "") if isinstance(page_data, dict) else str(page_data)
+                    if page_text.strip():
+                        text_parts.append(f"=== Page {i} ===\n{page_text.strip()}")
+                text = "\n\n".join(text_parts)
+            else:
+                text = md_text
+            
+            if text and len(text.strip()) > 100:
+                print(f"[DocProcessor] Extracted PDF with pymupdf4llm ({len(text)} chars)")
+                return text
+                
+        except ImportError:
+            pass  # pymupdf4llm not installed, fall back to standard extraction
+        except Exception as e:
+            print(f"[DocProcessor] pymupdf4llm failed, falling back: {e}")
+        
+        # Fallback: Standard PyMuPDF extraction with table handling
         try:
             import fitz  # PyMuPDF
             doc = fitz.open(stream=content, filetype="pdf")

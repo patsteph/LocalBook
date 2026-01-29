@@ -171,9 +171,23 @@ class RAGEngine:
             # Sort by RRF score
             sorted_keys = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
             
-            # Map back to documents
+            # Map back to documents, preserving _distance from vector results
             doc_map = {doc["source_id"] + str(doc.get("chunk_index", 0)): doc for doc in all_docs}
-            hybrid_results = [doc_map[key] for key in sorted_keys[:k] if key in doc_map]
+            vector_dist_map = {doc["source_id"] + str(doc.get("chunk_index", 0)): doc.get("_distance", 200) 
+                              for doc in vector_results}
+            
+            # Max RRF score for normalization (top result)
+            max_rrf = max(rrf_scores.values()) if rrf_scores else 1.0
+            
+            hybrid_results = []
+            for key in sorted_keys[:k]:
+                if key in doc_map:
+                    doc = doc_map[key].copy()
+                    # Preserve vector distance if available, otherwise estimate from RRF rank
+                    doc["_distance"] = vector_dist_map.get(key, 200)
+                    # Store normalized RRF score (0-1, higher is better) for confidence fallback
+                    doc["_rrf_score"] = rrf_scores[key] / max_rrf
+                    hybrid_results.append(doc)
             
             print(f"[RAG] Hybrid search: {len(hybrid_results)} results (vector + BM25 fusion)")
             return hybrid_results
@@ -256,22 +270,45 @@ class RAGEngine:
     def _get_ollama_embeddings_batch_sync(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings for multiple texts from Ollama.
         
-        Uses sequential processing to ensure reliability. Parallel processing
-        was causing issues with empty embeddings on failures.
+        Uses sequential processing with exponential backoff retry.
+        Logs failures for monitoring - zero vectors indicate retrieval gaps.
         """
         embeddings = []
+        failed_chunks = []
+        
         for i, text in enumerate(texts):
-            try:
-                embedding = self._get_ollama_embedding_sync(text)
-                if not embedding or len(embedding) == 0:
-                    # Retry once on empty embedding
-                    print(f"[RAG] Empty embedding for chunk {i}, retrying...")
+            embedding = None
+            max_retries = 3
+            
+            for attempt in range(max_retries):
+                try:
                     embedding = self._get_ollama_embedding_sync(text)
+                    if embedding and len(embedding) == settings.embedding_dim:
+                        break  # Success
+                    
+                    # Empty or wrong dimension - retry
+                    if attempt < max_retries - 1:
+                        wait_time = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+                        print(f"[RAG] Empty embedding for chunk {i}, retry {attempt + 1}/{max_retries} in {wait_time}s...")
+                        time.sleep(wait_time)
+                        
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait_time = 0.5 * (2 ** attempt)
+                        print(f"[RAG] Embedding failed for chunk {i} (attempt {attempt + 1}): {e}")
+                        time.sleep(wait_time)
+                    else:
+                        print(f"[RAG] ⚠️ EMBEDDING FAILED after {max_retries} attempts for chunk {i}: {e}")
+            
+            if embedding and len(embedding) == settings.embedding_dim:
                 embeddings.append(embedding)
-            except Exception as e:
-                print(f"[RAG] Embedding failed for chunk {i}: {e}")
-                # On failure, use a zero vector of expected dimension
+            else:
+                # Last resort: zero vector (will be logged for later repair)
                 embeddings.append([0.0] * settings.embedding_dim)
+                failed_chunks.append(i)
+        
+        if failed_chunks:
+            print(f"[RAG] ⚠️ {len(failed_chunks)} chunks got zero vectors (indices: {failed_chunks[:5]}{'...' if len(failed_chunks) > 5 else ''})")
         
         return embeddings
     
@@ -432,22 +469,44 @@ class RAGEngine:
         for i, result in enumerate(results):
             text = result.get("text", "")
             
-            # Use rerank_score if available (from cross-encoder), otherwise use vector distance
-            if "rerank_score" in result:
-                # Reranker scores are typically -10 to +10, normalize to 0-1
-                # Scores > 0 are relevant, < 0 are irrelevant
-                rerank_score = result.get("rerank_score", 0)
-                confidence = max(0, min(1, (rerank_score + 5) / 10))  # -5 -> 0%, +5 -> 100%
-                print(f"{log_prefix} Citation {i+1}: rerank_score={rerank_score:.2f} -> confidence={confidence:.0%}")
+            # Use rerank_score if available AND meaningful, otherwise use vector distance
+            rerank_score = result.get("rerank_score")
+            distance = result.get("_distance", 100.0)
+            
+            # FlashRank returns very low scores (< 0.01) for holistic/thematic queries
+            # In those cases, fall back to vector distance which better captures semantic similarity
+            use_rerank = rerank_score is not None and rerank_score > 0.01
+            
+            if use_rerank:
+                # FlashRank returns scores 0-1 (0 = irrelevant, 1 = highly relevant)
+                # Cross-encoder returns scores roughly -10 to +10
+                if rerank_score <= 1.0:
+                    # FlashRank: boost scores since it's conservative
+                    # 0.1 → 0.24, 0.3 → 0.52, 0.5 → 0.80
+                    confidence = min(1.0, rerank_score * 1.4 + 0.1)
+                else:
+                    # Cross-encoder fallback: scores are -10 to +10
+                    confidence = max(0, min(1, (rerank_score + 5) / 10))
+                
+                print(f"{log_prefix} Citation {i+1}: rerank_score={rerank_score:.3f} -> confidence={confidence:.0%}")
             else:
-                # LanceDB uses L2 (Euclidean) distance by default
-                # Typical ranges: 0-50 = very similar, 50-150 = somewhat similar, 150+ = less similar
-                # Good matches are typically < 100 distance
-                distance = result.get("_distance", 100.0)
-                # Convert to confidence using empirically-tuned thresholds
-                # 0 dist = 100%, 50 dist = 75%, 100 dist = 50%, 200 dist = 25%, 400+ dist = 0%
-                confidence = max(0, min(1, 1 - (distance / 400)))
-                print(f"{log_prefix} Citation {i+1}: distance={distance:.2f} -> confidence={confidence:.0%}")
+                # FlashRank returned low scores - use hybrid of vector distance and RRF score
+                # RRF score captures both semantic (vector) and keyword (BM25) relevance
+                rrf_score = result.get("_rrf_score", 0)
+                
+                if rrf_score > 0:
+                    # Use RRF score (already normalized 0-1, higher is better)
+                    # Scale to reasonable confidence range: top result ~85%, lower results differentiated
+                    confidence = 0.5 + (rrf_score * 0.4)  # Range: 50-90%
+                    print(f"{log_prefix} Citation {i+1}: rerank={rerank_score:.4f} low, using RRF={rrf_score:.2f} -> confidence={confidence:.0%}")
+                else:
+                    # Pure vector distance fallback
+                    # 0 dist = 100%, 50 dist = 88%, 100 dist = 75%, 200 dist = 50%, 400+ dist = 0%
+                    confidence = max(0, min(1, 1 - (distance / 400)))
+                    if rerank_score is not None:
+                        print(f"{log_prefix} Citation {i+1}: rerank={rerank_score:.4f} low, using distance={distance:.2f} -> confidence={confidence:.0%}")
+                    else:
+                        print(f"{log_prefix} Citation {i+1}: distance={distance:.2f} -> confidence={confidence:.0%}")
             
             confidence_level = "high" if confidence >= 0.6 else "medium" if confidence >= 0.4 else "low"
             
@@ -1752,6 +1811,119 @@ JSON:"""
         print(f"[RAG] Adaptive search: All strategies tried: {strategies_tried}")
         return results
     
+    async def _adaptive_search_progressive(self, table, question: str, query_embedding: List[float], 
+                                           analysis: Dict, top_k: int) -> Tuple[List[Dict], List[str]]:
+        """Adaptive search that returns strategies tried for progressive UI.
+        
+        v1.1.0: Wrapper around _adaptive_search that tracks and returns strategy info.
+        
+        Returns:
+            Tuple of (results, strategies_used)
+        """
+        strategies_used = []
+        
+        # Strategy 1: Standard hybrid search with expanded query
+        expanded_query = self._build_search_query(analysis, question)
+        if HAS_BM25:
+            results = self._hybrid_search(expanded_query, table, query_embedding, k=top_k * 2)
+            strategies_used.append("hybrid_search")
+        else:
+            results = table.search(query_embedding).limit(top_k * 2).to_list()
+            strategies_used.append("vector_search")
+        
+        is_good, reason = self._verify_retrieval_quality(results, analysis)
+        
+        if is_good:
+            return results, strategies_used
+        
+        # Strategy 2: Entity-focused search
+        entities = analysis.get("entities", [])
+        if entities:
+            try:
+                all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
+                entity_matches = []
+                for doc in all_docs:
+                    text = doc.get("text", "").lower()
+                    for entity in entities:
+                        if entity.lower() in text:
+                            entity_matches.append(doc)
+                            break
+                
+                if entity_matches:
+                    strategies_used.append("entity_focused")
+                    if HAS_BM25:
+                        corpus = [doc.get("text", "").lower().split() for doc in entity_matches]
+                        bm25 = BM25Okapi(corpus)
+                        scores = bm25.get_scores(expanded_query.lower().split())
+                        ranked_indices = np.argsort(scores)[::-1][:top_k * 2]
+                        results = [entity_matches[i] for i in ranked_indices]
+                    else:
+                        results = entity_matches[:top_k * 2]
+                    
+                    is_good, reason = self._verify_retrieval_quality(results, analysis)
+                    if is_good:
+                        return results, strategies_used
+            except Exception as e:
+                print(f"[RAG] Strategy 2 error: {e}")
+        
+        # Strategy 3: Time-period focused search
+        time_periods = analysis.get("time_periods", [])
+        if time_periods:
+            try:
+                all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
+                time_matches = []
+                for doc in all_docs:
+                    text = doc.get("text", "").lower()
+                    filename = doc.get("filename", "").lower()
+                    combined = f"{text} {filename}"
+                    for period in time_periods:
+                        if period.lower() in combined:
+                            time_matches.append(doc)
+                            break
+                
+                if time_matches:
+                    strategies_used.append("time_focused")
+                    if HAS_BM25 and len(time_matches) > 1:
+                        corpus = [doc.get("text", "").lower().split() for doc in time_matches]
+                        bm25 = BM25Okapi(corpus)
+                        scores = bm25.get_scores(expanded_query.lower().split())
+                        ranked_indices = np.argsort(scores)[::-1][:top_k * 2]
+                        results = [time_matches[i] for i in ranked_indices if i < len(time_matches)]
+                    else:
+                        results = time_matches[:top_k * 2]
+                    
+                    is_good, reason = self._verify_retrieval_quality(results, analysis)
+                    if is_good:
+                        return results, strategies_used
+            except Exception as e:
+                print(f"[RAG] Strategy 3 error: {e}")
+        
+        # Strategy 4: Keyword scan
+        try:
+            all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
+            key_metric = analysis.get("key_metric", "")
+            
+            keyword_matches = []
+            search_terms = [key_metric] if key_metric else []
+            search_terms.extend(entities)
+            search_terms.extend(time_periods)
+            
+            for doc in all_docs:
+                text = doc.get("text", "").lower()
+                match_count = sum(1 for term in search_terms if term.lower() in text)
+                if match_count >= 2:
+                    keyword_matches.append((match_count, doc))
+            
+            if keyword_matches:
+                strategies_used.append("keyword_scan")
+                keyword_matches.sort(key=lambda x: -x[0])
+                results = [doc for _, doc in keyword_matches[:top_k * 2]]
+                return results, strategies_used
+        except Exception as e:
+            print(f"[RAG] Strategy 4 error: {e}")
+        
+        return results, strategies_used
+    
     def _classify_query(self, question: str) -> str:
         """Classify query type for optimal prompt and model selection.
         
@@ -1920,34 +2092,62 @@ JSON:"""
     def _get_prompt_for_query_type(self, query_type: str, num_citations: int, avg_confidence: float = 0.5) -> str:
         """Get optimized prompt based on query classification.
         
-        Uses positive, structured prompts based on RAG best practices:
-        - Explicit retrieval constraints (answer ONLY from documents)
-        - Extractive answering (use exact facts from sources)
-        - Clear output format specification
+        v1.1.0: Enhanced with query-type-specific prompts per PROMPT_AUDIT.md Phase 0.2
+        - Factual: Exact value extraction with verification
+        - Complex: Step-by-step reasoning with synthesis
+        - Synthesis: Multi-source integration
         """
-        # Base instruction with strict output format
-        base = """You are a helpful assistant. Answer the question using ONLY information from the provided sources.
-
-OUTPUT RULES:
-1. Write ONLY your answer - nothing else
-2. Put [1], [2], etc. after facts to cite sources
-3. Do NOT add sections like "References:", "Sources:", "User context:", or explanations
-4. Do NOT explain your reasoning or cite formatting choices
-5. If you can't find the answer, just say "I couldn't find this in the documents."
-
+        # Shared output rules
+        output_rules = """OUTPUT RULES:
+1. Write ONLY your answer - no preamble, no "References:" section
+2. Cite sources inline as [1], [2] after facts
+3. If info not in sources, say "I couldn't find this in the documents."
 """
 
         if query_type == 'factual':
-            return base + """Give a direct 1-2 sentence answer with the specific fact or number.
+            # Priority 1 from PROMPT_AUDIT: Factual/Data Extraction Prompt
+            return f"""You are extracting specific facts from source documents.
 
-GOOD: "Chris Norman conducted 7 demos in Q1 2026 [1]."
-BAD: "Chris Norman conducted 7 demos in Q1 2026 [1]. [References] Source: ..." """
+CRITICAL - EXACT VALUE EXTRACTION:
+- Find the EXACT values in the sources. Do not estimate or round.
+- For numbers: Quote the exact figure from the source
+- For counts: Count the actual items listed in the source
+- For dates: Use the exact date format from the source
+- For names: Use the exact spelling from the source
+
+VERIFICATION: Before answering, locate the exact text in the source that contains your answer.
+
+{output_rules}
+Answer in 1-2 sentences with the specific fact.
+
+EXAMPLE:
+Question: "How many demos did Chris do in Q1?"
+GOOD: "Chris conducted 7 demos in Q1 2026 [1]."
+BAD: "Chris did several demos..." (vague)
+BAD: "Chris conducted approximately 7 demos..." (hedging)"""
 
         elif query_type == 'complex':
-            return base + """Analyze step by step, then give a clear conclusion in 2-3 paragraphs."""
+            return f"""You are analyzing a complex question that requires reasoning across sources.
+
+APPROACH:
+1. Identify the key aspects of the question
+2. Find relevant evidence in each source
+3. Synthesize findings into a coherent analysis
+4. Draw a clear conclusion
+
+{output_rules}
+Provide a thorough analysis in 2-3 paragraphs. Show your reasoning."""
 
         else:  # synthesis
-            return base + """Provide a clear, direct answer in 1-2 paragraphs."""
+            return f"""You are synthesizing information from multiple sources.
+
+APPROACH:
+- Weave together insights from different sources
+- Note agreements and any tensions between sources
+- Prioritize the most important points
+
+{output_rules}
+Provide a clear, integrated answer in 1-2 paragraphs."""
 
     def _extract_mentioned_sources(self, question: str, notebook_id: str) -> List[str]:
         """Extract source IDs if the user mentions specific filenames in their query.
@@ -2084,18 +2284,38 @@ BAD: "Chris Norman conducted 7 demos in Q1 2026 [1]. [References] Source: ..." "
         except Exception as e:
             print(f"[RAG STREAM] Error counting rows: {e}")
 
-        # Send "Searching" status to frontend
+        # Status 1: Searching
         yield {"type": "status", "message": "🔍 Searching your documents..."}
+        
+        # v1.1.0: Send retrieval_start event for progressive UI
+        yield {
+            "type": "retrieval_start",
+            "query_analysis": {
+                "entities": query_analysis.get("entities", []),
+                "time_periods": query_analysis.get("time_periods", []),
+                "data_type": query_analysis.get("data_type", "unknown"),
+                "key_metric": query_analysis.get("key_metric", "")
+            }
+        }
 
         # Step 2b: Adaptive search with multiple strategies and verification
         step_start = time.time()
         overcollect_k = settings.retrieval_overcollect if self._use_reranker else top_k
         try:
             # Use adaptive search that tries multiple strategies
-            results = await self._adaptive_search(
+            results, strategies_used = await self._adaptive_search_progressive(
                 table, question, query_embedding, query_analysis, overcollect_k
             )
-            print(f"[RAG STREAM] Step 2 - Adaptive Search ({len(results)} results): {time.time() - step_start:.2f}s")
+            search_time = time.time() - step_start
+            print(f"[RAG STREAM] Step 2 - Adaptive Search ({len(results)} results): {search_time:.2f}s")
+            
+            # v1.1.0: Send retrieval progress with preliminary results
+            yield {
+                "type": "retrieval_progress",
+                "chunks_found": len(results),
+                "strategies_tried": strategies_used,
+                "search_time_ms": int(search_time * 1000)
+            }
         except Exception as e:
             print(f"[RAG STREAM] Search exception: {e}")
             traceback.print_exc()
@@ -2109,10 +2329,14 @@ BAD: "Chris Norman conducted 7 demos in Q1 2026 [1]. [References] Source: ..." "
             results = [r for r in results if r["source_id"] in source_ids]
 
         # Step 2c: Rerank
+        rerank_time = 0
         if self._use_reranker and len(results) > top_k:
+            # Status 2: Reranking (only shown if reranker is used)
+            yield {"type": "status", "message": "📊 Reranking by relevance..."}
             step_start = time.time()
             results = self.rerank(question, results, top_k=top_k + 1)
-            print(f"[RAG STREAM] Step 2c - Reranking ({len(results)} results): {time.time() - step_start:.2f}s")
+            rerank_time = time.time() - step_start
+            print(f"[RAG STREAM] Step 2c - Reranking ({len(results)} results): {rerank_time:.2f}s")
 
         # Step 2d: Entity boosting (Phase 2.2) - use entities from analysis
         entities = query_analysis.get("entities", []) or self._extract_entities(question)
@@ -2135,13 +2359,13 @@ BAD: "Chris Norman conducted 7 demos in Q1 2026 [1]. [References] Source: ..." "
         num_citations = len(citations)
         print(f"[RAG STREAM] Step 3 - Build context: {time.time() - step_start:.2f}s ({len(context)} chars)")
 
-        # Send "Found relevant sections" status with source names
+        # Status 3: Found sections (with count and sources)
         if citations:
             source_names = list(set(c.get("filename", "document") for c in citations[:3]))
             sources_str = ", ".join(source_names[:2])
             if len(source_names) > 2:
-                sources_str += f" and {len(source_names) - 2} more"
-            yield {"type": "status", "message": f"📄 Found relevant sections in {sources_str}..."}
+                sources_str += f" +{len(source_names) - 2} more"
+            yield {"type": "status", "message": f"📄 Found {len(citations)} relevant sections from {sources_str}"}
 
         # Send citations immediately so UI can show them
         yield {
@@ -2194,7 +2418,23 @@ BAD: "Chris Norman conducted 7 demos in Q1 2026 [1]. [References] Source: ..." "
             if periods:
                 temporal_note = f"\n\nIMPORTANT: This question is specifically about {', '.join(periods)}. Only use data from this exact time period."
         
-        prompt = f"""Sources:
+        # v1.1.0: Add community context for holistic queries
+        community_context = ""
+        try:
+            from services.community_detection import community_detector
+            if community_detector.is_holistic_query(question):
+                # Get entities from query analysis
+                query_entities = query_analysis.get("entities", [])
+                if query_entities:
+                    community_context = community_detector.get_community_context(
+                        notebook_id, query_entities
+                    )
+                    if community_context:
+                        print(f"[RAG STREAM] Added community context for holistic query")
+        except Exception as e:
+            print(f"[RAG STREAM] Community context failed (non-fatal): {e}")
+        
+        prompt = f"""{community_context}Sources:
 {context}
 
 Question: {question}{temporal_note}
@@ -2209,10 +2449,11 @@ Answer with [N] citations:"""
         model_choice = "phi4-mini (fast)" if use_fast_model else "olmo-3:7b-instruct (main)"
         print(f"[RAG STREAM] Query type: {query_type}, using {model_choice}")
         
-        # Send status update to frontend (Phase 1.2)
+        # Status 4: Generating answer (final status before streaming)
+        thinking_msg = "🧠 Deep thinking..." if deep_think else ("🤔 Synthesizing answer..." if query_type == 'complex' else "✍️ Generating answer...")
         yield {
             "type": "status",
-            "message": f"🤔 {'Analyzing' if query_type == 'complex' else 'Finding answer'}...",
+            "message": thinking_msg,
             "query_type": query_type
         }
 
@@ -2276,7 +2517,24 @@ Answer with [N] citations:"""
         follow_up_questions = await followup_task
         print(f"[RAG STREAM] Step 7 - Follow-ups ready: {time.time() - step_start:.2f}s")
 
-        yield {"type": "done", "follow_up_questions": follow_up_questions}
+        # Step 7b: CaRR verification (v1.1.0) - verify answer is grounded in citations
+        verification_result = None
+        try:
+            from services.citation_verifier import citation_verifier
+            verification_result = citation_verifier.verify_answer(full_answer, citations)
+            print(f"[RAG STREAM] CaRR verification: score={verification_result.overall_score:.2f}, risk={verification_result.hallucination_risk}")
+        except Exception as e:
+            print(f"[RAG STREAM] CaRR verification failed (non-fatal): {e}")
+
+        yield {
+            "type": "done",
+            "follow_up_questions": follow_up_questions,
+            "verification": {
+                "score": verification_result.overall_score if verification_result else None,
+                "hallucination_risk": verification_result.hallucination_risk if verification_result else None,
+                "feedback": verification_result.feedback if verification_result else None
+            } if verification_result else None
+        }
 
         # Step 8: Memory extraction (fire-and-forget)
         async def _extract_memories_background():
@@ -2294,6 +2552,19 @@ Answer with [N] citations:"""
                 print(f"[RAG STREAM] Memory extraction failed (non-fatal): {e}")
         
         asyncio.create_task(_extract_memories_background())
+        
+        # v1.0.7: FAST pre-classify content INLINE for guaranteed instant visual generation
+        # Uses regex extraction (~2ms) instead of slow LLM analysis
+        # This runs INLINE (not background) so cache is ready before user can click "Create Visual"
+        try:
+            from services.visual_analyzer import visual_analyzer
+            await visual_analyzer.pre_classify_fast(
+                notebook_id=notebook_id,
+                query=question,
+                answer=full_answer
+            )
+        except Exception as e:
+            print(f"[RAG STREAM] Fast visual pre-classification failed (non-fatal): {e}")
 
         # v1.0.6: Finalize metrics for streaming query
         total_time_ms = (time.time() - total_start) * 1000
@@ -2323,6 +2594,11 @@ Answer with [N] citations:"""
         text = re.sub(r'\n*Sources?:.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'\n*User context:.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'\n*Citation.*should not be included.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Clean incomplete citation brackets at end: "[1] [2." -> ""
+        # Matches: [1] [2. or [1 or [1, at end of text
+        text = re.sub(r'\s*\[\d+\]\s*\[\d+\.?\s*$', '', text)
+        text = re.sub(r'\s*\[\d[\d,\s]*\.?\s*$', '', text)
         
         # Clean up whitespace
         text = re.sub(r'\n{3,}', '\n\n', text)

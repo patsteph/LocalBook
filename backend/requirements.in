@@ -14,6 +14,7 @@ torch>=2.0.0  # 2.0+ works, earlier versions may work too
 # LLM integrations
 anthropic>=0.40.0
 openai>=1.56.0
+mistralai>=1.10.0  # Mistral API client
 pydantic-ai>=0.0.30  # Structured LLM outputs with validation and retry
 
 # LangChain/LangGraph for agent workflows
@@ -25,6 +26,7 @@ cryptography>=42.0.0  # For credential locker encryption
 
 # Document processing
 PyMuPDF>=1.25.0,<1.26.0  # Pin to 1.25.x - 1.26.x has raw_unicode_escape encoding bug
+pymupdf4llm>=0.0.10  # RAG-optimized PDF extraction (Markdown output)
 python-docx>=1.1.0
 python-pptx>=1.0.0
 openpyxl>=3.1.0
@@ -47,8 +49,10 @@ beautifulsoup4>=4.12.0
 youtube-transcript-api>=0.6.0
 
 # Audio/Video transcription (requires ffmpeg: brew install ffmpeg)
-# IMPORTANT: openai-whisper requires Python 3.11 (not 3.12+)
-openai-whisper
+# v1.1.0: lightning-whisper-mlx is 10x faster on Apple Silicon
+# Falls back to openai-whisper if MLX unavailable
+lightning-whisper-mlx; sys_platform == "darwin"  # MLX only works on macOS
+openai-whisper  # Fallback for non-Mac or if MLX fails
 
 # System monitoring
 psutil>=5.9.0  # For health portal system info

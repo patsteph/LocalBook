@@ -2,7 +2,7 @@
 
 **Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
-[![Version](https://img.shields.io/badge/version-1.0.3-blue.svg)](https://github.com/patsteph/LocalBook/releases)
+[![Version](https://img.shields.io/badge/version-1.10-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
 [![Python](https://img.shields.io/badge/python-3.11-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -22,7 +22,7 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v1.0.5
+## 🎉 What's New in v1.10
 
 ### Visual Studio Improvements
 | Feature | Description |
@@ -108,7 +108,7 @@ brew install ollama ffmpeg tesseract python@3.11 node
 
 ### Option 1: Download Release (Recommended)
 
-1. Download `LocalBook-v1.0.3.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-v1.10.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip and drag `LocalBook.app` to `/Applications`
 3. Launch LocalBook — it will download required AI models on first run
 

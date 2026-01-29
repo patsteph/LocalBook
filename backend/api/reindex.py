@@ -383,3 +383,93 @@ async def cleanup_orphaned_data():
         "total_cleaned": total_cleaned,
         "cleaned_by_notebook": cleaned_by_notebook
     }
+
+
+@router.post("/repair-zero-vectors")
+async def repair_zero_vectors():
+    """Find and re-embed chunks that have zero vectors (failed embeddings).
+    
+    Zero vectors make chunks invisible to search. This scans all notebooks
+    and attempts to regenerate embeddings for any chunks with zero vectors.
+    """
+    import numpy as np
+    from services.rag_engine import rag_engine
+    
+    db = lancedb.connect(str(settings.db_path))
+    
+    total_found = 0
+    total_fixed = 0
+    results_by_notebook = {}
+    
+    for table_name in db.table_names():
+        if not table_name.startswith("notebook_"):
+            continue
+        
+        notebook_id = table_name.replace("notebook_", "")
+        table = db.open_table(table_name)
+        df = table.to_pandas()
+        
+        # Find zero vectors
+        zero_mask = df['vector'].apply(lambda v: all(x == 0 for x in v))
+        zero_df = df[zero_mask]
+        
+        if len(zero_df) == 0:
+            continue
+        
+        total_found += len(zero_df)
+        fixed = 0
+        
+        for _, row in zero_df.iterrows():
+            try:
+                # Generate new embedding
+                embedding = rag_engine.encode(row['text'])[0].tolist()
+                
+                if all(x == 0 for x in embedding):
+                    continue  # Still failed
+                
+                # Replace in table
+                table.delete(f"source_id = '{row['source_id']}' AND chunk_index = {row['chunk_index']}")
+                table.add([{
+                    'vector': embedding,
+                    'text': row['text'],
+                    'source_id': row['source_id'],
+                    'chunk_index': row['chunk_index'],
+                    'filename': row['filename'],
+                    'source_type': row.get('source_type', 'document')
+                }])
+                fixed += 1
+            except Exception as e:
+                print(f"[REPAIR] Error fixing chunk: {e}")
+        
+        total_fixed += fixed
+        results_by_notebook[notebook_id] = {"found": len(zero_df), "fixed": fixed}
+    
+    return {
+        "message": f"Found {total_found} zero vectors, fixed {total_fixed}",
+        "total_found": total_found,
+        "total_fixed": total_fixed,
+        "by_notebook": results_by_notebook
+    }
+
+
+@router.post("/recover-stuck")
+async def recover_stuck_sources():
+    """Manually trigger recovery of sources stuck in 'processing' status.
+    
+    Sources are considered stuck if they've been in 'processing' for >10 minutes.
+    Recovery will:
+    - Re-ingest if content exists but no chunks
+    - Mark completed if chunks already exist in LanceDB
+    - Mark failed if no content available
+    """
+    from services.stuck_source_recovery import stuck_source_recovery
+    
+    result = await stuck_source_recovery.check_and_recover()
+    
+    return {
+        "message": f"Found {result['stuck_found']} stuck sources, recovered {result['recovered']}, failed {result['failed']}",
+        "stuck_found": result["stuck_found"],
+        "recovered": result["recovered"],
+        "failed": result["failed"],
+        "details": result["details"]
+    }

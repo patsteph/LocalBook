@@ -11,12 +11,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, audio_llm, rag_health, health_portal
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from config import settings
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
 from services.startup_checks import run_all_startup_checks
 from services.migration_manager import check_and_migrate_on_startup
+from services.findings_store import init_findings_store
 
 async def _run_startup_tasks():
     """Run all startup tasks in background after HTTP server is ready.
@@ -27,6 +28,9 @@ async def _run_startup_tasks():
     print(f"📁 Data directory: {settings.data_dir}")
     print(f"🤖 LLM Provider: {settings.llm_provider}")
     print(f"🔥 Models: {settings.ollama_model} (think), {settings.ollama_fast_model} (fast)")
+    
+    # Initialize findings store
+    init_findings_store(settings.data_dir)
     
     # Check if this is an upgrade
     is_upgrade, previous_version = check_if_upgrade()
@@ -68,6 +72,10 @@ async def _run_startup_tasks():
     # Start background task to keep models warm (periodic keep-alive)
     set_startup_status("starting", "Starting background services...", 95)
     await start_warmup_task()
+    
+    # Start stuck source recovery (checks every 5 min, recovers after 10 min stuck)
+    from services.stuck_source_recovery import stuck_source_recovery
+    stuck_source_recovery.start_background_task()
     
     # Mark startup complete
     mark_startup_complete()
@@ -157,6 +165,10 @@ app.include_router(browser.router, tags=["browser"])
 app.include_router(audio_llm.router, tags=["audio-llm"])
 app.include_router(rag_health.router, tags=["rag-health"])
 app.include_router(health_portal.router, tags=["health-portal"])
+app.include_router(jobs.router, tags=["jobs"])
+app.include_router(agent_browser.router, tags=["agent-browser"])
+app.include_router(rlm.router, tags=["rlm"])
+app.include_router(findings.router, tags=["findings"])
 
 @app.get("/")
 async def root():

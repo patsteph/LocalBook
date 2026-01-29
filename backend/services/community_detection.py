@@ -392,16 +392,35 @@ SUMMARY: [2-3 sentence summary]"""
         Holistic queries benefit from community-level context.
         """
         holistic_patterns = [
+            # Overview requests
             "tell me about",
             "everything about",
-            "overview of",
+            "overview",
             "what do you know about",
             "summarize",
             "all about",
+            "big picture",
+            # Theme/topic questions
+            "themes",
+            "main topics",
+            "key topics",
+            "major points",
+            "key takeaways",
+            "main ideas",
+            "key concepts",
+            # Cross-source questions
+            "across all",
+            "across the",
+            "from all sources",
+            "in all the",
+            "throughout",
+            # Relationship questions
             "related to",
             "connected to",
             "who is involved",
             "what's the story",
+            "how does everything",
+            "connections between",
         ]
         
         query_lower = query.lower()

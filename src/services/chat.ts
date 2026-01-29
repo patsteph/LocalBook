@@ -2,9 +2,24 @@
 import api, { API_BASE_URL } from './api';
 import { ChatQuery, ChatResponse, Citation } from '../types';
 
+export interface QueryAnalysis {
+  entities: string[];
+  time_periods: string[];
+  data_type: string;
+  key_metric: string;
+}
+
+export interface RetrievalProgress {
+  chunks_found: number;
+  strategies_tried: string[];
+  search_time_ms: number;
+}
+
 export interface StreamCallbacks {
   onMode?: (deepThink: boolean, autoUpgraded: boolean) => void;
   onStatus?: (message: string, queryType: string) => void;
+  onRetrievalStart?: (queryAnalysis: QueryAnalysis) => void;
+  onRetrievalProgress?: (progress: RetrievalProgress) => void;
   onCitations?: (citations: Citation[], sources: string[], lowConfidence: boolean) => void;
   onQuickSummary?: (summary: string) => void;
   onToken?: (token: string) => void;
@@ -50,6 +65,14 @@ export const chatService = {
             callbacks.onMode?.(data.deep_think, data.auto_upgraded);
           } else if (data.type === 'status') {
             callbacks.onStatus?.(data.message, data.query_type);
+          } else if (data.type === 'retrieval_start') {
+            callbacks.onRetrievalStart?.(data.query_analysis);
+          } else if (data.type === 'retrieval_progress') {
+            callbacks.onRetrievalProgress?.({
+              chunks_found: data.chunks_found,
+              strategies_tried: data.strategies_tried,
+              search_time_ms: data.search_time_ms
+            });
           } else if (data.type === 'citations') {
             callbacks.onCitations?.(data.citations, data.sources, data.low_confidence);
           } else if (data.type === 'quick_summary') {

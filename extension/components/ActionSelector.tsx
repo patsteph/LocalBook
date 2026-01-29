@@ -25,6 +25,7 @@ export function ActionSelector({ loading, onAction }: ActionSelectorProps) {
         <option value="scrape">📄 Scrape to Notebook</option>
         <option value="links">🔗 Extract Links</option>
         <option value="compare">⚖️ Compare with Notebook</option>
+        <option value="automate">🤖 AI Automation</option>
       </select>
     </div>
   )

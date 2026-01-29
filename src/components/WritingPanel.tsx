@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { writingService, FormatOption, WritingResult } from '../services/writing';
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
+import { BookmarkButton } from './shared/BookmarkButton';
 
 interface WritingPanelProps {
   notebookId: string;
 }
 
-export const WritingPanel: React.FC<WritingPanelProps> = ({ }) => {
+export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formats, setFormats] = useState<FormatOption[]>([]);
@@ -169,12 +170,24 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ }) => {
             <span className="text-sm text-gray-500">
               {result.word_count} words • {result.format_used}
             </span>
-            <button
-              onClick={copyToClipboard}
-              className="text-xs text-blue-600 hover:text-blue-700"
-            >
-              Copy
-            </button>
+            <div className="flex items-center gap-2">
+              <BookmarkButton
+                notebookId={notebookId}
+                type="note"
+                title={`${selectedTask} - ${result.word_count} words`}
+                content={{
+                  text: result.content,
+                  task: selectedTask,
+                  format: result.format_used,
+                }}
+              />
+              <button
+                onClick={copyToClipboard}
+                className="text-xs text-blue-600 hover:text-blue-700"
+              >
+                Copy
+              </button>
+            </div>
           </div>
 
           <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 max-h-64 overflow-y-auto">

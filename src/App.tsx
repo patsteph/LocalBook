@@ -16,6 +16,7 @@ import { Timeline } from './components/Timeline';
 import { Constellation3D } from './components/Constellation3D';
 import { ThemesPanel } from './components/ThemesPanel';
 import { ExplorationPanel } from './components/ExplorationPanel';
+import { FindingsPanel } from './components/FindingsPanel';
 import { ToastContainer, ToastMessage } from './components/shared/Toast';
 import { API_BASE_URL } from './services/api';
 import { prewarmMermaid } from './components/shared/MermaidRenderer';
@@ -43,7 +44,7 @@ function App() {
     // Load saved LLM provider preference
     return localStorage.getItem('llmProvider') || 'ollama';
   });
-  const [activeTab, setActiveTab] = useState<'chat' | 'constellation' | 'timeline'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'constellation' | 'timeline' | 'findings'>('chat');
   const [insightTab, setInsightTab] = useState<'themes' | 'journey'>('themes');
   const [chatPrefillQuery, setChatPrefillQuery] = useState<string>('');
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
@@ -427,6 +428,19 @@ function App() {
               </svg>
               Timeline
             </button>
+            <button
+              onClick={() => setActiveTab('findings')}
+              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors border-b-2 ${
+                activeTab === 'findings'
+                  ? 'border-green-600 text-green-600 dark:text-green-400 bg-white dark:bg-gray-800'
+                  : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+              </svg>
+              Findings
+            </button>
           </div>
 
           {/* Tab Content - All rendered, visibility toggled to preserve state */}
@@ -508,6 +522,9 @@ function App() {
             </div>
             <div className={`absolute inset-0 ${activeTab === 'timeline' ? 'block' : 'hidden'}`}>
               <Timeline notebookId={selectedNotebookId} sourcesRefreshTrigger={refreshSources} />
+            </div>
+            <div className={`absolute inset-0 ${activeTab === 'findings' ? 'block' : 'hidden'}`}>
+              <FindingsPanel notebookId={selectedNotebookId} />
             </div>
           </div>
         </div>

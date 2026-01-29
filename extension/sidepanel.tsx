@@ -46,7 +46,8 @@ import {
   ResearchView,
   StatusMessage,
   LoadingSpinner,
-  DisconnectedView
+  DisconnectedView,
+  AutomationView
 } from "./components"
 
 function SidePanel() {
@@ -153,7 +154,7 @@ function SidePanel() {
       const newNb = await createNotebookApi(name)
       if (newNb) {
         setSelectedNotebook(newNb.id)
-        showMessage(`Created "${newNb.title || name}"`, "success")
+        showMessage(`Created "${newNb.name || name}"`, "success")
         await handleFetchNotebooks()
       } else {
         showMessage("Failed to create notebook", "error")
@@ -622,6 +623,14 @@ function SidePanel() {
           {/* Compare Result */}
           {currentAction === "compare" && compareResult && (
             <CompareResult result={compareResult} />
+          )}
+
+          {/* Automation View */}
+          {currentAction === "automate" && pageInfo && (
+            <AutomationView
+              pageUrl={pageInfo.url}
+              onMessage={showMessage}
+            />
           )}
 
           {/* Empty State */}

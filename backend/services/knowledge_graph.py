@@ -281,7 +281,10 @@ class KnowledgeGraphService:
         return result
     
     def _build_concept_extraction_prompt(self, text: str) -> str:
-        """Build prompt for concept extraction"""
+        """Build prompt for concept extraction.
+        
+        v1.1.0: Added example for better small model performance per PROMPT_AUDIT.md
+        """
         return f"""Extract key concepts and their relationships from this text.
 
 Text: "{text[:2000]}"
@@ -301,6 +304,11 @@ Rules:
 - Only include clear relationships
 - Use lowercase for concept names
 - Keep descriptions under 20 words
+
+EXAMPLE:
+Input: "Machine learning models like GPT-4 use transformer architecture. Transformers were introduced in the 2017 paper 'Attention is All You Need'."
+Output:
+{{"concepts": [{{"name": "machine learning", "description": "field of AI that learns from data"}}, {{"name": "gpt-4", "description": "large language model by openai"}}, {{"name": "transformer", "description": "neural network architecture using attention"}}], "relationships": [{{"source": "gpt-4", "target": "transformer", "type": "example_of"}}, {{"source": "gpt-4", "target": "machine learning", "type": "part_of"}}]}}
 
 Respond ONLY with JSON:"""
     

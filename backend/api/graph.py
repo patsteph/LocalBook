@@ -462,138 +462,23 @@ async def build_graph_for_notebook(notebook_id: str, background_tasks: Backgroun
     """
     Build/rebuild topics for a notebook.
     v0.6.5: Processes all sources through BERTopic to discover topics.
+    v1.1.0: Uses job queue for proper status tracking and cancellation support.
     """
-    import threading
-    from storage.source_store import source_store
-    from services.rag_engine import rag_engine
-    from api.constellation_ws import notify_build_progress, notify_build_complete
+    from services.job_queue import job_queue, JobType
     
-    def run_rebuild_sync():
-        """Synchronous wrapper to run async rebuild in a new event loop."""
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(rebuild_topics_async())
-        finally:
-            loop.close()
-    
-    async def rebuild_topics_async():
-        try:
-            print(f"[TopicModel] Starting rebuild for notebook {notebook_id}")
-            
-            # Get all sources for this notebook
-            sources = await source_store.list(notebook_id)
-            if not sources:
-                print(f"[TopicModel] No sources found for notebook {notebook_id}")
-                await notify_build_complete()
-                return
-            
-            print(f"[TopicModel] Found {len(sources)} sources to process")
-            
-            await notify_build_progress({
-                "notebook_id": notebook_id,
-                "progress": 5,
-                "status": f"Collecting {len(sources)} sources..."
-            })
-            
-            # STEP 1: Collect ALL chunks and embeddings first
-            all_chunks = []
-            all_embeddings = []
-            chunk_metadata = []  # Track which source each chunk belongs to
-            
-            for i, source in enumerate(sources):
-                content = source.get("content", "")
-                if not content or len(content) < 100:
-                    print(f"[TopicModel] Skipping source {i+1}: no content or too short")
-                    continue
-                
-                source_id = source.get("id", "")
-                filename = source.get('filename', 'unknown')
-                print(f"[TopicModel] Chunking source {i+1}/{len(sources)}: {filename}")
-                
-                # Chunk the content
-                chunks = rag_engine._chunk_text(content)
-                if not chunks:
-                    print(f"[TopicModel] No chunks generated for source {i+1}")
-                    continue
-                
-                # Generate embeddings for chunks
-                embeddings = rag_engine.encode(chunks)
-                
-                # Collect
-                all_chunks.extend(chunks)
-                all_embeddings.append(embeddings)
-                for chunk in chunks:
-                    chunk_metadata.append({"source_id": source_id, "notebook_id": notebook_id})
-                
-                progress = int(5 + (i + 1) / len(sources) * 40)
-                await notify_build_progress({
-                    "notebook_id": notebook_id,
-                    "progress": progress,
-                    "status": f"Chunked {i + 1}/{len(sources)} sources ({len(all_chunks)} chunks)"
-                })
-                await asyncio.sleep(0.05)
-            
-            if not all_chunks:
-                print(f"[TopicModel] No chunks collected from any source")
-                await notify_build_complete()
-                return
-            
-            # Combine embeddings
-            import numpy as np
-            combined_embeddings = np.vstack(all_embeddings) if all_embeddings else None
-            
-            print(f"[TopicModel] Collected {len(all_chunks)} chunks, fitting BERTopic...")
-            
-            await notify_build_progress({
-                "notebook_id": notebook_id,
-                "progress": 50,
-                "status": f"Discovering topics from {len(all_chunks)} chunks..."
-            })
-            
-            # STEP 2: Fit BERTopic on ALL documents at once
-            result = await topic_modeling_service.fit_all(
-                texts=all_chunks,
-                embeddings=combined_embeddings,
-                metadata=chunk_metadata,
-                notebook_id=notebook_id
-            )
-            
-            print(f"[TopicModel] BERTopic fit complete: {result}")
-            
-            await notify_build_progress({
-                "notebook_id": notebook_id,
-                "progress": 95,
-                "status": f"Found {result.get('topics_found', 0)} topics"
-            })
-            
-            # Get final stats
-            stats = await topic_modeling_service.get_stats(notebook_id)
-            print(f"[TopicModel] Rebuild complete: {stats}")
-            
-            await notify_build_progress({
-                "notebook_id": notebook_id,
-                "progress": 100,
-                "topics_found": stats.get("total_topics", 0)
-            })
-            
-            print(f"[TopicModel] Built topics for notebook {notebook_id}: {stats}")
-            await notify_build_complete()
-            
-        except Exception as e:
-            import traceback
-            print(f"[TopicModel] Rebuild error: {e}")
-            traceback.print_exc()
-            await notify_build_complete()
-    
-    # Use threading for reliable background execution in bundled app
-    thread = threading.Thread(target=run_rebuild_sync, daemon=True)
-    thread.start()
+    # Submit to job queue - returns immediately with job_id
+    job_id = await job_queue.submit(
+        job_type=JobType.TOPIC_REBUILD,
+        params={"notebook_id": notebook_id},
+        notebook_id=notebook_id
+    )
     
     return {
         "message": "Building topics from sources",
-        "status": "running"
+        "status": "running",
+        "job_id": job_id,
+        "track_url": f"/jobs/{job_id}",
+        "ws_url": f"/jobs/ws/{job_id}"
     }
 
 

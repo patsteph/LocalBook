@@ -37,43 +37,80 @@ class VoiceNoteCreate(BaseModel):
 
 
 # =============================================================================
-# Whisper Transcription
+# Whisper Transcription (v1.1.0: MLX-accelerated on Apple Silicon)
 # =============================================================================
 
 _whisper_model = None
+_whisper_type = None  # "mlx" or "openai"
 
 
 def _get_whisper_model():
-    """Lazy load Whisper model."""
-    global _whisper_model
-    if _whisper_model is None:
-        try:
-            import whisper
-            # Use 'base' model for balance of speed and accuracy
-            # Options: tiny, base, small, medium, large
-            _whisper_model = whisper.load_model("base")
-            print("[Voice] Whisper model loaded successfully")
-        except Exception as e:
-            print(f"[Voice] Failed to load Whisper: {e}")
-            raise HTTPException(
-                status_code=500, 
-                detail="Whisper transcription not available. Please install openai-whisper."
-            )
-    return _whisper_model
+    """Lazy load Whisper model.
+    
+    v1.1.0: Prefers lightning-whisper-mlx on macOS for 10x faster transcription.
+    Falls back to openai-whisper if MLX unavailable.
+    """
+    global _whisper_model, _whisper_type
+    
+    if _whisper_model is not None:
+        return _whisper_model, _whisper_type
+    
+    # Try lightning-whisper-mlx first (10x faster on Apple Silicon)
+    try:
+        from lightning_whisper_mlx import LightningWhisperMLX
+        _whisper_model = LightningWhisperMLX(model="base", batch_size=12, quant=None)
+        _whisper_type = "mlx"
+        print("[Voice] ✓ Lightning Whisper MLX loaded (10x faster on Apple Silicon)")
+        return _whisper_model, _whisper_type
+    except ImportError:
+        print("[Voice] lightning-whisper-mlx not available, trying openai-whisper...")
+    except Exception as e:
+        print(f"[Voice] MLX Whisper failed: {e}, trying openai-whisper...")
+    
+    # Fallback to openai-whisper
+    try:
+        import whisper
+        _whisper_model = whisper.load_model("base")
+        _whisper_type = "openai"
+        print("[Voice] ✓ OpenAI Whisper loaded (fallback)")
+        return _whisper_model, _whisper_type
+    except Exception as e:
+        print(f"[Voice] Failed to load any Whisper model: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Whisper transcription not available. Install lightning-whisper-mlx or openai-whisper."
+        )
 
 
 async def _transcribe_audio(audio_path: str) -> dict:
-    """Transcribe audio file using Whisper."""
-    model = _get_whisper_model()
+    """Transcribe audio file using Whisper (MLX or OpenAI).
+    
+    v1.1.0: Uses lightning-whisper-mlx when available for 10x speedup.
+    """
+    model, model_type = _get_whisper_model()
     
     # Run in thread pool to not block
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: model.transcribe(audio_path)
-    )
     
-    return result
+    if model_type == "mlx":
+        # Lightning Whisper MLX API
+        result = await loop.run_in_executor(
+            None,
+            lambda: model.transcribe(audio_path)
+        )
+        # Normalize result format to match openai-whisper
+        if isinstance(result, dict):
+            return result
+        else:
+            # MLX returns text directly in some versions
+            return {"text": str(result), "language": "en", "segments": []}
+    else:
+        # OpenAI Whisper API
+        result = await loop.run_in_executor(
+            None,
+            lambda: model.transcribe(audio_path)
+        )
+        return result
 
 
 # =============================================================================
@@ -224,16 +261,31 @@ async def transcribe_quick(
 @router.get("/status")
 async def get_voice_status():
     """Check if voice transcription is available."""
+    # Try MLX first
+    try:
+        from lightning_whisper_mlx import LightningWhisperMLX
+        return {
+            "available": True,
+            "model": "base",
+            "backend": "mlx",
+            "message": "Lightning Whisper MLX ready (10x faster on Apple Silicon)"
+        }
+    except ImportError:
+        pass
+    
+    # Try OpenAI Whisper
     try:
         import whisper
         return {
             "available": True,
             "model": "base",
-            "message": "Whisper transcription is ready"
+            "backend": "openai",
+            "message": "OpenAI Whisper ready"
         }
     except ImportError:
         return {
             "available": False,
             "model": None,
-            "message": "Whisper not installed. Run: pip install openai-whisper"
+            "backend": None,
+            "message": "No Whisper installed. Run: pip install lightning-whisper-mlx"
         }

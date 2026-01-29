@@ -41,6 +41,17 @@ export interface WebSource {
   url: string;
 }
 
+// Inline visual data for Chat Canvas
+export interface InlineVisualData {
+  id: string;
+  type: 'svg' | 'mermaid';
+  code: string;
+  title?: string;
+  template_id?: string;
+  pattern?: string;
+  tagline?: string;  // Editable summary line shown below visual
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -53,6 +64,10 @@ export interface ChatMessage {
   lowConfidenceQuery?: string;  // The query to use for web search if low confidence
   memoryUsed?: string[];  // Types of memory used: "core_context", "retrieved_memories"
   memoryContextSummary?: string;  // Brief summary of memory context used
+  inlineVisual?: InlineVisualData;  // Canvas: inline visual for this message
+  alternativeVisuals?: InlineVisualData[];  // Canvas: alternative visual options
+  visualLoading?: boolean;  // Canvas: visual is being generated
+  visualLoadingMessage?: string;  // Canvas: custom loading message (e.g., "Analyzing your guidance...")
 }
 
 export interface ChatQuery {

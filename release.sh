@@ -131,20 +131,20 @@ if ! command -v pip-compile &> /dev/null; then
     pip install pip-tools --quiet
 fi
 
-# Compile requirements.in to requirements.txt
+# Try pip-compile first (cleaner output with dependency provenance)
+# Fall back to pip freeze if pip-compile fails due to transitive conflicts
 echo -e "  Running pip-compile..."
 if pip-compile requirements.in -o requirements.txt --quiet 2>/dev/null; then
-    echo -e "${GREEN}  ✓ requirements.txt updated${NC}"
-    
-    # Check if requirements.txt changed
-    if [ -n "$(git status --porcelain requirements.txt 2>/dev/null)" ]; then
-        echo -e "${YELLOW}  ⚠ requirements.txt was updated - review changes${NC}"
-    fi
+    echo -e "${GREEN}  ✓ requirements.txt updated (pip-compile)${NC}"
 else
-    echo -e "${RED}✗ pip-compile failed${NC}"
-    deactivate
-    cd ..
-    exit 1
+    echo -e "${YELLOW}  ⚠ pip-compile failed (transitive conflicts), using pip freeze...${NC}"
+    pip freeze > requirements.txt
+    echo -e "${GREEN}  ✓ requirements.txt updated (pip freeze)${NC}"
+fi
+
+# Check if requirements.txt changed
+if [ -n "$(git status --porcelain requirements.txt 2>/dev/null)" ]; then
+    echo -e "${YELLOW}  ⚠ requirements.txt was updated - review changes${NC}"
 fi
 
 deactivate
