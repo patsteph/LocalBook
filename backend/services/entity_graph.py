@@ -6,10 +6,9 @@ Enables "who is connected to what" queries through graph traversal.
 import asyncio
 import json
 import re
-from collections import defaultdict
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional
 import httpx
 
 from config import settings
@@ -135,7 +134,7 @@ class EntityGraph:
     ) -> List[EntityRelationship]:
         """Extract relationships based on co-occurrence."""
         relationships = []
-        text_lower = text.lower()
+        text.lower()
         
         # Split into sentences
         sentences = re.split(r'[.!?\n]', text)

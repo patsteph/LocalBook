@@ -72,6 +72,11 @@ class TopicDocument:
 class TopicModelingService:
     """BERTopic-based topic modeling with incremental updates and two-stage naming."""
     
+    # Rebuild thresholds
+    REBUILD_SOURCE_THRESHOLD = 5      # Rebuild after 5 new sources since last rebuild
+    REBUILD_DOC_RATIO_THRESHOLD = 0.3 # Or when 30% more documents than at last rebuild
+    MIN_DOCS_FOR_REBUILD = 15         # Don't rebuild if total docs < 15
+    
     def __init__(self):
         self._model = None
         self._initialized = False
@@ -81,12 +86,16 @@ class TopicModelingService:
         self._enhancement_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
         self._last_load_time: float = 0  # Track when we last loaded from disk
+        self._rebuild_doc_counts: Dict[str, int] = {}   # notebook_id -> doc count at last rebuild
+        self._rebuild_source_counts: Dict[str, int] = {} # notebook_id -> unique source count at last rebuild
+        self._rebuild_in_progress: set = set()           # notebook_ids currently rebuilding
         
         # Paths
         self.data_dir = Path(settings.data_dir) / "topic_model"
         self.model_path = self.data_dir / "bertopic_model"
         self.topics_path = self.data_dir / "topics.json"
         self.docs_path = self.data_dir / "documents.json"
+        self.rebuild_state_path = self.data_dir / "rebuild_state.json"
         
     async def initialize(self) -> bool:
         """Initialize or load the BERTopic model."""
@@ -190,6 +199,16 @@ class TopicModelingService:
                         )
                         self._documents.append(doc)
             
+            # Load rebuild state tracking
+            if self.rebuild_state_path.exists():
+                try:
+                    with open(self.rebuild_state_path, 'r') as f:
+                        rebuild_data = json.load(f)
+                    self._rebuild_doc_counts = rebuild_data.get("doc_counts", {})
+                    self._rebuild_source_counts = rebuild_data.get("source_counts", {})
+                except Exception:
+                    pass
+            
             # Update load time AFTER successful load
             self._last_load_time = time.time()
             print(f"[TopicModel] Loaded {len(self._topics)} topics, {len(self._documents)} documents from disk")
@@ -224,12 +243,79 @@ class TopicModelingService:
             with open(self.docs_path, 'w') as f:
                 json.dump(docs_data, f, indent=2)
             
+            # Save rebuild state tracking
+            try:
+                rebuild_data = {
+                    "doc_counts": self._rebuild_doc_counts,
+                    "source_counts": self._rebuild_source_counts,
+                }
+                with open(self.rebuild_state_path, 'w') as f:
+                    json.dump(rebuild_data, f, indent=2)
+            except Exception:
+                pass
+            
             # Save BERTopic model
             if self._model is not None and hasattr(self._model, 'save'):
                 self._model.save(str(self.model_path), serialization="safetensors", save_ctfidf=True)
                 
         except Exception as e:
             print(f"[TopicModel] Error saving state: {e}")
+    
+    def should_rebuild(self, notebook_id: str) -> bool:
+        """Check if a notebook has enough new data to justify a topic rebuild.
+        
+        Returns True if:
+        - At least REBUILD_SOURCE_THRESHOLD new sources since last rebuild, OR
+        - Document count grew by REBUILD_DOC_RATIO_THRESHOLD (30%) since last rebuild
+        - AND total docs >= MIN_DOCS_FOR_REBUILD
+        - AND no rebuild is currently in progress for this notebook
+        """
+        if notebook_id in self._rebuild_in_progress:
+            return False
+        
+        # Count current docs and unique sources for this notebook
+        nb_docs = [d for d in self._documents if d.notebook_id == notebook_id]
+        current_doc_count = len(nb_docs)
+        current_source_count = len(set(d.source_id for d in nb_docs))
+        
+        if current_doc_count < self.MIN_DOCS_FOR_REBUILD:
+            return False
+        
+        last_doc_count = self._rebuild_doc_counts.get(notebook_id, 0)
+        last_source_count = self._rebuild_source_counts.get(notebook_id, 0)
+        
+        # Never rebuilt — should rebuild
+        if last_doc_count == 0 and current_doc_count >= self.MIN_DOCS_FOR_REBUILD:
+            return True
+        
+        # Check source threshold
+        new_sources = current_source_count - last_source_count
+        if new_sources >= self.REBUILD_SOURCE_THRESHOLD:
+            print(f"[TopicModel] Rebuild recommended for {notebook_id}: {new_sources} new sources since last rebuild")
+            return True
+        
+        # Check document ratio threshold
+        if last_doc_count > 0:
+            growth_ratio = (current_doc_count - last_doc_count) / last_doc_count
+            if growth_ratio >= self.REBUILD_DOC_RATIO_THRESHOLD:
+                print(f"[TopicModel] Rebuild recommended for {notebook_id}: {growth_ratio:.0%} doc growth since last rebuild")
+                return True
+        
+        return False
+    
+    def record_rebuild(self, notebook_id: str):
+        """Record current counts after a successful rebuild."""
+        nb_docs = [d for d in self._documents if d.notebook_id == notebook_id]
+        self._rebuild_doc_counts[notebook_id] = len(nb_docs)
+        self._rebuild_source_counts[notebook_id] = len(set(d.source_id for d in nb_docs))
+        self._rebuild_in_progress.discard(notebook_id)
+        print(f"[TopicModel] Recorded rebuild state for {notebook_id}: "
+              f"{self._rebuild_doc_counts[notebook_id]} docs, "
+              f"{self._rebuild_source_counts[notebook_id]} sources")
+    
+    def mark_rebuild_started(self, notebook_id: str):
+        """Mark that a rebuild is in progress for a notebook."""
+        self._rebuild_in_progress.add(notebook_id)
     
     async def add_documents(
         self,
@@ -542,10 +628,19 @@ Theme name:"""
                 print(f"[TopicModel] Topics file modified (file={file_mtime}, last_load={self._last_load_time}) - reloading")
                 await self._load_state()
         
-        topics = list(self._topics.values())
-        
+        # Cross-validate: ensure topic notebook_ids match actual document data
+        # This fixes contaminated data from the old topic ID collision bug
         if notebook_id:
-            topics = [t for t in topics if notebook_id in t.notebook_ids]
+            nb_doc_topic_ids = set(d.topic_id for d in self._documents if d.notebook_id == notebook_id)
+            topics = []
+            for t in self._topics.values():
+                if notebook_id in t.notebook_ids:
+                    # Verify this topic actually has documents from this notebook
+                    if t.topic_id in nb_doc_topic_ids:
+                        topics.append(t)
+                    # else: stale notebook_id reference, skip it
+        else:
+            topics = list(self._topics.values())
         
         # Filter out outlier topic (-1) and sort by document count
         topics = [t for t in topics if t.topic_id != -1]
@@ -634,14 +729,32 @@ Theme name:"""
                 
                 # Clear existing data for this notebook before rebuild
                 self._documents = [d for d in self._documents if d.notebook_id != notebook_id]
-                topics_to_remove = [tid for tid, t in self._topics.items() 
-                                   if notebook_id in t.notebook_ids and len(t.notebook_ids) == 1]
-                for tid in topics_to_remove:
+                
+                # Remove this notebook from ALL topics (not just exclusive ones)
+                # This prevents topic ID collisions: BERTopic always generates IDs 0,1,2...
+                # which would collide with other notebooks' topics if we only cleared exclusive ones.
+                for tid in list(self._topics.keys()):
+                    topic = self._topics[tid]
+                    if notebook_id in topic.notebook_ids:
+                        topic.notebook_ids.remove(notebook_id)
+                    # Recalculate doc count from remaining documents
+                    topic.document_count = len([d for d in self._documents if d.topic_id == tid])
+                    topic.source_ids = list(set(
+                        d.source_id for d in self._documents if d.topic_id == tid
+                    ))
+                # Delete topics with no notebooks left
+                empty_topics = [tid for tid, t in self._topics.items() if not t.notebook_ids]
+                for tid in empty_topics:
                     del self._topics[tid]
+                
+                # Compute topic ID offset to prevent collisions with other notebooks' topics
+                # BERTopic always generates sequential IDs (0, 1, 2, ...) so we offset them
+                existing_max_id = max(self._topics.keys(), default=-1)
+                topic_id_offset = existing_max_id + 1 if self._topics else 0
                 
                 # Create fresh BERTopic model for this fit
                 from bertopic import BERTopic
-                from bertopic.representation import KeyBERTInspired, MaximalMarginalRelevance
+                from bertopic.representation import MaximalMarginalRelevance
                 from umap import UMAP
                 from hdbscan import HDBSCAN
                 from sklearn.feature_extraction.text import CountVectorizer
@@ -759,39 +872,71 @@ Return ONLY the label, nothing else."""
                 
                 print(f"[TopicModel] fit_transform complete, found {len(set(topics)) - (1 if -1 in topics else 0)} topics")
                 
-                # Process results
+                # Build BERTopic-ID → unique-ID mapping to prevent cross-notebook collisions
+                bertopic_ids = set(int(t) for t in topics if t != -1)
+                bt_to_unique = {}
+                next_id = topic_id_offset
+                for bt_id in sorted(bertopic_ids):
+                    bt_to_unique[bt_id] = next_id
+                    next_id += 1
+                
+                print(f"[TopicModel] Topic ID mapping: offset={topic_id_offset}, {len(bt_to_unique)} topics")
+                
+                # Process results with remapped IDs
                 topic_ids_found = set()
                 for i, (topic_id, prob) in enumerate(zip(topics, probs if probs is not None else [0.5] * len(topics))):
                     if isinstance(prob, np.ndarray):
                         prob = float(prob.max())
                     
                     source_id = metadata[i]["source_id"]
+                    remapped_id = bt_to_unique.get(int(topic_id), -1) if topic_id != -1 else -1
                     
                     doc = TopicDocument(
                         doc_id=f"{source_id}_{i}",
                         text=texts[i][:500],
-                        topic_id=int(topic_id),
+                        topic_id=remapped_id,
                         probability=float(prob),
                         source_id=source_id,
                         notebook_id=notebook_id
                     )
                     self._documents.append(doc)
                     
-                    if topic_id != -1:
-                        topic_ids_found.add(int(topic_id))
+                    if remapped_id != -1:
+                        topic_ids_found.add(remapped_id)
                 
-                # Update topic metadata from BERTopic
-                await self._update_topics_metadata(topic_ids_found, "", notebook_id)
-                
-                # Fix source_ids for each topic
-                for topic in self._topics.values():
+                # Create topic objects directly with remapped IDs
+                # (Don't use _update_topics_metadata which would merge with existing topics)
+                topic_info = self._model.get_topic_info()
+                for bt_id, unique_id in bt_to_unique.items():
+                    topic = Topic(topic_id=unique_id)
+                    
+                    # Get metadata from BERTopic using original ID
+                    topic_row = topic_info[topic_info['Topic'] == bt_id]
+                    if not topic_row.empty:
+                        name = topic_row['Name'].values[0] if 'Name' in topic_row.columns else ""
+                        if name:
+                            topic.name = re.sub(r'^\d+_', '', str(name)).replace('_', ' ').strip()
+                        topic.document_count = int(topic_row['Count'].values[0]) if 'Count' in topic_row.columns else 0
+                    
+                    keywords = self._model.get_topic(bt_id)
+                    if keywords:
+                        topic.keywords = keywords[:10]
+                    
+                    try:
+                        rep_docs = self._model.get_representative_docs(bt_id)
+                        if rep_docs:
+                            topic.representative_docs = [d[:200] for d in rep_docs[:3]]
+                    except:
+                        pass
+                    
+                    topic.notebook_ids = [notebook_id]
                     topic.source_ids = list(set(
-                        d.source_id for d in self._documents 
-                        if d.topic_id == topic.topic_id
+                        d.source_id for d in self._documents if d.topic_id == unique_id
                     ))
+                    
+                    self._topics[unique_id] = topic
                 
                 # Queue topics WITHOUT enhanced names for background enhancement
-                # This handles cases where BERTopic's Ollama integration fails for some topics
                 topics_needing_enhancement = [
                     tid for tid in topic_ids_found 
                     if tid in self._topics and not self._topics[tid].enhanced_name
@@ -801,7 +946,10 @@ Return ONLY the label, nothing else."""
                     self._enhancement_queue = topics_needing_enhancement
                     self._start_enhancement_task()
                 
-                # Save state
+                # Record rebuild counts for threshold-based auto-rebuild
+                self.record_rebuild(notebook_id)
+                
+                # Save state (includes rebuild tracking)
                 await self._save_state()
                 
                 # Notify frontend
@@ -814,6 +962,7 @@ Return ONLY the label, nothing else."""
                 }
                 
             except Exception as e:
+                self._rebuild_in_progress.discard(notebook_id)
                 print(f"[TopicModel] fit_all error: {e}")
                 import traceback
                 traceback.print_exc()
@@ -845,21 +994,6 @@ Return ONLY the label, nothing else."""
             
             await self._save_state()
             print(f"[TopicModel] Cleared notebook {notebook_id}")
-    
-    async def delete_source(self, source_id: str) -> None:
-        """Delete all documents for a specific source."""
-        async with self._lock:
-            # Remove documents for this source
-            self._documents = [d for d in self._documents if d.source_id != source_id]
-            
-            # Update topic document counts
-            for topic in self._topics.values():
-                if source_id in topic.source_ids:
-                    topic.source_ids.remove(source_id)
-                    topic.document_count = len([d for d in self._documents if d.topic_id == topic.topic_id])
-            
-            await self._save_state()
-            print(f"[TopicModel] Deleted source {source_id}")
     
     async def rebuild_topics(self, notebook_id: Optional[str] = None) -> Dict:
         """Rebuild all topics from scratch."""

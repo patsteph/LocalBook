@@ -16,6 +16,8 @@ router = APIRouter(prefix="/browser", tags=["browser"])
 
 from version import APP_VERSION
 from api.constellation_ws import notify_source_updated
+from services.event_logger import log_document_captured
+from services.content_date_extractor import extract_content_date
 
 
 class PageCaptureRequest(BaseModel):
@@ -94,14 +96,14 @@ async def list_notebooks_for_extension():
         from storage.source_store import source_store
         
         notebooks = await notebook_store.list()
+        source_counts = await source_store.count_by_notebook()
         
         result = []
         for nb in notebooks:
-            sources = await source_store.list(nb["id"])
             result.append(NotebookInfo(
                 id=nb["id"],
                 name=nb.get("title", "Untitled"),
-                source_count=len(sources)
+                source_count=source_counts.get(nb["id"], 0)
             ))
         
         return result
@@ -197,7 +199,7 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
                 print(f"[BROWSER] Trafilatura extracted {len(content.split())} words")
             else:
                 # Fallback to extension-provided content
-                print(f"[BROWSER] Trafilatura returned insufficient content, using extension content")
+                print("[BROWSER] Trafilatura returned insufficient content, using extension content")
                 content = request.content.strip() if request.content else ""
         else:
             # No HTML provided, use extension content directly
@@ -218,6 +220,18 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
         
         source_id = str(uuid.uuid4())
         print(f"[BROWSER] Capturing page: {request.url} ({word_count} words)")
+        
+        # Score through Curator for learning (user-provided content gets bonus weight)
+        from agents.curator import curator
+        curator_scoring = await curator.score_user_item(
+            notebook_id=request.notebook_id,
+            title=request.title,
+            content=content,
+            url=request.url,
+            source_type="web",
+            user_weight_bonus=1.5  # User explicitly captured this
+        )
+        print(f"[BROWSER] Curator scored: relevance={curator_scoring['relevance_score']:.2f}, topics={curator_scoring['topics']}")
         
         # Extract metadata if HTML provided (non-critical, continue on failure)
         metadata = {}
@@ -258,7 +272,16 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
         except Exception as sum_err:
             print(f"[BROWSER] Summarization failed (non-critical): {sum_err}")
         
-        # Create source with initial status
+        # Extract content_date from title + early content
+        content_date = None
+        try:
+            content_date = extract_content_date(best_title, content[:800] if content else "")
+            if not content_date and metadata.get("date"):
+                content_date = extract_content_date("", metadata["date"])
+        except Exception:
+            pass
+        
+        # Create source with initial status + Curator scoring metadata
         source_data = {
             "id": source_id,
             "notebook_id": request.notebook_id,
@@ -278,8 +301,16 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             "capture_type": request.capture_type,
             "status": "processing",
             "chunks": 0,
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now().isoformat(),
+            # Curator scoring for learning
+            "user_provided": True,
+            "curator_scoring": curator_scoring,
+            "topics": curator_scoring.get("topics", []),
+            "entities": curator_scoring.get("entities", []),
+            "importance": curator_scoring.get("importance", "medium")
         }
+        if content_date:
+            source_data["content_date"] = content_date
         
         await source_store.create(
             notebook_id=request.notebook_id,
@@ -303,6 +334,13 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             "status": "completed"
         })
         
+        # Auto-tag the source (non-fatal)
+        try:
+            from services.auto_tagger import auto_tagger
+            await auto_tagger.tag_source_in_notebook(request.notebook_id, source_id, best_title, content[:3000])
+        except Exception as tag_err:
+            print(f"[BROWSER] Auto-tagging failed (non-fatal): {tag_err}")
+        
         # Notify frontend via WebSocket to refresh notebook counts
         await notify_source_updated({
             "notebook_id": request.notebook_id,
@@ -324,6 +362,10 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             print(f"[BROWSER] Queued background image extraction for: {best_title}")
         
         print(f"[BROWSER] Successfully captured: {best_title} ({chunks} chunks)")
+        try:
+            log_document_captured(request.notebook_id, request.url, best_title, "web_capture")
+        except Exception:
+            pass
         return CaptureResponse(
             success=True,
             source_id=source_id,
@@ -349,17 +391,38 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
 
 @router.post("/capture/selection", response_model=CaptureResponse)
 async def capture_selection(request: SelectionCaptureRequest):
-    """Capture selected text from a page."""
+    """
+    Capture selected text from a page.
+    
+    Selections are HIGH-VALUE user signals - the user explicitly identified
+    this content as important. We score through Curator with a 2.0x weight
+    bonus to heavily influence future learning and discovery.
+    """
     try:
         from storage.source_store import source_store
         from services.rag_engine import rag_engine
+        from agents.curator import curator
         
         source_id = str(uuid.uuid4())
         word_count = len(request.selected_text.split())
         char_count = len(request.selected_text)
         reading_time = max(1, word_count // 200)
         
-        # Create source with initial status
+        print(f"[BROWSER] Selection capture: {word_count} words from {request.url}")
+        
+        # Score through Curator with HIGH weight - selections are explicit user interest
+        # 2.0x bonus because user took deliberate action to highlight this
+        curator_scoring = await curator.score_user_item(
+            notebook_id=request.notebook_id,
+            title=f"Selection: {request.title}",
+            content=request.selected_text,
+            url=request.url,
+            source_type="highlight",  # Mark as highlight for special treatment
+            user_weight_bonus=2.0  # Double weight for explicit selection
+        )
+        print(f"[BROWSER] Selection scored: relevance={curator_scoring['relevance_score']:.2f}, topics={curator_scoring['topics']}")
+        
+        # Create source with Curator scoring metadata
         source_data = {
             "id": source_id,
             "notebook_id": request.notebook_id,
@@ -377,7 +440,14 @@ async def capture_selection(request: SelectionCaptureRequest):
             "capture_type": "selection",
             "status": "processing",
             "chunks": 0,
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now().isoformat(),
+            # Curator scoring for learning
+            "user_provided": True,
+            "is_highlight": True,
+            "curator_scoring": curator_scoring,
+            "topics": curator_scoring.get("topics", []),
+            "entities": curator_scoring.get("entities", []),
+            "importance": "high"  # Selections are always high importance
         }
         
         await source_store.create(
@@ -402,6 +472,13 @@ async def capture_selection(request: SelectionCaptureRequest):
             "status": "completed"
         })
         
+        # Auto-tag the source (non-fatal)
+        try:
+            from services.auto_tagger import auto_tagger
+            await auto_tagger.tag_source_in_notebook(request.notebook_id, source_id, request.title, request.selected_text[:3000])
+        except Exception as tag_err:
+            print(f"[BROWSER] Auto-tagging selection failed (non-fatal): {tag_err}")
+        
         # Notify frontend via WebSocket to refresh notebook counts
         await notify_source_updated({
             "notebook_id": request.notebook_id,
@@ -410,6 +487,10 @@ async def capture_selection(request: SelectionCaptureRequest):
             "chunks": chunks
         })
         
+        try:
+            log_document_captured(request.notebook_id, request.url, f"Selection: {request.title}", "web_selection")
+        except Exception:
+            pass
         return CaptureResponse(
             success=True,
             source_id=source_id,
@@ -497,6 +578,16 @@ async def capture_youtube(request: YouTubeCaptureRequest):
             "status": "completed"
         })
         
+        # Auto-tag the source (non-fatal)
+        try:
+            from services.auto_tagger import auto_tagger
+            await auto_tagger.tag_source_in_notebook(
+                request.notebook_id, source_id,
+                video_info.get("title", "YouTube Video"), content[:3000]
+            )
+        except Exception as tag_err:
+            print(f"[BROWSER] Auto-tagging YouTube failed (non-fatal): {tag_err}")
+        
         # Notify frontend via WebSocket to refresh notebook counts
         await notify_source_updated({
             "notebook_id": request.notebook_id,
@@ -505,6 +596,10 @@ async def capture_youtube(request: YouTubeCaptureRequest):
             "chunks": chunks
         })
         
+        try:
+            log_document_captured(request.notebook_id, request.video_url, video_info.get("title", "YouTube Video"), "youtube")
+        except Exception:
+            pass
         return CaptureResponse(
             success=True,
             source_id=source_id,

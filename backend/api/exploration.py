@@ -1,7 +1,7 @@
 """Exploration API endpoints - Track user's learning journey"""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List
 from storage.exploration_store import exploration_store
 
 router = APIRouter(prefix="/exploration", tags=["exploration"])

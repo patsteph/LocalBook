@@ -6,7 +6,6 @@ These tools are used by agents to perform specific tasks.
 
 from typing import Optional, List
 from langchain_core.tools import tool
-import asyncio
 
 
 @tool
@@ -359,56 +358,127 @@ async def summarize_page_tool(content: str, url: str) -> dict:
     return await _summarize_page_impl(content, url)
 
 
+def _sanitize_llm_json(text: str) -> str:
+    """Fix common LLM JSON issues that break json.loads."""
+    import re
+    # Remove trailing commas before ] or }
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    # Fix unescaped newlines inside JSON string values
+    # Walk through and escape literal newlines that are inside quotes
+    result = []
+    in_string = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '\\' and in_string and i + 1 < len(text):
+            result.append(ch)
+            result.append(text[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+        elif ch == '\n' and in_string:
+            result.append('\\n')
+        elif ch == '\r' and in_string:
+            result.append('\\r')
+        elif ch == '\t' and in_string:
+            result.append('\\t')
+        else:
+            result.append(ch)
+        i += 1
+    return ''.join(result)
+
+
+def _regex_extract_fields(text: str) -> dict:
+    """Nuclear fallback: extract key_points, summary, key_concepts via regex from malformed JSON."""
+    import re
+    
+    result = {"key_points": [], "summary": "", "key_concepts": []}
+    
+    # Extract summary — find "summary": "..." (handles multiline)
+    summary_match = re.search(r'"(?:summary|Summary)":\s*"((?:[^"\\]|\\.|"(?=\s*[,}\]]))*)"', text, re.DOTALL)
+    if summary_match:
+        raw = summary_match.group(1)
+        result["summary"] = raw.replace('\\n', '\n').replace('\\"', '"').strip()
+    
+    # Extract key_points array items
+    kp_match = re.search(r'"(?:key_points|takeaways)":\s*\[(.*?)\]', text, re.DOTALL)
+    if kp_match:
+        items = re.findall(r'"((?:[^"\\]|\\.)*)"', kp_match.group(1))
+        result["key_points"] = [s.replace('\\n', '\n').replace('\\"', '"').strip() for s in items if s.strip()]
+    
+    # Extract key_concepts array items
+    kc_match = re.search(r'"(?:key_concepts|concepts)":\s*\[(.*?)\]', text, re.DOTALL)
+    if kc_match:
+        items = re.findall(r'"((?:[^"\\]|\\.)*)"', kc_match.group(1))
+        result["key_concepts"] = [s.replace('\\n', '\n').replace('\\"', '"').strip() for s in items if s.strip()]
+    
+    return result
+
+
+def _try_parse_json(text: str) -> dict | None:
+    """Try json.loads with sanitization. Returns parsed dict or None."""
+    import json
+    # Try raw first
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Try after sanitizing
+    try:
+        return json.loads(_sanitize_llm_json(text))
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
 def _extract_summary_json(response: str) -> dict:
     """Extract JSON from LLM response with multiple fallback strategies."""
     import json
-    import re
     
     text = response.strip()
-    print(f"[DEBUG] Extracting JSON from response starting with: {text[:100]}...")
+    print(f"[DEBUG] Extracting JSON from response ({len(text)} chars), starts with: {text[:120]}...")
     
     # Strategy 1: Extract content between ``` markers, then find JSON
     if "```" in text:
-        # Find content between first ``` and last ```
         parts = text.split("```")
         for i, part in enumerate(parts):
-            # Skip even indices (outside code blocks)
-            if i % 2 == 1:  # Odd indices are inside code blocks
+            if i % 2 == 1:
                 content = part.strip()
-                # Remove 'json' language tag if present
                 if content.lower().startswith("json"):
                     content = content[4:].strip()
-                # Try to parse as JSON
                 if content.startswith("{"):
                     balanced = _extract_balanced_json(content)
                     if balanced:
-                        try:
-                            result = json.loads(balanced)
-                            print(f"[DEBUG] Strategy 1 (code block) succeeded")
-                            return _parse_and_validate(result)
-                        except json.JSONDecodeError as e:
-                            print(f"[DEBUG] Strategy 1 JSON parse failed: {e}")
+                        parsed = _try_parse_json(balanced)
+                        if parsed:
+                            print("[DEBUG] Strategy 1 (code block + sanitize) succeeded")
+                            return _parse_and_validate(parsed)
     
-    # Strategy 2: Find balanced JSON object directly in text
+    # Strategy 2: Find balanced JSON object directly in text, with sanitization
     balanced = _extract_balanced_json(text)
     if balanced:
-        try:
-            result = json.loads(balanced)
-            print(f"[DEBUG] Strategy 2 (balanced extraction) succeeded")
-            return _parse_and_validate(result)
-        except json.JSONDecodeError as e:
-            print(f"[DEBUG] Strategy 2 JSON parse failed: {e}")
+        parsed = _try_parse_json(balanced)
+        if parsed:
+            print("[DEBUG] Strategy 2 (balanced + sanitize) succeeded")
+            return _parse_and_validate(parsed)
     
-    # Strategy 3: Try parsing the whole response as JSON
-    try:
-        result = json.loads(text)
-        print(f"[DEBUG] Strategy 3 (direct parse) succeeded")
-        return _parse_and_validate(result)
-    except:
-        pass
+    # Strategy 3: Try parsing the whole response with sanitization
+    parsed = _try_parse_json(text)
+    if parsed:
+        print("[DEBUG] Strategy 3 (direct + sanitize) succeeded")
+        return _parse_and_validate(parsed)
+    
+    # Strategy 4: Regex field extraction — works even on badly malformed JSON
+    if '"summary"' in text.lower() or '"key_points"' in text.lower():
+        regex_result = _regex_extract_fields(text)
+        if regex_result["summary"] or regex_result["key_points"]:
+            print(f"[DEBUG] Strategy 4 (regex) succeeded: summary={len(regex_result['summary'])} chars, {len(regex_result['key_points'])} points")
+            return regex_result
     
     # Fallback: Return response as summary text
-    print(f"[DEBUG] All JSON extraction strategies failed, using raw text")
+    print("[DEBUG] All JSON extraction strategies failed, using raw text")
     return {
         "key_points": [],
         "summary": text,
@@ -421,7 +491,7 @@ def _extract_balanced_json(text: str) -> str:
     if not text.startswith("{"):
         idx = text.find("{")
         if idx == -1:
-            print(f"[DEBUG] _extract_balanced_json: No {{ found in text")
+            print("[DEBUG] _extract_balanced_json: No { found in text")
             return ""
         text = text[idx:]
     
@@ -455,7 +525,7 @@ def _extract_balanced_json(text: str) -> str:
 
 
 def _parse_and_validate(data: dict) -> dict:
-    """Ensure the parsed JSON has required fields."""
+    """Ensure the parsed JSON has required fields and all values are clean strings."""
     if not isinstance(data, dict):
         raise ValueError("Not a dict")
     
@@ -468,10 +538,35 @@ def _parse_and_validate(data: dict) -> dict:
     # Validate types
     if not isinstance(result["key_points"], list):
         result["key_points"] = []
-    if not isinstance(result["summary"], str):
+    if isinstance(result["summary"], list):
+        # LLM sometimes returns summary as a list of paragraphs — join them
+        result["summary"] = "\n\n".join(str(s) for s in result["summary"] if s)
+    elif not isinstance(result["summary"], str):
         result["summary"] = str(result["summary"]) if result["summary"] else ""
     if not isinstance(result["key_concepts"], list):
         result["key_concepts"] = []
+    
+    # Flatten list elements: LLMs sometimes return objects instead of strings
+    # e.g. {"Indexing Phase: ..."} or {"point": "text"} instead of just "text"
+    def _flatten_item(item) -> str:
+        if isinstance(item, str):
+            return item.strip()
+        if isinstance(item, dict):
+            # If single-key dict, use the key (or value if key is generic)
+            if len(item) == 1:
+                k, v = next(iter(item.items()))
+                if isinstance(v, str) and v:
+                    return f"{k}: {v}".strip() if k not in ("point", "text", "item", "concept") else v.strip()
+                return str(k).strip()
+            # Multi-key: try common field names
+            for field in ("text", "point", "description", "content", "name", "title"):
+                if field in item and isinstance(item[field], str):
+                    return item[field].strip()
+            return str(item)
+        return str(item).strip()
+    
+    result["key_points"] = [s for s in (_flatten_item(x) for x in result["key_points"]) if s]
+    result["key_concepts"] = [s for s in (_flatten_item(x) for x in result["key_concepts"]) if s]
     
     return result
 
@@ -491,7 +586,6 @@ async def extract_page_metadata_tool(
         Dictionary with extracted metadata
     """
     from bs4 import BeautifulSoup
-    import re
     
     soup = BeautifulSoup(html_content, 'html.parser')
     

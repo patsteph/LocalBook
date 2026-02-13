@@ -1,8 +1,6 @@
 """Skills storage"""
 import json
 import uuid
-from datetime import datetime
-from pathlib import Path
 from typing import List, Optional, Dict
 from config import settings
 from utils.json_io import atomic_write_json
@@ -13,7 +11,12 @@ class SkillsStore:
         self._ensure_storage()
 
     def _ensure_storage(self):
-        """Ensure storage file exists with default skills"""
+        """Ensure storage file exists with default skills, and add any missing builtins"""
+        if self.storage_path.exists():
+            # Migrate: add any missing built-in skills to existing file
+            self._add_missing_builtins()
+            return
+        
         if not self.storage_path.exists():
             default_skills = {
                 "skills": {
@@ -72,10 +75,53 @@ class SkillsStore:
                         "system_prompt": "Create a concise executive briefing document with key findings, implications, and recommended actions. Use bullet points and clear sections.",
                         "description": "Professional briefing document",
                         "is_builtin": True
+                    },
+                    "feynman_curriculum": {
+                        "skill_id": "feynman_curriculum",
+                        "name": "Feynman Learning Curriculum",
+                        "system_prompt": "Create a multi-part learning curriculum using the Feynman Technique. Progress from novice to near-expert in 4 parts: Foundation (explain to a 12-year-old), Building Understanding (connections and examples), First Principles (why things work), and Mastery Synthesis (teach it back). Include self-assessments at each level.",
+                        "description": "Novice-to-expert learning path using the Feynman method",
+                        "is_builtin": True
                     }
                 }
             }
             self._save_data(default_skills)
+
+    # All built-in skill IDs — used for migration
+    BUILTIN_SKILLS = {
+        "podcast_script": ("Podcast Script", "Create an engaging conversational podcast script between two hosts discussing the research content. Include natural dialogue, questions, and insights.", "Generate a two-host podcast conversation"),
+        "summary": ("Summary", "Provide a concise summary of the key points from the documents.", "Summarize the main ideas"),
+        "deep_dive": ("Deep Dive", "Create an in-depth analysis and exploration of the topic, covering nuances, implications, and connections between ideas.", "In-depth topic exploration"),
+        "explain": ("Explain Like I'm 5", "Explain this concept in simple terms that anyone can understand, using analogies and everyday examples.", "Simple explanations for complex topics"),
+        "debate": ("Debate", "Create a balanced debate script where two hosts take opposing viewpoints on the topic, presenting arguments and counterarguments.", "Explore multiple perspectives through debate"),
+        "study_guide": ("Study Guide", "Create a comprehensive study guide with key concepts, definitions, important facts, and review questions. Organize by topic with clear headings.", "Generate study materials and review questions"),
+        "faq": ("FAQ", "Generate a list of frequently asked questions and detailed answers based on the content. Include both basic and advanced questions.", "Create Q&A from the content"),
+        "briefing": ("Executive Briefing", "Create a concise executive briefing document with key findings, implications, and recommended actions. Use bullet points and clear sections.", "Professional briefing document"),
+        "feynman_curriculum": ("Feynman Learning Curriculum", "Create a multi-part learning curriculum using the Feynman Technique. Progress from novice to near-expert in 4 parts: Foundation (explain to a 12-year-old), Building Understanding (connections and examples), First Principles (why things work), and Mastery Synthesis (teach it back). Include self-assessments at each level.", "Novice-to-expert learning path using the Feynman method"),
+    }
+
+    def _add_missing_builtins(self):
+        """Add any missing built-in skills to existing storage"""
+        try:
+            data = self._load_data()
+            existing = data.get("skills", {})
+            added = []
+            for skill_id, (name, prompt, desc) in self.BUILTIN_SKILLS.items():
+                if skill_id not in existing:
+                    existing[skill_id] = {
+                        "skill_id": skill_id,
+                        "name": name,
+                        "system_prompt": prompt,
+                        "description": desc,
+                        "is_builtin": True
+                    }
+                    added.append(skill_id)
+            if added:
+                data["skills"] = existing
+                self._save_data(data)
+                print(f"[Skills] Added missing built-in skills: {', '.join(added)}")
+        except Exception as e:
+            print(f"[Skills] Migration check failed: {e}")
 
     def _load_data(self) -> dict:
         """Load skills from storage"""

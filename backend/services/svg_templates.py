@@ -74,8 +74,8 @@ Benefits over Mermaid:
 - Export-ready (PNG/SVG)
 """
 
-from typing import List, Dict, Any, Optional, Tuple
-from dataclasses import dataclass, field
+from typing import List, Dict, Any, Tuple
+from dataclasses import dataclass
 import html
 import re
 import math
@@ -527,7 +527,7 @@ class SVGTemplateBuilder:
     
     def _text_in_rect(self, x: int, y: int, width: int, height: int, text: str,
                       font_size: int = 12, color: str = "#ffffff", 
-                      align: str = "center", padding: int = 6) -> str:
+                      align: str = "center", padding: int = 8) -> str:
         """Generate text that wraps within rectangle boundaries using foreignObject.
         
         Uses HTML/CSS inside SVG for proper text wrapping.
@@ -555,7 +555,8 @@ class SVGTemplateBuilder:
       line-height: 1.2;
       word-wrap: break-word;
       overflow-wrap: break-word;
-      word-break: keep-all;
+      word-break: break-word;
+      overflow: hidden;
     ">{escaped}</div>
   </foreignObject>
 '''
@@ -593,6 +594,8 @@ class SVGTemplateBuilder:
       line-height: 1.15;
       word-wrap: break-word;
       overflow-wrap: break-word;
+      word-break: break-word;
+      overflow: hidden;
     ">{escaped}</div>
   </foreignObject>
 '''
@@ -764,12 +767,12 @@ class SVGTemplateBuilder:
         
         # FLEXIBLE: Use all spokes provided, scale layout dynamically
         num_spokes = len(spokes)
-        has_subs = sub_items and len(sub_items) > 0
+        _has_subs = sub_items and len(sub_items) > 0
         
         # Dynamic sizing based on spoke count - PPT slide friendly
         # Half-landscape slide: ~640x480, Full landscape: ~1280x720
         layout = get_layout_params("hub_spoke", num_spokes)
-        scale = layout["scale_factor"]
+        _scale = layout["scale_factor"]
         
         # Canvas grows significantly with more items to prevent overlap
         if num_spokes <= 5:
@@ -1038,7 +1041,7 @@ class SVGTemplateBuilder:
         """
         # FLEXIBLE: Use ALL items, no arbitrary limit
         num_items = len(items)
-        layout = get_layout_params("exec_summary", num_items)
+        _layout = get_layout_params("exec_summary", num_items)
         
         # Dynamic column decision
         use_two_columns = num_items > 5
@@ -1150,7 +1153,7 @@ class SVGTemplateBuilder:
         """
         # FLEXIBLE: Use ALL steps, scale layout dynamically
         num_steps = len(steps)
-        layout = get_layout_params("horizontal_steps", num_steps)
+        _layout = get_layout_params("horizontal_steps", num_steps)
         
         # Dynamic sizing based on step count
         if num_steps <= 4:
@@ -1224,7 +1227,7 @@ class SVGTemplateBuilder:
         """
         # FLEXIBLE: Use ALL items, scale layout dynamically
         num_items = len(items)
-        layout = get_layout_params("funnel" if is_funnel else "ranking", num_items)
+        _layout = get_layout_params("funnel" if is_funnel else "ranking", num_items)
         
         # Dynamic sizing based on item count
         if num_items <= 5:
@@ -1382,7 +1385,7 @@ class SVGTemplateBuilder:
                        quadrant_labels: List[str], items: List[Tuple[str, float, float]],
                        colors: List[str], insight: str = None) -> str:
         """Build a 2x2 quadrant matrix."""
-        width, height = 700, 650  # Increased for insight
+        width, height = 780, 700  # Wider for better text fit
         
         svg = self._svg_header(width, height)
         
@@ -1390,8 +1393,8 @@ class SVGTemplateBuilder:
         svg += self._title_element(width // 2, 35, title)
         
         # Grid area
-        grid_x, grid_y = 100, 80
-        grid_size = 450
+        grid_x, grid_y = 110, 80
+        grid_size = 500
         
         # Quadrant backgrounds
         quad_colors = [colors[0] + "40", colors[1] + "40", colors[2] + "40", colors[3] + "40"]
@@ -1425,8 +1428,8 @@ class SVGTemplateBuilder:
             color = colors[i % len(colors)]
             
             # Larger circle with foreignObject text
-            svg += self._circle(px, py, 40, color)
-            svg += self._text_in_circle(px, py, 40, label, font_size=9)
+            svg += self._circle(px, py, 48, color)
+            svg += self._text_in_circle(px, py, 48, label, font_size=9)
         
         # Insight at bottom
         if insight:
@@ -1451,7 +1454,7 @@ class SVGTemplateBuilder:
         # FLEXIBLE: Use ALL steps, scale layout dynamically
         num_steps = len(steps)
         layout = get_layout_params("cycle_loop", num_steps)
-        scale = layout["scale_factor"]
+        _scale = layout["scale_factor"]
         
         # Dynamic sizing based on step count
         if num_steps <= 4:
@@ -1522,7 +1525,7 @@ class SVGTemplateBuilder:
         # FLEXIBLE: Use ALL children, scale layout dynamically
         num_children = len(children)
         layout = get_layout_params("mece", num_children)
-        scale = layout["scale_factor"]
+        _scale = layout["scale_factor"]
         
         # Dynamic canvas - grows with more children
         width = max(800, 100 + num_children * 110)
@@ -1559,7 +1562,7 @@ class SVGTemplateBuilder:
             else:
                 child_width = 80
                 child_gap = 10
-            child_height = 55
+            child_height = 65
             total_width = num_children * child_width + (num_children - 1) * child_gap
             start_x = (width - total_width) // 2
             child_y = 200
@@ -1733,7 +1736,7 @@ class SVGVisualBuilder:
         recommendations = structure.get("recommendations", [])
         components = structure.get("components", [])
         rankings = structure.get("rankings", [])
-        comparisons = structure.get("comparisons", [])
+        _comparisons = structure.get("comparisons", [])
         dates_events = structure.get("dates_events", [])
         subpoints = structure.get("subpoints", {})  # P0: Theme -> [subpoints] for learning value
         
@@ -1868,9 +1871,33 @@ class SVGVisualBuilder:
         # === QUADRANT/GRID TEMPLATES ===
         elif template_id in ["quadrant", "heatmap"]:
             quad_labels = ["Do First", "Schedule", "Delegate", "Eliminate"]
-            # Ensure we have items - use themes or fallback (quadrant uses 4)
-            theme_items = themes[:4] if themes else ["Item 1", "Item 2", "Item 3", "Item 4"]
-            items = [(t, 0.3 + (i * 0.15), 0.8 - (i * 0.15)) for i, t in enumerate(theme_items)]
+            theme_items = themes[:8] if themes else ["Item 1", "Item 2", "Item 3", "Item 4"]
+            
+            # Check if structure already has positioned quadrant_items
+            quadrant_items = structure.get("quadrant_items")
+            if quadrant_items:
+                items = [(qi["name"], qi["x"], qi["y"]) for qi in quadrant_items[:8]]
+            else:
+                # Distribute items across quadrants so each quadrant gets representation
+                # Q1 Do First (top-right): high x, high y
+                # Q2 Schedule (top-left): low x, high y
+                # Q3 Delegate (bottom-left): low x, low y
+                # Q4 Eliminate (bottom-right): high x, low y
+                quadrant_positions = [
+                    (0.75, 0.80),  # Q1 - Do First
+                    (0.25, 0.75),  # Q2 - Schedule
+                    (0.20, 0.25),  # Q3 - Delegate
+                    (0.70, 0.20),  # Q4 - Eliminate
+                    (0.85, 0.65),  # Q1 overflow
+                    (0.35, 0.85),  # Q2 overflow
+                    (0.15, 0.35),  # Q3 overflow
+                    (0.80, 0.35),  # Q4 overflow
+                ]
+                items = [
+                    (t, quadrant_positions[i][0], quadrant_positions[i][1])
+                    for i, t in enumerate(theme_items)
+                ]
+            
             insight = structure.get("insight")
             return self.builder.build_quadrant(title, "Effort →", "Impact →", quad_labels, items, colors, insight=insight)
         

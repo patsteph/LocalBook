@@ -2,7 +2,6 @@
 import json
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import List, Optional, Dict
 from config import settings
 from utils.json_io import atomic_write_json

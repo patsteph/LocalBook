@@ -6,10 +6,9 @@ Stores entities separately for entity-aware retrieval.
 import asyncio
 import json
 import re
-from collections import defaultdict
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional
 import httpx
 
 from config import settings

@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 import httpx
 
 from config import settings
-from services.output_templates import VISUAL_TEMPLATES, build_visual_prompt
+from services.output_templates import VISUAL_TEMPLATES
 from services.svg_templates import build_svg_visual, COLOR_THEMES as SVG_COLOR_THEMES
 
 
@@ -314,7 +314,7 @@ DIFFICULTY GUIDELINES:
         if not segments:
             segments = [{"name": "Segment", "value": 100}]
         
-        total = sum(s.get("value", 1) if isinstance(s, dict) else 1 for s in segments)
+        sum(s.get("value", 1) if isinstance(s, dict) else 1 for s in segments)
         
         for i, seg in enumerate(segments[:7]):  # Max 7 segments
             if isinstance(seg, dict):
@@ -377,7 +377,7 @@ DIFFICULTY GUIDELINES:
         
         # Style
         lines.append(f"    style Pros fill:{colors[1]},color:#fff")
-        lines.append(f"    style Cons fill:#ef4444,color:#fff")
+        lines.append("    style Cons fill:#ef4444,color:#fff")
         
         return "\n".join(lines)
 
@@ -484,7 +484,7 @@ DIFFICULTY GUIDELINES:
         elif diagram_type == "quadrantChart":
             themes = structure.get("themes", [])
             entities = structure.get("entities", [])
-            comparisons = structure.get("comparisons", [])
+            structure.get("comparisons", [])
             
             # Use themes or entities as items to plot
             items = themes[:8] if themes else entities[:8]
@@ -625,7 +625,7 @@ DIFFICULTY GUIDELINES:
         # Extract all possible data from structure
         themes = structure.get("themes", [])
         entities = structure.get("entities", [])
-        relationships = structure.get("relationships", [])
+        structure.get("relationships", [])
         sequence = structure.get("sequence", [])
         dates_events = structure.get("dates_events", [])
         comparisons = structure.get("comparisons", [])
@@ -893,7 +893,7 @@ DIFFICULTY GUIDELINES:
             heat_colors = ["#ff6b6b", "#ffd93d", "#6bcb77"]
             lines = ["flowchart TB", "    subgraph Matrix[Intensity Map]"]
             for i, item in enumerate(items):
-                color = heat_colors[i % 3]
+                heat_colors[i % 3]
                 lines.append(f"        M{i+1}[{self._clean_label(item)}]")
             lines.append("    end")
             for i in range(len(items)):

@@ -8,11 +8,10 @@ This service:
 4. Detects contradictions between sources
 5. Provides graph data for visualization
 """
-import asyncio
 import json
 import re
 from datetime import datetime
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 import threading
 import lancedb
@@ -1136,7 +1135,6 @@ What theme or topic connects them? Respond with just a 2-4 word name (no punctua
                                     return parsed
                                 except json.JSONDecodeError as e2:
                                     print(f"[KG-LLM] Fixed JSON also failed: {e2}")
-                                    pass
                         else:
                             print(f"[KG-LLM] No JSON found in response: {text[:200]}...")
                         # Got response but couldn't parse - don't retry

@@ -11,10 +11,9 @@ v1.0.5: Added parallel processing, granite3.2-vision model, background task supp
 import asyncio
 import base64
 import io
-import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import httpx
 
 from config import settings
@@ -360,7 +359,7 @@ Focus on information that would be useful for answering questions about this doc
         """
         try:
             from bs4 import BeautifulSoup
-            from urllib.parse import urljoin, urlparse
+            from urllib.parse import urljoin
             from PIL import Image
             
             soup = BeautifulSoup(html_content, 'html.parser')

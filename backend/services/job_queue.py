@@ -18,7 +18,6 @@ Usage:
 
 import asyncio
 import uuid
-import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -500,7 +499,7 @@ async def _topic_rebuild_handler(
             await asyncio.sleep(0.01)  # Yield for responsiveness
         
         if not all_chunks:
-            print(f"[TopicModel] No chunks collected from any source")
+            print("[TopicModel] No chunks collected from any source")
             await notify_build_complete()
             return {"topics": 0, "message": "No chunks found in sources"}
         

@@ -35,18 +35,27 @@ class DocumentProcessor:
         
         print(f"[DocProcessor] Extracted {len(text)} characters from {filename}")
 
+        # Extract content date (when the content is FROM, not when uploaded)
+        from services.content_date_extractor import extract_content_date
+        content_date = extract_content_date(filename, text[:800])
+
         # Create source record
+        source_metadata = {
+            "type": file_format,
+            "format": file_format,  # Frontend expects 'format'
+            "size": len(content),
+            "chunks": 0,
+            "characters": 0,
+            "status": "processing"
+        }
+        if content_date:
+            source_metadata["content_date"] = content_date
+            print(f"[DocProcessor] Content date for {filename}: {content_date}")
+
         source = await source_store.create(
             notebook_id=notebook_id,
             filename=filename,
-            metadata={
-                "type": file_format,
-                "format": file_format,  # Frontend expects 'format'
-                "size": len(content),
-                "chunks": 0,
-                "characters": 0,
-                "status": "processing"
-            }
+            metadata=source_metadata
         )
 
         # Ingest into RAG system
@@ -109,7 +118,7 @@ class DocumentProcessor:
             return await self._extract_from_ppt_legacy(content)
         elif file_type in ["mp3", "wav", "m4a", "ogg", "flac", "aac", "wma"]:
             return await self._extract_from_audio(content, filename)
-        elif file_type in ["mp4", "mov", "avi", "mkv", "webm", "wmv", "flv"]:
+        elif file_type in ["mp4", "mov", "avi", "mkv", "webm", "wmv", "flv", "m4v"]:
             return await self._extract_from_video(content, filename)
         elif file_type == "epub":
             return await self._extract_from_epub(content)
@@ -119,8 +128,14 @@ class DocumentProcessor:
             return await self._extract_from_odt(content)
         elif file_type == "rtf":
             return await self._extract_from_rtf(content)
-        elif file_type in ["png", "jpg", "jpeg", "tiff", "bmp", "gif"]:
+        elif file_type in ["png", "jpg", "jpeg", "tiff", "bmp", "gif", "webp"]:
             return await self._extract_from_image_ocr(content, filename)
+        elif file_type in ["heic", "heif"]:
+            return await self._extract_from_heic(content, filename)
+        elif file_type == "svg":
+            return await self._extract_from_svg(content)
+        elif file_type == "ods":
+            return await self._extract_from_ods(content)
         elif file_type in ["html", "htm"]:
             return await self._extract_from_html(content)
         elif file_type in ["txt", "md", "markdown", "json", "xml", "py", "js", "ts", "css", "yaml", "yml", "tex", "bib"]:
@@ -404,7 +419,7 @@ class DocumentProcessor:
             
             # PowerPoint stores text in various streams
             for stream_path in ole.listdir():
-                stream_name = '/'.join(stream_path)
+                '/'.join(stream_path)
                 try:
                     stream_data = ole.openstream(stream_path).read()
                     # Try to decode as text
@@ -682,7 +697,6 @@ class DocumentProcessor:
         """
         try:
             from pptx import Presentation
-            from pptx.table import Table
             
             prs = Presentation(io.BytesIO(content))
             text_parts = []
@@ -749,7 +763,7 @@ class DocumentProcessor:
         import os
         
         try:
-            import whisper
+            import mlx_whisper
             
             # Save to temp file (whisper needs file path)
             with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as tmp:
@@ -757,16 +771,14 @@ class DocumentProcessor:
                 tmp_path = tmp.name
             
             try:
-                # Load openai-whisper model (uses 'base' for speed, can use 'small' or 'medium' for accuracy)
-                model = whisper.load_model("base")
-                result = model.transcribe(tmp_path)
+                result = mlx_whisper.transcribe(tmp_path, path_or_hf_repo="mlx-community/whisper-base-mlx")
                 return result["text"]
             finally:
                 # Clean up temp file
                 os.unlink(tmp_path)
                 
         except ImportError:
-            raise ValueError("Audio transcription requires openai-whisper. Install with: pip install openai-whisper")
+            raise ValueError("Audio transcription requires mlx-whisper. Install with: pip install mlx-whisper")
         except Exception as e:
             raise ValueError(f"Failed to transcribe audio: {str(e)}")
 
@@ -777,7 +789,7 @@ class DocumentProcessor:
         import os
         
         try:
-            import whisper
+            import mlx_whisper
             
             # Save video to temp file
             with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as tmp_video:
@@ -788,16 +800,21 @@ class DocumentProcessor:
             audio_path = video_path + ".wav"
             
             try:
+                from utils.binary_finder import find_binary
+                ffmpeg_path = find_binary("ffmpeg")
+                if not ffmpeg_path:
+                    raise FileNotFoundError(
+                        "ffmpeg not found. Install with: brew install ffmpeg"
+                    )
                 subprocess.run(
-                    ["ffmpeg", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "-y", audio_path],
+                    [ffmpeg_path, "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "-y", audio_path],
                     check=True,
                     capture_output=True,
                     timeout=300  # 5 min timeout for long videos
                 )
                 
                 # Transcribe the extracted audio
-                model = whisper.load_model("base")
-                result = model.transcribe(audio_path)
+                result = mlx_whisper.transcribe(audio_path, path_or_hf_repo="mlx-community/whisper-base-mlx")
                 return result["text"]
                 
             finally:
@@ -808,7 +825,7 @@ class DocumentProcessor:
                     os.unlink(audio_path)
                     
         except ImportError:
-            raise ValueError("Video transcription requires openai-whisper and ffmpeg. Install with: pip install openai-whisper")
+            raise ValueError("Video transcription requires mlx-whisper and ffmpeg. Install with: pip install mlx-whisper")
         except subprocess.CalledProcessError:
             raise ValueError("Video processing requires ffmpeg. Install with: brew install ffmpeg")
         except Exception as e:
@@ -853,7 +870,6 @@ class DocumentProcessor:
         """Extract text from Jupyter notebooks (.ipynb)."""
         try:
             import nbformat
-            import json
             
             notebook = nbformat.reads(content.decode('utf-8'), as_version=4)
             text_parts = []
@@ -986,6 +1002,100 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Failed to process RTF: {str(e)}")
     
+    async def _extract_from_heic(self, content: bytes, filename: str) -> str:
+        """Extract text from HEIC/HEIF images (iPhone photos) via OCR.
+        
+        Converts HEIC to JPEG using pillow-heif, then runs Tesseract OCR.
+        """
+        try:
+            from PIL import Image
+            try:
+                import pillow_heif
+                pillow_heif.register_heif_opener()
+            except ImportError:
+                raise ValueError("HEIC processing requires pillow-heif. Install with: pip install pillow-heif")
+            
+            img = Image.open(io.BytesIO(content))
+            # Convert to RGB (HEIC may have alpha channel)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Save as JPEG in memory for OCR
+            jpeg_buffer = io.BytesIO()
+            img.save(jpeg_buffer, format='JPEG', quality=95)
+            jpeg_bytes = jpeg_buffer.getvalue()
+            
+            return await self._extract_from_image_ocr(jpeg_bytes, filename)
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"Failed to process HEIC image: {str(e)}")
+
+    async def _extract_from_svg(self, content: bytes) -> str:
+        """Extract text content from SVG files.
+        
+        SVGs are XML-based vector images. We extract all text nodes
+        which often contain labels, annotations, and diagram text.
+        """
+        try:
+            from xml.etree import ElementTree as ET
+            
+            root = ET.fromstring(content)
+            # SVG namespace
+            ns = {'svg': 'http://www.w3.org/2000/svg'}
+            
+            text_parts = []
+            
+            # Extract all text elements (with and without namespace)
+            for text_elem in root.iter():
+                tag = text_elem.tag
+                # Strip namespace
+                if '}' in tag:
+                    tag = tag.split('}')[1]
+                if tag in ('text', 'tspan', 'title', 'desc'):
+                    if text_elem.text and text_elem.text.strip():
+                        text_parts.append(text_elem.text.strip())
+                    if text_elem.tail and text_elem.tail.strip():
+                        text_parts.append(text_elem.tail.strip())
+            
+            if not text_parts:
+                return f"[SVG image with no extractable text: {len(content)} bytes]"
+            
+            return "\n".join(text_parts)
+        except Exception as e:
+            raise ValueError(f"Failed to process SVG: {str(e)}")
+
+    async def _extract_from_ods(self, content: bytes) -> str:
+        """Extract text from OpenDocument Spreadsheet files (.ods).
+        
+        Uses pandas with odfpy engine to read sheets, then converts
+        tabular data to natural language sentences for better RAG retrieval.
+        """
+        try:
+            import pandas as pd
+            
+            df_dict = pd.read_excel(io.BytesIO(content), sheet_name=None, engine='odf')
+            
+            text_parts = []
+            for sheet_name, df in df_dict.items():
+                if df.empty:
+                    continue
+                text_parts.append(f"--- Sheet: {sheet_name} ---")
+                
+                sentences = self._dataframe_to_sentences(df, sheet_name)
+                if sentences:
+                    text_parts.append(sentences)
+                else:
+                    text_parts.append(df.fillna('').to_string(index=False))
+                
+                text_parts.append("\n\n")
+            
+            return "\n".join(text_parts)
+        except ImportError:
+            raise ValueError("ODS processing requires odfpy. Install with: pip install odfpy")
+        except Exception as e:
+            raise ValueError(f"Failed to process ODS spreadsheet: {str(e)}")
+
     async def _extract_from_html(self, content: bytes) -> str:
         """Extract text from HTML files with proper tag stripping."""
         try:
@@ -1038,6 +1148,12 @@ class DocumentProcessor:
         try:
             import pytesseract
             from PIL import Image
+            from utils.binary_finder import find_binary
+            
+            # Resolve tesseract path for bundled app environments
+            tesseract_path = find_binary("tesseract")
+            if tesseract_path:
+                pytesseract.pytesseract.tesseract_cmd = tesseract_path
             
             image = Image.open(io.BytesIO(content))
             
@@ -1069,13 +1185,13 @@ class DocumentProcessor:
         try:
             text = content.decode('utf-8')
             if text.strip() and len(text.strip()) > 20:
-                print(f"[DocProcessor] Fallback: decoded as UTF-8 text")
+                print("[DocProcessor] Fallback: decoded as UTF-8 text")
                 return text
         except UnicodeDecodeError:
             try:
                 text = content.decode('latin-1')
                 if text.strip() and len(text.strip()) > 20:
-                    print(f"[DocProcessor] Fallback: decoded as Latin-1 text")
+                    print("[DocProcessor] Fallback: decoded as Latin-1 text")
                     return text
             except:
                 pass
@@ -1085,7 +1201,7 @@ class DocumentProcessor:
         try:
             text = await self._extract_from_pdf(content)
             if text and len(text.strip()) > 50:
-                print(f"[DocProcessor] Fallback: extracted as PDF")
+                print("[DocProcessor] Fallback: extracted as PDF")
                 return text
         except:
             pass
@@ -1095,7 +1211,7 @@ class DocumentProcessor:
         try:
             text = await self._extract_from_docx(content)
             if text and len(text.strip()) > 50:
-                print(f"[DocProcessor] Fallback: extracted as DOCX")
+                print("[DocProcessor] Fallback: extracted as DOCX")
                 return text
         except:
             pass
@@ -1105,7 +1221,7 @@ class DocumentProcessor:
         try:
             text = await self._extract_from_excel(content, 'xlsx')
             if text and len(text.strip()) > 50:
-                print(f"[DocProcessor] Fallback: extracted as Excel")
+                print("[DocProcessor] Fallback: extracted as Excel")
                 return text
         except:
             pass
@@ -1115,7 +1231,7 @@ class DocumentProcessor:
         try:
             text = await self._extract_from_image_ocr(content, filename)
             if text and len(text.strip()) > 20:
-                print(f"[DocProcessor] Fallback: extracted via OCR")
+                print("[DocProcessor] Fallback: extracted via OCR")
                 return text
         except:
             pass
@@ -1137,10 +1253,11 @@ class DocumentProcessor:
             'pdf', 'docx', 'doc', 'xlsx', 'xls', 'csv', 'pptx', 'ppt',
             'txt', 'md', 'markdown', 'json', 'xml', 'html', 'htm',
             'py', 'js', 'ts', 'css', 'yaml', 'yml', 'tex', 'bib',
-            'epub', 'ipynb', 'odt', 'rtf',
+            'epub', 'ipynb', 'odt', 'ods', 'rtf', 'svg',
+            'heic', 'heif', 'webp',
             'mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac', 'wma',
-            'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv',
-            'png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif'
+            'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'm4v',
+            'png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif', 'webp'
         }
         
         if ext in known_extensions:
@@ -1182,13 +1299,14 @@ class DocumentProcessor:
             (b'ID3', 'mp3'),
             (b'\xff\xfb', 'mp3'),
             (b'\xff\xfa', 'mp3'),
-            (b'RIFF', '_riff'),  # WAV or AVI
+            (b'RIFF', '_riff'),  # WAV, AVI, or WEBP
             (b'fLaC', 'flac'),
             (b'OggS', 'ogg'),
             
-            # Video
-            (b'\x00\x00\x00\x1cftyp', 'mp4'),
-            (b'\x00\x00\x00\x20ftyp', 'mp4'),
+            # Video / HEIC (both use ftyp box)
+            (b'\x00\x00\x00\x1cftyp', '_ftyp'),
+            (b'\x00\x00\x00\x20ftyp', '_ftyp'),
+            (b'\x00\x00\x00\x18ftyp', '_ftyp'),
             (b'\x1aE\xdf\xa3', 'mkv'),
         ]
         
@@ -1201,6 +1319,8 @@ class DocumentProcessor:
                     return self._detect_ole_subtype(content)
                 elif file_type == '_riff':
                     return self._detect_riff_subtype(content)
+                elif file_type == '_ftyp':
+                    return self._detect_ftyp_subtype(content)
                 return file_type
         
         # Check if it's valid UTF-8 text
@@ -1265,6 +1385,31 @@ class DocumentProcessor:
                 return 'wav'
             if riff_type == b'AVI ':
                 return 'avi'
+            if riff_type == b'WEBP':
+                return 'webp'
         return 'wav'  # Default to WAV
+
+    def _detect_ftyp_subtype(self, content: bytes) -> str:
+        """Detect ftyp-based format (MP4 vs HEIC/HEIF vs M4A).
+        
+        Both MP4 video and HEIC images use ISO Base Media File Format
+        with an ftyp box. The brand inside distinguishes them.
+        """
+        try:
+            # ftyp box: [size:4][ftyp:4][brand:4]
+            # Find the brand after 'ftyp'
+            ftyp_idx = content.find(b'ftyp')
+            if ftyp_idx >= 0 and ftyp_idx + 8 <= len(content):
+                brand = content[ftyp_idx + 4:ftyp_idx + 8]
+                # HEIC/HEIF brands
+                heic_brands = {b'heic', b'heix', b'hevc', b'hevx', b'mif1', b'msf1'}
+                if brand in heic_brands:
+                    return 'heic'
+                # M4A audio
+                if brand == b'M4A ':
+                    return 'm4a'
+        except Exception:
+            pass
+        return 'mp4'  # Default to MP4 video
 
 document_processor = DocumentProcessor()

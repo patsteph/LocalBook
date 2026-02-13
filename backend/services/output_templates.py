@@ -29,6 +29,7 @@ class OutputTemplate:
     example_structure: str
     tone: str
     target_audience: str
+    recommended_tokens: int = 2000  # Recommended num_predict for this document type
 
 
 # =============================================================================
@@ -102,7 +103,8 @@ Write as if presenting to a CEO with 5 minutes to make a decision.""",
 *Sources: [List with brief descriptions]*""",
         
         tone="authoritative, concise, action-oriented",
-        target_audience="Senior executives and decision-makers"
+        target_audience="Senior executives and decision-makers",
+        recommended_tokens=2500
     ),
     
     "study_guide": OutputTemplate(
@@ -196,7 +198,8 @@ After studying this guide, you will be able to:
 *Answers: 1.[A] 2.[B] 3.[C]*""",
         
         tone="encouraging, clear, educational",
-        target_audience="Students and self-learners"
+        target_audience="Students and self-learners",
+        recommended_tokens=3500
     ),
     
     "faq": OutputTemplate(
@@ -293,7 +296,8 @@ Write as if creating documentation for a product millions will use.""",
 *Sources consulted: [List]*""",
         
         tone="helpful, thorough, accessible",
-        target_audience="Anyone seeking to understand the topic"
+        target_audience="Anyone seeking to understand the topic",
+        recommended_tokens=3000
     ),
     
     "deep_dive": OutputTemplate(
@@ -386,7 +390,8 @@ Write as if preparing a briefing paper for a think tank.""",
 [Full source list with brief descriptions]""",
         
         tone="analytical, nuanced, scholarly",
-        target_audience="Subject matter experts and researchers"
+        target_audience="Subject matter experts and researchers",
+        recommended_tokens=4000
     ),
     
     "summary": OutputTemplate(
@@ -450,7 +455,8 @@ Write as if the reader has only 3 minutes but needs complete understanding.""",
 *Based on: [Source list]*""",
         
         tone="concise, insightful, professional",
-        target_audience="Busy professionals needing quick understanding"
+        target_audience="Busy professionals needing quick understanding",
+        recommended_tokens=1500
     ),
     
     "explain": OutputTemplate(
@@ -536,7 +542,8 @@ Not quite. Here's why: [explanation]
 *Sources: [List] - simplified for accessibility*""",
         
         tone="friendly, patient, engaging",
-        target_audience="Anyone curious about the topic, regardless of background"
+        target_audience="Anyone curious about the topic, regardless of background",
+        recommended_tokens=2000
     ),
     
     "debate": OutputTemplate(
@@ -628,121 +635,290 @@ Consider these questions:
 *This analysis synthesizes perspectives from: [Source list]*""",
         
         tone="balanced, respectful, intellectually honest",
-        target_audience="Anyone wanting to understand multiple sides of an issue"
+        target_audience="Anyone wanting to understand multiple sides of an issue",
+        recommended_tokens=3500
     ),
     
     "podcast_script": OutputTemplate(
         template_id="podcast_script",
         name="Podcast Script",
         description="Engaging audio content with natural conversation flow",
-        system_prompt="""You are a podcast producer creating an engaging, educational conversation.
+        system_prompt="""You are a podcast producer creating an engaging, educational conversation that will be converted to audio via text-to-speech.
+
+CRITICAL: Every word you write will be spoken aloud. Write ONLY dialogue — no stage directions, no sound effects, no music cues, no markdown formatting, no action descriptions.
 
 Your podcast must:
 1. Sound like natural conversation, not reading from a script
 2. Have distinct host personalities that complement each other
-3. Build narrative momentum - hook early, build interest, deliver payoff
-4. Include moments of genuine insight and "aha" moments
-5. Reference sources naturally within conversation
+3. Open with a compelling hook — mid-conversation, surprising fact, or provocative question
+4. NEVER open with "Welcome to the show" or "I'm [name] and today we'll discuss"
+5. Include moments of genuine insight, reactions, and "aha" moments
+6. Reference sources naturally ("I was reading this piece that said...") — never "According to Source 1"
+7. End with a natural wind-down, a final thought, or a question for the listener
 
 Write as if creating a podcast that listeners recommend to friends.""",
         
         structure_requirements=[
-            "COLD OPEN (hook that grabs attention)",
-            "INTRODUCTION (hosts, topic, why it matters)",
-            "SEGMENT 1 (foundation/context)",
-            "SEGMENT 2 (main content/exploration)",
-            "SEGMENT 3 (implications/applications)",
-            "WRAP-UP (key takeaways, call to action)"
+            "COLD OPEN (hook that grabs attention — start mid-thought)",
+            "EXPLORATION (build context, share surprising findings)",
+            "DEEP DIVE (main content with back-and-forth discussion)",
+            "IMPLICATIONS (what this means, why it matters)",
+            "WIND-DOWN (final thoughts, question for the listener)"
         ],
         
         quality_checklist=[
             "Would you want to listen to this conversation?",
             "Do hosts have distinct, complementary voices?",
-            "Is information delivered conversationally?",
-            "Are there moments of genuine insight?",
-            "Does it maintain interest throughout?"
+            "Is information delivered conversationally with short sentences?",
+            "Are there genuine reactions and moments of insight?",
+            "Does the opening hook you immediately?",
+            "Is the ending natural, not a stiff sign-off?"
         ],
         
-        min_sections=5,
+        min_sections=4,
         
-        example_structure="""# Podcast: [Episode Title]
-*Duration: ~[X] minutes | Topic: [Topic]*
+        example_structure="""Host A: Okay so I have to tell you about this stat I found. Did you know that nearly sixty percent of people get this completely wrong?
 
----
+Host B: Wait, sixty percent? That seems absurdly high.
 
-## [COLD OPEN]
+Host A: Right? That's what I thought. But when you dig into the research, it actually makes a lot of sense. So here's the deal...
 
-**HOST A**: [Attention-grabbing statement or question]
+Host B: Okay break it down for me.
 
-**HOST B**: [Intrigued response]
+Host A: So the core issue is that most people assume this works one way, but the data shows it's almost the opposite. I was reading this one study and it basically said that the traditional approach has been failing for years, we just didn't have good enough measurements to see it.
 
-*[Theme music]*
+Host B: That's wild. So what are they actually finding works?
 
----
+Host A: This is where it gets interesting. The researchers found three things that actually move the needle. First...
 
-## [INTRODUCTION]
+Host B: Okay but here's the thing that bugs me about that. If it's so clear, why hasn't the field shifted already?
 
-**HOST A**: Welcome back to [Podcast Name]. I'm [Name], and with me as always is [Name].
+Host A: Great question. And honestly, it comes down to inertia. People have been doing it the old way for so long that...
 
-**HOST B**: Hey everyone! So today we're diving into [topic], and honestly, I was surprised by what we found in the research.
+Host B: So what do we take away from all this?
 
-**HOST A**: Right? Like, I thought I understood [topic], but [interesting hook]...
+Host A: For me, the biggest thing is just questioning our assumptions. Like, if sixty percent of people are getting it wrong, maybe we should at least check whether we're in that sixty percent.
 
----
+Host B: Yeah, that's a good way to think about it. And honestly, just being aware of these findings puts you ahead of most people.
 
-## SEGMENT 1: Setting the Stage
-
-**HOST A**: Okay, let's start with the basics. [Name], break it down for us.
-
-**HOST B**: So here's the thing... [natural explanation]
-
-**HOST A**: [Follow-up question that listeners might have]
-
-**HOST B**: Great question. According to [source], [answer]...
-
-[Continue natural dialogue]
-
----
-
-## SEGMENT 2: Going Deeper
-
-**HOST A**: This is where it gets interesting...
-
-[Continue with main exploration, hosts building on each other]
-
----
-
-## SEGMENT 3: So What?
-
-**HOST B**: Okay, but what does this actually mean for [audience]?
-
-**HOST A**: Well, here's what I took away from all this...
-
-[Practical implications discussion]
-
----
-
-## [WRAP-UP]
-
-**HOST A**: Alright, let's land this plane. Key takeaways?
-
-**HOST B**: 
-1. [Takeaway 1]
-2. [Takeaway 2]
-
-**HOST A**: And [Takeaway 3]. 
-
-**HOST B**: That's it for today! If you enjoyed this, [call to action].
-
-**HOST A**: See you next time!
-
-*[Outro music]*
-
----
-*Research sources: [List]*""",
+Host A: Exactly. Something to chew on.""",
         
-        tone="conversational, engaging, informative",
-        target_audience="Podcast listeners seeking educational content"
+        tone="conversational, engaging, informative, natural",
+        target_audience="Podcast listeners seeking educational content",
+        recommended_tokens=4000
+    ),
+
+    "feynman_curriculum": OutputTemplate(
+        template_id="feynman_curriculum",
+        name="Feynman Learning Curriculum",
+        description="Multi-part progressive learning system using the Feynman Technique — novice to near-expert",
+        system_prompt="""You are an expert instructional designer applying Richard Feynman's learning methodology to create a multi-part curriculum.
+
+THE FEYNMAN TECHNIQUE:
+Richard Feynman believed that if you can't explain something simply, you don't truly understand it. His method:
+1. Study and map knowledge into categories
+2. Explain it as if teaching a 12-year-old — use analogies, everyday language, zero jargon
+3. Identify gaps — what you can't explain simply reveals what you don't actually understand
+4. Simplify further — break everything to first principles, then rebuild at progressive difficulty levels
+
+YOUR CURRICULUM MUST:
+1. Build knowledge in 4 progressive levels: Foundation → Building → First Principles → Mastery
+2. Each level MUST be self-contained and useful on its own
+3. Use concrete analogies and everyday examples at EVERY level — this is the heart of Feynman's approach
+4. Include self-assessment at each level so the learner knows when they're ready to advance
+5. Explicitly identify and debunk common misconceptions
+6. Connect concepts across sources — show HOW ideas relate to each other
+7. At the Mastery level, include "teach it back" prompts — the ultimate Feynman test
+8. ONLY use facts from the provided research — do not invent claims or statistics
+
+Write as if creating a curriculum that would make Feynman himself proud — clear, joyful, and ruthlessly honest about complexity.""",
+        
+        structure_requirements=[
+            "CURRICULUM OVERVIEW (subject, estimated learning time, what you'll master)",
+            "PART 1: FOUNDATION (explain to a 12-year-old — core concepts with analogies, essential vocabulary, simple self-test)",
+            "PART 2: BUILDING UNDERSTANDING (deeper dive, how concepts connect, real-world examples, misconceptions debunked, application self-test)",
+            "PART 3: FIRST PRINCIPLES (WHY things work this way, root mechanisms, edge cases, expert insights, analysis self-test)",
+            "PART 4: MASTERY SYNTHESIS (teach-it-back summary, expert-level questions, what's still debated/unknown, learning path forward, comprehensive self-assessment)",
+            "KNOWLEDGE MAP (visual text diagram showing how all concepts connect)"
+        ],
+        
+        quality_checklist=[
+            "Could a motivated 12-year-old understand Part 1?",
+            "Does each part build clearly on the previous one?",
+            "Are there concrete analogies at every level, not just Part 1?",
+            "Do self-assessments actually test understanding, not just recall?",
+            "Are misconceptions explicitly identified and corrected?",
+            "Does Part 4 include genuine teach-it-back challenges?",
+            "Is the knowledge map accurate and useful?",
+            "Would Feynman approve of the clarity?"
+        ],
+        
+        min_sections=6,
+        
+        example_structure="""# Feynman Learning Curriculum: [Subject]
+*Estimated learning time: [X] hours across 4 parts | Sources: [N] documents*
+
+---
+
+## Curriculum Overview
+**What you'll master**: [1-2 sentence description of the end state]
+**Prerequisites**: [None / basic familiarity with X]
+**How to use this**: Work through each part in order. Don't advance until you can pass the self-assessment. If you get stuck, that's the Feynman signal — go back and simplify.
+
+---
+
+## Part 1: Foundation
+*"If you can't explain it to a 12-year-old, you don't understand it." — attributed to Feynman*
+
+### The Big Picture
+[2-3 paragraphs explaining the entire subject as if to a smart 12-year-old. Use an extended analogy that carries through.]
+
+### Essential Vocabulary
+| Term | Plain English | Analogy |
+|------|-------------|---------|
+| [Term] | [Simple definition — no jargon] | [Everyday comparison] |
+| [Term] | [Simple definition] | [Everyday comparison] |
+
+### Core Concepts
+
+**1. [Concept Name]**
+*What it is*: [1-2 sentences, plain language]
+*Think of it like*: [Analogy from everyday life]
+*Why it matters*: [So what? Why should anyone care?]
+
+**2. [Concept Name]**
+[Same structure...]
+
+**3. [Concept Name]**
+[Same structure...]
+
+### Foundation Self-Test
+*Can you answer these without looking back? If not, re-read the section.*
+1. [Simple recall — multiple choice]
+   A) [Option] B) [Option] C) [Option] D) [Option]
+2. [Explain-in-your-own-words — multiple choice]
+   A) [Option] B) [Option] C) [Option] D) [Option]
+3. ["Why does X matter?" — multiple choice]
+   A) [Option] B) [Option] C) [Option] D) [Option]
+*Answers: 1.[X] 2.[X] 3.[X]*
+
+---
+
+## Part 2: Building Understanding
+*Now that you have the basics, let's see how the pieces fit together.*
+
+### How It All Connects
+```
+[Concept A] ──affects──→ [Concept B]
+     │                        │
+     └──depends on──→ [Concept C] ──leads to──→ [Outcome]
+```
+
+### Deeper Dive
+
+**[Concept 1] — Beyond the Basics**
+[Expand on Part 1's explanation with more nuance. Include a real-world example or case study from the sources.]
+
+**[Concept 2] — Beyond the Basics**
+[Same structure...]
+
+### Common Misconceptions
+- **Misconception**: "[What people commonly get wrong]"
+  **Reality**: [What's actually true and why]
+- **Misconception**: "[Another common error]"
+  **Reality**: [Correction with evidence]
+
+### Building Self-Test
+1. [Application question — multiple choice]
+   A) [Option] B) [Option] C) [Option] D) [Option]
+2. [Connection question — multiple choice]
+   A) [Option] B) [Option] C) [Option] D) [Option]
+3. [Misconception check — true or false]
+   A) True B) False
+*Answers: 1.[X] 2.[X] 3.[X]*
+
+---
+
+## Part 3: First Principles
+*Now we go deeper — not just WHAT, but WHY.*
+
+### Root Mechanisms
+[For each core concept, explain the underlying mechanism. Why does it work this way and not some other way?]
+
+**Why [Concept] Works This Way**
+[First principles explanation — trace it back to the root cause]
+*The key insight*: [One sentence that captures the deep understanding]
+
+### Edge Cases & Nuances
+- [When does the standard explanation break down?]
+- [What exceptions exist and why?]
+- [What do experts disagree about?]
+
+### Expert Insights from the Research
+[Pull specific insights, data points, or arguments from the sources that reveal deeper understanding]
+
+### First Principles Self-Test
+1. [Analysis question — multiple choice]
+   A) [Option] B) [Option] C) [Option] D) [Option]
+2. [Synthesis question — multiple choice]
+   A) [Option] B) [Option] C) [Option] D) [Option]
+3. [Evaluation question — multiple choice]
+   A) [Option] B) [Option] C) [Option] D) [Option]
+*Answers: 1.[X] 2.[X] 3.[X]*
+
+---
+
+## Part 4: Mastery Synthesis
+*The ultimate Feynman test: Can you teach this subject to someone else?*
+
+### Teach It Back
+**Challenge 1**: Explain [the entire subject] in exactly 3 sentences to a colleague.
+**Challenge 2**: A friend asks "[common question about the subject]" — write your response.
+**Challenge 3**: Someone disagrees with [key claim]. Construct your argument.
+
+### Expert-Level Questions
+These are the questions that separate understanding from true mastery:
+1. [Question that requires deep synthesis across multiple concepts]
+2. [Question about implications or predictions]
+3. [Question about the limits of current knowledge]
+
+### What's Still Unknown
+[Honestly identify what the research doesn't answer, what's still debated, what's evolving]
+
+### Your Learning Path Forward
+- **To deepen**: [Specific topics to explore next]
+- **To apply**: [How to use this knowledge in practice]
+- **To stay current**: [How this field is evolving]
+
+### Comprehensive Self-Assessment
+Rate yourself honestly (1-5):
+- [ ] I can explain the core concepts without jargon
+- [ ] I understand WHY things work, not just WHAT happens
+- [ ] I can identify common misconceptions and correct them
+- [ ] I could teach this subject to someone else
+- [ ] I know what I still don't know
+
+---
+
+## Knowledge Map
+```
+                    [SUBJECT]
+                   /    |    \\
+          [Domain A] [Domain B] [Domain C]
+           /    \\      |         /    \\
+    [Concept] [Concept] [Concept] [Concept] [Concept]
+         \\        \\      |       /
+          └────── [Key Relationship] ──────┘
+                        |
+                   [Implication]
+```
+
+---
+*Built using the Feynman Learning Method | Sources: [List]*""",
+        
+        tone="clear, encouraging, intellectually honest, joyful about learning",
+        target_audience="Self-learners seeking deep understanding, not just surface knowledge",
+        recommended_tokens=5000
     ),
 }
 

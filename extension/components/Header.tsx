@@ -1,5 +1,6 @@
 import { useState } from "react"
 import type { Notebook } from "../types"
+import { ImportMenu } from "./ImportMenu"
 
 interface HeaderProps {
   notebooks: Notebook[]
@@ -7,6 +8,8 @@ interface HeaderProps {
   primaryNotebookId: string | null
   onSelectNotebook: (id: string) => void
   onCreateNotebook: (name: string) => Promise<void>
+  onMessage: (msg: string, type: "success" | "error" | "info") => void
+  onRefresh: () => void
   loading: boolean
 }
 
@@ -16,6 +19,8 @@ export function Header({
   primaryNotebookId,
   onSelectNotebook,
   onCreateNotebook,
+  onMessage,
+  onRefresh,
   loading
 }: HeaderProps) {
   const [notebookExpanded, setNotebookExpanded] = useState(false)
@@ -31,14 +36,14 @@ export function Header({
 
   return (
     <div className="px-3 py-2 border-b border-gray-700">
-      <div className="flex items-center gap-2">
-        {/* Logo + Name */}
-        <span className="text-lg">📚</span>
-        <span className="font-bold text-sm">LocalBook</span>
-        <span className="text-gray-600">|</span>
+      <div className="flex items-center justify-between gap-3">
+        {/* Left: Logo + Notebook */}
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className="text-lg shrink-0">📚</span>
+          <span className="font-bold text-sm shrink-0">LocalBook</span>
         
-        {/* Notebook Selector - inline */}
-        <div className="relative flex-1 min-w-0">
+          {/* Notebook Selector - inline */}
+          <div className="relative min-w-0 flex-1">
           <button
             onClick={() => setNotebookExpanded(!notebookExpanded)}
             className="flex items-center gap-1 px-2 py-1 bg-gray-800 border border-gray-600 rounded text-sm hover:bg-gray-750 max-w-full"
@@ -112,14 +117,21 @@ export function Header({
               )}
             </div>
           )}
+          </div>
         </div>
         
-        <span className="text-gray-600">|</span>
-        
-        {/* Connected Status */}
-        <div className="flex items-center gap-1 shrink-0">
-          <div className="w-2 h-2 rounded-full bg-green-500"></div>
-          <span className="text-xs text-gray-400">Connected</span>
+        {/* Right: Status + Import */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div title="Connected to LocalBook">
+            <div className="w-2.5 h-2.5 rounded-full bg-green-500"></div>
+          </div>
+          {selectedNotebook && (
+            <ImportMenu
+              notebookId={selectedNotebook}
+              onMessage={onMessage}
+              onRefresh={onRefresh}
+            />
+          )}
         </div>
       </div>
     </div>

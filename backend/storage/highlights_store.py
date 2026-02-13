@@ -2,7 +2,6 @@
 import json
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import List, Optional, Dict
 from config import settings
 from utils.json_io import atomic_write_json
@@ -73,6 +72,12 @@ class HighlightsStore:
         data = self._load_data()
         data["highlights"][highlight_id] = highlight
         self._save_data(data)
+
+        try:
+            from services.event_logger import log_highlight
+            log_highlight(notebook_id, source_id, highlighted_text, annotation or None)
+        except Exception:
+            pass
 
         return highlight
 

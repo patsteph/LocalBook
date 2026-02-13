@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-from services.structured_llm import structured_llm, MermaidDiagram
+from services.structured_llm import structured_llm
 from services.visual_analyzer import visual_analyzer
 from services.visual_router import visual_router, VISUAL_TEMPLATES
 from services.template_scorer import select_primary_and_alternatives
@@ -762,7 +762,7 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
         
         # Only re-extract if NO cached structure available AND no guidance was provided
         if not structure:
-            print(f"[Visual Stream] No cache hit - extracting from content...")
+            print("[Visual Stream] No cache hit - extracting from content...")
             print(f"[Visual Stream] Topic length: {len(topic)} chars")
             print(f"[Visual Stream] Topic preview: {topic[:300]}...")
             pre_classified = None
@@ -788,7 +788,7 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
         # CRITICAL FALLBACK: If we STILL have no themes, extract directly from topic using regex
         # This bypasses LLM entirely - guaranteed to work if content has structure
         if not structure.get('themes') or len(structure.get('themes', [])) < 2:
-            print(f"[Visual Stream] ⚠️ EMERGENCY FALLBACK - extracting themes directly from topic")
+            print("[Visual Stream] ⚠️ EMERGENCY FALLBACK - extracting themes directly from topic")
             import re as re_module
             clean_topic = re_module.sub(r'\[\d+\]', '', topic)
             
@@ -833,14 +833,14 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
         
         # DIAGNOSTIC: Full structure summary before building visual
         themes = structure.get('themes', [])
-        print(f"[Visual Stream] ═══════════════════════════════════════")
-        print(f"[Visual Stream] FINAL STRUCTURE FOR VISUAL:")
+        print("[Visual Stream] ═══════════════════════════════════════")
+        print("[Visual Stream] FINAL STRUCTURE FOR VISUAL:")
         print(f"[Visual Stream]   Template: {template.id if template else 'None'}")
         print(f"[Visual Stream]   Themes ({len(themes)}): {themes}")
         print(f"[Visual Stream]   Pros: {structure.get('pros', [])}")
         print(f"[Visual Stream]   Cons: {structure.get('cons', [])}")
         print(f"[Visual Stream]   Title: {structure.get('title', 'N/A')}")
-        print(f"[Visual Stream] ═══════════════════════════════════════")
+        print("[Visual Stream] ═══════════════════════════════════════")
         
         # VALIDATION: Warn if we're about to render with empty data
         if not themes or len(themes) < 2:
@@ -902,14 +902,13 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
         print(f"[Visual Stream] Generating primary visual: {template.id}")
         primary = await gen_visual(template)
         if primary:
-            print(f"[Visual Stream] ✅ Primary ready, yielding immediately")
+            print("[Visual Stream] ✅ Primary ready, yielding immediately")
             yield f"event: primary\ndata: {json_module.dumps(primary)}\n\n"
         else:
             yield f"event: error\ndata: {json_module.dumps({'error': 'Failed to generate primary visual'})}\n\n"
             return
         
         # Small delay to ensure primary is rendered before alternatives start
-        import asyncio
         await asyncio.sleep(0.1)
         
         # 2. Generate alternatives using scored templates (content-driven selection)

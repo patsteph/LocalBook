@@ -15,17 +15,17 @@ import httpx
 import psutil
 import lancedb
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, BackgroundTasks
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from config import settings
 from services.rag_metrics import rag_metrics
+from utils.binary_finder import find_binary
 from services.rag_cache import embedding_cache, answer_cache
 from services.startup_checks import (
     REQUIRED_MODELS, EXPECTED_EMBEDDING_DIM,
     check_ollama_version, check_ollama_models,
-    check_rag_embedding_dimensions, check_knowledge_graph_dimensions,
-    check_memory_store_dimensions
+    check_rag_embedding_dimensions, check_knowledge_graph_dimensions
 )
 
 router = APIRouter(prefix="/health", tags=["Health Portal"])
@@ -414,7 +414,7 @@ async def full_health_check():
             results["issues"].append({
                 "severity": "high",
                 "title": "Model File Corrupted",
-                "message": f"The model file is corrupted. Click Repair to re-download it.",
+                "message": "The model file is corrupted. Click Repair to re-download it.",
                 "repair": "repair_model",
                 "repair_params": {"model": settings.ollama_fast_model}
             })
@@ -427,7 +427,7 @@ async def full_health_check():
         # Use persistent cache dir (not /tmp which gets cleared on reboot)
         cache_dir = settings.data_dir / "models" / "flashrank"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        ranker = Ranker(model_name=settings.reranker_model, cache_dir=str(cache_dir))
+        _ranker = Ranker(model_name=settings.reranker_model, cache_dir=str(cache_dir))
         add_check("ai_models", {
             "name": "reranker",
             "display": "Reranker Model",
@@ -512,7 +512,7 @@ async def full_health_check():
                 "status": "warn",
                 "details": {"file": "Not found (new install)"}
             })
-    except json.JSONDecodeError as e:
+    except json.JSONDecodeError:
         add_check("data_integrity", {
             "name": "sources_storage",
             "display": "Sources Storage",
@@ -593,9 +593,8 @@ async def full_health_check():
     try:
         from datetime import timedelta
         stuck_sources = []
-        notebooks = await notebook_store.list()
-        for nb in notebooks:
-            sources = await source_store.list(nb.get("id"))
+        all_sources_by_nb = await source_store.list_all()
+        for nb_id, sources in all_sources_by_nb.items():
             for src in sources:
                 status = src.get("status", "")
                 chunks = src.get("chunks", 0)
@@ -606,7 +605,7 @@ async def full_health_check():
                         created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
                         if datetime.now(created_dt.tzinfo) - created_dt > timedelta(minutes=5):
                             stuck_sources.append({
-                                "notebook_id": nb.get("id"),
+                                "notebook_id": nb_id,
                                 "source_id": src.get("id"),
                                 "filename": src.get("filename", "Unknown"),
                                 "status": status,
@@ -701,7 +700,7 @@ async def full_health_check():
     deps_status = "pass"
     missing_deps = []
     try:
-        import flashrank
+        pass
     except ImportError:
         missing_deps.append("flashrank")
         deps_status = "warn"
@@ -716,7 +715,7 @@ async def full_health_check():
         missing_deps.append("PyMuPDF")
         deps_status = "warn"
     try:
-        import sentence_transformers
+        pass
     except ImportError:
         pass  # Optional - using Ollama embeddings
     
@@ -742,7 +741,7 @@ async def full_health_check():
     
     # PDF Extraction Test - most common user frustration
     try:
-        import fitz
+        import fitz as fitz  # noqa: F811 - reimport for functional test
         # Create a test PDF in memory and extract text
         doc = fitz.open()
         page = doc.new_page()
@@ -793,24 +792,33 @@ async def full_health_check():
             results["overall"] = "degraded"
     
     # ffmpeg Check - required for audio/video transcription
-    try:
-        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
-        if result.returncode == 0:
-            version_line = result.stdout.decode().split('\n')[0]
-            add_check("functional_tests", {
-                "name": "ffmpeg",
-                "display": "FFmpeg (Audio/Video)",
-                "status": "pass",
-                "details": {"installed": True, "info": version_line[:50]}
-            })
-        else:
+    ffmpeg_path = find_binary("ffmpeg")
+    if ffmpeg_path:
+        try:
+            result = subprocess.run([ffmpeg_path, "-version"], capture_output=True, timeout=5)
+            if result.returncode == 0:
+                version_line = result.stdout.decode().split('\n')[0]
+                add_check("functional_tests", {
+                    "name": "ffmpeg",
+                    "display": "FFmpeg (Audio/Video)",
+                    "status": "pass",
+                    "details": {"installed": True, "path": ffmpeg_path, "info": version_line[:50]}
+                })
+            else:
+                add_check("functional_tests", {
+                    "name": "ffmpeg",
+                    "display": "FFmpeg (Audio/Video)",
+                    "status": "warn",
+                    "error": f"Found at {ffmpeg_path} but not working properly"
+                })
+        except Exception as e:
             add_check("functional_tests", {
                 "name": "ffmpeg",
                 "display": "FFmpeg (Audio/Video)",
                 "status": "warn",
-                "error": "ffmpeg not working properly"
+                "error": str(e)[:30]
             })
-    except FileNotFoundError:
+    else:
         add_check("functional_tests", {
             "name": "ffmpeg",
             "display": "FFmpeg (Audio/Video)",
@@ -825,32 +833,34 @@ async def full_health_check():
         })
         if results["overall"] == "healthy":
             results["overall"] = "degraded"
-    except Exception as e:
-        add_check("functional_tests", {
-            "name": "ffmpeg",
-            "display": "FFmpeg (Audio/Video)",
-            "status": "warn",
-            "error": str(e)[:30]
-        })
     
     # Tesseract Check - required for OCR (optional but commonly needed)
-    try:
-        result = subprocess.run(["tesseract", "--version"], capture_output=True, timeout=5)
-        if result.returncode == 0:
-            add_check("functional_tests", {
-                "name": "tesseract",
-                "display": "Tesseract (OCR)",
-                "status": "pass",
-                "details": {"installed": True}
-            })
-        else:
+    tesseract_path = find_binary("tesseract")
+    if tesseract_path:
+        try:
+            result = subprocess.run([tesseract_path, "--version"], capture_output=True, timeout=5)
+            if result.returncode == 0:
+                add_check("functional_tests", {
+                    "name": "tesseract",
+                    "display": "Tesseract (OCR)",
+                    "status": "pass",
+                    "details": {"installed": True, "path": tesseract_path}
+                })
+            else:
+                add_check("functional_tests", {
+                    "name": "tesseract",
+                    "display": "Tesseract (OCR)",
+                    "status": "warn",
+                    "error": f"Found at {tesseract_path} but not working properly"
+                })
+        except Exception as e:
             add_check("functional_tests", {
                 "name": "tesseract",
                 "display": "Tesseract (OCR)",
                 "status": "warn",
-                "error": "Not working properly"
+                "error": str(e)[:30]
             })
-    except FileNotFoundError:
+    else:
         add_check("functional_tests", {
             "name": "tesseract",
             "display": "Tesseract (OCR)",
@@ -858,17 +868,10 @@ async def full_health_check():
             "details": {"installed": False, "note": "Optional - for image OCR"}
         })
         # Don't add issue - tesseract is optional
-    except Exception as e:
-        add_check("functional_tests", {
-            "name": "tesseract",
-            "display": "Tesseract (OCR)",
-            "status": "warn",
-            "error": str(e)[:30]
-        })
     
     # Whisper Model Test - audio transcription capability
     try:
-        import whisper
+        pass
         # Just verify import works - don't load model (too slow)
         add_check("functional_tests", {
             "name": "whisper",
@@ -876,7 +879,7 @@ async def full_health_check():
             "status": "pass",
             "details": {"library": "openai-whisper", "available": True}
         })
-    except ImportError as e:
+    except ImportError:
         add_check("functional_tests", {
             "name": "whisper",
             "display": "Whisper (Transcription)",
@@ -901,7 +904,7 @@ async def full_health_check():
     
     # Web Scraping Test - required for URL captures
     try:
-        import trafilatura
+        import trafilatura as trafilatura  # noqa: F811 - reimport for functional test
         test_html = "<html><body><article><p>Test content for LocalBook.</p></article></body></html>"
         extracted = trafilatura.extract(test_html)
         
@@ -952,8 +955,6 @@ async def full_health_check():
     
     # PowerPoint Import Test - required for .pptx uploads
     try:
-        from pptx import Presentation
-        from pptx.table import Table
         add_check("functional_tests", {
             "name": "pptx_import",
             "display": "PowerPoint Support",
@@ -985,11 +986,10 @@ async def full_health_check():
     
     # BERTopic Test - required for topic modeling
     try:
-        from bertopic import BERTopic
         from bertopic.vectorizers import OnlineCountVectorizer
         
         # Test that core components initialize
-        vectorizer = OnlineCountVectorizer(stop_words="english")
+        _vectorizer = OnlineCountVectorizer(stop_words="english")
         
         # Check if topic model data exists
         topic_model_path = settings.data_dir / "topic_model"
@@ -1001,7 +1001,7 @@ async def full_health_check():
             "status": "pass",
             "details": {"library": "BERTopic", "model_exists": has_model}
         })
-    except ImportError as e:
+    except ImportError:
         add_check("functional_tests", {
             "name": "topic_modeling",
             "display": "Topic Modeling",
@@ -1301,7 +1301,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                 query="test query",
                 passages=[{"id": "1", "text": "test passage"}]
             )
-            test_result = ranker.rerank(request)
+            ranker.rerank(request)
             add_log("INFO", f"Reranker initialized: {settings.reranker_model}", "health_portal")
             return {"status": "success", "message": f"Reranker {settings.reranker_model} ready (cached in {cache_dir})"}
         except Exception as e:
@@ -1324,7 +1324,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                 import trafilatura
                 importlib.reload(trafilatura)
                 test_html = "<html><body><p>Test</p></body></html>"
-                extracted = trafilatura.extract(test_html)
+                trafilatura.extract(test_html)
                 add_log("INFO", "Trafilatura reinstalled and working", "health_portal")
                 return {"status": "success", "message": "Trafilatura reinstalled. Restart app for full effect."}
             else:

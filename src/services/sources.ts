@@ -78,4 +78,9 @@ export const sourceService = {
     const response = await api.get(`/sources/${notebookId}/tags/${encodeURIComponent(tag)}/sources`);
     return response.data || [];
   },
+
+  async autoTagAll(notebookId: string): Promise<{ message: string; queued: number; already_tagged: number; total: number }> {
+    const response = await api.post(`/sources/${notebookId}/auto-tag-all`);
+    return response.data;
+  },
 };

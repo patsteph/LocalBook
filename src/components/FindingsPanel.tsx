@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { findingsService, Finding, FindingsStats } from '../services/findings';
 import { VisualCore } from './visual';
 
@@ -147,8 +148,8 @@ export const FindingsPanel: React.FC<FindingsPanelProps> = ({ notebookId }) => {
       
       case 'note':
         return (
-          <div className="mt-2 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-            {(content.text as string) || ''}
+          <div className="mt-2 text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:mt-3 prose-headings:mb-1 prose-ul:my-1 prose-li:my-0 prose-hr:my-3">
+            <ReactMarkdown>{(content.text as string) || ''}</ReactMarkdown>
           </div>
         );
       

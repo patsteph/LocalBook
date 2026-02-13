@@ -121,33 +121,49 @@ async def warm_reranker_model() -> bool:
 
 
 async def warmup_cycle(force_all: bool = False):
-    """Run one warmup cycle for models that have been recently used"""
+    """Run one warmup cycle for models that have been recently used.
+    
+    When force_all=True (startup), all models are warmed in PARALLEL
+    to minimize total startup time.
+    """
     now = time.time()
-    main_ok = fast_ok = embed_ok = rerank_ok = True
+    tasks = {}
     
     # Only warm main model if recently used (or forced on startup)
     if force_all or (now - _last_main_model_use < MODEL_IDLE_TIMEOUT):
-        main_ok = await warm_ollama_model(settings.ollama_model)
+        tasks["main"] = warm_ollama_model(settings.ollama_model)
     
     # Only warm fast model if recently used (or forced on startup)
+    # Skip if same model as main (already being warmed)
     if force_all or (now - _last_fast_model_use < MODEL_IDLE_TIMEOUT):
-        fast_ok = await warm_ollama_model(settings.ollama_fast_model)
+        if settings.ollama_fast_model != settings.ollama_model or "main" not in tasks:
+            tasks["fast"] = warm_ollama_model(settings.ollama_fast_model)
     
     # Only warm embedding model if recently used (or forced on startup)
     if force_all or (now - _last_embedding_use < MODEL_IDLE_TIMEOUT):
-        embed_ok = await warm_embedding_model()
+        tasks["embed"] = warm_embedding_model()
     
     # Only warm reranker if recently used (or forced on startup)
     if force_all or (now - _last_reranker_use < MODEL_IDLE_TIMEOUT):
-        rerank_ok = await warm_reranker_model()
+        tasks["rerank"] = warm_reranker_model()
+    
+    # Run all warmup tasks in parallel
+    if tasks:
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        result_map = dict(zip(tasks.keys(), results))
+    else:
+        result_map = {}
+    
+    main_ok = result_map.get("main", True) is True
+    fast_ok = result_map.get("fast", main_ok if settings.ollama_fast_model == settings.ollama_model else True) is True
+    embed_ok = result_map.get("embed", True) is True
+    rerank_ok = result_map.get("rerank", True) is True
     
     return main_ok, fast_ok, embed_ok, rerank_ok
 
 
 async def _warmup_loop_periodic():
     """Background loop that keeps models warm (periodic keep-alive only)"""
-    global _should_run
-    
     print("🔥 Starting periodic model keep-alive service...")
     
     # Periodic warmup - only warms recently-used models

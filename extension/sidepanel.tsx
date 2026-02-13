@@ -10,7 +10,8 @@ import type {
   PageContext,
   ViewMode,
   ActionType,
-  SearchResult
+  SearchResult,
+  OutboundLink
 } from "./types"
 import { API_BASE } from "./types"
 
@@ -44,6 +45,8 @@ import {
   CompareResult,
   ChatView,
   ResearchView,
+  TransformView,
+  SuggestedLinks,
   StatusMessage,
   LoadingSpinner,
   DisconnectedView,
@@ -83,6 +86,12 @@ function SidePanel() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedSite, setSelectedSite] = useState<string>("")
+
+  // Outbound links (from Turndown extraction)
+  const [outboundLinks, setOutboundLinks] = useState<OutboundLink[]>([])
+
+  // Collector state
+  const [collectorPending, setCollectorPending] = useState(0)
 
   // Journey tracking
   const [pageActions, setPageActions] = useState<string[]>([])
@@ -145,6 +154,18 @@ function SidePanel() {
     setPrimaryNotebookId(primaryId)
     if (!selectedNotebook && primaryId) {
       setSelectedNotebook(primaryId)
+    }
+
+    // Check Collector pending for the selected notebook
+    const nbId = selectedNotebook || primaryId || (nbs.length > 0 ? nbs[0].id : null)
+    if (nbId) {
+      try {
+        const pendingRes = await fetch(`${API_BASE}/collector/${nbId}/pending`)
+        if (pendingRes.ok) {
+          const pendingData = await pendingRes.json()
+          setCollectorPending(pendingData.total || pendingData.pending?.length || 0)
+        }
+      } catch { /* non-critical */ }
     }
   }
 
@@ -254,6 +275,7 @@ function SidePanel() {
       case "scrape": await handleScrape(); break
       case "links": await handleExtractLinks(); break
       case "compare": await handleCompareWithNotebook(); break
+      case "chat": handleStartChatDirect(); break
     }
   }
 
@@ -266,6 +288,11 @@ function SidePanel() {
     try {
       const content = await getPageContent()
       if (!content) throw new Error("Could not extract page content")
+
+      // Store outbound links for suggested sources
+      if (content.outboundLinks?.length) {
+        setOutboundLinks(content.outboundLinks)
+      }
 
       const res = await fetch(`${API_BASE}/browser/summarize`, {
         method: "POST",
@@ -284,7 +311,8 @@ function SidePanel() {
         key_points: data.key_points || [],
         key_concepts: data.key_concepts || [],
         reading_time: data.reading_time_minutes || 0,
-        raw_content: content.content.substring(0, 8000)
+        raw_content: content.content.substring(0, 8000),
+        outbound_links: content.outboundLinks
       })
       showMessage("Summary generated!", "success")
       trackAction("summarize")
@@ -303,8 +331,28 @@ function SidePanel() {
     setScrapeResult(null)
 
     try {
+      // Dedup check: see if this URL is already in the notebook
+      try {
+        const checkRes = await fetch(`${API_BASE}/sources/${selectedNotebook}`)
+        if (checkRes.ok) {
+          const sources = await checkRes.json()
+          const existing = sources.find((s: any) => s.url === pageInfo.cleanUrl || s.url === pageInfo.url)
+          if (existing) {
+            setScrapeResult(`⚠ Already in notebook\n"${existing.title || existing.filename}" was captured previously.`)
+            showMessage("This page is already in your notebook", "info")
+            setLoading(false)
+            return
+          }
+        }
+      } catch { /* non-critical, proceed with capture */ }
+
       const content = await getPageContent()
       if (!content) throw new Error("Could not extract page content")
+
+      // Store outbound links if not already captured from summarize
+      if (content.outboundLinks?.length && outboundLinks.length === 0) {
+        setOutboundLinks(content.outboundLinks)
+      }
 
       const res = await fetch(`${API_BASE}/browser/capture`, {
         method: "POST",
@@ -323,8 +371,11 @@ function SidePanel() {
 
       const data = await res.json()
       if (data.success) {
-        setScrapeResult(`✓ Saved to notebook\n${data.word_count} words • ${data.reading_time_minutes} min read`)
-        showMessage("Page scraped successfully!", "success")
+        const curatorInfo = data.key_concepts?.length
+          ? `\nTopics: ${data.key_concepts.slice(0, 3).join(", ")}`
+          : ""
+        setScrapeResult(`✓ Saved to notebook\n${data.word_count} words • ${data.reading_time_minutes} min read${curatorInfo}`)
+        showMessage("Page captured!", "success")
         handleFetchNotebooks()
         trackAction("scrape")
       } else {
@@ -410,6 +461,32 @@ function SidePanel() {
   }
 
   // Chat handlers
+  function handleStartChatDirect() {
+    if (pageInfo) {
+      setPageContext({
+        url: pageInfo.url,
+        title: pageInfo.title,
+        summary: summaryResult?.summary
+      })
+
+      const nbName = notebooks.find(n => n.id === selectedNotebook)?.name || "selected notebook"
+      setChatMessages([{
+        role: "assistant",
+        content: `Ask me anything about "${pageInfo.title}" or your notebook "${nbName}".`,
+        timestamp: Date.now()
+      }])
+      setViewMode("chat")
+    } else {
+      setPageContext(null)
+      setChatMessages([{
+        role: "assistant",
+        content: "No page detected. Ask me anything about your notebook.",
+        timestamp: Date.now()
+      }])
+      setViewMode("chat")
+    }
+  }
+
   function startChatWithContext() {
     if (pageInfo) {
       setPageContext({
@@ -442,41 +519,56 @@ function SidePanel() {
       timestamp: Date.now()
     }
 
-    setChatMessages(prev => [...prev, userMessage])
+    // Capture current messages BEFORE the state update so we can build
+    // a complete history that includes the new user message
+    const currentMessages = [...chatMessages, userMessage]
+
+    setChatMessages(currentMessages)
     setChatInput("")
     setLoading(true)
 
     try {
-      const endpoint = summaryResult ? `${API_BASE}/chat/query-with-context` : `${API_BASE}/chat/query`
-
-      const historyForRequest = chatMessages
-        .filter((m, idx) => {
-          if (m.role === "user") return true
-          if (m.role === "assistant" && idx === 0 && m.content.includes("I've analyzed")) return false
-          return m.role === "assistant"
+      // Build history from currentMessages (not stale chatMessages closure)
+      // Filter out the welcome message, keep last 12 messages (6 exchanges)
+      const historyForRequest = currentMessages
+        .filter(m => {
+          if (m.role === "assistant" && m.content.includes("I've analyzed")) return false
+          return true
         })
-        .slice(-6)
+        .slice(-12)
         .map(m => ({ role: m.role, content: m.content }))
 
-      const requestBody = summaryResult ? {
+      const requestBody = {
         notebook_id: selectedNotebook,
         question: chatInput,
-        page_context: {
+        page_context: summaryResult ? {
           title: pageInfo?.title || "",
           summary: summaryResult.summary,
           key_points: summaryResult.key_points,
           key_concepts: summaryResult.key_concepts,
           raw_content: summaryResult.raw_content
-        },
+        } : (pageInfo ? {
+          title: pageInfo.title,
+          summary: null,
+          key_points: [],
+          key_concepts: []
+        } : null),
         chat_history: historyForRequest,
-        enable_web_search: true
-      } : {
-        notebook_id: selectedNotebook,
-        question: pageInfo ? `[Viewing: "${pageInfo.title}"]\n\n${chatInput}` : chatInput,
         enable_web_search: true
       }
 
-      const res = await fetch(endpoint, {
+      // Use streaming endpoint for real-time response
+      const streamUrl = `${API_BASE}/chat/query-with-context/stream`
+
+      // Add a placeholder assistant message that we'll stream into
+      const placeholderId = Date.now()
+      setChatMessages(prev => [...prev, {
+        role: "assistant" as const,
+        content: "",
+        timestamp: placeholderId
+      }])
+
+      const res = await fetch(streamUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody)
@@ -484,14 +576,45 @@ function SidePanel() {
 
       if (!res.ok) throw new Error(await res.text())
 
-      const data = await res.json()
-      const assistantMessage: ChatMessage = {
-        role: "assistant",
-        content: data.answer || "No response",
-        timestamp: Date.now()
+      const reader = res.body?.getReader()
+      const decoder = new TextDecoder()
+      let accumulated = ""
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          const chunk = decoder.decode(value, { stream: true })
+          const lines = chunk.split("\n")
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue
+            try {
+              const data = JSON.parse(line.slice(6))
+              if (data.type === "token") {
+                accumulated += data.content
+                setChatMessages(prev =>
+                  prev.map(m =>
+                    m.timestamp === placeholderId ? { ...m, content: accumulated } : m
+                  )
+                )
+              } else if (data.type === "error") {
+                accumulated += `\n\nError: ${data.content}`
+              }
+            } catch { /* skip malformed lines */ }
+          }
+        }
       }
 
-      setChatMessages(prev => [...prev, assistantMessage])
+      // Final update — ensure the message is complete
+      if (!accumulated) {
+        setChatMessages(prev =>
+          prev.map(m =>
+            m.timestamp === placeholderId ? { ...m, content: "No response received" } : m
+          )
+        )
+      }
     } catch (e: any) {
       const errorMessage: ChatMessage = {
         role: "assistant",
@@ -584,6 +707,8 @@ function SidePanel() {
         primaryNotebookId={primaryNotebookId}
         onSelectNotebook={setSelectedNotebook}
         onCreateNotebook={handleCreateNotebook}
+        onMessage={showMessage}
+        onRefresh={handleFetchNotebooks}
         loading={loading}
       />
 
@@ -603,16 +728,39 @@ function SidePanel() {
         <div className="flex-1 overflow-auto p-3">
           {/* Summary Result */}
           {currentAction === "summary" && summaryResult && viewMode === "actions" && (
-            <SummaryView
-              summaryResult={summaryResult}
-              onStartChat={startChatWithContext}
-              onResearch={handleResearchThis}
-            />
+            <>
+              <SummaryView
+                summaryResult={summaryResult}
+                onTransform={() => setViewMode("transform")}
+              />
+              {/* Contextual: Suggested links after summarize */}
+              {outboundLinks.length > 0 && selectedNotebook && (
+                <SuggestedLinks
+                  links={outboundLinks}
+                  pageTitle={pageInfo?.title || ""}
+                  notebookIntent={notebooks.find(n => n.id === selectedNotebook)?.name || ""}
+                  notebookId={selectedNotebook}
+                  onMessage={showMessage}
+                />
+              )}
+            </>
           )}
 
           {/* Scrape Result */}
           {currentAction === "scrape" && scrapeResult && (
-            <ScrapeResult result={scrapeResult} />
+            <>
+              <ScrapeResult result={scrapeResult} />
+              {/* Suggested links after capture too */}
+              {outboundLinks.length > 0 && selectedNotebook && (
+                <SuggestedLinks
+                  links={outboundLinks}
+                  pageTitle={pageInfo?.title || ""}
+                  notebookIntent={notebooks.find(n => n.id === selectedNotebook)?.name || ""}
+                  notebookId={selectedNotebook}
+                  onMessage={showMessage}
+                />
+              )}
+            </>
           )}
 
           {/* Links Result */}
@@ -633,10 +781,61 @@ function SidePanel() {
             />
           )}
 
+          {/* YouTube Detection */}
+          {!currentAction && viewMode === "actions" && pageInfo?.domain === "youtube.com" && selectedNotebook && (
+            <div className="bg-red-900/20 border border-red-700/30 rounded p-3 mb-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span>📺</span>
+                  <span className="text-xs text-red-300">YouTube video detected</span>
+                </div>
+                <button
+                  onClick={async () => {
+                    setLoading(true)
+                    try {
+                      const res = await fetch(`${API_BASE}/browser/capture/youtube`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          video_url: pageInfo.url,
+                          notebook_id: selectedNotebook,
+                          include_transcript: true
+                        })
+                      })
+                      const data = await res.json()
+                      if (data.success) {
+                        showMessage(`Captured "${data.title}" with transcript!`, "success")
+                        handleFetchNotebooks()
+                      } else {
+                        showMessage(data.error || "YouTube capture failed", "error")
+                      }
+                    } catch (e: any) {
+                      showMessage(e.message || "YouTube capture failed", "error")
+                    } finally {
+                      setLoading(false)
+                    }
+                  }}
+                  disabled={loading}
+                  className="px-3 py-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-700 rounded text-xs"
+                >
+                  Capture + Transcript
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Collector Pending Badge */}
+          {!currentAction && viewMode === "actions" && collectorPending > 0 && (
+            <div className="bg-amber-900/20 border border-amber-700/30 rounded p-2 mb-2 text-xs text-amber-300 flex items-center gap-2">
+              <span>📋</span>
+              <span>{collectorPending} item{collectorPending !== 1 ? "s" : ""} awaiting review in Collector</span>
+            </div>
+          )}
+
           {/* Empty State */}
           {!currentAction && viewMode === "actions" && (
-            <div className="text-center text-gray-500 py-8">
-              <p className="text-sm">Select an action above to get started</p>
+            <div className="text-center text-gray-500 py-4">
+              <p className="text-sm">Choose an action above to get started</p>
             </div>
           )}
 
@@ -665,6 +864,16 @@ function SidePanel() {
               onSearch={handleResearchThis}
               onQuickAdd={quickAddToNotebook}
               onBack={() => setViewMode("actions")}
+            />
+          )}
+
+          {/* Transform View */}
+          {viewMode === "transform" && summaryResult && (
+            <TransformView
+              content={summaryResult.raw_content || summaryResult.summary}
+              title={pageInfo?.title || ""}
+              onBack={() => setViewMode("actions")}
+              onMessage={showMessage}
             />
           )}
         </div>

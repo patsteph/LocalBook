@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { skillsService } from '../services/skills';
 import { audioService } from '../services/audio';
 import { contentService, ContentGeneration } from '../services/content';
@@ -62,6 +63,8 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
   const [host2Gender, setHost2Gender] = useState('female');
   const [accent, setAccent] = useState('us');
   const [generatedScript, setGeneratedScript] = useState('');
+  const [quizTopic, setQuizTopic] = useState('');
+  const [quizDifficulty, setQuizDifficulty] = useState('medium');
   const [showScript, setShowScript] = useState(false);
 
   // Custom skill creation
@@ -91,11 +94,11 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
     }
   }, [notebookId]);
 
-  // Only poll when there's an active generation processing
+  // Poll when there's an active generation (pending or processing)
   useEffect(() => {
-    const hasProcessing = audioGenerations.some(g => g.status === 'processing');
-    if (hasProcessing) {
-      const interval = setInterval(loadAudioGenerations, 5000);
+    const hasActive = audioGenerations.some(g => g.status === 'processing' || g.status === 'pending');
+    if (hasActive) {
+      const interval = setInterval(loadAudioGenerations, 3000);
       return () => clearInterval(interval);
     }
   }, [audioGenerations]);
@@ -156,7 +159,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
     setGeneratedScript('');
 
     try {
-      const result = await audioService.generate({
+      await audioService.generate({
         notebook_id: notebookId,
         topic: topic || 'the research content',
         duration_minutes: duration,
@@ -166,8 +169,8 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
         accent: accent,
       });
 
-      setGeneratedScript(result.script);
-      setShowScript(true);
+      // API returns instantly — script + audio generate in background.
+      // The polling interval (useEffect) will pick up status updates.
       await loadAudioGenerations();
 
     } catch (err: any) {
@@ -228,7 +231,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
 
   // Skills that produce audio vs text-only
   const audioSkillIds = ['podcast_script', 'debate'];
-  const textSkillIds = ['summary', 'study_guide', 'faq', 'briefing', 'deep_dive', 'explain'];
+  const textSkillIds = ['summary', 'study_guide', 'faq', 'briefing', 'deep_dive', 'explain', 'feynman_curriculum'];
   
   // Filter skills based on active tab
   const filteredSkills = skills.filter(s => 
@@ -412,9 +415,14 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
             value={duration}
             onChange={(e) => setDuration(parseInt(e.target.value) || 10)}
             min="5"
-            max="30"
+            max={selectedSkill === 'feynman_curriculum' ? 45 : 30}
             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
           />
+          {selectedSkill === 'feynman_curriculum' && (
+            <p className="mt-1 text-xs text-indigo-600 dark:text-indigo-400">
+              4-part progressive teaching: Foundation → Building → First Principles → Mastery (recommended: 30-45 min)
+            </p>
+          )}
         </div>
         )}
 
@@ -504,11 +512,65 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
                 </button>
               </div>
             </div>
-            <div className="prose prose-sm dark:prose-invert max-w-none max-h-96 overflow-y-auto bg-white dark:bg-gray-800 p-4 rounded border border-gray-200 dark:border-gray-600">
-              <pre className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300 font-sans">
-                {generatedContent}
-              </pre>
+            <div className="prose prose-sm dark:prose-invert max-w-none max-h-96 overflow-y-auto bg-white dark:bg-gray-800 p-4 rounded border border-gray-200 dark:border-gray-600 prose-p:my-2 prose-headings:mt-4 prose-headings:mb-1 prose-ul:my-2 prose-li:my-0 prose-hr:my-4">
+              <ReactMarkdown>{generatedContent}</ReactMarkdown>
             </div>
+            {selectedSkill === 'feynman_curriculum' && (
+              <div className="mt-3 p-3 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-700 rounded-lg">
+                <p className="text-sm font-medium text-indigo-900 dark:text-indigo-100 mb-2">Test Your Understanding</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => { setQuizTopic(topic || 'the research content'); setQuizDifficulty('easy'); handleTabChange('quiz'); }}
+                    className="text-xs px-3 py-1.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-md hover:bg-green-200 dark:hover:bg-green-900/50 border border-green-300 dark:border-green-700"
+                  >
+                    Part 1: Foundation Quiz
+                  </button>
+                  <button
+                    onClick={() => { setQuizTopic(topic || 'the research content'); setQuizDifficulty('medium'); handleTabChange('quiz'); }}
+                    className="text-xs px-3 py-1.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 rounded-md hover:bg-yellow-200 dark:hover:bg-yellow-900/50 border border-yellow-300 dark:border-yellow-700"
+                  >
+                    Part 2: Building Quiz
+                  </button>
+                  <button
+                    onClick={() => { setQuizTopic(topic || 'the research content'); setQuizDifficulty('hard'); handleTabChange('quiz'); }}
+                    className="text-xs px-3 py-1.5 bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 rounded-md hover:bg-orange-200 dark:hover:bg-orange-900/50 border border-orange-300 dark:border-orange-700"
+                  >
+                    Part 3: First Principles Quiz
+                  </button>
+                  <button
+                    onClick={() => { setQuizTopic(topic || 'the research content'); setQuizDifficulty('hard'); handleTabChange('quiz'); }}
+                    className="text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-md hover:bg-red-200 dark:hover:bg-red-900/50 border border-red-300 dark:border-red-700"
+                  >
+                    Part 4: Mastery Quiz
+                  </button>
+                </div>
+              </div>
+            )}
+            {selectedSkill === 'feynman_curriculum' && (
+              <div className="mt-3 p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700 rounded-lg">
+                <p className="text-sm font-medium text-purple-900 dark:text-purple-100 mb-2">Visualize Your Learning</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => { setVisualContentFromChat(`Learning progression for ${topic || 'the research content'}: show the 4-level Feynman journey from Foundation to Mastery with key concepts at each level`); handleTabChange('visual'); }}
+                    className="text-xs px-3 py-1.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-md hover:bg-green-200 dark:hover:bg-green-900/50 border border-green-300 dark:border-green-700"
+                  >
+                    🎓 Learning Path
+                  </button>
+                  <button
+                    onClick={() => { setVisualContentFromChat(`Knowledge map for ${topic || 'the research content'}: show all core concepts, how they connect, why they work, and what's still unknown`); handleTabChange('visual'); }}
+                    className="text-xs px-3 py-1.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-md hover:bg-blue-200 dark:hover:bg-blue-900/50 border border-blue-300 dark:border-blue-700"
+                  >
+                    🧠 Knowledge Map
+                  </button>
+                  <button
+                    onClick={() => { setVisualContentFromChat(`Common misconceptions vs reality for ${topic || 'the research content'}: show what people commonly get wrong and why, with the key insight that resolves confusion`); handleTabChange('visual'); }}
+                    className="text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-md hover:bg-red-200 dark:hover:bg-red-900/50 border border-red-300 dark:border-red-700"
+                  >
+                    ❌➡️✅ Misconceptions
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -634,13 +696,13 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
                       </span>
                       <button
                         onClick={async () => {
-                          if (confirm('Delete this audio generation?')) {
-                            try {
-                              await audioService.delete(gen.audio_id);
-                              loadAudioGenerations();
-                            } catch (err) {
-                              console.error('Failed to delete:', err);
-                            }
+                          try {
+                            setAudioGenerations(prev => prev.filter(g => g.audio_id !== gen.audio_id));
+                            await audioService.delete(gen.audio_id);
+                            await loadAudioGenerations();
+                          } catch (err) {
+                            console.error('Failed to delete:', err);
+                            await loadAudioGenerations();
                           }
                         }}
                         className="text-red-500 hover:text-red-700 p-1"
@@ -666,11 +728,11 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
                     </div>
                   )}
 
-                  {gen.status === 'processing' && (
+                  {(gen.status === 'pending' || gen.status === 'processing') && (
                     <div className="mt-3 flex items-center gap-2">
                       <LoadingSpinner size="sm" />
                       <span className="text-sm text-gray-600 dark:text-gray-400">
-                        Generating audio...
+                        {gen.error_message || (gen.status === 'pending' ? 'Starting...' : 'Generating audio...')}
                       </span>
                     </div>
                   )}
@@ -706,7 +768,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
 
         {/* Quiz Panel */}
         {activeTab === 'quiz' && (
-          <QuizPanel notebookId={notebookId} />
+          <QuizPanel notebookId={notebookId} initialTopic={quizTopic} initialDifficulty={quizDifficulty} />
         )}
 
         {/* Visual Panel */}

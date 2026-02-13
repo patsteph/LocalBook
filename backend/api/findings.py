@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
 from services.findings_store import get_findings_store
+from services.event_logger import event_logger, EventType
 
 router = APIRouter(prefix="/findings", tags=["findings"])
 
@@ -63,6 +64,11 @@ async def create_finding(request: CreateFindingRequest):
         tags=request.tags,
         starred=request.starred,
     )
+    
+    try:
+        event_logger.log(EventType.FINDING_CREATED, request.notebook_id, {"type": request.type, "title": request.title})
+    except Exception:
+        pass
     
     return FindingResponse(**finding.to_dict())
 

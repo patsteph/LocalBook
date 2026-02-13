@@ -4,21 +4,16 @@ The main orchestrator that routes requests to specialized agents.
 Uses LangGraph to manage state and flow between agents.
 """
 
-from typing import Literal, Optional
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from typing import Optional
+from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode
 
 from agents.state import LocalBookState
 from agents.tools import (
-    rag_search_tool,
-    web_search_tool,
     generate_document_tool,
     generate_quiz_tool,
     generate_visual_tool,
     capture_page_tool,
-    summarize_page_tool,
-    extract_page_metadata_tool,
 )
 
 import httpx
@@ -33,19 +28,35 @@ Classify the user's request into ONE of these intents:
 - **studio**: Creating documents, quizzes, visuals, audio content, summaries
 - **browser**: Capturing web pages, importing content, page summarization
 - **memory**: Recalling past conversations, user preferences, stored memories
+- **curator**: Cross-notebook queries, comparing notebooks, synthesis across research, finding patterns
 - **chat**: General conversation, greetings, clarifications, off-topic
 
 Also identify which tools might be needed.
 
 Respond with JSON only:
 {
-    "intent": "research|studio|browser|memory|chat",
+    "intent": "research|studio|browser|memory|curator|chat",
     "confidence": 0.0-1.0,
     "reasoning": "brief explanation",
-    "suggested_tools": ["tool1", "tool2"]
+    "suggested_tools": ["tool1", "tool2"],
+    "cross_notebook": true|false
 }
 
 User query: {query}"""
+
+
+CROSS_NOTEBOOK_KEYWORDS = [
+    "across notebooks", "all notebooks", "compare notebooks", "both notebooks",
+    "multiple notebooks", "all my research", "everything i have", "cross-reference",
+    "patterns across", "themes across", "what do i know about", "synthesis",
+    "devil's advocate", "challenge my", "counterarguments", "prove me wrong"
+]
+
+
+def is_cross_notebook_query(query: str) -> bool:
+    """Detect if a query spans multiple notebooks."""
+    query_lower = query.lower()
+    return any(kw in query_lower for kw in CROSS_NOTEBOOK_KEYWORDS)
 
 
 async def classify_intent(query: str) -> dict:
@@ -149,8 +160,6 @@ Always cite which source your information comes from. If sources don't contain r
 
 async def studio_node(state: LocalBookState) -> LocalBookState:
     """Handle content generation requests."""
-    from services.rag_engine import rag_engine
-    
     query = state.get("user_query", "").lower()
     notebook_id = state.get("notebook_id")
     
@@ -270,15 +279,71 @@ Be friendly, concise, and helpful."""
     }
 
 
+async def curator_node(state: LocalBookState) -> LocalBookState:
+    """Handle cross-notebook queries via the Curator agent."""
+    from agents.curator import curator
+    
+    query = state.get("user_query", "")
+    notebook_id = state.get("notebook_id")
+    
+    # Check if this is a devil's advocate request
+    query_lower = query.lower()
+    is_devils_advocate = any(kw in query_lower for kw in [
+        "devil's advocate", "challenge", "counterargument", "prove me wrong"
+    ])
+    
+    if is_devils_advocate and notebook_id:
+        # Find counterarguments for current notebook
+        result = await curator.find_counterarguments(notebook_id=notebook_id)
+        response = "**Devil's Advocate Analysis**\n\n"
+        response += f"**Inferred thesis**: {result.inferred_thesis}\n\n"
+        
+        if result.counterpoints:
+            response += "**Counterpoints to consider:**\n"
+            for i, cp in enumerate(result.counterpoints, 1):
+                response += f"\n{i}. {cp.get('content', '')[:300]}...\n"
+        else:
+            response += "I couldn't find strong counterarguments in your sources."
+        
+        return {
+            **state,
+            "final_response": response,
+            "current_agent": "curator"
+        }
+    
+    # Cross-notebook synthesis
+    result = await curator.synthesize_across_notebooks(query=query)
+    
+    response = result.get("synthesis", "Unable to synthesize.")
+    
+    # Check for relevant proactive insight
+    insight = await curator.surface_insight_if_relevant(query)
+    if insight:
+        response = f"{response}\n\n{insight}"
+    
+    return {
+        **state,
+        "final_response": response,
+        "current_agent": "curator",
+        "cross_notebook_sources": result.get("sources", [])
+    }
+
+
 def route_by_intent(state: LocalBookState) -> str:
     """Route to the appropriate agent based on classified intent."""
     intent = state.get("intent", "chat")
+    user_query = state.get("user_query", "")
+    
+    # Force curator for cross-notebook queries even if not classified
+    if is_cross_notebook_query(user_query):
+        return "curator"
     
     routing = {
         "research": "research",
         "studio": "studio", 
         "browser": "browser",
         "memory": "chat",  # Memory handled by chat for now
+        "curator": "curator",
         "chat": "chat"
     }
     
@@ -297,6 +362,7 @@ def create_supervisor_graph() -> StateGraph:
     workflow.add_node("studio", studio_node)
     workflow.add_node("browser", browser_node)
     workflow.add_node("chat", chat_node)
+    workflow.add_node("curator", curator_node)
     
     # Set entry point
     workflow.set_entry_point("supervisor")
@@ -309,7 +375,8 @@ def create_supervisor_graph() -> StateGraph:
             "research": "research",
             "studio": "studio",
             "browser": "browser",
-            "chat": "chat"
+            "chat": "chat",
+            "curator": "curator"
         }
     )
     
@@ -318,6 +385,7 @@ def create_supervisor_graph() -> StateGraph:
     workflow.add_edge("studio", END)
     workflow.add_edge("browser", END)
     workflow.add_edge("chat", END)
+    workflow.add_edge("curator", END)
     
     return workflow.compile()
 

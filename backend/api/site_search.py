@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 
 from services.site_search import (
     site_search_service, 
-    SearchResult, 
     TimeRange
 )
 

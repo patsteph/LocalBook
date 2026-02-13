@@ -9,7 +9,7 @@ Based on: "CaRR: Citation-aware Rubric Rewards" (THUDM research)
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict
 from enum import Enum
 
 
@@ -125,7 +125,7 @@ class CitationVerifier:
             return claim
         
         # Check if claim content appears in cited sources
-        claim_lower = claim.text.lower()
+        claim.text.lower()
         
         # Extract key terms from claim (numbers, names, specific phrases)
         key_terms = self._extract_key_terms(claim.text)

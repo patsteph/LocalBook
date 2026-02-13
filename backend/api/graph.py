@@ -5,14 +5,13 @@ Topics are discovered automatically from document chunks with two-stage naming:
 1. Instant c-TF-IDF names at ingestion
 2. Background LLM enhancement for more readable names
 """
-import asyncio
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
 from models.knowledge_graph import (
     GraphData, GraphNode, GraphEdge, ConceptCluster,
-    ConceptExtractionRequest, ConceptExtractionResult
+    ConceptExtractionRequest
 )
 # NOTE: knowledge_graph_service is legacy (1395 lines) - replaced by BERTopic
 # Keeping services/knowledge_graph.py for now as migration_manager references it
@@ -131,6 +130,7 @@ async def _build_graph_from_topics(notebook_id: Optional[str] = None) -> GraphDa
         clusters.append(cluster)
     
     # Add edges between topics that share keywords
+    existing_edges = set()  # Track edge pairs to avoid duplicates
     for i, topic1 in enumerate(topics):
         kw1 = set(kw for kw, _ in topic1.keywords[:10])
         for j, topic2 in enumerate(topics[i+1:], i+1):
@@ -146,6 +146,55 @@ async def _build_graph_from_topics(notebook_id: Optional[str] = None) -> GraphDa
                     dashed=True
                 )
                 edges.append(edge)
+                existing_edges.add((topic1.id, topic2.id))
+    
+    # Add tag-based edges: topics whose sources share auto-tags get linked
+    # This enriches the graph with semantic connections beyond keyword overlap
+    if notebook_id:
+        try:
+            from storage.source_store import source_store
+            # Build a map: source_id -> set of tags
+            source_tags_map: Dict[str, set] = {}
+            all_sources = await source_store.list(notebook_id)
+            for src in all_sources:
+                sid = src.get("id", "")
+                tags = src.get("tags") or src.get("metadata", {}).get("tags", [])
+                if sid and tags:
+                    source_tags_map[sid] = set(tags)
+            
+            if source_tags_map:
+                # Build topic -> aggregated tags from its sources
+                topic_tags: Dict[str, set] = {}
+                for topic in topics:
+                    t_tags = set()
+                    for sid in topic.source_ids:
+                        if sid in source_tags_map:
+                            t_tags.update(source_tags_map[sid])
+                    if t_tags:
+                        topic_tags[topic.id] = t_tags
+                
+                # Create edges for topics sharing tags (but not already connected)
+                topic_list = list(topic_tags.keys())
+                for i, tid1 in enumerate(topic_list):
+                    for tid2 in topic_list[i+1:]:
+                        if (tid1, tid2) in existing_edges or (tid2, tid1) in existing_edges:
+                            continue
+                        shared_tags = topic_tags[tid1] & topic_tags[tid2]
+                        if shared_tags:
+                            edge = GraphEdge(
+                                id=f"tagedge_{tid1}_{tid2}",
+                                source=tid1,
+                                target=tid2,
+                                label=f"shared: {', '.join(list(shared_tags)[:3])}",
+                                strength=min(len(shared_tags) / 5, 1.0),
+                                dashed=True
+                            )
+                            edges.append(edge)
+                            existing_edges.add((tid1, tid2))
+            tag_edge_count = sum(1 for e in edges if e.id.startswith("tagedge_"))
+            print(f"[Graph] Tag-based edges: {len(source_tags_map)} tagged sources → {len(topic_tags)} topics with tags → {tag_edge_count} new edges")
+        except Exception as e:
+            print(f"[Graph] Tag-based edge generation failed (non-fatal): {e}")
     
     return GraphData(nodes=nodes, edges=edges, clusters=clusters)
 
@@ -402,7 +451,7 @@ async def get_notebook_themes(notebook_id: str, limit: int = 10):
 async def get_graph_stats(notebook_id: Optional[str] = None):
     """Get knowledge graph statistics, optionally filtered by notebook"""
     # v0.6.5: Use BERTopic stats
-    stats = await topic_modeling_service.get_stats(notebook_id)
+    await topic_modeling_service.get_stats(notebook_id)
     graph_data = await _build_graph_from_topics(notebook_id)
     return GraphStatsResponse(
         concepts=len([n for n in graph_data.nodes if n.type == "topic"]),

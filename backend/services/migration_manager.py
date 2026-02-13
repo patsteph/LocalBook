@@ -10,12 +10,11 @@ Version History:
 - v0.6.0: snowflake-arctic-embed2 (1024 dims), + Agentic RAG, Parent Docs, Entity Graph
 - v0.6.5: snowflake-arctic-embed2 (1024 dims), + BERTopic topic modeling (replaces custom concepts)
 """
-import asyncio
 import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, AsyncGenerator, Tuple
+from typing import Dict, Optional, AsyncGenerator, Tuple
 
 from config import settings
 from version import DATA_SCHEMA_VERSION
@@ -231,11 +230,10 @@ class MigrationManager:
         yield {"status": "🔄 Enhancing your documents with v0.60 features...", "progress": 10}
         
         try:
-            import lancedb
+            pass
             
             # Step 1: Ensure knowledge graph has new tables
             yield {"status": "📊 Updating schema...", "progress": 20}
-            from services.knowledge_graph import knowledge_graph_service
             # The __init__ will create new tables if they don't exist
             
             # Step 2: Add parent_text to existing chunks (if not present)

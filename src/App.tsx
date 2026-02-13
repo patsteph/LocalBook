@@ -17,12 +17,15 @@ import { Constellation3D } from './components/Constellation3D';
 import { ThemesPanel } from './components/ThemesPanel';
 import { ExplorationPanel } from './components/ExplorationPanel';
 import { FindingsPanel } from './components/FindingsPanel';
+import { CollectorPanel } from './components/CollectorPanel';
+import { CuratorPanel } from './components/CuratorPanel';
 import { ToastContainer, ToastMessage } from './components/shared/Toast';
 import { API_BASE_URL } from './services/api';
 import { prewarmMermaid } from './components/shared/MermaidRenderer';
 
 function App() {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
+  const [selectedNotebookName, setSelectedNotebookName] = useState<string>('Notebook');
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
   const [backendStatusMessage, setBackendStatusMessage] = useState<string>('Initializing backend services...');
@@ -31,6 +34,7 @@ function App() {
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
   const [refreshSources, setRefreshSources] = useState(0);
   const [refreshNotebooks, setRefreshNotebooks] = useState(0);
+  const [collectorRefreshKey, setCollectorRefreshKey] = useState(0);
   const [darkMode, setDarkMode] = useState(false);
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
   const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(false);
@@ -44,13 +48,15 @@ function App() {
     // Load saved LLM provider preference
     return localStorage.getItem('llmProvider') || 'ollama';
   });
-  const [activeTab, setActiveTab] = useState<'chat' | 'constellation' | 'timeline' | 'findings'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'constellation' | 'timeline' | 'findings' | 'curator'>('chat');
   const [insightTab, setInsightTab] = useState<'themes' | 'journey'>('themes');
   const [chatPrefillQuery, setChatPrefillQuery] = useState<string>('');
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [visualContent, setVisualContent] = useState<string>('');
   const [studioTab, setStudioTab] = useState<'documents' | 'audio' | 'quiz' | 'visual' | 'writing'>('documents');
+  const [morningBrief, setMorningBrief] = useState<any>(null);
+  const [curatorBriefData, setCuratorBriefData] = useState<any>(null);
 
   // Toast management
   const addToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
@@ -61,6 +67,20 @@ function App() {
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  // Fetch notebook name when selection changes
+  useEffect(() => {
+    if (!selectedNotebookId) {
+      setSelectedNotebookName('Notebook');
+      return;
+    }
+    fetch(`${API_BASE_URL}/notebooks/${selectedNotebookId}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.title) setSelectedNotebookName(data.title);
+      })
+      .catch(() => {});
+  }, [selectedNotebookId]);
 
   // WebSocket for background task notifications (source processing failures)
   useEffect(() => {
@@ -111,6 +131,47 @@ function App() {
   useEffect(() => {
     localStorage.setItem('llmProvider', selectedLLMProvider);
   }, [selectedLLMProvider]);
+
+  // Secondary morning brief trigger — fires when app regains focus in the AM
+  // Catches the case where app was left running overnight
+  useEffect(() => {
+    if (!backendReady) return;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      // Only trigger in the AM (before noon local time)
+      const hour = new Date().getHours();
+      if (hour >= 12) return;
+      // Don't re-show if already visible
+      if (morningBrief) return;
+
+      fetch(`${API_BASE_URL}/curator/morning-brief/should-show`)
+        .then(r => r.ok ? r.json() : null)
+        .then(check => {
+          if (check?.should_show) {
+            const hoursAway = check.hours_away || 12;
+            return fetch(`${API_BASE_URL}/curator/morning-brief?hours_away=${hoursAway}`)
+              .then(r => r.ok ? r.json() : null);
+          }
+          return null;
+        })
+        .then(brief => {
+          if (brief && (brief.notebooks?.length > 0 || brief.cross_notebook_insight || brief.narrative)) {
+            setMorningBrief(brief);
+            fetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
+            fetch(`${API_BASE_URL}/curator/morning-brief/save`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(brief)
+            }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [backendReady, morningBrief]);
 
   // Listen for "Create Visual from this" events from ChatInterface
   useEffect(() => {
@@ -178,6 +239,30 @@ function App() {
           setBackendReady(true);
           // Prewarm mermaid renderer in background
           prewarmMermaid();
+          // Fetch morning brief — check should-show first, then fetch if needed
+          fetch(`${API_BASE_URL}/curator/morning-brief/should-show`)
+            .then(r => r.ok ? r.json() : null)
+            .then(check => {
+              if (check?.should_show) {
+                const hoursAway = check.hours_away || 12;
+                return fetch(`${API_BASE_URL}/curator/morning-brief?hours_away=${hoursAway}`)
+                  .then(r => r.ok ? r.json() : null);
+              }
+              return null;
+            })
+            .then(brief => {
+              if (brief && (brief.notebooks?.length > 0 || brief.cross_notebook_insight || brief.narrative)) {
+                setMorningBrief(brief);
+                // Mark as shown and persist for recall
+                fetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
+                fetch(`${API_BASE_URL}/curator/morning-brief/save`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(brief)
+                }).catch(() => {});
+              }
+            })
+            .catch(() => {});
         } else {
           // Keep checking every second
           setTimeout(checkBackend, 1000);
@@ -331,6 +416,7 @@ function App() {
                 onNotebookSelect={setSelectedNotebookId}
                 selectedNotebookId={selectedNotebookId}
                 refreshTrigger={refreshNotebooks}
+                onCollectorConfigured={() => setCollectorRefreshKey(k => k + 1)}
               />
               <SourceUpload
                 notebookId={selectedNotebookId || ''}
@@ -387,6 +473,61 @@ function App() {
 
         {/* Center - Tabbed Interface (Chat / Timeline) */}
         <div className="flex-1 bg-white dark:bg-gray-800 overflow-hidden flex flex-col">
+          {/* Collector Panel - Collapsible above tabs */}
+          <CollectorPanel notebookId={selectedNotebookId} notebookName={selectedNotebookName} refreshKey={collectorRefreshKey} onSourcesRefresh={() => { setRefreshSources(prev => prev + 1); setRefreshNotebooks(prev => prev + 1); }} />
+
+          {/* Morning Brief — click navigates to Curator tab */}
+          {morningBrief && (
+            <button
+              onClick={() => { setCuratorBriefData(morningBrief); setActiveTab('curator'); setMorningBrief(null); }}
+              className="w-[calc(100%-2rem)] mx-4 mt-2 mb-1 p-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border border-blue-200 dark:border-blue-800/40 rounded-lg text-left hover:border-blue-400 dark:hover:border-blue-600 transition-colors group"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">&#x2600;&#xFE0F;</span>
+                  <h4 className="text-xs font-semibold text-blue-800 dark:text-blue-200 uppercase tracking-wide">
+                    Morning Brief
+                  </h4>
+                  <span className="text-[10px] text-blue-500 dark:text-blue-400">
+                    Away {morningBrief.away_duration}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span
+                    role="button"
+                    onClick={(e) => { e.stopPropagation(); setCuratorBriefData(morningBrief); setActiveTab('curator'); setMorningBrief(null); }}
+                    className="text-[10px] text-blue-400 dark:text-blue-500 hover:text-blue-600 dark:hover:text-blue-300 transition-colors underline cursor-pointer"
+                  >
+                    Read full brief &rarr;
+                  </span>
+                  <span
+                    role="button"
+                    onClick={(e) => { e.stopPropagation(); setMorningBrief(null); }}
+                    className="text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 text-xs p-1 -mr-1 rounded hover:bg-blue-500/10"
+                  >
+                    &#x2715;
+                  </span>
+                </div>
+              </div>
+              {/* Narrative preview or notebook summary */}
+              <div className="mt-1.5 text-xs text-blue-700 dark:text-blue-300">
+                {morningBrief.narrative ? (
+                  <p className="line-clamp-2">{morningBrief.narrative.replace(/\*\*/g, '').replace(/^#+\s/gm, '').slice(0, 200)}</p>
+                ) : (
+                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                    {morningBrief.notebooks?.map((nb: any, i: number) => (
+                      <span key={i}>
+                        <span className="font-medium">{nb.name}</span>
+                        {nb.items_added > 0 && `: ${nb.items_added} new`}
+                        {nb.pending_approval > 0 && ` \u00B7 ${nb.pending_approval} pending`}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </button>
+          )}
+          
           {/* Tab Bar */}
           <div className="flex border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
             <button
@@ -440,6 +581,19 @@ function App() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
               </svg>
               Findings
+            </button>
+            <button
+              onClick={() => setActiveTab('curator')}
+              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors border-b-2 ${
+                activeTab === 'curator'
+                  ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 bg-white dark:bg-gray-800'
+                  : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+              </svg>
+              Curator
             </button>
           </div>
 
@@ -526,6 +680,9 @@ function App() {
             <div className={`absolute inset-0 ${activeTab === 'findings' ? 'block' : 'hidden'}`}>
               <FindingsPanel notebookId={selectedNotebookId} />
             </div>
+            <div className={`absolute inset-0 ${activeTab === 'curator' ? 'block' : 'hidden'}`}>
+              <CuratorPanel notebookId={selectedNotebookId} morningBrief={curatorBriefData} />
+            </div>
           </div>
         </div>
 
@@ -557,23 +714,25 @@ function App() {
               />
             </div>
           ) : (
-            <div className="flex flex-col items-center gap-4 mt-4">
-              <button
-                className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                title="Audio Generation"
-              >
-                <svg className="w-6 h-6 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                </svg>
-              </button>
-              <button
-                className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                title="Skills"
-              >
-                <svg className="w-6 h-6 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-              </button>
+            <div className="flex flex-col items-center gap-3 mt-4">
+              {[
+                { tab: 'documents' as const, icon: '📄', title: 'Documents' },
+                { tab: 'audio' as const, icon: '🎙️', title: 'Audio' },
+                { tab: 'quiz' as const, icon: '🎯', title: 'Quiz' },
+                { tab: 'visual' as const, icon: '🧠', title: 'Visual' },
+                { tab: 'writing' as const, icon: '✍️', title: 'Writing' },
+              ].map(({ tab, icon, title }) => (
+                <button
+                  key={tab}
+                  onClick={() => { setStudioTab(tab); setRightSidebarCollapsed(false); }}
+                  className={`p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-lg ${
+                    studioTab === tab ? 'bg-blue-50 dark:bg-blue-900/30' : ''
+                  }`}
+                  title={title}
+                >
+                  {icon}
+                </button>
+              ))}
             </div>
           )}
         </div>

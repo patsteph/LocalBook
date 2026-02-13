@@ -82,7 +82,17 @@ async def save_notes(note: NoteSave):
 
 @router.post("/highlights", response_model=Highlight)
 async def create_highlight(highlight: HighlightCreate):
-    """Create a new highlight"""
+    """
+    Create a new highlight.
+    
+    Highlights are HIGH-VALUE user signals - explicit markers of importance.
+    We record learning signals so the Curator can use highlighted topics
+    to improve future scoring and discovery.
+    """
+    from storage.memory_store import memory_store
+    from agents.curator import curator
+    
+    # Store the highlight
     result = await highlights_store.create(
         notebook_id=highlight.notebook_id,
         source_id=highlight.source_id,
@@ -92,6 +102,38 @@ async def create_highlight(highlight: HighlightCreate):
         color=highlight.color or "yellow",
         annotation=highlight.annotation or ""
     )
+    
+    # Record learning signal - highlights are explicit user interest (2.0x weight)
+    # This feeds into Curator scoring and Collector discovery
+    if highlight.highlighted_text and len(highlight.highlighted_text) > 10:
+        try:
+            # Score through Curator to extract topics/entities
+            scoring = await curator.score_user_item(
+                notebook_id=highlight.notebook_id,
+                title=f"Highlight: {highlight.highlighted_text[:50]}",
+                content=highlight.highlighted_text,
+                url=None,
+                source_type="highlight",
+                user_weight_bonus=2.0  # Double weight for explicit highlight
+            )
+            
+            # Record additional highlight-specific signal
+            memory_store.record_user_signal(
+                notebook_id=highlight.notebook_id,
+                signal_type="content_highlighted",
+                signal_value=1.0,
+                metadata={
+                    "source_id": highlight.source_id,
+                    "text_preview": highlight.highlighted_text[:200],
+                    "annotation": highlight.annotation,
+                    "topics": scoring.get("topics", []),
+                    "entities": scoring.get("entities", []),
+                    "color": highlight.color  # Color can indicate importance level
+                }
+            )
+        except Exception as e:
+            print(f"[HIGHLIGHTS] Learning signal recording failed: {e}")
+    
     return result
 
 

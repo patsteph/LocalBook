@@ -12,14 +12,13 @@ Endpoints:
 - WS /jobs/ws - WebSocket for real-time progress updates
 """
 
-import asyncio
 import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query
 from pydantic import BaseModel
 
-from services.job_queue import job_queue, JobType, JobStatus, Job, JobProgress
+from services.job_queue import job_queue, JobType, JobStatus, Job
 
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])

@@ -1,7 +1,7 @@
 {
   "name": "localbook-extension",
   "displayName": "LocalBook Companion",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Your research companion - capture, summarize, and explore web content with LocalBook",
   "scripts": {
     "dev": "plasmo dev --no-open",
@@ -10,9 +10,11 @@
     "package": "plasmo package"
   },
   "dependencies": {
+    "@types/turndown": "^5.0.6",
     "plasmo": "0.88.0",
     "react": "18.2.0",
-    "react-dom": "18.2.0"
+    "react-dom": "18.2.0",
+    "turndown": "^7.2.2"
   },
   "devDependencies": {
     "@types/chrome": "0.0.268",
@@ -35,7 +37,9 @@
       "scripting",
       "contextMenus",
       "notifications",
-      "sidePanel"
+      "sidePanel",
+      "bookmarks",
+      "history"
     ],
     "side_panel": {
       "default_path": "sidepanel.html"

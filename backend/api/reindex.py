@@ -1,8 +1,7 @@
 """Re-indexing API endpoints for fixing sources that weren't properly ingested"""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional, Dict, List
-import json
+from typing import Dict, List
 import lancedb
 from config import settings
 from storage.source_store import source_store
@@ -267,12 +266,6 @@ async def check_data_integrity():
     valid_sources = sources_data.get("sources", {})
     valid_source_ids = set(valid_sources.keys())
     
-    # Map source_id to notebook_id
-    source_to_notebook = {
-        sid: s.get("notebook_id") 
-        for sid, s in valid_sources.items()
-    }
-    
     # Connect to LanceDB
     db = lancedb.connect(str(settings.db_path))
     
@@ -392,7 +385,6 @@ async def repair_zero_vectors():
     Zero vectors make chunks invisible to search. This scans all notebooks
     and attempts to regenerate embeddings for any chunks with zero vectors.
     """
-    import numpy as np
     from services.rag_engine import rag_engine
     
     db = lancedb.connect(str(settings.db_path))

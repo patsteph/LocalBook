@@ -33,21 +33,28 @@ if ! command -v brew &> /dev/null; then
     fi
 fi
 
-# Require Python 3.11 (openai-whisper doesn't support 3.12+)
+# Require Python 3.12+ (liquid-audio TTS requires 3.12+)
 PYTHON_CMD=""
-if command -v python3.11 &> /dev/null; then
-    PYTHON_CMD="python3.11"
-elif [ -f "/opt/homebrew/bin/python3.11" ]; then
-    PYTHON_CMD="/opt/homebrew/bin/python3.11"
-elif [ -f "/usr/local/bin/python3.11" ]; then
-    PYTHON_CMD="/usr/local/bin/python3.11"
+if command -v python3.12 &> /dev/null; then
+    PYTHON_CMD="python3.12"
+elif [ -f "/opt/homebrew/bin/python3.12" ]; then
+    PYTHON_CMD="/opt/homebrew/bin/python3.12"
+elif [ -f "/usr/local/bin/python3.12" ]; then
+    PYTHON_CMD="/usr/local/bin/python3.12"
+elif command -v python3.13 &> /dev/null; then
+    PYTHON_CMD="python3.13"
+elif command -v python3 &> /dev/null; then
+    PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.minor}')")
+    if [ "$PY_VER" -ge 12 ]; then
+        PYTHON_CMD="python3"
+    fi
 fi
 
 if [ -z "$PYTHON_CMD" ]; then
-    echo -e "${YELLOW}Python 3.11 not found. Installing...${NC}"
-    brew install python@3.11
-    PYTHON_CMD="/opt/homebrew/bin/python3.11"
-    [ -f "$PYTHON_CMD" ] || PYTHON_CMD="/usr/local/bin/python3.11"
+    echo -e "${YELLOW}Python 3.12+ not found. Installing...${NC}"
+    brew install python@3.12
+    PYTHON_CMD="/opt/homebrew/bin/python3.12"
+    [ -f "$PYTHON_CMD" ] || PYTHON_CMD="/usr/local/bin/python3.12"
 fi
 
 echo -e "${GREEN}Using Python: $PYTHON_CMD${NC}"
@@ -115,9 +122,9 @@ if [ ! -f "$BACKEND_EXE" ] || [ "$DO_REBUILD" = true ] || [ "$DO_CLEAN" = true ]
         rm -rf .venv
     fi
     
-    # Ensure venv exists with Python 3.11
+    # Ensure venv exists with Python 3.12+
     if [ ! -d ".venv" ]; then
-        echo -e "${YELLOW}Creating virtual environment with Python 3.11...${NC}"
+        echo -e "${YELLOW}Creating virtual environment with $PYTHON_CMD...${NC}"
         $PYTHON_CMD -m venv .venv
     fi
     

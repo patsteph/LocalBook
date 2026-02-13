@@ -15,7 +15,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from config import settings
-from services.structured_llm import structured_llm, QuizQuestion
+from services.structured_llm import structured_llm
 from storage.source_store import source_store
 
 
@@ -253,7 +253,7 @@ async def submit_answer(submission: AnswerSubmission):
     """Submit an answer and get feedback."""
     
     # Find the card
-    notebook_id = submission.quiz_id.split("_")[0] if "_" in submission.question_id else None
+    submission.quiz_id.split("_")[0] if "_" in submission.question_id else None
     
     # For now, do simple string matching
     # In production, could use LLM to evaluate answer similarity

@@ -1,7 +1,7 @@
 """Memory system models for MemGPT-style persistent memory architecture"""
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
 import uuid
 
@@ -11,6 +11,9 @@ class MemorySourceType(str, Enum):
     USER_STATED = "user_stated"      # User explicitly said this
     AI_INFERRED = "ai_inferred"      # AI deduced from conversation
     DOCUMENT_EXTRACTED = "document_extracted"  # Extracted from uploaded documents
+    SYSTEM = "system"                # System-generated (discovery, consolidation, etc.)
+    WEB = "web"                      # Collected from web sources (RSS, scraping, etc.)
+    MANUAL = "manual"                # Manually added content
 
 
 class MemoryCategory(str, Enum):

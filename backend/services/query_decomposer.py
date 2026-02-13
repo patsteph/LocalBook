@@ -3,10 +3,9 @@
 Breaks complex questions into simpler sub-questions for better retrieval.
 Uses LLM to intelligently decompose multi-part or comparison questions.
 """
-import asyncio
 import json
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 import httpx
 
 from config import settings

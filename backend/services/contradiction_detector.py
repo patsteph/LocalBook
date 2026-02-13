@@ -4,9 +4,7 @@ Detects conflicting information across sources in a notebook.
 Uses embedding similarity to find related claims, then LLM to verify contradictions.
 """
 
-import asyncio
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
+from typing import List, Dict, Optional
 from datetime import datetime
 import hashlib
 import json

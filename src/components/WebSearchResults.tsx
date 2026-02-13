@@ -437,7 +437,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                                 {existingSources.map((source) => (
                                     <div
                                         key={source.id}
-                                        className="p-2 bg-gray-50 dark:bg-gray-750 border border-gray-200 dark:border-gray-700 rounded text-xs"
+                                        className="p-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded text-xs"
                                     >
                                         <p className="font-medium text-gray-800 dark:text-gray-200 truncate">
                                             {source.title}

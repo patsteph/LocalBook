@@ -8,7 +8,7 @@ v1.1.0: Added 10-minute threshold for auto-recovery
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import Dict, Optional
 import lancedb
 
 from config import settings
@@ -112,7 +112,7 @@ class StuckSourceRecovery:
         """
         try:
             content = source.get("content", "")
-            existing_chunks = source.get("chunks", 0)
+            source.get("chunks", 0)
             notebook_id = source.get("notebook_id")
             title = source.get("title") or source.get("filename", "Unknown")
             

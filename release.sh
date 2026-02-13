@@ -244,7 +244,24 @@ fi
 echo -e "  Running bundle API tests..."
 echo -e "${YELLOW}  Starting LocalBook.app for testing...${NC}"
 open ./LocalBook.app
-sleep 8  # Wait for app to start
+
+# Poll for backend readiness (up to 60 seconds)
+BACKEND_READY=false
+for i in $(seq 1 30); do
+    if curl -s http://localhost:8000/health/quick > /dev/null 2>&1; then
+        BACKEND_READY=true
+        echo -e "${GREEN}  ✓ Backend ready (${i}s)${NC}"
+        break
+    fi
+    echo -e "  Waiting for backend... (${i}/30)"
+    sleep 2
+done
+
+if [ "$BACKEND_READY" = false ]; then
+    echo -e "${RED}  ✗ Backend failed to start within 60s${NC}"
+    osascript -e 'quit app "LocalBook"' 2>/dev/null || true
+    exit 1
+fi
 
 cd backend
 source .venv/bin/activate

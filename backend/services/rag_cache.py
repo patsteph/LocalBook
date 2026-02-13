@@ -307,7 +307,7 @@ class AnswerCache:
                 if not self._is_expired(entry):
                     entry["hits"] = entry.get("hits", 0) + 1
                     self._hits += 1
-                    print(f"[AnswerCache] Exact hit for query")
+                    print("[AnswerCache] Exact hit for query")
                     return {
                         "answer": entry["answer"],
                         "citations": entry["citations"],

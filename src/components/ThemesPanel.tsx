@@ -27,6 +27,8 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
 
     useEffect(() => {
         if (notebookId) {
+            setStatus('idle');  // Reset status when switching notebooks
+            setClusterProgress(null);
             loadThemes();
         }
     }, [notebookId]);
@@ -61,12 +63,20 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                         }
                         
                         // Build is in progress - show "Waiting..." status
+                        // Only react if this is for OUR notebook (or no notebook specified)
                         if (message.type === 'build_progress') {
-                            setStatus('waiting');
-                            setClusterProgress(null);
-                            // Start auto-refresh during build progress (fallback)
-                            if (!refreshIntervalRef.current) {
-                                refreshIntervalRef.current = setInterval(loadThemes, 15000);
+                            const msgNotebook = message.data?.notebook_id;
+                            if (!msgNotebook || msgNotebook === notebookId) {
+                                setStatus('waiting');
+                                setClusterProgress(null);
+                                // Start auto-refresh during build progress (fallback)
+                                if (!refreshIntervalRef.current) {
+                                    refreshIntervalRef.current = setInterval(loadThemes, 15000);
+                                }
+                                // Fallback: clear waiting after 60s if build_complete never arrives
+                                setTimeout(() => {
+                                    setStatus(prev => prev === 'waiting' ? 'idle' : prev);
+                                }, 60000);
                             }
                         }
                         
@@ -137,6 +147,10 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                 setThemes(data.themes);
                 setTopConcepts(data.top_concepts);
                 setTotalConcepts(data.total_concepts);
+                // Themes loaded successfully — clear any waiting status
+                if (status === 'waiting') {
+                    setStatus('idle');
+                }
             } else if (!hadThemes) {
                 // Only clear if we didn't have themes before
                 setThemes([]);

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { BookOpen, Trash2 } from 'lucide-react';
 import { sourceService } from '../services/sources';
 import { Source } from '../types';
 import { LoadingSpinner } from './shared/LoadingSpinner';
@@ -18,6 +19,9 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewingSource, setViewingSource] = useState<Source | null>(null);
+  const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
+  const [autoTagging, setAutoTagging] = useState(false);
+  const [showTagCloud, setShowTagCloud] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
   // WebSocket connection for real-time source updates
@@ -97,6 +101,52 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
     }
   };
 
+  // Compute tag counts from sources
+  const tagCounts = React.useMemo(() => {
+    const counts: Record<string, number> = {};
+    sources.forEach(s => {
+      (s.tags || []).forEach((tag: string) => {
+        counts[tag] = (counts[tag] || 0) + 1;
+      });
+    });
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1]);
+  }, [sources]);
+
+  const untaggedCount = sources.filter(s => !s.tags || s.tags.length === 0).length;
+
+  // Filter sources by active tag
+  const filteredSources = activeTagFilter
+    ? sources.filter(s => s.tags?.includes(activeTagFilter))
+    : sources;
+
+  const handleAutoTagAll = async () => {
+    if (!notebookId || autoTagging) return;
+    setAutoTagging(true);
+    try {
+      const result = await sourceService.autoTagAll(notebookId);
+      console.log('[AutoTag]', result.message);
+      // Poll for updates as tags are generated in background
+      const poll = setInterval(async () => {
+        await loadSources();
+      }, 3000);
+      // Stop polling after reasonable time (2s per source)
+      setTimeout(() => {
+        clearInterval(poll);
+        setAutoTagging(false);
+        loadSources();
+      }, Math.max(15000, result.queued * 2000));
+    } catch (err) {
+      console.error('Auto-tag failed:', err);
+      setError('Failed to start auto-tagging');
+      setAutoTagging(false);
+    }
+  };
+
+  // Clear filter when notebook changes
+  useEffect(() => {
+    setActiveTagFilter(null);
+  }, [notebookId]);
 
   if (!notebookId) {
     return (
@@ -120,83 +170,150 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
 
   return (
     <div className="p-4">
-      <h3 className="font-semibold mb-2 text-gray-900 dark:text-white">Sources ({sources.length})</h3>
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="font-semibold text-gray-900 dark:text-white">
+          Sources ({activeTagFilter ? `${filteredSources.length}/${sources.length}` : sources.length})
+        </h3>
+        {untaggedCount > 0 && (
+          <button
+            onClick={handleAutoTagAll}
+            disabled={autoTagging}
+            className="px-2 py-1 text-xs font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30 rounded transition-colors disabled:opacity-50"
+            title={`Auto-tag ${untaggedCount} untagged sources`}
+          >
+            {autoTagging ? 'Tagging...' : `Tag ${untaggedCount} untagged`}
+          </button>
+        )}
+      </div>
 
       {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
 
+      {/* Tag filter toggle + collapsible cloud */}
+      {tagCounts.length > 0 && (
+        <div className="mb-2" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center gap-2 mb-1">
+            <button
+              onClick={() => setShowTagCloud(!showTagCloud)}
+              className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-600 dark:text-gray-300"
+            >
+              <span>Tag ☁️</span>
+              <span className="opacity-50">{tagCounts.length}</span>
+              <span className="text-[10px] opacity-40">{showTagCloud ? '▲' : '▼'}</span>
+            </button>
+            {activeTagFilter && (
+              <button
+                onClick={() => setActiveTagFilter(null)}
+                className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-blue-600 text-white dark:bg-blue-500 hover:bg-blue-700 dark:hover:bg-blue-600 transition-colors"
+              >
+                {activeTagFilter} <span className="ml-1">✕</span>
+              </button>
+            )}
+          </div>
+          {showTagCloud && (
+            <div className="flex flex-wrap gap-1 max-h-40 overflow-y-auto">
+              {tagCounts.map(([tag, count]) => (
+                <button
+                  key={tag}
+                  onClick={() => {
+                    setActiveTagFilter(activeTagFilter === tag ? null : tag);
+                    setShowTagCloud(false);
+                  }}
+                  className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                    activeTagFilter === tag
+                      ? 'bg-blue-600 text-white dark:bg-blue-500'
+                      : 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50'
+                  }`}
+                >
+                  {tag} <span className="opacity-60">{count}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {sources.length === 0 ? (
         <p className="text-sm text-gray-500 dark:text-gray-400">No sources uploaded yet</p>
+      ) : filteredSources.length === 0 ? (
+        <p className="text-sm text-gray-500 dark:text-gray-400">No sources match tag "{activeTagFilter}"</p>
       ) : (
         <div className="space-y-2">
-          {sources.map((source) => {
+          {filteredSources.map((source) => {
             const isSelected = selectedSourceId === source.id;
+            const sourceTags = source.tags || [];
+            // Show active filter tag first if present, then up to 1 more
+            const displayTags: string[] = [];
+            if (activeTagFilter && sourceTags.includes(activeTagFilter)) {
+              displayTags.push(activeTagFilter);
+            }
+            for (const t of sourceTags) {
+              if (displayTags.length >= 2) break;
+              if (!displayTags.includes(t)) displayTags.push(t);
+            }
+            const remainingCount = sourceTags.length - displayTags.length;
+
             return (
               <div
                 key={source.id}
                 onClick={() => onSourceSelect?.(source.id)}
-                className={`p-3 rounded border transition cursor-pointer ${
+                className={`px-4 py-2 rounded border transition cursor-pointer overflow-hidden ${
                   isSelected
                     ? 'border-purple-500 dark:border-purple-400 bg-purple-50 dark:bg-purple-900/20 ring-1 ring-purple-500 dark:ring-purple-400'
                     : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-700'
                 }`}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      {isSelected && (
-                        <span className="text-purple-600 dark:text-purple-400 text-xs">●</span>
-                      )}
-                      <p className={`font-medium text-sm truncate ${isSelected ? 'text-purple-700 dark:text-purple-300' : 'text-gray-900 dark:text-white'}`} title={source.filename}>
-                        {source.filename}
-                      </p>
-                    </div>
-                    <div className="flex gap-3 mt-1 text-xs text-gray-600 dark:text-gray-400">
-                      <span>{source.format?.toUpperCase() || 'FILE'}</span>
-                      {(source.chunks ?? 0) > 0 && <span>{source.chunks} chunks</span>}
-                      <span>{((source.char_count || source.characters || 0) / 1000).toFixed(1)}k chars</span>
-                    </div>
-                    {/* Tags display */}
-                    {source.tags && source.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {source.tags.slice(0, 3).map((tag: string) => (
-                          <span
-                            key={tag}
-                            className="px-1.5 py-0.5 text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 rounded"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                        {source.tags.length > 3 && (
-                          <span className="px-1.5 py-0.5 text-xs text-gray-500 dark:text-gray-400">
-                            +{source.tags.length - 3}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    <span className={`inline-block mt-1 px-2 py-0.5 text-xs rounded ${
-                      source.status === 'completed'
-                        ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
-                        : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400'
-                    }`}>
-                      {source.status}
-                    </span>
-                  </div>
-                  <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between gap-1">
+                  <p className={`font-medium text-sm truncate flex-1 min-w-0 ${isSelected ? 'text-purple-700 dark:text-purple-300' : 'text-gray-900 dark:text-white'}`} title={source.filename}>
+                    {isSelected && <span className="text-purple-600 dark:text-purple-400 text-xs mr-1">●</span>}
+                    {source.filename}
+                  </p>
+                  <div className="flex gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
                     <button
                       onClick={() => setViewingSource(source)}
-                      className="px-3 py-1 text-xs font-medium text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded transition-colors"
+                      className="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded transition-colors"
                       title="View source & notes"
                     >
-                      View
+                      <BookOpen size={14} />
                     </button>
                     <button
                       onClick={() => handleDeleteSource(source.id)}
-                      className="px-3 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors"
+                      className="p-1 text-gray-300 hover:text-red-600 dark:text-gray-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors"
                       title="Delete source"
                     >
-                      Delete
+                      <Trash2 size={14} />
                     </button>
                   </div>
+                </div>
+                <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-gray-500 dark:text-gray-400 overflow-hidden min-w-0">
+                  <span className="shrink-0">{source.format?.toUpperCase() || 'FILE'}</span>
+                  <span className="shrink-0 opacity-30">·</span>
+                  <span className="shrink-0">{((source.char_count || source.characters || 0) / 1000).toFixed(1)}k</span>
+                  {source.status !== 'completed' && (
+                    <>
+                      <span className="shrink-0 opacity-30">·</span>
+                      <span className="shrink-0 text-yellow-600 dark:text-yellow-400">{source.status}</span>
+                    </>
+                  )}
+                  {displayTags.length > 0 && (
+                    <>
+                      <span className="shrink-0 opacity-30">·</span>
+                      {displayTags.map((tag: string) => (
+                        <span
+                          key={tag}
+                          className={`px-1 rounded truncate max-w-[7rem] ${
+                            tag === activeTagFilter
+                              ? 'bg-blue-600 text-white dark:bg-blue-500 text-[10px]'
+                              : 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300 text-[10px]'
+                          }`}
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                      {remainingCount > 0 && (
+                        <span className="text-[10px] text-gray-400 shrink-0">+{remainingCount}</span>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
             );

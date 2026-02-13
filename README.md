@@ -2,9 +2,9 @@
 
 **Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
-[![Version](https://img.shields.io/badge/version-1.10-blue.svg)](https://github.com/patsteph/LocalBook/releases)
+[![Version](https://img.shields.io/badge/version-1.20-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
-[![Python](https://img.shields.io/badge/python-3.11-green.svg)](https://www.python.org)
+[![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -19,68 +19,77 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 - 🧠 **Memory System** — AI remembers your preferences across sessions
 - 🎙️ **Podcast Generator** — Turn documents into audio discussions
 - 🧩 **Browser Extension** — Research companion for web browsing
+- 👥 **People Profiler** — Coaching and team management with social integration
+- 🤖 **Curator Agent** — Morning briefs and cross-notebook intelligence
 
 ---
 
-## 🎉 What's New in v1.10
+## 🎉 What's New in v1.20
 
-### Visual Studio Improvements
+### People Profiler & Curator
 | Feature | Description |
 |---------|-------------|
-| 🎨 **AI Visual Generator** | Options to choose from with intelligent type selection |
-| 🔍 **Lightbox View** | Click diagrams to view full-size with export options |
-| 🌈 **Vibrant Theming** | Beautiful color palette for light and dark modes |
-| 📊 **Horizontal Steps** | New template for simple step sequences |
+| 👥 **People Profiler** | Coaching/team management notebooks with social platform integration |
+| � **Coaching Notes & Goals** | Track notes, goals, and development plans per person |
+| 🤖 **Curator Agent** | Cross-notebook intelligence, morning briefs, activity tracking |
+| 🧠 **Config Inference** | Drop files into a new notebook and Curator auto-detects the topic |
 
-### Performance & Reliability
+### Knowledge Constellation v2
 | Feature | Description |
 |---------|-------------|
-| ⚡ **Mermaid Prewarm** | Instant diagram rendering (no cold start) |
-| 💾 **Metrics Persistence** | Query stats survive restarts |
-| 🔧 **Code Auto-fix** | Malformed LLM output automatically corrected |
+| 🌌 **Dynamic Zoom** | Camera distance adapts to node connection density |
+| � **Concentric Rings** | Heavily-connected nodes arranged in layered orbits |
+| 🏷️ **Tag-Based Edges** | Auto-tags create concept connections across sources |
+| � **Smart Labels** | Only top-N labels shown to prevent overlap on dense graphs |
+
+### RAG & Performance
+| Feature | Description |
+|---------|-------------|
+| ⚡ **Parallel Sub-Queries** | Decomposed questions searched concurrently |
+| 📐 **Response Format Detection** | Auto-detect list, code, table, or steps formatting |
+| 📅 **Content Date Extraction** | Auto-detect when documents are FROM, not just uploaded |
+| 📈 **Timeline Enhancements** | Content dates and key dates auto-populate timelines |
+
+### Memory System v2
+| Feature | Description |
+|---------|-------------|
+| 🧠 **Deep Consolidation** | Multi-layer memory compaction and pattern analysis |
+| 📊 **User Signals** | Track engagement patterns to improve recommendations |
+| 🔍 **Search Miss Tracking** | Learn from queries that didn't find good results |
+| 📰 **Daily Summaries** | Auto-generated activity digests |
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history.
 
 ---
 
-## v1.0.0 Highlights
+## Previous Releases
 
-The foundation release includes:
+<details>
+<summary><strong>v1.10</strong> — Visual Studio, Mermaid prewarm, metrics persistence</summary>
 
-### Browser Extension: LocalBook Companion
-| Feature | Description |
-|---------|-------------|
-| 🧩 **Side Panel** | AI assistant available while browsing any website |
-| 📝 **Page Summarization** | One-click summaries with key points and concepts |
-| 💬 **Chat with Pages** | Ask questions about any webpage you're viewing |
-| 📥 **Quick Capture** | Save pages directly to your notebooks |
+- AI Visual Generator with intelligent type selection and lightbox view
+- Horizontal Steps template, vibrant theming for light/dark modes
+- Mermaid prewarm for instant rendering, metrics persistence across restarts
+- Auto-fix for malformed LLM diagram output
+</details>
 
-### Studio: Content Generation
-| Feature | Description |
-|---------|-------------|
-| 📝 **Quiz Generator** | Create quizzes from notebook content with topic focus |
-| 🎨 **Visual Summaries** | Generate Mermaid diagrams, timelines, concept maps |
-| ✍️ **Writing Assistant** | AI-powered document drafting |
+<details>
+<summary><strong>v1.0.0</strong> — Browser Extension, Studio, RAG v2, Voice, Credentials</summary>
 
-### Enhanced RAG Engine
-| Feature | Description |
-|---------|-------------|
-| 🎯 **Query Orchestrator** | Complex queries auto-decompose into sub-questions |
-| 📖 **Parent Document Retrieval** | Retrieves surrounding context for better answers |
-| 🔀 **Hybrid Search** | Vector + BM25 keyword search combined |
-| 📊 **FlashRank Reranking** | Cross-encoder reranking for better retrieval |
-| 🔄 **Corrective RAG** | Query reformulation when initial retrieval fails |
+- LocalBook Companion browser extension (summarize, capture, chat with pages)
+- Studio content generation (quizzes, visual summaries, writing assistant)
+- Query Orchestrator, Parent Document Retrieval, Hybrid Search, FlashRank reranking, Corrective RAG
+- Credential Locker, Site Search, Voice Input, Entity Graph, Contradiction Detection
+- Snowflake Arctic Embed2 (1024-dim), Phi-4 Mini, OLMo-3 7B
+</details>
 
-### New Capabilities
-| Feature | Description |
-|---------|-------------|
-| 🔐 **Credential Locker** | Encrypted storage for site credentials |
-| 🌐 **Site Search** | Deep search across entire websites |
-| 🎤 **Voice Input** | Dictate questions using speech-to-text |
-| 🕸️ **Entity Graph** | Track people, metrics, relationships across documents |
-| 🔍 **Contradiction Detection** | Find conflicting information in your sources |
+<details>
+<summary><strong>v0.2 – v0.6</strong> — Foundation releases</summary>
 
-See [CHANGELOG.md](CHANGELOG.md) for full release notes.
+- 3D Constellation, Key Themes, persistent memory, auto-upgrade
+- BERTopic topic modeling, migration manager, embedding upgrades
+- Adaptive RAG, hybrid search, FlashRank reranking
+</details>
 
 ---
 
@@ -89,7 +98,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full release notes.
 | Requirement | Details |
 |-------------|---------|
 | **macOS** | 12.0+ (Apple Silicon recommended, Intel supported) |
-| **Python** | 3.11 required (openai-whisper dependency) |
+| **Python** | 3.12+ required (liquid-audio TTS dependency) |
 | **RAM** | 16GB+ recommended (8GB minimum) |
 | **Storage** | ~15GB for models and app |
 | **Ollama** | Local LLM runtime ([ollama.ai](https://ollama.ai)) |
@@ -99,7 +108,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full release notes.
 The build script installs these automatically, or install manually:
 
 ```bash
-brew install ollama ffmpeg tesseract python@3.11 node
+brew install ollama ffmpeg tesseract python@3.12 node
 ```
 
 ---
@@ -108,17 +117,17 @@ brew install ollama ffmpeg tesseract python@3.11 node
 
 ### Option 1: Download Release (Recommended)
 
-1. Download `LocalBook-v1.10.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-v1.20.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip and drag `LocalBook.app` to `/Applications`
 3. Launch LocalBook — it will download required AI models on first run
 
 ### Option 2: Build from Source
 
-**⚠️ Requires Python 3.11** (not 3.12+). The `openai-whisper` dependency does not support newer Python versions.
+**⚠️ Requires Python 3.12+** for liquid-audio TTS support.
 
 ```bash
-# Ensure Python 3.11 is installed
-brew install python@3.11
+# Ensure Python 3.12+ is installed
+brew install python@3.12
 
 # Clone and build
 git clone https://github.com/patsteph/LocalBook.git
@@ -178,11 +187,15 @@ LocalBook supports a wide range of document formats:
 | **Excel** | `.xlsx`, `.xls` | Spreadsheet data |
 | **EPUB** | `.epub` | E-books |
 | **Jupyter** | `.ipynb` | Notebooks with code/markdown |
-| **Images** | `.png`, `.jpg`, `.jpeg` | OCR text extraction (requires Tesseract) |
+| **Images** | `.png`, `.jpg`, `.jpeg`, `.webp` | OCR text extraction (requires Tesseract) |
+| **Apple Photos** | `.heic`, `.heif` | OCR text extraction |
+| **SVG** | `.svg` | Text extraction from vector graphics |
+| **Video** | `.mp4`, `.mov`, `.m4v`, `.mkv` | Audio transcript extraction |
+| **Audio** | `.mp3`, `.wav`, `.m4a`, `.ogg` | Speech-to-text transcription |
 | **Web** | URLs | Full page capture and parsing |
 | **YouTube** | URLs | Automatic transcript extraction |
 | **RTF** | `.rtf` | Rich Text Format |
-| **OpenDocument** | `.odt` | LibreOffice/OpenOffice |
+| **OpenDocument** | `.odt`, `.ods` | Text and spreadsheet formats |
 
 ---
 
@@ -272,17 +285,17 @@ LocalBook/
 ### Building a Release
 
 ```bash
-./release.sh 1.0.0  # Creates versioned archives for distribution
+./release.sh 1.20  # Creates versioned archives for distribution
 ```
 
 ---
 
 ## Upgrading
 
-### From v0.6.x
-Automatic upgrade. Replace the app and restart.
+### From v1.x
+Automatic upgrade. Replace the app and restart. All data is preserved.
 
-### From v0.5.x or earlier
+### From v0.6.x or earlier
 Documents will be re-indexed with new embeddings on first launch. This is automatic but may take a few minutes.
 
 ### From v0.1.x

@@ -6,6 +6,8 @@ import { BookmarkButton } from './shared/BookmarkButton';
 
 interface QuizPanelProps {
   notebookId: string;
+  initialTopic?: string;
+  initialDifficulty?: string;
 }
 
 interface QuizResult {
@@ -15,15 +17,15 @@ interface QuizResult {
   correctAnswer: string;
 }
 
-export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId }) => {
+export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, initialDifficulty }) => {
   const [mode, setMode] = useState<'generate' | 'review' | 'results'>('generate');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
   // Generate mode
   const [numQuestions, setNumQuestions] = useState(5);
-  const [difficulty, setDifficulty] = useState('medium');
-  const [topic, setTopic] = useState('');
+  const [difficulty, setDifficulty] = useState(initialDifficulty || 'medium');
+  const [topic, setTopic] = useState(initialTopic || '');
   const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
@@ -38,6 +40,12 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId }) => {
   
   // Stats
   const [stats, setStats] = useState<QuizStats | null>(null);
+
+  // Update from props when navigating from Feynman curriculum
+  useEffect(() => {
+    if (initialTopic) setTopic(initialTopic);
+    if (initialDifficulty) setDifficulty(initialDifficulty);
+  }, [initialTopic, initialDifficulty]);
 
   useEffect(() => {
     loadStats();

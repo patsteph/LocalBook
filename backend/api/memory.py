@@ -5,10 +5,11 @@ from pydantic import BaseModel
 
 from models.memory import (
     CoreMemory, CoreMemoryEntry, MemoryCategory, MemoryImportance,
-    ArchivalMemoryEntry, MemorySearchResult, MemoryConflict
+    ArchivalMemoryEntry
 )
-from storage.memory_store import memory_store
+from storage.memory_store import memory_store, AgentNamespace
 from services.memory_agent import memory_agent
+from services.memory_manager import memory_manager
 
 
 router = APIRouter(prefix="/memory", tags=["memory"])
@@ -33,6 +34,16 @@ class MemorySearchRequest(BaseModel):
     query: str
     max_results: int = 10
     notebook_id: Optional[str] = None
+    namespace: Optional[str] = "system"
+    cross_notebook: bool = False
+
+
+class UserSignalRequest(BaseModel):
+    notebook_id: str
+    signal_type: str  # view, click, ignore, search_miss, manual_add
+    item_id: Optional[str] = None
+    query: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class ConflictResolutionRequest(BaseModel):
@@ -121,11 +132,19 @@ async def get_core_memory_by_category(category: str):
 
 @router.post("/archival/search", response_model=List[Dict[str, Any]])
 async def search_archival_memory(request: MemorySearchRequest):
-    """Search archival memory by semantic similarity"""
+    """Search archival memory by semantic similarity with namespace isolation"""
+    # Parse namespace
+    try:
+        namespace = AgentNamespace(request.namespace) if request.namespace else AgentNamespace.SYSTEM
+    except ValueError:
+        namespace = AgentNamespace.SYSTEM
+    
     results = memory_store.search_archival_memory(
         query=request.query,
         limit=request.max_results,
-        notebook_id=request.notebook_id
+        namespace=namespace,
+        notebook_id=request.notebook_id,
+        cross_notebook=request.cross_notebook
     )
     
     return [
@@ -148,17 +167,25 @@ async def create_archival_memory(
     content: str,
     content_type: str = "user_note",
     topics: List[str] = [],
-    notebook_id: Optional[str] = None
+    notebook_id: Optional[str] = None,
+    namespace: str = "system"
 ):
-    """Manually add an archival memory"""
+    """Manually add an archival memory with namespace"""
     entry = ArchivalMemoryEntry(
         content=content,
         content_type=content_type,
         topics=topics,
         source_notebook_id=notebook_id,
     )
-    memory_store.add_archival_memory(entry)
-    return {"success": True, "memory_id": entry.id}
+    
+    # Parse namespace
+    try:
+        ns = AgentNamespace(namespace)
+    except ValueError:
+        ns = AgentNamespace.SYSTEM
+    
+    memory_store.add_archival_memory(entry, namespace=ns, notebook_id=notebook_id)
+    return {"success": True, "memory_id": entry.id, "namespace": ns.value}
 
 
 # =============================================================================
@@ -252,6 +279,126 @@ async def compress_memories():
     return {
         "success": True,
         "compressed": stats
+    }
+
+
+@router.post("/consolidate")
+async def trigger_consolidation():
+    """Manually trigger full memory consolidation cycle (Tier 3)"""
+    result = await memory_manager.run_consolidation()
+    return result
+
+
+@router.post("/consolidate/compact")
+async def trigger_compact():
+    """Manually trigger Tier 1: Hourly event compaction"""
+    result = await memory_manager.run_compact()
+    return result
+
+
+@router.post("/consolidate/patterns")
+async def trigger_pattern_analysis():
+    """Manually trigger Tier 2: 3-hour pattern analysis"""
+    result = await memory_manager.run_pattern_analysis()
+    return result
+
+
+@router.post("/consolidate/deep")
+async def trigger_deep_consolidation():
+    """Manually trigger Tier 3: 6-hour deep consolidation"""
+    result = await memory_manager.run_consolidation()
+    return result
+
+
+@router.post("/consolidate/daily")
+async def trigger_daily_summary():
+    """Manually trigger Tier 4: Daily summary"""
+    result = await memory_manager.run_daily_summary()
+    return result
+
+
+@router.get("/consolidation/status")
+async def get_consolidation_status():
+    """Get current consolidation scheduler status"""
+    return memory_manager.get_consolidation_status()
+
+
+# =============================================================================
+# User Signals (Negative Signal Learning)
+# =============================================================================
+
+@router.post("/signals")
+async def record_user_signal(request: UserSignalRequest):
+    """Record a user signal for learning (view, click, ignore, search_miss, manual_add)"""
+    valid_types = ["view", "click", "ignore", "search_miss", "manual_add"]
+    if request.signal_type not in valid_types:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid signal_type. Must be one of: {valid_types}"
+        )
+    
+    memory_store.record_user_signal(
+        notebook_id=request.notebook_id,
+        signal_type=request.signal_type,
+        item_id=request.item_id,
+        query=request.query,
+        metadata=request.metadata
+    )
+    return {"success": True}
+
+
+@router.get("/signals/{notebook_id}")
+async def get_user_signals(
+    notebook_id: str,
+    signal_type: Optional[str] = None,
+    since_days: int = 30,
+    limit: int = 100
+):
+    """Get user signals for a notebook"""
+    signals = memory_store.get_user_signals(
+        notebook_id=notebook_id,
+        signal_type=signal_type,
+        since_days=since_days,
+        limit=limit
+    )
+    return {"signals": signals}
+
+
+@router.get("/signals/{notebook_id}/ignored")
+async def get_ignored_items(notebook_id: str, days_threshold: int = 7):
+    """Get items that were shown but never clicked (negative signal)"""
+    items = memory_store.get_ignored_items(notebook_id, days_threshold)
+    return {"ignored_items": items, "count": len(items)}
+
+
+@router.get("/signals/{notebook_id}/search-misses")
+async def get_search_misses(notebook_id: str, since_days: int = 30):
+    """Get queries where user searched but Collector had no results"""
+    queries = memory_store.get_search_misses(notebook_id, since_days)
+    return {"search_misses": queries, "count": len(queries)}
+
+
+# =============================================================================
+# Namespace-aware Stats
+# =============================================================================
+
+@router.get("/namespaces/{notebook_id}")
+async def get_notebook_memory_stats(notebook_id: str):
+    """Get memory statistics for a specific notebook's collector namespace"""
+    collector_count = memory_store.get_archival_memory_count(
+        namespace=AgentNamespace.COLLECTOR,
+        notebook_id=notebook_id
+    )
+    
+    signals = memory_store.get_user_signals(notebook_id, limit=10)
+    ignored = memory_store.get_ignored_items(notebook_id)
+    
+    return {
+        "notebook_id": notebook_id,
+        "collector_memories": collector_count,
+        "recent_signals": len(signals),
+        "ignored_items": len(ignored),
+        "system_memories": memory_store.get_archival_memory_count(AgentNamespace.SYSTEM)
     }
 
 

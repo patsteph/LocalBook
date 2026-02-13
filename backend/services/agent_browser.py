@@ -11,10 +11,9 @@ Key Features:
 - Integration with browser extension
 """
 
-import re
 import json
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any
 from enum import Enum
 import httpx
 
@@ -341,7 +340,7 @@ Only return the JSON array, no other text."""
             line = f"[{i}] <{tag}"
             if attr_str:
                 line += f" {attr_str}"
-            line += f">"
+            line += ">"
             if text:
                 line += f" \"{text}\""
             

@@ -1,5 +1,4 @@
 """Sources API endpoints"""
-import asyncio
 from typing import List
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -7,6 +6,7 @@ from storage.source_store import source_store
 from services.document_processor import document_processor
 from services.rag_engine import rag_engine
 from services.topic_modeling import topic_modeling_service
+from services.event_logger import log_document_captured
 
 router = APIRouter()
 
@@ -73,6 +73,12 @@ async def upload_source(
                     file.filename
                 )
                 print(f"[UPLOAD] Queued background image processing for {file.filename}")
+        
+        # Log document capture event
+        try:
+            log_document_captured(notebook_id, file.filename, file.filename, "upload")
+        except Exception:
+            pass
         
         return result
     except Exception as e:
@@ -188,6 +194,55 @@ async def remove_source_tag(notebook_id: str, source_id: str, tag: str):
         raise HTTPException(status_code=500, detail="Failed to remove tag")
     
     return {"tags": await source_store.get_tags(notebook_id, source_id)}
+
+
+@router.post("/{notebook_id}/auto-tag-all")
+async def auto_tag_all_sources(notebook_id: str, background_tasks: BackgroundTasks):
+    """Auto-tag all untagged sources in a notebook using LLM.
+    
+    Finds sources with no tags, runs auto_tagger on each (with semaphore to
+    limit concurrent LLM calls), and stores the results.
+    Runs in background so the UI doesn't block.
+    """
+    sources = await source_store.list(notebook_id)
+    untagged = [s for s in sources if not s.get("tags")]
+    
+    if not untagged:
+        return {"message": "All sources already tagged", "queued": 0, "total": len(sources)}
+    
+    async def _backfill():
+        from services.auto_tagger import auto_tagger
+        import asyncio
+        
+        tagged_count = 0
+        for source in untagged:
+            try:
+                content = ""
+                content_data = await source_store.get_content(notebook_id, source["id"])
+                if content_data:
+                    content = content_data.get("content", "")
+                
+                tags = await auto_tagger.tag_source_in_notebook(
+                    notebook_id=notebook_id,
+                    source_id=source["id"],
+                    title=source.get("filename", ""),
+                    content=content,
+                )
+                if tags:
+                    tagged_count += 1
+            except Exception as e:
+                print(f"[AutoTag Backfill] Failed for {source.get('filename', source['id'])}: {e}")
+        
+        print(f"[AutoTag Backfill] Done: tagged {tagged_count}/{len(untagged)} sources in {notebook_id}")
+    
+    background_tasks.add_task(_backfill)
+    
+    return {
+        "message": f"Auto-tagging {len(untagged)} untagged sources in background",
+        "queued": len(untagged),
+        "already_tagged": len(sources) - len(untagged),
+        "total": len(sources)
+    }
 
 
 @router.get("/{notebook_id}/tags/all")

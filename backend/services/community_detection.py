@@ -8,10 +8,9 @@ Based on Microsoft GraphRAG approach using Leiden algorithm.
 """
 import asyncio
 import json
-from collections import defaultdict
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 import httpx
 
 from config import settings

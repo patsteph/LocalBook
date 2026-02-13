@@ -1,6 +1,6 @@
 // Background service worker for LocalBook extension
 
-const API_BASE = "http://localhost:8000"
+import { API_BASE } from "./types"
 
 // Set side panel to open when extension icon is clicked
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error)

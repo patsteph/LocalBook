@@ -55,7 +55,6 @@ export interface InlineVisualData {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
-  quickSummary?: string;  // Quick summary from fast model (shown before detailed answer)
   statusMessage?: string;  // Progressive status update (Phase 1.2)
   citations?: Citation[];
   web_sources?: WebSource[];
@@ -68,6 +67,8 @@ export interface ChatMessage {
   alternativeVisuals?: InlineVisualData[];  // Canvas: alternative visual options
   visualLoading?: boolean;  // Canvas: visual is being generated
   visualLoadingMessage?: string;  // Canvas: custom loading message (e.g., "Analyzing your guidance...")
+  curatorAside?: string;  // Curator overwatch: cross-notebook insight aside
+  curatorName?: string;  // Curator overwatch: name of the curator
 }
 
 export interface ChatQuery {

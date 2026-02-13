@@ -1,8 +1,8 @@
 """Source storage"""
 import json
+import os
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import List, Optional, Dict
 from config import settings
 from utils.json_io import atomic_write_json
@@ -10,6 +10,8 @@ from utils.json_io import atomic_write_json
 class SourceStore:
     def __init__(self):
         self.storage_path = settings.data_dir / "sources.json"
+        self._cache: Optional[dict] = None
+        self._cache_mtime: float = 0.0
         self._ensure_storage()
 
     def _ensure_storage(self):
@@ -18,13 +20,34 @@ class SourceStore:
             self._save_data({"sources": {}})
 
     def _load_data(self) -> dict:
-        """Load sources from storage"""
+        """Load sources from storage with mtime-based caching.
+        
+        Only re-reads and re-parses the file when it has been modified.
+        At scale (24+ notebooks, 1000s of sources) this eliminates
+        redundant file I/O in loops that call list() per notebook.
+        """
+        try:
+            current_mtime = os.path.getmtime(self.storage_path)
+        except OSError:
+            current_mtime = 0.0
+        
+        if self._cache is not None and current_mtime == self._cache_mtime:
+            return self._cache
+        
         with open(self.storage_path, 'r') as f:
-            return json.load(f)
+            self._cache = json.load(f)
+        self._cache_mtime = current_mtime
+        return self._cache
 
     def _save_data(self, data: dict):
-        """Save sources to storage"""
+        """Save sources to storage and update cache"""
         atomic_write_json(self.storage_path, data)
+        # Update cache immediately so subsequent reads don't re-parse
+        self._cache = data
+        try:
+            self._cache_mtime = os.path.getmtime(self.storage_path)
+        except OSError:
+            self._cache_mtime = 0.0
 
     async def list(self, notebook_id: str) -> List[Dict]:
         """List all sources for a notebook"""
@@ -33,6 +56,36 @@ class SourceStore:
             source for source in data["sources"].values()
             if source.get("notebook_id") == notebook_id
         ]
+
+    async def list_all(self) -> Dict[str, List[Dict]]:
+        """List ALL sources grouped by notebook_id (single file read).
+        
+        Use this instead of looping over notebooks calling list() individually.
+        Returns {notebook_id: [source, ...]}
+        """
+        data = self._load_data()
+        grouped: Dict[str, List[Dict]] = {}
+        for source in data["sources"].values():
+            nb_id = source.get("notebook_id")
+            if nb_id:
+                if nb_id not in grouped:
+                    grouped[nb_id] = []
+                grouped[nb_id].append(source)
+        return grouped
+
+    async def count_by_notebook(self) -> Dict[str, int]:
+        """Get source counts per notebook (single file read).
+        
+        Use this instead of looping over notebooks calling len(list(nb)) individually.
+        Returns {notebook_id: count}
+        """
+        data = self._load_data()
+        counts: Dict[str, int] = {}
+        for source in data["sources"].values():
+            nb_id = source.get("notebook_id")
+            if nb_id:
+                counts[nb_id] = counts.get(nb_id, 0) + 1
+        return counts
 
     async def create(self, notebook_id: str, filename: str, metadata: dict) -> Dict:
         """Create a new source.
@@ -87,6 +140,19 @@ class SourceStore:
                 self._save_data(data)
                 return True
         return False
+
+    async def delete_all(self, notebook_id: str) -> int:
+        """Delete all sources for a notebook"""
+        data = self._load_data()
+        to_delete = [
+            sid for sid, s in data["sources"].items() 
+            if s.get("notebook_id") == notebook_id
+        ]
+        for sid in to_delete:
+            del data["sources"][sid]
+        if to_delete:
+            self._save_data(data)
+        return len(to_delete)
 
     async def get_content(self, notebook_id: str, source_id: str) -> Optional[Dict]:
         """Get source content for viewing"""

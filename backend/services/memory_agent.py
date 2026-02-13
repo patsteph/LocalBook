@@ -11,16 +11,15 @@ This is the "brain" of the memory system that:
 import json
 import re
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 import tiktoken
 import httpx
 
 from models.memory import (
     CoreMemory, CoreMemoryEntry, MemoryCategory, MemoryImportance, MemorySourceType,
     RecallMemoryEntry, ConversationSummary,
-    ArchivalMemoryEntry, MemorySearchResult, MemoryConflict,
-    MemoryExtractionRequest, MemoryExtractionResult, MemoryContext,
-    CoreMemoryAppend, CoreMemoryUpdate, ArchivalMemoryInsert
+    ArchivalMemoryEntry, MemoryConflict, MemoryExtractionRequest,
+    MemoryExtractionResult, MemoryContext
 )
 from storage.memory_store import memory_store
 from config import settings

@@ -9,7 +9,7 @@ Handles complex multi-step queries by:
 import asyncio
 import re
 import time
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 
 import httpx
@@ -363,7 +363,7 @@ Provide a comprehensive answer that synthesizes all the findings. Use [1], [2], 
         
         else:  # complex
             # Full orchestration path
-            print(f"[Orchestrator] Decomposing complex query...")
+            print("[Orchestrator] Decomposing complex query...")
             
             # Decompose
             sub_queries = await self.decompose_query(query)

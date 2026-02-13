@@ -18,7 +18,6 @@ Supported Sites (with native APIs):
 Fallback: Brave Search with site:domain.com operator
 """
 
-import asyncio
 import httpx
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any
@@ -26,7 +25,6 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from enum import Enum
 import os
-import json
 import re
 
 from api.settings import get_api_key
@@ -116,7 +114,6 @@ class SiteSearchHandler(ABC):
         max_results: int = 10
     ) -> List[SearchResult]:
         """Execute search and return results."""
-        pass
     
     def _get_date_filter(self, time_range: TimeRange) -> Optional[datetime]:
         """Convert time range to datetime for filtering."""
@@ -367,7 +364,7 @@ class ArXivSearchHandler(SiteSearchHandler):
                 authors = entry.findall("atom:author/atom:name", ns)
                 author_str = ", ".join([a.text for a in authors[:3]]) if authors else None
                 if authors and len(authors) > 3:
-                    author_str += f" et al."
+                    author_str += " et al."
                 
                 # Get PDF link
                 pdf_link = None
@@ -967,7 +964,7 @@ class BraveFallbackHandler(SiteSearchHandler):
         api_key = get_api_key("brave_api_key") or os.getenv(self.api_key_env_var)
         
         if not api_key:
-            print(f"[BRAVE] No API key found in settings or environment, returning empty results")
+            print("[BRAVE] No API key found in settings or environment, returning empty results")
             return []
         
         # Build query with site: operator

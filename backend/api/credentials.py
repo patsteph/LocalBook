@@ -10,7 +10,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from services.credential_locker import credential_locker, SiteCredential
+from services.credential_locker import credential_locker
 
 
 router = APIRouter(prefix="/credentials", tags=["credentials"])

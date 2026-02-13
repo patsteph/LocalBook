@@ -20,9 +20,8 @@ import io
 import sys
 import json
 import asyncio
-from typing import Dict, Any, List, Optional, AsyncGenerator
+from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
-from datetime import datetime
 import httpx
 
 from config import settings
@@ -179,7 +178,7 @@ class RLMExecutor:
                     "content": "Please write ```python code blocks to analyze the sources."
                 })
         
-        log(f"Max iterations reached")
+        log("Max iterations reached")
         
         # Return partial answer if available
         final_answer = namespace.get('answer') or "Analysis incomplete - max iterations reached. Try a more specific query."

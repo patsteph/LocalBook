@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import uuid
 
-from services.rlm_executor import rlm_executor, run_rlm_job
+from services.rlm_executor import rlm_executor
 from services.job_queue import job_queue, JobStatus
 from storage.source_store import source_store
 

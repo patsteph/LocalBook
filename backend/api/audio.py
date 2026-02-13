@@ -4,7 +4,7 @@ import traceback
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 from pathlib import Path
 from services.audio_generator import audio_service
 from config import settings
@@ -64,12 +64,17 @@ async def generate_audio(request: AudioGenerateRequest):
 @router.delete("/remove/{audio_id}")
 async def delete_audio(audio_id: str):
     """Delete an audio generation and its files"""
+    import shutil
     try:
         audio_dir = settings.data_dir / "audio"
         deleted_files = []
-        for file_path in audio_dir.glob(f"{audio_id}*"):
-            file_path.unlink()
-            deleted_files.append(str(file_path.name))
+        if audio_dir.exists():
+            for file_path in audio_dir.glob(f"{audio_id}*"):
+                if file_path.is_dir():
+                    shutil.rmtree(file_path, ignore_errors=True)
+                else:
+                    file_path.unlink(missing_ok=True)
+                deleted_files.append(str(file_path.name))
         
         deleted = await audio_service.delete(audio_id)
         

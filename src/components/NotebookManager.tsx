@@ -1,23 +1,27 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { notebookService, NOTEBOOK_COLORS } from '../services/notebooks';
 import { exportService } from '../services/export';
 import { sourceService } from '../services/sources';
+import { API_BASE_URL } from '../services/api';
 import { Notebook } from '../types';
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
 import { Modal } from './shared/Modal';
+import { CollectorSetupWizard } from './collector';
 
 interface NotebookManagerProps {
   onNotebookSelect: (notebookId: string) => void;
   selectedNotebookId: string | null;
   refreshTrigger?: number;
+  onCollectorConfigured?: () => void;
 }
 
 export const NotebookManager: React.FC<NotebookManagerProps> = ({
   onNotebookSelect,
   selectedNotebookId,
   refreshTrigger,
+  onCollectorConfigured,
 }) => {
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [loading, setLoading] = useState(true);
@@ -34,6 +38,12 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   const [showColorPicker, setShowColorPicker] = useState<string | null>(null);
   const [showOtherNotebooks, setShowOtherNotebooks] = useState(false);
   const [primaryNotebookId, setPrimaryNotebookId] = useState<string | null>(null);
+  const [showCollectorSetup, setShowCollectorSetup] = useState(false);
+  const [newlyCreatedNotebook, setNewlyCreatedNotebook] = useState<Notebook | null>(null);
+  const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [inferredConfig, setInferredConfig] = useState<any>(null);
+  const dropRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     console.log('NotebookManager mounted, loading notebooks...');
@@ -125,12 +135,82 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
       onNotebookSelect(newNotebook.id);
       setShowCreateModal(false);
       setNewNotebookTitle('');
+
+      // If files were dropped, upload them and infer config
+      if (droppedFiles.length > 0) {
+        const filenames: string[] = [];
+        let sampleContent = '';
+        for (const file of droppedFiles) {
+          try {
+            await sourceService.upload(newNotebook.id, file);
+            filenames.push(file.name);
+            if (!sampleContent && file.type.startsWith('text/')) {
+              sampleContent = await file.text().then(t => t.slice(0, 2000));
+            }
+          } catch (err) {
+            console.error(`Failed to upload ${file.name}:`, err);
+          }
+        }
+        setDroppedFiles([]);
+
+        // Ask Curator to infer config from uploaded files
+        if (filenames.length > 0) {
+          try {
+            const res = await fetch(`${API_BASE_URL}/curator/infer-config`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                notebook_id: newNotebook.id,
+                filenames,
+                sample_content: sampleContent,
+              }),
+            });
+            if (res.ok) {
+              const suggested = await res.json();
+              setInferredConfig(suggested);
+            }
+          } catch (err) {
+            console.log('[NotebookManager] Config inference failed (non-fatal):', err);
+          }
+        }
+      }
+
+      // Trigger collector setup wizard
+      setNewlyCreatedNotebook(newNotebook);
+      setShowCollectorSetup(true);
     } catch (err) {
       console.error('Failed to create notebook:', err);
       setError('Failed to create notebook');
     } finally {
       setCreating(false);
     }
+  };
+
+  // File drop handlers for Create Notebook Modal
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      setDroppedFiles(prev => [...prev, ...files]);
+    }
+  };
+
+  const removeDroppedFile = (index: number) => {
+    setDroppedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleDeleteClick = (id: string) => {
@@ -339,6 +419,17 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
+                            setNewlyCreatedNotebook(selectedNotebook);
+                            setShowCollectorSetup(true);
+                          }}
+                          className="text-gray-500 hover:text-green-600 text-xs px-2 py-1 rounded hover:bg-green-100 dark:hover:bg-green-900/30 transition-colors"
+                          title="Configure Collector"
+                        >
+                          ⚙
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
                             handleExportClick(selectedNotebook.id);
                           }}
                           className="text-gray-500 hover:text-blue-600 text-xs px-2 py-1 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
@@ -430,22 +521,33 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    setNewlyCreatedNotebook(notebook);
+                                    setShowCollectorSetup(true);
+                                  }}
+                                  className="text-gray-400 hover:text-green-500 text-xs px-1 transition-colors"
+                                  title="Configure Collector"
+                                >
+                                  ⚙
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
                                     handleExportClick(notebook.id);
                                   }}
-                                  className="text-blue-600 dark:text-blue-400 hover:text-blue-700 text-xs px-1"
+                                  className="text-gray-400 hover:text-blue-500 text-xs px-1 transition-colors"
                                   title="Export"
                                 >
-                                  Export
+                                  ↓
                                 </button>
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleDeleteClick(notebook.id);
                                   }}
-                                  className="text-red-600 dark:text-red-400 hover:text-red-700 text-xs px-1"
+                                  className="text-gray-400 hover:text-red-500 text-xs px-1 transition-colors"
                                   title="Delete"
                                 >
-                                  Delete
+                                  ✕
                                 </button>
                               </div>
                             </div>
@@ -502,11 +604,57 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                 ))}
               </div>
             </div>
+            {/* File drop zone */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Starting Files <span className="text-gray-400 font-normal">(optional)</span>
+              </label>
+              <div
+                ref={dropRef}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
+                  isDragging
+                    ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/20'
+                    : 'border-gray-300 dark:border-gray-600 hover:border-gray-400'
+                }`}
+              >
+                {droppedFiles.length === 0 ? (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    Drop files here to seed your notebook
+                  </p>
+                ) : (
+                  <div className="space-y-1">
+                    {droppedFiles.map((file, i) => (
+                      <div key={i} className="flex items-center justify-between text-sm">
+                        <span className="text-gray-700 dark:text-gray-300 truncate">
+                          📄 {file.name}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeDroppedFile(i)}
+                          className="text-gray-400 hover:text-red-500 ml-2"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {droppedFiles.length > 0 && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  {droppedFiles.length} file{droppedFiles.length !== 1 ? 's' : ''} — will be uploaded and analyzed to suggest Collector config
+                </p>
+              )}
+            </div>
+
             <div className="flex justify-end gap-2">
               <Button
                 type="button"
                 variant="secondary"
-                onClick={() => setShowCreateModal(false)}
+                onClick={() => { setShowCreateModal(false); setDroppedFiles([]); }}
                 disabled={creating}
               >
                 Cancel
@@ -630,6 +778,27 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
           </div>
         </div>
       </Modal>
+
+      {/* Collector Setup Wizard */}
+      {newlyCreatedNotebook && (
+        <CollectorSetupWizard
+          notebookId={newlyCreatedNotebook.id}
+          notebookName={newlyCreatedNotebook.title}
+          isOpen={showCollectorSetup}
+          onClose={() => {
+            setShowCollectorSetup(false);
+            setNewlyCreatedNotebook(null);
+            setInferredConfig(null);
+          }}
+          onComplete={() => {
+            setShowCollectorSetup(false);
+            setNewlyCreatedNotebook(null);
+            setInferredConfig(null);
+            onCollectorConfigured?.();
+          }}
+          initialConfig={inferredConfig || undefined}
+        />
+      )}
     </div>
   );
 };

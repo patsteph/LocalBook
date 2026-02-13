@@ -11,7 +11,6 @@ from pydantic import BaseModel
 from services.contradiction_detector import (
     contradiction_detector,
     ContradictionReport,
-    Contradiction
 )
 
 

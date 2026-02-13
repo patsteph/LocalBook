@@ -8,7 +8,7 @@ Based on Napkin AI's approach: detect content type → match to best template.
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 
 class ContentPattern(Enum):
@@ -334,7 +334,7 @@ class VisualAnalyzer:
         # Keep reference for fallback
         numbered_sections = detected_sections
         
-        extraction_prompt = f"""Extract the main themes from this content. Return ONLY valid JSON.
+        extraction_prompt = f"""Extract the main themes and data from this content. Return ONLY valid JSON.
 
 Content:
 {text[:3000]}
@@ -343,6 +343,8 @@ Return JSON:
 {{
   "title": "3-5 word title",
   "themes": ["point 1", "point 2", "point 3", "...all points found..."],
+  "numbers": ["91.5", "14.2", "...numeric values found..."],
+  "metrics": ["Revenue: $91.5B", "Margin: 14.2%", "...labeled metrics..."],
   "pros": ["positive 1", "positive 2", "..."],
   "cons": ["challenge 1", "challenge 2", "..."],
   "recommendations": ["action 1", "action 2", "..."]
@@ -350,6 +352,8 @@ Return JSON:
 
 RULES:
 - themes: Extract ALL main points from the content - NO LIMIT. If numbered sections exist (1. xxx, 2. yyy), use ALL of them.
+- numbers: Extract key numeric values (revenue figures, percentages, counts, etc.)
+- metrics: Extract labeled metrics as "Label: Value" pairs (e.g. "Revenue: $91.5B", "Growth: 8.2%")
 - Each theme MUST be 4-6 words MAX (short noun phrases only!)
 - NO citation markers like [1] or [2]
 - NO incomplete sentences - every theme must be a complete phrase
@@ -397,7 +401,7 @@ RULES:
                 # CRITICAL: If we detected numbered sections in the content, ALWAYS use them
                 # They are more reliable than LLM extraction
                 if numbered_sections and len(numbered_sections) >= 2:
-                    print(f"[Visual Extraction] ✅ USING DETECTED SECTIONS (more reliable than LLM)")
+                    print("[Visual Extraction] ✅ USING DETECTED SECTIONS (more reliable than LLM)")
                     structure["themes"] = numbered_sections[:8]
                     print(f"[Visual Extraction] Themes from sections: {structure['themes']}")
                     # Generate a better title from the content if LLM didn't provide one
@@ -419,7 +423,7 @@ RULES:
                         print(f"[Visual Extraction] 🔄 Using sentence fallback: {fallback_themes}")
                 
                 # DEBUG: Show full extracted structure
-                print(f"[Visual Extraction] PARSED STRUCTURE:")
+                print("[Visual Extraction] PARSED STRUCTURE:")
                 print(f"  themes ({len(structure.get('themes', []))}): {structure.get('themes', [])}")
                 print(f"  tensions ({len(structure.get('tensions', []))}): {structure.get('tensions', [])}")
                 print(f"  gaps ({len(structure.get('gaps', []))}): {structure.get('gaps', [])}")
@@ -585,6 +589,88 @@ RULES:
         
         return recommendations
     
+    def _detect_metrics_fast(self, text: str) -> dict:
+        """Fast regex detection of numeric/metric content (~1ms).
+        
+        Returns dict with:
+          - is_metric_heavy: bool — True if content is primarily numbers-driven
+          - metrics: list of {"label": str, "value": float, "display": str}
+          - metric_type: "bar_chart" | "pie_chart" | "key_stats" | None
+        """
+        metrics = []
+        
+        # Pattern 1: "Label: $X.XB" or "Label: X%" or "Label: X,XXX" 
+        # Handles: "Revenue: $91.5 billion", "Net Income: $9.1B", "Operating Margin: 14.2%"
+        labeled_patterns = [
+            # "Label: $91.5 billion/million/B/M"
+            r'([A-Z][A-Za-z\s/&]+?)[\s:]+\$?([\d,.]+)\s*(billion|million|trillion|B|M|T|bn|mn)\b',
+            # "Label: XX.X%" or "Label: XX%"
+            r'([A-Z][A-Za-z\s/&]+?)[\s:]+\$?([\d,.]+)\s*%',
+            # "Label: $X,XXX" or "Label: $X.X" (plain dollar amounts)
+            r'([A-Z][A-Za-z\s/&]+?)[\s:]+\$([\d,.]+)(?:\s|$|,|\.|;)',
+        ]
+        
+        for pattern in labeled_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                label = match[0].strip().rstrip(':- ')
+                # Skip labels that are too long (likely sentences, not metric names)
+                if len(label) > 40 or len(label) < 3:
+                    continue
+                try:
+                    raw_val = match[1].replace(',', '')
+                    value = float(raw_val)
+                    # Build display string
+                    if len(match) > 2 and match[2]:  # Has unit (billion/million/%)
+                        unit = match[2].strip()
+                        if unit in ('billion', 'B', 'bn'):
+                            display = f"${raw_val}B"
+                        elif unit in ('million', 'M', 'mn'):
+                            display = f"${raw_val}M"
+                        elif unit in ('trillion', 'T'):
+                            display = f"${raw_val}T"
+                        else:
+                            display = f"{raw_val}%"
+                    elif '$' in text[max(0, text.find(match[1])-5):text.find(match[1])]:
+                        display = f"${raw_val}"
+                    else:
+                        display = raw_val
+                    
+                    # Deduplicate by label
+                    if not any(m["label"].lower() == label.lower() for m in metrics):
+                        metrics.append({"label": label, "value": value, "display": display})
+                except (ValueError, IndexError):
+                    continue
+        
+        # Pattern 2: Count raw number occurrences (fallback signal)
+        raw_numbers = re.findall(r'[\$]?[\d,]+\.?\d*\s*(?:billion|million|%|B|M|bps|basis points)?', text)
+        number_density = len(raw_numbers) / max(len(text.split()), 1)  # numbers per word
+        
+        is_metric_heavy = len(metrics) >= 3 or (len(metrics) >= 2 and number_density > 0.04)
+        
+        # Determine best chart type
+        metric_type = None
+        if is_metric_heavy:
+            # Check if values look like percentages that sum to ~100 (pie chart)
+            pct_metrics = [m for m in metrics if '%' in m.get("display", "")]
+            if len(pct_metrics) >= 3:
+                total = sum(m["value"] for m in pct_metrics)
+                if 80 <= total <= 120:
+                    metric_type = "distribution"  # pie chart
+                else:
+                    metric_type = "trend_chart"  # bar chart
+            elif len(metrics) >= 3:
+                metric_type = "trend_chart"  # bar chart for labeled values
+            else:
+                metric_type = "key_stats"  # hub-spoke with stat values
+        
+        return {
+            "is_metric_heavy": is_metric_heavy,
+            "metrics": metrics[:8],
+            "metric_type": metric_type,
+            "number_density": number_density,
+        }
+    
     async def pre_classify_fast(
         self, 
         notebook_id: str, 
@@ -597,6 +683,7 @@ RULES:
         before user can click "Create Visual".
         
         Uses regex extraction (instant) instead of LLM analysis (slow).
+        Detects both theme-based AND metric-based content.
         """
         from services.visual_cache import visual_cache, VisualClassification
         from services.theme_extractor import (
@@ -612,6 +699,9 @@ RULES:
             clean_answer = re.sub(r'\[\d+\]', '', answer)
             clean_answer = re.sub(r'[ \t]+', ' ', clean_answer)
             clean_answer = re.sub(r'\n\s*\n', '\n\n', clean_answer)
+            
+            # Detect metric/number-heavy content FIRST
+            metric_result = self._detect_metrics_fast(clean_answer)
             
             # FAST regex extraction (~2ms)
             themes = extract_themes_regex(clean_answer)
@@ -634,6 +724,58 @@ RULES:
             
             elapsed_ms = (time.time() - start) * 1000
             
+            # METRIC-HEAVY CONTENT: route to chart/stats templates
+            if metric_result["is_metric_heavy"]:
+                metrics = metric_result["metrics"]
+                metric_type = metric_result["metric_type"]
+                
+                # Build structure with extracted numbers for chart templates
+                metric_labels = [m["label"] for m in metrics]
+                metric_values = [m["value"] for m in metrics]
+                metric_displays = [f'{m["label"]}: {m["display"]}' for m in metrics]
+                
+                # Use query as title hint
+                query_lower = query.lower()
+                if not title or title == "Key Themes":
+                    # Derive title from query
+                    title = query[:50] if len(query) <= 50 else query[:47] + "..."
+                
+                visual_type = "STATS"
+                suggested_template = metric_type or "trend_chart"
+                
+                # Also keep themes as secondary option
+                secondary = ["key_takeaways", "key_stats"]
+                if metric_type != "trend_chart":
+                    secondary.append("trend_chart")
+                if metric_type != "distribution":
+                    secondary.append("distribution")
+                
+                classification = VisualClassification(
+                    query=query,
+                    answer_preview=answer[:500],
+                    visual_type=visual_type,
+                    suggested_template=suggested_template,
+                    key_items=metric_displays,
+                    title=title,
+                    structure={
+                        "themes": metric_displays,  # Use metric displays as theme labels for hub-spoke fallback
+                        "numbers": metric_values,
+                        "dates_events": metric_labels,  # Labels for chart X-axis
+                        "title": title,
+                        "subpoints": subpoints,
+                        "insight": insight,
+                        "metrics": metrics,  # Raw metric data for chart builders
+                    },
+                    notebook_id=notebook_id,
+                    secondary_types=secondary,
+                    has_multiple_structures=True,
+                )
+                await visual_cache.set(classification)
+                print(f"[VisualAnalyzer] ⚡ FAST pre-cache ({elapsed_ms:.0f}ms): METRICS detected — "
+                      f"{len(metrics)} metrics, type={metric_type} -> {suggested_template}")
+                return
+            
+            # THEME-BASED CONTENT: standard path
             if is_valid_extraction(themes):
                 # Template selection based on ITEM COUNT for visual quality
                 has_good_subpoints = subpoints and len(subpoints) >= 2 and any(len(subs) >= 2 for subs in subpoints.values())
@@ -667,7 +809,7 @@ RULES:
                 await visual_cache.set(classification)
                 print(f"[VisualAnalyzer] ⚡ FAST pre-cache ({elapsed_ms:.0f}ms): {len(themes)} themes, {len(subpoints)} with subpoints -> {suggested_template}")
             else:
-                print(f"[VisualAnalyzer] ⚠️ Regex extraction invalid, skipping cache")
+                print("[VisualAnalyzer] ⚠️ Regex extraction invalid, skipping cache")
             
         except Exception as e:
             print(f"[VisualAnalyzer] Fast pre-classification failed: {e}")

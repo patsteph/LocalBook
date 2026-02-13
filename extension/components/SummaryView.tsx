@@ -2,13 +2,12 @@ import type { SummaryResult } from "../types"
 
 interface SummaryViewProps {
   summaryResult: SummaryResult
-  onStartChat: () => void
-  onResearch: () => void
+  onTransform: () => void
 }
 
-export function SummaryView({ summaryResult, onStartChat, onResearch }: SummaryViewProps) {
+export function SummaryView({ summaryResult, onTransform }: SummaryViewProps) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Key Points */}
       {summaryResult.key_points.length > 0 && (
         <div>
@@ -17,7 +16,7 @@ export function SummaryView({ summaryResult, onStartChat, onResearch }: SummaryV
             {summaryResult.key_points.map((point, i) => (
               <li key={i} className="text-sm text-gray-200 flex gap-2">
                 <span className="text-purple-400 shrink-0">•</span>
-                <span>{point}</span>
+                <span>{typeof point === "string" ? point : JSON.stringify(point)}</span>
               </li>
             ))}
           </ul>
@@ -41,28 +40,20 @@ export function SummaryView({ summaryResult, onStartChat, onResearch }: SummaryV
           <div className="flex flex-wrap gap-1.5">
             {summaryResult.key_concepts.map((concept, i) => (
               <span key={i} className="px-2 py-1 bg-purple-900/40 text-purple-300 border border-purple-700/50 rounded text-xs">
-                {concept}
+                {typeof concept === "string" ? concept : JSON.stringify(concept)}
               </span>
             ))}
           </div>
         </div>
       )}
 
-      {/* Side-by-side action buttons */}
-      <div className="flex gap-2 mt-3 pt-2 border-t border-gray-700">
-        <button
-          onClick={onStartChat}
-          className="flex-1 p-2 bg-indigo-600 hover:bg-indigo-700 rounded text-sm font-medium flex items-center justify-center gap-1"
-        >
-          💬 Interact
-        </button>
-        <button
-          onClick={onResearch}
-          className="flex-1 p-2 bg-emerald-600 hover:bg-emerald-700 rounded text-sm font-medium flex items-center justify-center gap-1"
-        >
-          🔍 Research
-        </button>
-      </div>
+      {/* Transform link — subtle, not a giant banner */}
+      <button
+        onClick={onTransform}
+        className="w-full mt-2 py-2 text-xs text-indigo-400 hover:text-indigo-300 bg-indigo-900/10 hover:bg-indigo-900/25 border border-indigo-500/20 rounded transition-colors"
+      >
+        ✨ Explore Deeper — Action Items, Quiz, Timeline, Brief...
+      </button>
     </div>
   )
 }

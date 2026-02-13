@@ -3,12 +3,12 @@ import asyncio
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional
-import os
-import re
 from services.web_scraper import web_scraper
 from services.rag_engine import rag_engine
 from storage.source_store import source_store
 from api.constellation_ws import notify_source_updated
+from services.content_date_extractor import extract_content_date
+from services.event_logger import log_document_captured
 
 router = APIRouter()
 
@@ -153,6 +153,13 @@ async def _process_web_source_background(notebook_id: str, source_id: str, text:
         })
         print(f"[Web] Background ingestion complete for {title}: {chunks} chunks")
         
+        # Auto-tag the source (non-fatal)
+        try:
+            from services.auto_tagger import auto_tagger
+            await auto_tagger.tag_source_in_notebook(notebook_id, source_id, title, text[:3000])
+        except Exception as tag_err:
+            print(f"[Web] Auto-tagging failed (non-fatal): {tag_err}")
+        
         # Notify frontend via WebSocket
         await notify_source_updated({
             "notebook_id": notebook_id,
@@ -193,20 +200,35 @@ async def add_to_notebook(request: AddToNotebookRequest, background_tasks: Backg
             title = content.get("title", url)
             text = content["text"]
 
+            # Extract content_date from scraped date, title, or early text
+            cd = None
+            try:
+                scraped_date = content.get("date", "")
+                if scraped_date:
+                    cd = extract_content_date("", scraped_date)
+                if not cd:
+                    cd = extract_content_date(title, text[:800] if text else "")
+            except Exception:
+                pass
+            
             # Create source record immediately (shows in UI as "processing")
+            src_meta = {
+                "type": "web",
+                "format": "web",
+                "url": url,
+                "author": content.get("author"),
+                "date": content.get("date"),
+                "word_count": content.get("word_count"),
+                "char_count": content.get("char_count"),
+                "status": "processing"
+            }
+            if cd:
+                src_meta["content_date"] = cd
+            
             source = await source_store.create(
                 notebook_id=request.notebook_id,
                 filename=title,
-                metadata={
-                    "type": "web",
-                    "format": "web",
-                    "url": url,
-                    "author": content.get("author"),
-                    "date": content.get("date"),
-                    "word_count": content.get("word_count"),
-                    "char_count": content.get("char_count"),
-                    "status": "processing"
-                }
+                metadata=src_meta
             )
 
             # Queue RAG ingestion as background task - don't wait for it
@@ -300,6 +322,14 @@ async def _scrape_and_ingest_background(notebook_id: str, source_id: str, url: s
             })
             
             print(f"[Web] Background complete: {actual_title} ({chunks} chunks)")
+            
+            # Auto-tag the source (non-fatal)
+            try:
+                from services.auto_tagger import auto_tagger
+                await auto_tagger.tag_source_in_notebook(notebook_id, source_id, actual_title, text[:3000])
+            except Exception as tag_err:
+                print(f"[Web] Auto-tagging failed (non-fatal): {tag_err}")
+            
             await notify_source_updated({
                 "notebook_id": notebook_id,
                 "source_id": source_id,

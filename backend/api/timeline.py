@@ -6,7 +6,6 @@ from storage.source_store import source_store
 from storage.notebook_store import notebook_store
 import asyncio
 import re
-from datetime import datetime
 import dateparser
 
 router = APIRouter()
@@ -128,8 +127,19 @@ async def _extract_timeline_async(notebook_id: str):
                 )
                 events.extend(source_events)
             
+            # Add document-level event from content_date (when the doc is FROM)
+            doc_event = await _make_content_date_event(
+                notebook_id, source["id"], source.get("filename", "Unknown")
+            )
+            if doc_event:
+                events.append(doc_event)
+            
             # Small delay to not block
             await asyncio.sleep(0.1)
+        
+        # Pull in key dates for the notebook's subject (earnings, events, etc.)
+        key_date_events = await _make_key_date_events(notebook_id)
+        events.extend(key_date_events)
         
         # Store events
         _timeline_data[notebook_id] = events
@@ -288,6 +298,7 @@ async def extract_timeline_for_source(notebook_id: str, source_id: str, content:
     """Helper function to extract timeline for a single source.
     
     Can be called when a source is added to auto-extract timeline events.
+    Also creates a document-level event from content_date if available.
     """
     events = _extract_dates_from_text(
         text=content,
@@ -296,12 +307,114 @@ async def extract_timeline_for_source(notebook_id: str, source_id: str, content:
         filename=filename
     )
     
+    # Add a document-level event from content_date (when the doc is FROM)
+    doc_event = await _make_content_date_event(notebook_id, source_id, filename)
+    if doc_event:
+        events.insert(0, doc_event)
+    
     # Append to existing timeline data
     if notebook_id not in _timeline_data:
         _timeline_data[notebook_id] = []
     
     _timeline_data[notebook_id].extend(events)
     return len(events)
+
+
+async def _make_content_date_event(notebook_id: str, source_id: str, filename: str) -> Optional[dict]:
+    """Create a high-confidence document-level timeline event from content_date.
+    
+    content_date represents WHEN the document's content is from (e.g., FY23
+    review → 2023-06-30), not when it was uploaded. This gives the timeline
+    an anchor point for each source regardless of upload order.
+    """
+    try:
+        source = await source_store.get(source_id)
+        if not source:
+            return None
+        content_date = source.get("content_date")
+
+        # Fallback: if no stored content_date, try extracting from filename now
+        if not content_date:
+            from services.content_date_extractor import extract_content_date
+            content_date = extract_content_date(filename, (source.get("content") or "")[:800])
+
+        if not content_date:
+            return None
+        
+        parsed = dateparser.parse(content_date)
+        if not parsed:
+            return None
+        
+        return {
+            "event_id": f"{source_id}_content_date",
+            "notebook_id": notebook_id,
+            "source_id": source_id,
+            "date_timestamp": int(parsed.timestamp()),
+            "date_string": content_date,
+            "date_type": "exact",
+            "event_text": f"Document: {filename}",
+            "context": f"Source document dated {content_date} (extracted from filename/content)",
+            "page_number": None,
+            "char_offset": None,
+            "confidence": 0.95,
+            "filename": filename,
+            "is_document_date": True,
+        }
+    except Exception:
+        return None
+
+
+async def _make_key_date_events(notebook_id: str) -> list:
+    """Pull key dates (earnings, conferences, product launches) for the notebook's subject
+    and convert them into timeline events.
+
+    Reads the collector config to find the notebook subject/company, then calls
+    the key_dates service. Returns a list of timeline event dicts.
+    """
+    try:
+        from agents.collector import get_collector
+        collector = get_collector(notebook_id)
+        config = collector.get_config()
+        subject = config.subject if hasattr(config, "subject") and config.subject else None
+        if not subject:
+            return []
+
+        from services.key_dates import get_key_dates
+        dates = await get_key_dates(company_name=subject)
+        if not dates:
+            return []
+
+        events = []
+        for i, kd in enumerate(dates):
+            date_str = kd.get("date", "")
+            if not date_str or date_str == "TBD":
+                continue
+            parsed = dateparser.parse(date_str)
+            if not parsed:
+                continue
+
+            importance = kd.get("importance", "medium")
+            confidence = 0.85 if kd.get("source") == "sec" else 0.65
+
+            events.append({
+                "event_id": f"keydate_{notebook_id}_{i}",
+                "notebook_id": notebook_id,
+                "source_id": "key_dates",
+                "date_timestamp": int(parsed.timestamp()),
+                "date_string": date_str,
+                "date_type": "exact",
+                "event_text": kd.get("event", ""),
+                "context": f"[{kd.get('category', 'other').upper()}] {kd.get('event', '')} — importance: {importance}",
+                "page_number": None,
+                "char_offset": None,
+                "confidence": confidence,
+                "filename": f"Key Dates: {subject}",
+                "is_key_date": True,
+            })
+
+        return events
+    except Exception:
+        return []
 
 
 @router.post("/{notebook_id}/extract-all")

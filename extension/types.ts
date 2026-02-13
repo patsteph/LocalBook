@@ -17,6 +17,19 @@ export interface SummaryResult {
   key_concepts: string[]
   reading_time: number
   raw_content?: string
+  outbound_links?: OutboundLink[]
+}
+
+export interface OutboundLink {
+  url: string
+  text: string
+  context: string
+}
+
+export interface TransformResult {
+  type: string
+  content: string
+  timestamp: number
 }
 
 export interface LinkInfo {
@@ -37,8 +50,8 @@ export interface PageContext {
   content?: string
 }
 
-export type ViewMode = "actions" | "chat" | "research"
-export type ActionType = "summary" | "scrape" | "links" | "compare" | "automate" | null
+export type ViewMode = "actions" | "chat" | "research" | "transform"
+export type ActionType = "summary" | "scrape" | "links" | "compare" | "automate" | "chat" | null
 
 export interface SearchResult {
   title: string

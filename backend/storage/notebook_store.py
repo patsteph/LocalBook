@@ -1,8 +1,8 @@
 """Notebook storage"""
 import json
+import os
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import List, Optional, Dict
 from config import settings
 from utils.json_io import atomic_write_json
@@ -10,6 +10,8 @@ from utils.json_io import atomic_write_json
 class NotebookStore:
     def __init__(self):
         self.storage_path = settings.data_dir / "notebooks.json"
+        self._cache: Optional[dict] = None
+        self._cache_mtime: float = 0.0
         self._sources_count_cache: Optional[Dict[str, int]] = None
         self._sources_count_cache_mtime: Optional[float] = None
         self._ensure_storage()
@@ -20,36 +22,42 @@ class NotebookStore:
             self._save_data({"notebooks": {}})
 
     def _load_data(self) -> dict:
-        """Load notebooks from storage"""
+        """Load notebooks from storage with mtime-based caching."""
+        try:
+            current_mtime = os.path.getmtime(self.storage_path)
+        except OSError:
+            current_mtime = 0.0
+        
+        if self._cache is not None and current_mtime == self._cache_mtime:
+            return self._cache
+        
         with open(self.storage_path, 'r') as f:
-            return json.load(f)
+            self._cache = json.load(f)
+        self._cache_mtime = current_mtime
+        return self._cache
 
     def _save_data(self, data: dict):
-        """Save notebooks to storage"""
+        """Save notebooks to storage and update cache"""
         atomic_write_json(self.storage_path, data)
+        self._cache = data
+        try:
+            self._cache_mtime = os.path.getmtime(self.storage_path)
+        except OSError:
+            self._cache_mtime = 0.0
 
     async def list(self) -> List[Dict]:
         """List all notebooks with accurate source counts"""
         data = self._load_data()
         notebooks = list(data["notebooks"].values())
         
-        # Always read fresh source counts for UI accuracy
-        sources_path = settings.data_dir / "sources.json"
-        if sources_path.exists():
-            try:
-                with open(sources_path, 'r') as f:
-                    sources_data = json.load(f)
-                counts: Dict[str, int] = {}
-                for s in sources_data.get("sources", {}).values():
-                    nbid = s.get("notebook_id")
-                    if nbid:
-                        counts[nbid] = counts.get(nbid, 0) + 1
-
-                for notebook in notebooks:
-                    notebook_id = notebook["id"]
-                    notebook["source_count"] = counts.get(notebook_id, 0)
-            except Exception:
-                pass
+        # Use source_store's cached data instead of raw file read
+        try:
+            from storage.source_store import source_store
+            counts = await source_store.count_by_notebook()
+            for notebook in notebooks:
+                notebook["source_count"] = counts.get(notebook["id"], 0)
+        except Exception:
+            pass
         
         return notebooks
 

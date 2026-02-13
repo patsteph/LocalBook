@@ -174,6 +174,11 @@ const ADVANCED_TEMPLATES = {
     { id: 'roadmap', icon: '🛣️', label: 'Roadmap', desc: 'Future milestones' },
     { id: 'before_after', icon: '🔀', label: 'Before/After', desc: 'Transformation story' },
   ],
+  'Feynman Learning': [
+    { id: 'feynman_progression', icon: '🎓', label: 'Learning Path', desc: '4-level Feynman progression' },
+    { id: 'feynman_knowledge_map', icon: '🧠', label: 'Knowledge Map', desc: 'Concepts & connections' },
+    { id: 'feynman_misconceptions', icon: '❌➡️✅', label: 'Misconceptions', desc: 'Common mistakes vs reality' },
+  ],
 };
 
 // Color themes for diagrams - Napkin.ai style palettes

@@ -2,7 +2,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from storage.notebook_store import notebook_store
-from services.rag_engine import rag_engine
 from config import settings
 
 router = APIRouter()

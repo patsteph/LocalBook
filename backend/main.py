@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings, curator, collector, source_discovery, people
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from config import settings
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
@@ -77,6 +77,56 @@ async def _run_startup_tasks():
     from services.stuck_source_recovery import stuck_source_recovery
     stuck_source_recovery.start_background_task()
     
+    # Start memory consolidation manager (background memory lifecycle)
+    from services.memory_manager import memory_manager
+    asyncio.create_task(memory_manager.start_scheduler())
+    print("📝 Memory consolidation manager started")
+    
+    # Note: Collection scheduler starts on-demand via API, not auto-start
+    # Users control when collection runs via the Collector UI
+    
+    # Check for stale people coaching insights (background, non-blocking)
+    from services.coaching_insights import check_stale_insights_on_startup
+    asyncio.create_task(check_stale_insights_on_startup())
+    print("🧠 Coaching insights staleness check queued")
+
+    # Pre-download MLX Whisper model in background (no-op if already cached)
+    async def _predownload_whisper():
+        try:
+            from huggingface_hub import snapshot_download
+            import os
+            repo_id = "mlx-community/whisper-base-mlx"
+            # Check if already cached by looking for the repo in HF cache
+            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+            repo_dir = os.path.join(cache_dir, "models--mlx-community--whisper-base-mlx")
+            if os.path.exists(repo_dir):
+                print(f"🎤 Whisper model already cached")
+                return
+            print(f"🎤 Pre-downloading Whisper model ({repo_id})...")
+            await asyncio.to_thread(snapshot_download, repo_id=repo_id)
+            print(f"🎤 Whisper model ready")
+        except Exception as e:
+            print(f"🎤 Whisper pre-download skipped: {e}")
+    asyncio.create_task(_predownload_whisper())
+
+    # Pre-download LFM2.5-Audio model in background (no-op if already cached)
+    async def _predownload_audio_llm():
+        try:
+            from huggingface_hub import snapshot_download
+            import os
+            repo_id = "LiquidAI/LFM2.5-Audio-1.5B"
+            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+            repo_dir = os.path.join(cache_dir, "models--LiquidAI--LFM2.5-Audio-1.5B")
+            if os.path.exists(repo_dir):
+                print(f"🔊 LFM2.5-Audio model already cached")
+                return
+            print(f"🔊 Pre-downloading LFM2.5-Audio model ({repo_id})...")
+            await asyncio.to_thread(snapshot_download, repo_id=repo_id)
+            print(f"🔊 LFM2.5-Audio model ready")
+        except Exception as e:
+            print(f"🔊 LFM2.5-Audio pre-download skipped: {e}")
+    asyncio.create_task(_predownload_audio_llm())
+
     # Mark startup complete
     mark_startup_complete()
     print(f"✅ LocalBook v{CURRENT_VERSION} ready!")
@@ -110,6 +160,10 @@ async def lifespan(app: FastAPI):
     
     # Stop warmup task on shutdown
     await stop_warmup_task()
+    
+    # Stop memory manager on shutdown
+    from services.memory_manager import memory_manager
+    memory_manager.stop_scheduler()
     
     # Save RAG metrics on shutdown
     from services.rag_metrics import rag_metrics
@@ -162,6 +216,7 @@ app.include_router(contradictions.router, tags=["contradictions"])
 app.include_router(credentials.router, tags=["credentials"])
 app.include_router(agent.router, tags=["agent"])
 app.include_router(browser.router, tags=["browser"])
+app.include_router(browser_transform.router, tags=["browser-transform"])
 app.include_router(audio_llm.router, tags=["audio-llm"])
 app.include_router(rag_health.router, tags=["rag-health"])
 app.include_router(health_portal.router, tags=["health-portal"])
@@ -169,6 +224,10 @@ app.include_router(jobs.router, tags=["jobs"])
 app.include_router(agent_browser.router, tags=["agent-browser"])
 app.include_router(rlm.router, tags=["rlm"])
 app.include_router(findings.router, tags=["findings"])
+app.include_router(curator.router, tags=["curator"])
+app.include_router(collector.router, tags=["collector"])
+app.include_router(source_discovery.router, tags=["source-discovery"])
+app.include_router(people.router, tags=["people"])
 
 @app.get("/")
 async def root():

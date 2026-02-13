@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from services.rag_engine import rag_engine
 from services.query_orchestrator import get_orchestrator
+from services.event_logger import log_chat_qa
 import json
 
 router = APIRouter()
@@ -107,6 +108,8 @@ async def query_stream(chat_query: ChatQuery):
         print(f"[Chat] Cleared {cleared} stale visual cache entries for notebook {chat_query.notebook_id}")
     
     async def generate():
+        answer_parts = []
+        sources_used = []
         try:
             async for chunk in rag_engine.query_stream(
                 notebook_id=chat_query.notebook_id,
@@ -116,7 +119,16 @@ async def query_stream(chat_query: ChatQuery):
                 llm_provider=chat_query.llm_provider,
                 deep_think=chat_query.deep_think or False
             ):
+                if chunk.get("type") == "answer_chunk":
+                    answer_parts.append(chunk.get("content", ""))
+                elif chunk.get("type") == "citations":
+                    sources_used = [c.get("source_id", "") for c in chunk.get("citations", [])]
                 yield f"data: {json.dumps(chunk)}\n\n"
+            # Log the completed Q&A interaction for memory consolidation
+            try:
+                log_chat_qa(chat_query.notebook_id, chat_query.question, "".join(answer_parts), sources_used)
+            except Exception:
+                pass
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -188,10 +200,10 @@ async def query_with_context(request: ContextChatQuery):
         
         page_context_text = "\n".join(context_parts) if context_parts else ""
         
-        # Build conversation history (keep last 6 messages to stay in context window)
+        # Build conversation history (keep last 12 messages = 6 exchanges)
         history_text = ""
         if request.chat_history and len(request.chat_history) > 0:
-            recent_history = request.chat_history[-6:]  # Last 3 exchanges
+            recent_history = request.chat_history[-12:]
             history_parts = []
             for msg in recent_history:
                 role_label = "User" if msg.role == "user" else "Assistant"
@@ -246,6 +258,87 @@ Provide a direct answer based on the article content above."""
             low_confidence=not has_page_context
         )
         
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/query-with-context/stream")
+async def query_with_context_stream(request: ContextChatQuery):
+    """Streaming version of query-with-context for the browser extension."""
+    try:
+        # Build context (same logic as non-streaming)
+        context_parts = []
+        if request.page_context:
+            pc = request.page_context
+            context_parts.append(f"[PAGE TITLE: {pc.get('title', 'Unknown')}]")
+            if pc.get('raw_content'):
+                context_parts.append(f"\n[FULL ARTICLE CONTENT]\n{pc['raw_content']}\n[END ARTICLE CONTENT]")
+            elif pc.get('summary'):
+                context_parts.append(f"\n[ARTICLE SUMMARY]\n{pc['summary']}\n[END SUMMARY]")
+            if pc.get('key_points'):
+                points = pc['key_points']
+                if isinstance(points, list) and points:
+                    context_parts.append("\n[KEY POINTS]")
+                    for p in points:
+                        context_parts.append(f"• {p}")
+                    context_parts.append("[END KEY POINTS]")
+            if pc.get('key_concepts'):
+                concepts = pc['key_concepts']
+                if isinstance(concepts, list) and concepts:
+                    context_parts.append(f"\n[KEY CONCEPTS: {', '.join(concepts)}]")
+
+        page_context_text = "\n".join(context_parts) if context_parts else ""
+
+        history_text = ""
+        if request.chat_history and len(request.chat_history) > 0:
+            recent_history = request.chat_history[-12:]
+            history_parts = []
+            for msg in recent_history:
+                role_label = "User" if msg.role == "user" else "Assistant"
+                history_parts.append(f"{role_label}: {msg.content}")
+            if history_parts:
+                history_text = "\n\n=== CONVERSATION HISTORY ===\n" + "\n".join(history_parts) + "\n" + "=" * 50
+
+        full_context = page_context_text + history_text
+        has_page_context = bool(request.page_context and (request.page_context.get('raw_content') or request.page_context.get('summary')))
+
+        if has_page_context:
+            system_prompt = """You are a helpful research assistant. The user is reading a web article and asking questions about it.
+
+INSTRUCTIONS:
+1. Answer ONLY based on the article content provided below
+2. Be specific and cite details from the article
+3. If the information isn't in the article, say so briefly - don't speculate
+4. Give direct, focused answers without preamble
+5. NEVER repeat the question or include any markup from the context in your response"""
+        else:
+            system_prompt = """You are a helpful research assistant. The user is browsing the web and has a question.
+
+Since there's no page content available, provide a helpful general response.
+If the question seems to be about specific page content, suggest the user first summarize the page."""
+
+        user_prompt = f"""ARTICLE CONTEXT:
+{full_context}
+
+USER QUESTION: {request.question}
+
+Provide a direct answer based on the article content above."""
+
+        async def generate():
+            try:
+                async for token in rag_engine._stream_ollama(system_prompt, user_prompt, use_fast_model=True):
+                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()

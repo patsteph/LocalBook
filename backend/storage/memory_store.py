@@ -1,19 +1,33 @@
 """
-Memory Store - Persistent storage for MemGPT-style memory architecture
+Memory Store - Persistent storage for multi-tiered memory architecture
 
 Three-tier storage:
 1. Core Memory: JSON file (~2K tokens, always in context)
 2. Recall Memory: SQLite (recent conversations, searchable by text)
 3. Archival Memory: LanceDB (unlimited long-term, vector search)
+
+Namespace Isolation:
+- SYSTEM: App-wide memories, user preferences
+- CURATOR: Cross-notebook synthesis, global insights
+- COLLECTOR: Per-notebook isolated memories
 """
 import json
 import sqlite3
 from datetime import datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 import threading
 import lancedb
 import requests
+
+
+class AgentNamespace(str, Enum):
+    """Memory namespace for agent isolation"""
+    SYSTEM = "system"        # App-wide, user preferences, global context
+    CURATOR = "curator"      # Cross-notebook synthesis, global insights
+    COLLECTOR = "collector"  # Per-notebook isolation (requires notebook_id)
+
 
 from models.memory import (
     CoreMemory, CoreMemoryEntry, MemoryCategory, MemoryImportance, MemorySourceType,
@@ -257,6 +271,32 @@ class MemoryStore:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_recall_timestamp ON recall_entries(timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_recall_notebook ON recall_entries(notebook_id)")
         
+        # Access tracking for archival memories (LanceDB doesn't support updates)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS archival_access (
+                memory_id TEXT PRIMARY KEY,
+                access_count INTEGER DEFAULT 0,
+                last_accessed TEXT,
+                usefulness_score REAL DEFAULT 0.5,
+                decay_rate REAL DEFAULT 0.1
+            )
+        """)
+        
+        # User signals for negative signal learning (Enhancement #3)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_signals (
+                id TEXT PRIMARY KEY,
+                notebook_id TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                item_id TEXT,
+                query TEXT,
+                timestamp TEXT NOT NULL,
+                metadata TEXT
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_notebook ON user_signals(notebook_id, signal_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_timestamp ON user_signals(timestamp)")
+        
         conn.commit()
         conn.close()
     
@@ -465,45 +505,85 @@ class MemoryStore:
     # =========================================================================
     
     def _init_archival_db(self) -> None:
-        """Initialize LanceDB for archival memory"""
+        """Initialize LanceDB for archival memory with namespace support"""
         self.archival_db = lancedb.connect(str(self.archival_db_path))
         
-        # Create table if it doesn't exist
+        import pyarrow as pa
+        required_schema = pa.schema([
+            pa.field("id", pa.string()),
+            pa.field("namespace", pa.string()),  # SYSTEM, CURATOR, or COLLECTOR
+            pa.field("content", pa.string()),
+            pa.field("content_type", pa.string()),
+            pa.field("source_type", pa.string()),
+            pa.field("source_id", pa.string()),
+            pa.field("source_notebook_id", pa.string()),
+            pa.field("topics", pa.string()),  # JSON array
+            pa.field("entities", pa.string()),  # JSON array
+            pa.field("importance", pa.string()),
+            pa.field("created_at", pa.string()),
+            pa.field("last_accessed", pa.string()),
+            pa.field("access_count", pa.int32()),
+            pa.field("vector", pa.list_(pa.float32(), 1024)),  # snowflake-arctic-embed2 dimensions
+        ])
+        
         if "archival_memories" not in self.archival_db.table_names():
-            # Create with sample data structure
-            import pyarrow as pa
-            schema = pa.schema([
-                pa.field("id", pa.string()),
-                pa.field("content", pa.string()),
-                pa.field("content_type", pa.string()),
-                pa.field("source_type", pa.string()),
-                pa.field("source_id", pa.string()),
-                pa.field("source_notebook_id", pa.string()),
-                pa.field("topics", pa.string()),  # JSON array
-                pa.field("entities", pa.string()),  # JSON array
-                pa.field("importance", pa.string()),
-                pa.field("created_at", pa.string()),
-                pa.field("last_accessed", pa.string()),
-                pa.field("access_count", pa.int32()),
-                pa.field("vector", pa.list_(pa.float32(), 1024)),  # snowflake-arctic-embed2 dimensions
-            ])
-            self.archival_db.create_table("archival_memories", schema=schema)
+            self.archival_db.create_table("archival_memories", schema=required_schema)
+        else:
+            # Migrate existing table if schema is outdated (e.g. missing 'namespace' column)
+            try:
+                table = self.archival_db.open_table("archival_memories")
+                existing_names = set(table.schema.names)
+                required_names = set(required_schema.names)
+                missing = required_names - existing_names
+                if missing:
+                    print(f"[MEMORY] Archival table missing columns {missing}, recreating with new schema")
+                    self.archival_db.drop_table("archival_memories")
+                    self.archival_db.create_table("archival_memories", schema=required_schema)
+            except Exception as e:
+                print(f"[MEMORY] Archival table migration check failed ({e}), recreating")
+                try:
+                    self.archival_db.drop_table("archival_memories")
+                except Exception:
+                    pass
+                self.archival_db.create_table("archival_memories", schema=required_schema)
     
-    def add_archival_memory(self, entry: ArchivalMemoryEntry) -> None:
-        """Add entry to archival memory with embedding"""
+    def add_archival_memory(
+        self, 
+        entry: ArchivalMemoryEntry,
+        namespace: AgentNamespace = AgentNamespace.SYSTEM,
+        notebook_id: Optional[str] = None
+    ) -> None:
+        """
+        Add entry to archival memory with embedding and namespace isolation.
+        
+        Args:
+            entry: The memory entry to store
+            namespace: Which namespace to store in (SYSTEM, CURATOR, COLLECTOR)
+            notebook_id: Required for COLLECTOR namespace, ignored otherwise
+        
+        Raises:
+            ValueError: If COLLECTOR namespace used without notebook_id
+        """
+        if namespace == AgentNamespace.COLLECTOR and not notebook_id:
+            raise ValueError("notebook_id required for COLLECTOR namespace")
+        
         table = self.archival_db.open_table("archival_memories")
         
         # Generate embedding
         embedding = self.get_embedding(entry.content)
         
-        # Prepare record
+        # Use provided notebook_id or fall back to entry's source_notebook_id
+        effective_notebook_id = notebook_id or entry.source_notebook_id or ""
+        
+        # Prepare record with namespace
         record = {
             "id": entry.id,
+            "namespace": namespace.value,
             "content": entry.content,
             "content_type": entry.content_type,
             "source_type": entry.source_type.value,
             "source_id": entry.source_id or "",
-            "source_notebook_id": entry.source_notebook_id or "",
+            "source_notebook_id": effective_notebook_id,
             "topics": json.dumps(entry.topics),
             "entities": json.dumps(entry.entities),
             "importance": entry.importance.value,
@@ -519,24 +599,67 @@ class MemoryStore:
         self, 
         query: str, 
         limit: int = 10,
+        namespace: AgentNamespace = AgentNamespace.SYSTEM,
         notebook_id: Optional[str] = None,
+        cross_notebook: bool = False,
         recency_weight: float = 0.2
     ) -> List[MemorySearchResult]:
         """
-        Search archival memory by semantic similarity.
-        Combines vector similarity with recency scoring.
+        Search archival memory by semantic similarity with namespace isolation.
+        
+        Access Rules:
+        - SYSTEM namespace: Only searches SYSTEM memories
+        - CURATOR namespace: Can search ALL namespaces (cross_notebook=True allowed)
+        - COLLECTOR namespace: Only searches own notebook's COLLECTOR memories + SYSTEM
+        
+        Args:
+            query: Search query text
+            limit: Max results to return
+            namespace: Caller's namespace (determines access permissions)
+            notebook_id: Required for COLLECTOR namespace searches
+            cross_notebook: Only CURATOR can set True to search across notebooks
+            recency_weight: Weight for recency in scoring (0-1)
+        
+        Returns:
+            List of MemorySearchResult sorted by combined score
         """
         table = self.archival_db.open_table("archival_memories")
         
         # Generate query embedding
         query_embedding = self.get_embedding(query)
         
-        # Vector search
-        results = table.search(query_embedding).limit(limit * 2).to_list()
+        # Vector search - get more results to filter
+        results = table.search(query_embedding).limit(limit * 3).to_list()
         
-        # Filter by notebook if specified
-        if notebook_id:
-            results = [r for r in results if r.get("source_notebook_id") == notebook_id]
+        # Apply namespace access control
+        filtered_results = []
+        for r in results:
+            r_namespace = r.get("namespace", "system")
+            r_notebook = r.get("source_notebook_id", "")
+            
+            if namespace == AgentNamespace.CURATOR and cross_notebook:
+                # Curator with cross_notebook can access everything
+                filtered_results.append(r)
+            elif namespace == AgentNamespace.CURATOR:
+                # Curator without cross_notebook: CURATOR + SYSTEM namespaces
+                if r_namespace in [AgentNamespace.CURATOR.value, AgentNamespace.SYSTEM.value]:
+                    filtered_results.append(r)
+            elif namespace == AgentNamespace.COLLECTOR:
+                # Collector: own COLLECTOR namespace + SYSTEM
+                if r_namespace == AgentNamespace.SYSTEM.value:
+                    filtered_results.append(r)
+                elif r_namespace == AgentNamespace.COLLECTOR.value and r_notebook == notebook_id:
+                    filtered_results.append(r)
+            else:
+                # SYSTEM: only SYSTEM namespace
+                if r_namespace == AgentNamespace.SYSTEM.value:
+                    filtered_results.append(r)
+        
+        # Legacy filter by notebook_id (for backwards compatibility)
+        if notebook_id and namespace != AgentNamespace.COLLECTOR:
+            filtered_results = [r for r in filtered_results if r.get("source_notebook_id") == notebook_id]
+        
+        results = filtered_results
         
         # Score and rank
         scored_results = []
@@ -581,29 +704,226 @@ class MemoryStore:
         
         return scored_results
     
-    def get_archival_memory_count(self) -> int:
-        """Get total number of archival memories"""
+    def get_archival_memory_count(
+        self, 
+        namespace: Optional[AgentNamespace] = None,
+        notebook_id: Optional[str] = None
+    ) -> int:
+        """Get total number of archival memories, optionally filtered by namespace"""
         try:
             table = self.archival_db.open_table("archival_memories")
-            return table.count_rows()
+            if namespace is None and notebook_id is None:
+                return table.count_rows()
+            
+            # Filter and count
+            all_rows = table.to_pandas()
+            if namespace:
+                all_rows = all_rows[all_rows["namespace"] == namespace.value]
+            if notebook_id:
+                all_rows = all_rows[all_rows["source_notebook_id"] == notebook_id]
+            return len(all_rows)
         except Exception:
             return 0
     
-    def update_archival_access(self, memory_id: str) -> None:
-        """Update last_accessed and access_count for a memory"""
-        # LanceDB doesn't support updates well, so we'd need to delete and re-add
-        # For now, we'll skip this optimization
-        pass
+    def delete_notebook_memories(self, notebook_id: str) -> int:
+        """Delete all archival memories associated with a notebook"""
+        try:
+            table = self.archival_db.open_table("archival_memories")
+            df = table.to_pandas()
+            before = len(df)
+            keep = df[df["source_notebook_id"] != notebook_id]
+            deleted = before - len(keep)
+            
+            if deleted > 0:
+                # Recreate table without the deleted rows
+                table.delete(f'source_notebook_id = "{notebook_id}"')
+                print(f"[MemoryStore] Deleted {deleted} archival memories for notebook {notebook_id}")
+            
+            return deleted
+        except Exception as e:
+            print(f"[MemoryStore] Error deleting notebook memories: {e}")
+            return 0
+    
+    def update_archival_access(self, memory_id: str, was_useful: bool = True) -> None:
+        """
+        Update access tracking for an archival memory.
+        Uses SQLite table since LanceDB doesn't support updates.
+        """
+        conn = self._get_recall_connection()
+        cursor = conn.cursor()
+        
+        now = datetime.utcnow().isoformat()
+        usefulness_delta = 0.1 if was_useful else -0.05
+        
+        # Upsert access record
+        cursor.execute("""
+            INSERT INTO archival_access (memory_id, access_count, last_accessed, usefulness_score)
+            VALUES (?, 1, ?, 0.5)
+            ON CONFLICT(memory_id) DO UPDATE SET
+                access_count = access_count + 1,
+                last_accessed = ?,
+                usefulness_score = MIN(1.0, MAX(0.0, usefulness_score + ?))
+        """, (memory_id, now, now, usefulness_delta))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_archival_access_stats(self, memory_id: str) -> Optional[Dict[str, Any]]:
+        """Get access statistics for an archival memory"""
+        conn = self._get_recall_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT * FROM archival_access WHERE memory_id = ?",
+            (memory_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            return None
+        
+        return {
+            "memory_id": row[0],
+            "access_count": row[1],
+            "last_accessed": row[2],
+            "usefulness_score": row[3],
+            "decay_rate": row[4]
+        }
+    
+    # =========================================================================
+    # User Signals (Negative Signal Learning - Enhancement #3)
+    # =========================================================================
+    
+    def record_user_signal(
+        self,
+        notebook_id: str,
+        signal_type: str,
+        item_id: Optional[str] = None,
+        query: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Record a user signal for learning.
+        
+        Signal types:
+        - 'view': Item shown to user (start ignore timer)
+        - 'click': User engaged with item (positive)
+        - 'ignore': Item shown 7+ days, never clicked (negative)
+        - 'search_miss': User searched, no Collector results (gap)
+        - 'manual_add': User added content Collector missed (gap)
+        """
+        import uuid
+        conn = self._get_recall_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT INTO user_signals (id, notebook_id, signal_type, item_id, query, timestamp, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            str(uuid.uuid4()),
+            notebook_id,
+            signal_type,
+            item_id,
+            query,
+            datetime.utcnow().isoformat(),
+            json.dumps(metadata) if metadata else None
+        ))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_user_signals(
+        self,
+        notebook_id: str,
+        signal_type: Optional[str] = None,
+        since_days: int = 30,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """Get user signals for a notebook"""
+        conn = self._get_recall_connection()
+        cursor = conn.cursor()
+        
+        cutoff = (datetime.utcnow() - timedelta(days=since_days)).isoformat()
+        
+        query_sql = """
+            SELECT * FROM user_signals 
+            WHERE notebook_id = ? AND timestamp > ?
+        """
+        params = [notebook_id, cutoff]
+        
+        if signal_type:
+            query_sql += " AND signal_type = ?"
+            params.append(signal_type)
+        
+        query_sql += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        
+        cursor.execute(query_sql, params)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [{
+            "id": row[0],
+            "notebook_id": row[1],
+            "signal_type": row[2],
+            "item_id": row[3],
+            "query": row[4],
+            "timestamp": row[5],
+            "metadata": json.loads(row[6]) if row[6] else None
+        } for row in rows]
+    
+    def get_ignored_items(self, notebook_id: str, days_threshold: int = 7) -> List[str]:
+        """Get items that were viewed but never clicked (negative signal)"""
+        conn = self._get_recall_connection()
+        cursor = conn.cursor()
+        
+        cutoff = (datetime.utcnow() - timedelta(days=days_threshold)).isoformat()
+        
+        cursor.execute("""
+            SELECT DISTINCT item_id FROM user_signals 
+            WHERE notebook_id = ? 
+            AND signal_type = 'view'
+            AND timestamp < ?
+            AND item_id NOT IN (
+                SELECT item_id FROM user_signals 
+                WHERE signal_type = 'click' AND notebook_id = ?
+            )
+        """, (notebook_id, cutoff, notebook_id))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [row[0] for row in rows if row[0]]
+    
+    def get_search_misses(self, notebook_id: str, since_days: int = 30) -> List[str]:
+        """Get queries where user searched but Collector had no results"""
+        conn = self._get_recall_connection()
+        cursor = conn.cursor()
+        
+        cutoff = (datetime.utcnow() - timedelta(days=since_days)).isoformat()
+        
+        cursor.execute("""
+            SELECT DISTINCT query FROM user_signals 
+            WHERE notebook_id = ? 
+            AND signal_type = 'search_miss'
+            AND timestamp > ?
+        """, (notebook_id, cutoff))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [row[0] for row in rows if row[0]]
     
     # =========================================================================
     # Memory Statistics
     # =========================================================================
     
-    def get_memory_stats(self) -> Dict[str, Any]:
-        """Get statistics about all memory tiers"""
+    def get_memory_stats(self, namespace: Optional[AgentNamespace] = None) -> Dict[str, Any]:
+        """Get statistics about all memory tiers, optionally filtered by namespace"""
         core = self.load_core_memory()
         
-        return {
+        stats = {
             "core_memory": {
                 "entries": len(core.entries),
                 "tokens": core.total_tokens(),
@@ -614,9 +934,19 @@ class MemoryStore:
                 "entries": self.get_recall_entry_count(),
             },
             "archival_memory": {
-                "entries": self.get_archival_memory_count(),
+                "total_entries": self.get_archival_memory_count(),
+                "by_namespace": {
+                    "system": self.get_archival_memory_count(AgentNamespace.SYSTEM),
+                    "curator": self.get_archival_memory_count(AgentNamespace.CURATOR),
+                    "collector": self.get_archival_memory_count(AgentNamespace.COLLECTOR),
+                }
             }
         }
+        
+        if namespace:
+            stats["archival_memory"]["filtered_entries"] = self.get_archival_memory_count(namespace)
+        
+        return stats
 
 
 # Singleton instance

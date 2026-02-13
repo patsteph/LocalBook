@@ -4,7 +4,6 @@ from pydantic import BaseModel
 from typing import Optional, List
 import keyring
 import json
-from pathlib import Path
 from config import settings
 
 router = APIRouter()

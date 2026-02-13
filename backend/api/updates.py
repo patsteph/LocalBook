@@ -4,14 +4,11 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
 from pathlib import Path
-import json
 import subprocess
-import os
 import sys
 import tempfile
 import zipfile
 import shutil
-import asyncio
 
 from version import APP_VERSION, DATA_SCHEMA_VERSION
 

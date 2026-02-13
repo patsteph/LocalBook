@@ -151,10 +151,17 @@ export const Timeline: React.FC<TimelineProps> = ({ notebookId, sourcesRefreshTr
     if (filteredEvents.length === 0) return { min: 0, max: 0, range: 0 };
 
     const timestamps = filteredEvents.map(e => e.date_timestamp);
-    const min = Math.min(...timestamps);
-    const max = Math.max(...timestamps);
-    const range = max - min;
+    let min = Math.min(...timestamps);
+    let max = Math.max(...timestamps);
 
+    // If all events are at the same timestamp (or very close), pad by ±3 months
+    if (max - min < 86400 * 30) {
+      const mid = (min + max) / 2;
+      min = mid - 86400 * 90;  // 3 months before
+      max = mid + 86400 * 90;  // 3 months after
+    }
+
+    const range = max - min;
     return { min, max, range };
   };
 
@@ -279,7 +286,7 @@ export const Timeline: React.FC<TimelineProps> = ({ notebookId, sourcesRefreshTr
               const yearSpan = endYear - startYear;
               return (
                 <div className="flex items-center justify-between mb-3 text-sm text-gray-600 dark:text-gray-400">
-                  <span>{startYear} — {endYear} ({yearSpan} years)</span>
+                  <span>{startYear} — {endYear} ({yearSpan === 0 ? '<1 year' : `${yearSpan} year${yearSpan !== 1 ? 's' : ''}`})</span>
                   <span className="text-xs">← Scroll to navigate →</span>
                 </div>
               );
@@ -289,55 +296,122 @@ export const Timeline: React.FC<TimelineProps> = ({ notebookId, sourcesRefreshTr
             <div className="overflow-x-auto pb-4">
               {(() => {
                 const scale = getTimelineScale();
-                const startYear = new Date(scale.min * 1000).getFullYear();
-                const endYear = new Date(scale.max * 1000).getFullYear();
+                const startDate = new Date(scale.min * 1000);
+                const endDate = new Date(scale.max * 1000);
+                const startYear = startDate.getFullYear();
+                const endYear = endDate.getFullYear();
                 const yearSpan = endYear - startYear + 1;
-                // Min 80px per year, ensures readability
-                const timelineWidth = Math.max(100, yearSpan * 80);
+                const monthSpan = (endYear - startYear) * 12 + (endDate.getMonth() - startDate.getMonth()) + 1;
+
+                // Ensure comfortable spacing: at least 800px, or 120px per year, or 60px per month
+                const timelineWidth = Math.max(
+                  800,
+                  yearSpan * 120,
+                  monthSpan * 60
+                );
+
+                // Pre-compute positions and stagger overlapping dots into rows
+                const DOT_PROXIMITY_PX = 18; // dots closer than this get staggered
+                const positions = filteredEvents.map((event) => {
+                  const pct = scale.range > 0
+                    ? ((event.date_timestamp - scale.min) / scale.range) * 100
+                    : 50;
+                  return Math.max(1, Math.min(99, pct));
+                });
+
+                // Assign rows: if a dot is too close to one already placed in the same row, bump it down
+                const rows: number[] = [];
+                const rowRightEdges: number[][] = []; // for each row, list of occupied x-pixels
+                positions.forEach((pct) => {
+                  const xPx = (pct / 100) * timelineWidth;
+                  let assignedRow = 0;
+                  for (let r = 0; r < rowRightEdges.length; r++) {
+                    const conflict = rowRightEdges[r].some(ox => Math.abs(ox - xPx) < DOT_PROXIMITY_PX);
+                    if (!conflict) { assignedRow = r; break; }
+                    assignedRow = r + 1;
+                  }
+                  if (!rowRightEdges[assignedRow]) rowRightEdges[assignedRow] = [];
+                  rowRightEdges[assignedRow].push(xPx);
+                  rows.push(assignedRow);
+                });
+
+                const maxRow = Math.max(0, ...rows);
+                const timelineHeight = 50 + maxRow * 22 + 30; // axis + staggered rows + padding
                 
                 return (
-                  <div className="relative" style={{ width: `${timelineWidth}px`, minHeight: '100px' }}>
+                  <div className="relative" style={{ width: `${timelineWidth}px`, minHeight: `${timelineHeight}px` }}>
                     {/* Timeline axis */}
                     <div className="absolute left-0 right-0 top-10 h-1 bg-gray-300 dark:bg-gray-600"></div>
 
-                    {/* Year markers - show every year or every 5 years based on span */}
+                    {/* Time markers — months when span ≤ 2 years, otherwise years */}
                     {(() => {
                       if (scale.range === 0) return null;
-                      const yearMarkers = [];
-                      const yearStep = yearSpan > 20 ? 5 : yearSpan > 10 ? 2 : 1;
-                      
-                      for (let year = startYear; year <= endYear; year += yearStep) {
-                        const yearTimestamp = new Date(year, 0, 1).getTime() / 1000;
-                        const position = ((yearTimestamp - scale.min) / scale.range) * 100;
-                        
-                        yearMarkers.push(
-                          <div
-                            key={year}
-                            className="absolute flex flex-col items-center"
-                            style={{ left: `${position}%`, transform: 'translateX(-50%)' }}
-                          >
-                            <span className="text-xs text-gray-600 dark:text-gray-400 font-medium whitespace-nowrap">
-                              {year}
-                            </span>
-                            <div className="w-px h-2 bg-gray-400 dark:bg-gray-500 mt-1"></div>
-                          </div>
-                        );
+                      const markers: React.ReactNode[] = [];
+                      const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+                      if (yearSpan <= 2) {
+                        // Month markers
+                        const cursor = new Date(startYear, startDate.getMonth(), 1);
+                        while (cursor <= endDate) {
+                          const ts = cursor.getTime() / 1000;
+                          const pos = ((ts - scale.min) / scale.range) * 100;
+                          if (pos >= 0 && pos <= 100) {
+                            const label = cursor.getFullYear() === startYear && cursor.getMonth() === startDate.getMonth()
+                              ? `${monthNames[cursor.getMonth()]} ${cursor.getFullYear()}`
+                              : cursor.getMonth() === 0
+                                ? `${monthNames[0]} ${cursor.getFullYear()}`
+                                : monthNames[cursor.getMonth()];
+                            markers.push(
+                              <div
+                                key={`m-${cursor.getFullYear()}-${cursor.getMonth()}`}
+                                className="absolute flex flex-col items-center"
+                                style={{ left: `${pos}%`, transform: 'translateX(-50%)' }}
+                              >
+                                <span className="text-xs text-gray-600 dark:text-gray-400 font-medium whitespace-nowrap">
+                                  {label}
+                                </span>
+                                <div className="w-px h-2 bg-gray-400 dark:bg-gray-500 mt-1"></div>
+                              </div>
+                            );
+                          }
+                          cursor.setMonth(cursor.getMonth() + 1);
+                        }
+                      } else {
+                        // Year markers
+                        const yearStep = yearSpan > 20 ? 5 : yearSpan > 10 ? 2 : 1;
+                        for (let year = startYear; year <= endYear; year += yearStep) {
+                          const yearTimestamp = new Date(year, 0, 1).getTime() / 1000;
+                          const pos = ((yearTimestamp - scale.min) / scale.range) * 100;
+                          markers.push(
+                            <div
+                              key={year}
+                              className="absolute flex flex-col items-center"
+                              style={{ left: `${pos}%`, transform: 'translateX(-50%)' }}
+                            >
+                              <span className="text-xs text-gray-600 dark:text-gray-400 font-medium whitespace-nowrap">
+                                {year}
+                              </span>
+                              <div className="w-px h-2 bg-gray-400 dark:bg-gray-500 mt-1"></div>
+                            </div>
+                          );
+                        }
                       }
-                      return yearMarkers;
+                      return markers;
                     })()}
 
-                    {/* Event markers */}
-                    {filteredEvents.map((event) => {
-                      const position = ((event.date_timestamp - scale.min) / scale.range) * 100;
-                      const clampedPosition = Math.max(1, Math.min(99, position));
+                    {/* Event markers — staggered vertically to avoid overlap */}
+                    {filteredEvents.map((event, i) => {
+                      const pct = positions[i];
+                      const row = rows[i];
+                      const topPx = 36 + row * 22; // each row offsets 22px down
 
                       return (
                         <div
                           key={event.event_id}
                           className="absolute"
                           style={{
-                            left: `${clampedPosition}%`,
-                            top: '36px',
+                            left: `${pct}%`,
+                            top: `${topPx}px`,
                             transform: 'translateX(-50%)'
                           }}
                         >
@@ -350,6 +424,13 @@ export const Timeline: React.FC<TimelineProps> = ({ notebookId, sourcesRefreshTr
                             }`}
                             title={`${formatDate(event.date_timestamp)}: ${event.event_text.substring(0, 50)}...`}
                           />
+                          {/* Connector line to axis for staggered dots */}
+                          {row > 0 && (
+                            <div
+                              className="absolute left-1/2 -translate-x-1/2 w-px bg-blue-300 dark:bg-blue-700"
+                              style={{ top: `-${row * 22 - 4}px`, height: `${row * 22 - 4}px` }}
+                            />
+                          )}
                         </div>
                       );
                     })}

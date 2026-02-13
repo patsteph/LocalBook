@@ -3,8 +3,7 @@ Exploration Store - Track user's learning journey through their notebooks
 """
 import json
 from datetime import datetime
-from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Dict
 from config import settings
 from utils.json_io import atomic_write_json
 import uuid

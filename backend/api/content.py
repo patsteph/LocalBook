@@ -8,7 +8,7 @@ import traceback
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 import json
 
 logger = logging.getLogger(__name__)
@@ -112,8 +112,12 @@ Use ONLY the provided source content. Do not make up information."""
 
 Generate the {skill_name} now, ensuring you synthesize insights across ALL sources:"""
 
+        # Use template-specific token limit for thorough generation
+        template = DOCUMENT_TEMPLATES.get(request.skill_id)
+        doc_num_predict = template.recommended_tokens if template else 2000
+        
         # Generate content
-        content = await rag_engine._call_ollama(system_prompt, user_prompt)
+        content = await rag_engine._call_ollama(system_prompt, user_prompt, num_predict=doc_num_predict)
         
         # Save to content store for persistence
         await content_store.create(
@@ -206,8 +210,12 @@ Use ONLY the provided source content. Do not make up information."""
 
 Generate the {skill_name} now, ensuring you synthesize insights across ALL sources:"""
 
+        # Use template-specific token limit for thorough generation
+        template = DOCUMENT_TEMPLATES.get(request.skill_id)
+        doc_num_predict = template.recommended_tokens if template else 2000
+
         async def stream_generator():
-            async for chunk in rag_engine._stream_ollama(system_prompt, user_prompt):
+            async for chunk in rag_engine._stream_ollama(system_prompt, user_prompt, num_predict=doc_num_predict):
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             yield "data: [DONE]\n\n"
         

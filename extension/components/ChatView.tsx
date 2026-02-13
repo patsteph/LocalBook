@@ -11,6 +11,47 @@ interface ChatViewProps {
   onBack: () => void
 }
 
+function renderMessageContent(content: string, sourceUrl?: string): JSX.Element {
+  if (!content) {
+    return <span className="text-gray-500 animate-pulse">Thinking...</span>
+  }
+
+  // Convert quoted phrases into text fragment links when we have a source URL
+  // Pattern: "quoted text" → clickable link that opens source with text highlight
+  if (sourceUrl) {
+    const parts = content.split(/(\"[^\"]{10,80}\")/g)
+    if (parts.length > 1) {
+      return (
+        <>
+          {parts.map((part, i) => {
+            const match = part.match(/^\"(.+)\"$/)
+            if (match) {
+              const phrase = match[1]
+              const fragment = encodeURIComponent(phrase)
+              const fragmentUrl = `${sourceUrl}#:~:text=${fragment}`
+              return (
+                <a
+                  key={i}
+                  href={fragmentUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-400 hover:text-blue-300 underline decoration-dotted cursor-pointer"
+                  title="Open source with text highlight"
+                >
+                  "{phrase}"
+                </a>
+              )
+            }
+            return <span key={i}>{part}</span>
+          })}
+        </>
+      )
+    }
+  }
+
+  return <>{content}</>
+}
+
 export function ChatView({
   chatMessages,
   chatInput,
@@ -58,7 +99,11 @@ export function ChatView({
             <div className="text-xs text-gray-500 mb-1">
               {msg.role === "user" ? "You" : "LocalBook"}
             </div>
-            <div className="whitespace-pre-wrap">{msg.content}</div>
+            <div className="whitespace-pre-wrap">
+              {msg.role === "assistant"
+                ? renderMessageContent(msg.content, pageContext?.url)
+                : msg.content}
+            </div>
           </div>
         ))}
         <div ref={chatEndRef} />

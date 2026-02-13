@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { writingService, FormatOption, WritingResult } from '../services/writing';
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
@@ -191,8 +192,8 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
           </div>
 
           <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 max-h-64 overflow-y-auto">
-            <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap text-gray-900 dark:text-gray-100">
-              {result.content}
+            <div className="prose prose-sm dark:prose-invert max-w-none text-gray-900 dark:text-gray-100 prose-p:my-2 prose-headings:mt-4 prose-headings:mb-1 prose-ul:my-2 prose-li:my-0 prose-hr:my-4">
+              <ReactMarkdown>{result.content}</ReactMarkdown>
             </div>
           </div>
 

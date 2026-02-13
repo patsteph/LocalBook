@@ -3,12 +3,10 @@
 Provides web search augmentation when local RAG confidence is too low.
 Searches the web, summarizes results, and combines with local context.
 """
-import asyncio
 from typing import Dict, List, Optional, Tuple
 import httpx
 
 from api.settings import get_api_key
-from config import settings
 
 
 class WebFallbackService:

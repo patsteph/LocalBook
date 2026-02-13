@@ -10,7 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 from enum import Enum
 
 from config import settings
@@ -306,7 +306,7 @@ class RAGMetricsService:
                 self._current_query = None
                 return result
             else:
-                print(f"[RAGMetrics] WARNING: end_query called but no current query tracked")
+                print("[RAGMetrics] WARNING: end_query called but no current query tracked")
             return None
     
     # =========================================================================
@@ -430,7 +430,7 @@ class RAGMetricsService:
         print(f"Status: {health['status'].upper()}")
         
         if health['issues']:
-            print(f"\n⚠️  Issues:")
+            print("\n⚠️  Issues:")
             for issue in health['issues']:
                 print(f"   - {issue}")
         
@@ -439,19 +439,19 @@ class RAGMetricsService:
         print(f"   Quality: {(1-agg.low_confidence_rate)*100:.0f}% high confidence, {agg.avg_citations:.1f} avg citations")
         print(f"   Errors:  {agg.error_rate*100:.1f}% error rate")
         
-        print(f"\n⚡ Cache Performance:")
+        print("\n⚡ Cache Performance:")
         print(f"   Query cache:     {agg.query_cache_hit_rate*100:.0f}% hit rate")
         print(f"   Embedding cache: {agg.embedding_cache_hit_rate*100:.0f}% hit rate")
         print(f"   Answer cache:    {agg.answer_cache_hit_rate*100:.0f}% hit rate")
         
         if agg.strategy_distribution:
-            print(f"\n🔍 Search Strategies:")
+            print("\n🔍 Search Strategies:")
             for strategy, count in sorted(agg.strategy_distribution.items(), key=lambda x: -x[1]):
                 pct = count / agg.total_queries * 100 if agg.total_queries > 0 else 0
                 print(f"   {strategy}: {count} ({pct:.0f}%)")
         
         if agg.avg_stage_times:
-            print(f"\n⏱️  Stage Timings (avg ms):")
+            print("\n⏱️  Stage Timings (avg ms):")
             for stage, ms in sorted(agg.avg_stage_times.items(), key=lambda x: -x[1])[:5]:
                 print(f"   {stage}: {ms:.0f}ms")
         

@@ -7,12 +7,10 @@ Handles all first-launch and upgrade checks:
 3. Embedding dimension migration (768 -> 1024 for all tables)
 4. Knowledge graph table schema validation
 """
-import asyncio
 import httpx
 import lancedb
 import pyarrow as pa
-from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Dict, Any
 from config import settings
 
 # Required Ollama models for v0.6.0

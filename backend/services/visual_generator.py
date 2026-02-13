@@ -15,7 +15,7 @@ import httpx
 
 from config import settings
 from services.visual_router import visual_router, VisualTemplate, VISUAL_TEMPLATES
-from services.visual_analyzer import visual_analyzer, ContentAnalysis
+from services.visual_analyzer import visual_analyzer
 
 
 @dataclass
@@ -592,7 +592,7 @@ class VisualGenerator:
             GeneratedVisual with the result
         """
         # Analyze content and route to template
-        analysis = self.analyzer.analyze(content)
+        self.analyzer.analyze(content)
         
         if template_id:
             template = self.router.get_template(template_id)

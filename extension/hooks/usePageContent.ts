@@ -22,11 +22,32 @@ export function extractDomain(url: string): string {
   }
 }
 
-export async function getPageContent(): Promise<{ content: string; html: string } | null> {
+export interface PageContent {
+  content: string
+  html: string
+  outboundLinks?: Array<{ url: string; text: string; context: string }>
+}
+
+export async function getPageContent(): Promise<PageContent | null> {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
     if (!tab?.id) return null
 
+    // Try content script first (Turndown markdown extraction)
+    try {
+      const response = await chrome.tabs.sendMessage(tab.id, { action: "getPageContent" })
+      if (response?.content) {
+        return {
+          content: response.content,
+          html: response.html || "",
+          outboundLinks: response.outboundLinks || []
+        }
+      }
+    } catch {
+      // Content script not injected on this page — fall back to scripting API
+    }
+
+    // Fallback: basic extraction via scripting API
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => ({

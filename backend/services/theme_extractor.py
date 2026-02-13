@@ -444,7 +444,7 @@ async def extract_themes_hybrid(text: str) -> VisualContent:
     # PASS 3: LLM fallback (regex produced garbage)
     garbage_samples = [t for t in regex_themes if is_garbage_theme(t)][:3]
     print(f"[Theme Extractor] ⚠️ Regex extraction FAILED validation. Garbage detected: {garbage_samples}")
-    print(f"[Theme Extractor] 🔄 Falling back to LLM extraction...")
+    print("[Theme Extractor] 🔄 Falling back to LLM extraction...")
     
     return await extract_themes_llm(text)
 

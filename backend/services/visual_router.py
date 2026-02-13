@@ -58,8 +58,8 @@ VISUAL_TEMPLATES: Dict[str, VisualTemplate] = {
         best_for=["numbers_stats", "overview"]
     ),
     
-    "exec_summary": VisualTemplate(
-        id="exec_summary",
+    "exec_summary_context": VisualTemplate(
+        id="exec_summary_context",
         name="Executive Summary",
         category=TemplateCategory.CONTEXT,
         description="TL;DR for busy readers",
@@ -260,8 +260,8 @@ VISUAL_TEMPLATES: Dict[str, VisualTemplate] = {
     
     # === CATEGORY 3: COMPARE & CONTRAST ===
     
-    "side_by_side": VisualTemplate(
-        id="side_by_side",
+    "side_by_side_analysis": VisualTemplate(
+        id="side_by_side_analysis",
         name="Side-by-Side Comparison",
         category=TemplateCategory.ANALYSIS,
         description="A vs B comparison",
@@ -747,6 +747,126 @@ CRITICAL RULES:
     S2 --> E1 & E2
     E1 & E2 --> C1""",
         best_for=["hierarchy", "relationships"]
+    ),
+    
+    # === FEYNMAN LEARNING VISUALS ===
+    
+    "feynman_progression": VisualTemplate(
+        id="feynman_progression",
+        name="Learning Progression",
+        category=TemplateCategory.PERSUADE,
+        description="Feynman 4-level learning journey from novice to mastery",
+        mermaid_type="flowchart",
+        prompt_enhancement="""Create a TOP-DOWN flowchart showing the Feynman learning progression for this topic.
+CRITICAL RULES:
+1. Show 4 levels: Foundation → Building Understanding → First Principles → Mastery
+2. Under each level, list 2-3 KEY CONCEPTS learned at that stage (from the research content)
+3. Use subgraphs for each level with distinct colors showing progression (green=foundation, blue=building, purple=first principles, gold=mastery)
+4. Show arrows between levels indicating progression
+5. Concepts should get progressively more advanced/nuanced at each level
+6. Keep node labels SHORT (3-5 words max)""",
+        example_code="""flowchart TD
+    subgraph L1["🌱 Foundation"]
+        A1["Core Concept A"]
+        A2["Core Concept B"]
+        A3["Basic Vocabulary"]
+    end
+    subgraph L2["🔗 Building Understanding"]
+        B1["How A connects to B"]
+        B2["Real-world Example"]
+        B3["Common Misconception"]
+    end
+    subgraph L3["⚙️ First Principles"]
+        C1["Why A works this way"]
+        C2["Underlying Mechanism"]
+        C3["Edge Cases"]
+    end
+    subgraph L4["🎓 Mastery"]
+        D1["Teach it back"]
+        D2["Open Questions"]
+        D3["Advanced Application"]
+    end
+    L1 --> L2 --> L3 --> L4
+    style L1 fill:#dcfce7,stroke:#16a34a,stroke-width:2px
+    style L2 fill:#dbeafe,stroke:#2563eb,stroke-width:2px
+    style L3 fill:#ede9fe,stroke:#7c3aed,stroke-width:2px
+    style L4 fill:#fef3c7,stroke:#d97706,stroke-width:2px""",
+        best_for=["learning", "progression", "feynman", "curriculum"]
+    ),
+    
+    "feynman_knowledge_map": VisualTemplate(
+        id="feynman_knowledge_map",
+        name="Knowledge Map",
+        category=TemplateCategory.PERSUADE,
+        description="Feynman-style concept map showing all ideas and their connections",
+        mermaid_type="mindmap",
+        prompt_enhancement="""Create a KNOWLEDGE MAP mindmap for Feynman-style learning.
+CRITICAL RULES:
+1. Central node is the main topic/subject
+2. First-level branches are the CORE CONCEPTS (3-5 max)
+3. Second-level branches show HOW concepts connect, with simple explanations
+4. Third-level branches show WHY (first principles / underlying mechanisms)
+5. Use clear, simple language — as if explaining to someone learning this for the first time
+6. Every concept should connect to at least one other concept
+7. Include a branch for 'Open Questions' or 'What's Unknown'""",
+        example_code="""mindmap
+  root((Subject Name))
+    Core Concept A
+      How it works
+        Simple analogy
+      Why it matters
+        Underlying mechanism
+    Core Concept B
+      Connection to A
+      Real-world example
+        Practical application
+    Core Concept C
+      First principle
+      Edge case
+    Open Questions
+      What experts debate
+      Frontier of knowledge""",
+        best_for=["learning", "concepts", "feynman", "knowledge", "relationships"]
+    ),
+    
+    "feynman_misconceptions": VisualTemplate(
+        id="feynman_misconceptions",
+        name="Misconceptions Map",
+        category=TemplateCategory.PERSUADE,
+        description="What people commonly get wrong vs the reality — Feynman gap identification",
+        mermaid_type="flowchart",
+        prompt_enhancement="""Create a flowchart showing COMMON MISCONCEPTIONS vs REALITY for this topic.
+CRITICAL RULES:
+1. Left side: What people commonly believe (misconceptions) in RED boxes
+2. Right side: What's actually true (reality) in GREEN boxes
+3. Connect each misconception to its correction with a labeled arrow saying WHY it's wrong
+4. Include 3-5 misconception pairs from the research content
+5. At the bottom, show the KEY INSIGHT that resolves the confusion
+6. Use clear, simple language
+7. Only include misconceptions that are actually addressed in the source material""",
+        example_code="""flowchart LR
+    subgraph Wrong["❌ Common Misconceptions"]
+        M1["People think X"]
+        M2["People assume Y"]
+        M3["Common belief Z"]
+    end
+    subgraph Right["✅ Reality"]
+        R1["Actually X works like..."]
+        R2["Y is really about..."]
+        R3["Z happens because..."]
+    end
+    M1 -->|"Because..."| R1
+    M2 -->|"Research shows..."| R2
+    M3 -->|"The real mechanism is..."| R3
+    R1 & R2 & R3 --> I["💡 Key Insight"]
+    style M1 fill:#fee2e2,stroke:#dc2626,stroke-width:2px
+    style M2 fill:#fee2e2,stroke:#dc2626,stroke-width:2px
+    style M3 fill:#fee2e2,stroke:#dc2626,stroke-width:2px
+    style R1 fill:#dcfce7,stroke:#16a34a,stroke-width:2px
+    style R2 fill:#dcfce7,stroke:#16a34a,stroke-width:2px
+    style R3 fill:#dcfce7,stroke:#16a34a,stroke-width:2px
+    style I fill:#fef3c7,stroke:#d97706,stroke-width:2px""",
+        best_for=["learning", "misconceptions", "feynman", "comparison", "gaps"]
     ),
 }
 

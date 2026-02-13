@@ -1,5 +1,4 @@
 """Application configuration"""
-import os
 import sys
 from pathlib import Path
 from pydantic_settings import BaseSettings
@@ -43,7 +42,7 @@ def _migrate_old_data(new_data_dir: Path) -> None:
                     shutil.copytree(item, dest, dirs_exist_ok=True)
                 else:
                     shutil.copy2(item, dest)
-            print(f"[Config] Migration complete!")
+            print("[Config] Migration complete!")
         except Exception as e:
             print(f"[Config] Migration failed: {e}")
 

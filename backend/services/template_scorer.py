@@ -349,7 +349,7 @@ def select_primary_and_alternatives(
     
     if not viable_ranked:
         # Nothing scored well enough to render - use universal fallbacks
-        print(f"[TemplateScorer] ⚠️ No viable templates, using universal fallbacks")
+        print("[TemplateScorer] ⚠️ No viable templates, using universal fallbacks")
         # Find first fallback that can render
         for fallback_id in UNIVERSAL_FALLBACKS:
             if can_render(fallback_id, structure):

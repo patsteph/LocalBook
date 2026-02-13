@@ -5,6 +5,7 @@ import { voiceService } from '../services/voice';
 import { visualService } from '../services/visual';
 import { findingsService } from '../services/findings';
 import { ChatMessage, Citation as CitationType, InlineVisualData } from '../types';
+import { API_BASE_URL } from '../services/api';
 import { Button } from './shared/Button';
 // LoadingSpinner removed - now using statusMessage in message bubble
 import { ErrorMessage } from './shared/ErrorMessage';
@@ -93,6 +94,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       }
     }
     return result.trim();
+  };
+
+  // Strip leading grouped citation block like "[1] [2] [3] [4] [5] [6]\n"
+  // that LLM sometimes outputs before the actual answer
+  const stripLeadingCitationBlock = (content: string): string => {
+    // Match a line at the start that is ONLY citation numbers like [1] [2] [3]...
+    // Followed by a newline, then the real content
+    return content.replace(/^(\s*(\[\d+\]\s*)+)\n+/, '');
   };
 
   // Render message content with inline clickable citations and mermaid diagrams
@@ -286,27 +295,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
             });
           },
           onCitations: (citations, _sources, lowConfidence) => {
-            // Store citations but don't show yet - wait for quick summary
             currentCitations = citations;
             isLowConfidence = lowConfidence;
-          },
-          onQuickSummary: (summary) => {
-            // Show quick summary immediately - this gives user fast feedback
-            setMessages((prev) => {
-              const updated = [...prev];
-              const lastIdx = updated.length - 1;
-              if (updated[lastIdx]?.role === 'assistant') {
-                updated[lastIdx] = {
-                  ...updated[lastIdx],
-                  quickSummary: summary,
-                  citations: currentCitations,
-                };
-              }
-              return updated;
-            });
-            
-            // Stop showing loading indicator once we have quick summary
-            setLoading(false);
           },
           onToken: (token) => {
             tokenBuffer += token;
@@ -347,8 +337,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               const updated = [...prev];
               const lastIdx = updated.length - 1;
               if (updated[lastIdx]?.role === 'assistant') {
-                // Strip any trailing citation/reference lists the LLM might have added
-                let finalContent = stripTrailingCitations(currentContent);
+                // Strip leading grouped citation block and trailing reference lists
+                let finalContent = stripLeadingCitationBlock(stripTrailingCitations(currentContent));
                 let lowConfidenceQuery: string | undefined;
                 
                 // Detect low confidence from flag OR from response content patterns
@@ -404,6 +394,40 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               confidence,
               currentContent.slice(0, 200)
             ).catch(err => console.error('Failed to record query:', err));
+
+            // Curator overwatch: check for cross-notebook insights (fire and forget)
+            if (notebookId && currentContent.length > 50) {
+              fetch(`${API_BASE_URL}/curator/overwatch`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  query: currentQuestion,
+                  answer: currentContent.slice(0, 500),
+                  notebook_id: notebookId,
+                }),
+              })
+                .then(r => r.ok ? r.json() : null)
+                .then(data => {
+                  if (data?.aside) {
+                    setMessages(prev => {
+                      const updated = [...prev];
+                      // Find the last assistant message (the one we just finalized)
+                      for (let i = updated.length - 1; i >= 0; i--) {
+                        if (updated[i].role === 'assistant' && updated[i].content) {
+                          updated[i] = {
+                            ...updated[i],
+                            curatorAside: data.aside,
+                            curatorName: data.curator_name || 'Curator',
+                          };
+                          break;
+                        }
+                      }
+                      return updated;
+                    });
+                  }
+                })
+                .catch(() => {});
+            }
             
           },
           onError: (errorMsg) => {
@@ -709,7 +733,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               className={`max-w-3xl rounded-lg p-3 ${
                 message.role === 'user'
                   ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-900'
+                  : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
               }`}
             >
               {message.role === 'user' ? (
@@ -717,8 +741,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               ) : (
                 <>
                   {/* Status message - shown while processing (Phase 1.2) */}
-                  {message.statusMessage && !message.content && !message.quickSummary && (
-                    <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                  {message.statusMessage && !message.content && (
+                    <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
                       <span className="animate-pulse">{message.statusMessage}</span>
                     </div>
                   )}
@@ -740,27 +764,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                     </div>
                   )}
                   
-                  {/* Quick Summary - only show if Detailed Answer is substantially longer */}
-                  {message.quickSummary && message.content && 
-                   message.content.length > message.quickSummary.length * 1.5 && (
-                    <div className="mb-3 pb-3 border-b border-gray-200 dark:border-gray-600">
-                      <div className="flex items-center gap-1.5 mb-1.5">
-                        <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">⚡ Quick Answer</span>
-                      </div>
-                      {renderMessageWithCitations(message.quickSummary, message.citations)}
-                    </div>
-                  )}
-                  
-                  {/* Detailed Answer - show with header only if Quick Answer is also shown */}
+                  {/* Answer */}
                   {message.content && (
-                    <>
-                      {message.quickSummary && message.content.length > message.quickSummary.length * 1.5 && (
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">📝 Detailed Answer</span>
-                        </div>
-                      )}
-                      {renderMessageWithCitations(message.content, message.citations)}
-                    </>
+                    renderMessageWithCitations(message.content, message.citations)
                   )}
                   
                   {message.citations && message.citations.length > 0 && (
@@ -783,7 +789,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                               <div className="flex-1">
                                 <p className="font-medium text-blue-700 dark:text-blue-400">{source.title}</p>
                                 <p className="text-gray-600 dark:text-gray-400 mt-1">{source.snippet}</p>
-                                <p className="text-gray-500 dark:text-gray-500 mt-1 truncate">{source.url}</p>
+                                <p className="text-gray-500 dark:text-gray-400 mt-1 truncate">{source.url}</p>
                               </div>
                             </div>
                           </a>
@@ -904,6 +910,22 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                           }}
                         />
                       )}
+                    </div>
+                  )}
+                  {/* Curator Overwatch Aside */}
+                  {message.curatorAside && (
+                    <div className="mt-3 p-2.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border-l-3 border-indigo-500 dark:border-indigo-400">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <div className="w-4 h-4 rounded-full bg-indigo-600 dark:bg-indigo-500 flex items-center justify-center text-white text-[7px] font-bold flex-shrink-0">
+                          {(message.curatorName || 'C').charAt(0).toUpperCase()}
+                        </div>
+                        <span className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wide">
+                          {message.curatorName || 'Curator'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-indigo-800 dark:text-indigo-200 leading-relaxed">
+                        {message.curatorAside}
+                      </p>
                     </div>
                   )}
                   {message.lowConfidenceQuery && (

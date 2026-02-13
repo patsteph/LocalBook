@@ -89,6 +89,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
   const [processingSources, setProcessingSources] = useState<Set<string>>(new Set());  // Track sources being processed
   const wsRef = useRef<WebSocket | null>(null);
   const notebookIdRef = useRef<string | null>(notebookId);
+  const autoBuiltNotebooks = useRef<Set<string>>(new Set());  // Track auto-triggered builds to prevent loops
   
   // Keep ref in sync with prop - update synchronously during render
   // This ensures the ref is always current when WebSocket callbacks fire
@@ -141,43 +142,60 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
     // Get focused node position
     const focusedPos = mesh.position.clone();
     
-    // Calculate camera position - zoom in CLOSE
-    const distance = 35;  // Closer zoom
+    // Adaptive layout based on connection density
+    const connCount = connected.size;
+    
+    // Dynamic camera distance — zoom out more for heavily-connected nodes
+    const distance = connCount > 30 ? 70 : connCount > 15 ? 50 : 35;
     const direction = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
     const newCameraPos = focusedPos.clone().add(direction.multiplyScalar(distance));
     
     // Animate camera AND connected nodes
     const startCameraPos = camera.position.clone();
     const startTarget = controls.target.clone();
-    const duration = 800;  // Slightly longer for smoother feel
+    const duration = 800;
     const startTime = Date.now();
     
     // Store start positions for connected node animation
     const nodeStartPositions = new Map<string, THREE.Vector3>();
     const nodeTargetPositions = new Map<string, THREE.Vector3>();
     
-    // Arrange connected nodes in a circle around focused node
+    // Sort connected nodes by their connection count (most connected first)
     const connectedArray = Array.from(connected);
-    const orbitRadius = 18;  // Close orbit
+    connectedArray.sort((a, b) => {
+      const aConn = nodesRef.current.get(a)?.userData.connections || 0;
+      const bConn = nodesRef.current.get(b)?.userData.connections || 0;
+      return bConn - aConn;
+    });
+    
+    // Dynamic orbit: use concentric rings for many connections
+    // Ring 1 (inner): top ~12 nodes, Ring 2 (outer): next ~12, Ring 3: rest
+    const baseRadius = Math.min(18 + connCount * 0.4, 50);  // Scale radius, cap at 50
+    const nodesPerRing = Math.max(8, Math.ceil(connCount / 3));
     
     nodesRef.current.forEach((m, id) => {
       nodeStartPositions.set(id, m.position.clone());
       
       if (id === nodeId) {
-        // Focused node stays in place
         nodeTargetPositions.set(id, focusedPos.clone());
       } else if (connected.has(id)) {
-        // Arrange connected nodes in a circle around focused node
         const idx = connectedArray.indexOf(id);
-        const angle = (idx / connectedArray.length) * Math.PI * 2;
+        const ring = Math.floor(idx / nodesPerRing);         // 0, 1, 2...
+        const posInRing = idx % nodesPerRing;
+        const ringTotal = Math.min(nodesPerRing, connCount - ring * nodesPerRing);
+        
+        // Each ring is progressively wider and slightly offset vertically
+        const ringRadius = baseRadius * (1 + ring * 0.6);
+        const angle = (posInRing / ringTotal) * Math.PI * 2 + ring * 0.3;  // Offset per ring
+        const ySpread = 0.4 - ring * 0.1;   // Inner ring flatter, outer rings more spherical
+        
         const offset = new THREE.Vector3(
-          Math.cos(angle) * orbitRadius,
-          Math.sin(angle) * orbitRadius * 0.5,  // Flatter ellipse
-          Math.sin(angle) * orbitRadius * 0.3
+          Math.cos(angle) * ringRadius,
+          Math.sin(angle) * ringRadius * ySpread + ring * 4,  // Vertical stagger per ring
+          Math.sin(angle) * ringRadius * 0.25
         );
         nodeTargetPositions.set(id, focusedPos.clone().add(offset));
       } else {
-        // Unconnected nodes stay where they are (just fade them)
         nodeTargetPositions.set(id, m.position.clone());
       }
     });
@@ -227,9 +245,15 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
       return newHistory.slice(-10);
     });
     
-    // Show ALL connected nodes (not just top 15)
+    // Show all connected nodes, but only label the top ones
     const visibleConnected = connected;
-    console.log(`Showing ${visibleConnected.size} connected nodes`);
+    // Only show labels for the top N most-connected nodes to prevent overlap
+    const maxLabels = connCount > 30 ? 12 : connCount > 15 ? 15 : connCount;
+    const labeledSet = new Set(connectedArray.slice(0, maxLabels));
+    console.log(`Showing ${visibleConnected.size} connected nodes (${labeledSet.size} labeled)`);
+    
+    // Scale factor — shrink nodes more when there are many connections
+    const connNodeScale = connCount > 30 ? 0.5 : connCount > 15 ? 0.65 : 0.8;
     
     // Update visual appearance - nodes
     nodesRef.current.forEach((m, id) => {
@@ -240,7 +264,6 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
         // Focused node - bright, large, prominent label
         material.emissiveIntensity = 1;
         material.opacity = 1;
-        // Keep cluster color for focused node too
         const focusedClusterColor = m.userData.clusterColor;
         if (focusedClusterColor) {
           material.color.setHex(focusedClusterColor);
@@ -248,21 +271,32 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
         m.scale.setScalar(1.5);
         if (label) {
           label.visible = true;
-          label.scale.set(45, 6, 1);  // Wide for full text
+          label.scale.set(45, 6, 1);
         }
       } else if (visibleConnected.has(id)) {
-        // Connected nodes - smaller to prevent blob, keep cluster color
-        material.emissiveIntensity = 0.8;
-        material.opacity = 1;
-        // Keep the node's cluster color (stored in userData)
+        // Connected node — keep cluster color
         const clusterColor = m.userData.clusterColor;
         if (clusterColor) {
           material.color.setHex(clusterColor);
         }
-        m.scale.setScalar(0.8);  // Smaller to prevent overlap
-        if (label) {
-          label.visible = true;
-          label.scale.set(40, 5, 1);  // Wide for full text
+        
+        if (labeledSet.has(id)) {
+          // Top-N labeled node — full brightness, label visible
+          material.emissiveIntensity = 0.8;
+          material.opacity = 1;
+          m.scale.setScalar(connNodeScale);
+          if (label) {
+            label.visible = true;
+            label.scale.set(40, 5, 1);
+          }
+        } else {
+          // Lower-ranked connected node — visible dot, no label
+          material.emissiveIntensity = 0.5;
+          material.opacity = 0.7;
+          m.scale.setScalar(connNodeScale * 0.7);
+          if (label) {
+            label.visible = false;
+          }
         }
       } else {
         // Other nodes - very faded, almost invisible
@@ -951,6 +985,25 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
         }
         setGraphData(data);
         updateScene(data);
+        
+        // AUTO-BUILD: If graph is empty and we haven't auto-triggered for this notebook yet,
+        // check if sources exist and auto-trigger a topic rebuild
+        if (data.nodes.length === 0 && currentNotebookId && !autoBuiltNotebooks.current.has(currentNotebookId) && !building) {
+          try {
+            const sourcesRes = await fetch(`${API_BASE}/sources/${currentNotebookId}`);
+            if (sourcesRes.ok) {
+              const sources = await sourcesRes.json();
+              if (Array.isArray(sources) && sources.length >= 3) {
+                console.log(`[Constellation] Auto-triggering topic build for ${currentNotebookId} (${sources.length} sources, 0 topics)`);
+                autoBuiltNotebooks.current.add(currentNotebookId);
+                // Small delay so UI renders the "discovering" state first
+                setTimeout(() => buildConstellation(), 500);
+              }
+            }
+          } catch (err) {
+            console.log('[Constellation] Auto-build check failed:', err);
+          }
+        }
       } else {
         console.error('[Constellation] Failed to load graph:', response.status);
         setError('Failed to load graph');
@@ -1471,21 +1524,39 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
           ) : graphData && graphData.nodes.length === 0 ? (
             <div className="absolute inset-0 flex items-center justify-center text-gray-400">
               <div className="text-center max-w-md">
-                <p className="text-4xl mb-4">✨</p>
-                <p className="text-lg font-medium mb-2">No topics yet</p>
-                <p className="text-sm mb-4">
-                  Topics will appear automatically as you add sources to your notebook.
-                </p>
-                {notebookId && (
-                  <button
-                    onClick={async () => {
-                      await buildConstellation();
-                    }}
-                    disabled={building}
-                    className="px-4 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-lg text-sm"
-                  >
-                    {building ? '🔄 Rebuilding...' : '🔄 Rebuild Topics'}
-                  </button>
+                {building ? (
+                  <>
+                    <p className="text-4xl mb-4 animate-pulse">✨</p>
+                    <p className="text-lg font-medium mb-2">Discovering themes...</p>
+                    <p className="text-sm mb-4 text-gray-500">
+                      Analyzing your sources to find connections and patterns.
+                    </p>
+                    <div className="w-48 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden mx-auto">
+                      <div 
+                        className="h-full bg-purple-500 transition-all duration-300"
+                        style={{ width: `${buildProgress}%` }}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-4xl mb-4">✨</p>
+                    <p className="text-lg font-medium mb-2">No topics yet</p>
+                    <p className="text-sm mb-4">
+                      Add at least 3 sources, then topics will be discovered automatically.
+                    </p>
+                    {notebookId && (
+                      <button
+                        onClick={async () => {
+                          await buildConstellation();
+                        }}
+                        disabled={building}
+                        className="px-4 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-lg text-sm"
+                      >
+                        🔄 Rebuild Topics
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </div>

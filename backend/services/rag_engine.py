@@ -4,15 +4,12 @@ Implements hybrid search (BM25 + Vector) for maximum retrieval accuracy.
 Vector search captures semantic similarity, BM25 captures exact keyword matches.
 """
 import asyncio
-import json
 import os
 import re
-import sys
 import time
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import List, Dict, Optional, AsyncGenerator, Tuple, Union
 
 import httpx
@@ -26,8 +23,8 @@ from services.memory_agent import memory_agent
 from storage.source_store import source_store
 
 # v1.0.3: RAG metrics and caching for performance monitoring
-from services.rag_metrics import rag_metrics, RAGStage, SearchStrategy
-from services.rag_cache import embedding_cache, answer_cache, context_compressor
+from services.rag_metrics import rag_metrics, RAGStage
+from services.rag_cache import embedding_cache, answer_cache
 from services.web_fallback import web_fallback
 from services.query_decomposer import query_decomposer
 from services.entity_extractor import entity_extractor
@@ -411,10 +408,14 @@ class RAGEngine:
 
         table_name = f"notebook_{notebook_id}"
 
-        # Check if table exists
-        if table_name not in self.db.table_names():
-            # Create table with schema including useful metadata fields
-            # v0.60: Include parent_text for expanded context retrieval
+        # Try to open existing table first (fast path)
+        try:
+            return self.db.open_table(table_name)
+        except Exception:
+            pass
+
+        # Table doesn't exist — create with placeholder to define schema
+        try:
             placeholder_embedding = self.encode("placeholder")[0].tolist()
             self.db.create_table(
                 table_name,
@@ -428,13 +429,12 @@ class RAGEngine:
                     "source_type": "placeholder"
                 }]
             )
-            # Delete placeholder
             table = self.db.open_table(table_name)
             table.delete("source_id = 'placeholder'")
-        else:
-            table = self.db.open_table(table_name)
-
-        return table
+            return table
+        except Exception:
+            # Race condition: another request created it between our check and create
+            return self.db.open_table(table_name)
     
     def _table_has_parent_text(self, table) -> bool:
         """Check if table schema includes parent_text column"""
@@ -498,7 +498,7 @@ class RAGEngine:
                     # Use RRF score (already normalized 0-1, higher is better)
                     # Scale to reasonable confidence range: top result ~85%, lower results differentiated
                     confidence = 0.5 + (rrf_score * 0.4)  # Range: 50-90%
-                    print(f"{log_prefix} Citation {i+1}: rerank={rerank_score:.4f} low, using RRF={rrf_score:.2f} -> confidence={confidence:.0%}")
+                    print(f"{log_prefix} Citation {i+1}: rerank={rerank_score if rerank_score is not None else 'None'} low, using RRF={rrf_score:.2f} -> confidence={confidence:.0%}")
                 else:
                     # Pure vector distance fallback
                     # 0 dist = 100%, 50 dist = 88%, 100 dist = 75%, 200 dist = 50%, 400+ dist = 0%
@@ -666,6 +666,15 @@ class RAGEngine:
                 print(f"[RAG] Entity/relationship extraction failed (non-fatal): {e}")
         
         asyncio.create_task(_extract_entities_and_relationships_background())
+
+        # Auto-refresh people coaching insights when new sources are added
+        # Skip people_profile/coaching_notes to avoid infinite loops
+        if source_type not in ("people_profile", "coaching_notes", "summary"):
+            try:
+                from services.coaching_insights import schedule_insight_refresh
+                schedule_insight_refresh(notebook_id)
+            except Exception:
+                pass  # Non-fatal — insights refresh is best-effort
 
         return {
             "source_id": source_id,
@@ -881,6 +890,29 @@ Summary:"""
                 else:
                     print(f"[TopicModel] No new topics for source {source_id} (status: {result.get('status', 'unknown')})")
                 
+                # Check if we should auto-rebuild topics for better discovery
+                if topic_modeling_service.should_rebuild(notebook_id):
+                    try:
+                        from services.job_queue import job_queue, JobType, JobStatus
+                        # Guard: don't submit if a rebuild is already running for this notebook
+                        running_jobs = await job_queue.list_jobs(notebook_id=notebook_id, status=JobStatus.RUNNING)
+                        has_running_rebuild = any(
+                            j.get("job_type") == JobType.TOPIC_REBUILD.value 
+                            for j in running_jobs
+                        )
+                        if not has_running_rebuild:
+                            topic_modeling_service.mark_rebuild_started(notebook_id)
+                            job_id = await job_queue.submit(
+                                job_type=JobType.TOPIC_REBUILD,
+                                params={"notebook_id": notebook_id},
+                                notebook_id=notebook_id
+                            )
+                            print(f"[TopicModel] Auto-triggered rebuild for {notebook_id} (job {job_id})")
+                        else:
+                            print(f"[TopicModel] Rebuild already running for {notebook_id}, skipping auto-trigger")
+                    except Exception as rebuild_err:
+                        print(f"[TopicModel] Auto-rebuild trigger failed (non-fatal): {rebuild_err}")
+                
             except Exception as e:
                 import traceback
                 print(f"[TopicModel] Error adding to topic model: {e}")
@@ -997,21 +1029,32 @@ Summary:"""
         
         try:
             if sub_questions and len(sub_questions) > 1:
-                # Search for each sub-question and merge results
-                all_results = []
-                seen_ids = set()
+                # Search all sub-questions in PARALLEL and merge results
                 per_query_k = max(2, overcollect_k // len(sub_questions))
                 
+                # Pre-compute embeddings (cache-aware)
+                sub_embeddings = []
                 for sub_q in sub_questions:
-                    sub_embedding = embedding_cache.get(sub_q)
-                    if sub_embedding is None:
-                        sub_embedding = self.encode(sub_q)[0].tolist()
-                        embedding_cache.put(sub_q, sub_embedding)
-                    
-                    sub_results = await self._adaptive_search(
-                        table, sub_q, sub_embedding, query_analysis, per_query_k
-                    )
-                    
+                    sub_emb = embedding_cache.get(sub_q)
+                    if sub_emb is None:
+                        sub_emb = self.encode(sub_q)[0].tolist()
+                        embedding_cache.put(sub_q, sub_emb)
+                    sub_embeddings.append(sub_emb)
+                
+                # Run all sub-query searches concurrently
+                search_tasks = [
+                    self._adaptive_search(table, sub_q, sub_emb, query_analysis, per_query_k)
+                    for sub_q, sub_emb in zip(sub_questions, sub_embeddings)
+                ]
+                sub_results_list = await asyncio.gather(*search_tasks, return_exceptions=True)
+                
+                # Merge and dedup
+                all_results = []
+                seen_ids = set()
+                for sub_results in sub_results_list:
+                    if isinstance(sub_results, Exception):
+                        print(f"[RAG] Sub-query search failed: {sub_results}")
+                        continue
                     for r in sub_results:
                         r_id = r.get('chunk_id', hash(r.get('text', '')[:100]))
                         if r_id not in seen_ids:
@@ -1019,7 +1062,7 @@ Summary:"""
                             seen_ids.add(r_id)
                 
                 results = all_results
-                print(f"[RAG] Merged {len(results)} results from {len(sub_questions)} sub-queries")
+                print(f"[RAG] Merged {len(results)} results from {len(sub_questions)} parallel sub-queries")
             else:
                 results = await self._adaptive_search(
                     table, question, query_embedding, query_analysis, overcollect_k
@@ -1162,7 +1205,7 @@ Summary:"""
             rag_metrics.end_stage(RAGStage.CORRECTIVE_RETRIEVAL)
         else:
             rag_metrics.record_corrective_retrieval(False)
-            print(f"[RAG] Quality check passed")
+            print("[RAG] Quality check passed")
 
         # Step 5c: Web search fallback if confidence still too low
         web_sources = None
@@ -1649,7 +1692,6 @@ JSON:"""
                 time_found = True
                 break
             # Handle "Q1 2026" matching "Q 1 FY 2026" - extract quarter and year
-            import re
             q_match = re.search(r'q\s*(\d)', period_lower)
             y_match = re.search(r'20\d{2}', period_lower)
             if q_match and y_match:
@@ -1703,7 +1745,7 @@ JSON:"""
         strategies_tried.append(("hybrid", is_good, reason))
         
         if is_good:
-            print(f"[RAG] Adaptive search: Strategy 1 (hybrid) succeeded")
+            print("[RAG] Adaptive search: Strategy 1 (hybrid) succeeded")
             return results
         
         print(f"[RAG] Adaptive search: Strategy 1 failed - {reason}")
@@ -1737,7 +1779,7 @@ JSON:"""
                     strategies_tried.append(("entity_focused", is_good, reason))
                     
                     if is_good:
-                        print(f"[RAG] Adaptive search: Strategy 2 (entity-focused) succeeded")
+                        print("[RAG] Adaptive search: Strategy 2 (entity-focused) succeeded")
                         return results
                     
                     print(f"[RAG] Adaptive search: Strategy 2 failed - {reason}")
@@ -1774,7 +1816,7 @@ JSON:"""
                     strategies_tried.append(("time_focused", is_good, reason))
                     
                     if is_good:
-                        print(f"[RAG] Adaptive search: Strategy 3 (time-focused) succeeded")
+                        print("[RAG] Adaptive search: Strategy 3 (time-focused) succeeded")
                         return results
                     
                     print(f"[RAG] Adaptive search: Strategy 3 failed - {reason}")
@@ -1967,6 +2009,46 @@ JSON:"""
         # Default to synthesis (general questions)
         return 'synthesis'
     
+    def _detect_response_format(self, question: str) -> str:
+        """Detect the ideal response format from the query — pure regex, zero latency.
+
+        Returns a short instruction string to append to the system prompt,
+        or empty string for default paragraph style.
+
+        Format categories:
+        - 'list'  : user asks for N things, bullet points, enumerations
+        - 'code'  : user asks for code, implementation, script
+        - 'table' : user asks for comparison table or structured data
+        - 'steps' : user asks for how-to, step-by-step, process
+        - ''      : default (paragraph / conversational)
+        """
+        q_lower = question.lower()
+
+        # LIST: "give me 10 things", "list the top 5", "what are the key…"
+        if re.search(r'\b(\d+|top|key|main|major|all)\s+(things?|items?|points?|reasons?|ways?|tips?|examples?|factors?|features?|benefits?|risks?|issues?|steps?|ideas?|recommendations?|priorities?|strengths?|weaknesses?|areas?)\b', q_lower):
+            return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
+        if re.search(r'\blist\s+(the|all|every|my|our|their)\b', q_lower):
+            return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
+        if re.search(r'\bwhat are (the |all )?(key|main|top|biggest|most)\b', q_lower):
+            return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
+
+        # CODE: "write code", "show me the code", "implement", "script"
+        if re.search(r'\b(write|show|give|create|generate)\s+(me\s+)?(the\s+)?(code|script|function|implementation|snippet|class|method|query|sql|regex)\b', q_lower):
+            return "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."
+        if re.search(r'\b(implement|code|program|script)\s+(a|an|the|this|that)\b', q_lower):
+            return "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."
+
+        # TABLE: "compare in a table", "show a table"
+        if re.search(r'\b(table|comparison|matrix|grid)\b.*\b(of|for|showing|comparing)\b', q_lower):
+            return "\nFORMAT: Use a markdown table for structured comparison. Add a brief summary below the table."
+
+        # STEPS: "how to", "step by step", "walk me through", "process for"
+        if re.search(r'\b(step.by.step|walk me through|how do i|how to|process for|guide to|instructions for)\b', q_lower):
+            return "\nFORMAT: Respond with numbered steps. Each step should have a clear action and brief explanation."
+
+        # Default: no format override (paragraph style)
+        return ""
+
     def _should_auto_upgrade_to_think(self, question: str) -> bool:
         """Invisible auto-routing: detect if a 'fast' query should be upgraded to 'think' mode."""
         return self._classify_query(question) == 'complex'
@@ -2061,7 +2143,7 @@ JSON:"""
         Called when answer quality check fails. Generates variant queries and
         retrieves again to get better results.
         """
-        print(f"[RAG] Corrective retrieval triggered - generating query variants")
+        print("[RAG] Corrective retrieval triggered - generating query variants")
         
         variants = await self._generate_query_variants(question)
         print(f"[RAG] Query variants: {variants}")
@@ -2233,6 +2315,9 @@ Provide a clear, integrated answer in 1-2 paragraphs."""
             "auto_upgraded": auto_upgraded
         }
 
+        # Immediate status so user sees feedback within milliseconds
+        yield {"type": "status", "message": "🔍 Analyzing your question..."}
+
         # Step 1: PARALLEL query analysis + embedding (0ms added latency)
         # Run LLM analysis in parallel with embedding generation
         step_start = time.time()
@@ -2243,7 +2328,7 @@ Provide a clear, integrated answer in 1-2 paragraphs."""
         
         if cached_analysis:
             query_analysis = cached_analysis
-            print(f"[RAG STREAM] Step 1a - Query Analysis (CACHED): 0.00s")
+            print("[RAG STREAM] Step 1a - Query Analysis (CACHED): 0.00s")
         else:
             # Start LLM analysis as background task
             analysis_task = asyncio.create_task(self._analyze_query_with_llm(question))
@@ -2378,7 +2463,6 @@ Provide a clear, integrated answer in 1-2 paragraphs."""
         # Step 4: Handle low confidence case - refuse to answer if no valid sources
         if low_confidence or num_citations == 0 or not context.strip():
             no_info_msg = "I don't have enough relevant information in your documents to answer this question accurately. Try uploading more documents related to this topic, or rephrase your question."
-            yield {"type": "quick_summary", "content": no_info_msg}
             yield {"type": "token", "content": no_info_msg}
             yield {"type": "done", "follow_up_questions": []}
             return
@@ -2403,7 +2487,8 @@ Provide a clear, integrated answer in 1-2 paragraphs."""
         
         # Get optimized prompt for this query type (with confidence guidance)
         base_prompt = self._get_prompt_for_query_type(query_type, num_citations, avg_confidence)
-        system_prompt = f"User context: {user_context}\n\n{base_prompt}" if user_context else base_prompt
+        format_hint = self._detect_response_format(question)
+        system_prompt = f"User context: {user_context}\n\n{base_prompt}{format_hint}" if user_context else f"{base_prompt}{format_hint}"
 
         # Build user prompt with temporal context if detected
         temporal_note = ""
@@ -2430,7 +2515,7 @@ Provide a clear, integrated answer in 1-2 paragraphs."""
                         notebook_id, query_entities
                     )
                     if community_context:
-                        print(f"[RAG STREAM] Added community context for holistic query")
+                        print("[RAG STREAM] Added community context for holistic query")
         except Exception as e:
             print(f"[RAG STREAM] Community context failed (non-fatal): {e}")
         
@@ -2462,15 +2547,9 @@ Answer with [N] citations:"""
         buffer = ""
         references_started = False
         
-        # Quick Answer extraction state
-        quick_answer_sent = False
-        sentence_buffer = ""
-        sentence_count = 0
-        
         async for token in self._stream_ollama(system_prompt, prompt, deep_think=deep_think, use_fast_model=use_fast_model):
             buffer += token
             full_answer += token
-            sentence_buffer += token
             
             # Check if we've hit a References section - stop streaming if so
             if not references_started:
@@ -2478,7 +2557,7 @@ Answer with [N] citations:"""
                 for marker in ["\nreferences:", "\nreferences\n", "\nsources:\n", "\ncitations:\n", "\n\n[1] "]:
                     if marker in lower_buffer:
                         references_started = True
-                        print(f"[RAG STREAM] Detected references section, stopping output")
+                        print("[RAG STREAM] Detected references section, stopping output")
                         break
             
             if not references_started:
@@ -2486,29 +2565,6 @@ Answer with [N] citations:"""
                 # _clean_llm_output is for complete text, not streaming tokens
                 if token:
                     yield {"type": "token", "content": token}
-            
-            # Extract Quick Answer from first 1-2 complete sentences
-            if not quick_answer_sent:
-                # Count sentences by looking for sentence endings
-                for end_char in ['. ', '.\n', '? ', '?\n', '! ', '!\n']:
-                    if end_char in sentence_buffer:
-                        sentence_count += sentence_buffer.count(end_char)
-                        sentence_buffer = sentence_buffer.split(end_char)[-1]  # Keep remainder
-                
-                # After 2 sentences (or 1 if it's substantial), emit Quick Answer
-                if sentence_count >= 2 or (sentence_count >= 1 and len(full_answer) > 150):
-                    # Extract first 1-2 sentences for Quick Answer
-                    quick_answer = self._extract_first_sentences(full_answer, max_sentences=2)
-                    if quick_answer:
-                        # Clean LaTeX artifacts from Quick Answer
-                        quick_answer = self._clean_llm_output(quick_answer)
-                        yield {"type": "quick_summary", "content": quick_answer}
-                        print(f"[RAG STREAM] Quick Answer extracted from stream: {len(quick_answer)} chars")
-                        quick_answer_sent = True
-        
-        # If answer was very short and we never sent Quick Answer, send the whole thing
-        if not quick_answer_sent and full_answer.strip():
-            yield {"type": "quick_summary", "content": self._clean_llm_output(full_answer.strip())}
         
         print(f"[RAG STREAM] Step 6 - LLM streaming: {time.time() - step_start:.2f}s")
 
@@ -2605,55 +2661,6 @@ Answer with [N] citations:"""
         text = text.strip()
         
         return text
-
-    def _extract_first_sentences(self, text: str, max_sentences: int = 2) -> str:
-        """Extract the first N sentences from text for Quick Answer preview.
-        
-        This ensures Quick Answer is always consistent with Detailed Answer
-        since it's literally extracted from the same response.
-        """
-        if not text:
-            return ""
-        
-        import re
-        
-        # Split by sentence endings followed by space or newline
-        # But require the sentence to be at least 20 chars to avoid false positives
-        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-        
-        if not sentences:
-            return text.strip()
-        
-        # Filter out very short "sentences" that are likely fragments
-        # Also skip sentences that end with incomplete patterns like "for." or "of."
-        valid_sentences = []
-        for s in sentences:
-            s = s.strip()
-            if len(s) < 15:
-                continue
-            # Skip if it ends with a preposition + period (incomplete)
-            if re.search(r'\b(for|of|to|in|on|at|by|with|from)\.$', s, re.IGNORECASE):
-                continue
-            valid_sentences.append(s)
-        
-        if not valid_sentences:
-            # Fallback: just take first chunk up to a reasonable length
-            first_chunk = text[:300]
-            # Find last complete sentence
-            last_period = max(first_chunk.rfind('. '), first_chunk.rfind('.\n'))
-            if last_period > 50:
-                return first_chunk[:last_period + 1].strip()
-            return first_chunk.strip() + '...'
-        
-        # Take first N valid sentences
-        result_sentences = valid_sentences[:max_sentences]
-        result = ' '.join(result_sentences)
-        
-        # Ensure it ends with proper punctuation
-        if result and result[-1] not in '.!?':
-            result += '.'
-        
-        return result.strip()
 
     async def generate_proactive_insights(self, notebook_id: str, limit: int = 3) -> List[Dict]:
         """Phase 4.1: Generate proactive insights from document content.
@@ -2875,6 +2882,11 @@ Be thorough but concise (2-3 paragraphs). Inline citations only."""
                 memory_used.append("core_context")
         system_parts.append(base_prompt)
         
+        # Zero-latency format hint (list, code, table, steps, or empty)
+        format_hint = self._detect_response_format(question)
+        if format_hint:
+            system_parts.append(format_hint)
+        
         system_prompt = "\n\n".join(system_parts)
         
         # Add retrieved memories to context if available
@@ -2909,15 +2921,23 @@ Answer concisely with inline [N] citations:"""
             "memory_context_summary": memory_context.core_memory_block[:200] if memory_context.core_memory_block else None
         }
     
-    async def _call_ollama(self, system_prompt: str, prompt: str, model: str = None) -> str:
-        """Call Ollama API"""
+    async def _call_ollama(self, system_prompt: str, prompt: str, model: str = None, num_predict: int = 500, num_ctx: int = None) -> str:
+        """Call Ollama API
+        
+        Args:
+            num_predict: Max tokens to generate. 500 for chat Q&A, 2000-4000 for documents.
+            num_ctx: Context window size. None = Ollama default. Set higher (8192+) for long generation.
+        """
         # Use very long timeout - LLM generation can take minutes for complex queries
         timeout = httpx.Timeout(10.0, read=600.0)  # 10s connect, 10 min read
         # Default to fast model for non-streaming calls - faster response times
         # Main model (olmo-3:7b-instruct) used for streaming queries
         use_model = model or settings.ollama_fast_model
+        options = {"num_predict": num_predict}
+        if num_ctx is not None:
+            options["num_ctx"] = num_ctx
         async with httpx.AsyncClient(timeout=timeout) as client:
-            print(f"Calling Ollama with model: {use_model}")
+            print(f"Calling Ollama with model: {use_model}, num_predict: {num_predict}, num_ctx: {num_ctx or 'default'}")
             response = await client.post(
                 f"{settings.ollama_base_url}/api/generate",
                 json={
@@ -2925,21 +2945,21 @@ Answer concisely with inline [N] citations:"""
                     "prompt": f"{system_prompt}\n\n{prompt}",
                     "stream": False,
                     "keep_alive": -1,  # Keep model loaded (Tier 1 optimization)
-                    "options": {
-                        "num_predict": 500,  # Increased for better responses
-                    }
+                    "options": options
                 }
             )
             result = response.json()
             print(f"Ollama response received, length: {len(result.get('response', ''))}")
             return result.get("response", "No response from LLM")
 
-    async def _stream_ollama(self, system_prompt: str, prompt: str, deep_think: bool = False, use_fast_model: bool = False) -> AsyncGenerator[str, None]:
+    async def _stream_ollama(self, system_prompt: str, prompt: str, deep_think: bool = False, use_fast_model: bool = False, num_predict: Optional[int] = None) -> AsyncGenerator[str, None]:
         """Stream response from Ollama API with stop sequences to prevent citation lists
         
         Args:
             deep_think: Use CoT prompting with lower temperature for thorough analysis
             use_fast_model: Use phi4-mini (System 1) instead of olmo-3:7b-instruct (System 2)
+            num_predict: Override token limit. None = use defaults (400 chat / 800 deep think).
+                         Set higher (2000-4000) for document generation.
         """
         timeout = httpx.Timeout(10.0, read=600.0)
         
@@ -2957,39 +2977,51 @@ Answer concisely with inline [N] citations:"""
             top_p = 0.9
         
         # Stop sequences to prevent LLM from generating citation/reference lists
-        stop_sequences = [
-            "\n\nReferences",
-            "\n\nSources:",
-            "\n\nSources\n",
-            "\n\nCitations:",
-            "\n\nCitations\n",
-            "\n\n---\n[",
-            "\n\n[1]:",
-            "\n\n**References",
-            "\n\n**Sources",
-        ]
+        # Only apply for chat Q&A, not document generation (which needs References sections)
+        stop_sequences = []
+        if num_predict is None:
+            stop_sequences = [
+                "\n\nReferences",
+                "\n\nSources:",
+                "\n\nSources\n",
+                "\n\nCitations:",
+                "\n\nCitations\n",
+                "\n\n---\n[",
+                "\n\n[1]:",
+                "\n\n**References",
+                "\n\n**Sources",
+            ]
+        
+        # Determine token limit
+        if num_predict is not None:
+            effective_num_predict = num_predict
+        else:
+            effective_num_predict = 800 if deep_think else 400
         
         async with httpx.AsyncClient(timeout=timeout) as client:
             mode_str = " [Deep Think]" if deep_think else (" [Fast]" if use_fast_model else "")
-            print(f"Streaming from Ollama with model: {model}{mode_str} (temp={temperature}, top_p={top_p})")
+            print(f"Streaming from Ollama with model: {model}{mode_str} (temp={temperature}, num_predict={effective_num_predict})")
             
             # Tier 1 optimizations: keep_alive prevents cold start, num_predict caps runaway generation
+            request_json = {
+                "model": model,
+                "prompt": f"{system_prompt}\n\n{prompt}",
+                "stream": True,
+                "keep_alive": -1,  # Keep model loaded indefinitely (eliminates cold start)
+                "options": {
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "num_predict": effective_num_predict,
+                    "num_ctx": 4096,  # Reasonable context window
+                }
+            }
+            if stop_sequences:
+                request_json["stop"] = stop_sequences
+            
             async with client.stream(
                 "POST",
                 f"{settings.ollama_base_url}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": f"{system_prompt}\n\n{prompt}",
-                    "stream": True,
-                    "stop": stop_sequences,
-                    "keep_alive": -1,  # Keep model loaded indefinitely (eliminates cold start)
-                    "options": {
-                        "temperature": temperature,
-                        "top_p": top_p,
-                        "num_predict": 400 if not deep_think else 800,  # Cap output length
-                        "num_ctx": 4096,  # Reasonable context window
-                    }
-                }
+                json=request_json
             ) as response:
                 async for line in response.aiter_lines():
                     if line:
