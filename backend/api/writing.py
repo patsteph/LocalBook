@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from services.structured_llm import structured_llm
+from services.event_logger import log_content_generated
 from storage.source_store import source_store
 
 
@@ -149,6 +150,7 @@ async def assist_writing(request: WriteRequest):
 @router.post("/from-sources", response_model=WritingResponse)
 async def write_from_sources(request: WriteFromSourcesRequest):
     """Generate writing based on notebook sources."""
+    log_content_generated(request.notebook_id, "document", request.task or "write", request.topic or "")
     
     sources = await source_store.list(request.notebook_id)
     if not sources:

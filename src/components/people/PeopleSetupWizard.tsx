@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Button } from '../shared/Button';
 import { Modal } from '../shared/Modal';
-import { API_BASE_URL } from '../../services/api';
+import { peopleService } from '../../services/people';
 import {
   Plus, Trash2, Linkedin, Github, Globe,
   CheckCircle2, AlertCircle, Loader2, Shield
@@ -72,10 +72,8 @@ export const PeopleSetupWizard: React.FC<PeopleSetupWizardProps> = ({
 
   const fetchAuthStatus = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/people/auth/status`);
-      if (res.ok) {
-        setAuthStatus(await res.json());
-      }
+      const data = await peopleService.getAuthStatus();
+      setAuthStatus(data);
     } catch (e) {
       console.error('Failed to fetch auth status:', e);
     }
@@ -170,15 +168,8 @@ export const PeopleSetupWizard: React.FC<PeopleSetupWizardProps> = ({
   const handleAuthenticate = async (platform: string) => {
     setAuthenticating(platform);
     try {
-      const res = await fetch(`${API_BASE_URL}/people/auth/${platform}`, {
-        method: 'POST',
-      });
-      if (res.ok) {
-        await fetchAuthStatus();
-      } else {
-        const data = await res.json();
-        setError(data.detail || 'Authentication failed');
-      }
+      await peopleService.authenticate(platform, {});
+      await fetchAuthStatus();
     } catch (e) {
       setError('Authentication failed. Please try again.');
     } finally {
@@ -198,34 +189,24 @@ export const PeopleSetupWizard: React.FC<PeopleSetupWizardProps> = ({
     try {
       const validMembers = members.filter(m => m.name.trim() !== '');
 
-      const res = await fetch(`${API_BASE_URL}/people/${notebookId}/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          notebook_name: notebookName,
-          coaching_enabled: coachingEnabled,
-          members: validMembers.map(m => ({
-            name: m.name.trim(),
-            social_links: Object.fromEntries(
-              Object.entries(m.social_links).filter(([_, v]) => v.trim())
-            ),
-            current_role: m.current_role,
-            initial_notes: m.initial_notes,
-          })),
-          collection_schedule: schedule,
-        }),
+      await peopleService.updateConfig(notebookId, {
+        notebook_name: notebookName,
+        coaching_enabled: coachingEnabled,
+        members: validMembers.map(m => ({
+          name: m.name.trim(),
+          social_links: Object.fromEntries(
+            Object.entries(m.social_links).filter(([_, v]) => v.trim())
+          ),
+          current_role: m.current_role,
+          initial_notes: m.initial_notes,
+        })),
+        collection_schedule: schedule,
       });
-
-      if (!res.ok) throw new Error('Failed to save configuration');
 
       // Trigger first collection
-      fetch(`${API_BASE_URL}/people/${notebookId}/collect-all`, {
-        method: 'POST',
-      }).then(r => {
-        if (r.ok) console.log('[People Wizard] First collection triggered');
-      }).catch(err => {
-        console.error('[People Wizard] First collection failed:', err);
-      });
+      peopleService.collectAll(notebookId)
+        .then(() => console.log('[People Wizard] First collection triggered'))
+        .catch(err => console.error('[People Wizard] First collection failed:', err));
 
       onComplete();
     } catch (e) {

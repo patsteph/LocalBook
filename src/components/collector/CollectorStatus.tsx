@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Button } from '../shared/Button';
-import { API_BASE_URL } from '../../services/api';
+import { collectorService } from '../../services/collector';
 import './CollectorStatus.css';
 
 interface CollectorConfig {
@@ -42,23 +42,15 @@ export const CollectorStatus: React.FC<CollectorStatusProps> = ({
 
   const fetchStatus = async () => {
     try {
-      const [configRes, healthRes, pendingRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/collector/${notebookId}/config`),
-        fetch(`${API_BASE_URL}/collector/${notebookId}/source-health`),
-        fetch(`${API_BASE_URL}/collector/${notebookId}/pending`)
+      const [configData, healthData, pendingData] = await Promise.all([
+        collectorService.getConfig(notebookId),
+        collectorService.getSourceHealth(notebookId),
+        collectorService.getPendingApprovals(notebookId)
       ]);
 
-      if (configRes.ok) {
-        setConfig(await configRes.json());
-      }
-      if (healthRes.ok) {
-        const data = await healthRes.json();
-        setSourceHealth(data.sources || []);
-      }
-      if (pendingRes.ok) {
-        const data = await pendingRes.json();
-        setPendingCount(data.total || 0);
-      }
+      setConfig(configData as any);
+      setSourceHealth(healthData.sources || []);
+      setPendingCount(pendingData.total || 0);
     } catch (err) {
       console.error('Error fetching collector status:', err);
     } finally {
@@ -69,13 +61,8 @@ export const CollectorStatus: React.FC<CollectorStatusProps> = ({
   const handleCollectNow = async () => {
     setCollecting(true);
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/collector/${notebookId}/collect-now`,
-        { method: 'POST' }
-      );
-      if (response.ok) {
-        await fetchStatus();
-      }
+      await collectorService.collectNow(notebookId);
+      await fetchStatus();
     } catch (err) {
       console.error('Error triggering collection:', err);
     } finally {

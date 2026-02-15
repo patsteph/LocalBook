@@ -3,6 +3,10 @@
 v1.1.0: Implements RLM patterns for processing 50+ documents that exceed
 normal LLM context windows. Uses code execution to navigate large contexts.
 
+STATUS: PARTIAL — Wired to api/rlm.py endpoints but has minimal real-world
+usage. The primary chat flow uses rag_engine with query decomposition instead.
+RLM is an alternative approach for very large notebook analysis tasks.
+
 Key Features:
 - Root LLM (olmo-3:7b) orchestrates analysis via Python code
 - Sub LLM (phi4-mini) analyzes individual chunks

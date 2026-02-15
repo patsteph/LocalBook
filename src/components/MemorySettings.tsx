@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { API_BASE_URL } from '../services/api';
+import { memoryService } from '../services/memory';
 
 interface CoreMemoryEntry {
   id: string;
@@ -34,8 +34,6 @@ interface MemoryStats {
     entries: number;
   };
 }
-
-const API_BASE = API_BASE_URL;
 
 const CATEGORY_LABELS: Record<string, string> = {
   user_preference: '⚙️ Preferences',
@@ -80,11 +78,8 @@ export const MemorySettings: React.FC = () => {
 
   const loadMemories = async () => {
     try {
-      const response = await fetch(`${API_BASE}/memory/core`);
-      if (response.ok) {
-        const data = await response.json();
-        setMemories(data.entries || []);
-      }
+      const data = await memoryService.getCoreMemories();
+      setMemories((data as any).entries || []);
     } catch (err) {
       console.error('Failed to load memories:', err);
     } finally {
@@ -94,11 +89,8 @@ export const MemorySettings: React.FC = () => {
 
   const loadStats = async () => {
     try {
-      const response = await fetch(`${API_BASE}/memory/stats`);
-      if (response.ok) {
-        const data = await response.json();
-        setStats(data);
-      }
+      const data = await memoryService.getStats();
+      setStats(data as any);
     } catch (err) {
       console.error('Failed to load memory stats:', err);
     }
@@ -106,14 +98,9 @@ export const MemorySettings: React.FC = () => {
 
   const deleteMemory = async (id: string) => {
     try {
-      const response = await fetch(`${API_BASE}/memory/core/${id}`, {
-        method: 'DELETE',
-      });
-      
-      if (response.ok) {
-        setMemories(memories.filter(m => m.id !== id));
-        loadStats();
-      }
+      await memoryService.deleteCoreMemory(id);
+      setMemories(memories.filter(m => m.id !== id));
+      loadStats();
     } catch (err) {
       setError('Failed to delete memory');
     }
@@ -127,7 +114,7 @@ export const MemorySettings: React.FC = () => {
     try {
       // Delete each memory
       for (const memory of memories) {
-        await fetch(`${API_BASE}/memory/core/${memory.id}`, { method: 'DELETE' });
+        await memoryService.deleteCoreMemory(memory.id);
       }
       setMemories([]);
       loadStats();

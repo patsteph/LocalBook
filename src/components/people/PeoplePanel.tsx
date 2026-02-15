@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { API_BASE_URL } from '../../services/api';
+import { peopleService } from '../../services/people';
 import { TeamMemberList } from './TeamMemberList';
 import { PersonProfileView } from './PersonProfileView';
 import { PeopleSetupWizard } from './PeopleSetupWizard';
@@ -30,15 +30,10 @@ export const PeoplePanel: React.FC<PeoplePanelProps> = ({
 
   const loadConfig = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/people/${notebookId}/config`);
-      if (res.ok) {
-        const data = await res.json();
-        setConfig(data);
-        setHasConfig(true);
-        setCoachingEnabled(data.coaching_enabled === true);
-      } else if (res.status === 404) {
-        setHasConfig(false);
-      }
+      const data = await peopleService.getConfig(notebookId);
+      setConfig(data);
+      setHasConfig(true);
+      setCoachingEnabled(data.coaching_enabled === true);
     } catch (e) {
       console.error('Failed to load people config:', e);
     } finally {
@@ -53,9 +48,7 @@ export const PeoplePanel: React.FC<PeoplePanelProps> = ({
   const handleCollectAll = async () => {
     setIsCollecting(true);
     try {
-      await fetch(`${API_BASE_URL}/people/${notebookId}/collect-all`, {
-        method: 'POST',
-      });
+      await peopleService.collectAll(notebookId);
       await loadConfig();
     } catch (e) {
       console.error('Collect all failed:', e);
@@ -68,16 +61,10 @@ export const PeoplePanel: React.FC<PeoplePanelProps> = ({
     if (!newMemberName.trim()) return;
     setAddingMember(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/people/${notebookId}/members`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newMemberName.trim() }),
-      });
-      if (res.ok) {
-        setNewMemberName('');
-        setShowAddMember(false);
-        await loadConfig();
-      }
+      await peopleService.getMembers(notebookId);
+      setNewMemberName('');
+      setShowAddMember(false);
+      await loadConfig();
     } catch (e) {
       console.error('Failed to add member:', e);
     } finally {
@@ -136,8 +123,8 @@ export const PeoplePanel: React.FC<PeoplePanelProps> = ({
             onClick={async () => {
               try {
                 const next = !coachingEnabled;
-                const res = await fetch(`${API_BASE_URL}/people/${notebookId}/config/coaching?enabled=${next}`, { method: 'PATCH' });
-                if (res.ok) setCoachingEnabled(next);
+                await peopleService.toggleCoaching(notebookId, next);
+                setCoachingEnabled(next);
               } catch (e) { console.error('Toggle coaching failed:', e); }
             }}
             className={`p-1 rounded transition-colors ${

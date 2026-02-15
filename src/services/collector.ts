@@ -231,6 +231,37 @@ class CollectorService {
     if (!response.ok) throw new Error('Failed to stop scheduler');
     return response.json();
   }
+
+  /**
+   * Get collector profile (collection history summary)
+   */
+  async getProfile(notebookId: string): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/profile`);
+    if (!response.ok) throw new Error('Failed to fetch collector profile');
+    return response.json();
+  }
+
+  /**
+   * Get collection history
+   */
+  async getHistory(notebookId: string, limit = 15): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/history?limit=${limit}`);
+    if (!response.ok) throw new Error('Failed to fetch collection history');
+    return response.json();
+  }
+
+  /**
+   * Toggle a source on/off
+   */
+  async toggleSource(notebookId: string, sourceUrl: string, enabled: boolean): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/source-toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_url: sourceUrl, enabled })
+    });
+    if (!response.ok) throw new Error('Failed to toggle source');
+    return response.json();
+  }
 }
 
 export const collectorService = new CollectorService();

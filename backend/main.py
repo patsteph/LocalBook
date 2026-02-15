@@ -17,7 +17,7 @@ from config import settings
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
 from services.startup_checks import run_all_startup_checks
 from services.migration_manager import check_and_migrate_on_startup
-from services.findings_store import init_findings_store
+from storage.findings_store import init_findings_store
 
 async def _run_startup_tasks():
     """Run all startup tasks in background after HTTP server is ready.
@@ -31,6 +31,16 @@ async def _run_startup_tasks():
     
     # Initialize findings store
     init_findings_store(settings.data_dir)
+    
+    # SQLite migration: if use_sqlite is enabled, run one-time JSON→SQLite migration
+    if settings.use_sqlite:
+        try:
+            from storage.migrate_json_to_sqlite import run_migration
+            run_migration()
+            print("💾 SQLite storage backend active")
+        except Exception as e:
+            print(f"⚠️ SQLite migration failed, falling back to JSON: {e}")
+            settings.use_sqlite = False
     
     # Check if this is an upgrade
     is_upgrade, previous_version = check_if_upgrade()
@@ -218,8 +228,9 @@ app.include_router(agent.router, tags=["agent"])
 app.include_router(browser.router, tags=["browser"])
 app.include_router(browser_transform.router, tags=["browser-transform"])
 app.include_router(audio_llm.router, tags=["audio-llm"])
-app.include_router(rag_health.router, tags=["rag-health"])
-app.include_router(health_portal.router, tags=["health-portal"])
+if settings.debug_mode:
+    app.include_router(rag_health.router, tags=["rag-health"])
+    app.include_router(health_portal.router, tags=["health-portal"])
 app.include_router(jobs.router, tags=["jobs"])
 app.include_router(agent_browser.router, tags=["agent-browser"])
 app.include_router(rlm.router, tags=["rlm"])

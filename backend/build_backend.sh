@@ -111,7 +111,7 @@ pyinstaller \
     --hidden-import=services.entity_extractor \
     --hidden-import=services.entity_graph \
     --hidden-import=services.event_logger \
-    --hidden-import=services.findings_store \
+    --hidden-import=storage.findings_store \
     --hidden-import=services.hierarchical_chunker \
     --hidden-import=services.job_queue \
     --hidden-import=services.knowledge_graph \
@@ -125,11 +125,15 @@ pyinstaller \
     --hidden-import=services.query_decomposer \
     --hidden-import=services.query_orchestrator \
     --hidden-import=services.rag_cache \
+    --hidden-import=services.rag_chunking \
     --hidden-import=services.rag_engine \
+    --hidden-import=services.rag_generation \
     --hidden-import=services.rag_metrics \
+    --hidden-import=services.rag_query_analyzer \
     --hidden-import=services.rlm_executor \
     --hidden-import=services.site_search \
     --hidden-import=services.source_discovery \
+    --hidden-import=services.source_ingestion \
     --hidden-import=services.source_router \
     --hidden-import=services.startup_checks \
     --hidden-import=services.structured_llm \
@@ -163,9 +167,13 @@ pyinstaller \
     --hidden-import=pyee \
     --hidden-import=pyee.asyncio \
     --hidden-import=storage \
+    --hidden-import=storage.database \
+    --hidden-import=storage.migrate_json_to_sqlite \
     --hidden-import=storage.notebook_store \
     --hidden-import=storage.source_store \
     --hidden-import=storage.audio_store \
+    --hidden-import=storage.content_store \
+    --hidden-import=storage.exploration_store \
     --hidden-import=storage.highlights_store \
     --hidden-import=storage.skills_store \
     --hidden-import=storage.memory_store \
@@ -216,7 +224,6 @@ pyinstaller \
     --hidden-import=openpyxl \
     --hidden-import=xlrd \
     --hidden-import=pandas._config \
-    --hidden-import=moviepy \
     --hidden-import=anthropic \
     --hidden-import=openai \
     --hidden-import=multiprocessing \
@@ -238,6 +245,9 @@ pyinstaller \
     --hidden-import=yaml \
     --hidden-import=cryptography \
     --hidden-import=zoneinfo \
+    --exclude-module=boto3 \
+    --exclude-module=botocore \
+    --exclude-module=s3transfer \
     main.py
 
 # Make the main executable... executable

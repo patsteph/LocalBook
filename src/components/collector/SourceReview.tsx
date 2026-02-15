@@ -15,7 +15,7 @@ import {
   TrendingUp,
   AlertCircle
 } from 'lucide-react';
-import { API_BASE_URL } from '../../services/api';
+import { sourceDiscoveryService } from '../../services/sourceDiscovery';
 import { PeopleSetupWizard } from '../people/PeopleSetupWizard';
 
 interface DiscoveredSource {
@@ -157,24 +157,13 @@ export const SourceReview: React.FC<SourceReviewProps> = ({
     setError(null);
     
     try {
-      const response = await fetch(`${API_BASE_URL}/source-discovery/discover`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          notebook_id: notebookId,
-          subject,
-          intent,
-          focus_areas: focusAreas,
-          override_purpose: overridePurpose,
-          company_details: companyDetails,
-        }),
+      const data = await sourceDiscoveryService.discover(notebookId, {
+        subject,
+        intent,
+        focus_areas: focusAreas,
+        override_purpose: overridePurpose,
+        company_details: companyDetails,
       });
-      
-      if (!response.ok) {
-        throw new Error('Discovery failed');
-      }
-      
-      const data = await response.json();
       setSources(data.sources || []);
       setIntentAnalysis(data.intent_analysis);
       setCompanyProfile(data.company_profile);
@@ -246,23 +235,8 @@ export const SourceReview: React.FC<SourceReviewProps> = ({
     
     try {
       const approved = sources.filter(s => selectedSources.has(s.id));
-      const rejected = sources.filter(s => !selectedSources.has(s.id));
       
-      const response = await fetch(`${API_BASE_URL}/source-discovery/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          notebook_id: notebookId,
-          approved_sources: approved,
-          rejected_sources: rejected,
-        }),
-      });
-      
-      if (!response.ok) {
-        throw new Error('Failed to save sources');
-      }
-      
-      const result = await response.json();
+      const result = await sourceDiscoveryService.approve(notebookId, approved);
       onComplete(result.sources_added);
       
     } catch (err) {

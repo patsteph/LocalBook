@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import List
 from storage.exploration_store import exploration_store
+from services.event_logger import log_search
 
 router = APIRouter(prefix="/exploration", tags=["exploration"])
 
@@ -20,6 +21,7 @@ class RecordQueryRequest(BaseModel):
 @router.post("/record")
 async def record_query(request: RecordQueryRequest):
     """Record a query as part of the user's exploration journey"""
+    log_search(request.notebook_id, request.query, len(request.sources_used))
     result = await exploration_store.record_query(
         notebook_id=request.notebook_id,
         query=request.query,

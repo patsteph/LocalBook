@@ -10,7 +10,7 @@ import {
   Loader2,
   RefreshCw
 } from 'lucide-react';
-import { API_BASE_URL } from '../../services/api';
+import { curatorService } from '../../services/curatorApi';
 
 interface NotebookSummary {
   notebook_id: string;
@@ -66,13 +66,7 @@ export const MorningBrief: React.FC<MorningBriefProps> = ({
         hoursAway = Math.max(1, Math.min(hoursAway, 168)); // Between 1 hour and 1 week
       }
       
-      const response = await fetch(`${API_BASE_URL}/curator/morning-brief?hours_away=${hoursAway}`);
-      
-      if (!response.ok) {
-        throw new Error('Failed to load brief');
-      }
-      
-      const data = await response.json();
+      const data = await curatorService.getMorningBrief(hoursAway);
       setBriefData(data);
       
       // Update last seen

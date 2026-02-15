@@ -12,6 +12,7 @@ import traceback
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from services.event_logger import log_content_generated
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,7 @@ async def generate_visual_summary(request: GenerateVisualRequest):
         ]
         
         logger.info(f"[STUDIO] Visual summary completed: {len(diagrams)} diagrams generated")
+        log_content_generated(request.notebook_id, "visual", "visual_summary", request.focus_topic or "")
         return VisualSummaryResponse(
             notebook_id=request.notebook_id,
             diagrams=diagrams,

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { API_BASE_URL } from '../../services/api';
+import { peopleService } from '../../services/people';
 import {
   ArrowLeft, RefreshCw, Github,
   MapPin, Briefcase, Clock, Plus,
@@ -42,10 +42,8 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
   const loadProfile = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}`);
-      if (res.ok) {
-        setProfile(await res.json());
-      }
+      const data = await peopleService.getMember(notebookId, memberId);
+      setProfile(data);
     } catch (e) {
       console.error('Failed to load profile:', e);
     } finally {
@@ -56,9 +54,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
   const handleCollect = async () => {
     setCollecting(true);
     try {
-      await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/collect`, {
-        method: 'POST',
-      });
+      await peopleService.collectMember(notebookId, memberId);
       await loadProfile();
     } catch (e) {
       console.error('Collection failed:', e);
@@ -71,19 +67,10 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
     if (!newNote.trim()) return;
     setAddingNote(true);
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/people/${notebookId}/members/${memberId}/notes`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: newNote.trim(), category: noteCategory }),
-        }
-      );
-      if (res.ok) {
-        setNewNote('');
-        setShowNoteForm(false);
-        await loadProfile();
-      }
+      await peopleService.addNote(notebookId, memberId, newNote.trim(), noteCategory);
+      setNewNote('');
+      setShowNoteForm(false);
+      await loadProfile();
     } catch (e) {
       console.error('Failed to add note:', e);
     } finally {
@@ -95,19 +82,10 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
     if (!newGoal.trim()) return;
     setAddingGoal(true);
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/people/${notebookId}/members/${memberId}/goals`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ goal: newGoal.trim() }),
-        }
-      );
-      if (res.ok) {
-        setNewGoal('');
-        setShowGoalForm(false);
-        await loadProfile();
-      }
+      await peopleService.addGoal(notebookId, memberId, newGoal.trim());
+      setNewGoal('');
+      setShowGoalForm(false);
+      await loadProfile();
     } catch (e) {
       console.error('Failed to add goal:', e);
     } finally {
@@ -117,13 +95,8 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
 
   const handleDeleteNote = async (noteId: string) => {
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/people/${notebookId}/members/${memberId}/notes/${noteId}`,
-        { method: 'DELETE' }
-      );
-      if (res.ok) {
-        await loadProfile();
-      }
+      await peopleService.deleteNote(notebookId, memberId, noteId);
+      await loadProfile();
     } catch (e) {
       console.error('Failed to delete note:', e);
     }
@@ -131,13 +104,8 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
 
   const handleDeleteGoal = async (goalId: string) => {
     try {
-      const res = await fetch(
-        `${API_BASE_URL}/people/${notebookId}/members/${memberId}/goals/${goalId}`,
-        { method: 'DELETE' }
-      );
-      if (res.ok) {
-        await loadProfile();
-      }
+      await peopleService.deleteGoal(notebookId, memberId, goalId);
+      await loadProfile();
     } catch (e) {
       console.error('Failed to delete goal:', e);
     }

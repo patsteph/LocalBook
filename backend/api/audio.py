@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import Optional
 from pathlib import Path
 from services.audio_generator import audio_service
+from services.event_logger import log_content_generated
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ async def generate_audio(request: AudioGenerateRequest):
             accent=request.accent
         )
         logger.info(f"[STUDIO] Podcast generation completed: audio_id={result.get('audio_id', 'unknown')}")
+        log_content_generated(request.notebook_id, "audio", request.skill_id or "podcast", request.topic or "")
         return result
     except Exception as e:
         logger.error(f"[STUDIO] Podcast generation failed for notebook={request.notebook_id}")

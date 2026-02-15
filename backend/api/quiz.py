@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 import json
 from pathlib import Path
 
+from services.event_logger import log_quiz_completed
+
 logger = logging.getLogger(__name__)
 
 from config import settings
@@ -165,6 +167,7 @@ async def generate_quiz(request: GenerateQuizRequest):
     """Generate a quiz from notebook content."""
     try:
         logger.info(f"[STUDIO] Quiz generation started for notebook={request.notebook_id}, questions={request.num_questions}")
+        log_quiz_completed(request.notebook_id, request.topic or "", request.difficulty or "medium", total=request.num_questions)
         
         # Get sources for the notebook
         sources = await source_store.list(request.notebook_id)

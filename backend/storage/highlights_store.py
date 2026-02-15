@@ -9,8 +9,14 @@ from utils.json_io import atomic_write_json
 
 class HighlightsStore:
     def __init__(self):
+        self._use_sqlite = settings.use_sqlite
         self.storage_path = settings.data_dir / "highlights.json"
-        self._ensure_storage()
+        if not self._use_sqlite:
+            self._ensure_storage()
+
+    def _get_db(self):
+        from storage.database import get_db
+        return get_db().get_connection()
 
     def _ensure_storage(self):
         """Ensure storage file exists"""
@@ -28,6 +34,12 @@ class HighlightsStore:
 
     async def list(self, notebook_id: str, source_id: str) -> List[Dict]:
         """List all highlights for a source"""
+        if self._use_sqlite:
+            rows = self._get_db().execute(
+                "SELECT * FROM highlights WHERE notebook_id = ? AND source_id = ?",
+                (notebook_id, source_id)
+            ).fetchall()
+            return [dict(r) for r in rows]
         data = self._load_data()
         return [
             h for h in data["highlights"].values()
@@ -36,6 +48,11 @@ class HighlightsStore:
     
     async def list_by_notebook(self, notebook_id: str) -> List[Dict]:
         """List all highlights across all sources in a notebook"""
+        if self._use_sqlite:
+            rows = self._get_db().execute(
+                "SELECT * FROM highlights WHERE notebook_id = ?", (notebook_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
         data = self._load_data()
         return [
             h for h in data["highlights"].values()
@@ -69,9 +86,21 @@ class HighlightsStore:
             "updated_at": now
         }
 
-        data = self._load_data()
-        data["highlights"][highlight_id] = highlight
-        self._save_data(data)
+        if self._use_sqlite:
+            conn = self._get_db()
+            conn.execute(
+                """INSERT INTO highlights
+                   (highlight_id, notebook_id, source_id, start_offset, end_offset,
+                    highlighted_text, color, annotation, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (highlight_id, notebook_id, source_id, start_offset, end_offset,
+                 highlighted_text, color, annotation, now, now)
+            )
+            conn.commit()
+        else:
+            data = self._load_data()
+            data["highlights"][highlight_id] = highlight
+            self._save_data(data)
 
         try:
             from services.event_logger import log_highlight
@@ -83,11 +112,34 @@ class HighlightsStore:
 
     async def get(self, highlight_id: str) -> Optional[Dict]:
         """Get a highlight by ID"""
+        if self._use_sqlite:
+            row = self._get_db().execute(
+                "SELECT * FROM highlights WHERE highlight_id = ?", (highlight_id,)
+            ).fetchone()
+            return dict(row) if row else None
         data = self._load_data()
         return data["highlights"].get(highlight_id)
 
     async def update(self, highlight_id: str, updates: Dict) -> Optional[Dict]:
         """Update a highlight"""
+        if self._use_sqlite:
+            now = datetime.utcnow().isoformat()
+            allowed = {'color', 'annotation', 'highlighted_text', 'start_offset', 'end_offset'}
+            sets = []
+            params = []
+            for k, v in updates.items():
+                if k in allowed:
+                    sets.append(f"{k} = ?")
+                    params.append(v)
+            if not sets:
+                return await self.get(highlight_id)
+            sets.append("updated_at = ?")
+            params.append(now)
+            params.append(highlight_id)
+            conn = self._get_db()
+            conn.execute(f"UPDATE highlights SET {', '.join(sets)} WHERE highlight_id = ?", params)
+            conn.commit()
+            return await self.get(highlight_id)
         data = self._load_data()
         if highlight_id in data["highlights"]:
             highlight = data["highlights"][highlight_id]
@@ -100,6 +152,11 @@ class HighlightsStore:
 
     async def delete(self, highlight_id: str) -> bool:
         """Delete a highlight"""
+        if self._use_sqlite:
+            conn = self._get_db()
+            cursor = conn.execute("DELETE FROM highlights WHERE highlight_id = ?", (highlight_id,))
+            conn.commit()
+            return cursor.rowcount > 0
         data = self._load_data()
         if highlight_id in data["highlights"]:
             del data["highlights"][highlight_id]
@@ -109,6 +166,14 @@ class HighlightsStore:
 
     async def delete_for_source(self, notebook_id: str, source_id: str) -> int:
         """Delete all highlights for a source, returns count deleted"""
+        if self._use_sqlite:
+            conn = self._get_db()
+            cursor = conn.execute(
+                "DELETE FROM highlights WHERE notebook_id = ? AND source_id = ?",
+                (notebook_id, source_id)
+            )
+            conn.commit()
+            return cursor.rowcount
         data = self._load_data()
         to_delete = [
             hid for hid, h in data["highlights"].items()

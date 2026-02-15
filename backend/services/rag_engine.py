@@ -31,6 +31,9 @@ from services.entity_extractor import entity_extractor
 from services.source_router import source_router
 from services.entity_graph import entity_graph
 from services.community_detection import community_detector
+from services import rag_query_analyzer
+from services import rag_chunking
+from services import rag_generation
 
 # BM25 for hybrid search
 try:
@@ -1339,392 +1342,39 @@ JSON:"""
     
     def _fallback_query_analysis(self, question: str) -> Dict:
         """Fallback query analysis when LLM is unavailable."""
-        q_lower = question.lower()
-        
-        # Extract time periods
-        time_periods = []
-        import re
-        quarter_match = re.search(r'q([1-4])\s*(?:fy)?\s*(\d{4})?', q_lower)
-        if quarter_match:
-            q_num = quarter_match.group(1)
-            year = quarter_match.group(2) or "2026"
-            time_periods.append(f"Q {q_num} FY {year}")
-        
-        # Extract entities (capitalized words)
-        entities = re.findall(r'\b([A-Z][a-z]+)\b', question)
-        
-        # Build search terms
-        search_terms = list(set(question.lower().split()))
-        
-        return {
-            "search_terms": search_terms,
-            "entities": entities,
-            "time_periods": time_periods,
-            "data_type": "count" if any(w in q_lower for w in ["how many", "count", "number"]) else "explanation",
-            "key_metric": None
-        }
+        return rag_query_analyzer.fallback_query_analysis(question)
     
     def _build_search_query(self, analysis: Dict, original_question: str) -> str:
         """Build an optimized search query from LLM analysis."""
-        parts = [original_question]
-        
-        # Add search term variations
-        for term in analysis.get("search_terms", []):
-            if term.lower() not in original_question.lower():
-                parts.append(term)
-        
-        # Add entity variations
-        for entity in analysis.get("entities", []):
-            if entity.lower() not in original_question.lower():
-                parts.append(entity)
-        
-        # Add time period variations
-        for period in analysis.get("time_periods", []):
-            parts.append(period)
-        
-        # Add metric-related terms
-        if analysis.get("key_metric"):
-            metric = analysis["key_metric"].lower()
-            parts.append(metric)
-            parts.append("record count")  # Common in tabular data
-        
-        return " ".join(parts)
+        return rag_query_analyzer.build_search_query(analysis, original_question)
     
     def _expand_query(self, question: str) -> str:
-        """Phase 2.1: Query expansion with synonyms and related terms.
-        
-        Expands the query to improve retrieval by adding synonyms and
-        common variations. This helps find relevant content even when
-        the user uses different words than the document.
-        """
-        # Common business/sales synonyms
-        expansions = {
-            'demo': 'demo demonstration "record count"',
-            'demos': 'demos demonstrations "record count"',
-            'trial': 'trial pilot',
-            'trials': 'trials pilots',
-            'q1': 'q1 "q 1" "quarter 1" "first quarter" "Q 1 FY"',
-            'q2': 'q2 "q 2" "quarter 2" "second quarter" "Q 2 FY"',
-            'q3': 'q3 "q 3" "quarter 3" "third quarter" "Q 3 FY"',
-            'q4': 'q4 "q 4" "quarter 4" "fourth quarter" "Q 4 FY"',
-            'fy': 'fy "fiscal year"',
-            'fy2026': 'fy2026 "fy 2026" "FY 2026"',
-            'fy2025': 'fy2025 "fy 2025" "FY 2025"',
-            'revenue': 'revenue sales income',
-            'customer': 'customer client account',
-            'customers': 'customers clients accounts',
-            'meeting': 'meeting call conversation',
-            'meetings': 'meetings calls conversations',
-        }
-        
-        # Common name nicknames -> full names
-        name_expansions = {
-            'chris': 'chris christopher',
-            'mike': 'mike michael',
-            'dan': 'dan daniel',
-            'bill': 'bill william',
-            'bob': 'bob robert',
-            'jim': 'jim james',
-            'tom': 'tom thomas',
-            'steve': 'steve stephen steven',
-            'pat': 'pat patrick patricia',
-            'jen': 'jen jennifer',
-            'liz': 'liz elizabeth',
-            'alex': 'alex alexander alexandra',
-            'matt': 'matt matthew',
-            'nick': 'nick nicholas',
-            'sam': 'sam samuel samantha',
-            'joe': 'joe joseph',
-            'will': 'will william',
-        }
-        
-        expanded = question
-        q_lower = question.lower()
-        
-        for term, expansion in expansions.items():
-            if term in q_lower and expansion not in q_lower:
-                expanded = f"{expanded} {expansion}"
-        
-        # Expand nicknames to full names
-        for nick, full in name_expansions.items():
-            if nick in q_lower.split():  # Match whole word only
-                expanded = f"{expanded} {full}"
-        
-        return expanded
+        """Phase 2.1: Query expansion with synonyms and related terms."""
+        return rag_query_analyzer.expand_query(question)
     
     def _extract_entities(self, question: str) -> List[str]:
-        """Phase 2.2: Extract named entities from query for better matching.
-        
-        Lightweight entity extraction without spaCy dependency.
-        Focuses on names, proper nouns, and domain-specific terms.
-        """
-        import re
-        
-        entities = []
-        
-        # Extract capitalized words/phrases (likely names or proper nouns)
-        # Match sequences of capitalized words
-        cap_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b'
-        cap_matches = re.findall(cap_pattern, question)
-        entities.extend(cap_matches)
-        
-        # Common name patterns (first name + last name)
-        name_pattern = r'\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\b'
-        name_matches = re.findall(name_pattern, question)
-        for first, last in name_matches:
-            entities.append(f"{first} {last}")
-        
-        # Extract quoted phrases (user explicitly marking important terms)
-        quoted = re.findall(r'"([^"]+)"', question)
-        entities.extend(quoted)
-        quoted_single = re.findall(r"'([^']+)'", question)
-        entities.extend(quoted_single)
-        
-        # Deduplicate while preserving order
-        seen = set()
-        unique_entities = []
-        for e in entities:
-            e_lower = e.lower()
-            if e_lower not in seen and len(e) > 1:
-                seen.add(e_lower)
-                unique_entities.append(e)
-        
-        return unique_entities
+        """Phase 2.2: Extract named entities from query for better matching."""
+        return rag_query_analyzer.extract_entities(question)
     
     def _boost_entity_matches(self, results: List[Dict], entities: List[str]) -> List[Dict]:
-        """Phase 2.2: Boost results containing extracted entities.
-        
-        Prioritizes chunks that mention the same entities as the query.
-        """
-        if not entities:
-            return results
-        
-        def entity_score(result):
-            text = result.get('text', '').lower()
-            score = 0
-            for entity in entities:
-                if entity.lower() in text:
-                    score += 2  # Higher weight for entity matches
-            return score
-        
-        # Sort by entity score (descending), then by original order
-        scored = [(entity_score(r), i, r) for i, r in enumerate(results)]
-        scored.sort(key=lambda x: (-x[0], x[1]))
-        
-        boosted = [r for _, _, r in scored]
-        
-        # Log if we boosted anything
-        top_scores = [s for s, _, _ in scored[:5]]
-        if any(s > 0 for s in top_scores):
-            print(f"[RAG] Entity boost applied for {entities}: top scores = {top_scores}")
-        
-        return boosted
+        """Phase 2.2: Boost results containing extracted entities."""
+        return rag_query_analyzer.boost_entity_matches(results, entities)
     
     def _extract_temporal_filter(self, question: str) -> Optional[Dict]:
-        """Phase 2.4: Extract temporal references from query for filtering.
-        
-        Detects time periods mentioned in the query (Q1 2026, FY 2025, etc.)
-        to help prioritize temporally relevant chunks.
-        """
-        import re
-        q_lower = question.lower()
-        
-        temporal_info = {
-            'quarters': [],
-            'years': [],
-            'fiscal_years': []
-        }
-        
-        # Extract quarters (Q1, Q2, Q3, Q4)
-        quarter_patterns = [
-            r'\bq\s*([1-4])\b',
-            r'\bquarter\s*([1-4])\b',
-            r'\b(first|second|third|fourth)\s+quarter\b'
-        ]
-        quarter_map = {'first': '1', 'second': '2', 'third': '3', 'fourth': '4'}
-        
-        for pattern in quarter_patterns:
-            matches = re.findall(pattern, q_lower)
-            for match in matches:
-                if match in quarter_map:
-                    temporal_info['quarters'].append(quarter_map[match])
-                elif match.isdigit():
-                    temporal_info['quarters'].append(match)
-        
-        # Extract years (2024, 2025, 2026, etc.)
-        year_matches = re.findall(r'\b(20[2-3][0-9])\b', question)
-        temporal_info['years'] = list(set(year_matches))
-        
-        # Extract fiscal years (FY 2025, FY2026, etc.)
-        fy_matches = re.findall(r'\bfy\s*(\d{4}|\d{2})\b', q_lower)
-        for fy in fy_matches:
-            if len(fy) == 2:
-                fy = '20' + fy
-            temporal_info['fiscal_years'].append(fy)
-        
-        # Return None if no temporal info found
-        if not any(temporal_info.values()):
-            return None
-        
-        return temporal_info
+        """Phase 2.4: Extract temporal references from query for filtering."""
+        return rag_query_analyzer.extract_temporal_filter(question)
     
     def _boost_temporal_relevance(self, results: List[Dict], temporal_filter: Dict) -> List[Dict]:
-        """Phase 2.4: Boost results that match temporal criteria.
-        
-        Reorders results to prioritize chunks containing matching time periods.
-        """
-        if not temporal_filter:
-            return results
-        
-        # Build search patterns from temporal info
-        patterns = []
-        for q in temporal_filter.get('quarters', []):
-            patterns.extend([f'q{q}', f'q {q}', f'quarter {q}'])
-        for y in temporal_filter.get('years', []):
-            patterns.append(y)
-        for fy in temporal_filter.get('fiscal_years', []):
-            patterns.extend([f'fy {fy}', f'fy{fy}', fy])
-        
-        if not patterns:
-            return results
-        
-        # Score each result by temporal matches (check text AND filename)
-        def temporal_score(result):
-            text = result.get('text', '').lower()
-            source_id = result.get('source_id', '').lower()
-            filename = result.get('filename', '').lower()
-            
-            # Combine all searchable text
-            searchable = f"{text} {source_id} {filename}"
-            
-            score = 0
-            for pattern in patterns:
-                if pattern.lower() in searchable:
-                    score += 1
-            return score
-        
-        # Sort by temporal score (descending), then by original order
-        scored = [(temporal_score(r), i, r) for i, r in enumerate(results)]
-        scored.sort(key=lambda x: (-x[0], x[1]))
-        
-        boosted = [r for _, _, r in scored]
-        
-        # Log if we boosted anything
-        top_scores = [s for s, _, _ in scored[:5]]
-        if any(s > 0 for s in top_scores):
-            print(f"[RAG] Temporal boost applied: top scores = {top_scores}")
-        else:
-            # Warn if temporal filter was specified but no matches found
-            print(f"[RAG] WARNING: Temporal filter {patterns} found no matching documents")
-        
-        return boosted
+        """Phase 2.4: Boost results that match temporal criteria."""
+        return rag_query_analyzer.boost_temporal_relevance(results, temporal_filter)
     
     def _ensure_source_diversity(self, results: List[Dict], min_sources: int = 2) -> List[Dict]:
-        """Phase 2.3: Ensure results come from multiple sources when possible.
-        
-        Reorders results to ensure diversity of sources in top results,
-        preventing all citations from coming from a single document.
-        """
-        if len(results) <= min_sources:
-            return results
-        
-        # Group by source
-        by_source = {}
-        for r in results:
-            source_id = r.get('source_id', 'unknown')
-            if source_id not in by_source:
-                by_source[source_id] = []
-            by_source[source_id].append(r)
-        
-        # If only one source, return as-is
-        if len(by_source) <= 1:
-            return results
-        
-        # Round-robin selection to ensure diversity
-        diverse_results = []
-        source_iterators = {k: iter(v) for k, v in by_source.items()}
-        
-        while len(diverse_results) < len(results):
-            added_this_round = False
-            for source_id in list(source_iterators.keys()):
-                try:
-                    result = next(source_iterators[source_id])
-                    diverse_results.append(result)
-                    added_this_round = True
-                except StopIteration:
-                    del source_iterators[source_id]
-            
-            if not added_this_round:
-                break
-        
-        return diverse_results
+        """Phase 2.3: Ensure results come from multiple sources when possible."""
+        return rag_query_analyzer.ensure_source_diversity(results, min_sources)
     
     def _verify_retrieval_quality(self, results: List[Dict], analysis: Dict) -> Tuple[bool, str]:
-        """Verify that retrieved chunks actually contain relevant data.
-        
-        Returns: (is_good, reason)
-        - is_good: True if retrieval looks good
-        - reason: Explanation if retrieval is poor
-        """
-        if not results:
-            return False, "No results retrieved"
-        
-        # Check if key entities are present in results
-        entities = analysis.get("entities", [])
-        time_periods = analysis.get("time_periods", [])
-        key_metric = analysis.get("key_metric", "")
-        
-        combined_text = " ".join(r.get("text", "") for r in results[:4]).lower()
-        
-        # Check entity coverage
-        entity_found = False
-        for entity in entities:
-            if entity.lower() in combined_text:
-                entity_found = True
-                break
-        
-        # Check time period coverage (flexible matching for Q1 vs Q 1, FY variations)
-        time_found = False
-        for period in time_periods:
-            period_lower = period.lower()
-            # Direct match
-            if period_lower in combined_text:
-                time_found = True
-                break
-            # Handle "Q1 2026" matching "Q 1 FY 2026" - extract quarter and year
-            q_match = re.search(r'q\s*(\d)', period_lower)
-            y_match = re.search(r'20\d{2}', period_lower)
-            if q_match and y_match:
-                quarter = q_match.group(1)
-                year = y_match.group(0)
-                # Check for variations: "q 1 fy 2026", "q1 2026", "q1 fy 2026"
-                if f"q {quarter}" in combined_text and year in combined_text:
-                    time_found = True
-                    break
-                if f"q{quarter}" in combined_text and year in combined_text:
-                    time_found = True
-                    break
-        
-        # Check metric coverage (flexible: demos matches demo, trials matches trial, etc.)
-        metric_found = True
-        if key_metric:
-            metric_lower = key_metric.lower()
-            # Check exact match or singular/plural variations
-            metric_found = (
-                metric_lower in combined_text or
-                metric_lower.rstrip('s') in combined_text or  # demos -> demo
-                (metric_lower + 's') in combined_text  # demo -> demos
-            )
-        
-        # Determine quality
-        if entities and not entity_found:
-            return False, f"Entity '{entities[0]}' not found in top results"
-        if time_periods and not time_found:
-            return False, f"Time period '{time_periods[0]}' not found in top results"
-        if key_metric and not metric_found:
-            return False, f"Metric '{key_metric}' not found in top results"
-        
-        return True, "Retrieval looks good"
+        """Verify that retrieved chunks actually contain relevant data."""
+        return rag_query_analyzer.verify_retrieval_quality(results, analysis)
     
     async def _adaptive_search(self, table, question: str, query_embedding: List[float], 
                                 analysis: Dict, top_k: int) -> List[Dict]:
@@ -1970,171 +1620,24 @@ JSON:"""
         """Classify query type for optimal prompt and model selection.
         
         Returns: 'factual', 'synthesis', or 'complex'
-        - factual: Simple lookups, counts, specific data extraction
-        - synthesis: Summaries, explanations, general questions  
-        - complex: Comparisons, analysis, multi-step reasoning
         """
-        q_lower = question.lower()
-        
-        # FACTUAL: Questions asking for specific data/counts/values
-        factual_patterns = [
-            'how many', 'how much', 'what is the', 'what was the',
-            'when did', 'when was', 'who is', 'who was', 'who did',
-            'what date', 'what time', 'what number', 'what percentage',
-            'list the', 'name the', 'count of', 'total of',
-            'did chris', 'did christopher',  # Specific to user's data
-        ]
-        for pattern in factual_patterns:
-            if pattern in q_lower:
-                return 'factual'
-        
-        # COMPLEX: Questions requiring deep analysis
-        complex_patterns = [
-            'compare', 'contrast', 'analyze', 'explain why', 'explain how',
-            'what are the differences', 'what are the similarities',
-            'synthesize', 'evaluate', 'assess',
-            'pros and cons', 'advantages and disadvantages',
-            'step by step', 'walk me through', 'break down',
-            'relationship between', 'implications', 'consequences',
-            'argue', 'debate', 'critique', 'review'
-        ]
-        for pattern in complex_patterns:
-            if pattern in q_lower:
-                return 'complex'
-        
-        # Long questions or multiple questions = complex
-        if len(question) > 100 or question.count('?') > 1:
-            return 'complex'
-        
-        # Default to synthesis (general questions)
-        return 'synthesis'
+        return rag_query_analyzer.classify_query(question)
     
     def _detect_response_format(self, question: str) -> str:
-        """Detect the ideal response format from the query — pure regex, zero latency.
-
-        Returns a short instruction string to append to the system prompt,
-        or empty string for default paragraph style.
-
-        Format categories:
-        - 'list'  : user asks for N things, bullet points, enumerations
-        - 'code'  : user asks for code, implementation, script
-        - 'table' : user asks for comparison table or structured data
-        - 'steps' : user asks for how-to, step-by-step, process
-        - ''      : default (paragraph / conversational)
-        """
-        q_lower = question.lower()
-
-        # LIST: "give me 10 things", "list the top 5", "what are the key…"
-        if re.search(r'\b(\d+|top|key|main|major|all)\s+(things?|items?|points?|reasons?|ways?|tips?|examples?|factors?|features?|benefits?|risks?|issues?|steps?|ideas?|recommendations?|priorities?|strengths?|weaknesses?|areas?)\b', q_lower):
-            return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
-        if re.search(r'\blist\s+(the|all|every|my|our|their)\b', q_lower):
-            return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
-        if re.search(r'\bwhat are (the |all )?(key|main|top|biggest|most)\b', q_lower):
-            return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
-
-        # CODE: "write code", "show me the code", "implement", "script"
-        if re.search(r'\b(write|show|give|create|generate)\s+(me\s+)?(the\s+)?(code|script|function|implementation|snippet|class|method|query|sql|regex)\b', q_lower):
-            return "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."
-        if re.search(r'\b(implement|code|program|script)\s+(a|an|the|this|that)\b', q_lower):
-            return "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."
-
-        # TABLE: "compare in a table", "show a table"
-        if re.search(r'\b(table|comparison|matrix|grid)\b.*\b(of|for|showing|comparing)\b', q_lower):
-            return "\nFORMAT: Use a markdown table for structured comparison. Add a brief summary below the table."
-
-        # STEPS: "how to", "step by step", "walk me through", "process for"
-        if re.search(r'\b(step.by.step|walk me through|how do i|how to|process for|guide to|instructions for)\b', q_lower):
-            return "\nFORMAT: Respond with numbered steps. Each step should have a clear action and brief explanation."
-
-        # Default: no format override (paragraph style)
-        return ""
+        """Detect the ideal response format from the query — pure regex, zero latency."""
+        return rag_query_analyzer.detect_response_format(question)
 
     def _should_auto_upgrade_to_think(self, question: str) -> bool:
         """Invisible auto-routing: detect if a 'fast' query should be upgraded to 'think' mode."""
-        return self._classify_query(question) == 'complex'
+        return rag_query_analyzer.should_auto_upgrade_to_think(question)
     
     def _check_answer_quality(self, question: str, answer: str, query_type: str) -> Tuple[bool, str]:
-        """Lightweight quality check for answers - no LLM call, just heuristics.
-        
-        Returns: (is_good, reason)
-        
-        Phase 1: Heuristic checks only (fast, no latency)
-        Phase 2 (future): Add LLM-based critique for edge cases
-        """
-        import re
-        
-        if not answer or len(answer.strip()) < 15:
-            return False, "Answer too short"
-        
-        # Explicit failure indicators
-        failure_phrases = [
-            "i cannot find", "not in the sources", "no information",
-            "unable to find", "don't have", "doesn't contain",
-            "not mentioned", "no data", "cannot determine"
-        ]
-        answer_lower = answer.lower()
-        for phrase in failure_phrases:
-            if phrase in answer_lower:
-                return False, f"Answer indicates failure: '{phrase}'"
-        
-        # For factual queries, check if answer contains a number
-        if query_type == 'factual':
-            has_number = bool(re.search(r'\d+', answer))
-            if not has_number:
-                return False, "Factual query but no number in answer"
-            # Check for "X number" placeholder pattern
-            if re.search(r'\bX\s+(number|demos?|seedings?|activities?|total)\b', answer, re.IGNORECASE):
-                return False, "Answer contains 'X' placeholder instead of actual number"
-        
-        # Check for placeholder artifacts that slipped through
-        if '[N]' in answer or '[Summary]' in answer:
-            return False, "Answer contains placeholder artifacts"
-        
-        # Check for "Note to user" meta-commentary
-        if "note to user" in answer_lower or "replace 'x'" in answer_lower:
-            return False, "Answer contains meta-commentary instead of actual data"
-        
-        return True, "Answer looks good"
+        """Lightweight quality check for answers - no LLM call, just heuristics."""
+        return rag_query_analyzer.check_answer_quality(question, answer, query_type)
     
     async def _generate_query_variants(self, question: str) -> List[str]:
-        """Generate variant queries to improve retrieval on retry.
-        
-        Uses simple transformations - no LLM call for speed.
-        Phase 2 (future): Use LLM to generate smarter variants.
-        """
-        variants = [question]  # Always include original
-        
-        q_lower = question.lower()
-        
-        # Variant 1: Expand abbreviations
-        expanded = question
-        expansions = {
-            'q1': 'first quarter Q1',
-            'q2': 'second quarter Q2', 
-            'q3': 'third quarter Q3',
-            'q4': 'fourth quarter Q4',
-            'fy': 'fiscal year FY',
-        }
-        for abbrev, full in expansions.items():
-            if abbrev in q_lower:
-                expanded = re.sub(rf'\b{abbrev}\b', full, question, flags=re.IGNORECASE)
-                if expanded != question:
-                    variants.append(expanded)
-                    break
-        
-        # Variant 2: Add "total" or "count" for numeric queries
-        if any(word in q_lower for word in ['how many', 'how much', 'total', 'count']):
-            variants.append(f"{question} total count number")
-        
-        # Variant 3: Extract and emphasize key entity
-        # Simple heuristic: capitalize words are likely entities
-        import re
-        entities = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', question)
-        if entities:
-            entity_focused = f"{entities[0]} {question}"
-            variants.append(entity_focused)
-        
-        return variants[:3]  # Max 3 variants
+        """Generate variant queries to improve retrieval on retry."""
+        return rag_query_analyzer.generate_query_variants(question)
     
     async def _corrective_retrieval(self, table, question: str, analysis: Dict, 
                                      top_k: int, original_results: List[Dict]) -> List[Dict]:
@@ -2172,64 +1675,8 @@ JSON:"""
         return all_results[:top_k * 2]  # Return expanded set for reranking
     
     def _get_prompt_for_query_type(self, query_type: str, num_citations: int, avg_confidence: float = 0.5) -> str:
-        """Get optimized prompt based on query classification.
-        
-        v1.1.0: Enhanced with query-type-specific prompts per PROMPT_AUDIT.md Phase 0.2
-        - Factual: Exact value extraction with verification
-        - Complex: Step-by-step reasoning with synthesis
-        - Synthesis: Multi-source integration
-        """
-        # Shared output rules
-        output_rules = """OUTPUT RULES:
-1. Write ONLY your answer - no preamble, no "References:" section
-2. Cite sources inline as [1], [2] after facts
-3. If info not in sources, say "I couldn't find this in the documents."
-"""
-
-        if query_type == 'factual':
-            # Priority 1 from PROMPT_AUDIT: Factual/Data Extraction Prompt
-            return f"""You are extracting specific facts from source documents.
-
-CRITICAL - EXACT VALUE EXTRACTION:
-- Find the EXACT values in the sources. Do not estimate or round.
-- For numbers: Quote the exact figure from the source
-- For counts: Count the actual items listed in the source
-- For dates: Use the exact date format from the source
-- For names: Use the exact spelling from the source
-
-VERIFICATION: Before answering, locate the exact text in the source that contains your answer.
-
-{output_rules}
-Answer in 1-2 sentences with the specific fact.
-
-EXAMPLE:
-Question: "How many demos did Chris do in Q1?"
-GOOD: "Chris conducted 7 demos in Q1 2026 [1]."
-BAD: "Chris did several demos..." (vague)
-BAD: "Chris conducted approximately 7 demos..." (hedging)"""
-
-        elif query_type == 'complex':
-            return f"""You are analyzing a complex question that requires reasoning across sources.
-
-APPROACH:
-1. Identify the key aspects of the question
-2. Find relevant evidence in each source
-3. Synthesize findings into a coherent analysis
-4. Draw a clear conclusion
-
-{output_rules}
-Provide a thorough analysis in 2-3 paragraphs. Show your reasoning."""
-
-        else:  # synthesis
-            return f"""You are synthesizing information from multiple sources.
-
-APPROACH:
-- Weave together insights from different sources
-- Note agreements and any tensions between sources
-- Prioritize the most important points
-
-{output_rules}
-Provide a clear, integrated answer in 1-2 paragraphs."""
+        """Get optimized prompt based on query classification."""
+        return rag_generation.get_prompt_for_query_type(query_type, num_citations, avg_confidence)
 
     def _extract_mentioned_sources(self, question: str, notebook_id: str) -> List[str]:
         """Extract source IDs if the user mentions specific filenames in their query.
@@ -2631,36 +2078,8 @@ Answer with [N] citations:"""
         print(f"{'='*60}\n")
 
     def _clean_llm_output(self, text: str) -> str:
-        """Clean up LLM output artifacts.
-        
-        Minimal post-processing - let the prompt do the heavy lifting.
-        Only clean up formatting artifacts that slip through.
-        """
-        import re
-        
-        # Remove LaTeX formatting artifacts
-        text = re.sub(r'\\boxed\{([^}]*)\}', r'\1', text)
-        text = re.sub(r'\\text\{([^}]*)\}', r'\1', text)
-        text = re.sub(r'\\textbf\{([^}]*)\}', r'\1', text)
-        text = re.sub(r'\\textit\{([^}]*)\}', r'\1', text)
-        text = re.sub(r'\\(boxed|text|textbf|textit)\b', '', text)
-        
-        # Remove unwanted sections that LLM sometimes adds
-        text = re.sub(r'\n*\[?References\]?:?.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'\n*Sources?:.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'\n*User context:.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'\n*Citation.*should not be included.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Clean incomplete citation brackets at end: "[1] [2." -> ""
-        # Matches: [1] [2. or [1 or [1, at end of text
-        text = re.sub(r'\s*\[\d+\]\s*\[\d+\.?\s*$', '', text)
-        text = re.sub(r'\s*\[\d[\d,\s]*\.?\s*$', '', text)
-        
-        # Clean up whitespace
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        text = text.strip()
-        
-        return text
+        """Clean up LLM output artifacts."""
+        return rag_generation.clean_llm_output(text)
 
     async def generate_proactive_insights(self, notebook_id: str, limit: int = 3) -> List[Dict]:
         """Phase 4.1: Generate proactive insights from document content.
@@ -2818,11 +2237,7 @@ No numbering, no preamble, just the questions."""
     
     def _default_suggested_questions(self) -> List[str]:
         """Fallback suggested questions"""
-        return [
-            "What are the main topics covered in my documents?",
-            "Can you summarize the key points?",
-            "What are the most important findings?"
-        ]
+        return rag_generation.default_suggested_questions()
 
     async def _generate_answer(self, question: str, context: str, num_citations: int = 5, llm_provider: Optional[str] = None, notebook_id: Optional[str] = None, conversation_id: Optional[str] = None, deep_think: bool = False) -> Dict:
         """Generate answer using LLM with memory augmentation and user personalization. Returns dict with answer and memory_used info."""
@@ -3059,291 +2474,32 @@ Answer concisely with inline [N] citations:"""
         return response.content[0].text
 
     def _chunk_text_smart(self, text: str, source_type: str, filename: str) -> List[str]:
-        """Smart chunking that adapts strategy based on source type.
-        
-        Different file types need different chunking strategies:
-        - Tabular data (xlsx, csv): Keep rows together, include headers in each chunk
-        - Documents (pdf, docx): Hierarchical chunking by sections/paragraphs
-        - Code: Split by functions/classes
-        - Transcripts: Split by speaker turns or time segments
-        
-        v1.0.5: Added hierarchical chunking for structured documents.
-        """
-        filename_lower = filename.lower()
-        
-        # Detect tabular data
-        is_tabular = source_type in ['xlsx', 'xls', 'csv'] or \
-                     filename_lower.endswith(('.xlsx', '.xls', '.csv'))
-        
-        # Detect if content looks like tabular data (row-based format)
-        if not is_tabular and 'Row ' in text[:500] and ': ' in text[:500]:
-            is_tabular = True
-        
-        if is_tabular:
-            return self._chunk_tabular_data(text)
-        
-        # v1.0.5: Use hierarchical chunking for structured documents (PDFs, docx)
-        # This preserves document structure and enables multi-granularity retrieval
-        is_structured_doc = source_type in ['pdf', 'docx', 'doc', 'pptx'] or \
-                           filename_lower.endswith(('.pdf', '.docx', '.doc', '.pptx'))
-        
-        if is_structured_doc and len(text) > 2000:
-            return self._chunk_hierarchical(text, filename)
-        
-        # Default: use standard semantic chunking
-        return self._chunk_text(text)
+        """Smart chunking that adapts strategy based on source type."""
+        return rag_chunking.chunk_text_smart(text, source_type, filename)
     
     def _chunk_hierarchical(self, text: str, filename: str) -> List[str]:
-        """Hierarchical chunking for structured documents.
-        
-        Creates chunks at section and paragraph levels while preserving
-        document structure. Each chunk includes section context for better retrieval.
-        
-        v1.0.5: New hierarchical chunking strategy.
-        """
-        try:
-            from services.hierarchical_chunker import HierarchicalChunker
-            
-            chunker = HierarchicalChunker()
-            hier_chunks = chunker.chunk_document(
-                text=text,
-                source_id="temp",  # Chunk IDs assigned later
-                filename=filename,
-                include_sentences=False  # Skip sentence level for now
-            )
-            
-            # Convert hierarchical chunks to flat list of text strings
-            # We keep section and paragraph level chunks (levels 1 and 2)
-            # Level 0 (doc summary) is handled separately in ingest_document
-            result = []
-            for chunk in hier_chunks:
-                if chunk.level in [1, 2]:  # Section and paragraph level
-                    # Add section context prefix for better retrieval
-                    if chunk.section_title and chunk.level == 2:
-                        chunk_text = f"[{chunk.section_title}]\n{chunk.text}"
-                    else:
-                        chunk_text = chunk.text
-                    
-                    # Ensure chunk meets minimum size
-                    if len(chunk_text) >= 100:
-                        result.append(chunk_text)
-            
-            if result:
-                print(f"[RAG] Hierarchical chunking: {len(result)} chunks from {len(hier_chunks)} total levels")
-                return result
-            
-        except Exception as e:
-            print(f"[RAG] Hierarchical chunking failed, falling back to standard: {e}")
-        
-        # Fallback to standard chunking
-        return self._chunk_text(text)
+        """Hierarchical chunking for structured documents."""
+        return rag_chunking.chunk_hierarchical(text, filename)
     
     def _chunk_tabular_data(self, text: str) -> List[str]:
-        """Chunk tabular data keeping related rows together with context.
-        
-        Strategy:
-        1. Extract header/context lines (sheet name, column headers)
-        2. Group rows into chunks respecting both row count AND character limits
-        3. Prepend header context to each chunk for self-contained retrieval
-        """
-        # Max chunk size in characters (leave room for embedding model context)
-        max_chunk_chars = settings.chunk_size  # Use same limit as regular chunking
-        
-        lines = text.split('\n')
-        
-        # Find header/context lines (sheet info, column headers, etc.)
-        header_lines = []
-        data_lines = []
-        
-        for line in lines:
-            line_stripped = line.strip()
-            if not line_stripped:
-                continue
-            
-            # Identify header/context lines
-            if line_stripped.startswith('===') or \
-               line_stripped.startswith('Data from sheet') or \
-               line_stripped.startswith('Complete row data') or \
-               line_stripped.startswith('This data is from') or \
-               ('Column' in line_stripped and ':' in line_stripped and line_stripped.startswith('Row 1:')):
-                header_lines.append(line_stripped)
-            else:
-                data_lines.append(line_stripped)
-        
-        # Build header context (prepended to each chunk)
-        header_context = '\n'.join(header_lines[:5]) if header_lines else ""
-        header_len = len(header_context) + 2  # +2 for \n\n separator
-        
-        # Group data lines into chunks respecting character limits
-        chunks = []
-        current_chunk_lines = []
-        current_chunk_len = header_len
-        
-        for line in data_lines:
-            line_len = len(line) + 1  # +1 for newline
-            
-            # If adding this line would exceed limit, start new chunk
-            if current_chunk_len + line_len > max_chunk_chars and current_chunk_lines:
-                # Save current chunk
-                if header_context:
-                    chunk_text = header_context + '\n\n' + '\n'.join(current_chunk_lines)
-                else:
-                    chunk_text = '\n'.join(current_chunk_lines)
-                chunks.append(chunk_text)
-                
-                # Start new chunk
-                current_chunk_lines = [line]
-                current_chunk_len = header_len + line_len
-            else:
-                current_chunk_lines.append(line)
-                current_chunk_len += line_len
-        
-        # Don't forget the last chunk
-        if current_chunk_lines:
-            if header_context:
-                chunk_text = header_context + '\n\n' + '\n'.join(current_chunk_lines)
-            else:
-                chunk_text = '\n'.join(current_chunk_lines)
-            if chunk_text.strip():
-                chunks.append(chunk_text)
-        
-        # If no chunks created, fall back to standard chunking
-        if not chunks:
-            return self._chunk_text(text)
-        
-        print(f"[RAG] Tabular chunking: {len(data_lines)} rows -> {len(chunks)} chunks (max {max_chunk_chars} chars/chunk)")
-        return chunks
+        """Chunk tabular data keeping related rows together with context."""
+        return rag_chunking.chunk_tabular_data(text)
 
     def _chunk_text(self, text: str) -> List[str]:
-        """Chunk text into smaller pieces with semantic boundary awareness.
-        
-        Tries to split at paragraph/sentence boundaries rather than mid-sentence
-        for better embedding quality. Falls back to character-based splitting.
-        """
-        chunk_size = settings.chunk_size
-        chunk_overlap = settings.chunk_overlap
-
-        # First, try to split by paragraphs (double newlines)
-        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-        
-        if not paragraphs:
-            paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
-        
-        chunks = []
-        current_chunk = ""
-        
-        for para in paragraphs:
-            # If adding this paragraph would exceed chunk_size
-            if len(current_chunk) + len(para) + 2 > chunk_size:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                
-                # If single paragraph is larger than chunk_size, split it
-                if len(para) > chunk_size:
-                    # Try to split at sentence boundaries
-                    sentences = self._split_into_sentences(para)
-                    for sentence in sentences:
-                        if len(current_chunk) + len(sentence) + 1 > chunk_size:
-                            if current_chunk:
-                                chunks.append(current_chunk.strip())
-                            # If single sentence is too long, fall back to character split
-                            if len(sentence) > chunk_size:
-                                chunks.extend(self._char_split(sentence, chunk_size, chunk_overlap))
-                                current_chunk = ""
-                            else:
-                                current_chunk = sentence
-                        else:
-                            current_chunk = (current_chunk + " " + sentence).strip() if current_chunk else sentence
-                else:
-                    current_chunk = para
-            else:
-                current_chunk = (current_chunk + "\n\n" + para).strip() if current_chunk else para
-        
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-        
-        # If we got no chunks (empty text), return empty list
-        if not chunks:
-            return []
-        
-        # Add overlap by including end of previous chunk at start of next
-        if chunk_overlap > 0 and len(chunks) > 1:
-            overlapped_chunks = [chunks[0]]
-            for i in range(1, len(chunks)):
-                prev_end = chunks[i-1][-chunk_overlap:] if len(chunks[i-1]) > chunk_overlap else chunks[i-1]
-                overlapped_chunks.append(prev_end + "\n" + chunks[i])
-            chunks = overlapped_chunks
-        
-        return chunks
+        """Chunk text with semantic boundary awareness."""
+        return rag_chunking.chunk_text(text)
     
     def _split_into_sentences(self, text: str) -> List[str]:
         """Split text into sentences."""
-        import re
-        # Split on sentence-ending punctuation followed by space or end
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        return [s.strip() for s in sentences if s.strip()]
+        return rag_chunking.split_into_sentences(text)
     
     def _char_split(self, text: str, chunk_size: int, overlap: int) -> List[str]:
-        """Fallback character-based splitting for very long text without boundaries."""
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = start + chunk_size
-            chunks.append(text[start:end])
-            start = end - overlap
-        return chunks
+        """Fallback character-based splitting."""
+        return rag_chunking.char_split(text, chunk_size, overlap)
 
     def _get_parent_context(self, chunks: List[str], chunk_index: int, max_parent_chars: int = 2000) -> str:
-        """v0.60: Get expanded parent context for a chunk.
-        
-        Combines the current chunk with surrounding chunks to provide
-        more context during retrieval. This helps the LLM understand
-        the broader context of a matched chunk.
-        
-        Args:
-            chunks: All chunks from the document
-            chunk_index: Index of the current chunk
-            max_parent_chars: Maximum characters for parent context
-            
-        Returns:
-            Parent text containing current chunk + surrounding context
-        """
-        if not chunks or chunk_index < 0 or chunk_index >= len(chunks):
-            return ""
-        
-        current_chunk = chunks[chunk_index]
-        
-        # Start with current chunk
-        parent_parts = [current_chunk]
-        current_len = len(current_chunk)
-        
-        # Add previous chunks until we hit the limit
-        prev_idx = chunk_index - 1
-        while prev_idx >= 0 and current_len < max_parent_chars:
-            prev_chunk = chunks[prev_idx]
-            if current_len + len(prev_chunk) > max_parent_chars:
-                # Add partial chunk
-                remaining = max_parent_chars - current_len
-                parent_parts.insert(0, prev_chunk[-remaining:] + "...")
-                break
-            parent_parts.insert(0, prev_chunk)
-            current_len += len(prev_chunk)
-            prev_idx -= 1
-        
-        # Add next chunks until we hit the limit
-        next_idx = chunk_index + 1
-        while next_idx < len(chunks) and current_len < max_parent_chars:
-            next_chunk = chunks[next_idx]
-            if current_len + len(next_chunk) > max_parent_chars:
-                # Add partial chunk
-                remaining = max_parent_chars - current_len
-                parent_parts.append("..." + next_chunk[:remaining])
-                break
-            parent_parts.append(next_chunk)
-            current_len += len(next_chunk)
-            next_idx += 1
-        
-        return "\n\n".join(parent_parts)
+        """Get expanded parent context for a chunk."""
+        return rag_chunking.get_parent_context(chunks, chunk_index, max_parent_chars)
 
     def get_current_embedding_dim(self) -> int:
         """Get the dimension of the current embedding model"""

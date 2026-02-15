@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     retrieval_overcollect: int = 12  # Candidates from vector search before reranking
     retrieval_top_k: int = 5  # Final chunks after reranking
 
+    # Debug mode — enables diagnostic endpoints (health portal, RAG health)
+    debug_mode: bool = False  # Set LOCALBOOK_DEBUG_MODE=true to enable
+
+    # Storage backend — use SQLite instead of JSON files
+    use_sqlite: bool = False  # Set USE_SQLITE=true to enable
+
     class Config:
         env_file = ".env"
 
