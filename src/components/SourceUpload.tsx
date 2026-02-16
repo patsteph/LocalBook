@@ -185,7 +185,7 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className={`
-          border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors
+          border-2 border-dashed rounded-lg p-3 cursor-pointer transition-colors
           ${isDragging
             ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
             : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
@@ -194,30 +194,30 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
         `}
         onClick={() => !uploading && notebookId && fileInputRef.current?.click()}
       >
-        <div className="flex flex-col items-center gap-1.5">
-          <svg
-            className={`w-10 h-10 ${isDragging ? 'text-blue-500' : 'text-gray-400 dark:text-gray-500'}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-            />
-          </svg>
-          <div>
-            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
-              {isDragging ? 'Drop files here' : 'Drag and drop files here, or click to browse'}
+        <div className="flex flex-col gap-1">
+          <p className="text-sm font-medium text-gray-700 dark:text-gray-300 text-left">
+            {isDragging ? 'Drop files here' : 'Drag and drop files here, or click to browse'}
+          </p>
+          <div className="flex items-end gap-2">
+            <p className="flex-1 text-[10px] leading-tight text-gray-500 dark:text-gray-400">
+              PDF, DOCX, PPTX, XLSX, ODS, CSV, EPUB, Jupyter, ODT, RTF, LaTeX, SVG, Images (OCR/HEIC), Audio, Video
             </p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-              Supports: PDF, DOCX, PPTX, XLSX, ODS, CSV, EPUB, Jupyter, ODT, RTF, LaTeX, SVG, Images (OCR/HEIC), Audio, Video
-            </p>
+            <svg
+              className={`w-8 h-8 flex-shrink-0 ${isDragging ? 'text-blue-500' : 'text-gray-300 dark:text-gray-600'}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.5}
+                d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+              />
+            </svg>
           </div>
           {!notebookId && (
-            <p className="text-sm text-red-500 dark:text-red-400 mt-2">
+            <p className="text-xs text-red-500 dark:text-red-400">
               Select a notebook first
             </p>
           )}
