@@ -7,6 +7,7 @@ const STUDIO_KEY = 'localbook-studio';
 
 export interface DrawerState {
   notebooks: boolean;
+  webResearch: boolean;
   sources: boolean;
   collector: boolean;
   people: boolean;
@@ -19,7 +20,8 @@ export interface StudioState {
 
 const DEFAULT_DRAWERS: DrawerState = {
   notebooks: true,
-  sources: true,
+  webResearch: false,
+  sources: false,
   collector: false,
   people: false,
 };

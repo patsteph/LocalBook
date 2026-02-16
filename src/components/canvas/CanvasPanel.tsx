@@ -21,7 +21,6 @@ interface CanvasPanelProps {
 }
 
 const MAIN_VIEWS: PanelView[] = ['chat', 'constellation', 'timeline', 'findings', 'curator'];
-const TOOL_VIEWS: PanelView[] = ['settings', 'llm-selector', 'embedding-selector', 'web-research'];
 
 export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelProps }) => {
   const ctx = useCanvas();
@@ -235,19 +234,6 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
             <div className="absolute top-full left-0 mt-1 w-48 bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-lg shadow-lg z-50 py-1">
               <div className="px-2 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Views</div>
               {MAIN_VIEWS.map(v => (
-                <button
-                  key={v}
-                  onClick={() => { ctx.changePanelView(panelId, v); setShowViewMenu(false); }}
-                  className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-gray-700 ${
-                    v === view ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-gray-700 dark:text-gray-300'
-                  }`}
-                >
-                  <span>{VIEW_ICONS[v]}</span> {VIEW_LABELS[v]}
-                </button>
-              ))}
-              <div className="border-t dark:border-gray-700 my-1" />
-              <div className="px-2 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Tools</div>
-              {TOOL_VIEWS.map(v => (
                 <button
                   key={v}
                   onClick={() => { ctx.changePanelView(panelId, v); setShowViewMenu(false); }}

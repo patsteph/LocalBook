@@ -61,6 +61,49 @@ const DrawerSection: React.FC<DrawerSectionProps> = ({ title, icon, isOpen, onTo
   </div>
 );
 
+const WebResearchDrawerContent: React.FC<{ notebookId: string | null }> = ({ notebookId }) => {
+  const ctx = useCanvas();
+  const [query, setQuery] = React.useState('');
+
+  const handleSearch = () => {
+    if (!notebookId) return;
+    ctx.openWebResearch(query || undefined);
+  };
+
+  return (
+    <div className="px-3 py-2 space-y-2">
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') handleSearch(); }}
+        placeholder="Search query or paste URL..."
+        disabled={!notebookId}
+        className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+      />
+      <div className="flex gap-2">
+        <button
+          onClick={() => handleSearch()}
+          disabled={!notebookId}
+          className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          🌐 Web Search
+        </button>
+        <button
+          onClick={() => handleSearch()}
+          disabled={!notebookId}
+          className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          🎯 Site Search
+        </button>
+      </div>
+      {!notebookId && (
+        <p className="text-[10px] text-gray-400 italic">Select a notebook first</p>
+      )}
+    </div>
+  );
+};
+
 export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
   selectedNotebookId,
   onNotebookSelect,
@@ -99,6 +142,20 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
         />
       </DrawerSection>
 
+      {/* Web Research drawer */}
+      <DrawerSection
+        title="Web Research"
+        icon={
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        }
+        isOpen={drawers.webResearch}
+        onToggle={() => toggleDrawer('webResearch')}
+      >
+        <WebResearchDrawerContent notebookId={selectedNotebookId} />
+      </DrawerSection>
+
       {/* Sources drawer */}
       <DrawerSection
         title="Sources"
@@ -114,20 +171,6 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
           notebookId={selectedNotebookId || ''}
           onUploadComplete={onUploadComplete}
         />
-        {/* Web Research Button */}
-        <div className="px-4 py-3 border-b dark:border-gray-700">
-          <button
-            onClick={() => ctx.openWebResearch()}
-            disabled={!selectedNotebookId}
-            title="Search the web or paste URLs to add to your research"
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-            <span>Web Research</span>
-          </button>
-        </div>
         <div className="max-h-[40vh] overflow-y-auto">
           <SourcesList
             key={`${selectedNotebookId}-${refreshSources}`}

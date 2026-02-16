@@ -166,18 +166,13 @@ else
 fi
 
 # Step 2: Install frontend dependencies
-echo -e "\n${YELLOW}Step 2/4: Installing frontend dependencies...${NC}"
+echo -e "\n${YELLOW}Step 2/3: Installing frontend dependencies...${NC}"
 npm install --silent
 echo -e "${GREEN}✓ Frontend dependencies ready${NC}"
 
-# Step 3: Clean and rebuild frontend (prevents stale cache issues)
-echo -e "\n${YELLOW}Step 3/4: Rebuilding frontend (clean)...${NC}"
+# Step 3: Build Tauri app (includes Vite frontend build via beforeBuildCommand)
+echo -e "\n${YELLOW}Step 3/3: Building Tauri application...${NC}"
 rm -rf dist/
-npm run build
-echo -e "${GREEN}✓ Frontend rebuilt${NC}"
-
-# Step 4: Build Tauri app
-echo -e "\n${YELLOW}Step 4/4: Building Tauri application...${NC}"
 npm run tauri build
 
 # Copy app to easy location

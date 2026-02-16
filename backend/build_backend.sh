@@ -49,6 +49,7 @@ pyinstaller \
     --specpath "./build" \
     --clean \
     --noconfirm \
+    --log-level WARN \
     --paths="$SCRIPT_DIR" \
     --add-data="$SCRIPT_DIR/api:api" \
     --add-data="$SCRIPT_DIR/services:services" \
@@ -203,7 +204,14 @@ pyinstaller \
     --collect-all=bertopic \
     --collect-all=umap \
     --collect-all=hdbscan \
-    --collect-submodules=pandas \
+    --collect-submodules=pandas.core \
+    --collect-submodules=pandas.io \
+    --collect-submodules=pandas.tslibs \
+    --collect-submodules=pandas.compat \
+    --collect-submodules=pandas.api \
+    --collect-submodules=pandas.plotting \
+    --collect-submodules=pandas.errors \
+    --collect-submodules=pandas._libs \
     --collect-data=lancedb \
     --collect-data=tiktoken \
     --hidden-import=sklearn.cluster \
@@ -248,6 +256,12 @@ pyinstaller \
     --exclude-module=boto3 \
     --exclude-module=botocore \
     --exclude-module=s3transfer \
+    --exclude-module=pandas.tests \
+    --exclude-module=torch.distributed \
+    --exclude-module=torch.testing \
+    --exclude-module=torch.utils.tensorboard \
+    --exclude-module=torch._inductor \
+    --exclude-module=torch._dynamo \
     main.py
 
 # Make the main executable... executable
@@ -270,6 +284,20 @@ if [ -n "$PANDAS_CONFIG" ]; then
 fi
 
 echo -e "${GREEN}✓ Backend built: $OUTPUT_DIR/localbook-backend/${NC}"
+
+# Trim unnecessary bulk from bundle
+echo -e "${YELLOW}Trimming unnecessary files from bundle...${NC}"
+# torch C++ headers (59MB) - never needed at runtime
+rm -rf "$OUTPUT_DIR/localbook-backend/_internal/torch/include" 2>/dev/null
+# plotly (13MB) - pulled in by BERTopic but never rendered in our app
+rm -rf "$OUTPUT_DIR/localbook-backend/_internal/plotly" 2>/dev/null
+# babel locale data (32MB) - only dateparser uses it, keep just en
+BABEL_LOCALE="$OUTPUT_DIR/localbook-backend/_internal/babel/locale-data"
+if [ -d "$BABEL_LOCALE" ]; then
+    find "$BABEL_LOCALE" -name "*.dat" ! -name "en*" ! -name "root*" -delete 2>/dev/null
+fi
+TRIMMED_SIZE=$(du -sh "$OUTPUT_DIR/localbook-backend" | cut -f1)
+echo -e "${GREEN}✓ Bundle trimmed to: $TRIMMED_SIZE${NC}"
 
 # Sign all binaries for macOS Sequoia compatibility
 # macOS Sequoia requires proper code signing for all .so/.dylib files
