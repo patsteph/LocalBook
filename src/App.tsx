@@ -531,8 +531,8 @@ function App() {
           </button>
         )}
 
-        {/* Main content — resizable left nav + canvas */}
-        <div className="flex-1 overflow-hidden">
+        {/* Main content — resizable left nav + canvas (min-h-0 lets it shrink when Studio expands) */}
+        <div className="flex-1 overflow-hidden min-h-0">
           <Group orientation="horizontal" id="main-layout">
             <Panel id="left-nav" defaultSize="25%" minSize="20%" maxSize="30%">
               <LeftNavColumn
@@ -562,7 +562,7 @@ function App() {
           </Group>
         </div>
 
-        {/* Studio floating mini-player */}
+        {/* Studio bottom bar — accordion expands upward */}
         <StudioMiniPlayer
           notebookId={selectedNotebookId}
           studio={studio}

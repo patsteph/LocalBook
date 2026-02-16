@@ -27,65 +27,50 @@ export const StudioMiniPlayer: React.FC<StudioMiniPlayerProps> = ({
 }) => {
   return (
     <div
-      className={`fixed z-40 transition-all duration-300 ease-in-out ${
-        studio.expanded
-          ? 'bottom-4 right-4 w-[420px] h-[70vh] max-h-[700px]'
-          : 'bottom-16 right-4'
+      className={`flex-shrink-0 border-t dark:border-gray-700 bg-white dark:bg-gray-800 transition-all duration-300 ease-in-out overflow-hidden ${
+        studio.expanded ? 'h-[45vh] max-h-[500px]' : ''
       }`}
     >
-      {/* Expanded: full Studio interface */}
-      {studio.expanded && (
-        <div className="bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-xl shadow-2xl flex flex-col h-full overflow-hidden">
-          {/* Header */}
-          <div className="flex items-center justify-between px-3 py-2 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-900 rounded-t-xl flex-shrink-0">
-            <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">Studio</span>
-            <button
-              onClick={toggleStudio}
-              className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600"
-              title="Collapse Studio"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-          </div>
-          {/* Studio content */}
-          <div className="flex-1 overflow-hidden">
-            <Studio
-              notebookId={notebookId}
-              initialVisualContent={visualContent}
-              initialTab={studio.activeTab}
-              onTabChange={(tab) => setStudioTab(tab)}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Collapsed: compact icon bar */}
-      {!studio.expanded && (
-        <div className="bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-full shadow-lg flex items-center gap-1 px-2 py-1.5">
+      {/* Bottom bar: always visible — tab icons + expand/collapse toggle */}
+      <div className="flex items-center justify-between px-3 h-9 bg-gray-50 dark:bg-gray-900 border-b dark:border-gray-700 flex-shrink-0">
+        <div className="flex items-center gap-0.5">
+          <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mr-2">Studio</span>
           {TABS.map(tab => (
             <button
               key={tab.id}
               onClick={() => setStudioTab(tab.id)}
-              className={`p-2 rounded-full transition-colors text-sm hover:bg-gray-100 dark:hover:bg-gray-700 ${
-                studio.activeTab === tab.id ? 'bg-blue-50 dark:bg-blue-900/30' : ''
+              className={`px-2 py-1 rounded transition-colors text-xs hover:bg-gray-200 dark:hover:bg-gray-700 ${
+                studio.activeTab === tab.id
+                  ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                  : 'text-gray-500 dark:text-gray-400'
               }`}
               title={tab.label}
             >
-              {tab.icon}
+              <span className="mr-1">{tab.icon}</span>
+              <span className="hidden sm:inline">{tab.label}</span>
             </button>
           ))}
-          <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 mx-0.5" />
-          <button
-            onClick={toggleStudio}
-            className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 transition-colors"
-            title="Expand Studio"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-            </svg>
-          </button>
+        </div>
+        <button
+          onClick={toggleStudio}
+          className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 transition-colors"
+          title={studio.expanded ? 'Collapse Studio' : 'Expand Studio'}
+        >
+          <svg className={`w-4 h-4 transition-transform duration-200 ${studio.expanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Expanded: full Studio content accordion */}
+      {studio.expanded && (
+        <div className="flex-1 overflow-hidden" style={{ height: 'calc(100% - 36px)' }}>
+          <Studio
+            notebookId={notebookId}
+            initialVisualContent={visualContent}
+            initialTab={studio.activeTab}
+            onTabChange={(tab) => setStudioTab(tab)}
+          />
         </div>
       )}
     </div>
