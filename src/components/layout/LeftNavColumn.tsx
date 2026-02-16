@@ -140,8 +140,8 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
 
   return (
     <div className="flex flex-col h-full w-full bg-white dark:bg-gray-800 overflow-hidden">
-      {/* Drawers area — scrollable, shrinks when Studio expands */}
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+      {/* Drawers area — takes natural height, scrolls if needed, shrinks when Studio expands */}
+      <div className="overflow-y-auto overflow-x-hidden flex-shrink">
       {/* Notebooks drawer */}
       <DrawerSection
         title="Notebooks"
@@ -229,15 +229,15 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
 
       </div>
 
-      {/* Studio — anchored to bottom, expands upward */}
+      {/* Studio — fills all remaining space below drawers, expands upward */}
       <div
-        className={`flex-shrink-0 flex flex-col transition-all duration-300 ease-in-out overflow-hidden ${
-          studio.expanded ? 'h-[55%]' : ''
+        className={`flex-1 min-h-[36px] flex flex-col transition-all duration-300 ease-in-out overflow-hidden ${
+          studio.expanded ? 'min-h-[45%]' : ''
         }`}
       >
         {/* Rainbow gradient accent line */}
         <div
-          className="h-[2px] flex-shrink-0"
+          className="h-[3px] flex-shrink-0"
           style={{
             background: 'linear-gradient(90deg, rgba(244,114,182,0.25), rgba(251,146,60,0.2), rgba(250,204,21,0.15), rgba(74,222,128,0.2), rgba(96,165,250,0.25), rgba(167,139,250,0.25))',
           }}
