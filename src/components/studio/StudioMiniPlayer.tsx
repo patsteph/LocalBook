@@ -27,10 +27,10 @@ export const StudioMiniPlayer: React.FC<StudioMiniPlayerProps> = ({
 }) => {
   return (
     <div
-      className={`fixed bottom-4 right-4 z-40 transition-all duration-300 ease-in-out ${
+      className={`z-40 transition-all duration-300 ease-in-out ${
         studio.expanded
-          ? 'w-[420px] h-[70vh] max-h-[700px]'
-          : 'w-auto h-auto'
+          ? 'fixed bottom-14 right-4 w-[420px] h-[70vh] max-h-[700px]'
+          : 'flex-shrink-0 flex justify-end px-4 py-1.5 bg-gray-50 dark:bg-gray-900 border-t dark:border-gray-700'
       }`}
     >
       {/* Expanded: full Studio interface */}
