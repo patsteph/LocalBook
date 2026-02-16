@@ -23,7 +23,7 @@ function renderNode(node: LayoutNode, depth: number = 0): React.ReactNode {
 
   return (
     <Group orientation={orientation} id={`split-${depth}`}>
-      <Panel id={`split-${depth}-a`} defaultSize={node.sizes[0]}>
+      <Panel id={`split-${depth}-a`} defaultSize={`${node.sizes[0]}%`}>
         {renderNode(node.children[0], depth * 2 + 1)}
       </Panel>
       <Separator>
@@ -41,7 +41,7 @@ function renderNode(node: LayoutNode, depth: number = 0): React.ReactNode {
           />
         </div>
       </Separator>
-      <Panel id={`split-${depth}-b`} defaultSize={node.sizes[1]}>
+      <Panel id={`split-${depth}-b`} defaultSize={`${node.sizes[1]}%`}>
         {renderNode(node.children[1], depth * 2 + 2)}
       </Panel>
     </Group>

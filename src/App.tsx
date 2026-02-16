@@ -534,7 +534,7 @@ function App() {
         {/* Main content — resizable left nav + canvas */}
         <div className="flex-1 overflow-hidden">
           <Group orientation="horizontal" id="main-layout">
-            <Panel id="left-nav" defaultSize={25} minSize={18} maxSize={40}>
+            <Panel id="left-nav" defaultSize="25%" minSize="20%" maxSize="30%">
               <LeftNavColumn
                 selectedNotebookId={selectedNotebookId}
                 onNotebookSelect={setSelectedNotebookId}
@@ -556,7 +556,7 @@ function App() {
                 <div className="w-0.5 h-8 rounded-full bg-gray-300 dark:bg-gray-600 group-hover:bg-blue-500 transition-colors" />
               </div>
             </Separator>
-            <Panel id="canvas" minSize={50}>
+            <Panel id="canvas" defaultSize="75%" minSize="50%">
               <CanvasWorkspace layout={layout} />
             </Panel>
           </Group>

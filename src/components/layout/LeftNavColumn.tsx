@@ -79,7 +79,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
   const ctx = useCanvas();
 
   return (
-    <div className="flex flex-col h-full bg-white dark:bg-gray-800 overflow-hidden">
+    <div className="flex flex-col h-full w-full bg-white dark:bg-gray-800 overflow-y-auto overflow-x-hidden">
       {/* Notebooks drawer */}
       <DrawerSection
         title="Notebooks"
