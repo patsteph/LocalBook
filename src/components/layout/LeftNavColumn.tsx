@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { DrawerState, StudioState } from '../../hooks/useLayoutPersistence';
 import { useCanvas } from '../canvas/CanvasContext';
 import { NotebookManager } from '../NotebookManager';
@@ -6,6 +6,9 @@ import { SourceUpload } from '../SourceUpload';
 import { SourcesList } from '../SourcesList';
 import { CollectorPanel } from '../CollectorPanel';
 import { Studio } from '../Studio';
+import { Modal } from '../shared/Modal';
+import { WebSearchResults } from '../WebSearchResults';
+import { SiteSearch } from '../SiteSearch';
 
 interface LeftNavColumnProps {
   selectedNotebookId: string | null;
@@ -66,36 +69,19 @@ const DrawerSection: React.FC<DrawerSectionProps> = ({ title, icon, isOpen, onTo
   </div>
 );
 
-const WebResearchDrawerContent: React.FC<{ notebookId: string | null }> = ({ notebookId }) => {
-  const ctx = useCanvas();
-  const [query, setQuery] = React.useState('');
-
-  const handleSearch = () => {
-    if (!notebookId) return;
-    ctx.openWebResearch(query || undefined);
-  };
-
+const WebResearchDrawerContent: React.FC<{ notebookId: string | null; onOpenModal: (tab: 'web' | 'site') => void }> = ({ notebookId, onOpenModal }) => {
   return (
     <div className="px-3 py-2 space-y-2">
-      <input
-        type="text"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter') handleSearch(); }}
-        placeholder="Search query or paste URL..."
-        disabled={!notebookId}
-        className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
-      />
       <div className="flex gap-2">
         <button
-          onClick={() => handleSearch()}
+          onClick={() => onOpenModal('web')}
           disabled={!notebookId}
           className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           🌐 Web Search
         </button>
         <button
-          onClick={() => handleSearch()}
+          onClick={() => onOpenModal('site')}
           disabled={!notebookId}
           className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-md text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
@@ -137,6 +123,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
   visualContent,
 }) => {
   const ctx = useCanvas();
+  const [webResearchModal, setWebResearchModal] = useState<'web' | 'site' | null>(null);
 
   return (
     <div className="flex flex-col h-full w-full bg-white dark:bg-gray-800 overflow-hidden">
@@ -172,7 +159,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
         isOpen={drawers.webResearch}
         onToggle={() => toggleDrawer('webResearch')}
       >
-        <WebResearchDrawerContent notebookId={selectedNotebookId} />
+        <WebResearchDrawerContent notebookId={selectedNotebookId} onOpenModal={(tab) => setWebResearchModal(tab)} />
       </DrawerSection>
 
       {/* Sources drawer */}
@@ -229,12 +216,28 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
 
       </div>
 
-      {/* Studio — fills all remaining space below drawers, expands upward */}
+      {/* Studio — anchored to absolute bottom of column, expands upward */}
       <div
         className={`flex-1 min-h-[36px] flex flex-col transition-all duration-300 ease-in-out overflow-hidden ${
           studio.expanded ? 'min-h-[45%]' : ''
         }`}
       >
+        {/* Spacer — pushes studio to bottom when collapsed */}
+        {!studio.expanded && <div className="flex-1" />}
+
+        {/* Studio content — visible when expanded, ABOVE the header */}
+        {studio.expanded && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <Studio
+              notebookId={selectedNotebookId}
+              initialVisualContent={visualContent}
+              initialTab={studio.activeTab}
+              onTabChange={(tab) => setStudioTab(tab)}
+              hideHeader
+            />
+          </div>
+        )}
+
         {/* Rainbow gradient accent line */}
         <div
           className="h-[3px] flex-shrink-0"
@@ -243,7 +246,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
           }}
         />
 
-        {/* Studio header bar — always visible */}
+        {/* Studio header bar — always at bottom */}
         <button
           onClick={toggleStudio}
           className="w-full flex items-center justify-between px-3 h-9 bg-gray-50/80 dark:bg-gray-900/60 flex-shrink-0 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
@@ -274,20 +277,54 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
         </button>
-
-        {/* Studio content — visible when expanded */}
-        {studio.expanded && (
-          <div className="flex-1 min-h-0 overflow-hidden border-t dark:border-gray-700">
-            <Studio
-              notebookId={selectedNotebookId}
-              initialVisualContent={visualContent}
-              initialTab={studio.activeTab}
-              onTabChange={(tab) => setStudioTab(tab)}
-              hideHeader
-            />
-          </div>
-        )}
       </div>
+
+      {/* Web Research Modal Popup */}
+      <Modal
+        isOpen={webResearchModal !== null}
+        onClose={() => setWebResearchModal(null)}
+        title="Web Research"
+        size="lg"
+      >
+        <div className="p-4">
+          {/* Tab switcher */}
+          <div className="flex gap-2 mb-4 border-b border-gray-200 dark:border-gray-700 pb-2">
+            <button
+              onClick={() => setWebResearchModal('web')}
+              className={`px-3 py-1.5 text-sm font-medium rounded-t transition-colors ${
+                webResearchModal === 'web'
+                  ? 'text-blue-600 border-b-2 border-blue-600 dark:text-blue-400 dark:border-blue-400'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+              }`}
+            >
+              🌐 Web Search
+            </button>
+            <button
+              onClick={() => setWebResearchModal('site')}
+              className={`px-3 py-1.5 text-sm font-medium rounded-t transition-colors ${
+                webResearchModal === 'site'
+                  ? 'text-blue-600 border-b-2 border-blue-600 dark:text-blue-400 dark:border-blue-400'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+              }`}
+            >
+              🎯 Site Search
+            </button>
+          </div>
+          {/* Tab content */}
+          {webResearchModal === 'web' && selectedNotebookId && (
+            <WebSearchResults
+              notebookId={selectedNotebookId}
+              onSourceAdded={() => { ctx.triggerSourcesRefresh(); ctx.triggerNotebooksRefresh(); }}
+            />
+          )}
+          {webResearchModal === 'site' && selectedNotebookId && (
+            <SiteSearch
+              notebookId={selectedNotebookId}
+              onSourceAdded={() => { ctx.triggerSourcesRefresh(); ctx.triggerNotebooksRefresh(); }}
+            />
+          )}
+        </div>
+      </Modal>
     </div>
   );
 };
