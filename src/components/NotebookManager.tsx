@@ -268,10 +268,10 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   }
 
   return (
-    <div className="p-4 bg-white dark:bg-gray-800 border-b dark:border-gray-700">
+    <div className="px-3 py-2 bg-white dark:bg-gray-800 border-b dark:border-gray-700">
       {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
 
-      <div className="flex items-center justify-end mb-3">
+      <div className="flex items-center justify-end mb-1">
         <button
           onClick={() => setShowCreateModal(true)}
           disabled={creating}
@@ -300,10 +300,10 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
               <>
                 {selectedNotebook && (
                   <div
-                    className="group p-3 rounded-lg border border-blue-500/30 bg-gradient-to-r from-blue-50 to-blue-100/50 dark:from-blue-900/30 dark:to-blue-800/20 dark:border-blue-500/40 hover:border-blue-500/50 transition-all"
+                    className="group p-2 rounded-lg border border-blue-500/30 bg-gradient-to-r from-blue-50 to-blue-100/50 dark:from-blue-900/30 dark:to-blue-800/20 dark:border-blue-500/40 hover:border-blue-500/50 transition-all"
                   >
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3 flex-1">
+                      <div className="flex items-center gap-2 flex-1">
                         {/* Color indicator with picker */}
                         <div className="relative">
                           <button

@@ -260,7 +260,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
       )}
 
       {/* Main Content - Scrollable */}
-      <div className="flex-1 overflow-y-auto p-6 pb-12 space-y-6">
+      <div className="flex-1 overflow-y-auto px-3 py-3 pb-8 space-y-3">
         {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
 
         {/* Documents & Audio Tab Content */}

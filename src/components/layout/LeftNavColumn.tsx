@@ -225,19 +225,6 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
         {/* Spacer — pushes studio to bottom when collapsed */}
         {!studio.expanded && <div className="flex-1" />}
 
-        {/* Studio content — visible when expanded, ABOVE the header */}
-        {studio.expanded && (
-          <div className="flex-1 min-h-0 overflow-hidden">
-            <Studio
-              notebookId={selectedNotebookId}
-              initialVisualContent={visualContent}
-              initialTab={studio.activeTab}
-              onTabChange={(tab) => setStudioTab(tab)}
-              hideHeader
-            />
-          </div>
-        )}
-
         {/* Rainbow gradient accent line */}
         <div
           className="h-[3px] flex-shrink-0"
@@ -246,7 +233,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
           }}
         />
 
-        {/* Studio header bar — always at bottom */}
+        {/* Studio header bar — at bottom when collapsed, at top when expanded */}
         <button
           onClick={toggleStudio}
           className="w-full flex items-center justify-between px-3 h-9 bg-gray-50/80 dark:bg-gray-900/60 flex-shrink-0 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
@@ -277,6 +264,19 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
         </button>
+
+        {/* Studio content — visible when expanded, BELOW the header */}
+        {studio.expanded && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <Studio
+              notebookId={selectedNotebookId}
+              initialVisualContent={visualContent}
+              initialTab={studio.activeTab}
+              onTabChange={(tab) => setStudioTab(tab)}
+              hideHeader
+            />
+          </div>
+        )}
       </div>
 
       {/* Web Research Modal Popup */}
