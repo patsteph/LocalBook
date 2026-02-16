@@ -12,6 +12,16 @@
   }
 }
 
+/* Soften blue intensity in light mode — less electric, slightly warmer */
+html:not(.dark) .bg-blue-600 { background-color: #4070dc !important; }
+html:not(.dark) .hover\:bg-blue-700:hover { background-color: #3762c7 !important; }
+html:not(.dark) .bg-blue-100 { background-color: #e6edfa !important; }
+html:not(.dark) .text-blue-700 { color: #3762c7 !important; }
+html:not(.dark) .text-blue-600 { color: #4070dc !important; }
+html:not(.dark) .border-blue-500 { border-color: #5a8ae0 !important; }
+html:not(.dark) .ring-blue-500 { --tw-ring-color: #5a8ae0 !important; }
+html:not(.dark) .focus\:ring-blue-500:focus { --tw-ring-color: #5a8ae0 !important; }
+
 /* Smooth streaming text appearance */
 .streaming-text {
   animation: fadeIn 0.1s ease-in;

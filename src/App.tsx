@@ -6,7 +6,6 @@ import { LeftNavColumn } from './components/layout/LeftNavColumn';
 import { CanvasWorkspace } from './components/canvas/CanvasWorkspace';
 import { CanvasProvider, CanvasContextValue } from './components/canvas/CanvasContext';
 import { LayoutNode, PanelView, countLeaves, replaceLeaf, removeLeaf, findLeaf } from './components/canvas/types';
-import { StudioMiniPlayer } from './components/studio/StudioMiniPlayer';
 import { useCanvasLayout, useDrawerState, useStudioState } from './hooks/useLayoutPersistence';
 import { ToastContainer, ToastMessage } from './components/shared/Toast';
 import { API_BASE_URL } from './services/api';
@@ -531,8 +530,8 @@ function App() {
           </button>
         )}
 
-        {/* Main content — resizable left nav + canvas (min-h-0 lets it shrink when Studio expands) */}
-        <div className="flex-1 overflow-hidden min-h-0">
+        {/* Main content — resizable left nav + canvas */}
+        <div className="flex-1 overflow-hidden">
           <Group orientation="horizontal" id="main-layout">
             <Panel id="left-nav" defaultSize="25%" minSize="20%" maxSize="30%">
               <LeftNavColumn
@@ -549,6 +548,10 @@ function App() {
                 drawers={drawers}
                 toggleDrawer={toggleDrawer}
                 selectedNotebookName={selectedNotebookName}
+                studio={studio}
+                toggleStudio={toggleStudio}
+                setStudioTab={setStudioTab}
+                visualContent={visualContent}
               />
             </Panel>
             <Separator>
@@ -561,15 +564,6 @@ function App() {
             </Panel>
           </Group>
         </div>
-
-        {/* Studio bottom bar — accordion expands upward */}
-        <StudioMiniPlayer
-          notebookId={selectedNotebookId}
-          studio={studio}
-          toggleStudio={toggleStudio}
-          setStudioTab={setStudioTab}
-          visualContent={visualContent}
-        />
 
         {/* Toast notifications */}
         <ToastContainer toasts={toasts} onDismiss={dismissToast} />
