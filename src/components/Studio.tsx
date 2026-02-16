@@ -17,9 +17,10 @@ interface StudioProps {
   initialVisualContent?: string;
   initialTab?: 'documents' | 'audio' | 'quiz' | 'visual' | 'writing';
   onTabChange?: (tab: 'documents' | 'audio' | 'quiz' | 'visual' | 'writing') => void;
+  hideHeader?: boolean;
 }
 
-export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent, initialTab, onTabChange }) => {
+export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent, initialTab, onTabChange, hideHeader }) => {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<string>('');
   const [audioGenerations, setAudioGenerations] = useState<AudioGeneration[]>([]);
@@ -229,32 +230,34 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      {/* Header with Tabs */}
-      <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-        <h3 className="font-bold text-base mb-2 text-gray-900 dark:text-white">Studio</h3>
-        <div className="grid grid-cols-5 gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
-          {[
-            { id: 'documents' as const, icon: '📄', label: 'Docs' },
-            { id: 'audio' as const, icon: '🎙️', label: 'Audio' },
-            { id: 'quiz' as const, icon: '🎯', label: 'Quiz' },
-            { id: 'visual' as const, icon: '🧠', label: 'Visual' },
-            { id: 'writing' as const, icon: '✍️', label: 'Write' },
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => handleTabChange(tab.id)}
-              className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors flex flex-col items-center ${
-                activeTab === tab.id
-                  ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
-                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-              }`}
-            >
-              <span>{tab.icon}</span>
-              <span className="mt-0.5">{tab.label}</span>
-            </button>
-          ))}
+      {/* Header with Tabs — hidden when rendered inside left nav (thin bar provides tabs) */}
+      {!hideHeader && (
+        <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+          <h3 className="font-bold text-base mb-2 text-gray-900 dark:text-white">Studio</h3>
+          <div className="grid grid-cols-5 gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+            {[
+              { id: 'documents' as const, icon: '📄', label: 'Docs' },
+              { id: 'audio' as const, icon: '🎙️', label: 'Audio' },
+              { id: 'quiz' as const, icon: '🎯', label: 'Quiz' },
+              { id: 'visual' as const, icon: '🧠', label: 'Visual' },
+              { id: 'writing' as const, icon: '✍️', label: 'Write' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => handleTabChange(tab.id)}
+                className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors flex flex-col items-center ${
+                  activeTab === tab.id
+                    ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                <span>{tab.icon}</span>
+                <span className="mt-0.5">{tab.label}</span>
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Main Content - Scrollable */}
       <div className="flex-1 overflow-y-auto p-6 pb-12 space-y-6">

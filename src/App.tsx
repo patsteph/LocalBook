@@ -422,12 +422,9 @@ function App() {
   return (
     <CanvasProvider value={canvasContext}>
       <div className="h-screen flex flex-col bg-gray-50 dark:bg-gray-900">
-        {/* Header */}
-        <div className="bg-white dark:bg-gray-800 border-b dark:border-gray-700 px-6 py-3 flex justify-between items-center flex-shrink-0">
-          <div>
-            <h1 className="text-xl font-bold text-gray-900 dark:text-white">LocalBook</h1>
-          </div>
-          <div className="flex items-center gap-1">
+        {/* Utility icon bar */}
+        <div className="bg-white dark:bg-gray-800 border-b dark:border-gray-700 px-3 flex justify-end items-center flex-shrink-0 h-9">
+          <div className="flex items-center gap-0.5">
             <button
               onClick={openLLMSelector}
               className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"

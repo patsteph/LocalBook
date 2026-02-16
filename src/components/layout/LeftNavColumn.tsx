@@ -283,6 +283,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
               initialVisualContent={visualContent}
               initialTab={studio.activeTab}
               onTabChange={(tab) => setStudioTab(tab)}
+              hideHeader
             />
           </div>
         )}

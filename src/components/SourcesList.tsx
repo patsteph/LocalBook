@@ -256,7 +256,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
               <div
                 key={source.id}
                 onClick={() => onSourceSelect?.(source.id)}
-                className={`px-4 py-2 rounded border transition cursor-pointer overflow-hidden ${
+                className={`group px-4 py-2.5 rounded border transition cursor-pointer overflow-hidden ${
                   isSelected
                     ? 'border-purple-500 dark:border-purple-400 bg-purple-50 dark:bg-purple-900/20 ring-1 ring-purple-500 dark:ring-purple-400'
                     : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-700'
@@ -267,7 +267,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                     {isSelected && <span className="text-purple-600 dark:text-purple-400 text-xs mr-1">●</span>}
                     {source.filename}
                   </p>
-                  <div className="flex gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
                     <button
                       onClick={() => setViewingSource(source)}
                       className="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded transition-colors"
