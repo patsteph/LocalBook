@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { API_BASE_URL } from '../services/api';
+import { collectorService } from '../services/collector';
+import { peopleService } from '../services/people';
 import { ApprovalQueue } from './collector/ApprovalQueue';
 import { CollectorSetupWizard } from './collector/CollectorSetupWizard';
 import { CollectorProfile } from './collector/CollectorProfile';
@@ -65,38 +66,25 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
     setLoading(true);
     try {
       // Load config
-      const configRes = await fetch(`${API_BASE_URL}/collector/${notebookId}/config`);
-      if (configRes.ok) {
-        const configData = await configRes.json();
-        setConfig(configData);
-      }
+      const configData = await collectorService.getConfig(notebookId);
+      setConfig(configData as any);
 
       // Check for people profiler config
       try {
-        const peopleRes = await fetch(`${API_BASE_URL}/people/${notebookId}/config`);
-        if (peopleRes.ok) {
-          const peopleData = await peopleRes.json();
-          setHasPeopleConfig(true);
-          setPeopleMemberCount(peopleData.members?.length || 0);
-        } else {
-          setHasPeopleConfig(false);
-          setPeopleMemberCount(0);
-        }
+        const peopleData = await peopleService.getConfig(notebookId);
+        setHasPeopleConfig(true);
+        setPeopleMemberCount(peopleData.members?.length || 0);
       } catch {
         setHasPeopleConfig(false);
         setPeopleMemberCount(0);
       }
 
       // Load pending count
-      const pendingRes = await fetch(`${API_BASE_URL}/collector/${notebookId}/pending`);
-      if (pendingRes.ok) {
-        const pendingData = await pendingRes.json();
-        const count = pendingData.total || pendingData.pending?.length || 0;
-        setPendingCount(count);
-        // Auto-expand when there are pending items needing attention
-        if (count > 0) {
-          setExpanded(true);
-        }
+      const pendingData = await collectorService.getPendingApprovals(notebookId);
+      const count = pendingData.total || pendingData.pending?.length || 0;
+      setPendingCount(count);
+      if (count > 0) {
+        setExpanded(true);
       }
     } catch (err) {
       console.error('Error loading collector status:', err);
@@ -112,30 +100,22 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
     setCollectResult(null);
     
     try {
-      const res = await fetch(`${API_BASE_URL}/collector/${notebookId}/collect-now`, {
-        method: 'POST'
+      const data: any = await collectorService.collectNow(notebookId);
+      setLastCollection(new Date().toLocaleTimeString());
+      setCollectResult({
+        items: data.items_collected || 0,
+        approved: data.items_approved || 0,
+        pending: data.items_pending || 0,
+        rejected: data.items_rejected || 0,
+        filtered: data.items_filtered || 0,
+        message: data.message,
+        auto_approved: data.auto_approved || [],
+        filtered_items: data.filtered || []
       });
-      if (res.ok) {
-        const data = await res.json();
-        setLastCollection(new Date().toLocaleTimeString());
-        setCollectResult({
-          items: data.items_collected || 0,
-          approved: data.items_approved || 0,
-          pending: data.items_pending || 0,
-          rejected: data.items_rejected || 0,
-          filtered: data.items_filtered || 0,
-          message: data.message,
-          auto_approved: data.auto_approved || [],
-          filtered_items: data.filtered || []
-        });
-        // Reload status after collection
-        await loadCollectorStatus();
-        // Tell parent to refresh sources list
-        onSourcesRefresh?.();
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        setCollectResult({ items: 0, approved: 0, pending: 0, rejected: 0, filtered: 0, message: errData.detail || 'Collection failed' });
-      }
+      // Reload status after collection
+      await loadCollectorStatus();
+      // Tell parent to refresh sources list
+      onSourcesRefresh?.();
     } catch (err) {
       console.error('Error triggering collection:', err);
       const errMsg = err instanceof Error ? err.message : 'Connection error';

@@ -2,6 +2,10 @@
 
 LangGraph tools that wrap existing LocalBook functionality.
 These tools are used by agents to perform specific tasks.
+
+STATUS: PARTIAL — These tools are only invoked via the experimental
+LangGraph supervisor (agents/supervisor.py → api/agent.py). The primary
+app flow calls the underlying services directly (rag_engine, structured_llm, etc.).
 """
 
 from typing import Optional, List
@@ -230,63 +234,27 @@ async def capture_page_tool(
     Returns:
         Dictionary with capture result
     """
-    from storage.source_store import source_store
-    from services.rag_engine import rag_engine
-    import uuid
-    from datetime import datetime
+    from services.source_ingestion import create_and_ingest_source
     
-    source_id = str(uuid.uuid4())
-    
-    # Calculate reading time
     word_count = len(content.split())
     reading_time = max(1, word_count // 200)
     
-    # Create source with proper metadata
-    char_count = len(content)
-    source_data = {
-        "id": source_id,
-        "notebook_id": notebook_id,
-        "type": "web",
-        "format": "web",
-        "url": url,
-        "title": title,
-        "filename": title,
-        "content": content,
-        "word_count": word_count,
-        "char_count": char_count,
-        "characters": char_count,
-        "reading_time_minutes": reading_time,
-        "meta_tags": meta_tags or {},
-        "status": "processing",
-        "chunks": 0,
-        "created_at": datetime.now().isoformat()
-    }
-    
-    await source_store.create(
+    result = await create_and_ingest_source(
         notebook_id=notebook_id,
         filename=title,
-        metadata=source_data
-    )
-    
-    # Index in RAG
-    rag_result = await rag_engine.ingest_document(
-        notebook_id=notebook_id,
-        source_id=source_id,
         text=content,
-        filename=title,
-        source_type="web"
+        source_type="web",
+        url=url,
+        extra_metadata={
+            "word_count": word_count,
+            "reading_time_minutes": reading_time,
+            "meta_tags": meta_tags or {},
+        },
     )
-    
-    # Update source with RAG results
-    chunks = rag_result.get("chunks", 0) if rag_result else 0
-    await source_store.update(notebook_id, source_id, {
-        "chunks": chunks,
-        "status": "completed"
-    })
     
     return {
         "success": True,
-        "source_id": source_id,
+        "source_id": result["source_id"],
         "title": title,
         "word_count": word_count,
         "reading_time_minutes": reading_time

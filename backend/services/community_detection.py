@@ -5,6 +5,10 @@ Enables holistic "tell me everything about X" queries by grouping
 related entities and generating community summaries.
 
 Based on Microsoft GraphRAG approach using Leiden algorithm.
+
+STATUS: PARTIAL — Wired to api/graph.py endpoints but not automatically
+triggered during ingestion. Communities must be built on-demand via API.
+The RAG engine does not yet route holistic queries through community summaries.
 """
 import asyncio
 import json

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { API_BASE_URL } from '../../services/api';
+import { collectorService } from '../../services/collector';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -197,21 +197,13 @@ export const CollectorProfile: React.FC<CollectorProfileProps> = ({
     setError(null);
 
     try {
-      const [profileRes, historyRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/collector/${notebookId}/profile`),
-        fetch(`${API_BASE_URL}/collector/${notebookId}/history?limit=15`),
+      const [profileData, historyData] = await Promise.all([
+        collectorService.getProfile(notebookId),
+        collectorService.getHistory(notebookId, 15),
       ]);
 
-      if (profileRes.ok) {
-        setProfile(await profileRes.json());
-      } else {
-        setError('Failed to load profile');
-      }
-
-      if (historyRes.ok) {
-        const hData = await historyRes.json();
-        setHistory(hData.history || []);
-      }
+      setProfile(profileData);
+      setHistory(historyData.history || []);
     } catch (err) {
       setError('Connection error');
     } finally {
@@ -226,12 +218,8 @@ export const CollectorProfile: React.FC<CollectorProfileProps> = ({
   const handleToggleSource = async (sourceId: string, enabled: boolean) => {
     setTogglingSource(sourceId);
     try {
-      const res = await fetch(`${API_BASE_URL}/collector/${notebookId}/source-toggle`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_id: sourceId, enabled }),
-      });
-      if (res.ok && profile) {
+      await collectorService.toggleSource(notebookId, sourceId, enabled);
+      if (profile) {
         setProfile({
           ...profile,
           sources: profile.sources.map((s) =>

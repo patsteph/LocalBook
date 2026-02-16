@@ -256,7 +256,7 @@ class CoachingInsightGenerator:
         These represent the manager's key insights and decisions — high-signal data.
         """
         try:
-            from services.findings_store import get_findings_store
+            from storage.findings_store import get_findings_store
             store = get_findings_store()
             findings = await store.get_findings(notebook_id, limit=10)
             if not findings:

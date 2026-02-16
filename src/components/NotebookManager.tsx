@@ -1,14 +1,17 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { notebookService, NOTEBOOK_COLORS } from '../services/notebooks';
 import { exportService } from '../services/export';
 import { sourceService } from '../services/sources';
 import { API_BASE_URL } from '../services/api';
+import { curatorService } from '../services/curatorApi';
 import { Notebook } from '../types';
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
 import { Modal } from './shared/Modal';
 import { CollectorSetupWizard } from './collector';
+import { CreateNotebookModal } from './notebook/CreateNotebookModal';
+import { ExportModal } from './notebook/ExportModal';
 
 interface NotebookManagerProps {
   onNotebookSelect: (notebookId: string) => void;
@@ -28,22 +31,17 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [newNotebookTitle, setNewNotebookTitle] = useState('');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [notebookToDelete, setNotebookToDelete] = useState<string | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
   const [notebookToExport, setNotebookToExport] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-  const [newNotebookColor, setNewNotebookColor] = useState(NOTEBOOK_COLORS[0]);
   const [showColorPicker, setShowColorPicker] = useState<string | null>(null);
   const [showOtherNotebooks, setShowOtherNotebooks] = useState(false);
   const [primaryNotebookId, setPrimaryNotebookId] = useState<string | null>(null);
   const [showCollectorSetup, setShowCollectorSetup] = useState(false);
   const [newlyCreatedNotebook, setNewlyCreatedNotebook] = useState<Notebook | null>(null);
-  const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
-  const [isDragging, setIsDragging] = useState(false);
   const [inferredConfig, setInferredConfig] = useState<any>(null);
-  const dropRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     console.log('NotebookManager mounted, loading notebooks...');
@@ -71,7 +69,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
       
       // Load primary notebook preference
       try {
-        const prefsRes = await fetch('http://localhost:8000/settings/primary-notebook');
+        const prefsRes = await fetch(`${API_BASE_URL}/settings/primary-notebook`);
         if (prefsRes.ok) {
           const prefsData = await prefsRes.json();
           setPrimaryNotebookId(prefsData.primary_notebook_id);
@@ -89,7 +87,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
 
   const handleSetPrimary = async (notebookId: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/settings/primary-notebook/${notebookId}`, {
+      const res = await fetch(`${API_BASE_URL}/settings/primary-notebook/${notebookId}`, {
         method: 'POST'
       });
       if (res.ok) {
@@ -99,12 +97,6 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
       console.error('Failed to set primary notebook:', err);
       setError('Failed to set primary notebook');
     }
-  };
-
-  const handleCreateClick = () => {
-    setShowCreateModal(true);
-    setNewNotebookTitle('');
-    setNewNotebookColor(NOTEBOOK_COLORS[0]);
   };
 
   const handleColorChange = async (notebookId: string, color: string) => {
@@ -120,55 +112,36 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
     }
   };
 
-  const handleCreateSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!newNotebookTitle.trim()) {
-      return;
-    }
-
+  const handleCreateNotebook = async (title: string, color: string, files: File[]) => {
     setCreating(true);
     setError(null);
     try {
-      const newNotebook = await notebookService.create(newNotebookTitle.trim(), undefined, newNotebookColor);
+      const newNotebook = await notebookService.create(title, undefined, color);
       setNotebooks([...notebooks, newNotebook]);
       onNotebookSelect(newNotebook.id);
       setShowCreateModal(false);
-      setNewNotebookTitle('');
 
       // If files were dropped, upload them and infer config
-      if (droppedFiles.length > 0) {
+      if (files.length > 0) {
         const filenames: string[] = [];
         let sampleContent = '';
-        for (const file of droppedFiles) {
+        for (const file of files) {
           try {
             await sourceService.upload(newNotebook.id, file);
             filenames.push(file.name);
             if (!sampleContent && file.type.startsWith('text/')) {
-              sampleContent = await file.text().then(t => t.slice(0, 2000));
+              sampleContent = await file.text().then((t: string) => t.slice(0, 2000));
             }
           } catch (err) {
             console.error(`Failed to upload ${file.name}:`, err);
           }
         }
-        setDroppedFiles([]);
 
         // Ask Curator to infer config from uploaded files
         if (filenames.length > 0) {
           try {
-            const res = await fetch(`${API_BASE_URL}/curator/infer-config`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                notebook_id: newNotebook.id,
-                filenames,
-                sample_content: sampleContent,
-              }),
-            });
-            if (res.ok) {
-              const suggested = await res.json();
-              setInferredConfig(suggested);
-            }
+            const suggested = await curatorService.inferConfig(files);
+            setInferredConfig(suggested);
           } catch (err) {
             console.log('[NotebookManager] Config inference failed (non-fatal):', err);
           }
@@ -184,33 +157,6 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
     } finally {
       setCreating(false);
     }
-  };
-
-  // File drop handlers for Create Notebook Modal
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) {
-      setDroppedFiles(prev => [...prev, ...files]);
-    }
-  };
-
-  const removeDroppedFile = (index: number) => {
-    setDroppedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleDeleteClick = (id: string) => {
@@ -327,7 +273,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
 
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-bold text-gray-900 dark:text-white">Notebooks</h2>
-        <Button onClick={handleCreateClick} disabled={creating} size="sm">
+        <Button onClick={() => setShowCreateModal(true)} disabled={creating} size="sm">
           + New Notebook
         </Button>
       </div>
@@ -564,111 +510,12 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
       )}
 
       {/* Create Notebook Modal */}
-      <Modal
+      <CreateNotebookModal
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
-        title="Create New Notebook"
-      >
-        <div className="p-6">
-          <form onSubmit={handleCreateSubmit}>
-            <div className="mb-4">
-              <label htmlFor="notebook-title" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Notebook Name
-              </label>
-              <input
-                id="notebook-title"
-                type="text"
-                value={newNotebookTitle}
-                onChange={(e) => setNewNotebookTitle(e.target.value)}
-                placeholder="My Research Project"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
-                autoFocus
-                disabled={creating}
-              />
-            </div>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Color
-              </label>
-              <div className="flex gap-2 flex-wrap">
-                {NOTEBOOK_COLORS.map((color) => (
-                  <button
-                    key={color}
-                    type="button"
-                    onClick={() => setNewNotebookColor(color)}
-                    className={`w-8 h-8 rounded-full hover:scale-110 transition-transform ${
-                      newNotebookColor === color ? 'ring-2 ring-offset-2 ring-blue-500' : ''
-                    }`}
-                    style={{ backgroundColor: color }}
-                  />
-                ))}
-              </div>
-            </div>
-            {/* File drop zone */}
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Starting Files <span className="text-gray-400 font-normal">(optional)</span>
-              </label>
-              <div
-                ref={dropRef}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
-                  isDragging
-                    ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/20'
-                    : 'border-gray-300 dark:border-gray-600 hover:border-gray-400'
-                }`}
-              >
-                {droppedFiles.length === 0 ? (
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
-                    Drop files here to seed your notebook
-                  </p>
-                ) : (
-                  <div className="space-y-1">
-                    {droppedFiles.map((file, i) => (
-                      <div key={i} className="flex items-center justify-between text-sm">
-                        <span className="text-gray-700 dark:text-gray-300 truncate">
-                          📄 {file.name}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => removeDroppedFile(i)}
-                          className="text-gray-400 hover:text-red-500 ml-2"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {droppedFiles.length > 0 && (
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  {droppedFiles.length} file{droppedFiles.length !== 1 ? 's' : ''} — will be uploaded and analyzed to suggest Collector config
-                </p>
-              )}
-            </div>
-
-            <div className="flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => { setShowCreateModal(false); setDroppedFiles([]); }}
-                disabled={creating}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={creating || !newNotebookTitle.trim()}
-              >
-                {creating ? 'Creating...' : 'Create'}
-              </Button>
-            </div>
-          </form>
-        </div>
-      </Modal>
+        onSubmit={handleCreateNotebook}
+        creating={creating}
+      />
 
       {/* Delete Confirmation Modal */}
       <Modal
@@ -698,86 +545,12 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
       </Modal>
 
       {/* Export Modal */}
-      <Modal
+      <ExportModal
         isOpen={showExportModal}
-        onClose={() => {
-          console.log('Export modal close clicked');
-          setShowExportModal(false);
-        }}
-        title="Export Notebook"
-      >
-        <div className="p-6">
-          <p className="text-gray-700 dark:text-gray-300 mb-6">
-            Choose the format to export your notebook:
-          </p>
-          <div className="space-y-3">
-            <button
-              onClick={(e) => {
-                console.log('Markdown button clicked');
-                e.preventDefault();
-                e.stopPropagation();
-                handleExport('markdown');
-              }}
-              disabled={exporting}
-              className="w-full flex items-center justify-between p-4 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <div className="flex items-center gap-3">
-                <svg className="w-6 h-6 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <div className="text-left">
-                  <div className="font-medium text-gray-900 dark:text-white">Markdown (.md)</div>
-                  <div className="text-sm text-gray-500 dark:text-gray-400">Plain text with formatting</div>
-                </div>
-              </div>
-              <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-
-            <button
-              onClick={(e) => {
-                console.log('PDF button clicked');
-                e.preventDefault();
-                e.stopPropagation();
-                handleExport('pdf');
-              }}
-              disabled={exporting}
-              className="w-full flex items-center justify-between p-4 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <div className="flex items-center gap-3">
-                <svg className="w-6 h-6 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-                </svg>
-                <div className="text-left">
-                  <div className="font-medium text-gray-900 dark:text-white">PDF (.pdf)</div>
-                  <div className="text-sm text-gray-500 dark:text-gray-400">Opens browser print dialog</div>
-                </div>
-              </div>
-              <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-          </div>
-
-          {exporting && (
-            <div className="mt-4 flex items-center justify-center gap-2 text-gray-600 dark:text-gray-400">
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
-              <span>Exporting...</span>
-            </div>
-          )}
-
-          <div className="mt-6 flex justify-end">
-            <Button
-              variant="secondary"
-              onClick={() => setShowExportModal(false)}
-              disabled={exporting}
-            >
-              Cancel
-            </Button>
-          </div>
-        </div>
-      </Modal>
+        onClose={() => setShowExportModal(false)}
+        onExport={handleExport}
+        exporting={exporting}
+      />
 
       {/* Collector Setup Wizard */}
       {newlyCreatedNotebook && (

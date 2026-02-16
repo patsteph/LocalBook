@@ -99,7 +99,7 @@ async def delete_notebook(notebook_id: str):
     
     # 4. Delete findings for this notebook
     try:
-        from services.findings_store import findings_store
+        from storage.findings_store import findings_store
         if findings_store:
             await findings_store.delete_notebook_findings(notebook_id)
             print(f"[CLEANUP] Deleted findings for {notebook_id}")

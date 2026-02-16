@@ -242,6 +242,20 @@ fi
 
 # Run bundle API tests (requires app to be running)
 echo -e "  Running bundle API tests..."
+
+# Kill any stale LocalBook/backend process before starting fresh
+echo -e "  Cleaning up stale processes..."
+osascript -e 'quit app "LocalBook"' 2>/dev/null || true
+# Kill anything on port 8000
+lsof -ti:8000 | xargs kill -9 2>/dev/null || true
+sleep 3  # Wait for port to fully release
+
+# Verify port is free
+if curl -s http://localhost:8000/health/quick > /dev/null 2>&1; then
+    echo -e "${RED}  ✗ Port 8000 still occupied after cleanup${NC}"
+    exit 1
+fi
+
 echo -e "${YELLOW}  Starting LocalBook.app for testing...${NC}"
 open ./LocalBook.app
 

@@ -7,7 +7,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 
 export interface ToastMessage {
   id: string;
-  type: 'success' | 'error' | 'info';
+  type: 'success' | 'error' | 'info' | 'warning';
   title: string;
   message?: string;
   duration?: number;
@@ -30,12 +30,14 @@ const Toast: React.FC<ToastProps> = ({ toast, onDismiss }) => {
     success: 'bg-green-500',
     error: 'bg-red-500',
     info: 'bg-blue-500',
+    warning: 'bg-yellow-500',
   }[toast.type];
 
   const icon = {
     success: '✓',
     error: '✕',
     info: 'ℹ',
+    warning: '⚠',
   }[toast.type];
 
   return (

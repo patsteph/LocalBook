@@ -7,8 +7,27 @@ from utils.json_io import atomic_write_json
 
 class SkillsStore:
     def __init__(self):
+        self._use_sqlite = settings.use_sqlite
         self.storage_path = settings.data_dir / "skills.json"
-        self._ensure_storage()
+        if self._use_sqlite:
+            self._ensure_builtin_skills_sqlite()
+        else:
+            self._ensure_storage()
+
+    def _get_db(self):
+        from storage.database import get_db
+        return get_db().get_connection()
+
+    def _ensure_builtin_skills_sqlite(self):
+        """Ensure built-in skills exist in SQLite"""
+        conn = self._get_db()
+        for skill_id, (name, prompt, desc) in self.BUILTIN_SKILLS.items():
+            conn.execute(
+                """INSERT OR IGNORE INTO skills (skill_id, name, system_prompt, description, is_builtin)
+                   VALUES (?, ?, ?, ?, 1)""",
+                (skill_id, name, prompt, desc)
+            )
+        conn.commit()
 
     def _ensure_storage(self):
         """Ensure storage file exists with default skills, and add any missing builtins"""
@@ -136,6 +155,9 @@ class SkillsStore:
 
     async def list(self) -> List[Dict]:
         """List all skills"""
+        if self._use_sqlite:
+            rows = self._get_db().execute("SELECT * FROM skills").fetchall()
+            return [{**dict(r), 'is_builtin': bool(r['is_builtin'])} for r in rows]
         data = self._load_data()
         return list(data["skills"].values())
 
@@ -151,14 +173,28 @@ class SkillsStore:
             "is_builtin": False
         }
 
-        data = self._load_data()
-        data["skills"][skill_id] = skill
-        self._save_data(data)
+        if self._use_sqlite:
+            conn = self._get_db()
+            conn.execute(
+                """INSERT INTO skills (skill_id, name, system_prompt, description, is_builtin)
+                   VALUES (?, ?, ?, ?, 0)""",
+                (skill_id, name, system_prompt, description)
+            )
+            conn.commit()
+        else:
+            data = self._load_data()
+            data["skills"][skill_id] = skill
+            self._save_data(data)
 
         return skill
 
     async def get(self, skill_id: str) -> Optional[Dict]:
         """Get a skill by ID"""
+        if self._use_sqlite:
+            row = self._get_db().execute("SELECT * FROM skills WHERE skill_id = ?", (skill_id,)).fetchone()
+            if row:
+                return {**dict(row), 'is_builtin': bool(row['is_builtin'])}
+            return None
         data = self._load_data()
         return data["skills"].get(skill_id)
 

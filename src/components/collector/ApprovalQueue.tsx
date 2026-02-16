@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Button } from '../shared/Button';
-import { API_BASE_URL } from '../../services/api';
+import { collectorService } from '../../services/collector';
 import './ApprovalQueue.css';
 
 interface PendingItem {
@@ -51,9 +51,7 @@ export const ApprovalQueue: React.FC<ApprovalQueueProps> = ({
 
   const fetchPending = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/pending`);
-      if (!response.ok) throw new Error('Failed to fetch pending items');
-      const data = await response.json();
+      const data = await collectorService.getPendingApprovals(notebookId);
       setPending(data.pending || []);
       setExpiringCount(data.expiring_soon || 0);
     } catch (err) {
@@ -66,11 +64,7 @@ export const ApprovalQueue: React.FC<ApprovalQueueProps> = ({
   const handleApprove = async (itemId: string) => {
     setActionLoading(itemId);
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/collector/${notebookId}/approve/${itemId}`,
-        { method: 'POST' }
-      );
-      if (!response.ok) throw new Error('Failed to approve item');
+      await collectorService.approveItem(notebookId, itemId);
       setPending(prev => prev.filter(p => p.item_id !== itemId));
       onApprovalChange?.();
     } catch (err) {
@@ -84,15 +78,7 @@ export const ApprovalQueue: React.FC<ApprovalQueueProps> = ({
     setActionLoading('all');
     try {
       const itemIds = pending.map(p => p.item_id);
-      const response = await fetch(
-        `${API_BASE_URL}/collector/${notebookId}/approve-batch`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ item_ids: itemIds })
-        }
-      );
-      if (!response.ok) throw new Error('Failed to approve items');
+      await collectorService.approveBatch(notebookId, itemIds);
       setPending([]);
       onApprovalChange?.();
     } catch (err) {
@@ -105,18 +91,7 @@ export const ApprovalQueue: React.FC<ApprovalQueueProps> = ({
   const handleReject = async (itemId: string) => {
     setActionLoading(itemId);
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/collector/${notebookId}/reject/${itemId}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            reason: rejectReason || 'User rejected',
-            feedback_type: rejectType
-          })
-        }
-      );
-      if (!response.ok) throw new Error('Failed to reject item');
+      await collectorService.rejectItem(notebookId, itemId, rejectReason || 'User rejected', rejectType as any);
       setPending(prev => prev.filter(p => p.item_id !== itemId));
       setShowRejectModal(null);
       setRejectReason('');

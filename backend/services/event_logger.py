@@ -299,3 +299,40 @@ def log_document_captured(notebook_id: str, url: str, title: str, source_type: s
         notebook_id,
         {"url": url, "title": title, "source_type": source_type}
     )
+
+
+def log_quiz_completed(notebook_id: str, topic: str, difficulty: str, score: Optional[int] = None, total: Optional[int] = None) -> bool:
+    """Log when user completes a quiz"""
+    return event_logger.log(
+        EventType.QUIZ_COMPLETED,
+        notebook_id,
+        {"topic": topic, "difficulty": difficulty, "score": score, "total": total}
+    )
+
+
+def log_content_generated(notebook_id: str, content_type: str, skill_id: str, topic: str = "") -> bool:
+    """Log when studio generates content (document, audio, visual)"""
+    return event_logger.log(
+        EventType.CONTENT_GENERATED,
+        notebook_id,
+        {"content_type": content_type, "skill_id": skill_id, "topic": topic[:200]}
+    )
+
+
+def log_search(notebook_id: str, query: str, result_count: int = 0) -> bool:
+    """Log when user performs a search"""
+    return event_logger.log(
+        EventType.SEARCH_PERFORMED,
+        notebook_id,
+        {"query": query[:500], "result_count": result_count}
+    )
+
+
+def log_source_viewed(notebook_id: str, source_id: str, title: str = "") -> bool:
+    """Log when user views a source document"""
+    return event_logger.log(
+        EventType.DOCUMENT_READ,
+        notebook_id,
+        {"title": title[:200]},
+        source_id
+    )

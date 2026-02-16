@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { API_BASE_URL } from '../services/api';
+import { curatorService } from '../services/curatorApi';
 
 interface CuratorConfig {
   name: string;
@@ -167,9 +167,8 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
 
   // Load config on mount
   useEffect(() => {
-    fetch(`${API_BASE_URL}/curator/config`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
+    curatorService.getConfig()
+      .then((data: any) => {
         if (data) {
           setConfig(data);
           setNameInput(data.name || 'Curator');
@@ -196,35 +195,12 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
     setLoading(true);
 
     try {
-      const history = messages.map(m => ({
-        role: m.role === 'curator' ? 'assistant' : 'user',
-        content: m.content,
-      }));
-
-      const res = await fetch(`${API_BASE_URL}/curator/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: userMsg.content,
-          notebook_id: notebookId,
-          history,
-        }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setMessages(prev => [...prev, {
-          role: 'curator',
-          content: data.reply,
-          timestamp: new Date(),
-        }]);
-      } else {
-        setMessages(prev => [...prev, {
-          role: 'curator',
-          content: 'Sorry, I encountered an error processing your request.',
-          timestamp: new Date(),
-        }]);
-      }
+      const data = await curatorService.chat(userMsg.content, notebookId || undefined);
+      setMessages(prev => [...prev, {
+        role: 'curator',
+        content: data.reply,
+        timestamp: new Date(),
+      }]);
     } catch {
       setMessages(prev => [...prev, {
         role: 'curator',
@@ -239,16 +215,9 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
   const handleSaveName = useCallback(async () => {
     if (!nameInput.trim()) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/curator/config`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: nameInput.trim() }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setConfig(data.config);
-        setEditingName(false);
-      }
+      const data = await curatorService.updateConfig({ name: nameInput.trim() } as any);
+      setConfig(data.config);
+      setEditingName(false);
     } catch {
       // ignore
     }

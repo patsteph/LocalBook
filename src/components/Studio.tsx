@@ -1,16 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import ReactMarkdown from 'react-markdown';
 import { skillsService } from '../services/skills';
 import { audioService } from '../services/audio';
 import { contentService, ContentGeneration } from '../services/content';
 import { writingService, FormatOption } from '../services/writing';
 import { Skill, AudioGeneration } from '../types';
 import { Button } from './shared/Button';
-import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
 import { QuizPanel } from './QuizPanel';
 import { VisualPanel } from './VisualPanel';
 import { WritingPanel } from './WritingPanel';
+import { ContentViewer } from './studio/ContentViewer';
+import { AudioHistory } from './studio/AudioHistory';
 
 interface StudioProps {
   notebookId: string | null;
@@ -178,26 +178,6 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
       setError(err.response?.data?.detail || 'Failed to generate audio');
     } finally {
       setGenerating(false);
-    }
-  };
-
-  const formatDuration = (seconds?: number) => {
-    if (!seconds) return 'N/A';
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return 'bg-green-100 text-green-800';
-      case 'processing':
-        return 'bg-blue-100 text-blue-800';
-      case 'failed':
-        return 'bg-red-100 text-red-800';
-      default:
-        return 'bg-gray-100 text-gray-800';
     }
   };
 
@@ -485,285 +465,58 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
         </Button>
 
         {/* Generated Text Content (Documents tab) */}
-        {activeTab === 'documents' && generatedContent && (
-          <div className="border border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 rounded-lg p-4">
-            <div className="flex justify-between items-center mb-3">
-              <h4 className="font-medium text-sm text-green-900 dark:text-green-100">
-                ✓ {contentSkillName} Generated
-              </h4>
-              <div className="flex gap-2">
-                <button
-                  onClick={async () => {
-                    try {
-                      await contentService.downloadAsPDF(generatedContent, contentSkillName, contentSkillName.toLowerCase().replace(/\s+/g, '-'));
-                    } catch (err) {
-                      console.error('PDF download failed:', err);
-                    }
-                  }}
-                  className="text-xs px-2 py-1 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30"
-                >
-                  📥 PDF
-                </button>
-                <button
-                  onClick={() => setGeneratedContent('')}
-                  className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-            <div className="prose prose-sm dark:prose-invert max-w-none max-h-96 overflow-y-auto bg-white dark:bg-gray-800 p-4 rounded border border-gray-200 dark:border-gray-600 prose-p:my-2 prose-headings:mt-4 prose-headings:mb-1 prose-ul:my-2 prose-li:my-0 prose-hr:my-4">
-              <ReactMarkdown>{generatedContent}</ReactMarkdown>
-            </div>
-            {selectedSkill === 'feynman_curriculum' && (
-              <div className="mt-3 p-3 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-700 rounded-lg">
-                <p className="text-sm font-medium text-indigo-900 dark:text-indigo-100 mb-2">Test Your Understanding</p>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => { setQuizTopic(topic || 'the research content'); setQuizDifficulty('easy'); handleTabChange('quiz'); }}
-                    className="text-xs px-3 py-1.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-md hover:bg-green-200 dark:hover:bg-green-900/50 border border-green-300 dark:border-green-700"
-                  >
-                    Part 1: Foundation Quiz
-                  </button>
-                  <button
-                    onClick={() => { setQuizTopic(topic || 'the research content'); setQuizDifficulty('medium'); handleTabChange('quiz'); }}
-                    className="text-xs px-3 py-1.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 rounded-md hover:bg-yellow-200 dark:hover:bg-yellow-900/50 border border-yellow-300 dark:border-yellow-700"
-                  >
-                    Part 2: Building Quiz
-                  </button>
-                  <button
-                    onClick={() => { setQuizTopic(topic || 'the research content'); setQuizDifficulty('hard'); handleTabChange('quiz'); }}
-                    className="text-xs px-3 py-1.5 bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 rounded-md hover:bg-orange-200 dark:hover:bg-orange-900/50 border border-orange-300 dark:border-orange-700"
-                  >
-                    Part 3: First Principles Quiz
-                  </button>
-                  <button
-                    onClick={() => { setQuizTopic(topic || 'the research content'); setQuizDifficulty('hard'); handleTabChange('quiz'); }}
-                    className="text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-md hover:bg-red-200 dark:hover:bg-red-900/50 border border-red-300 dark:border-red-700"
-                  >
-                    Part 4: Mastery Quiz
-                  </button>
-                </div>
-              </div>
-            )}
-            {selectedSkill === 'feynman_curriculum' && (
-              <div className="mt-3 p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700 rounded-lg">
-                <p className="text-sm font-medium text-purple-900 dark:text-purple-100 mb-2">Visualize Your Learning</p>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => { setVisualContentFromChat(`Learning progression for ${topic || 'the research content'}: show the 4-level Feynman journey from Foundation to Mastery with key concepts at each level`); handleTabChange('visual'); }}
-                    className="text-xs px-3 py-1.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-md hover:bg-green-200 dark:hover:bg-green-900/50 border border-green-300 dark:border-green-700"
-                  >
-                    🎓 Learning Path
-                  </button>
-                  <button
-                    onClick={() => { setVisualContentFromChat(`Knowledge map for ${topic || 'the research content'}: show all core concepts, how they connect, why they work, and what's still unknown`); handleTabChange('visual'); }}
-                    className="text-xs px-3 py-1.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-md hover:bg-blue-200 dark:hover:bg-blue-900/50 border border-blue-300 dark:border-blue-700"
-                  >
-                    🧠 Knowledge Map
-                  </button>
-                  <button
-                    onClick={() => { setVisualContentFromChat(`Common misconceptions vs reality for ${topic || 'the research content'}: show what people commonly get wrong and why, with the key insight that resolves confusion`); handleTabChange('visual'); }}
-                    className="text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-md hover:bg-red-200 dark:hover:bg-red-900/50 border border-red-300 dark:border-red-700"
-                  >
-                    ❌➡️✅ Misconceptions
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Generated Script Preview - Only show on Audio tab */}
-        {activeTab === 'audio' && generatedScript && showScript && (
-          <div className="border border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 rounded-lg p-4">
-            <div className="flex justify-between items-center mb-2">
-              <h4 className="font-medium text-sm text-green-900 dark:text-green-100">✓ Content Generated Successfully</h4>
-              <button
-                onClick={() => setShowScript(false)}
-                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
-              >
-                Hide
-              </button>
-            </div>
-            <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded text-sm text-blue-900 dark:text-blue-100">
-              ✓ <strong>Content generated successfully!</strong> Audio is now being generated and will appear below when ready (usually 1-2 minutes).
-            </div>
-            <details className="mb-3">
-              <summary className="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:text-gray-900 dark:hover:text-white">
-                View Generated Content
-              </summary>
-              <div className="mt-2 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap max-h-64 overflow-y-auto bg-white dark:bg-gray-800 p-3 rounded border border-gray-200 dark:border-gray-600">
-                {generatedScript}
-              </div>
-            </details>
-          </div>
-        )}
-
-        {/* Previous Document Generations - Only for text tab */}
-        {activeTab === 'documents' && contentGenerations.length > 0 && (
-          <div className="mt-4">
-            <h4 className="font-medium text-sm mb-3 text-gray-900 dark:text-white">Previous Documents</h4>
-            <div className="space-y-2">
-              {contentGenerations.map((gen) => (
-                <div
-                  key={gen.content_id}
-                  className={`p-3 rounded-lg border cursor-pointer transition-colors ${
-                    selectedContentId === gen.content_id
-                      ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20'
-                      : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
-                  }`}
-                  onClick={() => {
-                    setSelectedContentId(gen.content_id);
-                    setGeneratedContent(gen.content);
-                    setContentSkillName(gen.skill_name);
-                  }}
-                >
-                  <div className="flex justify-between items-start">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm text-gray-900 dark:text-white truncate">
-                        {gen.skill_name}
-                      </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {new Date(gen.created_at).toLocaleDateString()} • {gen.sources_used} sources
-                      </p>
-                      {gen.topic && (
-                        <p className="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5">
-                          Topic: {gen.topic}
-                        </p>
-                      )}
-                    </div>
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        try {
-                          await contentService.delete(gen.content_id);
-                          loadContentGenerations();
-                          if (selectedContentId === gen.content_id) {
-                            setGeneratedContent('');
-                            setSelectedContentId(null);
-                          }
-                        } catch (err) {
-                          console.error('Failed to delete:', err);
-                        }
-                      }}
-                      className="text-gray-400 hover:text-red-500 ml-2"
-                      title="Delete"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+        {activeTab === 'documents' && (
+          <ContentViewer
+            generatedContent={generatedContent}
+            contentSkillName={contentSkillName}
+            selectedSkill={selectedSkill}
+            topic={topic}
+            selectedContentId={selectedContentId}
+            contentGenerations={contentGenerations}
+            onClear={() => setGeneratedContent('')}
+            onSelectContent={(gen) => {
+              setSelectedContentId(gen.content_id);
+              setGeneratedContent(gen.content);
+              setContentSkillName(gen.skill_name);
+            }}
+            onDeleteContent={async (contentId) => {
+              try {
+                await contentService.delete(contentId);
+                loadContentGenerations();
+                if (selectedContentId === contentId) {
+                  setGeneratedContent('');
+                  setSelectedContentId(null);
+                }
+              } catch (err) {
+                console.error('Failed to delete:', err);
+              }
+            }}
+            onQuizNav={(t, d) => { setQuizTopic(t); setQuizDifficulty(d); handleTabChange('quiz'); }}
+            onVisualNav={(content) => { setVisualContentFromChat(content); handleTabChange('visual'); }}
+          />
         )}
 
         </>
         )}
 
-        {/* Previous Audio Generations - Only for audio tab */}
+        {/* Audio History - Only for audio tab */}
         {activeTab === 'audio' && (
-        <div>
-          <h4 className="font-medium text-sm mb-3 text-gray-900 dark:text-white">Previous Audio Generations</h4>
-          {audioGenerations.length === 0 ? (
-            <p className="text-sm text-gray-500 dark:text-gray-400">No generations yet</p>
-          ) : (
-            <div className="space-y-3">
-              {audioGenerations.map((gen) => (
-                <div
-                  key={gen.audio_id}
-                  className="border border-gray-300 rounded-lg p-4"
-                >
-                  <div className="flex justify-between items-start mb-2">
-                    <div className="flex-1">
-                      <span
-                        className={`inline-block px-2 py-0.5 text-xs rounded ${getStatusColor(
-                          gen.status
-                        )}`}
-                      >
-                        {gen.status}
-                      </span>
-                      {gen.duration_seconds && (
-                        <span className="ml-2 text-sm text-gray-600 dark:text-gray-400">
-                          {formatDuration(gen.duration_seconds)}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-500 dark:text-gray-400">
-                        {new Date(gen.created_at).toLocaleString()}
-                      </span>
-                      <button
-                        onClick={async () => {
-                          try {
-                            setAudioGenerations(prev => prev.filter(g => g.audio_id !== gen.audio_id));
-                            await audioService.delete(gen.audio_id);
-                            await loadAudioGenerations();
-                          } catch (err) {
-                            console.error('Failed to delete:', err);
-                            await loadAudioGenerations();
-                          }
-                        }}
-                        className="text-red-500 hover:text-red-700 p-1"
-                        title="Delete"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Audio Player */}
-                  {gen.status === 'completed' && gen.audio_file_path && (
-                    <div className="mt-3">
-                      <audio
-                        controls
-                        className="w-full"
-                        src={audioService.getDownloadUrl(gen.audio_id)}
-                      >
-                        Your browser does not support audio playback.
-                      </audio>
-                    </div>
-                  )}
-
-                  {(gen.status === 'pending' || gen.status === 'processing') && (
-                    <div className="mt-3 flex items-center gap-2">
-                      <LoadingSpinner size="sm" />
-                      <span className="text-sm text-gray-600 dark:text-gray-400">
-                        {gen.error_message || (gen.status === 'pending' ? 'Starting...' : 'Generating audio...')}
-                      </span>
-                    </div>
-                  )}
-
-                  {gen.status === 'failed' && gen.error_message && (
-                    <div className="mt-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded">
-                      <p className="text-sm font-medium text-red-800 dark:text-red-200 mb-1">
-                        ❌ Generation Failed
-                      </p>
-                      <p className="text-xs text-red-700 dark:text-red-300">
-                        {gen.error_message}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Content Preview */}
-                  {gen.script && (
-                    <details className="mt-3">
-                      <summary className="text-sm text-blue-600 cursor-pointer hover:text-blue-700">
-                        View Content
-                      </summary>
-                      <div className="mt-2 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap max-h-48 overflow-y-auto bg-gray-50 dark:bg-gray-800 p-3 rounded">
-                        {gen.script}
-                      </div>
-                    </details>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+          <AudioHistory
+            audioGenerations={audioGenerations}
+            generatedScript={generatedScript}
+            showScript={showScript}
+            onHideScript={() => setShowScript(false)}
+            onDelete={async (audioId) => {
+              try {
+                setAudioGenerations(prev => prev.filter(g => g.audio_id !== audioId));
+                await audioService.delete(audioId);
+                await loadAudioGenerations();
+              } catch (err) {
+                console.error('Failed to delete:', err);
+                await loadAudioGenerations();
+              }
+            }}
+          />
         )}
 
         {/* Quiz Panel */}

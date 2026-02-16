@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { API_BASE_URL, WS_BASE_URL } from '../services/api';
+import { graphService } from '../services/graph';
 
 interface GraphNode {
   id: string;
@@ -942,11 +943,8 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
     try {
       // Use ref to get current notebookId (avoids stale closure in WebSocket callbacks)
       const currentNotebookId = notebookIdRef.current;
-      const params = currentNotebookId ? `?notebook_id=${currentNotebookId}` : '';
-      const response = await fetch(`${API_BASE}/graph/stats${params}`);
-      if (response.ok) {
-        setStats(await response.json());
-      }
+      const data = await graphService.getStats(currentNotebookId || undefined);
+      setStats(data as any);
     } catch (err) {
       console.error('Failed to load stats:', err);
     }
@@ -1308,8 +1306,8 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
     setBuilding(true);
     setBuildProgress(0);
     try {
-      const response = await fetch(`${API_BASE}/graph/build/${notebookId}`, { method: 'POST' });
-      if (response.ok) {
+      const response = await graphService.buildGraph(notebookId);
+      if (response) {
         console.log('Building constellation - waiting for WebSocket updates...');
         // The WebSocket handler will set building=false when build_complete is received
         // But set a fallback timeout in case WebSocket isn't connected
@@ -1334,7 +1332,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
   const triggerClustering = async () => {
     try {
       console.log('Triggering clustering for color coding...');
-      await fetch(`${API_BASE}/graph/cluster`, { method: 'POST' });
+      await graphService.clusterGraph();
       // cluster_complete WebSocket event will trigger loadGraph/loadStats automatically
       // No need for setTimeout - the event-driven approach is more reliable
     } catch (err) {
@@ -1403,15 +1401,8 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                   if (scanningInsights) return;
                   setScanningInsights(true);
                   try {
-                    const response = await fetch(`${API_BASE}/contradictions/scan/${notebookId}`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ force_rescan: false }),
-                    });
-                    if (response.ok) {
-                      const data = await response.json();
-                      setInsightCount(data.contradictions?.length || 0);
-                    }
+                    const data = await graphService.scanContradictions(notebookId);
+                    setInsightCount(data.contradictions?.length || 0);
                   } catch (err) {
                     console.error('Failed to scan for insights:', err);
                   } finally {
@@ -1463,7 +1454,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                         if (!notebookId) return;
                         setResetting(true);
                         try {
-                          await fetch(`${API_BASE}/graph/reset/${notebookId}`, { method: 'DELETE' });
+                          await graphService.resetGraph(notebookId);
                           setGraphData(null);
                           setStats(null);
                           loadGraph();

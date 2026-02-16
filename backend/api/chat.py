@@ -89,6 +89,14 @@ async def query(chat_query: ChatQuery):
             enable_web_search=chat_query.enable_web_search,
             llm_provider=chat_query.llm_provider
         )
+        
+        # Log Q&A for memory consolidation (fire-and-forget)
+        try:
+            sources_used = [c.get("source_id", "") for c in (result.get("citations") or [])] if isinstance(result, dict) else [c.source_id for c in getattr(result, 'citations', [])]
+            log_chat_qa(chat_query.notebook_id, chat_query.question, result.answer if hasattr(result, 'answer') else result.get("answer", ""), sources_used)
+        except Exception:
+            pass
+        
         return result
     except Exception as e:
         import traceback

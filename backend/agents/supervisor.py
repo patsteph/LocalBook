@@ -2,6 +2,10 @@
 
 The main orchestrator that routes requests to specialized agents.
 Uses LangGraph to manage state and flow between agents.
+
+STATUS: PARTIAL — Wired to api/agent.py but not the primary query path.
+The primary chat flow uses api/chat.py → rag_engine.query() directly.
+This LangGraph system is an experimental alternative routing layer.
 """
 
 from typing import Optional

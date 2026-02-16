@@ -13,7 +13,6 @@
     "dev:full": "bash ./start.sh"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.90.11",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.4.2",
     "@tauri-apps/plugin-fs": "^2.4.4",
@@ -29,10 +28,9 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^7.9.6",
+    "react-resizable-panels": "^4.6.4",
     "tailwind-merge": "^3.4.0",
-    "three": "^0.182.0",
-    "zustand": "^5.0.8"
+    "three": "^0.182.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

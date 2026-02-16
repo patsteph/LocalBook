@@ -14,8 +14,14 @@ def local_iso_time() -> str:
 
 class AudioStore:
     def __init__(self):
+        self._use_sqlite = settings.use_sqlite
         self.storage_path = settings.data_dir / "audio_generations.json"
-        self._ensure_storage()
+        if not self._use_sqlite:
+            self._ensure_storage()
+
+    def _get_db(self):
+        from storage.database import get_db
+        return get_db().get_connection()
 
     def _ensure_storage(self):
         """Ensure storage file exists"""
@@ -33,12 +39,17 @@ class AudioStore:
 
     async def list(self, notebook_id: str) -> List[Dict]:
         """List all audio generations for a notebook"""
+        if self._use_sqlite:
+            rows = self._get_db().execute(
+                "SELECT * FROM audio_generations WHERE notebook_id = ? ORDER BY created_at DESC",
+                (notebook_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
         data = self._load_data()
         generations = [
             g for g in data["generations"].values()
             if g.get("notebook_id") == notebook_id
         ]
-        # Sort by created_at descending (newest first)
         generations.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         return generations
 
@@ -75,14 +86,34 @@ class AudioStore:
             "updated_at": now
         }
 
-        data = self._load_data()
-        data["generations"][audio_id] = generation
-        self._save_data(data)
+        if self._use_sqlite:
+            conn = self._get_db()
+            conn.execute(
+                """INSERT INTO audio_generations
+                   (audio_id, notebook_id, script, topic, duration_minutes,
+                    host1_gender, host2_gender, accent, skill_id,
+                    audio_file_path, duration_seconds, status, error_message,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (audio_id, notebook_id, script, topic, duration_minutes,
+                 host1_gender, host2_gender, accent, skill_id,
+                 None, None, 'pending', None, now, now)
+            )
+            conn.commit()
+        else:
+            data = self._load_data()
+            data["generations"][audio_id] = generation
+            self._save_data(data)
 
         return generation
 
     async def get(self, audio_id: str) -> Optional[Dict]:
         """Get an audio generation by ID"""
+        if self._use_sqlite:
+            row = self._get_db().execute(
+                "SELECT * FROM audio_generations WHERE audio_id = ?", (audio_id,)
+            ).fetchone()
+            return dict(row) if row else None
         data = self._load_data()
         return data["generations"].get(audio_id)
 
@@ -95,6 +126,26 @@ class AudioStore:
 
     async def update(self, audio_id: str, updates: Dict) -> Optional[Dict]:
         """Update an audio generation"""
+        if self._use_sqlite:
+            now = local_iso_time()
+            allowed = {'script', 'topic', 'audio_file_path', 'duration_seconds',
+                       'status', 'error_message', 'duration_minutes',
+                       'host1_gender', 'host2_gender', 'accent', 'skill_id'}
+            sets = []
+            params = []
+            for k, v in updates.items():
+                if k in allowed:
+                    sets.append(f"{k} = ?")
+                    params.append(v)
+            if not sets:
+                return await self.get(audio_id)
+            sets.append("updated_at = ?")
+            params.append(now)
+            params.append(audio_id)
+            conn = self._get_db()
+            conn.execute(f"UPDATE audio_generations SET {', '.join(sets)} WHERE audio_id = ?", params)
+            conn.commit()
+            return await self.get(audio_id)
         data = self._load_data()
         if audio_id in data["generations"]:
             generation = data["generations"][audio_id]
@@ -107,6 +158,11 @@ class AudioStore:
 
     async def delete(self, audio_id: str) -> bool:
         """Delete an audio generation"""
+        if self._use_sqlite:
+            conn = self._get_db()
+            cursor = conn.execute("DELETE FROM audio_generations WHERE audio_id = ?", (audio_id,))
+            conn.commit()
+            return cursor.rowcount > 0
         data = self._load_data()
         if audio_id in data["generations"]:
             del data["generations"][audio_id]

@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
-from services.findings_store import get_findings_store
+from storage.findings_store import get_findings_store
 from services.event_logger import event_logger, EventType
 
 router = APIRouter(prefix="/findings", tags=["findings"])

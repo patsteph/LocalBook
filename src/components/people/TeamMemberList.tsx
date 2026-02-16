@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { API_BASE_URL } from '../../services/api';
+import { peopleService } from '../../services/people';
 import {
   Users, Plus, RefreshCw, Linkedin, Github, Globe,
   Clock, ChevronRight, Loader2, Trash2
@@ -86,9 +86,7 @@ export const TeamMemberList: React.FC<TeamMemberListProps> = ({
     e.stopPropagation();
     setCollectingMember(memberId);
     try {
-      await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/collect`, {
-        method: 'POST',
-      });
+      await peopleService.collectMember(notebookId, memberId);
       onRefresh();
     } catch (err) {
       console.error('Collection failed:', err);
@@ -102,14 +100,8 @@ export const TeamMemberList: React.FC<TeamMemberListProps> = ({
     if (!window.confirm(`Remove ${memberName} from this notebook?`)) return;
     setDeletingMember(memberId);
     try {
-      const res = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        onRefresh();
-      } else {
-        console.error('Delete failed:', await res.text());
-      }
+      await peopleService.deleteMember(notebookId, memberId);
+      onRefresh();
     } catch (err) {
       console.error('Delete failed:', err);
     } finally {

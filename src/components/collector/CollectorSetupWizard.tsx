@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Button } from '../shared/Button';
 import { Modal } from '../shared/Modal';
-import { API_BASE_URL } from '../../services/api';
+import { curatorService } from '../../services/curatorApi';
+import { collectorService } from '../../services/collector';
 import { SourceReview } from './SourceReview';
 import { PeopleSetupWizard } from '../people/PeopleSetupWizard';
 import './CollectorSetupWizard.css';
@@ -171,11 +172,8 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
   // Fetch Curator follow-up message after setup
   const fetchFollowUp = async (): Promise<string | undefined> => {
     try {
-      const res = await fetch(`${API_BASE_URL}/curator/setup-followup/${notebookId}`);
-      if (res.ok) {
-        const data = await res.json();
-        return data.message || undefined;
-      }
+      const data = await curatorService.getSetupFollowup(notebookId);
+      return data.message || undefined;
     } catch (err) {
       console.log('[Wizard] Follow-up fetch failed (non-fatal):', err);
     }
@@ -243,15 +241,7 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
         approval_mode: approvalMode,
       };
 
-      const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/config`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to save collector configuration');
-      }
+      await collectorService.updateConfig(notebookId, config as any);
 
       // Check if this looks like a coaching/people notebook
       if (looksLikeCoaching(subject, intent)) {
