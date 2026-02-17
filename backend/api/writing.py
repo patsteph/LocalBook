@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from services.structured_llm import structured_llm
 from services.event_logger import log_content_generated
-from storage.source_store import source_store
+from services.context_builder import context_builder
 
 
 router = APIRouter(prefix="/writing", tags=["writing"])
@@ -150,23 +150,20 @@ async def assist_writing(request: WriteRequest):
 @router.post("/from-sources", response_model=WritingResponse)
 async def write_from_sources(request: WriteFromSourcesRequest):
     """Generate writing based on notebook sources."""
-    log_content_generated(request.notebook_id, "document", request.task or "write", request.topic or "")
+    log_content_generated(request.notebook_id, "document", request.task or "write", request.focus_topic or "")
     
-    sources = await source_store.list(request.notebook_id)
-    if not sources:
+    # Build adaptive context using the centralized context builder
+    built = await context_builder.build_context(
+        notebook_id=request.notebook_id,
+        skill_id="writing",
+        topic=request.focus_topic,
+        source_ids=request.source_ids,
+    )
+    
+    if built.sources_used == 0:
         raise HTTPException(status_code=404, detail="No sources found in notebook")
     
-    if request.source_ids:
-        sources = [s for s in sources if s.get("id") in request.source_ids]
-    
-    # Collect content from sources
-    content_parts = []
-    for source in sources[:5]:
-        source_content = source.get("content", "")[:3000]
-        if source_content:
-            content_parts.append(f"Source: {source.get('filename', 'Unknown')}\n{source_content}")
-    
-    combined_content = "\n\n---\n\n".join(content_parts)
+    combined_content = built.context
     
     if request.focus_topic:
         combined_content = f"Focus on: {request.focus_topic}\n\n{combined_content}"
@@ -224,11 +221,16 @@ async def transform_text(request: TransformTextRequest):
 async def quick_summary(notebook_id: str, max_sentences: int = 3):
     """Generate a quick summary of notebook content."""
     
-    sources = await source_store.list(notebook_id)
-    if not sources:
+    # Build adaptive context using the centralized context builder
+    built = await context_builder.build_context(
+        notebook_id=notebook_id,
+        skill_id="writing",
+    )
+    
+    if built.sources_used == 0:
         raise HTTPException(status_code=404, detail="No sources found")
     
-    content = "\n\n".join([s.get("content", "")[:2000] for s in sources[:3]])
+    content = built.context
     
     result = await structured_llm.assist_writing(
         content=f"Summarize in {max_sentences} sentences:\n\n{content}",

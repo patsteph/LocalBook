@@ -105,6 +105,7 @@ pyinstaller \
     --hidden-import=services.collection_scheduler \
     --hidden-import=services.community_detection \
     --hidden-import=services.company_profiler \
+    --hidden-import=services.context_builder \
     --hidden-import=services.content_fetcher \
     --hidden-import=services.contradiction_detector \
     --hidden-import=services.credential_locker \

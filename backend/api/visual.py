@@ -22,6 +22,7 @@ from services.visual_router import visual_router, VISUAL_TEMPLATES
 from services.template_scorer import select_primary_and_alternatives
 from services.visual_generator import visual_generator
 from storage.source_store import source_store
+from services.context_builder import context_builder
 
 
 router = APIRouter(prefix="/visual", tags=["visual"])
@@ -599,16 +600,17 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
             yield f"event: error\ndata: {json_module.dumps({'error': 'No topic provided'})}\n\n"
             return
         
-        # Fetch notebook sources to get REAL content for theme extraction
+        # Fetch notebook sources using centralized context builder for theme extraction
         content = topic
         try:
-            sources = await source_store.list(request.notebook_id)
-            if sources:
-                # Get content from first 3 sources (up to 2000 chars each)
-                source_texts = [s.get("content", "")[:2000] for s in sources[:3] if s.get("content")]
-                if source_texts:
-                    content = f"{topic}\n\nSource content:\n" + "\n\n".join(source_texts)
-                    print(f"[Visual Stream] Using {len(source_texts)} sources ({len(content)} chars) for extraction")
+            built = await context_builder.build_context(
+                notebook_id=request.notebook_id,
+                skill_id="visual",
+                topic=topic,
+            )
+            if built.sources_used > 0:
+                content = f"{topic}\n\nSource content:\n{built.context}"
+                print(f"[Visual Stream] Using {built.sources_used} sources ({built.total_chars} chars) for extraction")
         except Exception as e:
             print(f"[Visual Stream] Failed to fetch sources: {e}")
         

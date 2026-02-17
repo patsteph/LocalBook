@@ -16,6 +16,7 @@ from storage.audio_store import audio_store
 from storage.source_store import source_store
 from storage.skills_store import skills_store
 from services.rag_engine import rag_engine
+from services.context_builder import context_builder
 
 class AudioGenerator:
     """Generate podcast audio from notebooks using LFM2.5-Audio"""
@@ -108,22 +109,16 @@ class AudioGenerator:
         - Long (21-30 min): multi-pass sections for coherent long-form
         """
         
-        # Scale source utilization with duration
-        max_sources = min(len(await source_store.list(notebook_id)), 
-                         3 if duration_minutes <= 5 else 8 if duration_minutes <= 15 else 15)
-        chars_per_source = 2000 if duration_minutes <= 5 else 4000 if duration_minutes <= 15 else 6000
+        # Use centralized context builder with duration-aware budgets
+        audio_skill = "feynman_curriculum" if skill_id == "feynman_curriculum" else "podcast_script"
+        built = await context_builder.build_context(
+            notebook_id=notebook_id,
+            skill_id=audio_skill,
+            topic=topic,
+            duration_minutes=duration_minutes,
+        )
         
-        sources = await source_store.list(notebook_id)
-        content_parts = []
-        for source in sources[:max_sources]:
-            source_content = await source_store.get_content(notebook_id, source["id"])
-            if source_content and source_content.get("content"):
-                content_parts.append(
-                    f"Source: {source.get('filename', 'Unknown')}\n"
-                    f"{source_content['content'][:chars_per_source]}"
-                )
-        
-        context = "\n\n---\n\n".join(content_parts)
+        context = built.context
         
         # Feynman curriculum uses a specialized teaching-style prompt
         is_feynman = skill_id == 'feynman_curriculum'

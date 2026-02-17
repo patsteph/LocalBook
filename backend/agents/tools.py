@@ -88,49 +88,45 @@ async def generate_document_tool(
         Dictionary with generated content
     """
     from storage.skills_store import skills_store
-    from storage.source_store import source_store
     from services.rag_engine import rag_engine
     from services.output_templates import build_document_prompt, DOCUMENT_TEMPLATES
+    from services.context_builder import context_builder
     
     # Get skill
     skill = await skills_store.get(document_type)
     if not skill:
         return {"error": f"Unknown document type: {document_type}"}
     
-    # Get sources
-    sources = await source_store.list(notebook_id)
-    if not sources:
+    # Build adaptive context using the centralized context builder
+    built = await context_builder.build_context(
+        notebook_id=notebook_id,
+        skill_id=document_type,
+        topic=topic,
+    )
+    
+    if built.sources_used == 0:
         return {"error": "No sources in notebook"}
     
-    content_parts = []
-    for source in sources[:10]:
-        source_content = await source_store.get_content(notebook_id, source["id"])
-        if source_content and source_content.get("content"):
-            content_parts.append(
-                f"## Source: {source.get('filename', 'Unknown')}\n{source_content['content'][:4000]}"
-            )
-    
-    context = "\n\n---\n\n".join(content_parts)
     skill_name = skill.get("name", "Content")
     topic_focus = topic or "the main topics and insights"
     
     # Build prompt
     if document_type in DOCUMENT_TEMPLATES:
         template_system, template_format = build_document_prompt(
-            document_type, topic_focus, style, len(content_parts)
+            document_type, topic_focus, style, built.sources_used
         )
         system_prompt = f"{template_system}\n\n{template_format}\n\nFOCUS: {topic_focus}"
     else:
         system_prompt = skill.get("system_prompt", "")
     
-    user_prompt = f"Based on these {len(content_parts)} sources, create a {skill_name}:\n\n{context[:12000]}"
+    user_prompt = f"Based on these {built.sources_used} sources, create a {skill_name}:\n\n{built.context}"
     
     content = await rag_engine._call_ollama(system_prompt, user_prompt)
     
     return {
         "document_type": document_type,
         "content": content,
-        "sources_used": len(content_parts),
+        "sources_used": built.sources_used,
         "topic": topic_focus
     }
 

@@ -14,10 +14,10 @@ import json
 logger = logging.getLogger(__name__)
 
 from storage.skills_store import skills_store
-from storage.source_store import source_store
 from storage.content_store import content_store
 from services.rag_engine import rag_engine
 from services.output_templates import build_document_prompt, DOCUMENT_TEMPLATES
+from services.context_builder import context_builder
 
 router = APIRouter()
 
@@ -55,20 +55,15 @@ async def generate_content(request: ContentGenerateRequest):
         if not skill:
             raise HTTPException(status_code=404, detail="Skill not found")
         
-        # Get sources content
-        sources = await source_store.list(request.notebook_id)
-        if not sources:
+        # Build adaptive context using the centralized context builder
+        built = await context_builder.build_context(
+            notebook_id=request.notebook_id,
+            skill_id=request.skill_id,
+            topic=request.topic,
+        )
+        
+        if built.sources_used == 0:
             raise HTTPException(status_code=400, detail="No sources in notebook")
-        
-        content_parts = []
-        for source in sources[:10]:  # Use up to 10 sources
-            source_content = await source_store.get_content(request.notebook_id, source["id"])
-            if source_content and source_content.get("content"):
-                content_parts.append(
-                    f"## Source: {source.get('filename', 'Unknown')}\n{source_content['content'][:4000]}"
-                )
-        
-        context = "\n\n---\n\n".join(content_parts)
         
         # Build prompt based on skill using professional templates
         skill_name = skill.get("name", "Content")
@@ -80,7 +75,7 @@ async def generate_content(request: ContentGenerateRequest):
                 request.skill_id, 
                 topic_focus, 
                 request.style or "professional",
-                len(content_parts)
+                built.sources_used
             )
             system_prompt = f"""{template_system}
 
@@ -106,15 +101,19 @@ Focus on: {topic_focus}
 
 Use ONLY the provided source content. Do not make up information."""
 
-        user_prompt = f"""Based on the following {len(content_parts)} source document(s), create a world-class {skill_name}:
+        user_prompt = f"""Based on the following {built.sources_used} source document(s), create a world-class {skill_name}:
 
-{context[:12000]}
+{built.context}
 
 Generate the {skill_name} now, ensuring you synthesize insights across ALL sources:"""
 
         # Use template-specific token limit for thorough generation
         template = DOCUMENT_TEMPLATES.get(request.skill_id)
         doc_num_predict = template.recommended_tokens if template else 2000
+        
+        logger.info(f"[STUDIO] Context: {built.total_chars} chars from {built.sources_used} sources "
+                    f"(strategy={built.strategy_used}, profile={built.profile_used}, "
+                    f"build_time={built.build_time_ms}ms)")
         
         # Generate content
         content = await rag_engine._call_ollama(system_prompt, user_prompt, num_predict=doc_num_predict)
@@ -126,7 +125,7 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
             skill_name=skill_name,
             content=content,
             topic=request.topic,
-            sources_used=len(content_parts)
+            sources_used=built.sources_used
         )
         
         return ContentGenerateResponse(
@@ -134,7 +133,7 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
             skill_id=request.skill_id,
             skill_name=skill_name,
             content=content,
-            sources_used=len(content_parts)
+            sources_used=built.sources_used
         )
         
     except HTTPException:
@@ -155,20 +154,15 @@ async def generate_content_stream(request: ContentGenerateRequest):
         if not skill:
             raise HTTPException(status_code=404, detail="Skill not found")
         
-        # Get sources content
-        sources = await source_store.list(request.notebook_id)
-        if not sources:
+        # Build adaptive context using the centralized context builder
+        built = await context_builder.build_context(
+            notebook_id=request.notebook_id,
+            skill_id=request.skill_id,
+            topic=request.topic,
+        )
+        
+        if built.sources_used == 0:
             raise HTTPException(status_code=400, detail="No sources in notebook")
-        
-        content_parts = []
-        for source in sources[:10]:
-            source_content = await source_store.get_content(request.notebook_id, source["id"])
-            if source_content and source_content.get("content"):
-                content_parts.append(
-                    f"## Source: {source.get('filename', 'Unknown')}\n{source_content['content'][:4000]}"
-                )
-        
-        context = "\n\n---\n\n".join(content_parts)
         
         skill_name = skill.get("name", "Content")
         topic_focus = request.topic or "the main topics and insights"
@@ -179,7 +173,7 @@ async def generate_content_stream(request: ContentGenerateRequest):
                 request.skill_id, 
                 topic_focus, 
                 request.style or "professional",
-                len(content_parts)
+                built.sources_used
             )
             system_prompt = f"""{template_system}
 
@@ -204,15 +198,18 @@ Focus on: {topic_focus}
 
 Use ONLY the provided source content. Do not make up information."""
 
-        user_prompt = f"""Based on the following {len(content_parts)} source document(s), create a world-class {skill_name}:
+        user_prompt = f"""Based on the following {built.sources_used} source document(s), create a world-class {skill_name}:
 
-{context[:12000]}
+{built.context}
 
 Generate the {skill_name} now, ensuring you synthesize insights across ALL sources:"""
 
         # Use template-specific token limit for thorough generation
         template = DOCUMENT_TEMPLATES.get(request.skill_id)
         doc_num_predict = template.recommended_tokens if template else 2000
+        
+        logger.info(f"[STUDIO] Streaming context: {built.total_chars} chars from {built.sources_used} sources "
+                    f"(strategy={built.strategy_used}, build_time={built.build_time_ms}ms)")
 
         async def stream_generator():
             async for chunk in rag_engine._stream_ollama(system_prompt, user_prompt, num_predict=doc_num_predict):
