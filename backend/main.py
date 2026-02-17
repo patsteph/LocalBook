@@ -11,13 +11,33 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
+from config import settings
+
+# ── SQLite migration: MUST run before store singletons are created ──────────
+# Stores read settings.use_sqlite at import time and cache it. If we delay
+# migration to a background task, the frontend sees empty SQLite tables.
+# Running it here (synchronously, before API imports) guarantees:
+#   1. Database schema is created and populated from JSON files
+#   2. If migration fails, use_sqlite is reverted BEFORE stores read it
+if settings.use_sqlite:
+    try:
+        from storage.migrate_json_to_sqlite import run_migration
+        run_migration()
+        print("💾 SQLite storage backend active")
+    except Exception as e:
+        print(f"⚠️ SQLite migration failed, falling back to JSON: {e}")
+        settings.use_sqlite = False
+
+# Initialize findings store before API imports (uses deferred init pattern)
+from storage.findings_store import init_findings_store
+init_findings_store(settings.data_dir)
+
+# NOW import API modules — stores will read the (possibly corrected) use_sqlite flag
 from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings, curator, collector, source_discovery, people
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
-from config import settings
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
 from services.startup_checks import run_all_startup_checks
 from services.migration_manager import check_and_migrate_on_startup
-from storage.findings_store import init_findings_store
 
 async def _run_startup_tasks():
     """Run all startup tasks in background after HTTP server is ready.
@@ -28,19 +48,7 @@ async def _run_startup_tasks():
     print(f"📁 Data directory: {settings.data_dir}")
     print(f"🤖 LLM Provider: {settings.llm_provider}")
     print(f"🔥 Models: {settings.ollama_model} (think), {settings.ollama_fast_model} (fast)")
-    
-    # Initialize findings store
-    init_findings_store(settings.data_dir)
-    
-    # SQLite migration: if use_sqlite is enabled, run one-time JSON→SQLite migration
-    if settings.use_sqlite:
-        try:
-            from storage.migrate_json_to_sqlite import run_migration
-            run_migration()
-            print("💾 SQLite storage backend active")
-        except Exception as e:
-            print(f"⚠️ SQLite migration failed, falling back to JSON: {e}")
-            settings.use_sqlite = False
+    print(f"💾 Storage: {'SQLite' if settings.use_sqlite else 'JSON files'}")
     
     # Check if this is an upgrade
     is_upgrade, previous_version = check_if_upgrade()

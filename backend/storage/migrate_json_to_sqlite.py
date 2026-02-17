@@ -266,19 +266,52 @@ def migrate_exploration(data_dir: Path, conn):
     return q_count
 
 
+def _needs_remigration(conn) -> bool:
+    """Safety check: if SQLite is marked migrated but empty while JSON has data, re-migrate."""
+    data_dir = settings.data_dir
+    
+    # Check if SQLite has notebooks
+    sqlite_count = conn.execute("SELECT COUNT(*) as cnt FROM notebooks").fetchone()['cnt']
+    if sqlite_count > 0:
+        return False  # SQLite has data, we're good
+    
+    # SQLite is empty — check if JSON has notebooks
+    json_path = data_dir / "notebooks.json"
+    if not json_path.exists():
+        return False  # No JSON either, nothing to migrate
+    
+    try:
+        data = _load_json_safe(json_path)
+        json_count = len(data.get("notebooks", {}))
+        if json_count > 0:
+            logger.warning(
+                "[Migration] SQLite marked as migrated but empty (%d notebooks in JSON). "
+                "Forcing re-migration.", json_count
+            )
+            return True
+    except Exception:
+        pass
+    
+    return False
+
+
 def run_migration():
     """Run full JSON → SQLite migration if not already done."""
     db = get_db()
+    conn = db.get_connection()
     
-    if is_migrated():
+    if is_migrated() and not _needs_remigration(conn):
         logger.info("[Migration] Already migrated, skipping")
         return
     
     logger.info("[Migration] Starting JSON → SQLite migration...")
-    conn = db.get_connection()
     data_dir = settings.data_dir
     
     try:
+        # Disable foreign keys during migration — JSON data may have orphaned
+        # references (e.g. highlights pointing to deleted sources)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        
         migrate_notebooks(data_dir, conn)
         migrate_sources(data_dir, conn)
         migrate_highlights(data_dir, conn)
@@ -289,9 +322,14 @@ def run_migration():
         migrate_exploration(data_dir, conn)
         
         conn.commit()
+        
+        # Re-enable foreign keys
+        conn.execute("PRAGMA foreign_keys=ON")
+        
         mark_migrated()
         logger.info("[Migration] JSON → SQLite migration complete. JSON files preserved as backups.")
     except Exception as e:
         conn.rollback()
+        conn.execute("PRAGMA foreign_keys=ON")
         logger.error(f"[Migration] Migration failed: {e}")
         raise

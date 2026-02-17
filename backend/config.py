@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     debug_mode: bool = False  # Set LOCALBOOK_DEBUG_MODE=true to enable
 
     # Storage backend — use SQLite instead of JSON files
-    use_sqlite: bool = False  # Keep JSON default until migration tool is built
+    use_sqlite: bool = True  # SQLite is default — auto-migrates from JSON on first launch
 
     class Config:
         env_file = ".env"
