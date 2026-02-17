@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Group, Panel, Separator } from 'react-resizable-panels';
-// openUrl moved to CanvasPanel for health portal button
-
 import { LeftNavColumn } from './components/layout/LeftNavColumn';
 import { CanvasWorkspace } from './components/canvas/CanvasWorkspace';
 import { CanvasProvider, CanvasContextValue } from './components/canvas/CanvasContext';
 import { LayoutNode, PanelView, countLeaves, replaceLeaf, removeLeaf, findLeaf } from './components/canvas/types';
 import { useCanvasLayout, useDrawerState, useStudioState } from './hooks/useLayoutPersistence';
 import { ToastContainer, ToastMessage } from './components/shared/Toast';
+import { Modal } from './components/shared/Modal';
+import { Settings } from './components/Settings';
+import { LLMSelector } from './components/LLMSelector';
+import { EmbeddingSelector } from './components/EmbeddingSelector';
 import { API_BASE_URL } from './services/api';
 import { prewarmMermaid } from './components/shared/MermaidRenderer';
 
@@ -34,6 +36,9 @@ function App() {
   const [visualContent, setVisualContent] = useState<string>('');
   const [morningBrief, setMorningBrief] = useState<any>(null);
   const [curatorBriefData, setCuratorBriefData] = useState<any>(null);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showLLMModal, setShowLLMModal] = useState(false);
+  const [showEmbeddingModal, setShowEmbeddingModal] = useState(false);
 
   // Canvas layout, drawer, and studio state (persisted to localStorage)
   const { layout, setLayout } = useCanvasLayout(selectedNotebookId);
@@ -119,9 +124,9 @@ function App() {
     openPanel('web-research', query ? { initialQuery: query } : undefined);
   }, [openPanel]);
 
-  const openSettings = useCallback(() => openPanel('settings'), [openPanel]);
-  const openLLMSelector = useCallback(() => openPanel('llm-selector'), [openPanel]);
-  const openEmbeddingSelector = useCallback(() => openPanel('embedding-selector'), [openPanel]);
+  const openSettings = useCallback(() => setShowSettingsModal(true), []);
+  const openLLMSelector = useCallback(() => setShowLLMModal(true), []);
+  const openEmbeddingSelector = useCallback(() => setShowEmbeddingModal(true), []);
 
   const toggleDarkMode = useCallback(() => {
     setDarkMode(prev => {
@@ -507,6 +512,21 @@ function App() {
 
         {/* Toast notifications */}
         <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+        {/* Settings Modal */}
+        <Modal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} title="Settings" size="lg">
+          <Settings />
+        </Modal>
+
+        {/* LLM Selector Modal */}
+        <Modal isOpen={showLLMModal} onClose={() => setShowLLMModal(false)} title="Select AI Brain" size="lg">
+          <LLMSelector selectedProvider={selectedLLMProvider} onProviderChange={setSelectedLLMProvider} />
+        </Modal>
+
+        {/* Embedding Selector Modal */}
+        <Modal isOpen={showEmbeddingModal} onClose={() => setShowEmbeddingModal(false)} title="Select Embedding Model" size="lg">
+          <EmbeddingSelector notebookId={selectedNotebookId} />
+        </Modal>
       </div>
     </CanvasProvider>
   );

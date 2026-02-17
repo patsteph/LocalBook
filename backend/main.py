@@ -230,7 +230,7 @@ app.include_router(browser_transform.router, tags=["browser-transform"])
 app.include_router(audio_llm.router, tags=["audio-llm"])
 if settings.debug_mode:
     app.include_router(rag_health.router, tags=["rag-health"])
-    app.include_router(health_portal.router, tags=["health-portal"])
+app.include_router(health_portal.router, tags=["health-portal"])
 app.include_router(jobs.router, tags=["jobs"])
 app.include_router(agent_browser.router, tags=["agent-browser"])
 app.include_router(rlm.router, tags=["rlm"])
