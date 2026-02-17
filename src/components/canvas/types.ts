@@ -88,6 +88,11 @@ export function removeLeaf(node: LayoutNode, id: string): LayoutNode | null {
   return { ...node, children: [left, right] as [LayoutNode, LayoutNode] };
 }
 
+export function findFirstLeafId(node: LayoutNode): string {
+  if (node.type === 'leaf') return node.id;
+  return findFirstLeafId(node.children[0]);
+}
+
 export function makeDefaultLayout(): LayoutNode {
   return { type: 'leaf', id: 'main', view: 'chat' };
 }
