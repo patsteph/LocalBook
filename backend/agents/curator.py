@@ -1675,7 +1675,7 @@ Respond with JSON only:
                     was_stored = await collector._store_approved_item(item)
                     if was_stored:
                         approved += 1
-                        approved_titles.append({"title": item.title, "source": item.source_name, "confidence": item.overall_confidence})
+                        approved_titles.append({"id": item.id, "title": item.title, "source": item.source_name, "confidence": item.overall_confidence})
                     else:
                         # Item was approved but filtered (shallow content, duplicate, etc.)
                         filtered += 1
@@ -1695,7 +1695,7 @@ Respond with JSON only:
                     was_stored = True  # _add_to_approval_queue already called _store_approved_item
                     if was_stored:
                         approved += 1
-                        approved_titles.append({"title": item.title, "source": item.source_name, "confidence": item.overall_confidence})
+                        approved_titles.append({"id": item.id, "title": item.title, "source": item.source_name, "confidence": item.overall_confidence})
                     else:
                         filtered += 1
                         filtered_titles.append({"title": item.title, "source": item.source_name, "confidence": item.overall_confidence, "reason": "shallow_or_duplicate"})

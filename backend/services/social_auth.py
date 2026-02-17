@@ -14,6 +14,7 @@ Security Architecture:
 """
 
 import os
+import sys
 import json
 import stat
 import subprocess
@@ -31,28 +32,110 @@ from models.person_profile import (
 
 
 def _ensure_playwright_browsers_path():
-    """Point Playwright at the system browser cache instead of the PyInstaller bundle.
+    """Point Playwright at the system browser cache and auto-install if missing.
 
     When running inside a PyInstaller onedir bundle, Playwright's default
     browser path resolves to _internal/playwright/driver/... which doesn't
-    contain the actual Chromium binaries. Setting PLAYWRIGHT_BROWSERS_PATH
-    to ~/Library/Caches/ms-playwright (the standard macOS cache location)
-    tells Playwright to look there instead.
+    contain the actual Chromium binaries. We ALWAYS set PLAYWRIGHT_BROWSERS_PATH
+    to the system cache location and auto-install chromium if needed.
+
+    Install strategies (tried in order):
+    1. Bundled driver: use playwright's own node+cli.js (works in PyInstaller)
+    2. Python module: sys.executable -m playwright install (works in source builds)
+    3. System CLI: playwright install (works if globally installed)
     """
+    _log = logging.getLogger(__name__)
+
     if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        return  # already set by user or prior call
+        # Already set — but verify browsers actually exist there
+        browsers_path = Path(os.environ["PLAYWRIGHT_BROWSERS_PATH"])
+        if browsers_path.is_dir() and any(browsers_path.glob("chromium-*")):
+            return  # browsers exist, we're good
+        # Path is set but empty/missing — fall through to install
 
-    # Standard macOS cache location
-    system_cache = Path.home() / "Library" / "Caches" / "ms-playwright"
-    if system_cache.is_dir():
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(system_cache)
-        return
+    import platform as plat
 
-    # Fallback: generic XDG-style path (Linux)
-    xdg_cache = Path.home() / ".cache" / "ms-playwright"
-    if xdg_cache.is_dir():
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(xdg_cache)
-        return
+    # Determine system cache location
+    if plat.system() == "Darwin":
+        system_cache = Path.home() / "Library" / "Caches" / "ms-playwright"
+    else:
+        system_cache = Path.home() / ".cache" / "ms-playwright"
+
+    # ALWAYS set the env var — even if the dir doesn't exist yet.
+    # This prevents Playwright from looking inside the PyInstaller bundle.
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(system_cache)
+
+    # Check if chromium is already installed
+    if system_cache.is_dir() and any(system_cache.glob("chromium-*")):
+        return  # browsers already installed
+
+    _log.info("[Playwright] Chromium not found at %s — auto-installing...", system_cache)
+    install_env = {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(system_cache)}
+
+    # Strategy 1: Use the bundled Playwright driver directly.
+    # This works in PyInstaller bundles where sys.executable is the frozen binary
+    # and `python -m playwright` doesn't work. The driver (node + cli.js) IS
+    # bundled by --collect-all=playwright and compute_driver_executable() finds it.
+    try:
+        from playwright._impl._driver import compute_driver_executable
+        driver_executable, driver_cli = compute_driver_executable()
+        _log.info("[Playwright] Using bundled driver: %s %s", driver_executable, driver_cli)
+        # Ensure bundled node binary is executable (may lose +x after zip extraction)
+        driver_path = Path(driver_executable)
+        if driver_path.exists() and not os.access(driver_path, os.X_OK):
+            os.chmod(driver_path, driver_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
+        result = subprocess.run(
+            [str(driver_executable), str(driver_cli), "install", "chromium"],
+            capture_output=True, text=True, timeout=180,
+            env=install_env,
+        )
+        if result.returncode == 0:
+            _log.info("[Playwright] Chromium installed successfully via bundled driver")
+            return
+        else:
+            _log.warning(
+                "[Playwright] Bundled driver install returned code %d: %s",
+                result.returncode, (result.stderr or result.stdout)[:500]
+            )
+    except Exception as e:
+        _log.debug("[Playwright] Bundled driver strategy failed: %s", e)
+
+    # Strategy 2: Python module (works for source builds)
+    if not getattr(sys, 'frozen', False):
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                capture_output=True, text=True, timeout=180,
+                env=install_env,
+            )
+            if result.returncode == 0:
+                _log.info("[Playwright] Chromium installed via python -m playwright")
+                return
+            else:
+                _log.warning(
+                    "[Playwright] python -m playwright install returned code %d: %s",
+                    result.returncode, (result.stderr or result.stdout)[:500]
+                )
+        except Exception as e:
+            _log.debug("[Playwright] Python module strategy failed: %s", e)
+
+    # Strategy 3: System CLI fallback
+    try:
+        result = subprocess.run(
+            ["playwright", "install", "chromium"],
+            capture_output=True, text=True, timeout=180,
+            env=install_env,
+        )
+        if result.returncode == 0:
+            _log.info("[Playwright] Chromium installed via system playwright CLI")
+            return
+    except Exception:
+        pass
+
+    _log.error(
+        "[Playwright] All auto-install strategies failed. "
+        "Please run manually: playwright install chromium"
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -159,10 +242,21 @@ class SocialAuthService:
 
         async with async_playwright() as p:
             # Launch VISIBLE browser — user logs in manually
-            browser = await p.chromium.launch(
-                headless=False,
-                channel="chromium",
-            )
+            try:
+                browser = await p.chromium.launch(
+                    headless=False,
+                    channel="chromium",
+                )
+            except Exception as launch_err:
+                err_str = str(launch_err)
+                if "Executable doesn't exist" in err_str or "browserType.launch" in err_str.lower():
+                    raise RuntimeError(
+                        "Chromium browser not found. LocalBook tried to auto-install it but failed. "
+                        "Please open a terminal and run:\n\n"
+                        "  pip install playwright && playwright install chromium\n\n"
+                        "Then try connecting again."
+                    ) from launch_err
+                raise
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 900},
                 user_agent=(

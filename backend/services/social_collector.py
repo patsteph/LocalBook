@@ -26,17 +26,13 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_playwright_browsers_path():
-    """Point Playwright at the system browser cache instead of the PyInstaller bundle."""
-    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        return
-    system_cache = Path.home() / "Library" / "Caches" / "ms-playwright"
-    if system_cache.is_dir():
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(system_cache)
-        return
-    xdg_cache = Path.home() / ".cache" / "ms-playwright"
-    if xdg_cache.is_dir():
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(xdg_cache)
-        return
+    """Point Playwright at the system browser cache and auto-install if missing.
+    
+    Delegates to the robust implementation in social_auth which handles
+    auto-installation for both bundled apps and source builds.
+    """
+    from services.social_auth import _ensure_playwright_browsers_path as _ensure
+    _ensure()
 
 
 # Rate limiting: random delay between profile visits
@@ -169,7 +165,16 @@ class SocialCollectorService:
 
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+                try:
+                    browser = await p.chromium.launch(headless=True)
+                except Exception as launch_err:
+                    err_str = str(launch_err)
+                    if "Executable doesn't exist" in err_str or "browserType.launch" in err_str.lower():
+                        raise RuntimeError(
+                            "Chromium browser not found. Please authenticate first via the People panel, "
+                            "or run: playwright install chromium"
+                        ) from launch_err
+                    raise
                 context_opts = {
                     "viewport": {"width": 1280, "height": 900},
                     "user_agent": (

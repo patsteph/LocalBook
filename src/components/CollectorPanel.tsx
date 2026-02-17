@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { Trash2 } from 'lucide-react';
 import { collectorService } from '../services/collector';
+import { sourceService } from '../services/sources';
 import { peopleService } from '../services/people';
 import { ApprovalQueue } from './collector/ApprovalQueue';
 import { CollectorSetupWizard } from './collector/CollectorSetupWizard';
@@ -35,7 +37,8 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
   const [showProfile, setShowProfile] = useState(false);
   const [lastCollection, setLastCollection] = useState<string | null>(null);
   const [collecting, setCollecting] = useState(false);
-  const [collectResult, setCollectResult] = useState<{items: number; approved: number; pending: number; rejected: number; filtered: number; message?: string; auto_approved?: {title: string; source: string; confidence: number}[]; filtered_items?: {title: string; source: string; confidence: number; reason?: string}[]} | null>(null);
+  const [collectResult, setCollectResult] = useState<{items: number; approved: number; pending: number; rejected: number; filtered: number; message?: string; auto_approved?: {id?: string; title: string; source: string; confidence: number}[]; filtered_items?: {title: string; source: string; confidence: number; reason?: string}[]} | null>(null);
+  const [deletingSourceId, setDeletingSourceId] = useState<string | null>(null);
   const [hasPeopleConfig, setHasPeopleConfig] = useState(false);
   const [peopleMemberCount, setPeopleMemberCount] = useState(0);
   const [showSourceSection, setShowSourceSection] = useState(false);
@@ -409,12 +412,46 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
                             <p className="text-xs font-medium mb-1">Added:</p>
                             <ul className="text-xs space-y-0.5">
                               {collectResult.auto_approved.map((item, i) => (
-                                <li key={i} className="flex items-center gap-1">
+                                <li key={i} className="flex items-center gap-1 group/item">
                                   <span className="text-green-600 dark:text-green-400">✓</span>
-                                  <span className="truncate">{item.title}</span>
-                                  <span className="text-green-500 ml-auto shrink-0">
+                                  <span className="truncate flex-1">{item.title}</span>
+                                  <span className="text-green-500 shrink-0">
                                     {Math.round(item.confidence * 100)}%
                                   </span>
+                                  {item.id && notebookId && (
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        if (!window.confirm(`Remove "${item.title}" from sources?`)) return;
+                                        setDeletingSourceId(item.id!);
+                                        try {
+                                          await sourceService.delete(notebookId, item.id!);
+                                          setCollectResult(prev => prev ? {
+                                            ...prev,
+                                            approved: Math.max(0, prev.approved - 1),
+                                            auto_approved: prev.auto_approved?.filter(a => a.id !== item.id),
+                                          } : null);
+                                          onSourcesRefresh?.();
+                                        } catch (err) {
+                                          console.error('Failed to delete source:', err);
+                                        } finally {
+                                          setDeletingSourceId(null);
+                                        }
+                                      }}
+                                      disabled={deletingSourceId === item.id}
+                                      className="opacity-0 group-hover/item:opacity-100 p-0.5 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all shrink-0"
+                                      title="Remove source"
+                                    >
+                                      {deletingSourceId === item.id ? (
+                                        <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24">
+                                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                        </svg>
+                                      ) : (
+                                        <Trash2 size={12} />
+                                      )}
+                                    </button>
+                                  )}
                                 </li>
                               ))}
                             </ul>
