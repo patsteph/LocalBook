@@ -222,7 +222,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
   if (!notebookId) {
     return (
       <div className="p-6 text-center text-gray-500 dark:text-gray-400">
-        <h3 className="font-bold text-lg mb-2 text-gray-900 dark:text-white">Studio</h3>
+        <h3 className="font-semibold text-base mb-2 text-gray-900 dark:text-white">Studio</h3>
         <p>Select a notebook to start creating</p>
       </div>
     );
@@ -233,7 +233,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
       {/* Header with Tabs — hidden when rendered inside left nav (thin bar provides tabs) */}
       {!hideHeader && (
         <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-          <h3 className="font-bold text-base mb-2 text-gray-900 dark:text-white">Studio</h3>
+          <h3 className="font-semibold text-base mb-2 text-gray-900 dark:text-white">Studio</h3>
           <div className="grid grid-cols-5 gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
             {[
               { id: 'documents' as const, icon: '📄', label: 'Docs' },
@@ -245,7 +245,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
               <button
                 key={tab.id}
                 onClick={() => handleTabChange(tab.id)}
-                className={`px-2 py-1.5 text-xs font-medium rounded-md transition-colors flex flex-col items-center ${
+                className={`px-2 py-1.5 text-xs font-medium rounded-lg transition-colors flex flex-col items-center ${
                   activeTab === tab.id
                     ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
                     : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
@@ -285,7 +285,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
               <select
                 value={selectedSkill}
                 onChange={(e) => setSelectedSkill(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
               >
                 {filteredSkills.map((skill) => (
                   <option key={skill.skill_id} value={skill.skill_id}>
@@ -300,27 +300,27 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
               )}
             </>
           ) : (
-            <div className="space-y-3 border border-gray-300 dark:border-gray-600 rounded-md p-3">
+            <div className="space-y-3 border border-gray-300 dark:border-gray-600 rounded-lg p-3">
               <input
                 type="text"
                 value={customSkillName}
                 onChange={(e) => setCustomSkillName(e.target.value)}
                 placeholder="Skill Name"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
               />
               <input
                 type="text"
                 value={customSkillDescription}
                 onChange={(e) => setCustomSkillDescription(e.target.value)}
                 placeholder="Description (optional)"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
               />
               <textarea
                 value={customSkillPrompt}
                 onChange={(e) => setCustomSkillPrompt(e.target.value)}
                 placeholder="System Prompt (instructions for the AI)"
                 rows={4}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
               />
               <Button
                 onClick={async () => {
@@ -350,7 +350,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
 
         {/* Topic Input */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Topic (optional)
           </label>
           <input
@@ -358,14 +358,14 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
             placeholder="e.g., AI use cases in healthcare"
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
           />
         </div>
 
         {/* Style Selection - Only for documents tab */}
         {activeTab === 'documents' && styleFormats.length > 0 && (
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Output Style
             </label>
             <div className="grid grid-cols-3 gap-2">
@@ -373,7 +373,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
                 <button
                   key={format.value}
                   onClick={() => setSelectedStyle(format.value)}
-                  className={`px-2 py-1.5 text-xs rounded-md border text-left transition-colors ${
+                  className={`px-2 py-1.5 text-xs rounded-lg border text-left transition-colors ${
                     selectedStyle === format.value
                       ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300'
                       : 'border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300'
@@ -390,7 +390,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
         {/* Duration - Only for audio tab */}
         {activeTab === 'audio' && (
         <div>
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Duration (minutes)
           </label>
           <input
@@ -399,10 +399,10 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
             onChange={(e) => setDuration(parseInt(e.target.value) || 10)}
             min="5"
             max={selectedSkill === 'feynman_curriculum' ? 45 : 30}
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
           />
           {selectedSkill === 'feynman_curriculum' && (
-            <p className="mt-1 text-xs text-indigo-600 dark:text-indigo-400">
+            <p className="mt-1 text-xs text-blue-600 dark:text-blue-400">
               4-part progressive teaching: Foundation → Building → First Principles → Mastery (recommended: 30-45 min)
             </p>
           )}
@@ -411,7 +411,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
 
         {/* Voice Configuration - Only for audio tab */}
         {activeTab === 'audio' && (
-        <details className="border border-gray-300 dark:border-gray-600 rounded-md" open>
+        <details className="border border-gray-300 dark:border-gray-600 rounded-lg" open>
           <summary className="px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 text-xs font-medium text-gray-700 dark:text-gray-300">
             Voice Configuration
           </summary>
@@ -422,7 +422,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
               <select
                 value={host1Gender}
                 onChange={(e) => setHost1Gender(e.target.value)}
-                className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
               >
                 <option value="male">Male</option>
                 <option value="female">Female</option>
@@ -435,7 +435,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
               <select
                 value={host2Gender}
                 onChange={(e) => setHost2Gender(e.target.value)}
-                className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
               >
                 <option value="male">Male</option>
                 <option value="female">Female</option>
@@ -448,7 +448,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
               <select
                 value={accent}
                 onChange={(e) => setAccent(e.target.value)}
-                className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
               >
                 <option value="us">American (US)</option>
                 <option value="uk">British (UK)</option>

@@ -470,7 +470,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
           onChange={(e) => setTopic(e.target.value)}
           placeholder={placeholderText}
           rows={3}
-          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 text-sm resize-none"
+          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 text-sm resize-none"
         />
       </div>
 

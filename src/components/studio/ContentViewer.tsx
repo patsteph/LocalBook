@@ -49,7 +49,7 @@ export const ContentViewer: React.FC<ContentViewerProps> = ({
                     console.error('PDF download failed:', err);
                   }
                 }}
-                className="text-xs px-2 py-1 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30"
+                className="text-xs px-2 py-1 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30"
               >
                 📥 PDF
               </button>
@@ -65,30 +65,30 @@ export const ContentViewer: React.FC<ContentViewerProps> = ({
             <ReactMarkdown>{generatedContent}</ReactMarkdown>
           </div>
           {selectedSkill === 'feynman_curriculum' && (
-            <div className="mt-3 p-3 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-700 rounded-lg">
-              <p className="text-sm font-medium text-indigo-900 dark:text-indigo-100 mb-2">Test Your Understanding</p>
+            <div className="mt-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg">
+              <p className="text-sm font-medium text-blue-900 dark:text-blue-100 mb-2">Test Your Understanding</p>
               <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() => onQuizNav(effectiveTopic, 'easy')}
-                  className="text-xs px-3 py-1.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-md hover:bg-green-200 dark:hover:bg-green-900/50 border border-green-300 dark:border-green-700"
+                  className="text-xs px-3 py-1.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg hover:bg-green-200 dark:hover:bg-green-900/50 border border-green-300 dark:border-green-700"
                 >
                   Part 1: Foundation Quiz
                 </button>
                 <button
                   onClick={() => onQuizNav(effectiveTopic, 'medium')}
-                  className="text-xs px-3 py-1.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 rounded-md hover:bg-yellow-200 dark:hover:bg-yellow-900/50 border border-yellow-300 dark:border-yellow-700"
+                  className="text-xs px-3 py-1.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 rounded-lg hover:bg-yellow-200 dark:hover:bg-yellow-900/50 border border-yellow-300 dark:border-yellow-700"
                 >
                   Part 2: Building Quiz
                 </button>
                 <button
                   onClick={() => onQuizNav(effectiveTopic, 'hard')}
-                  className="text-xs px-3 py-1.5 bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 rounded-md hover:bg-orange-200 dark:hover:bg-orange-900/50 border border-orange-300 dark:border-orange-700"
+                  className="text-xs px-3 py-1.5 bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 rounded-lg hover:bg-orange-200 dark:hover:bg-orange-900/50 border border-orange-300 dark:border-orange-700"
                 >
                   Part 3: First Principles Quiz
                 </button>
                 <button
                   onClick={() => onQuizNav(effectiveTopic, 'hard')}
-                  className="text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-md hover:bg-red-200 dark:hover:bg-red-900/50 border border-red-300 dark:border-red-700"
+                  className="text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/50 border border-red-300 dark:border-red-700"
                 >
                   Part 4: Mastery Quiz
                 </button>
@@ -101,19 +101,19 @@ export const ContentViewer: React.FC<ContentViewerProps> = ({
               <div className="flex flex-wrap gap-2">
                 <button
                   onClick={() => onVisualNav(`Learning progression for ${effectiveTopic}: show the 4-level Feynman journey from Foundation to Mastery with key concepts at each level`)}
-                  className="text-xs px-3 py-1.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-md hover:bg-green-200 dark:hover:bg-green-900/50 border border-green-300 dark:border-green-700"
+                  className="text-xs px-3 py-1.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg hover:bg-green-200 dark:hover:bg-green-900/50 border border-green-300 dark:border-green-700"
                 >
                   🎓 Learning Path
                 </button>
                 <button
                   onClick={() => onVisualNav(`Knowledge map for ${effectiveTopic}: show all core concepts, how they connect, why they work, and what's still unknown`)}
-                  className="text-xs px-3 py-1.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-md hover:bg-blue-200 dark:hover:bg-blue-900/50 border border-blue-300 dark:border-blue-700"
+                  className="text-xs px-3 py-1.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg hover:bg-blue-200 dark:hover:bg-blue-900/50 border border-blue-300 dark:border-blue-700"
                 >
                   🧠 Knowledge Map
                 </button>
                 <button
                   onClick={() => onVisualNav(`Common misconceptions vs reality for ${effectiveTopic}: show what people commonly get wrong and why, with the key insight that resolves confusion`)}
-                  className="text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-md hover:bg-red-200 dark:hover:bg-red-900/50 border border-red-300 dark:border-red-700"
+                  className="text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/50 border border-red-300 dark:border-red-700"
                 >
                   ❌➡️✅ Misconceptions
                 </button>

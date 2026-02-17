@@ -86,7 +86,7 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
           onChange={(e) => setDirectInput(e.target.value)}
           placeholder="Paste your text here to transform..."
           rows={5}
-          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white resize-none"
+          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white resize-none"
         />
         <p className="mt-1 text-xs text-gray-500">
           {directInput.split(/\s+/).filter(Boolean).length} words
@@ -101,7 +101,7 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
         <select
           value={selectedTask}
           onChange={(e) => setSelectedTask(e.target.value)}
-          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
         >
           {tasks.map((task) => (
             <option key={task.value} value={task.value}>
@@ -126,7 +126,7 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
             <button
               key={format.value}
               onClick={() => setSelectedFormat(format.value)}
-              className={`px-2 py-1.5 text-xs rounded-md border text-left transition-colors ${
+              className={`px-2 py-1.5 text-xs rounded-lg border text-left transition-colors ${
                 selectedFormat === format.value
                   ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300'
                   : 'border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300'

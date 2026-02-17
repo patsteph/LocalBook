@@ -169,7 +169,7 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
       <div className="flex gap-2">
         <button
           onClick={() => setMode('generate')}
-          className={`px-3 py-1.5 text-sm rounded-md ${
+          className={`px-3 py-1.5 text-sm rounded-lg ${
             mode === 'generate'
               ? 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300'
               : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
@@ -179,7 +179,7 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
         </button>
         <button
           onClick={() => setMode('review')}
-          className={`px-3 py-1.5 text-sm rounded-md flex items-center gap-1 ${
+          className={`px-3 py-1.5 text-sm rounded-lg flex items-center gap-1 ${
             mode === 'review'
               ? 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300'
               : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
@@ -207,7 +207,7 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               placeholder="e.g., Machine Learning, React Hooks, WWII..."
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
             />
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Focus questions on a specific topic</p>
           </div>
@@ -234,7 +234,7 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
             <select
               value={difficulty}
               onChange={(e) => setDifficulty(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
             >
               <option value="easy">Easy</option>
               <option value="medium">Medium</option>
@@ -482,25 +482,25 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
                       <div className="grid grid-cols-4 gap-2">
                         <button
                           onClick={() => handleReviewRating(1)}
-                          className="px-2 py-2 bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 rounded-md text-sm hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors"
+                          className="px-2 py-2 bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 rounded-lg text-sm hover:bg-red-200 dark:hover:bg-red-900/60 transition-colors"
                         >
                           Again
                         </button>
                         <button
                           onClick={() => handleReviewRating(2)}
-                          className="px-2 py-2 bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300 rounded-md text-sm hover:bg-orange-200 dark:hover:bg-orange-900/60 transition-colors"
+                          className="px-2 py-2 bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300 rounded-lg text-sm hover:bg-orange-200 dark:hover:bg-orange-900/60 transition-colors"
                         >
                           Hard
                         </button>
                         <button
                           onClick={() => handleReviewRating(3)}
-                          className="px-2 py-2 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded-md text-sm hover:bg-green-200 dark:hover:bg-green-900/60 transition-colors"
+                          className="px-2 py-2 bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded-lg text-sm hover:bg-green-200 dark:hover:bg-green-900/60 transition-colors"
                         >
                           Good
                         </button>
                         <button
                           onClick={() => handleReviewRating(4)}
-                          className="px-2 py-2 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded-md text-sm hover:bg-blue-200 dark:hover:bg-blue-900/60 transition-colors"
+                          className="px-2 py-2 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 rounded-lg text-sm hover:bg-blue-200 dark:hover:bg-blue-900/60 transition-colors"
                         >
                           Easy
                         </button>

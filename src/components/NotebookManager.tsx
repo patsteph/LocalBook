@@ -346,7 +346,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
-                            <h3 className="font-medium text-gray-900 dark:text-white">{selectedNotebook.title}</h3>
+                            <h3 className="font-medium text-sm text-gray-900 dark:text-white">{selectedNotebook.title}</h3>
                           </div>
                           <p className="text-xs text-gray-500 dark:text-gray-400">
                             {selectedNotebook.source_count} sources
@@ -532,8 +532,8 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
         onClose={() => setShowDeleteModal(false)}
         title="Delete Notebook"
       >
-        <div className="p-6">
-          <p className="text-gray-700 dark:text-gray-300 mb-6">
+        <div className="p-4">
+          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
             Are you sure you want to delete this notebook? This action cannot be undone.
           </p>
           <div className="flex justify-end gap-2">

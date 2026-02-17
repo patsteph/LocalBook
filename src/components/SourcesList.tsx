@@ -151,7 +151,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   if (!notebookId) {
     return (
       <div className="p-4">
-        <h3 className="font-semibold mb-2 text-gray-900 dark:text-white">Sources</h3>
+        <h3 className="text-sm font-semibold mb-2 text-gray-900 dark:text-white">Sources</h3>
         <p className="text-sm text-gray-500 dark:text-gray-400">Select a notebook to view sources</p>
       </div>
     );
@@ -160,7 +160,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   if (loading) {
     return (
       <div className="p-4">
-        <h3 className="font-semibold mb-2 text-gray-900 dark:text-white">Sources</h3>
+        <h3 className="text-sm font-semibold mb-2 text-gray-900 dark:text-white">Sources</h3>
         <LoadingSpinner />
       </div>
     );
@@ -171,7 +171,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   return (
     <div className="p-4">
       <div className="flex items-center justify-between mb-2">
-        <h3 className="font-semibold text-gray-900 dark:text-white">
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
           Sources ({activeTagFilter ? `${filteredSources.length}/${sources.length}` : sources.length})
         </h3>
         {untaggedCount > 0 && (
@@ -256,7 +256,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
               <div
                 key={source.id}
                 onClick={() => onSourceSelect?.(source.id)}
-                className={`group px-4 py-2.5 rounded border transition cursor-pointer overflow-hidden ${
+                className={`group px-3 py-2 rounded-lg border transition cursor-pointer overflow-hidden ${
                   isSelected
                     ? 'border-purple-500 dark:border-purple-400 bg-purple-50 dark:bg-purple-900/20 ring-1 ring-purple-500 dark:ring-purple-400'
                     : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-700'

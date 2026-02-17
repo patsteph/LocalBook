@@ -258,7 +258,7 @@ export const PeopleSetupWizard: React.FC<PeopleSetupWizardProps> = ({
             value={member.name}
             onChange={e => updateMember(idx, 'name', e.target.value)}
             placeholder="Full Name"
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
             autoFocus={idx === 0}
           />
 
@@ -267,7 +267,7 @@ export const PeopleSetupWizard: React.FC<PeopleSetupWizardProps> = ({
             value={member.current_role}
             onChange={e => updateMember(idx, 'current_role', e.target.value)}
             placeholder="Role (e.g., Senior Engineer)"
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
           />
 
           <div className="space-y-2">
@@ -279,7 +279,7 @@ export const PeopleSetupWizard: React.FC<PeopleSetupWizardProps> = ({
                   value={member.social_links[platform.key] || ''}
                   onChange={e => updateMemberLink(idx, platform.key, e.target.value)}
                   placeholder={platform.placeholder}
-                  className="flex-1 px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-xs focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                  className="flex-1 px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-xs focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
                 />
               </div>
             ))}
@@ -290,7 +290,7 @@ export const PeopleSetupWizard: React.FC<PeopleSetupWizardProps> = ({
             onChange={e => updateMember(idx, 'initial_notes', e.target.value)}
             placeholder="Initial coaching notes (optional, private)"
             rows={2}
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none"
+            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none"
           />
         </div>
       ))}
