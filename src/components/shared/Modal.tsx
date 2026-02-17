@@ -51,8 +51,8 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, 
 
       {/* Modal */}
       <div className={`relative bg-white dark:bg-gray-800 rounded-lg shadow-xl ${sizeClasses[size]} ${heightClasses[size]} w-full mx-4 overflow-hidden flex flex-col`}>
-        <div className="p-6 pb-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-          <h3 className="text-xl font-bold text-gray-900 dark:text-white">{title}</h3>
+        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h3>
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 text-2xl leading-none"

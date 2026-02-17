@@ -1518,7 +1518,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                 {building ? (
                   <>
                     <p className="text-4xl mb-4 animate-pulse">✨</p>
-                    <p className="text-lg font-medium mb-2">Discovering themes...</p>
+                    <p className="text-base font-medium mb-2">Discovering themes...</p>
                     <p className="text-sm mb-4 text-gray-500">
                       Analyzing your sources to find connections and patterns.
                     </p>
@@ -1532,7 +1532,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                 ) : (
                   <>
                     <p className="text-4xl mb-4">✨</p>
-                    <p className="text-lg font-medium mb-2">No topics yet</p>
+                    <p className="text-base font-medium mb-2">No topics yet</p>
                     <p className="text-sm mb-4">
                       Add at least 3 sources, then topics will be discovered automatically.
                     </p>

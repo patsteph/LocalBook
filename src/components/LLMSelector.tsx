@@ -70,9 +70,9 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   ];
 
   return (
-    <div className="p-6">
+    <div className="p-4">
       {/* Toggle Switch */}
-      <div className="flex items-center justify-center mb-6">
+      <div className="flex items-center justify-center mb-4">
         <div className="relative inline-flex items-center bg-gray-200 dark:bg-gray-700 rounded-full p-1">
           <button
             onClick={() => handleModeToggle('local')}

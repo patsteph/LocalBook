@@ -114,20 +114,20 @@ export const UpdatesSection: React.FC = () => {
     };
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-4">
             <div>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Software Updates</h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+                <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-1">Software Updates</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
                     Check for and install updates from GitHub.
                 </p>
             </div>
 
             {/* Current Version */}
-            <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800">
+            <div className="p-3 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800">
                 <div className="flex items-center justify-between">
                     <div>
-                        <h4 className="font-medium text-gray-900 dark:text-white">Current Version</h4>
-                        <p className="text-2xl font-bold text-blue-600 dark:text-blue-400 mt-1">
+                        <h4 className="text-sm font-medium text-gray-900 dark:text-white">Current Version</h4>
+                        <p className="text-lg font-bold text-blue-600 dark:text-blue-400 mt-1">
                             v{updateInfo?.current_version || '0.1.0'}
                         </p>
                     </div>
@@ -229,8 +229,8 @@ export const UpdatesSection: React.FC = () => {
             )}
 
             {/* Data Safety Note */}
-            <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800/50">
-                <h4 className="font-medium text-gray-900 dark:text-white mb-2">💾 Your Data is Safe</h4>
+            <div className="p-3 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+                <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-1">💾 Your Data is Safe</h4>
                 <p className="text-sm text-gray-600 dark:text-gray-400">
                     All your notebooks, sources, and settings are stored separately from the app. 
                     Updates will never affect your data.

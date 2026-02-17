@@ -175,7 +175,7 @@ export const FindingsPanel: React.FC<FindingsPanelProps> = ({ notebookId }) => {
       {/* Header with filters */}
       <div className="flex-shrink-0 p-4 border-b border-gray-200 dark:border-gray-700">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+          <h2 className="text-base font-semibold text-gray-900 dark:text-white">
             Findings
           </h2>
           {stats && (

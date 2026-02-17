@@ -131,7 +131,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
       case 'settings':
         return (
           <div className="p-6 overflow-y-auto h-full">
-            <Settings onClose={() => ctx.closePanel(panelId)} />
+            <Settings />
           </div>
         );
 

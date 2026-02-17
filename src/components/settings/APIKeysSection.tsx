@@ -180,9 +180,9 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
         return (
             <div
                 key={config.key}
-                className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800"
+                className="p-3 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800"
             >
-                <div className="flex items-start justify-between mb-3">
+                <div className="flex items-start justify-between mb-2">
                     <div className="flex-1">
                         <div className="flex items-center gap-2">
                             <h4 className="font-medium text-gray-900 dark:text-white">
@@ -217,12 +217,12 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                         onChange={(e) => setApiKeys({ ...apiKeys, [config.key]: e.target.value })}
                         placeholder={isConfigured ? '••••••••' : config.placeholder}
                         disabled={isSaving}
-                        className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                        className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                     />
                     <button
                         onClick={() => handleSaveKey(config.key)}
                         disabled={isSaving || !apiKeys[config.key]}
-                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded text-sm font-medium transition-colors"
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg text-sm font-medium transition-colors"
                     >
                         {isSaving ? 'Saving...' : 'Save'}
                     </button>
@@ -230,7 +230,7 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                         <button
                             onClick={() => handleDeleteKey(config.key)}
                             disabled={isSaving}
-                            className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white rounded text-sm font-medium transition-colors"
+                            className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-400 text-white rounded-lg text-sm font-medium transition-colors"
                         >
                             Remove
                         </button>
@@ -241,19 +241,19 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
     };
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-4">
             <div>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">API Keys</h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+                <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-1">API Keys</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
                     API keys are stored securely in your system keychain and never leave your computer.
                 </p>
 
-                <div className="space-y-6">
+                <div className="space-y-4">
                     {/* Brave Search - First Item */}
                     {renderKeyCard(API_KEY_CONFIGS[0])}
 
                     {/* Custom LLM - Second Item */}
-                    <div className="p-4 border-2 border-purple-200 dark:border-purple-700 rounded-lg bg-purple-50 dark:bg-purple-900/10">
+                    <div className="p-3 border-2 border-blue-200 dark:border-blue-700 rounded-lg bg-blue-50 dark:bg-blue-900/10">
                         <div className="flex items-start justify-between mb-3">
                             <div className="flex-1">
                                 <div className="flex items-center gap-2">
@@ -265,7 +265,7 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                                             Configured
                                         </span>
                                     )}
-                                    <span className="px-2 py-0.5 text-xs font-medium bg-purple-200 dark:bg-purple-800 text-purple-800 dark:text-purple-200 rounded">
+                                    <span className="px-2 py-0.5 text-xs font-medium bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-200 rounded">
                                         Company Internal
                                     </span>
                                 </div>
@@ -286,7 +286,7 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                                     onChange={(e) => setCustomLLMEndpoint(e.target.value)}
                                     placeholder="https://api.yourcompany.com/v1"
                                     disabled={saving === 'custom_llm'}
-                                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50"
+                                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                                 />
                             </div>
                             <div>
@@ -299,7 +299,7 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                                     onChange={(e) => setCustomLLMApiKey(e.target.value)}
                                     placeholder={customLLMConfigured ? '••••••••' : 'Your API key'}
                                     disabled={saving === 'custom_llm'}
-                                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50"
+                                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                                 />
                             </div>
                             <div>
@@ -312,14 +312,14 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                                     onChange={(e) => setCustomLLMModel(e.target.value)}
                                     placeholder="gpt-4, claude-3, etc."
                                     disabled={saving === 'custom_llm'}
-                                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50"
+                                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                                 />
                             </div>
                             <div className="flex gap-2 pt-2">
                                 <button
                                     onClick={handleSaveCustomLLM}
                                     disabled={saving === 'custom_llm' || !customLLMEndpoint || !customLLMApiKey || !customLLMModel}
-                                    className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white rounded text-sm font-medium transition-colors"
+                                    className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg text-sm font-medium transition-colors"
                                 >
                                     {saving === 'custom_llm' ? 'Saving...' : 'Save Custom LLM'}
                                 </button>
@@ -327,7 +327,7 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                                     <button
                                         onClick={handleDeleteCustomLLM}
                                         disabled={saving === 'custom_llm'}
-                                        className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white rounded text-sm font-medium transition-colors"
+                                        className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-400 text-white rounded-lg text-sm font-medium transition-colors"
                                     >
                                         Remove
                                     </button>

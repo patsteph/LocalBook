@@ -107,15 +107,15 @@ export const CredentialLocker: React.FC = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8">
-        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-amber-600"></div>
+        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+        <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-1">
           Site Login Credentials
         </h3>
         <p className="text-sm text-gray-600 dark:text-gray-400">
@@ -124,13 +124,13 @@ export const CredentialLocker: React.FC = () => {
       </div>
 
       {error && (
-        <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded text-sm text-red-700 dark:text-red-400">
+        <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-700 dark:text-red-400">
           {error}
         </div>
       )}
 
       {success && (
-        <div className="p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded text-sm text-green-700 dark:text-green-400">
+        <div className="p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg text-sm text-green-700 dark:text-green-400">
           {success}
         </div>
       )}
@@ -138,8 +138,8 @@ export const CredentialLocker: React.FC = () => {
       {/* Disclaimer Modal */}
       {showDisclaimer && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md mx-4 shadow-xl">
-            <h4 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-4 max-w-md mx-4 shadow-xl">
+            <h4 className="text-base font-semibold text-gray-900 dark:text-white mb-3">
               ⚠️ Important Notice
             </h4>
             <div className="text-sm text-gray-600 dark:text-gray-400 space-y-3">
@@ -156,16 +156,16 @@ export const CredentialLocker: React.FC = () => {
                 By continuing, you acknowledge these terms.
               </p>
             </div>
-            <div className="flex gap-3 mt-6">
+            <div className="flex gap-3 mt-4">
               <button
                 onClick={() => setShowDisclaimer(false)}
-                className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+                className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
               >
                 Cancel
               </button>
               <button
                 onClick={handleAcceptDisclaimer}
-                className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded text-sm font-medium"
+                className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium"
               >
                 I Understand
               </button>
@@ -176,8 +176,8 @@ export const CredentialLocker: React.FC = () => {
 
       {/* Add Credential Form */}
       {showAddForm && (
-        <form onSubmit={handleSubmit} className="p-4 border-2 border-amber-200 dark:border-amber-700 rounded-lg bg-amber-50 dark:bg-amber-900/10">
-          <h4 className="font-medium text-gray-900 dark:text-white mb-4">Add Site Credential</h4>
+        <form onSubmit={handleSubmit} className="p-3 border-2 border-blue-200 dark:border-blue-700 rounded-lg bg-blue-50 dark:bg-blue-900/10">
+          <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-3">Add Site Credential</h4>
           
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -189,7 +189,7 @@ export const CredentialLocker: React.FC = () => {
                 value={formData.site_domain}
                 onChange={(e) => setFormData({ ...formData, site_domain: e.target.value })}
                 placeholder="medium.com"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
               />
             </div>
             <div>
@@ -201,7 +201,7 @@ export const CredentialLocker: React.FC = () => {
                 value={formData.site_name}
                 onChange={(e) => setFormData({ ...formData, site_name: e.target.value })}
                 placeholder="Medium"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
               />
             </div>
             <div>
@@ -213,7 +213,7 @@ export const CredentialLocker: React.FC = () => {
                 value={formData.username}
                 onChange={(e) => setFormData({ ...formData, username: e.target.value })}
                 placeholder="user@example.com"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
               />
             </div>
             <div>
@@ -225,7 +225,7 @@ export const CredentialLocker: React.FC = () => {
                 value={formData.password}
                 onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                 placeholder="••••••••"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
               />
             </div>
             <div className="col-span-2">
@@ -237,7 +237,7 @@ export const CredentialLocker: React.FC = () => {
                 value={formData.notes}
                 onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
                 placeholder="Any notes about this account"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
               />
             </div>
           </div>
@@ -246,14 +246,14 @@ export const CredentialLocker: React.FC = () => {
             <button
               type="button"
               onClick={() => setShowAddForm(false)}
-              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
+              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={saving}
-              className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-400 text-white rounded text-sm font-medium"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg text-sm font-medium"
             >
               {saving ? 'Saving...' : 'Save Credential'}
             </button>
@@ -265,7 +265,7 @@ export const CredentialLocker: React.FC = () => {
       <div className="space-y-3">
         {credentials.length === 0 ? (
           <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-            <p className="text-lg mb-2">🔐</p>
+            <p className="text-base mb-2">🔐</p>
             <p className="text-sm">No site credentials stored yet.</p>
             <p className="text-xs mt-1">Add credentials to access paywalled content.</p>
           </div>
@@ -273,7 +273,7 @@ export const CredentialLocker: React.FC = () => {
           credentials.map((cred) => (
             <div
               key={cred.site_domain}
-              className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 flex items-center justify-between"
+              className="p-3 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 flex items-center justify-between"
             >
               <div>
                 <div className="flex items-center gap-2">
@@ -295,7 +295,7 @@ export const CredentialLocker: React.FC = () => {
               </div>
               <button
                 onClick={() => handleDelete(cred.site_domain)}
-                className="px-3 py-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded text-sm"
+                className="px-3 py-1.5 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg text-sm"
               >
                 Delete
               </button>
@@ -308,7 +308,7 @@ export const CredentialLocker: React.FC = () => {
       {!showAddForm && (
         <button
           onClick={handleAddClick}
-          className="w-full py-3 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-gray-600 dark:text-gray-400 hover:border-amber-400 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+          className="w-full py-3 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-gray-600 dark:text-gray-400 hover:border-blue-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
         >
           + Add Site Credential
         </button>

@@ -61,10 +61,10 @@ export const ProfileSection: React.FC<ProfileSectionProps> = ({ setError, setSuc
     }
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-4">
             <div>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">User Profile</h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-1">User Profile</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
                     Personalize how the AI responds to you. This information is stored locally and used to make responses feel more natural.
                 </p>
             </div>
@@ -180,7 +180,7 @@ export const ProfileSection: React.FC<ProfileSectionProps> = ({ setError, setSuc
                     <button
                         onClick={handleSaveProfile}
                         disabled={profileSaving}
-                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-lg text-sm font-medium transition-colors"
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg text-sm font-medium transition-colors"
                     >
                         {profileSaving ? 'Saving...' : 'Save Profile'}
                     </button>

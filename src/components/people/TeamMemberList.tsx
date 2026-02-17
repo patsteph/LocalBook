@@ -113,7 +113,7 @@ export const TeamMemberList: React.FC<TeamMemberListProps> = ({
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
         <Users className="w-12 h-12 text-gray-300 dark:text-gray-600 mb-4" />
-        <h3 className="text-lg font-medium text-gray-700 dark:text-gray-300 mb-2">
+        <h3 className="text-base font-medium text-gray-700 dark:text-gray-300 mb-2">
           No profiles yet
         </h3>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-4 max-w-sm">

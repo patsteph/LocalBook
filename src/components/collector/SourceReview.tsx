@@ -350,9 +350,9 @@ export const SourceReview: React.FC<SourceReviewProps> = ({
   if (isLoading) {
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-        <div className="bg-white dark:bg-gray-800 rounded-xl p-8 max-w-lg w-full mx-4 text-center">
+        <div className="bg-white dark:bg-gray-800 rounded-xl p-4 max-w-lg w-full mx-4 text-center">
           <Loader2 className="w-12 h-12 animate-spin mx-auto text-blue-500 mb-4" />
-          <h3 className="text-lg font-semibold mb-2 text-gray-900 dark:text-gray-100">Discovering Sources...</h3>
+          <h3 className="text-base font-semibold mb-2 text-gray-900 dark:text-gray-100">Discovering Sources...</h3>
           <p className="text-gray-500 dark:text-gray-400">
             Analyzing your intent and finding relevant sources
           </p>
@@ -382,8 +382,8 @@ if (showPeopleWizard) {
 if (showPurposeClarification) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4">
-        <h3 className="text-lg font-semibold mb-2 flex items-center gap-2 text-gray-900 dark:text-gray-100">
+      <div className="bg-white dark:bg-gray-800 rounded-xl p-4 max-w-lg w-full mx-4">
+        <h3 className="text-base font-semibold mb-2 flex items-center gap-2 text-gray-900 dark:text-gray-100">
           <Sparkles className="w-5 h-5 text-blue-500" />
           Help us understand your goal
         </h3>
@@ -440,8 +440,8 @@ if (showCompanyClarification) {
   
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-xl p-6 max-w-lg w-full mx-4">
-        <h3 className="text-lg font-semibold mb-2 flex items-center gap-2 text-gray-900 dark:text-gray-100">
+      <div className="bg-white dark:bg-gray-800 rounded-xl p-4 max-w-lg w-full mx-4">
+        <h3 className="text-base font-semibold mb-2 flex items-center gap-2 text-gray-900 dark:text-gray-100">
           <Building2 className="w-5 h-5 text-blue-500" />
           Help us find this company
         </h3>
@@ -508,7 +508,7 @@ if (showCompanyClarification) {
         {/* Header */}
         <div className="p-4 border-b dark:border-gray-700">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold flex items-center gap-2 text-gray-900 dark:text-gray-100">
+            <h2 className="text-base font-semibold flex items-center gap-2 text-gray-900 dark:text-gray-100">
               <Sparkles className="w-5 h-5 text-blue-500" />
               Discovered Sources
             </h2>

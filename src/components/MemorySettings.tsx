@@ -143,28 +143,28 @@ export const MemorySettings: React.FC = () => {
   }, {} as Record<string, CoreMemoryEntry[]>);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Onboarding Message */}
       {showOnboarding && (
-        <div className="p-4 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700 rounded-lg">
+        <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg">
           <div className="flex items-start gap-3">
-            <span className="text-2xl">🧠</span>
+            <span className="text-lg">🧠</span>
             <div className="flex-1">
-              <h4 className="font-medium text-purple-900 dark:text-purple-100 mb-1">
+              <h4 className="text-sm font-medium text-blue-900 dark:text-blue-100 mb-1">
                 How Memory Works
               </h4>
-              <p className="text-sm text-purple-800 dark:text-purple-200 mb-3">
+              <p className="text-sm text-blue-800 dark:text-blue-200 mb-3">
                 I'll remember key details from our conversations to give better answers over time. 
                 This works like a good colleague's memory - I won't constantly remind you what I know, 
                 but I'll use context naturally to help you better.
               </p>
-              <p className="text-sm text-purple-700 dark:text-purple-300 mb-3">
+              <p className="text-sm text-blue-700 dark:text-blue-300 mb-3">
                 <strong>Your privacy matters:</strong> All memories are stored locally on your computer. 
                 You can view, edit, or delete anything I remember right here.
               </p>
               <button
                 onClick={dismissOnboarding}
-                className="text-sm text-purple-600 dark:text-purple-400 hover:underline"
+                className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
               >
                 Got it, don't show again
               </button>
@@ -174,9 +174,9 @@ export const MemorySettings: React.FC = () => {
       )}
 
       {/* Memory Toggle */}
-      <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+      <div className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
         <div>
-          <h4 className="font-medium text-gray-900 dark:text-white">Memory</h4>
+          <h4 className="text-sm font-medium text-gray-900 dark:text-white">Memory</h4>
           <p className="text-sm text-gray-600 dark:text-gray-400">
             {memoryEnabled 
               ? 'I remember context from our conversations' 
@@ -186,7 +186,7 @@ export const MemorySettings: React.FC = () => {
         <button
           onClick={toggleMemory}
           className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-            memoryEnabled ? 'bg-purple-600' : 'bg-gray-300 dark:bg-gray-600'
+            memoryEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
           }`}
         >
           <span
@@ -200,20 +200,20 @@ export const MemorySettings: React.FC = () => {
       {/* Stats */}
       {stats && memoryEnabled && (
         <div className="grid grid-cols-3 gap-4">
-          <div className="p-3 bg-purple-50 dark:bg-purple-900/20 rounded-lg text-center">
-            <div className="text-xl font-bold text-purple-600 dark:text-purple-400">
+          <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-center">
+            <div className="text-lg font-bold text-blue-600 dark:text-blue-400">
               {stats.core_memory.entries}
             </div>
             <div className="text-xs text-gray-600 dark:text-gray-400">Core Facts</div>
           </div>
           <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-center">
-            <div className="text-xl font-bold text-blue-600 dark:text-blue-400">
+            <div className="text-lg font-bold text-blue-600 dark:text-blue-400">
               {stats.recall_memory.entries}
             </div>
             <div className="text-xs text-gray-600 dark:text-gray-400">Conversations</div>
           </div>
           <div className="p-3 bg-green-50 dark:bg-green-900/20 rounded-lg text-center">
-            <div className="text-xl font-bold text-green-600 dark:text-green-400">
+            <div className="text-lg font-bold text-green-600 dark:text-green-400">
               {stats.archival_memory.entries}
             </div>
             <div className="text-xs text-gray-600 dark:text-gray-400">Archived</div>
@@ -230,8 +230,8 @@ export const MemorySettings: React.FC = () => {
       {/* Memory List */}
       {memoryEnabled && (
         <div>
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-base font-semibold text-gray-900 dark:text-white">
               What I Remember About You
             </h3>
             {memories.length > 0 && (
@@ -246,11 +246,11 @@ export const MemorySettings: React.FC = () => {
 
           {loading ? (
             <div className="flex items-center justify-center py-8">
-              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600"></div>
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
             </div>
           ) : memories.length === 0 ? (
             <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-              <p className="text-lg mb-2">Nothing yet!</p>
+              <p className="text-base mb-2">Nothing yet!</p>
               <p className="text-sm">
                 As we chat, I'll naturally learn and remember important things about you and your work.
               </p>

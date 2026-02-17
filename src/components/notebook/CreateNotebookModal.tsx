@@ -64,10 +64,10 @@ export const CreateNotebookModal: React.FC<CreateNotebookModalProps> = ({
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="Create New Notebook">
-      <div className="p-6">
+      <div className="p-4">
         <form onSubmit={handleSubmit}>
-          <div className="mb-4">
-            <label htmlFor="notebook-title" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+          <div className="mb-3">
+            <label htmlFor="notebook-title" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Notebook Name
             </label>
             <input
@@ -76,13 +76,13 @@ export const CreateNotebookModal: React.FC<CreateNotebookModalProps> = ({
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="My Research Project"
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
+              className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
               autoFocus
               disabled={creating}
             />
           </div>
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+          <div className="mb-3">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Color
             </label>
             <div className="flex gap-2 flex-wrap">
@@ -100,8 +100,8 @@ export const CreateNotebookModal: React.FC<CreateNotebookModalProps> = ({
             </div>
           </div>
           {/* File drop zone */}
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+          <div className="mb-3">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Starting Files <span className="text-gray-400 font-normal">(optional)</span>
             </label>
             <div

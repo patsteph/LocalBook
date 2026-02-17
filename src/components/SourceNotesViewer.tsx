@@ -308,9 +308,9 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col">
         {/* Header */}
-        <div className="border-b p-4 flex justify-between items-center">
+        <div className="border-b px-4 py-3 flex justify-between items-center">
           <div className="flex-1">
-            <h2 className="text-xl font-bold text-gray-900">{sourceName}</h2>
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white">{sourceName}</h2>
             <p className="text-sm text-gray-600 dark:text-gray-400">
               {content?.format} • {sourceId}
             </p>
@@ -476,7 +476,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
         <div className="border-t p-4 bg-gray-50 flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
           >
             Close
           </button>
@@ -486,8 +486,8 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
       {/* Annotation Modal */}
       {showAnnotationModal && pendingHighlight && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
-          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4">Add Highlight</h3>
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-4 max-w-md w-full mx-4">
+            <h3 className="text-base font-semibold mb-3">Add Highlight</h3>
 
             <div className="mb-4">
               <p className="text-sm text-gray-700 mb-2">Selected text:</p>
@@ -498,7 +498,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
             </div>
 
             <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Highlight Color
               </label>
               <div className="flex gap-2">
@@ -521,14 +521,14 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
             </div>
 
             <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Annotation (optional)
               </label>
               <textarea
                 value={annotationText}
                 onChange={(e) => setAnnotationText(e.target.value)}
                 placeholder="Add a note about this highlight..."
-                className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
                 rows={3}
               />
             </div>
@@ -539,13 +539,13 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
                   setShowAnnotationModal(false);
                   setPendingHighlight(null);
                 }}
-                className="px-4 py-2 text-gray-700 bg-gray-200 rounded hover:bg-gray-300 transition-colors"
+                className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-200 dark:bg-gray-700 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors text-sm font-medium"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSaveHighlight}
-                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
               >
                 Save Highlight
               </button>

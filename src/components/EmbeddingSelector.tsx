@@ -38,7 +38,7 @@ export const EmbeddingSelector: React.FC<EmbeddingSelectorProps> = () => {
 
   if (loading) {
     return (
-      <div className="p-6">
+      <div className="p-4">
         <div className="flex items-center justify-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
         </div>
@@ -47,9 +47,9 @@ export const EmbeddingSelector: React.FC<EmbeddingSelectorProps> = () => {
   }
 
   return (
-    <div className="p-6">
-      <div className="mb-6">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+    <div className="p-4">
+      <div className="mb-4">
+        <h3 className="text-base font-semibold text-gray-900 dark:text-white mb-1">
           Retrieval Configuration
         </h3>
         <p className="text-sm text-gray-600 dark:text-gray-400">
@@ -58,7 +58,7 @@ export const EmbeddingSelector: React.FC<EmbeddingSelectorProps> = () => {
       </div>
 
       {/* Embedding Model */}
-      <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+      <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
         <div className="flex items-center gap-3">
           <span className="text-2xl">❄️</span>
           <div className="flex-1">
@@ -76,7 +76,7 @@ export const EmbeddingSelector: React.FC<EmbeddingSelectorProps> = () => {
       </div>
 
       {/* Reranker */}
-      <div className="mb-4 p-4 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg">
+      <div className="mb-3 p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg">
         <div className="flex items-center gap-3">
           <span className="text-2xl">🎯</span>
           <div className="flex-1">
@@ -94,7 +94,7 @@ export const EmbeddingSelector: React.FC<EmbeddingSelectorProps> = () => {
       </div>
 
       {/* Info Section */}
-      <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+      <div className="mt-4 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
         <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-2">
           ℹ️ Two-Stage Retrieval
         </h4>

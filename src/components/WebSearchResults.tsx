@@ -263,8 +263,8 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
     return (
         <div className="flex flex-col h-full bg-white dark:bg-gray-800 rounded-lg shadow-lg">
             {/* Header */}
-            <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+            <div className="p-3 border-b border-gray-200 dark:border-gray-700">
+                <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">
                     Web Research
                 </h2>
                 <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">

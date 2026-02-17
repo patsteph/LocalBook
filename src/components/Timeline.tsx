@@ -173,7 +173,7 @@ export const Timeline: React.FC<TimelineProps> = ({ notebookId, sourcesRefreshTr
           <svg className="w-16 h-16 mx-auto mb-4 text-gray-400 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
           </svg>
-          <p className="text-lg font-medium">No Notebook Selected</p>
+          <p className="text-base font-medium">No Notebook Selected</p>
           <p className="text-sm mt-2">Select a notebook to view its timeline</p>
         </div>
       </div>
@@ -191,10 +191,10 @@ export const Timeline: React.FC<TimelineProps> = ({ notebookId, sourcesRefreshTr
   return (
     <div className="flex flex-col h-full bg-white dark:bg-gray-800">
       {/* Header */}
-      <div className="p-4 border-b dark:border-gray-700">
-        <div className="flex items-center justify-between mb-4">
+      <div className="p-3 border-b dark:border-gray-700">
+        <div className="flex items-center justify-between mb-3">
           <div>
-            <h2 className="text-xl font-bold text-gray-900 dark:text-white">Timeline</h2>
+            <h2 className="text-base font-semibold text-gray-900 dark:text-white">Timeline</h2>
             <p className="text-sm text-gray-600 dark:text-gray-400">
               {filteredEvents.length} {filteredEvents.length === 1 ? 'event' : 'events'}
               {events.length !== filteredEvents.length && ` (filtered from ${events.length})`}
@@ -527,7 +527,7 @@ export const Timeline: React.FC<TimelineProps> = ({ notebookId, sourcesRefreshTr
             <svg className="w-20 h-20 mx-auto mb-4 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
-            <p className="text-lg font-medium mb-2">No Timeline Yet</p>
+            <p className="text-base font-medium mb-2">No Timeline Yet</p>
             <p className="text-sm mb-4">
               Extract dates from your documents to create an interactive timeline
             </p>
@@ -537,7 +537,7 @@ export const Timeline: React.FC<TimelineProps> = ({ notebookId, sourcesRefreshTr
       ) : filteredEvents.length === 0 && events.length > 0 ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center text-gray-500 dark:text-gray-400">
-            <p className="text-lg font-medium">No events match your filters</p>
+            <p className="text-base font-medium">No events match your filters</p>
             <p className="text-sm mt-2">Try adjusting your search or source filter</p>
           </div>
         </div>

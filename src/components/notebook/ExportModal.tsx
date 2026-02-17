@@ -21,8 +21,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       onClose={onClose}
       title="Export Notebook"
     >
-      <div className="p-6">
-        <p className="text-gray-700 dark:text-gray-300 mb-6">
+      <div className="p-4">
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
           Choose the format to export your notebook:
         </p>
         <div className="space-y-3">
