@@ -261,14 +261,14 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
 
   if (loading) {
     return (
-      <div className="p-4">
+      <div className="px-3 py-2">
         <LoadingSpinner />
       </div>
     );
   }
 
   return (
-    <div className="px-3 py-2 bg-white dark:bg-gray-800 border-b dark:border-gray-700">
+    <div className="px-3 py-2">
       {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
 
       <div className="flex items-center justify-end mb-1">

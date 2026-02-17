@@ -197,19 +197,31 @@ class CuratorAgent:
         self, 
         collector_id: str,
         proposed_items: List[CollectedItem],
-        notebook_intent: str
+        notebook_intent: str,
+        deadline: float = 0
     ) -> List[JudgmentResult]:
         """
         Review items a Collector wants to add.
-        Returns judgment for each item.
+        Returns judgment for each item (parallel with bounded concurrency).
+        If deadline is set and approaching, auto-defers remaining items to user review.
         """
-        results = []
+        import asyncio
+        import time as _time
+        sem = asyncio.Semaphore(4)
         
-        for item in proposed_items:
-            result = await self._judge_single_item(item, notebook_intent, collector_id)
-            results.append(result)
+        async def _judge_bounded(item):
+            # If less than 10s left, skip LLM and auto-defer
+            if deadline and _time.time() > deadline - 10:
+                return JudgmentResult(
+                    decision=JudgmentDecision.DEFER_TO_USER,
+                    reason="Deferred to keep collection fast. Will review in background.",
+                    confidence=item.overall_confidence
+                )
+            async with sem:
+                return await self._judge_single_item(item, notebook_intent, collector_id)
         
-        return results
+        results = await asyncio.gather(*[_judge_bounded(item) for item in proposed_items])
+        return list(results)
     
     async def _judge_single_item(
         self,
@@ -275,7 +287,7 @@ Respond with JSON only:
             response = await ollama_client.generate(
                 prompt=prompt,
                 system="You are an editorial judgment system. Respond only with valid JSON.",
-                model=settings.ollama_fast_model,
+                model=settings.ollama_model,  # Main model — this is the gatekeeper decision
                 temperature=0.3
             )
             
@@ -1573,8 +1585,15 @@ Respond with JSON only:
         """
         Curator creates a specific collection task for a Collector.
         This is where Curator's intelligence directs what to look for.
+        
+        Instead of just passing raw config through, the Curator:
+        1. Analyzes existing sources to understand what's already covered
+        2. Uses LLM to generate specific, targeted search queries
+        3. Auto-populates news_keywords so Google News gets searched
+        4. Identifies knowledge gaps and emerging subtopics to pursue
         """
-        # Analyze what the notebook needs
+        from storage.source_store import source_store
+        
         task = {
             "notebook_id": notebook_id,
             "intent": config.intent,
@@ -1585,23 +1604,187 @@ Respond with JSON only:
             "created_at": datetime.utcnow().isoformat()
         }
         
-        # Curator can add specific directives based on notebook state
-        # e.g., "focus on recent developments" or "find contradicting evidence"
+        # ── Build a knowledge snapshot of what we already have ──
+        source_titles = []
+        source_domains = set()
         try:
-            # Check what's already in the notebook to avoid duplicates
+            sources = await source_store.list(notebook_id)
+            for s in sources[:80]:  # Cap to avoid huge prompts
+                title = s.get("filename", s.get("title", ""))
+                if title:
+                    source_titles.append(title)
+                url = s.get("url", "")
+                if url:
+                    try:
+                        from urllib.parse import urlparse
+                        domain = urlparse(url).netloc.lower().replace("www.", "")
+                        if domain:
+                            source_domains.add(domain)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug(f"Could not load sources for smart directives: {e}")
+        
+        # ── Check archival memory for recent coverage ──
+        recent_topics_text = ""
+        try:
             existing_memories = memory_store.search_archival_memory(
                 query=config.intent,
-                limit=5,
+                limit=10,
                 namespace=AgentNamespace.COLLECTOR,
                 notebook_id=notebook_id
             )
-            
             if existing_memories:
-                recent_topics = [m.entry.content[:100] for m in existing_memories[:3]]
+                recent_topics = [m.entry.content[:120] for m in existing_memories[:5]]
                 task["avoid_similar_to"] = recent_topics
-                task["curator_directive"] = "Find NEW information not covered by existing content"
+                recent_topics_text = "\n".join(f"- {t}" for t in recent_topics)
         except Exception as e:
             logger.debug(f"Could not check existing content: {e}")
+        
+        # ── Use LLM to generate smart, specific search queries ──
+        smart_queries = []
+        try:
+            subject = config.subject.strip() if hasattr(config, 'subject') else ""
+            focus_areas_str = ", ".join(config.focus_areas[:10]) if config.focus_areas else "general"
+            
+            # Build the prompt with existing knowledge context
+            existing_context = ""
+            if source_titles:
+                sample_titles = source_titles[-20:]  # Most recent 20
+                existing_context = f"""
+The notebook already has {len(source_titles)} sources. Here are the most recent titles:
+{chr(10).join(f'- {t}' for t in sample_titles)}
+
+Known domains already collected from: {', '.join(list(source_domains)[:15])}"""
+            
+            if recent_topics_text:
+                existing_context += f"""
+
+Recent content summaries already in the notebook:
+{recent_topics_text}"""
+            
+            prompt = f"""You are a research librarian planning the next collection run for a research notebook.
+
+NOTEBOOK PURPOSE: {config.intent}
+SUBJECT: {subject or '(general)'}
+FOCUS AREAS: {focus_areas_str}
+{existing_context}
+
+Generate 6-8 SPECIFIC search queries that would find NEW, valuable content not already covered.
+
+Rules:
+- Be SPECIFIC, not generic. "transformer architecture scaling laws 2026" is good. "AI research papers" is bad.
+- Target specific researchers, labs, conferences, techniques, or recent developments
+- Include at least 1 query targeting a specific research venue (arXiv, conference, journal)
+- Include at least 1 query targeting a specific person/lab in this field
+- Include at least 1 query about a recent development or trend
+- Avoid queries that would return content already in the notebook
+- Each query should be 3-8 words, suitable for Google News or web search
+
+Respond with ONLY a JSON array of strings, no other text:
+["query 1", "query 2", ...]"""
+
+            import asyncio as _asyncio
+            response = await _asyncio.wait_for(
+                ollama_client.generate(
+                    prompt=prompt,
+                    system="You are a research librarian. Respond only with a valid JSON array of search query strings.",
+                    model=settings.ollama_model,  # Main model — this is the strategic brain
+                    temperature=0.7  # Some creativity in query generation
+                ),
+                timeout=45  # 45s max for main model query generation — fall back to defaults if slow
+            )
+            
+            text = response.get("response", "")
+            # Extract JSON array
+            bracket_start = text.find("[")
+            bracket_end = text.rfind("]") + 1
+            if bracket_start >= 0 and bracket_end > bracket_start:
+                parsed = json.loads(text[bracket_start:bracket_end])
+                if isinstance(parsed, list):
+                    smart_queries = [q.strip() for q in parsed if isinstance(q, str) and len(q.strip()) > 3][:8]
+            
+            if smart_queries:
+                print(f"[CURATOR] 🧠 Generated {len(smart_queries)} smart queries: {smart_queries}")
+                logger.info(f"Smart collection queries for {notebook_id}: {smart_queries}")
+                
+        except Exception as e:
+            logger.warning(f"Smart query generation failed (will use defaults): {e}")
+            print(f"[CURATOR] Smart query generation failed: {e}")
+        
+        # ── Enrich the task with smart directives ──
+        if smart_queries:
+            task["smart_queries"] = smart_queries
+            task["curator_directive"] = (
+                f"Use these targeted queries to find specific, high-quality content: "
+                f"{', '.join(smart_queries[:4])}..."
+            )
+        else:
+            task["curator_directive"] = "Find NEW information not covered by existing content"
+        
+        # ── Auto-populate news_keywords if empty ──
+        # This ensures Google News actually gets searched
+        sources = task.get("sources", {})
+        existing_news_kw = sources.get("news_keywords", [])
+        
+        if not existing_news_kw:
+            auto_news_keywords = []
+            subject = config.subject.strip() if hasattr(config, 'subject') else ""
+            
+            # Use smart queries as news keywords (they're already specific)
+            if smart_queries:
+                auto_news_keywords.extend(smart_queries[:4])
+            
+            # Also add subject + top focus areas as fallback
+            if subject:
+                for area in config.focus_areas[:3]:
+                    kw = f"{subject} {area}" if subject.lower() not in area.lower() else area
+                    if kw not in auto_news_keywords:
+                        auto_news_keywords.append(kw)
+                if subject not in auto_news_keywords:
+                    auto_news_keywords.append(subject)
+            
+            if auto_news_keywords:
+                # Deep copy sources to avoid mutating config
+                task["sources"] = {k: list(v) if isinstance(v, list) else v for k, v in sources.items()}
+                task["sources"]["news_keywords"] = auto_news_keywords
+                print(f"[CURATOR] 📰 Auto-populated {len(auto_news_keywords)} news keywords: {auto_news_keywords}")
+        
+        # ── Auto-populate arxiv_categories for research-oriented notebooks ──
+        arxiv_categories = sources.get("arxiv_categories", [])
+        if not arxiv_categories:
+            intent_lower = (config.intent or "").lower()
+            subject_lower = (config.subject if hasattr(config, 'subject') else "").lower()
+            combined = f"{intent_lower} {subject_lower}"
+            
+            auto_arxiv = []
+            # Map common research topics to arXiv categories
+            arxiv_hints = {
+                "cs.AI": ["artificial intelligence", "ai research", "ai "],
+                "cs.LG": ["machine learning", "deep learning", "neural network"],
+                "cs.CL": ["natural language", "nlp", "language model", "llm", "gpt", "transformer"],
+                "cs.CV": ["computer vision", "image recognition", "object detection"],
+                "cs.RO": ["robotics", "robot"],
+                "cs.CR": ["cybersecurity", "security", "cryptography"],
+                "stat.ML": ["statistical learning", "bayesian"],
+                "cs.SE": ["software engineering"],
+                "q-fin": ["quantitative finance", "algorithmic trading"],
+                "econ": ["economics research"],
+            }
+            for category, triggers in arxiv_hints.items():
+                if any(t in combined for t in triggers):
+                    auto_arxiv.append(category)
+            
+            if auto_arxiv:
+                if "sources" not in task or task["sources"] is sources:
+                    task["sources"] = {k: list(v) if isinstance(v, list) else v for k, v in sources.items()}
+                task["sources"]["arxiv_categories"] = auto_arxiv[:3]
+                print(f"[CURATOR] 📚 Auto-added arXiv categories: {auto_arxiv[:3]}")
+                
+                # Also use smart queries for direct arXiv search (not just browsing categories)
+                if smart_queries:
+                    task["sources"]["arxiv_queries"] = smart_queries[:4]
+                    print(f"[CURATOR] 🔬 Auto-added {len(smart_queries[:4])} arXiv search queries")
         
         return task
     
@@ -1613,7 +1796,13 @@ Respond with JSON only:
         """
         Curator assigns an immediate collection task for a specific notebook.
         Called when user clicks "Collect Now" - but Curator still orchestrates.
+        
+        Uses an internal deadline so the pipeline gracefully finishes within ~2 minutes.
+        Each stage checks remaining time and skips non-essential work if tight.
         """
+        import time as _time
+        deadline = _time.time() + 120  # 2-minute budget for entire pipeline
+        
         from agents.collector import get_collector
         
         print(f"[CURATOR] assign_immediate_collection: getting collector for {notebook_id}")
@@ -1631,7 +1820,10 @@ Respond with JSON only:
             task["specific_query"] = specific_query
             task["curator_directive"] = f"Focus on: {specific_query}"
         
-        print("[CURATOR] Task created. Executing collection...")
+        # Pass deadline to collector so it can manage its time
+        task["_deadline"] = deadline
+        
+        print(f"[CURATOR] Task created. Executing collection... (budget: {deadline - _time.time():.0f}s remaining)")
         
         # Execute collection
         collected_items = await collector.execute_collection_task(task)
@@ -1641,12 +1833,14 @@ Respond with JSON only:
         if not collected_items:
             return {"items_collected": 0, "message": "No new items found"}
         
-        # Judge results
-        print(f"[CURATOR] Judging {len(collected_items)} items...")
+        # Judge results (pass deadline so judgment can auto-defer if time is tight)
+        remaining = deadline - _time.time()
+        print(f"[CURATOR] Judging {len(collected_items)} items... ({remaining:.0f}s remaining)")
         judgments = await self.judge_collection(
             collector_id=notebook_id,
             proposed_items=collected_items,
-            notebook_intent=config.intent
+            notebook_intent=config.intent,
+            deadline=deadline
         )
         
         approved = 0

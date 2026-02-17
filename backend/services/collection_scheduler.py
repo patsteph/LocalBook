@@ -47,8 +47,8 @@ class CollectionScheduler:
         while self._running:
             try:
                 await self._check_and_run_collections()
-                # Check every 15 minutes
-                await asyncio.sleep(900)
+                # Check every 10 minutes (supports hourly+ frequencies)
+                await asyncio.sleep(600)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -66,8 +66,10 @@ class CollectionScheduler:
                 collector = get_collector(notebook_id)
                 config = collector.get_config()
                 
-                # Skip if manual-only mode
+                # Skip if manual-only collection mode or manual schedule frequency
                 if config.collection_mode.value == "manual":
+                    continue
+                if config.schedule.get("frequency") == "manual":
                     continue
                 
                 # Check if collection is due
@@ -89,49 +91,41 @@ class CollectionScheduler:
         
         intervals = {
             "hourly": timedelta(hours=1),
+            "every_2_hours": timedelta(hours=2),
             "every_4_hours": timedelta(hours=4),
+            "every_8_hours": timedelta(hours=8),
+            "twice_daily": timedelta(hours=12),
             "daily": timedelta(days=1),
-            "weekly": timedelta(weeks=1)
+            "every_3_days": timedelta(days=3),
+            "weekly": timedelta(weeks=1),
         }
         
         interval = intervals.get(frequency, timedelta(days=1))
         return datetime.utcnow() - last_run >= interval
     
     async def _run_collection(self, collector: CollectorAgent) -> Dict[str, Any]:
-        """Run a collection job for a Collector"""
-        results = {
-            "notebook_id": collector.notebook_id,
-            "started_at": datetime.utcnow().isoformat(),
-            "items_found": 0,
-            "items_queued": 0,
-            "items_auto_approved": 0,
-            "duplicates_skipped": 0,
-            "errors": []
-        }
+        """Run a scheduled collection via the full Curator pipeline.
         
-        config = collector.get_config()
-        config.schedule.get("max_items_per_run", 10)
+        Uses the same intelligent path as 'Collect Now':
+        smart queries, scoring, contextualization, judgment.
+        """
+        notebook_id = collector.notebook_id
         
-        # Collect from RSS feeds
-        rss_feeds = config.sources.get("rss_feeds", [])
-        for feed_url in rss_feeds:
-            try:
-                items = await self._collect_from_rss(feed_url, collector)
-                results["items_found"] += len(items)
-            except Exception as e:
-                results["errors"].append(f"RSS {feed_url}: {str(e)}")
-        
-        # Collect from news keywords
-        keywords = config.sources.get("news_keywords", [])
-        if keywords:
-            try:
-                items = await self._collect_from_news(keywords, collector)
-                results["items_found"] += len(items)
-            except Exception as e:
-                results["errors"].append(f"News search: {str(e)}")
-        
-        results["completed_at"] = datetime.utcnow().isoformat()
-        return results
+        try:
+            from agents.curator import curator
+            result = await curator.assign_immediate_collection(
+                notebook_id=notebook_id
+            )
+            logger.info(f"Scheduled collection for {notebook_id}: {result.get('items_approved', 0)} approved, "
+                       f"{result.get('items_pending', 0)} pending")
+            return result
+        except Exception as e:
+            logger.error(f"Scheduled collection failed for {notebook_id}: {e}")
+            return {
+                "notebook_id": notebook_id,
+                "items_collected": 0,
+                "error": str(e)
+            }
     
     async def _collect_from_rss(
         self, 

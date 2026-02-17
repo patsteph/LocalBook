@@ -625,7 +625,7 @@ class ArXivFetcher(BaseFetcher):
         return items
     
     async def _fetch_search(self, query: str, keywords: List[str]) -> List[FetchedItem]:
-        """Search arXiv API"""
+        """Search arXiv API — no secondary keyword filter since the query ensures relevance."""
         items = []
         session = await self._get_session()
         
@@ -659,11 +659,8 @@ class ArXivFetcher(BaseFetcher):
                     summary = summary_elem.text.strip() if summary_elem is not None else ""
                     link = link_elem.text if link_elem is not None else ""
                     
-                    # Filter by additional keywords
-                    if keywords:
-                        content_lower = f"{title} {summary}".lower()
-                        if not any(kw.lower() in content_lower for kw in keywords):
-                            continue
+                    # No secondary keyword filter — the arXiv search query
+                    # already targets specific content
                     
                     item = FetchedItem(
                         title=title,
@@ -701,6 +698,12 @@ class GoogleNewsFetcher(BaseFetcher):
         
         source_config:
             keyword: Search keyword
+            
+        Note: We do NOT apply secondary keyword filtering here because the
+        Google News search query itself already ensures relevance. Applying
+        substring-based keyword filters on top kills good results (e.g., a
+        multi-word smart query like "transformer scaling laws 2026" won't
+        match as a substring in most article titles).
         """
         keyword = source_config.get("keyword")
         if not keyword:
@@ -721,10 +724,7 @@ class GoogleNewsFetcher(BaseFetcher):
                 if "url=" in link:
                     actual_url = link.split("url=")[-1].split("&")[0]
                 
-                # Filter by additional keywords
-                if keywords:
-                    if not any(kw.lower() in title.lower() for kw in keywords):
-                        continue
+                # No secondary keyword filter — the search query ensures relevance
                 
                 item = FetchedItem(
                     title=title,
@@ -829,9 +829,13 @@ class UnifiedFetcher:
         for keyword in sources.get("youtube_keywords", []):
             tasks.append(self.youtube_fetcher.fetch({"keyword": keyword}, keywords))
         
-        # arXiv categories
+        # arXiv categories (browse recent papers, filter by keywords)
         for category in sources.get("arxiv_categories", []):
             tasks.append(self.arxiv_fetcher.fetch({"category": category}, keywords))
+        
+        # arXiv direct search queries (targeted paper search, no secondary filter)
+        for query in sources.get("arxiv_queries", []):
+            tasks.append(self.arxiv_fetcher.fetch({"query": query}, keywords))
         
         # News keywords
         for keyword in sources.get("news_keywords", []):

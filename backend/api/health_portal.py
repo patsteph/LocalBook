@@ -488,59 +488,67 @@ async def full_health_check():
     
     # ============ DATA INTEGRITY SECTION ============
     
-    # NEW: Sources Storage Integrity Check
+    # Sources Storage Integrity Check (SQLite-aware)
     try:
         from storage.source_store import source_store
         from storage.notebook_store import notebook_store
         
-        sources_file = settings.data_dir / "sources.json"
-        if sources_file.exists():
-            import json
-            with open(sources_file, 'r') as f:
-                sources_data = json.load(f)
-            source_count = len(sources_data.get("sources", {}))
+        if settings.use_sqlite:
+            # SQLite backend — check localbook.db
+            from storage.database import get_db
+            db_inst = get_db()
+            conn = db_inst.get_connection()
+            row = conn.execute("SELECT COUNT(*) as cnt FROM sources").fetchone()
+            source_count = row['cnt'] if row else 0
             add_check("data_integrity", {
                 "name": "sources_storage",
                 "display": "Sources Storage",
                 "status": "pass",
-                "details": {"file": str(sources_file), "sources": source_count}
+                "details": {"backend": "SQLite", "sources": source_count}
             })
         else:
-            add_check("data_integrity", {
-                "name": "sources_storage",
-                "display": "Sources Storage",
-                "status": "warn",
-                "details": {"file": "Not found (new install)"}
-            })
-    except json.JSONDecodeError:
-        add_check("data_integrity", {
-            "name": "sources_storage",
-            "display": "Sources Storage",
-            "status": "fail",
-            "error": "File corrupted"
-        })
-        results["issues"].append({
-            "severity": "critical",
-            "title": "Sources File Corrupted",
-            "message": "sources.json is corrupted. Data may be lost.",
-            "repair": None
-        })
-        results["overall"] = "critical"
+            sources_file = settings.data_dir / "sources.json"
+            if sources_file.exists():
+                import json
+                with open(sources_file, 'r') as f:
+                    sources_data = json.load(f)
+                source_count = len(sources_data.get("sources", {}))
+                add_check("data_integrity", {
+                    "name": "sources_storage",
+                    "display": "Sources Storage",
+                    "status": "pass",
+                    "details": {"backend": "JSON", "file": str(sources_file), "sources": source_count}
+                })
+            else:
+                add_check("data_integrity", {
+                    "name": "sources_storage",
+                    "display": "Sources Storage",
+                    "status": "warn",
+                    "details": {"file": "Not found (new install)"}
+                })
     except Exception as e:
         add_check("data_integrity", {
             "name": "sources_storage",
             "display": "Sources Storage",
-            "status": "warn",
-            "error": str(e)[:50]
+            "status": "fail",
+            "error": str(e)[:80]
         })
+        results["issues"].append({
+            "severity": "critical",
+            "title": "Sources Storage Error",
+            "message": f"Cannot read sources: {str(e)[:80]}",
+            "repair": "remigrate_sqlite" if settings.use_sqlite else None
+        })
+        results["overall"] = "critical"
     
-    # NEW: Source-DB Sync Check
+    # Source-DB Sync Check (works with both JSON and SQLite backends)
     try:
-        sources_data = source_store._load_data()
-        valid_sources = sources_data.get("sources", {})
-        
-        # Count sources with chunks > 0
-        sources_with_chunks = sum(1 for s in valid_sources.values() if s.get("chunks", 0) > 0)
+        all_sources = await source_store.list_all()
+        sources_with_chunks = 0
+        for nb_sources in all_sources.values():
+            for s in nb_sources:
+                if s.get("chunks", 0) > 0:
+                    sources_with_chunks += 1
         
         # Compare with LanceDB
         sync_ok = True
@@ -700,24 +708,25 @@ async def full_health_check():
     deps_status = "pass"
     missing_deps = []
     try:
-        pass
+        import flashrank  # noqa: F401
     except ImportError:
         missing_deps.append("flashrank")
         deps_status = "warn"
     try:
-        import trafilatura
+        import trafilatura  # noqa: F401
     except ImportError:
         missing_deps.append("trafilatura")
         deps_status = "warn"
     try:
-        import fitz  # PyMuPDF - actual PDF library used
+        import fitz  # PyMuPDF - actual PDF library used  # noqa: F401
     except ImportError:
         missing_deps.append("PyMuPDF")
         deps_status = "warn"
     try:
-        pass
+        import feedparser  # noqa: F401 - required for RSS collection
     except ImportError:
-        pass  # Optional - using Ollama embeddings
+        missing_deps.append("feedparser")
+        deps_status = "warn"
     
     add_check("configuration", {
         "name": "dependencies",
@@ -871,13 +880,12 @@ async def full_health_check():
     
     # Whisper Model Test - audio transcription capability
     try:
-        pass
-        # Just verify import works - don't load model (too slow)
+        import mlx_whisper  # noqa: F401
         add_check("functional_tests", {
             "name": "whisper",
             "display": "Whisper (Transcription)",
             "status": "pass",
-            "details": {"library": "openai-whisper", "available": True}
+            "details": {"library": "mlx-whisper", "available": True}
         })
     except ImportError:
         add_check("functional_tests", {
@@ -955,6 +963,7 @@ async def full_health_check():
     
     # PowerPoint Import Test - required for .pptx uploads
     try:
+        import pptx  # noqa: F401
         add_check("functional_tests", {
             "name": "pptx_import",
             "display": "PowerPoint Support",
@@ -1031,6 +1040,202 @@ async def full_health_check():
         })
         if results["overall"] == "healthy":
             results["overall"] = "degraded"
+    
+    # ============ INFRASTRUCTURE CHECKS ============
+    results["sections"]["infrastructure"] = {"name": "Infrastructure", "icon": "🏗️", "checks": [], "status": "pass"}
+    
+    # SQLite Database Health (if SQLite backend active)
+    if settings.use_sqlite:
+        try:
+            from storage.database import get_db
+            db_inst = get_db()
+            conn = db_inst.get_connection()
+            
+            # PRAGMA integrity_check
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()
+            integrity_ok = integrity and integrity[0] == "ok"
+            
+            # Table counts
+            tables = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            table_names = [t[0] for t in tables]
+            
+            # Row counts for key tables
+            row_counts = {}
+            for tbl in ["notebooks", "sources", "highlights", "skills", "findings", "audio_generations", "content_generations", "exploration_queries"]:
+                if tbl in table_names:
+                    row = conn.execute(f"SELECT COUNT(*) as cnt FROM {tbl}").fetchone()
+                    row_counts[tbl] = row["cnt"] if row else 0
+            
+            # Migration status
+            migrated_row = conn.execute(
+                "SELECT value FROM migration_meta WHERE key='json_migrated'"
+            ).fetchone()
+            migrated = migrated_row and migrated_row["value"] == "true" if migrated_row else False
+            
+            # DB file size
+            db_path = settings.data_dir / "localbook.db"
+            db_size_mb = round(db_path.stat().st_size / (1024 * 1024), 1) if db_path.exists() else 0
+            
+            status = "pass" if integrity_ok else "fail"
+            add_check("infrastructure", {
+                "name": "sqlite_health",
+                "display": "SQLite Database",
+                "status": status,
+                "details": {
+                    "integrity": "ok" if integrity_ok else str(integrity),
+                    "tables": len(table_names),
+                    "migrated": migrated,
+                    "size_mb": db_size_mb,
+                    "row_counts": row_counts
+                }
+            })
+            
+            if not integrity_ok:
+                results["issues"].append({
+                    "severity": "critical",
+                    "title": "SQLite Database Corrupt",
+                    "message": "Database integrity check failed. Data may be damaged.",
+                    "repair": "repair_sqlite"
+                })
+                results["overall"] = "critical"
+            
+            # Check for orphaned sources (in SQLite but not in LanceDB)
+            if row_counts.get("sources", 0) > 0 and total_db_chunks == 0:
+                results["issues"].append({
+                    "severity": "medium",
+                    "title": "Sources Not Indexed",
+                    "message": f"{row_counts['sources']} sources in SQLite but 0 chunks in vector DB.",
+                    "repair": "reindex_all"
+                })
+                if results["overall"] == "healthy":
+                    results["overall"] = "degraded"
+        except Exception as e:
+            add_check("infrastructure", {
+                "name": "sqlite_health",
+                "display": "SQLite Database",
+                "status": "fail",
+                "error": str(e)[:80]
+            })
+            results["issues"].append({
+                "severity": "critical",
+                "title": "SQLite Database Error",
+                "message": f"Cannot access SQLite database: {str(e)[:80]}",
+                "repair": "remigrate_sqlite"
+            })
+            results["overall"] = "critical"
+    
+    # Playwright Browser Check (required for LinkedIn/social collection)
+    try:
+        import os
+        pw_browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
+        chromium_found = False
+        chromium_path = ""
+        
+        # Check common Playwright browser locations
+        search_paths = []
+        if pw_browsers_path:
+            search_paths.append(Path(pw_browsers_path))
+        
+        # System cache locations
+        home = Path.home()
+        search_paths.extend([
+            home / "Library" / "Caches" / "ms-playwright",
+            home / ".cache" / "ms-playwright",
+        ])
+        
+        # PyInstaller bundle location
+        if getattr(sys, 'frozen', False):
+            bundle_dir = Path(sys._MEIPASS)
+            search_paths.append(bundle_dir / "playwright" / "driver" / "package" / ".local-browsers")
+        
+        for sp in search_paths:
+            if sp.exists():
+                # Look for any chromium directory
+                for item in sp.iterdir():
+                    if "chromium" in item.name.lower() and item.is_dir():
+                        chromium_found = True
+                        chromium_path = str(item)
+                        break
+            if chromium_found:
+                break
+        
+        add_check("infrastructure", {
+            "name": "playwright",
+            "display": "Playwright Browser",
+            "status": "pass" if chromium_found else "warn",
+            "details": {
+                "chromium_installed": chromium_found,
+                "path": chromium_path if chromium_found else "Not found",
+                "purpose": "LinkedIn/social media collection"
+            }
+        })
+        
+        if not chromium_found:
+            results["issues"].append({
+                "severity": "medium",
+                "title": "Playwright Browser Not Installed",
+                "message": "Chromium not found. LinkedIn and social media collection won't work.",
+                "repair": "install_playwright"
+            })
+            if results["overall"] == "healthy":
+                results["overall"] = "degraded"
+    except Exception as e:
+        add_check("infrastructure", {
+            "name": "playwright",
+            "display": "Playwright Browser",
+            "status": "warn",
+            "error": str(e)[:50]
+        })
+    
+    # Collector Config Validation
+    try:
+        from storage.notebook_store import notebook_store
+        from agents.collector import get_collector
+        
+        notebooks = await notebook_store.list()
+        configured_collectors = 0
+        broken_collectors = []
+        
+        for nb in notebooks:
+            nb_id = nb.get("id", "")
+            if not nb_id:
+                continue
+            try:
+                collector = get_collector(nb_id)
+                config = collector.get_config()
+                if config.intent:
+                    configured_collectors += 1
+            except Exception as cfg_err:
+                broken_collectors.append({"notebook_id": nb_id, "error": str(cfg_err)[:50]})
+        
+        status = "pass" if not broken_collectors else "warn"
+        add_check("infrastructure", {
+            "name": "collector_configs",
+            "display": "Collector Configs",
+            "status": status,
+            "details": {
+                "notebooks": len(notebooks),
+                "configured_collectors": configured_collectors,
+                "broken": len(broken_collectors)
+            }
+        })
+        
+        if broken_collectors:
+            results["issues"].append({
+                "severity": "low",
+                "title": f"{len(broken_collectors)} Broken Collector Config(s)",
+                "message": "Some notebook collectors have corrupted configs.",
+                "repair": None
+            })
+    except Exception as e:
+        add_check("infrastructure", {
+            "name": "collector_configs",
+            "display": "Collector Configs",
+            "status": "warn",
+            "error": str(e)[:50]
+        })
     
     # ============ SYSTEM HEALTH (non-section issues) ============
     
@@ -1427,6 +1632,103 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             add_log("ERROR", f"Model repair failed: {e}", "health_portal")
             return {"status": "error", "message": str(e)}
     
+    elif action == "repair_sqlite":
+        # Run PRAGMA integrity_check and VACUUM on SQLite database
+        try:
+            add_log("INFO", "Repairing SQLite database...", "health_portal")
+            from storage.database import get_db
+            db_inst = get_db()
+            conn = db_inst.get_connection()
+            
+            # Check integrity
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()
+            integrity_ok = integrity and integrity[0] == "ok"
+            
+            if integrity_ok:
+                # Database is fine, just VACUUM to reclaim space
+                conn.execute("VACUUM")
+                add_log("INFO", "SQLite VACUUM complete", "health_portal")
+                return {"status": "success", "message": "Database integrity OK. VACUUM complete."}
+            else:
+                # Database has issues — attempt export/reimport
+                add_log("WARN", f"Integrity check failed: {integrity}", "health_portal")
+                
+                # Try to dump and reimport
+                db_path = settings.data_dir / "localbook.db"
+                backup_path = settings.data_dir / "localbook.db.backup"
+                
+                import shutil
+                shutil.copy2(str(db_path), str(backup_path))
+                add_log("INFO", f"Backup created at {backup_path}", "health_portal")
+                
+                return {
+                    "status": "partial",
+                    "message": f"Database integrity failed. Backup created at {backup_path}. Consider re-running migration.",
+                    "repair_suggestion": "remigrate_sqlite"
+                }
+        except Exception as e:
+            add_log("ERROR", f"SQLite repair failed: {e}", "health_portal")
+            return {"status": "error", "message": str(e)}
+    
+    elif action == "remigrate_sqlite":
+        # Force re-run JSON→SQLite migration
+        try:
+            add_log("INFO", "Forcing JSON→SQLite re-migration...", "health_portal")
+            from storage.database import get_db
+            
+            # Clear migration flag so migration will re-run
+            db_inst = get_db()
+            conn = db_inst.get_connection()
+            conn.execute("DELETE FROM migration_meta WHERE key='json_migrated'")
+            conn.commit()
+            
+            # Run migration
+            from storage.migrate_json_to_sqlite import run_migration
+            run_migration()
+            
+            add_log("INFO", "Re-migration complete", "health_portal")
+            return {"status": "success", "message": "JSON→SQLite re-migration complete. All data restored from JSON backups."}
+        except Exception as e:
+            add_log("ERROR", f"Re-migration failed: {e}", "health_portal")
+            return {"status": "error", "message": str(e)}
+    
+    elif action == "install_playwright":
+        # Install Playwright Chromium browser
+        try:
+            add_log("INFO", "Installing Playwright Chromium...", "health_portal")
+            
+            # Set browser path to system cache
+            import os
+            home = Path.home()
+            if platform.system() == "Darwin":
+                browsers_path = home / "Library" / "Caches" / "ms-playwright"
+            else:
+                browsers_path = home / ".cache" / "ms-playwright"
+            
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
+            
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(browsers_path)}
+            )
+            
+            if result.returncode == 0:
+                add_log("INFO", f"Playwright Chromium installed to {browsers_path}", "health_portal")
+                return {"status": "success", "message": f"Chromium installed to {browsers_path}"}
+            else:
+                error_msg = result.stderr[:200] if result.stderr else "Unknown error"
+                add_log("ERROR", f"Playwright install failed: {error_msg}", "health_portal")
+                return {"status": "error", "message": f"Install failed: {error_msg}"}
+        except subprocess.TimeoutExpired:
+            add_log("ERROR", "Playwright install timed out", "health_portal")
+            return {"status": "error", "message": "Installation timed out after 120 seconds"}
+        except Exception as e:
+            add_log("ERROR", f"Playwright install failed: {e}", "health_portal")
+            return {"status": "error", "message": str(e)}
+    
     else:
         return {"status": "error", "message": f"Unknown action: {action}"}
 
@@ -1470,6 +1772,7 @@ async def export_diagnostics():
             "embedding_dim": settings.embedding_dim,
             "data_dir": str(settings.data_dir),
             "db_path": str(settings.db_path),
+            "use_sqlite": settings.use_sqlite,
         }
     }
     

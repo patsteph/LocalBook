@@ -255,16 +255,24 @@ async def get_index_status(notebook_id: str):
 
 @router.get("/integrity")
 async def check_data_integrity():
-    """Check for orphaned data in LanceDB that doesn't match sources.json.
+    """Check for orphaned data in LanceDB that doesn't match sources.
     
     Returns a report of:
-    - Orphaned chunks (in LanceDB but source deleted from sources.json)
-    - Missing chunks (in sources.json but not in LanceDB)
+    - Orphaned chunks (in LanceDB but source deleted from storage)
+    - Missing chunks (in storage but not in LanceDB)
     """
-    # Load all valid source IDs from sources.json
-    sources_data = source_store._load_data()
-    valid_sources = sources_data.get("sources", {})
-    valid_source_ids = set(valid_sources.keys())
+    # Load all valid sources via public API (works with both JSON and SQLite)
+    all_sources_by_nb = await source_store.list_all()
+    
+    # Build flat lookup: source_id → source dict
+    valid_source_ids = set()
+    valid_sources_flat: Dict[str, Dict] = {}
+    for nb_id, nb_sources in all_sources_by_nb.items():
+        for s in nb_sources:
+            sid = s.get("id", "")
+            if sid:
+                valid_source_ids.add(sid)
+                valid_sources_flat[sid] = {**s, "notebook_id": nb_id}
     
     # Connect to LanceDB
     db = lancedb.connect(str(settings.db_path))
@@ -304,7 +312,7 @@ async def check_data_integrity():
                     total_orphaned += 1
         
         # Check for sources that should be in this notebook but aren't in LanceDB
-        for sid, source in valid_sources.items():
+        for sid, source in valid_sources_flat.items():
             if source.get("notebook_id") == notebook_id:
                 if sid not in source_ids_in_table and source.get("chunks", 0) > 0:
                     missing_chunks.append({
@@ -331,9 +339,14 @@ async def cleanup_orphaned_data():
     This cleans up stale data left behind when sources were deleted without
     proper LanceDB cleanup.
     """
-    # Load valid source IDs
-    sources_data = source_store._load_data()
-    valid_source_ids = set(sources_data.get("sources", {}).keys())
+    # Load valid source IDs via public API (works with both JSON and SQLite)
+    all_sources_by_nb = await source_store.list_all()
+    valid_source_ids = set()
+    for nb_sources in all_sources_by_nb.values():
+        for s in nb_sources:
+            sid = s.get("id", "")
+            if sid:
+                valid_source_ids.add(sid)
     
     # Connect to LanceDB
     db = lancedb.connect(str(settings.db_path))

@@ -495,7 +495,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       </div>
 
       {/* Input area */}
-      <div className="border-t dark:border-gray-700 p-4 bg-white dark:bg-gray-800 flex-shrink-0">
+      <div className="border-t dark:border-gray-700 px-3 py-2 bg-white dark:bg-gray-800 flex-shrink-0">
         <form onSubmit={handleSubmit}>
           <div className="flex gap-2 items-center">
             {/* Quick/Deep Toggle - Rabbit vs Brain */}

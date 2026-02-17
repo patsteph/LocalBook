@@ -163,6 +163,7 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
     selectedTemplate?.defaults.collection_mode || 'hybrid'
   );
 
+  const [frequency, setFrequency] = useState('daily');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showSourceReview, setShowSourceReview] = useState(false);
@@ -239,6 +240,7 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
         focus_areas: focusAreas,
         collection_mode: collectionMode,
         approval_mode: approvalMode,
+        schedule: { frequency, max_items_per_run: frequency === 'hourly' ? 5 : frequency.includes('hours') || frequency === 'twice_daily' ? 8 : 10 },
       };
 
       await collectorService.updateConfig(notebookId, config as any);
@@ -381,6 +383,16 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
     { value: 'trust_me', label: 'Auto' },
   ];
 
+  const FREQUENCY_OPTIONS = [
+    { value: 'hourly', label: 'Hourly' },
+    { value: 'every_4_hours', label: '4 Hours' },
+    { value: 'twice_daily', label: 'Twice Daily' },
+    { value: 'daily', label: 'Daily' },
+    { value: 'every_3_days', label: '3 Days' },
+    { value: 'weekly', label: 'Weekly' },
+    { value: 'manual', label: 'Manual' },
+  ];
+
   return (
     <Modal
       isOpen={isOpen}
@@ -457,6 +469,30 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
             {approvalMode === 'show_me' && 'Review every item before it enters your notebook'}
             {approvalMode === 'mixed' && 'Auto-add high confidence, queue the rest for review'}
             {approvalMode === 'trust_me' && 'Collector adds relevant items automatically'}
+          </p>
+
+          {/* Collection frequency */}
+          <label className="refine-label refine-label--mt">Check Frequency</label>
+          <div className="approval-toggle-row" style={{ flexWrap: 'wrap', gap: '4px' }}>
+            {FREQUENCY_OPTIONS.map(opt => (
+              <button
+                key={opt.value}
+                type="button"
+                className={`approval-toggle ${frequency === opt.value ? 'approval-toggle--active' : ''}`}
+                onClick={() => setFrequency(opt.value)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <p className="approval-toggle-hint">
+            {frequency === 'hourly' && 'Check for new content every hour'}
+            {frequency === 'every_4_hours' && 'Check every 4 hours during the day'}
+            {frequency === 'twice_daily' && 'Check morning and evening'}
+            {frequency === 'daily' && 'Check once per day (recommended)'}
+            {frequency === 'every_3_days' && 'Check every few days — low-traffic topics'}
+            {frequency === 'weekly' && 'Weekly digest — minimal checking'}
+            {frequency === 'manual' && 'Only collect when you click Collect Now'}
           </p>
 
           {error && <p className="wizard-error">{error}</p>}

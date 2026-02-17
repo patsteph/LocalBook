@@ -150,7 +150,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
 
   if (!notebookId) {
     return (
-      <div className="p-4">
+      <div className="px-3 py-2">
         <h3 className="text-sm font-semibold mb-2 text-gray-900 dark:text-white">Sources</h3>
         <p className="text-sm text-gray-500 dark:text-gray-400">Select a notebook to view sources</p>
       </div>
@@ -159,7 +159,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
 
   if (loading) {
     return (
-      <div className="p-4">
+      <div className="px-3 py-2">
         <h3 className="text-sm font-semibold mb-2 text-gray-900 dark:text-white">Sources</h3>
         <LoadingSpinner />
       </div>
@@ -169,7 +169,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   console.log('Rendering SourcesList, sources count:', sources.length);
 
   return (
-    <div className="p-4">
+    <div className="px-3 py-2">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
           Sources ({activeTagFilter ? `${filteredSources.length}/${sources.length}` : sources.length})

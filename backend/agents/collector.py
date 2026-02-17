@@ -508,6 +508,151 @@ class CollectorAgent:
 
         return seed_sources
 
+    async def _analyze_coverage_gaps(self) -> List[str]:
+        """
+        Identify focus areas that are underrepresented in existing sources.
+        Returns gap-filling search keywords biased toward underserved topics.
+        """
+        if not self.config.focus_areas:
+            return []
+
+        from storage.source_store import source_store
+
+        sources = await source_store.list(self.notebook_id)
+        if not sources:
+            return []  # Fresh notebook — no gaps to analyze yet
+
+        subject = self.config.subject.strip()
+
+        # Count how many sources mention each focus area (case-insensitive)
+        area_counts: Dict[str, int] = {area: 0 for area in self.config.focus_areas}
+        for src in sources:
+            text = f"{src.get('filename', '')} {src.get('content', '')[:500]}".lower()
+            for area in self.config.focus_areas:
+                if area.lower() in text:
+                    area_counts[area] += 1
+
+        if not area_counts:
+            return []
+
+        avg_count = sum(area_counts.values()) / len(area_counts)
+        gap_threshold = max(1, avg_count * 0.4)  # Areas with < 40% of average are gaps
+
+        gap_keywords = []
+        for area, count in sorted(area_counts.items(), key=lambda x: x[1]):
+            if count < gap_threshold:
+                kw = f"{subject} {area}" if subject and subject.lower() not in area.lower() else area
+                gap_keywords.append(kw)
+
+        if gap_keywords:
+            logger.info(
+                f"[COLLECTOR] Coverage gaps detected: {gap_keywords} "
+                f"(counts: {area_counts})"
+            )
+            print(
+                f"[COLLECTOR] 🎯 Coverage gaps: {gap_keywords[:5]} — "
+                f"will bias collection toward underserved topics"
+            )
+
+        return gap_keywords[:5]
+
+    def _enforce_diversity(
+        self,
+        items: List['CollectedItem'],
+        max_per_domain: int = 3,
+        max_total: int = 15,
+    ) -> List['CollectedItem']:
+        """
+        Re-rank collected items to maximize diversity across domains and topics.
+
+        Rules applied in order:
+        1. Cap items per domain (default 3) — prevents one site from dominating
+        2. Prefer items with low knowledge_overlap (genuinely new content)
+        3. Prefer items flagged as is_new_topic
+        4. Maintain relevance ordering within each tier
+
+        Returns a re-ranked subset of items.
+        """
+        from urllib.parse import urlparse
+
+        if not items:
+            return items
+
+        # Bucket items by domain
+        domain_buckets: Dict[str, List[CollectedItem]] = {}
+        for item in items:
+            domain = "unknown"
+            if item.url:
+                try:
+                    domain = urlparse(item.url).netloc.lower().replace("www.", "")
+                except Exception:
+                    pass
+            domain_buckets.setdefault(domain, []).append(item)
+
+        # Build diversity score for each item:
+        #   higher = more valuable for diversity
+        #   new_topic bonus + low overlap bonus + domain scarcity bonus
+        scored: List[tuple] = []
+        domain_selected: Dict[str, int] = {}
+
+        for item in items:
+            domain = "unknown"
+            if item.url:
+                try:
+                    domain = urlparse(item.url).netloc.lower().replace("www.", "")
+                except Exception:
+                    pass
+
+            diversity_score = 0.0
+
+            # Prefer genuinely new topics
+            if item.is_new_topic:
+                diversity_score += 0.3
+
+            # Prefer low knowledge overlap
+            diversity_score += (1.0 - item.knowledge_overlap) * 0.3
+
+            # Prefer domains with fewer items already selected
+            selected_from_domain = domain_selected.get(domain, 0)
+            if selected_from_domain >= max_per_domain:
+                diversity_score -= 1.0  # Heavy penalty — over domain cap
+            else:
+                diversity_score += 0.2 / (1 + selected_from_domain)
+
+            # Keep relevance as tiebreaker
+            diversity_score += item.overall_confidence * 0.2
+
+            scored.append((diversity_score, item, domain))
+
+        # Sort by diversity score descending
+        scored.sort(key=lambda x: -x[0])
+
+        # Select items respecting domain cap
+        selected: List[CollectedItem] = []
+        domain_selected = {}
+
+        for _, item, domain in scored:
+            if len(selected) >= max_total:
+                break
+            if domain_selected.get(domain, 0) >= max_per_domain:
+                continue
+            selected.append(item)
+            domain_selected[domain] = domain_selected.get(domain, 0) + 1
+
+        # Log diversity stats
+        domains_used = len(set(domain_selected.keys()))
+        new_topics = sum(1 for i in selected if i.is_new_topic)
+        logger.info(
+            f"[COLLECTOR] Diversity filter: {len(items)} → {len(selected)} items, "
+            f"{domains_used} domains, {new_topics} new topics"
+        )
+        print(
+            f"[COLLECTOR] 🌐 Diversity: {len(items)} → {len(selected)} items "
+            f"({domains_used} domains, {new_topics} new topics)"
+        )
+
+        return selected
+
     # =========================================================================
     # Curator-Assigned Task Execution (Worker Mode)
     # =========================================================================
@@ -534,37 +679,58 @@ class CollectorAgent:
             List of CollectedItem ready for Curator's judgment
         """
         from services.content_fetcher import unified_fetcher
+        import time as _time
+        
+        deadline = task.get("_deadline", 0)
         
         print(f"[COLLECTOR] execute_collection_task starting for {self.notebook_id}")
         logger.info(f"Executing Curator-assigned task for notebook {self.notebook_id}")
         
         collected_items: List[CollectedItem] = []
         
-        # Build search keywords combining subject + focus areas
-        # e.g. subject="Costco", focus_areas=["news","financials"] → ["Costco news","Costco financials","Costco"]
+        # ── Build search keywords ──
+        # Priority: Curator smart queries > coverage gaps > static config fallback
         keywords = []
         subject = self.config.subject.strip()
         
-        if subject and self.config.focus_areas:
-            # Combine subject with each focus area for targeted searches
-            for area in self.config.focus_areas[:5]:
-                area_stripped = area.strip()
-                # Only prefix if the focus area doesn't already contain the subject
-                if subject.lower() not in area_stripped.lower():
-                    keywords.append(f"{subject} {area_stripped}")
-                else:
-                    keywords.append(area_stripped)
-            # Also include the subject alone as a catch-all
-            keywords.append(subject)
-        elif self.config.focus_areas:
-            # No subject set — use focus areas as-is (legacy behavior)
-            keywords.extend(self.config.focus_areas[:5])
-        elif subject:
-            keywords.append(subject)
+        # 1. Smart queries from Curator (LLM-generated, specific and targeted)
+        smart_queries = task.get("smart_queries", [])
+        if smart_queries:
+            keywords.extend(smart_queries)
+            print(f"[COLLECTOR] Using {len(smart_queries)} Curator smart queries as primary keywords")
         
-        # Add specific query from Curator if provided
+        # 2. Coverage gap keywords (underserved focus areas)
+        try:
+            gap_keywords = await self._analyze_coverage_gaps()
+            if gap_keywords:
+                for gk in gap_keywords:
+                    if gk not in keywords:
+                        keywords.append(gk)
+        except Exception as gap_err:
+            print(f"[COLLECTOR] Coverage gap analysis failed (non-fatal): {gap_err}")
+        
+        # 3. Specific query from Curator (e.g. user-triggered "Collect Now" with a topic)
         if task.get("specific_query"):
             keywords.insert(0, task["specific_query"])
+        
+        # 4. Fallback: static subject + focus areas (only if nothing better available)
+        if not keywords:
+            if subject and self.config.focus_areas:
+                for area in self.config.focus_areas[:5]:
+                    area_stripped = area.strip()
+                    if subject.lower() not in area_stripped.lower():
+                        keywords.append(f"{subject} {area_stripped}")
+                    else:
+                        keywords.append(area_stripped)
+                keywords.append(subject)
+            elif self.config.focus_areas:
+                keywords.extend(self.config.focus_areas[:5])
+            elif subject:
+                keywords.append(subject)
+        
+        # Always include subject as a catch-all if we have one and it's not already there
+        if subject and subject not in keywords:
+            keywords.append(subject)
         
         # Get sources from task or fall back to config
         sources = task.get("sources", self.config.sources)
@@ -602,9 +768,17 @@ class CollectorAgent:
             print(f"[COLLECTOR] Seed domain extraction failed (non-fatal): {seed_err}")
         
         # Use unified fetcher to collect from ALL source types
-        print(f"[COLLECTOR] Fetching from sources: {list(sources.keys())} with {len(keywords)} keywords")
+        # Give fetching at most 60s so processing/judgment still have time
+        fetch_timeout = 60
+        if deadline:
+            fetch_timeout = min(60, max(15, deadline - _time.time() - 60))  # Leave 60s for processing+judgment
+        print(f"[COLLECTOR] Fetching from sources: {list(sources.keys())} with {len(keywords)} keywords (timeout: {fetch_timeout:.0f}s)")
         try:
-            fetched_items = await unified_fetcher.fetch_all(sources, keywords)
+            import asyncio
+            fetched_items = await asyncio.wait_for(
+                unified_fetcher.fetch_all(sources, keywords),
+                timeout=fetch_timeout
+            )
             print(f"[COLLECTOR] Unified fetcher returned {len(fetched_items)} items")
             
             # Convert FetchedItem to CollectedItem
@@ -621,6 +795,9 @@ class CollectorAgent:
                 )
                 collected_items.append(item)
                 
+        except asyncio.TimeoutError:
+            # Fetch timed out — continue with whatever items we already collected
+            print(f"[COLLECTOR] Fetch timed out after {fetch_timeout:.0f}s — continuing with {len(collected_items)} items already gathered")
         except Exception as e:
             print(f"[COLLECTOR] Unified fetcher error: {type(e).__name__}: {e}")
             logger.error(f"Unified fetcher error: {e}")
@@ -634,9 +811,13 @@ class CollectorAgent:
         
         # Resource list expansion: detect pages that are lists of URLs
         # (e.g., "Top 100 AI RSS Feeds") and fetch the top ~10 individual sites
+        # Skip if deadline is tight — this is nice-to-have, not essential
         expanded_items = []
         items_to_remove = []
-        for idx, item in enumerate(collected_items):
+        skip_expansion = deadline and _time.time() > deadline - 45
+        if skip_expansion:
+            print(f"[COLLECTOR] Skipping resource list expansion — only {deadline - _time.time():.0f}s left")
+        for idx, item in enumerate([] if skip_expansion else collected_items):
             try:
                 urls_found = self._detect_resource_list(item)
                 if urls_found:
@@ -697,44 +878,62 @@ class CollectorAgent:
             collected_items.extend(expanded_items)
         
         # Process all items (scoring, duplicate detection)
+        # Run in PARALLEL with semaphore to limit concurrent LLM calls
+        import asyncio
         print(f"[COLLECTOR] Processing {len(collected_items)} raw items...")
-        processed_items = []
-        for item in collected_items:
-            processed = await self._process_item(item)
-            
-            # Skip duplicates
-            if processed.is_duplicate:
-                continue
-            
-            # Skip items similar to what Curator said to avoid
-            if task.get("avoid_similar_to"):
-                should_skip = False
-                for avoid_content in task["avoid_similar_to"]:
-                    if self._content_similarity(processed.content, avoid_content) > 0.8:
-                        should_skip = True
-                        break
-                if should_skip:
-                    continue
-            
-            processed_items.append(processed)
+        
+        process_semaphore = asyncio.Semaphore(4)
+        avoid_similar = task.get("avoid_similar_to", [])
+        
+        async def _process_bounded(item):
+            """Process a single item with bounded concurrency."""
+            # If deadline is very tight, skip LLM scoring and use heuristic
+            if deadline and _time.time() > deadline - 20:
+                return None  # Will be picked up in next auto-collection
+            async with process_semaphore:
+                try:
+                    processed = await self._process_item(item)
+                    if processed.is_duplicate:
+                        return None
+                    # Skip items similar to what Curator said to avoid
+                    for avoid_content in avoid_similar:
+                        if self._content_similarity(processed.content, avoid_content) > 0.8:
+                            return None
+                    return processed
+                except Exception as proc_err:
+                    logger.debug(f"Processing failed for '{item.title}' (non-fatal): {proc_err}")
+                    return None
+        
+        process_results = await asyncio.gather(*[_process_bounded(item) for item in collected_items])
+        processed_items = [r for r in process_results if r is not None]
+        print(f"[COLLECTOR] {len(processed_items)} items passed processing (from {len(collected_items)} raw)")
         
         # Contextualize items — Temporal Intelligence (Enhancement #6)
         # Adds delta insights: what's new vs what user already knows
-        # Run in PARALLEL with semaphore to limit concurrent LLM calls
-        import asyncio
-        ctx_semaphore = asyncio.Semaphore(3)
+        # Skip entirely if deadline is tight — this is enrichment, not essential
+        if deadline and _time.time() > deadline - 25:
+            print(f"[COLLECTOR] Skipping contextualization — only {deadline - _time.time():.0f}s left for judgment")
+        else:
+            ctx_semaphore = asyncio.Semaphore(4)
+            
+            async def _contextualize_bounded(item):
+                async with ctx_semaphore:
+                    try:
+                        await self.contextualize_item(item)
+                    except Exception as ctx_err:
+                        logger.debug(f"Contextualization failed for '{item.title}' (non-fatal): {ctx_err}")
+            
+            await asyncio.gather(*[_contextualize_bounded(item) for item in processed_items])
         
-        async def _contextualize_bounded(item):
-            async with ctx_semaphore:
-                try:
-                    await self.contextualize_item(item)
-                except Exception as ctx_err:
-                    logger.debug(f"Contextualization failed for '{item.title}' (non-fatal): {ctx_err}")
+        # Enforce diversity — cap per-domain, prefer new topics and low-overlap items
+        diverse_items = self._enforce_diversity(
+            processed_items,
+            max_per_domain=3,
+            max_total=self.config.schedule.get("max_items_per_run", 15),
+        )
         
-        await asyncio.gather(*[_contextualize_bounded(item) for item in processed_items])
-        
-        logger.info(f"Task execution complete: {len(processed_items)} items collected")
-        return processed_items
+        logger.info(f"Task execution complete: {len(diverse_items)} diverse items from {len(processed_items)} processed")
+        return diverse_items
     
     def _detect_resource_list(self, item: CollectedItem) -> Optional[List[str]]:
         """Detect if content is a list/directory of URLs rather than actual content.

@@ -72,7 +72,11 @@ async def run_first_sweep(notebook_id: str):
 
 @router.post("/{notebook_id}/collect-now")
 async def collect_now(notebook_id: str, specific_query: Optional[str] = None):
-    """Trigger immediate collection run - routed through Curator"""
+    """Trigger immediate collection run - routed through Curator.
+    
+    The pipeline uses an internal deadline to gracefully finish within ~2 minutes.
+    No hard timeout — the pipeline manages its own time budget.
+    """
     import traceback
     
     try:
@@ -80,7 +84,7 @@ async def collect_now(notebook_id: str, specific_query: Optional[str] = None):
         from agents.curator import curator
         print("[COLLECT-NOW] Curator imported, calling assign_immediate_collection")
         
-        # Curator orchestrates all collection - Collectors are workers
+        # Curator orchestrates all collection - pipeline has internal deadline
         result = await curator.assign_immediate_collection(
             notebook_id=notebook_id,
             specific_query=specific_query

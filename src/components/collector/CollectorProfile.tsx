@@ -150,6 +150,18 @@ const MODE_LABELS: Record<string, string> = {
   trust_me: 'Full Automatic',
 };
 
+const FREQUENCY_LABELS: Record<string, string> = {
+  hourly: 'Every Hour',
+  every_2_hours: 'Every 2 Hours',
+  every_4_hours: 'Every 4 Hours',
+  every_8_hours: 'Every 8 Hours',
+  twice_daily: 'Twice Daily',
+  daily: 'Daily',
+  every_3_days: 'Every 3 Days',
+  weekly: 'Weekly',
+  manual: 'Manual Only',
+};
+
 function timeAgo(iso: string): string {
   if (!iso) return 'Never';
   const now = Date.now();
@@ -432,8 +444,8 @@ const OverviewTab: React.FC<{ profile: ProfileData }> = ({ profile }) => {
         </div>
         <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 border border-gray-200 dark:border-gray-700">
           <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Check Frequency</div>
-          <div className="text-sm font-semibold text-gray-900 dark:text-gray-100 mt-1 capitalize">
-            {schedule.frequency} · Max {schedule.max_items_per_run}/run
+          <div className="text-sm font-semibold text-gray-900 dark:text-gray-100 mt-1">
+            {FREQUENCY_LABELS[schedule.frequency] || schedule.frequency} · Max {schedule.max_items_per_run}/run
           </div>
         </div>
         <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 border border-gray-200 dark:border-gray-700">

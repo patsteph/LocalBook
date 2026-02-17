@@ -40,7 +40,7 @@ interface DrawerSectionProps {
 }
 
 const DrawerSection: React.FC<DrawerSectionProps> = ({ title, icon, isOpen, onToggle, children, badge }) => (
-  <div className="border-b dark:border-gray-700">
+  <div className="border-t border-gray-200 dark:border-gray-700">
     <button
       onClick={onToggle}
       className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
@@ -127,8 +127,8 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
 
   return (
     <div className="flex flex-col h-full w-full bg-white dark:bg-gray-800 overflow-hidden">
-      {/* Drawers area — takes natural height, scrolls if needed, shrinks when Studio expands */}
-      <div className="overflow-y-auto overflow-x-hidden flex-shrink">
+      {/* Drawers area — fills remaining space, scrolls when content exceeds available space */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
       {/* Notebooks drawer */}
       <DrawerSection
         title="Notebooks"
@@ -177,6 +177,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
           notebookId={selectedNotebookId || ''}
           onUploadComplete={onUploadComplete}
         />
+        <div className="border-t border-gray-100 dark:border-gray-700/50" />
         <div className="max-h-[40vh] overflow-y-auto">
           <SourcesList
             key={`${selectedNotebookId}-${refreshSources}`}
@@ -201,7 +202,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
         isOpen={drawers.collector}
         onToggle={() => toggleDrawer('collector')}
       >
-        <div className="max-h-[30vh] overflow-y-auto">
+        <div className="max-h-[40vh] overflow-y-auto">
           <CollectorPanel
             notebookId={selectedNotebookId}
             notebookName={selectedNotebookName}
@@ -218,12 +219,10 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
 
       {/* Studio — anchored to absolute bottom of column, expands upward */}
       <div
-        className={`flex-1 min-h-[36px] flex flex-col transition-all duration-300 ease-in-out overflow-hidden ${
-          studio.expanded ? 'min-h-[45%]' : ''
+        className={`flex-shrink-0 flex flex-col transition-all duration-300 ease-in-out overflow-hidden ${
+          studio.expanded ? 'flex-1 min-h-[45%]' : ''
         }`}
       >
-        {/* Spacer — pushes studio to bottom when collapsed */}
-        {!studio.expanded && <div className="flex-1" />}
 
         {/* Rainbow gradient accent line */}
         <div

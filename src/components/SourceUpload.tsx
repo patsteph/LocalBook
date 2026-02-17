@@ -164,7 +164,7 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
   const progressPercentage = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
   return (
-    <div className="p-3 border-b dark:border-gray-700">
+    <div className="px-3 py-2">
       {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
 
       <input
