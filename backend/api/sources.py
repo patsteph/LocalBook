@@ -11,6 +11,16 @@ from services.event_logger import log_document_captured
 router = APIRouter()
 
 
+class NoteCreateRequest(BaseModel):
+    title: str
+    content: str
+
+
+class NoteUpdateRequest(BaseModel):
+    title: str | None = None
+    content: str
+
+
 class TagsRequest(BaseModel):
     tags: List[str]
 
@@ -87,6 +97,132 @@ async def upload_source(
         print(f"[UPLOAD] Error processing {file.filename}: {error_msg}")
         print(f"[UPLOAD] Traceback:\n{tb}")
         raise HTTPException(status_code=500, detail=f"Failed to process file: {error_msg}")
+
+@router.post("/{notebook_id}/note")
+async def create_note(notebook_id: str, request: NoteCreateRequest, background_tasks: BackgroundTasks):
+    """Create a user note as a RAG-searchable source.
+    
+    Notes are first-class sources with type='note' and format='markdown'.
+    They are indexed into LanceDB just like uploaded documents.
+    """
+    from api.timeline import extract_timeline_for_source
+
+    title = request.title.strip() or "Untitled Note"
+    text = request.content.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Note content cannot be empty")
+
+    # 1. Create source record (processing status)
+    source = await source_store.create(
+        notebook_id=notebook_id,
+        filename=title,
+        metadata={
+            "type": "note",
+            "format": "markdown",
+            "size": len(text.encode("utf-8")),
+            "chunks": 0,
+            "characters": 0,
+            "status": "processing",
+        }
+    )
+
+    # 2. Ingest into RAG
+    try:
+        result = await rag_engine.ingest_document(
+            notebook_id=notebook_id,
+            source_id=source["id"],
+            text=text,
+            filename=title,
+            source_type="note"
+        )
+
+        # 3. Update source with results + full content
+        await source_store.update(notebook_id, source["id"], {
+            "chunks": result.get("chunks", 0),
+            "characters": result.get("characters", len(text)),
+            "status": "completed",
+            "content": text,
+        })
+
+        # Timeline extraction in background
+        if background_tasks:
+            background_tasks.add_task(
+                extract_timeline_for_source,
+                notebook_id, source["id"], text, title
+            )
+
+        try:
+            log_document_captured(notebook_id, title, title, "note")
+        except Exception:
+            pass
+
+        return {
+            "source_id": source["id"],
+            "filename": title,
+            "format": "markdown",
+            "type": "note",
+            "chunks": result.get("chunks", 0),
+            "characters": result.get("characters", len(text)),
+            "status": "completed",
+        }
+    except Exception as e:
+        await source_store.delete(notebook_id, source["id"])
+        raise HTTPException(status_code=500, detail=f"Failed to create note: {e}")
+
+
+@router.put("/{notebook_id}/{source_id}/note")
+async def update_note(notebook_id: str, source_id: str, request: NoteUpdateRequest):
+    """Update a note's content and re-index in RAG.
+    
+    Deletes old vectors, re-ingests with new content.
+    """
+    source = await source_store.get(source_id)
+    if not source or source.get("notebook_id") != notebook_id:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if source.get("type") != "note":
+        raise HTTPException(status_code=400, detail="Source is not a note")
+
+    text = request.content.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Note content cannot be empty")
+
+    title = (request.title.strip() if request.title else None) or source.get("filename", "Untitled Note")
+
+    # 1. Delete old vectors from LanceDB
+    try:
+        await rag_engine.delete_source(notebook_id, source_id)
+    except Exception as e:
+        print(f"[NOTE] LanceDB cleanup for re-index: {e}")
+
+    # 2. Re-ingest
+    try:
+        result = await rag_engine.ingest_document(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            text=text,
+            filename=title,
+            source_type="note"
+        )
+
+        # 3. Update source record
+        await source_store.update(notebook_id, source_id, {
+            "filename": title,
+            "chunks": result.get("chunks", 0),
+            "characters": result.get("characters", len(text)),
+            "content": text,
+            "status": "completed",
+        })
+
+        return {
+            "source_id": source_id,
+            "filename": title,
+            "chunks": result.get("chunks", 0),
+            "characters": result.get("characters", len(text)),
+            "status": "completed",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update note: {e}")
+
 
 @router.delete("/{notebook_id}/{source_id}")
 async def delete_source(notebook_id: str, source_id: str):

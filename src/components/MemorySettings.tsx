@@ -274,7 +274,7 @@ export const MemorySettings: React.FC = () => {
                               <span className="font-medium text-gray-900 dark:text-white text-sm">
                                 {memory.key.replace(/_/g, ' ')}
                               </span>
-                              <span className={`px-1.5 py-0.5 rounded text-xs ${IMPORTANCE_COLORS[memory.importance]}`}>
+                              <span className={`px-1.5 py-0.5 rounded-lg text-xs ${IMPORTANCE_COLORS[memory.importance]}`}>
                                 {memory.importance}
                               </span>
                             </div>
@@ -288,7 +288,7 @@ export const MemorySettings: React.FC = () => {
                           </div>
                           <button
                             onClick={() => deleteMemory(memory.id)}
-                            className="p-1 opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-opacity"
+                            className="p-1 opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-opacity"
                             title="Remove this memory"
                           >
                             <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">

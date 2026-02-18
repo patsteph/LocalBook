@@ -108,6 +108,32 @@ const renderMessageWithCitations = (
   );
 };
 
+/**
+ * Detect logical sections in a long answer for per-section visual generation.
+ * Returns sections with title + FULL content (not truncated) so the visual
+ * generator receives complete context for each section.
+ */
+function detectSections(content: string): { title: string; text: string }[] {
+  if (content.length < 400) return [];
+  // Split on markdown headers (## or **bold line**) or numbered sections (1. **Title**)
+  // Also detect dash-separated sections (--- or ===)
+  const sectionRegex = /(?:^|\n)(?:#{1,3}\s+(.+)|\*\*([^*]{5,60})\*\*(?:\s*\n)|(\d+\.\s+\*\*[^*]+\*\*)|(?:-{3,}|={3,})\s*\n\s*(.+))(?:\n|$)/gm;
+  const sections: { title: string; text: string; start: number; end: number }[] = [];
+  let match;
+  while ((match = sectionRegex.exec(content)) !== null) {
+    const title = (match[1] || match[2] || match[3] || match[4] || '').replace(/^\d+\.\s*\*\*|\*\*$/g, '').trim();
+    if (title) sections.push({ title, text: '', start: match.index + match[0].length, end: 0 });
+  }
+  if (sections.length < 2) return []; // Need at least 2 sections
+  // Fill text — use FULL section content up to the next section boundary
+  for (let i = 0; i < sections.length; i++) {
+    const nextStart = i < sections.length - 1 ? sections[i + 1].start - sections[i + 1].title.length - 10 : content.length;
+    sections[i].text = content.substring(sections[i].start, nextStart).trim();
+    sections[i].end = nextStart;
+  }
+  return sections.filter(s => s.text.length > 50).slice(0, 8);
+}
+
 export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
   message,
   index,
@@ -130,13 +156,21 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
         className={`max-w-3xl rounded-lg p-3 ${
           message.role === 'user'
             ? 'bg-blue-600 text-white'
-            : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+            : message.curatorName
+              ? 'bg-purple-50 dark:bg-purple-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-purple-500'
+              : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
         }`}
       >
         {message.role === 'user' ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         ) : (
           <>
+            {/* Curator badge */}
+            {message.curatorName && (
+              <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-purple-600 dark:text-purple-400">
+                <span>🧭</span> {message.curatorName}
+              </div>
+            )}
             {/* Status message - shown while processing (Phase 1.2) */}
             {message.statusMessage && !message.content && (
               <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
@@ -154,7 +188,7 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                   Using context from our conversations
                 </span>
                 {message.memoryContextSummary && (
-                  <div className="absolute left-0 top-full mt-1 p-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-10 max-w-xs whitespace-normal">
+                  <div className="absolute left-0 top-full mt-1 p-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-10 max-w-xs whitespace-normal">
                     {message.memoryContextSummary}
                   </div>
                 )}
@@ -179,7 +213,7 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                       href={source.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="block p-2 bg-blue-50 dark:bg-blue-900/20 rounded text-xs hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+                      className="block p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-xs hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
                     >
                       <div className="flex items-start gap-2">
                         <span className="text-base">🌐</span>
@@ -243,16 +277,42 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
               />
             )}
             
+            {/* Per-section spark buttons for long structured answers */}
+            {(() => {
+              const sections = detectSections(message.content);
+              if (sections.length >= 2 && !message.inlineVisual && !message.visualLoading) {
+                return (
+                  <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mb-1.5 uppercase tracking-wider">Visualize a section</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {sections.map((sec, si) => (
+                        <button
+                          key={si}
+                          onClick={() => onGenerateVisual(index, sec.text, sec.title)}
+                          className="text-xs px-2 py-0.5 rounded-full border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-amber-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors flex items-center gap-1"
+                          title={`Visualize: ${sec.title}`}
+                        >
+                          <span className="text-amber-500">&#x2728;</span> {sec.title.length > 30 ? sec.title.slice(0, 28) + '...' : sec.title}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
             {/* Action buttons row - Create Visual & Bookmark */}
             {message.content && message.content.length > 50 && (
               <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 flex items-center gap-2">
-                {/* Create Visual button - shows when no inline visual exists */}
+                {/* Spark icon — Napkin-style inline visual trigger */}
                 {message.content.length > 100 && !message.inlineVisual && !message.visualLoading && (
                   <button
                     onClick={() => onGenerateVisual(index, message.content)}
-                    className="text-xs px-2.5 py-1 bg-green-100 dark:bg-green-800/40 text-green-800 dark:text-green-200 rounded-full hover:bg-green-200 dark:hover:bg-green-700/50 transition-colors border border-green-300 dark:border-green-600 flex items-center gap-1"
+                    className="text-xs px-2 py-1 text-gray-400 dark:text-gray-500 rounded-full hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors flex items-center gap-1"
+                    title="Create visual from this answer"
                   >
-                    🎨 Create Visual
+                    <span>&#x2728;</span> <span className="text-xs">Visualize</span>
                   </button>
                 )}
                 {/* Bookmark answer to Findings */}
@@ -277,7 +337,7 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                   <div className="w-4 h-4 rounded-full bg-indigo-600 dark:bg-indigo-500 flex items-center justify-center text-white text-[7px] font-bold flex-shrink-0">
                     {(message.curatorName || 'C').charAt(0).toUpperCase()}
                   </div>
-                  <span className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wide">
+                  <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wide">
                     {message.curatorName || 'Curator'}
                   </span>
                 </div>

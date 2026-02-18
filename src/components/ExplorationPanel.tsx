@@ -83,7 +83,7 @@ export const ExplorationPanel: React.FC<ExplorationPanelProps> = ({
                 <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-0.5">
                     <button
                         onClick={() => setActiveView('journey')}
-                        className={`flex-1 px-2 py-1 text-xs font-medium rounded transition-colors ${
+                        className={`flex-1 px-2 py-1 text-xs font-medium rounded-lg transition-colors ${
                             activeView === 'journey'
                                 ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
                                 : 'text-gray-600 dark:text-gray-400'
@@ -93,7 +93,7 @@ export const ExplorationPanel: React.FC<ExplorationPanelProps> = ({
                     </button>
                     <button
                         onClick={() => setActiveView('topics')}
-                        className={`flex-1 px-2 py-1 text-xs font-medium rounded transition-colors ${
+                        className={`flex-1 px-2 py-1 text-xs font-medium rounded-lg transition-colors ${
                             activeView === 'topics'
                                 ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
                                 : 'text-gray-600 dark:text-gray-400'
@@ -146,7 +146,7 @@ export const ExplorationPanel: React.FC<ExplorationPanelProps> = ({
                                             {query.topics.slice(0, 3).map((topic, i) => (
                                                 <span
                                                     key={i}
-                                                    className="px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 text-xs rounded"
+                                                    className="px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 text-xs rounded-lg"
                                                 >
                                                     {topic}
                                                 </span>
@@ -155,7 +155,7 @@ export const ExplorationPanel: React.FC<ExplorationPanelProps> = ({
                                     )}
                                     
                                     <div className="flex items-center gap-2 mt-2">
-                                        <span className={`px-1.5 py-0.5 text-xs rounded ${getConfidenceColor(query.confidence)}`}>
+                                        <span className={`px-1.5 py-0.5 text-xs rounded-lg ${getConfidenceColor(query.confidence)}`}>
                                             {Math.round(query.confidence * 100)}% confident
                                         </span>
                                         <span className="text-xs text-gray-400 dark:text-gray-500">

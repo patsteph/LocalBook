@@ -321,7 +321,6 @@ export const contentService = {
             });
             
             if (!path) {
-                console.log('User cancelled PDF save');
                 return null;
             }
             
@@ -330,7 +329,6 @@ export const contentService = {
             const uint8Array = new Uint8Array(pdfOutput);
             await writeFile(path, uint8Array);
             
-            console.log(`PDF saved successfully to: ${path}`);
             return path;
         } catch (error) {
             console.error('Failed to save PDF:', error);

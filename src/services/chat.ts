@@ -22,7 +22,8 @@ export interface StreamCallbacks {
   onRetrievalProgress?: (progress: RetrievalProgress) => void;
   onCitations?: (citations: Citation[], sources: string[], lowConfidence: boolean) => void;
   onToken?: (token: string) => void;
-  onDone?: (followUpQuestions: string[]) => void;
+  onReplaceAnswer?: (content: string) => void;
+  onDone?: (followUpQuestions: string[], curatorName?: string) => void;
   onError?: (error: string) => void;
 }
 
@@ -76,8 +77,10 @@ export const chatService = {
             callbacks.onCitations?.(data.citations, data.sources, data.low_confidence);
           } else if (data.type === 'token') {
             callbacks.onToken?.(data.content);
+          } else if (data.type === 'replace_answer') {
+            callbacks.onReplaceAnswer?.(data.content);
           } else if (data.type === 'done') {
-            callbacks.onDone?.(data.follow_up_questions || []);
+            callbacks.onDone?.(data.follow_up_questions || [], data.curator_name);
           }
         } catch (e) {
           console.error('Failed to parse SSE data:', e);

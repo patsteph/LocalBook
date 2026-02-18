@@ -176,7 +176,6 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
       const data = await curatorService.getSetupFollowup(notebookId);
       return data.message || undefined;
     } catch (err) {
-      console.log('[Wizard] Follow-up fetch failed (non-fatal):', err);
     }
     return undefined;
   };
@@ -264,8 +263,7 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
   // Post-setup flows (preserved from original)
   // -----------------------------------------------------------------------
 
-  const handleSourceReviewComplete = async (sourcesAdded: number) => {
-    console.log(`Source review complete: ${sourcesAdded} sources added`);
+  const handleSourceReviewComplete = async (_sourcesAdded: number) => {
     // Don't setShowSourceReview(false) — onComplete unmounts the wizard from parent.
     // Collection is triggered by the parent's onComplete handler with proper UI feedback.
 

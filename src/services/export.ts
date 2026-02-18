@@ -18,14 +18,22 @@ export interface ExportFormat {
 
 export interface ExportOptions {
     notebookId: string;
-    format: 'markdown' | 'html' | 'pdf';
+    format: 'markdown' | 'html' | 'pdf' | 'pptx';
     includeSourcesContent?: boolean;
+    pptxTheme?: 'light' | 'dark' | 'corporate' | 'academic';
     chatHistory?: Array<{
         question: string;
         answer: string;
         citations?: any[];
         timestamp?: string;
     }>;
+}
+
+export interface SlideData {
+    title: string;
+    bullets: string[];
+    slide_type: 'title' | 'content' | 'sources' | 'qa' | 'thankyou' | 'visual_overview';
+    mermaid_code?: string;
 }
 
 export const exportService = {
@@ -58,6 +66,7 @@ export const exportService = {
                 format: options.format,
                 include_sources_content: options.includeSourcesContent || false,
                 chat_history: options.chatHistory || null,
+                pptx_theme: options.pptxTheme || 'light',
             }),
         });
 
@@ -86,7 +95,6 @@ export const exportService = {
 
             // If user cancelled, path will be null
             if (!path) {
-                console.log('User cancelled file save');
                 return null;
             }
 
@@ -97,7 +105,6 @@ export const exportService = {
             // Write file using Tauri's fs API
             await writeFile(path, uint8Array);
 
-            console.log(`File saved successfully to: ${path}`);
             return path;
         } catch (error) {
             console.error('Failed to save file:', error);
@@ -109,6 +116,78 @@ export const exportService = {
      * Generate a PDF directly using jsPDF
      * Returns a Blob containing the PDF data
      */
+    /**
+     * Generate PPTX slide preview as JSON for the revision UI
+     */
+    async previewPptxSlides(notebookId: string, theme?: string): Promise<{ slides: SlideData[]; theme: string }> {
+        const response = await fetch(`${API_BASE}/export/pptx/preview`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ notebook_id: notebookId, pptx_theme: theme || 'light' }),
+        });
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(error.detail || 'Failed to generate slide preview');
+        }
+        return response.json();
+    },
+
+    /**
+     * Revise slides using a natural language prompt
+     */
+    async revisePptxSlides(notebookId: string, slides: SlideData[], revisionPrompt: string, theme?: string): Promise<{ slides: SlideData[]; theme: string }> {
+        const response = await fetch(`${API_BASE}/export/pptx/revise`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                notebook_id: notebookId,
+                slides,
+                revision_prompt: revisionPrompt,
+                pptx_theme: theme || 'light',
+            }),
+        });
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(error.detail || 'Failed to revise slides');
+        }
+        return response.json();
+    },
+
+    /**
+     * Download finalized slides as .pptx file
+     */
+    async downloadPptxSlides(notebookId: string, slides: SlideData[], theme?: string): Promise<Blob> {
+        const response = await fetch(`${API_BASE}/export/pptx/download`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                notebook_id: notebookId,
+                slides,
+                pptx_theme: theme || 'light',
+            }),
+        });
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(error.detail || 'Failed to download slides');
+        }
+        return response.blob();
+    },
+
+    /**
+     * Render a Mermaid diagram to a base64 PNG data URL for preview
+     */
+    async renderDiagramPreview(mermaidCode: string): Promise<{ success: boolean; image?: string; error?: string }> {
+        const response = await fetch(`${API_BASE}/export/pptx/render-diagram`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mermaid_code: mermaidCode }),
+        });
+        if (!response.ok) {
+            return { success: false, error: response.statusText };
+        }
+        return response.json();
+    },
+
     async generatePDF(notebookTitle: string, sources: any[], chatHistory?: any[]): Promise<Blob> {
         const doc = new jsPDF();
         const pageWidth = doc.internal.pageSize.getWidth();

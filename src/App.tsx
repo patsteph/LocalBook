@@ -4,14 +4,17 @@ import { Group, Panel, Separator } from 'react-resizable-panels';
 import { LeftNavColumn } from './components/layout/LeftNavColumn';
 import { CanvasWorkspace } from './components/canvas/CanvasWorkspace';
 import { CanvasProvider, CanvasContextValue } from './components/canvas/CanvasContext';
+import { CanvasItem } from './components/canvas/types';
 import { LayoutNode, PanelView, countLeaves, replaceLeaf, removeLeaf, findLeaf } from './components/canvas/types';
 import { useCanvasLayout, useDrawerState, useStudioState } from './hooks/useLayoutPersistence';
 import { ToastContainer, ToastMessage } from './components/shared/Toast';
+import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { Modal } from './components/shared/Modal';
 import { Settings } from './components/Settings';
 import { LLMSelector } from './components/LLMSelector';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
 import { API_BASE_URL } from './services/api';
+import { useReconnectingWebSocket } from './hooks/useReconnectingWebSocket';
 import { prewarmMermaid } from './components/shared/MermaidRenderer';
 
 function App() {
@@ -33,12 +36,13 @@ function App() {
   const [chatPrefillQuery, setChatPrefillQuery] = useState<string>('');
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const [visualContent, setVisualContent] = useState<string>('');
+  const [visualContent] = useState<string>('');
   const [morningBrief, setMorningBrief] = useState<any>(null);
   const [curatorBriefData, setCuratorBriefData] = useState<any>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showLLMModal, setShowLLMModal] = useState(false);
   const [showEmbeddingModal, setShowEmbeddingModal] = useState(false);
+  const [canvasItems, setCanvasItems] = useState<CanvasItem[]>([]);
 
   // Canvas layout, drawer, and studio state (persisted to localStorage)
   const { layout, setLayout } = useCanvasLayout(selectedNotebookId);
@@ -65,7 +69,58 @@ function App() {
     setLayout(prev => replaceLeaf(prev, panelId, { type: 'leaf', id: panelId, view }));
   }, [setLayout]);
 
+  // Views that open in the universal canvas instead of splitting the layout
+  const CANVAS_VIEWS: Record<string, CanvasItem['type']> = {
+    'content-viewer': 'document',
+    'quiz-viewer': 'quiz',
+    'visual-viewer': 'visual',
+  };
+
+  const addCanvasItem = useCallback((item: Omit<CanvasItem, 'id' | 'timestamp'> & { id?: string }) => {
+    const newItem: CanvasItem = {
+      ...item,
+      id: item.id || `canvas-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      timestamp: Date.now(),
+    };
+    setCanvasItems(prev => [...prev, newItem]);
+  }, []);
+
+  const removeCanvasItem = useCallback((id: string) => {
+    setCanvasItems(prev => prev.filter(item => item.id !== id));
+  }, []);
+
+  const updateCanvasItem = useCallback((id: string, updates: Partial<Pick<CanvasItem, 'title' | 'content'>>) => {
+    setCanvasItems(prev => prev.map(item =>
+      item.id === id ? { ...item, ...updates } : item
+    ));
+  }, []);
+
+  const toggleCanvasItemCollapse = useCallback((id: string) => {
+    setCanvasItems(prev => prev.map(item =>
+      item.id === id ? { ...item, collapsed: !item.collapsed } : item
+    ));
+  }, []);
+
+  const clearCanvas = useCallback(() => {
+    setCanvasItems([]);
+  }, []);
+
   const openPanel = useCallback((view: PanelView, props?: Record<string, any>) => {
+    // Content viewers open in the universal canvas workspace
+    const canvasType = CANVAS_VIEWS[view];
+    if (canvasType) {
+      const newItem: CanvasItem = {
+        id: `canvas-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+        type: canvasType,
+        title: props?.title || 'Document',
+        content: props?.content || '',
+        collapsed: false,
+        timestamp: Date.now(),
+      };
+      // Fresh open: clear previous items and add the new one
+      setCanvasItems([newItem]);
+      return;
+    }
     setLayout(prev => {
       if (countLeaves(prev) < 4) {
         const mainId = findFirstLeafId(prev);
@@ -174,13 +229,20 @@ function App() {
     setMorningBrief,
     curatorBriefData,
     setCuratorBriefData,
+    canvasItems,
+    addCanvasItem,
+    removeCanvasItem,
+    updateCanvasItem,
+    toggleCanvasItemCollapse,
+    clearCanvas,
   }), [
     selectedNotebookId, selectedNotebookName, selectedSourceId, selectedLLMProvider,
     refreshSources, refreshNotebooks, collectorRefreshKey, addToast,
     openPanel, closePanel, splitPanel, changePanelView, layout,
     openWebResearch, openSettings, openLLMSelector, openEmbeddingSelector,
     chatPrefillQuery, navigateToChat, darkMode, toggleDarkMode,
-    morningBrief, curatorBriefData,
+    morningBrief, curatorBriefData, canvasItems, addCanvasItem,
+    removeCanvasItem, updateCanvasItem, toggleCanvasItemCollapse, clearCanvas,
   ]);
 
   // Fetch notebook name when selection changes
@@ -198,40 +260,24 @@ function App() {
   }, [selectedNotebookId]);
 
   // WebSocket for background task notifications (source processing failures)
-  useEffect(() => {
-    if (!selectedNotebookId) return;
-
-    const wsUrl = API_BASE_URL.replace('http', 'ws') + '/constellation/ws';
-    const ws = new WebSocket(wsUrl);
-
-    ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        if (message.type === 'source_updated' && message.data?.notebook_id === selectedNotebookId) {
-          // Refresh sources list
-          setRefreshSources(prev => prev + 1);
-          
-          // Show toast for failures
-          if (message.data.status === 'failed') {
-            addToast({
-              type: 'error',
-              title: 'Failed to add source',
-              message: message.data.title || message.data.error || 'Unknown error',
-              duration: 8000,
-            });
-          }
+  const wsUrl = useMemo(() => API_BASE_URL.replace('http', 'ws') + '/constellation/ws', []);
+  useReconnectingWebSocket({
+    url: wsUrl,
+    enabled: !!selectedNotebookId,
+    onMessage: useCallback((message: any) => {
+      if (message.type === 'source_updated' && message.data?.notebook_id === selectedNotebookId) {
+        setRefreshSources(prev => prev + 1);
+        if (message.data.status === 'failed') {
+          addToast({
+            type: 'error',
+            title: 'Failed to add source',
+            message: message.data.title || message.data.error || 'Unknown error',
+            duration: 8000,
+          });
         }
-      } catch (e) {
-        console.error('WebSocket message parse error:', e);
       }
-    };
-
-    ws.onerror = (e) => console.error('App WebSocket error:', e);
-
-    return () => {
-      ws.close();
-    };
-  }, [selectedNotebookId, addToast]);
+    }, [selectedNotebookId, addToast]),
+  });
 
   useEffect(() => {
     // Check for saved theme preference
@@ -288,18 +334,25 @@ function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [backendReady, morningBrief]);
 
-  // Listen for "Create Visual from this" events from ChatInterface
+  // Listen for "Open in Canvas" events from chat visual actions
   useEffect(() => {
-    const handleOpenStudioVisual = (event: CustomEvent<{ content: string }>) => {
-      setVisualContent(event.detail.content);
-      setStudioTab('visual'); // Also expands the mini-player
+    const handleOpenCanvasVisual = (event: CustomEvent<{ content: string }>) => {
+      // Open the content in canvas as a document item for visual generation
+      setCanvasItems([{
+        id: `canvas-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+        type: 'document',
+        title: 'Visual Content',
+        content: event.detail.content,
+        collapsed: false,
+        timestamp: Date.now(),
+      }]);
     };
 
-    window.addEventListener('openStudioVisual', handleOpenStudioVisual as EventListener);
+    window.addEventListener('openCanvasVisual', handleOpenCanvasVisual as EventListener);
     return () => {
-      window.removeEventListener('openStudioVisual', handleOpenStudioVisual as EventListener);
+      window.removeEventListener('openCanvasVisual', handleOpenCanvasVisual as EventListener);
     };
-  }, [setStudioTab]);
+  }, []);
 
   useEffect(() => {
     // Check if backend is ready
@@ -382,7 +435,6 @@ function App() {
   }, []);
 
   const handleUploadComplete = () => {
-    console.log('Upload completed - triggering sources and notebooks refresh');
     // Trigger sources list refresh and notebook count refresh
     setRefreshSources(prev => prev + 1);
     setRefreshNotebooks(prev => prev + 1);
@@ -392,32 +444,32 @@ function App() {
   // Show loading screen while backend starts
   if (!backendReady) {
     return (
-      <div className="h-screen flex items-center justify-center bg-gray-50">
+      <div className="h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
         <div className="text-center max-w-md">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
             {isUpgrade ? '⬆️ Upgrading LocalBook' : 'Starting LocalBook'}
           </h2>
           {currentVersion && (
-            <p className="text-sm text-blue-600 mb-2">v{currentVersion}</p>
+            <p className="text-sm text-blue-600 dark:text-blue-400 mb-2">v{currentVersion}</p>
           )}
-          <p className="text-gray-600 min-h-[24px] transition-all duration-200">{backendStatusMessage}</p>
-          <div className="mt-4 w-full bg-gray-200 rounded-full h-2">
+          <p className="text-gray-600 dark:text-gray-400 min-h-[24px] transition-all duration-200">{backendStatusMessage}</p>
+          <div className="mt-4 w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
             <div 
               className="bg-blue-600 h-2 rounded-full transition-all duration-500 ease-out"
               style={{ width: `${Math.max(startupProgress, 5)}%` }}
             />
           </div>
           {isUpgrade && currentVersion && (
-            <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-              <p className="text-sm text-blue-800">
+            <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg">
+              <p className="text-sm text-blue-800 dark:text-blue-300">
                 Upgrading to v{currentVersion} - please wait...
               </p>
             </div>
           )}
           {backendError && (
-            <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-              <p className="text-sm text-yellow-800">{backendError}</p>
+            <div className="mt-4 p-4 bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+              <p className="text-sm text-yellow-800 dark:text-yellow-300">{backendError}</p>
             </div>
           )}
         </div>
@@ -438,20 +490,20 @@ function App() {
               <div className="flex items-center gap-2">
                 <span className="text-base">&#x2600;&#xFE0F;</span>
                 <h4 className="text-xs font-semibold text-blue-800 dark:text-blue-200 uppercase tracking-wide">Morning Brief</h4>
-                <span className="text-[10px] text-blue-500 dark:text-blue-400">Away {morningBrief.away_duration}</span>
+                <span className="text-xs text-blue-500 dark:text-blue-400">Away {morningBrief.away_duration}</span>
               </div>
               <div className="flex items-center gap-3">
                 <span
                   role="button"
                   onClick={(e) => { e.stopPropagation(); setCuratorBriefData(morningBrief); changePanelView(findFirstLeafId(layout), 'curator'); setMorningBrief(null); }}
-                  className="text-[10px] text-blue-400 dark:text-blue-500 hover:text-blue-600 dark:hover:text-blue-300 transition-colors underline cursor-pointer"
+                  className="text-xs text-blue-400 dark:text-blue-500 hover:text-blue-600 dark:hover:text-blue-300 transition-colors underline cursor-pointer"
                 >
                   Read full brief &rarr;
                 </span>
                 <span
                   role="button"
                   onClick={(e) => { e.stopPropagation(); setMorningBrief(null); }}
-                  className="text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 text-xs p-1 -mr-1 rounded hover:bg-blue-500/10"
+                  className="text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 text-xs p-1 -mr-1 rounded-lg hover:bg-blue-500/10"
                 >
                   &#x2715;
                 </span>
@@ -479,6 +531,7 @@ function App() {
         <div className="flex-1 overflow-hidden">
           <Group orientation="horizontal" id="main-layout">
             <Panel id="left-nav" defaultSize="25%" minSize="20%" maxSize="30%">
+              <ErrorBoundary fallbackTitle="Sidebar crashed">
               <LeftNavColumn
                 selectedNotebookId={selectedNotebookId}
                 onNotebookSelect={setSelectedNotebookId}
@@ -498,6 +551,7 @@ function App() {
                 setStudioTab={setStudioTab}
                 visualContent={visualContent}
               />
+              </ErrorBoundary>
             </Panel>
             <Separator>
               <div className="w-1.5 h-full cursor-col-resize hover:bg-blue-400/30 flex items-center justify-center transition-colors">
@@ -505,7 +559,9 @@ function App() {
               </div>
             </Separator>
             <Panel id="canvas" defaultSize="75%" minSize="50%">
+              <ErrorBoundary fallbackTitle="Workspace crashed">
               <CanvasWorkspace layout={layout} />
+              </ErrorBoundary>
             </Panel>
           </Group>
         </div>

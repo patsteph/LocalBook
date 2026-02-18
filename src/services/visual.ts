@@ -207,12 +207,10 @@ export const visualService = {
     while (Date.now() - startTime < maxWaitMs) {
       const status = await this.checkCacheStatus(notebookId);
       if (status.ready) {
-        console.log(`[Visual] Cache ready in ${Date.now() - startTime}ms, ${status.theme_count} themes`);
         return true;
       }
       await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
     }
-    console.log(`[Visual] Cache not ready after ${maxWaitMs}ms, proceeding anyway`);
     return false;
   },
 };

@@ -252,7 +252,7 @@ export const CollectorProfile: React.FC<CollectorProfileProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-xl max-w-3xl w-full mx-4 max-h-[90vh] flex flex-col shadow-2xl">
+      <div className="bg-white dark:bg-gray-800 rounded-lg max-w-3xl w-full mx-4 max-h-[90vh] flex flex-col shadow-2xl">
         {/* Header */}
         <div className="p-4 border-b dark:border-gray-700 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
@@ -338,7 +338,7 @@ const OverviewTab: React.FC<{ profile: ProfileData }> = ({ profile }) => {
   return (
     <div className="space-y-5">
       {/* Subject Card + Stock */}
-      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl p-4 border border-blue-100 dark:border-blue-800/40">
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-lg p-4 border border-blue-100 dark:border-blue-800/40">
         <div className="flex items-start justify-between">
           <div className="flex-1">
             <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">
@@ -346,7 +346,7 @@ const OverviewTab: React.FC<{ profile: ProfileData }> = ({ profile }) => {
             </h3>
             <div className="flex flex-wrap items-center gap-2 mt-1">
               {subject.ticker && (
-                <span className="text-sm font-mono bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-2 py-0.5 rounded">
+                <span className="text-sm font-mono bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-2 py-0.5 rounded-lg">
                   {subject.ticker}
                 </span>
               )}
@@ -506,7 +506,7 @@ const OverviewTab: React.FC<{ profile: ProfileData }> = ({ profile }) => {
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{kd.event}</div>
                     <div className="flex items-center gap-2 mt-0.5">
-                      <span className={`text-xs px-1.5 py-0.5 rounded ${CATEGORY_COLORS[kd.category] || 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'}`}>
+                      <span className={`text-xs px-1.5 py-0.5 rounded-lg ${CATEGORY_COLORS[kd.category] || 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'}`}>
                         {kd.category}
                       </span>
                       {kd.source === 'sec' && (
@@ -711,7 +711,7 @@ const InsightsTab: React.FC<{ feedback: FeedbackData }> = ({ feedback }) => {
       </div>
 
       {!hasData ? (
-        <div className="text-center py-8 bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-200 dark:border-gray-700">
+        <div className="text-center py-8 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700">
           <span className="text-3xl mb-3 block">📝</span>
           <p className="text-gray-600 dark:text-gray-400 font-medium">No feedback data yet</p>
           <p className="text-sm text-gray-500 dark:text-gray-500 mt-1 max-w-xs mx-auto">

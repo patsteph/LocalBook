@@ -44,8 +44,8 @@ export const BookmarkButton: React.FC<BookmarkButtonProps> = ({
   };
 
   const baseClass = compact
-    ? 'p-1.5 rounded transition-colors'
-    : 'px-2 py-1 text-xs rounded transition-colors flex items-center';
+    ? 'p-1.5 rounded-lg transition-colors'
+    : 'px-2 py-1 text-xs rounded-lg transition-colors flex items-center';
 
   // Match chat box background - transparent with high contrast icon
   const colorClass = saved

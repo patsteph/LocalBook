@@ -189,7 +189,7 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                                 {config.label}
                             </h4>
                             {isConfigured && (
-                                <span className="px-2 py-0.5 text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded">
+                                <span className="px-2 py-0.5 text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded-lg">
                                     Configured
                                 </span>
                             )}
@@ -261,11 +261,11 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                                         Custom LLM (Secure)
                                     </h4>
                                     {customLLMConfigured && (
-                                        <span className="px-2 py-0.5 text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded">
+                                        <span className="px-2 py-0.5 text-xs font-medium bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded-lg">
                                             Configured
                                         </span>
                                     )}
-                                    <span className="px-2 py-0.5 text-xs font-medium bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-200 rounded">
+                                    <span className="px-2 py-0.5 text-xs font-medium bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-200 rounded-lg">
                                         Company Internal
                                     </span>
                                 </div>

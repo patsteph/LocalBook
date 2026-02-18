@@ -473,10 +473,10 @@ export const Timeline: React.FC<TimelineProps> = ({ notebookId, sourcesRefreshTr
                 "{selectedEvent.context}"
               </p>
               <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                <span className="px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded">
+                <span className="px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded-lg">
                   Confidence: {(selectedEvent.confidence * 100).toFixed(0)}%
                 </span>
-                <span className="px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded capitalize">
+                <span className="px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded-lg capitalize">
                   {selectedEvent.date_type}
                 </span>
               </div>

@@ -115,8 +115,12 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
                     f"(strategy={built.strategy_used}, profile={built.profile_used}, "
                     f"build_time={built.build_time_ms}ms)")
         
+        # Get adaptive temperature from context profile
+        from services.context_builder import CONTEXT_PROFILES
+        skill_temp = CONTEXT_PROFILES.get(request.skill_id, CONTEXT_PROFILES["default"]).temperature
+        
         # Generate content
-        content = await rag_engine._call_ollama(system_prompt, user_prompt, num_predict=doc_num_predict)
+        content = await rag_engine._call_ollama(system_prompt, user_prompt, num_predict=doc_num_predict, temperature=skill_temp)
         
         # Save to content store for persistence
         await content_store.create(
@@ -211,8 +215,12 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
         logger.info(f"[STUDIO] Streaming context: {built.total_chars} chars from {built.sources_used} sources "
                     f"(strategy={built.strategy_used}, build_time={built.build_time_ms}ms)")
 
+        # Get adaptive temperature from context profile
+        from services.context_builder import CONTEXT_PROFILES
+        skill_temp = CONTEXT_PROFILES.get(request.skill_id, CONTEXT_PROFILES["default"]).temperature
+
         async def stream_generator():
-            async for chunk in rag_engine._stream_ollama(system_prompt, user_prompt, num_predict=doc_num_predict):
+            async for chunk in rag_engine._stream_ollama(system_prompt, user_prompt, num_predict=doc_num_predict, temperature_override=skill_temp):
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             yield "data: [DONE]\n\n"
         

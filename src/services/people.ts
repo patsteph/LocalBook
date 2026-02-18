@@ -12,7 +12,7 @@ class PeopleService {
 
   async updateConfig(notebookId: string, config: any): Promise<any> {
     const response = await fetch(`${API_BASE_URL}/people/${notebookId}/config`, {
-      method: 'PUT',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config),
     });

@@ -226,7 +226,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
               <Sparkles className="w-4 h-4 text-amber-500" />
               <h4 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Coaching Insights</h4>
               {ci.generated_at && (
-                <span className="text-[10px] text-gray-400 ml-auto">
+                <span className="text-xs text-gray-400 ml-auto">
                   {new Date(ci.generated_at).toLocaleDateString()}
                 </span>
               )}
@@ -291,7 +291,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
                 <h5 className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Conversation Starters</h5>
                 <div className="space-y-1.5">
                   {ci.conversation_starters.map((q: string, i: number) => (
-                    <div key={i} className="p-2 rounded bg-gray-50 dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 italic">
+                    <div key={i} className="p-2 rounded-lg bg-gray-50 dark:bg-gray-800 text-sm text-gray-700 dark:text-gray-300 italic">
                       &ldquo;{q}&rdquo;
                     </div>
                   ))}
@@ -351,7 +351,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
               {actProfile.overall_last_active && formatLastActive(actProfile.overall_last_active) && (
                 <>
                   <span className="text-xs text-gray-500 dark:text-gray-400">Last active:</span>
-                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                  <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300">
                     {formatLastActive(actProfile.overall_last_active)}
                   </span>
                 </>
@@ -360,7 +360,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
                 <>
                   <span className="text-gray-300 dark:text-gray-600">|</span>
                   {actProfile.topics.map((t: string, i: number) => (
-                    <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300">
+                    <span key={i} className="text-xs px-1.5 py-0.5 rounded-lg bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300">
                       #{t}
                     </span>
                   ))}
@@ -375,8 +375,8 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
                   if (!formatted) return null;
                   return (
                     <div key={platform} className="flex items-center gap-1">
-                      <span className="text-[10px] capitalize text-gray-500 dark:text-gray-400">{platform.replace('_', ' ')}:</span>
-                      <span className="text-[10px] font-medium text-gray-600 dark:text-gray-300">
+                      <span className="text-xs capitalize text-gray-500 dark:text-gray-400">{platform.replace('_', ' ')}:</span>
+                      <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
                         {formatted}
                       </span>
                     </div>
@@ -416,7 +416,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
                     <Github className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400 flex-shrink-0" />
                     <span className="text-sm font-medium text-gray-800 dark:text-gray-200">{repo.name}</span>
                     {repo.language && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 ml-auto">
+                      <span className="text-xs px-1.5 py-0.5 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 ml-auto">
                         {repo.language}
                       </span>
                     )}
@@ -425,7 +425,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
                     <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-5.5">{repo.description}</p>
                   )}
                   {(repo.stars > 0 || repo.forks > 0) && (
-                    <div className="flex gap-3 mt-1 ml-5.5 text-[10px] text-gray-400">
+                    <div className="flex gap-3 mt-1 ml-5.5 text-xs text-gray-400">
                       {repo.stars > 0 && <span>&#9733; {repo.stars}</span>}
                       {repo.forks > 0 && <span>&#x2442; {repo.forks}</span>}
                     </div>
@@ -446,11 +446,11 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
               {allActivity.slice(0, 20).map((item, i) => (
                 <div key={i} className="p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                    <span className="text-xs font-medium px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
                       {item.platform}
                     </span>
                     {item.date && (
-                      <span className="text-[10px] text-gray-400">{item.date}</span>
+                      <span className="text-xs text-gray-400">{item.date}</span>
                     )}
                   </div>
                   <p className="text-sm text-gray-700 dark:text-gray-300 line-clamp-3">
@@ -472,19 +472,19 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
               {actProfile.recent_items.map((item: any, i: number) => (
                 <div key={i} className="p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 capitalize">
+                    <span className="text-xs font-medium px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 capitalize">
                       {item.platform}
                     </span>
-                    <span className="text-[10px] text-gray-400 capitalize">{item.content_type?.replace('_', ' ')}</span>
+                    <span className="text-xs text-gray-400 capitalize">{item.content_type?.replace('_', ' ')}</span>
                     {item.date && (
-                      <span className="text-[10px] text-gray-400 ml-auto">{item.date}</span>
+                      <span className="text-xs text-gray-400 ml-auto">{item.date}</span>
                     )}
                   </div>
                   <p className="text-sm text-gray-700 dark:text-gray-300 line-clamp-2">
                     {item.title || item.summary}
                   </p>
                   {item.engagement && (item.engagement.likes > 0 || item.engagement.comments > 0) && (
-                    <div className="flex gap-3 mt-1 text-[10px] text-gray-400">
+                    <div className="flex gap-3 mt-1 text-xs text-gray-400">
                       {item.engagement.likes > 0 && <span>&#x2764; {item.engagement.likes}</span>}
                       {item.engagement.comments > 0 && <span>&#x1F4AC; {item.engagement.comments}</span>}
                       {item.engagement.shares > 0 && <span>&#x21BB; {item.engagement.shares}</span>}
@@ -520,7 +520,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
             <select
               value={noteCategory}
               onChange={e => setNoteCategory(e.target.value)}
-              className="w-full mb-2 px-2 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+              className="w-full mb-2 px-2 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
             >
               {NOTE_CATEGORIES.map(c => (
                 <option key={c.value} value={c.value}>{c.label}</option>
@@ -531,7 +531,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
               onChange={e => setNewNote(e.target.value)}
               placeholder="Write a coaching note..."
               rows={3}
-              className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none focus:ring-2 focus:ring-blue-500 outline-none"
+              className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 resize-none focus:ring-2 focus:ring-blue-500 outline-none"
               autoFocus
             />
             <div className="flex justify-end gap-2 mt-2">
@@ -555,7 +555,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
             .map((note: any) => (
               <div key={note.id} className="group p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
+                  <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${
                     note.category === 'strength' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' :
                     note.category === 'growth_area' ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300' :
                     note.category === 'goal' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' :
@@ -563,7 +563,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
                   }`}>
                     {note.category?.replace('_', ' ')}
                   </span>
-                  <span className="text-[10px] text-gray-400">
+                  <span className="text-xs text-gray-400">
                     {note.created_at ? new Date(note.created_at).toLocaleDateString() : ''}
                   </span>
                   <button
@@ -601,7 +601,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
               value={newGoal}
               onChange={e => setNewGoal(e.target.value)}
               placeholder="What should this person work toward?"
-              className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 outline-none"
+              className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 outline-none"
               autoFocus
             />
             <div className="flex justify-end gap-2 mt-2">
@@ -628,7 +628,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
               }`} />
               <div className="flex-1">
                 <p className="text-sm text-gray-700 dark:text-gray-300">{goal.goal}</p>
-                <span className={`text-[10px] font-medium ${
+                <span className={`text-xs font-medium ${
                   goal.status === 'completed' ? 'text-green-600' :
                   goal.status === 'paused' ? 'text-yellow-600' :
                   'text-blue-600'
@@ -686,7 +686,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
         ) : (
           <div className="space-y-1.5">
             {(profile.sources || []).slice(-10).reverse().map((src: any, i: number) => (
-              <div key={i} className="flex items-center justify-between p-2 rounded bg-gray-50 dark:bg-gray-800 text-xs">
+              <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-gray-50 dark:bg-gray-800 text-xs">
                 <div className="flex items-center gap-2">
                   <span className={`w-2 h-2 rounded-full ${src.success ? 'bg-green-400' : 'bg-red-400'}`} />
                   <span className="capitalize text-gray-700 dark:text-gray-300">
@@ -721,7 +721,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
         <div className="flex items-center gap-3">
           <button
             onClick={onBack}
-            className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded"
+            className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -769,7 +769,7 @@ export const PersonProfileView: React.FC<PersonProfileViewProps> = ({
             {profile.tags.map((tag: string) => (
               <span
                 key={tag}
-                className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                className="px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
               >
                 {tag}
               </span>

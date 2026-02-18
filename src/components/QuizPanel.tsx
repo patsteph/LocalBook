@@ -8,6 +8,7 @@ interface QuizPanelProps {
   notebookId: string;
   initialTopic?: string;
   initialDifficulty?: string;
+  onQuizGenerated?: (quiz: Quiz) => void;
 }
 
 interface QuizResult {
@@ -17,7 +18,7 @@ interface QuizResult {
   correctAnswer: string;
 }
 
-export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, initialDifficulty }) => {
+export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, initialDifficulty, onQuizGenerated }) => {
   const [mode, setMode] = useState<'generate' | 'review' | 'results'>('generate');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +82,7 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
       setAnsweredQuestions(new Set());
       setQuizResults([]);
       setQuizComplete(false);
+      onQuizGenerated?.(result);
     } catch (err: any) {
       setError(err.message || 'Failed to generate quiz');
     } finally {

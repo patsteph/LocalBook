@@ -871,6 +871,24 @@ CRITICAL RULES:
 }
 
 
+# Per-notebook template history for diversity scoring
+_notebook_template_history: Dict[str, List[str]] = {}
+MAX_HISTORY = 3
+
+
+def _record_template(notebook_id: str, template_id: str):
+    """Record which template was used for a notebook."""
+    history = _notebook_template_history.setdefault(notebook_id, [])
+    history.append(template_id)
+    if len(history) > MAX_HISTORY:
+        _notebook_template_history[notebook_id] = history[-MAX_HISTORY:]
+
+
+def _get_recent_templates(notebook_id: str) -> List[str]:
+    """Get recently used templates for a notebook."""
+    return _notebook_template_history.get(notebook_id, [])
+
+
 class VisualRouter:
     """Routes content to the best visual template."""
     
@@ -882,21 +900,40 @@ class VisualRouter:
         """Get a template by ID."""
         return self.templates.get(template_id)
     
-    def route(self, text: str) -> Tuple[VisualTemplate, ContentAnalysis]:
-        """Route content to the best template.
+    def route(self, text: str, notebook_id: Optional[str] = None) -> Tuple[VisualTemplate, ContentAnalysis]:
+        """Route content to the best template with diversity scoring.
+        
+        If notebook_id is provided, avoids repeating the same template as
+        the last 3 visuals generated for that notebook.
         
         Returns: (best_template, analysis)
         """
         analysis = self.analyzer.analyze(text)
+        recent = _get_recent_templates(notebook_id) if notebook_id else []
         
         if analysis.suggested_templates:
+            # Try the best template first; if recently used, try alternatives
+            for template_id in analysis.suggested_templates:
+                if template_id not in recent:
+                    template = self.templates.get(template_id)
+                    if template:
+                        if notebook_id:
+                            _record_template(notebook_id, template_id)
+                        return template, analysis
+            
+            # All suggestions were recent — use the top one anyway
             template_id = analysis.suggested_templates[0]
             template = self.templates.get(template_id)
             if template:
+                if notebook_id:
+                    _record_template(notebook_id, template_id)
                 return template, analysis
         
         # Fallback to concept_map
-        return self.templates["concept_map"], analysis
+        fallback = self.templates["concept_map"]
+        if notebook_id:
+            _record_template(notebook_id, "concept_map")
+        return fallback, analysis
     
     def get_alternatives(self, text: str, count: int = 3) -> List[Tuple[VisualTemplate, str]]:
         """Get alternative template suggestions with reasons.

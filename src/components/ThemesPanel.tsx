@@ -52,13 +52,11 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                         // v0.6.5: Topics updated from BERTopic - refresh themes
                         // Handle both direct topics_updated event and legacy concept_added
                         if (message.type === 'topics_updated') {
-                            console.log('[ThemesPanel] Topics updated, refreshing themes');
                             loadThemes();
                         }
                         
                         // Enhancement complete - refresh to show enhanced names
                         if (message.type === 'enhancement_progress' && message.data?.status === 'complete') {
-                            console.log('[ThemesPanel] Enhancement complete, refreshing themes');
                             loadThemes();
                         }
                         
@@ -82,7 +80,6 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                         
                         // Build complete - topics ready
                         if (message.type === 'build_complete') {
-                            console.log('[ThemesPanel] Build complete, refreshing themes');
                             setStatus('idle');
                             // Small delay to ensure topics are saved before fetching
                             setTimeout(() => loadThemes(), 500);
@@ -101,7 +98,6 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                         
                         // Clustering complete - refresh and clear status
                         if (message.type === 'cluster_complete') {
-                            console.log('[ThemesPanel] Cluster complete, refreshing themes');
                             setStatus('idle');
                             setClusterProgress(null);
                             loadThemes();
@@ -242,7 +238,7 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
             {/* Content */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
                 {error && (
-                    <div className="p-2 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 text-xs rounded">
+                    <div className="p-2 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 text-xs rounded-lg">
                         {error}
                     </div>
                 )}

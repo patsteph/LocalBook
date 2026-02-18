@@ -921,6 +921,32 @@ Summary:"""
                 print(f"[TopicModel] Error adding to topic model: {e}")
                 traceback.print_exc()
 
+    def search_chunks(self, notebook_id: str, query_text: str, top_k: int = 5) -> List[Dict]:
+        """Public API: Search for relevant chunks in a notebook's vector store.
+        
+        Simple vector similarity search without LLM generation.
+        Use this when you need raw chunks (e.g., visual generation, slide content).
+        
+        Args:
+            notebook_id: The notebook to search in
+            query_text: Text to search for (will be embedded)
+            top_k: Number of results to return
+            
+        Returns:
+            List of chunk dicts with 'text', 'source_id', 'filename', etc.
+            Empty list if table doesn't exist or has no data.
+        """
+        try:
+            table = self._get_table(notebook_id)
+            if table.count_rows() == 0:
+                return []
+            query_emb = self.encode(query_text)[0].tolist()
+            results = table.search(query_emb).limit(top_k).to_list()
+            return results
+        except Exception as e:
+            print(f"[RAG] search_chunks failed for {notebook_id}: {e}")
+            return []
+
     async def query(
         self,
         notebook_id: str,
@@ -1159,6 +1185,14 @@ Summary:"""
         
         rag_metrics.end_stage(RAGStage.CONTEXT_BUILD)
         print(f"[RAG] Step 4 - Build context: {time.time() - step_start:.2f}s")
+
+        # Step 4b: If query was decomposed, structure context with sub-question awareness
+        if sub_questions and len(sub_questions) > 1:
+            decomposed_note = query_decomposer.build_decomposed_prompt(
+                question, sub_questions, ["(see sources above)"] * len(sub_questions)
+            )
+            context = f"{context}\n\n---\nQuery structure:\n{decomposed_note}"
+            print(f"[RAG] Injected decomposed synthesis structure ({len(sub_questions)} sub-questions)")
 
         # Step 5: Generate answer
         rag_metrics.start_stage(RAGStage.LLM_GENERATION)
@@ -2020,12 +2054,59 @@ Answer with [N] citations:"""
         follow_up_questions = await followup_task
         print(f"[RAG STREAM] Step 7 - Follow-ups ready: {time.time() - step_start:.2f}s")
 
-        # Step 7b: CaRR verification (v1.1.0) - verify answer is grounded in citations
+        # Step 7b: CaRR verification loop (v1.2) — verify + conditional retry via LangGraph
         verification_result = None
+        carr_retried = False
         try:
             from services.citation_verifier import citation_verifier
             verification_result = citation_verifier.verify_answer(full_answer, citations)
             print(f"[RAG STREAM] CaRR verification: score={verification_result.overall_score:.2f}, risk={verification_result.hallucination_risk}")
+
+            # If high hallucination risk, retry once with grounding instructions
+            if verification_result.hallucination_risk == "high":
+                try:
+                    from agents.carr_graph import verified_generate
+                    yield {"type": "status", "message": "🔍 Verifying answer quality..."}
+
+                    carr_result = await verified_generate(
+                        system_prompt=system_prompt,
+                        user_prompt=prompt,
+                        citations=citations,
+                        deep_think=deep_think,
+                        use_fast_model=use_fast_model,
+                        max_retries=1,
+                    )
+                    if carr_result.get("retried") and carr_result.get("answer"):
+                        # Replace the streamed answer with the verified one
+                        new_answer = carr_result["answer"]
+                        # Strip references section from retry answer
+                        for marker in ["\nReferences:", "\nreferences\n", "\nSources:\n"]:
+                            idx = new_answer.lower().find(marker.lower())
+                            if idx > 0:
+                                new_answer = new_answer[:idx]
+                                break
+
+                        # Send a replace event so frontend can swap in the better answer
+                        yield {"type": "replace_answer", "content": new_answer}
+                        full_answer = new_answer
+                        carr_retried = True
+
+                        # Update verification from the CaRR graph result
+                        carr_verif = carr_result.get("verification")
+                        if carr_verif:
+                            verification_result = type(verification_result)(
+                                overall_score=carr_verif.get("score", verification_result.overall_score),
+                                hallucination_risk=carr_verif.get("hallucination_risk", "medium"),
+                                feedback=carr_verif.get("feedback", ""),
+                                claims=[],
+                                fully_supported_count=carr_verif.get("fully_supported", 0),
+                                partially_supported_count=carr_verif.get("partially_supported", 0),
+                                unsupported_count=carr_verif.get("unsupported", 0),
+                                no_citation_count=carr_verif.get("no_citation", 0),
+                            )
+                        print(f"[RAG STREAM] CaRR retry complete: new score={verification_result.overall_score:.2f}")
+                except Exception as carr_err:
+                    print(f"[RAG STREAM] CaRR retry failed (non-fatal): {carr_err}")
         except Exception as e:
             print(f"[RAG STREAM] CaRR verification failed (non-fatal): {e}")
 
@@ -2035,7 +2116,8 @@ Answer with [N] citations:"""
             "verification": {
                 "score": verification_result.overall_score if verification_result else None,
                 "hallucination_risk": verification_result.hallucination_risk if verification_result else None,
-                "feedback": verification_result.feedback if verification_result else None
+                "feedback": verification_result.feedback if verification_result else None,
+                "retried": carr_retried,
             } if verification_result else None
         }
 
@@ -2336,12 +2418,13 @@ Answer concisely with inline [N] citations:"""
             "memory_context_summary": memory_context.core_memory_block[:200] if memory_context.core_memory_block else None
         }
     
-    async def _call_ollama(self, system_prompt: str, prompt: str, model: str = None, num_predict: int = 500, num_ctx: int = None) -> str:
+    async def _call_ollama(self, system_prompt: str, prompt: str, model: str = None, num_predict: int = 500, num_ctx: int = None, temperature: float = None) -> str:
         """Call Ollama API
         
         Args:
             num_predict: Max tokens to generate. 500 for chat Q&A, 2000-4000 for documents.
             num_ctx: Context window size. None = Ollama default. Set higher (8192+) for long generation.
+            temperature: LLM temperature. None = Ollama default (~0.7).
         """
         # Use very long timeout - LLM generation can take minutes for complex queries
         timeout = httpx.Timeout(10.0, read=600.0)  # 10s connect, 10 min read
@@ -2351,6 +2434,8 @@ Answer concisely with inline [N] citations:"""
         options = {"num_predict": num_predict}
         if num_ctx is not None:
             options["num_ctx"] = num_ctx
+        if temperature is not None:
+            options["temperature"] = temperature
         async with httpx.AsyncClient(timeout=timeout) as client:
             print(f"Calling Ollama with model: {use_model}, num_predict: {num_predict}, num_ctx: {num_ctx or 'default'}")
             response = await client.post(
@@ -2367,7 +2452,7 @@ Answer concisely with inline [N] citations:"""
             print(f"Ollama response received, length: {len(result.get('response', ''))}")
             return result.get("response", "No response from LLM")
 
-    async def _stream_ollama(self, system_prompt: str, prompt: str, deep_think: bool = False, use_fast_model: bool = False, num_predict: Optional[int] = None) -> AsyncGenerator[str, None]:
+    async def _stream_ollama(self, system_prompt: str, prompt: str, deep_think: bool = False, use_fast_model: bool = False, num_predict: Optional[int] = None, temperature_override: Optional[float] = None) -> AsyncGenerator[str, None]:
         """Stream response from Ollama API with stop sequences to prevent citation lists
         
         Args:
@@ -2375,6 +2460,7 @@ Answer concisely with inline [N] citations:"""
             use_fast_model: Use phi4-mini (System 1) instead of olmo-3:7b-instruct (System 2)
             num_predict: Override token limit. None = use defaults (400 chat / 800 deep think).
                          Set higher (2000-4000) for document generation.
+            temperature_override: Per-skill adaptive temperature. None = use model defaults.
         """
         timeout = httpx.Timeout(10.0, read=600.0)
         
@@ -2383,12 +2469,12 @@ Answer concisely with inline [N] citations:"""
         # - System 2 (olmo-3:7b-instruct): Synthesis, complex queries, Deep Think
         if use_fast_model and not deep_think:
             model = settings.ollama_fast_model
-            temperature = 0.7
+            temperature = temperature_override or 0.7
             top_p = 0.9
         else:
             model = settings.ollama_model
             # Lower temperature for Deep Think mode (more focused reasoning)
-            temperature = 0.5 if deep_think else 0.7
+            temperature = temperature_override or (0.5 if deep_think else 0.7)
             top_p = 0.9
         
         # Stop sequences to prevent LLM from generating citation/reference lists

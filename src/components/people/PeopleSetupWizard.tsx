@@ -205,7 +205,7 @@ export const PeopleSetupWizard: React.FC<PeopleSetupWizardProps> = ({
 
       // Trigger first collection
       peopleService.collectAll(notebookId)
-        .then(() => console.log('[People Wizard] First collection triggered'))
+        .then(() => {})
         .catch(err => console.error('[People Wizard] First collection failed:', err));
 
       onComplete();

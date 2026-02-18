@@ -266,7 +266,7 @@ export const SiteSearch: React.FC<SiteSearchProps> = ({
           <select
             value={timeRange}
             onChange={(e) => setTimeRange(e.target.value as TimeRange)}
-            className="text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            className="text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
           >
             {TIME_RANGE_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -282,7 +282,7 @@ export const SiteSearch: React.FC<SiteSearchProps> = ({
         
         {/* Hint */}
         <p className="text-xs text-gray-500 dark:text-gray-400">
-          💡 Type <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">youtube.com</code> then press <kbd className="bg-gray-100 dark:bg-gray-700 px-1 rounded">TAB</kbd> to search that site
+          💡 Type <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded-lg">youtube.com</code> then press <kbd className="bg-gray-100 dark:bg-gray-700 px-1 rounded-lg">TAB</kbd> to search that site
         </p>
       </div>
       
@@ -325,7 +325,7 @@ export const SiteSearch: React.FC<SiteSearchProps> = ({
                 </a>
                 
                 <div className="flex items-center gap-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  <span className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
+                  <span className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded-lg">
                     {result.source_site}
                   </span>
                   {result.author && <span>by {result.author}</span>}
@@ -342,10 +342,10 @@ export const SiteSearch: React.FC<SiteSearchProps> = ({
                 {result.metadata && (
                   <div className="flex flex-wrap gap-2 mt-2">
                     {result.metadata.duration && (
-                      <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-1.5 py-0.5 rounded">🎬 {result.metadata.duration}</span>
+                      <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-1.5 py-0.5 rounded-lg">🎬 {result.metadata.duration}</span>
                     )}
                     {result.metadata.read_time && !result.metadata.duration && (
-                      <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-1.5 py-0.5 rounded">📖 {result.metadata.read_time}</span>
+                      <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-1.5 py-0.5 rounded-lg">📖 {result.metadata.read_time}</span>
                     )}
                     {result.metadata.view_count && (
                       <span className="text-xs text-gray-500 dark:text-gray-400">👁️ {result.metadata.view_count}</span>
@@ -372,7 +372,7 @@ export const SiteSearch: React.FC<SiteSearchProps> = ({
                   <img
                     src={result.thumbnail}
                     alt=""
-                    className="w-24 h-16 object-cover rounded"
+                    className="w-24 h-16 object-cover rounded-lg"
                   />
                 )}
                 {/* Add Button - positioned below thumbnail or standalone */}
@@ -380,7 +380,7 @@ export const SiteSearch: React.FC<SiteSearchProps> = ({
                   <button
                     onClick={() => handleAddSingle(result.url, result.title)}
                     disabled={addedUrls.has(result.url) && !failedUrls.has(result.url)}
-                    className={`w-7 h-7 flex items-center justify-center rounded text-sm font-bold transition-all ${
+                    className={`w-7 h-7 flex items-center justify-center rounded-lg text-sm font-bold transition-all ${
                       failedUrls.has(result.url)
                         ? 'bg-red-500 text-white cursor-pointer hover:bg-red-600'
                         : addedUrls.has(result.url)

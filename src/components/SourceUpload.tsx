@@ -26,12 +26,10 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
 
   const processFiles = async (files: FileList | File[]) => {
     if (!notebookId) {
-      console.log('No notebook ID');
       return;
     }
 
     const fileArray = Array.from(files);
-    console.log(`Starting batch upload: ${fileArray.length} files to notebook:`, notebookId);
 
     // Initialize upload statuses
     const statuses: FileUploadStatus[] = fileArray.map(file => ({
@@ -56,7 +54,6 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
 
       try {
         await sourceService.upload(notebookId, file);
-        console.log('Upload successful:', file.name);
         successCount++;
 
         // Update status to success
@@ -199,7 +196,7 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
             {isDragging ? 'Drop files here' : 'Drag and drop files here, or click to browse'}
           </p>
           <div className="flex items-end gap-2">
-            <p className="flex-1 text-[10px] leading-tight text-gray-500 dark:text-gray-400">
+            <p className="flex-1 text-xs leading-tight text-gray-500 dark:text-gray-400">
               PDF, DOCX, PPTX, XLSX, ODS, CSV, EPUB, Jupyter, ODT, RTF, LaTeX, SVG, Images (OCR/HEIC), Audio, Video
             </p>
             <svg
@@ -250,7 +247,7 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
             {uploadStatuses.map((status, idx) => (
             <div
               key={idx}
-              className="flex items-center gap-2 text-xs p-2 rounded bg-gray-50 dark:bg-gray-800"
+              className="flex items-center gap-2 text-xs p-2 rounded-lg bg-gray-50 dark:bg-gray-800"
             >
               <div className="flex-shrink-0">
                 {getStatusIcon(status.status)}

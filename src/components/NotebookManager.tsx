@@ -44,24 +44,32 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   const [inferredConfig, setInferredConfig] = useState<any>(null);
 
   useEffect(() => {
-    console.log('NotebookManager mounted, loading notebooks...');
     loadNotebooks();
   }, []);
 
   // Refresh when refreshTrigger changes
   useEffect(() => {
     if (refreshTrigger !== undefined && refreshTrigger > 0) {
-      console.log('NotebookManager refreshTrigger changed, reloading notebooks...', refreshTrigger);
       loadNotebooks();
     }
   }, [refreshTrigger]);
 
+  // Listen for canvas PPTX action — opens export modal for the selected notebook
+  useEffect(() => {
+    const handleOpenExport = () => {
+      if (selectedNotebookId) {
+        setNotebookToExport(selectedNotebookId);
+        setShowExportModal(true);
+      }
+    };
+    window.addEventListener('openExportModal', handleOpenExport);
+    return () => window.removeEventListener('openExportModal', handleOpenExport);
+  }, [selectedNotebookId]);
+
   const loadNotebooks = async () => {
     try {
-      console.log('Loading notebooks from API...');
       setError(null);
       const data = await notebookService.list();
-      console.log('Notebooks loaded:', data);
       setNotebooks(data);
       if (data.length > 0 && !selectedNotebookId) {
         onNotebookSelect(data[0].id);
@@ -75,7 +83,6 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
           setPrimaryNotebookId(prefsData.primary_notebook_id);
         }
       } catch (e) {
-        console.log('Failed to load primary notebook preference');
       }
     } catch (err) {
       console.error('Failed to load notebooks:', err);
@@ -143,7 +150,6 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
             const suggested = await curatorService.inferConfig(files);
             setInferredConfig(suggested);
           } catch (err) {
-            console.log('[NotebookManager] Config inference failed (non-fatal):', err);
           }
         }
       }
@@ -184,77 +190,60 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   };
 
   const handleExportClick = (id: string) => {
-    console.log('Export clicked for notebook:', id);
     setNotebookToExport(id);
     setShowExportModal(true);
-    console.log('Export modal state set to true');
   };
 
-  const handleExport = async (format: 'markdown' | 'html' | 'pdf') => {
-    console.log('handleExport called with format:', format);
-    console.log('notebookToExport:', notebookToExport);
+  const handleExport = async (format: 'markdown' | 'html' | 'pdf' | 'pptx', pptxTheme?: 'light' | 'dark' | 'corporate' | 'academic') => {
 
     if (!notebookToExport) {
-      console.log('No notebook to export, returning');
       return;
     }
 
-    console.log('Starting export...');
     setExporting(true);
     setError(null);
 
     try {
-      console.log('About to call exportService.exportNotebook');
       if (format === 'pdf') {
-        console.log('PDF format - generating PDF with jsPDF');
 
         // Get notebook info and sources
         const notebook = notebooks.find(nb => nb.id === notebookToExport);
         const notebookTitle = notebook?.title || 'Notebook';
 
         // Fetch sources for the notebook
-        console.log('Fetching sources for notebook:', notebookToExport);
         const sources = await sourceService.list(notebookToExport);
-        console.log('Sources fetched:', sources);
 
         // Generate PDF
-        console.log('Generating PDF...');
         const blob = await exportService.generatePDF(notebookTitle, sources);
-        console.log('PDF generated, blob size:', blob.size);
 
         const filename = `${notebookTitle.replace(/\s+/g, '_')}.pdf`;
-        console.log('Saving PDF as:', filename);
 
         await exportService.downloadBlob(blob, filename);
 
         setShowExportModal(false);
         setNotebookToExport(null);
-        console.log('PDF export complete');
       } else {
-        console.log(`${format} format - downloading directly`);
-        // For markdown and HTML, download directly
+        // For markdown, HTML, and PPTX, download via backend
         const blob = await exportService.exportNotebook({
           notebookId: notebookToExport,
           format,
           includeSourcesContent: false,
+          ...(format === 'pptx' && pptxTheme ? { pptxTheme } : {}),
         });
-        console.log('Got blob:', blob);
 
         const notebook = notebooks.find(nb => nb.id === notebookToExport);
-        const filename = `${notebook?.title.replace(/\s+/g, '_') || 'notebook'}.${format === 'markdown' ? 'md' : format}`;
-        console.log('Downloading as:', filename);
+        const ext = format === 'markdown' ? 'md' : format;
+        const filename = `${notebook?.title.replace(/\s+/g, '_') || 'notebook'}.${ext}`;
 
         await exportService.downloadBlob(blob, filename);
         setShowExportModal(false);
         setNotebookToExport(null);
-        console.log('Download complete');
       }
     } catch (err) {
       console.error('Export error caught:', err);
       console.error('Error details:', err);
       setError(err instanceof Error ? err.message : 'Failed to export notebook');
     } finally {
-      console.log('Export finally block');
       setExporting(false);
     }
   };
@@ -275,7 +264,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
         <button
           onClick={() => setShowCreateModal(true)}
           disabled={creating}
-          className="flex items-center gap-1 px-2 py-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors disabled:opacity-50"
+          className="flex items-center gap-1 px-2 py-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50"
           title="New Notebook"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -362,7 +351,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                               handleSetPrimary(selectedNotebook.id);
                             }
                           }}
-                          className={`text-xs px-2 py-1 rounded transition-colors ${
+                          className={`text-xs px-2 py-1 rounded-lg transition-colors ${
                             primaryNotebookId === selectedNotebook.id
                               ? 'text-purple-500 cursor-default'
                               : 'text-purple-500 hover:text-purple-600 hover:bg-purple-100 dark:hover:bg-purple-900/30 cursor-pointer'
@@ -377,7 +366,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                             setNewlyCreatedNotebook(selectedNotebook);
                             setShowCollectorSetup(true);
                           }}
-                          className="text-gray-500 hover:text-green-600 text-xs px-2 py-1 rounded hover:bg-green-100 dark:hover:bg-green-900/30 transition-colors"
+                          className="text-gray-500 hover:text-green-600 text-xs px-2 py-1 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/30 transition-colors"
                           title="Configure Collector"
                         >
                           ⚙
@@ -387,7 +376,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                             e.stopPropagation();
                             handleExportClick(selectedNotebook.id);
                           }}
-                          className="text-gray-500 hover:text-blue-600 text-xs px-2 py-1 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+                          className="text-gray-500 hover:text-blue-600 text-xs px-2 py-1 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
                           title="Export"
                         >
                           ↓
@@ -397,7 +386,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                             e.stopPropagation();
                             handleDeleteClick(selectedNotebook.id);
                           }}
-                          className="text-gray-500 hover:text-red-600 text-xs px-2 py-1 rounded hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+                          className="text-gray-500 hover:text-red-600 text-xs px-2 py-1 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
                           title="Delete"
                         >
                           ✕
@@ -412,7 +401,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                   <div className="mt-2">
                     <button
                       onClick={() => setShowOtherNotebooks(!showOtherNotebooks)}
-                      className="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                      className="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
                     >
                       <span className="flex items-center gap-2">
                         <svg 
@@ -435,7 +424,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
                         {otherNotebooks.map((notebook) => (
                           <div
                             key={notebook.id}
-                            className="group p-2 rounded border border-gray-200 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-700 cursor-pointer transition"
+                            className="group p-2 rounded-lg border border-gray-200 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-700 cursor-pointer transition"
                             onClick={() => {
                               onNotebookSelect(notebook.id);
                               setShowOtherNotebooks(false);
@@ -559,6 +548,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
         onClose={() => setShowExportModal(false)}
         onExport={handleExport}
         exporting={exporting}
+        notebookId={notebookToExport}
       />
 
       {/* Collector Setup Wizard */}

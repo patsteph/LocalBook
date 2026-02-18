@@ -284,7 +284,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                             disabled={isSearching}
                         />
                         {query.trim() && isUrl(query.trim()) && (
-                            <span className="absolute right-3 top-2.5 text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded">
+                            <span className="absolute right-3 top-2.5 text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded-lg">
                                 URL
                             </span>
                         )}
@@ -300,7 +300,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
 
                 {/* Error Message */}
                 {error && (
-                    <div className="mt-2 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded text-sm text-red-700 dark:text-red-400">
+                    <div className="mt-2 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-700 dark:text-red-400">
                         {error}
                     </div>
                 )}
@@ -318,7 +318,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                                 className="flex items-center gap-1.5 hover:text-blue-600 dark:hover:text-blue-400 disabled:opacity-50 disabled:cursor-not-allowed group"
                                 title="Scrapes and adds all results to your notebook sources"
                             >
-                                <span className="w-5 h-5 flex items-center justify-center rounded bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 group-hover:bg-blue-200 dark:group-hover:bg-blue-900/50 text-sm font-bold">+</span>
+                                <span className="w-5 h-5 flex items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 group-hover:bg-blue-200 dark:group-hover:bg-blue-900/50 text-sm font-bold">+</span>
                                 <span>Add All</span>
                                 <span className="text-gray-400 dark:text-gray-500">({results.length - addedUrls.size} remaining)</span>
                             </button>
@@ -352,7 +352,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                                             
                                             {/* Source badge and read time */}
                                             <div className="flex items-center gap-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                                <span className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
+                                                <span className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded-lg">
                                                     {(() => {
                                                         try {
                                                             return new URL(result.url).hostname.replace('www.', '');
@@ -362,7 +362,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                                                     })()}
                                                 </span>
                                                 {result.read_time && (
-                                                    <span className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">
+                                                    <span className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded-lg">
                                                         📖 {result.read_time}
                                                     </span>
                                                 )}
@@ -376,7 +376,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                                         <button
                                             onClick={() => handleAddSingle(result.url)}
                                             disabled={addedUrls.has(result.url) && !failedUrls.has(result.url)}
-                                            className={`w-7 h-7 flex-shrink-0 flex items-center justify-center rounded text-sm font-bold transition-all ${
+                                            className={`w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-lg text-sm font-bold transition-all ${
                                                 failedUrls.has(result.url)
                                                     ? 'bg-red-500 text-white cursor-pointer hover:bg-red-600'
                                                     : addedUrls.has(result.url)
@@ -437,7 +437,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                                 {existingSources.map((source) => (
                                     <div
                                         key={source.id}
-                                        className="p-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded text-xs"
+                                        className="p-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-xs"
                                     >
                                         <p className="font-medium text-gray-800 dark:text-gray-200 truncate">
                                             {source.title}

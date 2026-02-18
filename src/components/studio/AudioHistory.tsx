@@ -52,14 +52,14 @@ export const AudioHistory: React.FC<AudioHistoryProps> = ({
               Hide
             </button>
           </div>
-          <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded text-sm text-blue-900 dark:text-blue-100">
+          <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg text-sm text-blue-900 dark:text-blue-100">
             ✓ <strong>Content generated successfully!</strong> Audio is now being generated and will appear below when ready (usually 1-2 minutes).
           </div>
           <details className="mb-3">
             <summary className="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer hover:text-gray-900 dark:hover:text-white">
               View Generated Content
             </summary>
-            <div className="mt-2 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap max-h-64 overflow-y-auto bg-white dark:bg-gray-800 p-3 rounded border border-gray-200 dark:border-gray-600">
+            <div className="mt-2 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap max-h-64 overflow-y-auto bg-white dark:bg-gray-800 p-3 rounded-lg border border-gray-200 dark:border-gray-600">
               {generatedScript}
             </div>
           </details>
@@ -81,7 +81,7 @@ export const AudioHistory: React.FC<AudioHistoryProps> = ({
                 <div className="flex justify-between items-start mb-2">
                   <div className="flex-1">
                     <span
-                      className={`inline-block px-2 py-0.5 text-xs rounded ${getStatusColor(gen.status)}`}
+                      className={`inline-block px-2 py-0.5 text-xs rounded-lg ${getStatusColor(gen.status)}`}
                     >
                       {gen.status}
                     </span>
@@ -130,7 +130,7 @@ export const AudioHistory: React.FC<AudioHistoryProps> = ({
                 )}
 
                 {gen.status === 'failed' && gen.error_message && (
-                  <div className="mt-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded">
+                  <div className="mt-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg">
                     <p className="text-sm font-medium text-red-800 dark:text-red-200 mb-1">
                       ❌ Generation Failed
                     </p>
@@ -146,7 +146,7 @@ export const AudioHistory: React.FC<AudioHistoryProps> = ({
                     <summary className="text-sm text-blue-600 cursor-pointer hover:text-blue-700">
                       View Content
                     </summary>
-                    <div className="mt-2 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap max-h-48 overflow-y-auto bg-gray-50 dark:bg-gray-800 p-3 rounded">
+                    <div className="mt-2 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap max-h-48 overflow-y-auto bg-gray-50 dark:bg-gray-800 p-3 rounded-lg">
                       {gen.script}
                     </div>
                   </details>

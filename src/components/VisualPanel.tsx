@@ -53,7 +53,7 @@ const RefinementChat: React.FC<RefinementChatProps> = ({ notebookId, currentCode
             key={r.label}
             onClick={() => handleRefine(r.instruction)}
             disabled={refining}
-            className="px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50"
+            className="px-2 py-1 text-xs rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50"
           >
             {r.label}
           </button>
@@ -65,13 +65,13 @@ const RefinementChat: React.FC<RefinementChatProps> = ({ notebookId, currentCode
           value={refineInput}
           onChange={(e) => setRefineInput(e.target.value)}
           placeholder="Refine: 'focus on X', 'add connections'..."
-          className="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+          className="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
           onKeyDown={(e) => e.key === 'Enter' && handleRefine(refineInput)}
         />
         <button
           onClick={() => handleRefine(refineInput)}
           disabled={refining || !refineInput.trim()}
-          className="px-3 py-1 text-xs rounded bg-purple-500 text-white hover:bg-purple-600 disabled:opacity-50"
+          className="px-3 py-1 text-xs rounded-lg bg-purple-500 text-white hover:bg-purple-600 disabled:opacity-50"
         >
           {refining ? '...' : '✨'}
         </button>
@@ -124,6 +124,7 @@ const validateMermaidCode = async (code: string): Promise<boolean> => {
 interface VisualPanelProps {
   notebookId: string;
   initialContent?: string; // For "Create Visual" from chat
+  onVisualGenerated?: (mermaidCode: string, title: string) => void;
 }
 
 type DiagramType = 'mindmap' | 'flowchart' | 'timeline' | 'classDiagram' | 'quadrant' | 'auto';
@@ -203,7 +204,7 @@ const EXAMPLE_PROMPTS = [
   'Pros and cons of remote vs hybrid work',
 ];
 
-export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialContent = '' }) => {
+export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialContent = '', onVisualGenerated }) => {
   const [loading, setLoading] = useState(false);
   const [loadingAlternatives, setLoadingAlternatives] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -267,6 +268,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
       setKeyPoints(result.key_points);
       if (validatedDiagrams.length > 0) {
         setSelectedDiagram(validatedDiagrams[0]);
+        onVisualGenerated?.(validatedDiagrams[0].code || '', validatedDiagrams[0].title || topic || 'Visual');
       } else if (rawDiagrams.length > 0) {
         setError('Generated diagram had syntax errors. Try regenerating.');
       }
@@ -547,7 +549,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
                     key={t.id}
                     onClick={() => selectAdvancedTemplate(t.id)}
                     title={t.desc}
-                    className={`px-2 py-1 text-xs rounded border transition-colors ${
+                    className={`px-2 py-1 text-xs rounded-lg border transition-colors ${
                       selectedTemplate === t.id
                         ? 'border-purple-500 bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300'
                         : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-800'
@@ -608,7 +610,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
             <div className="flex gap-1 flex-wrap">
               <button
                 onClick={copyImageToClipboard}
-                className="px-2 py-1 text-xs rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800/40"
+                className="px-2 py-1 text-xs rounded-lg bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800/40"
                 title="Copy image to clipboard"
               >
                 {copied === 'image' ? '✓ Copied!' : '📋 Copy'}
@@ -616,21 +618,21 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
               <button
                 onClick={exportToPNG}
                 disabled={exporting}
-                className="px-2 py-1 text-xs rounded bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800/40 disabled:opacity-50"
+                className="px-2 py-1 text-xs rounded-lg bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800/40 disabled:opacity-50"
                 title="Download as PNG"
               >
                 📷 PNG
               </button>
               <button
                 onClick={exportToSVG}
-                className="px-2 py-1 text-xs rounded bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-800/40"
+                className="px-2 py-1 text-xs rounded-lg bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-800/40"
                 title="Download as SVG"
               >
                 🎨 SVG
               </button>
               <button
                 onClick={() => copyCodeToClipboard(selectedDiagram.code || selectedDiagram.svg || '')}
-                className="px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+                className="px-2 py-1 text-xs rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
                 title="Copy code"
               >
                 {copied === 'code' ? '✓ Copied!' : '📝 Code'}
@@ -666,7 +668,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
               <MermaidRenderer code={selectedDiagram.code || ''} className="border border-gray-200 dark:border-gray-700" />
             )}
             <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 dark:group-hover:bg-white/5 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
-              <span className="bg-black/70 text-white text-xs px-2 py-1 rounded">
+              <span className="bg-black/70 text-white text-xs px-2 py-1 rounded-lg">
                 🔍 Click to expand
               </span>
             </div>
@@ -725,7 +727,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
                 <div className="font-medium text-gray-900 dark:text-white truncate">
                   {(d as any).template_name || d.diagram_type}
                 </div>
-                <div className="text-gray-500 dark:text-gray-400 text-[10px] mt-0.5">
+                <div className="text-gray-500 dark:text-gray-400 text-xs mt-0.5">
                   {i === 0 ? '⭐ Recommended' : d.diagram_type}
                 </div>
               </button>
@@ -733,12 +735,12 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
             {loadingAlternatives && (
               <>
                 <div className="p-2 text-xs rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 animate-pulse">
-                  <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4 mb-1"></div>
-                  <div className="h-3 bg-gray-100 dark:bg-gray-800 rounded w-1/2"></div>
+                  <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded-lg w-3/4 mb-1"></div>
+                  <div className="h-3 bg-gray-100 dark:bg-gray-800 rounded-lg w-1/2"></div>
                 </div>
                 <div className="p-2 text-xs rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 animate-pulse">
-                  <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4 mb-1"></div>
-                  <div className="h-3 bg-gray-100 dark:bg-gray-800 rounded w-1/2"></div>
+                  <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded-lg w-3/4 mb-1"></div>
+                  <div className="h-3 bg-gray-100 dark:bg-gray-800 rounded-lg w-1/2"></div>
                 </div>
               </>
             )}
@@ -754,7 +756,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
         >
           <div 
             ref={lightboxRef}
-            className="bg-white dark:bg-gray-900 rounded-xl max-w-[90vw] max-h-[90vh] overflow-auto p-6 shadow-2xl"
+            className="bg-white dark:bg-gray-900 rounded-lg max-w-[90vw] max-h-[90vh] overflow-auto p-6 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex justify-between items-start mb-4">

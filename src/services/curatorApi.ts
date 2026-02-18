@@ -4,10 +4,14 @@
 import { API_BASE_URL } from './api';
 
 export interface CuratorConfig {
-  notebook_id: string;
-  personality: string;
-  focus_areas: string[];
-  proactive: boolean;
+  name?: string;
+  personality?: string;
+  focus_areas?: string[];
+  proactive?: boolean;
+  oversight?: {
+    overwatch_enabled?: boolean;
+    excluded_notebook_ids?: string[];
+  };
 }
 
 class CuratorService {
@@ -67,6 +71,11 @@ class CuratorService {
       body: JSON.stringify({ notebook_id: notebookId, query, answer }),
     });
     if (!response.ok) return null;
+    return response.json();
+  }
+  async getNotebooks(): Promise<{ id: string; title: string; source_count: number }[]> {
+    const response = await fetch(`${API_BASE_URL}/notebooks`);
+    if (!response.ok) throw new Error('Failed to fetch notebooks');
     return response.json();
   }
 }

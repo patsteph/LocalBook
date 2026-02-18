@@ -40,7 +40,7 @@ export const VisualSkeleton: React.FC<VisualSkeletonProps> = ({
         {/* Skeleton structure */}
         <div className="relative z-10 p-4 flex flex-col h-full">
           {/* Title skeleton */}
-          <div className="h-4 w-32 bg-gray-700 rounded mb-4 animate-pulse" />
+          <div className="h-4 w-32 bg-gray-700 rounded-lg mb-4 animate-pulse" />
           
           {/* Content skeleton - mimics a hub-spoke diagram */}
           <div className="flex-1 flex items-center justify-center">
@@ -51,10 +51,10 @@ export const VisualSkeleton: React.FC<VisualSkeletonProps> = ({
               {/* Spoke nodes */}
               {!compact && (
                 <>
-                  <div className="absolute -top-12 left-1/2 -translate-x-1/2 w-12 h-8 bg-gray-700 rounded animate-pulse" style={{ animationDelay: '0.1s' }} />
-                  <div className="absolute top-1/2 -right-16 -translate-y-1/2 w-12 h-8 bg-gray-700 rounded animate-pulse" style={{ animationDelay: '0.2s' }} />
-                  <div className="absolute -bottom-12 left-1/2 -translate-x-1/2 w-12 h-8 bg-gray-700 rounded animate-pulse" style={{ animationDelay: '0.3s' }} />
-                  <div className="absolute top-1/2 -left-16 -translate-y-1/2 w-12 h-8 bg-gray-700 rounded animate-pulse" style={{ animationDelay: '0.4s' }} />
+                  <div className="absolute -top-12 left-1/2 -translate-x-1/2 w-12 h-8 bg-gray-700 rounded-lg animate-pulse" style={{ animationDelay: '0.1s' }} />
+                  <div className="absolute top-1/2 -right-16 -translate-y-1/2 w-12 h-8 bg-gray-700 rounded-lg animate-pulse" style={{ animationDelay: '0.2s' }} />
+                  <div className="absolute -bottom-12 left-1/2 -translate-x-1/2 w-12 h-8 bg-gray-700 rounded-lg animate-pulse" style={{ animationDelay: '0.3s' }} />
+                  <div className="absolute top-1/2 -left-16 -translate-y-1/2 w-12 h-8 bg-gray-700 rounded-lg animate-pulse" style={{ animationDelay: '0.4s' }} />
                 </>
               )}
             </div>

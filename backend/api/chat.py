@@ -21,6 +21,7 @@ class ChatQuery(BaseModel):
     llm_provider: Optional[str] = None
     deep_think: Optional[bool] = False  # Enable Deep Think mode with chain-of-thought reasoning
     use_orchestrator: Optional[bool] = True  # v0.60: Auto-detect complex queries and decompose
+    target: Optional[str] = None  # v1.4: @mention routing — 'curator', 'collector', or None for default RAG
 
 
 class WebSource(BaseModel):
@@ -106,7 +107,39 @@ async def query(chat_query: ChatQuery):
 
 @router.post("/query/stream")
 async def query_stream(chat_query: ChatQuery):
-    """Query the RAG system with streaming response"""
+    """Query the RAG system with streaming response.
+    
+    Routes to specialized agents when target is set via @mention:
+    - target='curator': Cross-notebook synthesis via Curator agent
+    - target='collector': Collection status/commands via Collector
+    - target=None: Default RAG pipeline
+    """
+    
+    # @mention routing — delegate to specialized agent streams
+    if chat_query.target == "curator":
+        return StreamingResponse(
+            _stream_curator(chat_query),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+    if chat_query.target == "collector":
+        return StreamingResponse(
+            _stream_collector(chat_query),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+    
+    # Fallback intent detection: auto-route cross-notebook queries to Curator
+    # Uses fast regex first; only invokes LLM classifier if regex is inconclusive
+    if chat_query.target is None:
+        from agents.supervisor import is_cross_notebook_query
+        if is_cross_notebook_query(chat_query.question):
+            print(f"[Chat] Auto-routing cross-notebook query to Curator: '{chat_query.question[:60]}...'")
+            return StreamingResponse(
+                _stream_curator(chat_query),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
     
     # CRITICAL: Clear visual cache for this notebook when new question is asked
     # This prevents stale visuals from a previous question being shown
@@ -150,6 +183,163 @@ async def query_stream(chat_query: ChatQuery):
             "Connection": "keep-alive",
         }
     )
+
+
+async def _stream_curator(chat_query: ChatQuery):
+    """Stream a Curator response with cross-notebook RAG search in SSE format."""
+    from agents.curator import curator
+    from services.cross_notebook_search import cross_notebook_search
+    from services.ollama_client import ollama_client
+
+    yield f"data: {json.dumps({'type': 'status', 'message': '🧭 Curator searching across notebooks...', 'query_type': 'curator'})}\n\n"
+
+    try:
+        # Respect curator config for excluded notebooks
+        excluded = []
+        try:
+            cfg = curator.get_config()
+            oversight = cfg.get("oversight", {})
+            if isinstance(oversight, dict):
+                excluded = oversight.get("excluded_notebook_ids", [])
+        except Exception:
+            pass
+
+        # Cross-notebook RAG search
+        search_result = await cross_notebook_search.search(
+            query=chat_query.question,
+            exclude_notebook_ids=excluded or None,
+            top_k=10,
+            top_k_per_notebook=4,
+        )
+        results = search_result["results"]
+        nb_count = search_result["notebooks_searched"]
+
+        yield f"data: {json.dumps({'type': 'status', 'message': f'🧭 Curator found {len(results)} results across {nb_count} notebooks', 'query_type': 'curator'})}\n\n"
+
+        if not results:
+            # Fallback to conversational reply when no RAG content
+            reply = await curator.conversational_reply(
+                message=chat_query.question,
+                notebook_id=chat_query.notebook_id,
+            )
+        else:
+            # Build context from cross-notebook results
+            context = cross_notebook_search.build_context(results, max_chars=8000)
+
+            # Build citations for frontend
+            citations = []
+            seen = set()
+            for i, r in enumerate(results):
+                key = (r["source_id"], r["chunk_index"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                citations.append({
+                    "number": len(citations) + 1,
+                    "source_id": r["source_id"],
+                    "filename": f"{r['notebook_title']} / {r['filename']}",
+                    "chunk_index": r["chunk_index"],
+                    "text": r["text"][:300],
+                    "snippet": r["text"][:120],
+                    "confidence": max(0, 1.0 - r.get("_distance", 0.5)),
+                    "confidence_level": "high" if r.get("_distance", 1) < 0.4 else "medium",
+                })
+
+            # Emit citations
+            yield f"data: {json.dumps({'type': 'citations', 'citations': citations, 'sources': list(set(r['filename'] for r in results)), 'low_confidence': len(citations) < 2})}\n\n"
+
+            # Generate synthesis using LLM
+            prompt = f"""You are {curator.name}, a cross-notebook research curator.
+
+The user asked: {chat_query.question}
+
+Here is relevant content found across {nb_count} notebooks:
+
+{context}
+
+Synthesize a comprehensive answer that:
+1. Draws connections across notebooks
+2. Cites sources using [1], [2], etc. matching the citation numbers
+3. Notes any contradictions or complementary perspectives
+4. Is concise but thorough
+
+Answer:"""
+
+            reply = ""
+            try:
+                response = await ollama_client.generate(
+                    prompt=prompt,
+                    system=f"You are {curator.name}, a research curator who synthesizes knowledge across multiple research notebooks. Personality: {curator.personality}",
+                    model=settings.default_model,
+                    temperature=0.5,
+                )
+                reply = response.get("response", "I couldn't generate a synthesis. Please try rephrasing your question.")
+            except Exception as gen_err:
+                reply = f"Synthesis generation failed: {gen_err}"
+
+        # Stream reply as tokens
+        chunk_size = 12
+        for i in range(0, len(reply), chunk_size):
+            yield f"data: {json.dumps({'type': 'token', 'content': reply[i:i+chunk_size]})}\n\n"
+
+        yield f"data: {json.dumps({'type': 'done', 'follow_up_questions': ['What patterns exist across all notebooks?', 'Compare the key findings', 'What contradictions do you see?'], 'curator_name': curator.name})}\n\n"
+
+        # Log the interaction
+        try:
+            log_chat_qa(chat_query.notebook_id, f"@curator {chat_query.question}", reply, [r["source_id"] for r in results] if results else [])
+        except Exception:
+            pass
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        yield f"data: {json.dumps({'error': f'Curator error: {e}'})}\n\n"
+
+
+async def _stream_collector(chat_query: ChatQuery):
+    """Stream a Collector response in SSE format — ask mode only for now."""
+    from storage.source_store import source_store
+    from agents.collector import collector
+
+    yield f"data: {json.dumps({'type': 'status', 'message': '📡 Collector checking status...', 'query_type': 'collector'})}\n\n"
+
+    try:
+        notebook_id = chat_query.notebook_id
+        sources = await source_store.list(notebook_id)
+        source_count = len(sources)
+
+        pending = [s for s in sources if s.get("status") != "completed"]
+        recent = sorted(sources, key=lambda s: s.get("created_at", ""), reverse=True)[:5]
+
+        config = None
+        try:
+            config = collector.load_config(notebook_id)
+        except Exception:
+            pass
+
+        lines = [f"Here's your collection status for this notebook:\n"]
+        lines.append(f"- **{source_count}** total sources indexed")
+        if pending:
+            lines.append(f"- **{len(pending)}** sources still processing")
+        if recent:
+            lines.append(f"\n**Recent sources:**")
+            for s in recent:
+                lines.append(f"- {s.get('filename', 'Unknown')} ({s.get('format', 'file').upper()}, {s.get('status', 'unknown')})")
+        if config:
+            schedule = getattr(config, 'collection_schedule', None) or config.get('collection_schedule', 'manual') if isinstance(config, dict) else 'manual'
+            lines.append(f"\n**Schedule:** {schedule}")
+
+        reply = "\n".join(lines)
+
+        chunk_size = 12
+        for i in range(0, len(reply), chunk_size):
+            yield f"data: {json.dumps({'type': 'token', 'content': reply[i:i+chunk_size]})}\n\n"
+
+        yield f"data: {json.dumps({'type': 'done', 'follow_up_questions': ['Find new sources about this topic', 'Show approval queue', 'What sources need attention?']})}\n\n"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        yield f"data: {json.dumps({'error': f'Collector error: {e}'})}\n\n"
 
 
 class ChatHistoryMessage(BaseModel):

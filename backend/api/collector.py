@@ -98,6 +98,49 @@ async def collect_now(notebook_id: str, specific_query: Optional[str] = None):
         raise HTTPException(status_code=500, detail=error_msg)
 
 
+@router.post("/{notebook_id}/collect-now/v2")
+async def collect_now_v2(notebook_id: str, specific_query: Optional[str] = None):
+    """LangGraph-powered collection pipeline with checkpointing and approval interrupts.
+    
+    If items need user approval, returns status='awaiting_approval' with a thread_id
+    and pending items. Call POST /collector/{notebook_id}/resume-approval with the
+    thread_id and approved item IDs to continue.
+    """
+    import traceback
+    try:
+        from agents.collection_graph import run_collection
+        result = await run_collection(
+            notebook_id=notebook_id,
+            specific_query=specific_query,
+            timeout_seconds=120,
+        )
+        return result
+    except Exception as e:
+        error_msg = f"Collection failed: {type(e).__name__}: {str(e)}"
+        print(f"[COLLECT-NOW-V2] Error: {error_msg}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+class ResumeApprovalRequest(BaseModel):
+    thread_id: str
+    approved_item_ids: List[str]
+
+
+@router.post("/{notebook_id}/resume-approval")
+async def resume_approval(notebook_id: str, request: ResumeApprovalRequest):
+    """Resume a paused LangGraph collection pipeline after user approves items."""
+    try:
+        from agents.collection_graph import resume_approval as _resume
+        result = await _resume(
+            thread_id=request.thread_id,
+            approved_item_ids=request.approved_item_ids,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Resume failed: {e}")
+
+
 @router.get("/{notebook_id}/pending")
 async def get_pending_approvals(notebook_id: str):
     """Get items pending approval"""

@@ -249,7 +249,7 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
                           <button
                             onClick={handleCollectNow}
                             disabled={collecting}
-                            className={`px-3 py-1 text-white text-xs font-medium rounded transition-colors flex items-center gap-1.5 ${
+                            className={`px-3 py-1 text-white text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5 ${
                               collecting ? 'bg-blue-500 cursor-wait' : 'bg-blue-600 hover:bg-blue-700'
                             }`}
                           >
@@ -336,7 +336,7 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
                       {config.focus_areas.slice(0, 5).map((area, i) => (
                         <span 
                           key={i}
-                          className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 rounded text-xs"
+                          className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 rounded-lg text-xs"
                         >
                           {area}
                         </span>

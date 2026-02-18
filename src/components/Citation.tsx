@@ -47,7 +47,7 @@ export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) =>
         >
           <div className={`bg-white dark:bg-gray-800 rounded-lg shadow-lg border ${confidenceBadge.border} p-3`}>
             <div className="flex items-center gap-2 mb-2">
-              <span className={`px-1.5 py-0.5 text-xs rounded ${confidenceBadge.bg} ${confidenceBadge.text}`}>
+              <span className={`px-1.5 py-0.5 text-xs rounded-lg ${confidenceBadge.bg} ${confidenceBadge.text}`}>
                 {confidenceBadge.icon} {Math.round(citation.confidence * 100)}%
               </span>
               <span className="text-xs text-gray-500 dark:text-gray-400 truncate flex-1">{citation.filename}</span>
@@ -68,7 +68,7 @@ export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) =>
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
                   <h3 className="font-semibold text-lg">Citation [{citation.number}]</h3>
-                  <span className={`px-2 py-0.5 text-xs rounded ${confidenceBadge.bg} ${confidenceBadge.text}`}>
+                  <span className={`px-2 py-0.5 text-xs rounded-lg ${confidenceBadge.bg} ${confidenceBadge.text}`}>
                     {confidenceBadge.icon} {confidenceBadge.label} ({citation.confidence}%)
                   </span>
                 </div>
@@ -88,7 +88,7 @@ export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) =>
             {/* Content */}
             <div className="p-4">
               <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Source Text:</h4>
-              <div className="bg-gray-50 p-4 rounded border border-gray-200">
+              <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
                 <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
                   {citation.text}
                 </p>
@@ -105,14 +105,14 @@ export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) =>
                     const searchTerm = citation.text.substring(0, 50).trim();
                     onViewSource(citation.source_id, citation.filename, searchTerm);
                   }}
-                  className="flex-1 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-sm"
+                  className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
                 >
                   📄 View Full Source
                 </button>
               )}
               <button
                 onClick={() => setShowFull(false)}
-                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm"
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
               >
                 Close
               </button>

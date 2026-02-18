@@ -52,7 +52,7 @@ const DrawerSection: React.FC<DrawerSectionProps> = ({ title, icon, isOpen, onTo
         <span className="text-gray-500 dark:text-gray-400">{icon}</span>
         <span className="text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">{title}</span>
         {badge !== undefined && badge > 0 && (
-          <span className="px-1.5 py-0.5 text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 rounded-full">
+          <span className="px-1.5 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 rounded-full">
             {badge}
           </span>
         )}
@@ -94,7 +94,7 @@ const WebResearchDrawerContent: React.FC<{ notebookId: string | null; onOpenModa
         </button>
       </div>
       {!notebookId && (
-        <p className="text-[10px] text-gray-400 italic">Select a notebook first</p>
+        <p className="text-xs text-gray-400 italic">Select a notebook first</p>
       )}
     </div>
   );
@@ -184,6 +184,28 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
           onUploadComplete={onUploadComplete}
         />
         <div className="border-t border-gray-100 dark:border-gray-700/50" />
+        {selectedNotebookId && (
+          <button
+            onClick={() => {
+              // Open a fresh note in the universal canvas
+              ctx.clearCanvas();
+              ctx.addCanvasItem({
+                type: 'note',
+                title: '',
+                content: '',
+                collapsed: false,
+              });
+              ctx.navigateToChat();
+            }}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+            New Note
+          </button>
+        )}
+        <div className="border-t border-gray-100 dark:border-gray-700/50" />
         <div>
           <SourcesList
             key={`${selectedNotebookId}-${refreshSources}`}
@@ -196,6 +218,8 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
           />
         </div>
       </DrawerSection>
+
+      {/* Note editor now lives in the universal canvas */}
 
       {/* Collector drawer */}
       <DrawerSection
@@ -245,13 +269,13 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
           className="w-full flex items-center justify-between px-3 h-9 bg-gray-50/80 dark:bg-gray-900/60 flex-shrink-0 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
         >
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Studio</span>
+            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Studio</span>
             <div className="flex items-center gap-0.5 ml-1">
               {STUDIO_TABS.map(tab => (
                 <span
                   key={tab.id}
                   onClick={(e) => { e.stopPropagation(); setStudioTab(tab.id); }}
-                  className={`px-1.5 py-0.5 rounded text-[11px] cursor-pointer transition-colors ${
+                  className={`px-1.5 py-0.5 rounded-lg text-xs cursor-pointer transition-colors ${
                     studio.activeTab === tab.id
                       ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
                       : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
@@ -280,6 +304,15 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
               initialTab={studio.activeTab}
               onTabChange={(tab) => setStudioTab(tab)}
               hideHeader
+              onContentGenerated={(content, skillName) => {
+                ctx.openPanel('content-viewer', { content, title: skillName });
+              }}
+              onQuizGenerated={(quizHtml, topic) => {
+                ctx.openPanel('quiz-viewer', { content: quizHtml, title: topic });
+              }}
+              onVisualGenerated={(mermaidCode, title) => {
+                ctx.openPanel('visual-viewer', { content: mermaidCode, title });
+              }}
             />
           </div>
         )}

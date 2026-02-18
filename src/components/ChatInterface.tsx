@@ -21,6 +21,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [deepThink, setDeepThink] = useState(false);  // Deep Think mode toggle
+  const [showMentionMenu, setShowMentionMenu] = useState(false);
+  const [mentionFilter, setMentionFilter] = useState('');
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   
   // Handle prefill from external sources
   useEffect(() => {
@@ -101,11 +104,75 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
 
   // Old cycling loading messages removed - now using statusMessage from backend (Phase 1.2)
 
+  // =========================================================================
+  // @Mention Parser & Autocomplete
+  // =========================================================================
+
+  const MENTION_OPTIONS: { key: string; icon: string; desc: string }[] = [
+    { key: 'curator', icon: '🧭', desc: 'Cross-notebook synthesis' },
+    { key: 'collector', icon: '📡', desc: 'Collection status & commands' },
+  ];
+
+  const parseMention = (text: string): { target: string | null; cleanQuestion: string } => {
+    const match = text.match(/^@(curator|collector)\s+([\s\S]*)$/i);
+    if (match) {
+      return { target: match[1].toLowerCase(), cleanQuestion: match[2].trim() };
+    }
+    return { target: null, cleanQuestion: text.trim() };
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setInput(val);
+
+    // Auto-resize textarea
+    const target = e.target;
+    target.style.height = 'auto';
+    target.style.height = Math.min(target.scrollHeight, 120) + 'px';
+
+    // Show @mention menu when user types '@' at the start
+    if (val === '@' || val.match(/^@[a-z]*$/i)) {
+      setShowMentionMenu(true);
+      setMentionFilter(val.slice(1));
+    } else {
+      setShowMentionMenu(false);
+    }
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showMentionMenu && e.key === 'Escape') {
+      setShowMentionMenu(false);
+      e.preventDefault();
+    }
+    if (showMentionMenu && e.key === 'Tab') {
+      const filtered = MENTION_OPTIONS.filter(opt => !mentionFilter || opt.key.includes(mentionFilter.toLowerCase()));
+      if (filtered.length === 1) {
+        insertMention(filtered[0].key);
+        e.preventDefault();
+      }
+    }
+    // Enter to submit, Shift+Enter for newline
+    if (e.key === 'Enter' && !e.shiftKey && !showMentionMenu) {
+      e.preventDefault();
+      if (input.trim() && notebookId && !loading) {
+        handleSubmit(e as any);
+      }
+    }
+  };
+
+  const insertMention = (key: string) => {
+    setInput(`@${key} `);
+    setShowMentionMenu(false);
+    setMentionFilter('');
+    inputRef.current?.focus();
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || !notebookId || loading) return;
 
-    const currentQuestion = input;
+    const { target, cleanQuestion } = parseMention(input);
+    const currentQuestion = cleanQuestion;
     
     const userMessage: ChatMessage = {
       role: 'user',
@@ -115,6 +182,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
 
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
+    setShowMentionMenu(false);
+    // Reset textarea height after clearing
+    if (inputRef.current) inputRef.current.style.height = 'auto';
     setLoading(true);
     setError(null);
 
@@ -146,6 +216,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
           enable_web_search: false,
           llm_provider: llmProvider,
           deep_think: deepThink,
+          target: target || undefined,
         },
         {
           onMode: (isDeepThink, _autoUpgraded) => {
@@ -239,7 +310,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               tokenBuffer = '';
             }
           },
-          onDone: (followUpQuestions) => {
+          onReplaceAnswer: (content) => {
+            // CaRR retry: replace the entire answer with the verified version
+            currentContent = content;
+            tokenBuffer = '';
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (updated[lastIdx]?.role === 'assistant') {
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  content,
+                  citations: currentCitations,
+                };
+              }
+              return updated;
+            });
+          },
+          onDone: (followUpQuestions, curatorName) => {
             // Finalize the message with follow-up questions and low confidence prompt
             setMessages((prev) => {
               const updated = [...prev];
@@ -276,6 +364,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                   citations: currentCitations,
                   follow_up_questions: followUpQuestions,
                   lowConfidenceQuery,
+                  ...(curatorName ? { curatorName } : {}),
                 };
               }
               return updated;
@@ -497,7 +586,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       {/* Input area */}
       <div className="border-t dark:border-gray-700 px-3 py-2 bg-white dark:bg-gray-800 flex-shrink-0">
         <form onSubmit={handleSubmit}>
-          <div className="flex gap-2 items-center">
+          <div className="flex gap-2 items-end">
             {/* Quick/Deep Toggle - Rabbit vs Brain */}
             <div 
               className="relative flex items-center bg-gray-100 dark:bg-gray-700 rounded-full p-0.5"
@@ -528,15 +617,53 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 🧠
               </button>
             </div>
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={notebookId ? (isTranscribing ? "Transcribing..." : "Ask a question...") : "Select a notebook first"}
-              title={deepThink ? "Deep Think mode: AI will analyze step-by-step for thorough answers" : "Quick mode: Fast, concise responses"}
-              disabled={!notebookId || loading || isTranscribing}
-              className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-700 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-            />
+            <div className="relative flex-1">
+              {/* @mention active target indicator */}
+              {parseMention(input).target && (
+                <span className={`absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold px-1.5 py-0.5 rounded-lg pointer-events-none z-10 ${
+                  parseMention(input).target === 'curator'
+                    ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300'
+                    : 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                }`}>
+                  @{parseMention(input).target}
+                </span>
+              )}
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={handleInputChange}
+                onKeyDown={handleInputKeyDown}
+                placeholder={notebookId ? (isTranscribing ? "Transcribing..." : "Ask a question... (type @ for agents)") : "Select a notebook first"}
+                title={deepThink ? "Deep Think mode: AI will analyze step-by-step for thorough answers" : "Quick mode: Fast, concise responses"}
+                disabled={!notebookId || loading || isTranscribing}
+                rows={1}
+                className={`w-full py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-700 bg-white dark:bg-gray-700 text-gray-900 dark:text-white resize-none min-h-[38px] max-h-[120px] ${
+                  parseMention(input).target ? 'pl-[4.5rem] pr-4' : 'px-4'
+                }`}
+              />
+              {/* @mention autocomplete dropdown */}
+              {showMentionMenu && (
+                <div className="absolute bottom-full left-0 mb-1 w-64 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 py-1 overflow-hidden">
+                  <div className="px-3 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">Agents</div>
+                  {MENTION_OPTIONS
+                    .filter(opt => !mentionFilter || opt.key.includes(mentionFilter.toLowerCase()))
+                    .map(opt => (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        onMouseDown={(e) => { e.preventDefault(); insertMention(opt.key); }}
+                        className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                      >
+                        <span className="text-base">{opt.icon}</span>
+                        <div>
+                          <span className="font-medium">@{opt.key}</span>
+                          <span className="text-xs text-gray-400 ml-2">{opt.desc}</span>
+                        </div>
+                      </button>
+                    ))}
+                </div>
+              )}
+            </div>
             {/* Mic button for voice input */}
             <button
               type="button"

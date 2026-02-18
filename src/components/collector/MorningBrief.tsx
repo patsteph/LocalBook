@@ -103,7 +103,7 @@ export const MorningBrief: React.FC<MorningBriefProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-xl max-w-lg w-full mx-4 overflow-hidden shadow-2xl">
+      <div className="bg-white dark:bg-gray-800 rounded-lg max-w-lg w-full mx-4 overflow-hidden shadow-2xl">
         {/* Header */}
         <div className="bg-gradient-to-r from-blue-500 to-purple-600 p-6 text-white">
           <div className="flex items-center gap-3 mb-2">

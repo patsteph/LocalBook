@@ -96,3 +96,13 @@ export function findFirstLeafId(node: LayoutNode): string {
 export function makeDefaultLayout(): LayoutNode {
   return { type: 'leaf', id: 'main', view: 'chat' };
 }
+
+// Canvas workspace item — content stacked in the universal canvas
+export interface CanvasItem {
+  id: string;
+  type: 'document' | 'visual' | 'quiz' | 'audio' | 'chat-response' | 'note';
+  title: string;
+  content: string;       // markdown, mermaid code, quiz HTML, audio URL, chat markdown, or editable note text
+  collapsed: boolean;
+  timestamp: number;
+}

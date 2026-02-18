@@ -268,7 +268,7 @@ export const SourceReview: React.FC<SourceReviewProps> = ({
       >
         <div className="flex items-start gap-3">
           <div className={`
-            w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 mt-0.5
+            w-5 h-5 rounded-lg border-2 flex items-center justify-center flex-shrink-0 mt-0.5
             ${isSelected 
               ? 'border-blue-500 bg-blue-500 text-white' 
               : 'border-gray-300 dark:border-gray-600'
@@ -284,12 +284,12 @@ export const SourceReview: React.FC<SourceReviewProps> = ({
               </span>
               <span className="font-medium truncate text-gray-900 dark:text-gray-100">{source.name}</span>
               {isAutoApproved && (
-                <span className="text-xs bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 px-1.5 py-0.5 rounded">
+                <span className="text-xs bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 px-1.5 py-0.5 rounded-lg">
                   Recommended
                 </span>
               )}
               {isSkipped && (
-                <span className="text-xs bg-gray-100 text-gray-500 dark:bg-gray-800 px-1.5 py-0.5 rounded">
+                <span className="text-xs bg-gray-100 text-gray-500 dark:bg-gray-800 px-1.5 py-0.5 rounded-lg">
                   Lower relevance
                 </span>
               )}
@@ -350,7 +350,7 @@ export const SourceReview: React.FC<SourceReviewProps> = ({
   if (isLoading) {
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-        <div className="bg-white dark:bg-gray-800 rounded-xl p-4 max-w-lg w-full mx-4 text-center">
+        <div className="bg-white dark:bg-gray-800 rounded-lg p-4 max-w-lg w-full mx-4 text-center">
           <Loader2 className="w-12 h-12 animate-spin mx-auto text-blue-500 mb-4" />
           <h3 className="text-base font-semibold mb-2 text-gray-900 dark:text-gray-100">Discovering Sources...</h3>
           <p className="text-gray-500 dark:text-gray-400">
@@ -382,7 +382,7 @@ if (showPeopleWizard) {
 if (showPurposeClarification) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-xl p-4 max-w-lg w-full mx-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 max-w-lg w-full mx-4">
         <h3 className="text-base font-semibold mb-2 flex items-center gap-2 text-gray-900 dark:text-gray-100">
           <Sparkles className="w-5 h-5 text-blue-500" />
           Help us understand your goal
@@ -440,7 +440,7 @@ if (showCompanyClarification) {
   
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-xl p-4 max-w-lg w-full mx-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 max-w-lg w-full mx-4">
         <h3 className="text-base font-semibold mb-2 flex items-center gap-2 text-gray-900 dark:text-gray-100">
           <Building2 className="w-5 h-5 text-blue-500" />
           Help us find this company
@@ -504,7 +504,7 @@ if (showCompanyClarification) {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-xl max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col">
+      <div className="bg-white dark:bg-gray-800 rounded-lg max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="p-4 border-b dark:border-gray-700">
           <div className="flex items-center justify-between">
@@ -534,7 +534,7 @@ if (showCompanyClarification) {
                   {intentAnalysis.keywords.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">
                       {intentAnalysis.keywords.slice(0, 5).map((kw, i) => (
-                        <span key={i} className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded text-xs">
+                        <span key={i} className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg text-xs">
                           {kw}
                         </span>
                       ))}

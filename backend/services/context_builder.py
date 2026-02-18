@@ -45,6 +45,7 @@ class ContextProfile:
     use_chunks: bool          # If True, use RAG chunk retrieval instead of raw source content
     chunk_top_k: int          # How many chunks to retrieve when use_chunks=True
     use_map_reduce: bool      # If True, use map-reduce for large source sets
+    temperature: float = 0.60 # LLM temperature — per-skill adaptive
 
 
 # Output-type profiles — tuned to each skill's needs
@@ -52,45 +53,54 @@ CONTEXT_PROFILES: Dict[str, ContextProfile] = {
     # Short, breadth-first outputs
     "summary": ContextProfile(
         max_sources=10, chars_per_source=3000, total_context_chars=16000,
-        strategy="breadth", use_chunks=False, chunk_top_k=0, use_map_reduce=False
+        strategy="breadth", use_chunks=False, chunk_top_k=0, use_map_reduce=False,
+        temperature=0.35  # Factual precision
     ),
     "explain": ContextProfile(
         max_sources=8, chars_per_source=4000, total_context_chars=16000,
-        strategy="depth", use_chunks=False, chunk_top_k=0, use_map_reduce=False
+        strategy="depth", use_chunks=False, chunk_top_k=0, use_map_reduce=False,
+        temperature=0.50  # Clear but engaging
     ),
     
     # Medium outputs — need good coverage
     "briefing": ContextProfile(
         max_sources=15, chars_per_source=4000, total_context_chars=24000,
-        strategy="breadth", use_chunks=True, chunk_top_k=20, use_map_reduce=False
+        strategy="breadth", use_chunks=True, chunk_top_k=20, use_map_reduce=False,
+        temperature=0.35  # Factual precision
     ),
     "faq": ContextProfile(
         max_sources=15, chars_per_source=4000, total_context_chars=24000,
-        strategy="breadth", use_chunks=True, chunk_top_k=20, use_map_reduce=False
+        strategy="breadth", use_chunks=True, chunk_top_k=20, use_map_reduce=False,
+        temperature=0.45  # Thorough but focused
     ),
     "debate": ContextProfile(
         max_sources=15, chars_per_source=5000, total_context_chars=28000,
-        strategy="breadth", use_chunks=True, chunk_top_k=25, use_map_reduce=False
+        strategy="breadth", use_chunks=True, chunk_top_k=25, use_map_reduce=False,
+        temperature=0.65  # Balanced creativity for arguments
     ),
     
     # Large outputs — need comprehensive coverage
     "study_guide": ContextProfile(
         max_sources=20, chars_per_source=5000, total_context_chars=32000,
-        strategy="depth", use_chunks=True, chunk_top_k=30, use_map_reduce=True
+        strategy="depth", use_chunks=True, chunk_top_k=30, use_map_reduce=True,
+        temperature=0.45  # Thorough but focused
     ),
     "deep_dive": ContextProfile(
         max_sources=50, chars_per_source=6000, total_context_chars=40000,
-        strategy="exhaustive", use_chunks=True, chunk_top_k=40, use_map_reduce=True
+        strategy="exhaustive", use_chunks=True, chunk_top_k=40, use_map_reduce=True,
+        temperature=0.45  # Thorough but focused
     ),
     "feynman_curriculum": ContextProfile(
         max_sources=50, chars_per_source=6000, total_context_chars=40000,
-        strategy="exhaustive", use_chunks=True, chunk_top_k=40, use_map_reduce=True
+        strategy="exhaustive", use_chunks=True, chunk_top_k=40, use_map_reduce=True,
+        temperature=0.55  # Teaching clarity
     ),
     
     # Audio — scales with duration (overridden dynamically)
     "podcast_script": ContextProfile(
         max_sources=15, chars_per_source=4000, total_context_chars=24000,
-        strategy="breadth", use_chunks=False, chunk_top_k=0, use_map_reduce=False
+        strategy="breadth", use_chunks=False, chunk_top_k=0, use_map_reduce=False,
+        temperature=0.70  # Conversational naturalness
     ),
     
     # Writing assistant — focused
@@ -102,7 +112,8 @@ CONTEXT_PROFILES: Dict[str, ContextProfile] = {
     # Visual — needs less context but relevant
     "visual": ContextProfile(
         max_sources=5, chars_per_source=2000, total_context_chars=8000,
-        strategy="depth", use_chunks=True, chunk_top_k=10, use_map_reduce=False
+        strategy="depth", use_chunks=True, chunk_top_k=10, use_map_reduce=False,
+        temperature=0.65  # Structured creativity
     ),
     
     # Default fallback

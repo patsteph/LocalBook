@@ -131,7 +131,6 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
     
     // Get connected nodes
     const connected = getConnectedNodes(nodeId);
-    console.log(`Node ${nodeId} has ${connected.size} connections:`, Array.from(connected));
     
     // Store original positions if not already stored
     if (originalPositionsRef.current.size === 0) {
@@ -251,7 +250,6 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
     // Only show labels for the top N most-connected nodes to prevent overlap
     const maxLabels = connCount > 30 ? 12 : connCount > 15 ? 15 : connCount;
     const labeledSet = new Set(connectedArray.slice(0, maxLabels));
-    console.log(`Showing ${visibleConnected.size} connected nodes (${labeledSet.size} labeled)`);
     
     // Scale factor — shrink nodes more when there are many connections
     const connNodeScale = connCount > 30 ? 0.5 : connCount > 15 ? 0.65 : 0.8;
@@ -805,7 +803,6 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
     
     const connectWebSocket = () => {
       if (wsRetryCount >= maxRetries) {
-        console.log('WebSocket not available, using polling fallback');
         return;
       }
       
@@ -813,45 +810,37 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
         const ws = new WebSocket(`${WS_BASE_URL}/constellation/ws`);
         
         ws.onopen = () => {
-          console.log('Constellation WebSocket connected');
           wsRetryCount = 0;  // Reset on successful connection
         };
         
         ws.onmessage = (event) => {
           try {
             const message = JSON.parse(event.data);
-            console.log('WebSocket message:', message.type, message.data);
             
             switch (message.type) {
               case 'connected':
-                console.log('WebSocket confirmed connected');
                 break;
               case 'concept_added':
                 loadGraph();
                 loadStats();
                 break;
               case 'build_progress':
-                console.log('Build progress:', message.data.progress);
                 setBuildProgress(prev => Math.max(prev, message.data.progress));
                 break;
               case 'build_complete':
                 // v0.6.5: BERTopic handles topic discovery automatically
-                console.log('Build complete - topics ready');
                 setBuilding(false);
                 setBuildProgress(100);
                 loadGraph();
                 loadStats();
                 break;
               case 'cluster_progress':
-                console.log('Clustering progress:', message.data.phase, message.data.progress);
                 break;
               case 'cluster_complete':
-                console.log('Clustering complete - refreshing graph with theme colors');
                 loadGraph();
                 loadStats();
                 break;
               case 'enhancement_progress':
-                console.log('Enhancement progress:', message.data);
                 if (message.data.status === 'starting' || message.data.status === 'enhancing') {
                   setEnhancing(true);
                   setEnhanceProgress({ current: message.data.current, total: message.data.total });
@@ -972,14 +961,11 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
         ? `${API_BASE}/graph/all?${params}`
         : `${API_BASE}/graph/notebook/${currentNotebookId}?${params}`;
       
-      console.log('[Constellation] Loading graph from:', endpoint);
       const response = await fetch(endpoint);
       
       if (response.ok) {
         const data: GraphData = await response.json();
-        console.log('[Constellation] Loaded', data.nodes.length, 'nodes,', data.edges.length, 'edges,', data.clusters?.length || 0, 'clusters');
         if (data.clusters && data.clusters.length > 0) {
-          console.log('[Constellation] Cluster colors will be applied:', data.clusters.map(c => c.name).join(', '));
         }
         setGraphData(data);
         updateScene(data);
@@ -992,14 +978,12 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
             if (sourcesRes.ok) {
               const sources = await sourcesRes.json();
               if (Array.isArray(sources) && sources.length >= 3) {
-                console.log(`[Constellation] Auto-triggering topic build for ${currentNotebookId} (${sources.length} sources, 0 topics)`);
                 autoBuiltNotebooks.current.add(currentNotebookId);
                 // Small delay so UI renders the "discovering" state first
                 setTimeout(() => buildConstellation(), 500);
               }
             }
           } catch (err) {
-            console.log('[Constellation] Auto-build check failed:', err);
           }
         }
       } else {
@@ -1017,10 +1001,8 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
   const updateScene = useCallback((data: GraphData) => {
     const scene = sceneRef.current;
     if (!scene) {
-      console.log('[Constellation] updateScene called but scene not ready');
       return;
     }
-    console.log('[Constellation] updateScene with', data.nodes.length, 'nodes');
     
     // Clear existing tracked objects
     nodesRef.current.forEach(mesh => {
@@ -1308,12 +1290,10 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
     try {
       const response = await graphService.buildGraph(notebookId);
       if (response) {
-        console.log('Building constellation - waiting for WebSocket updates...');
         // The WebSocket handler will set building=false when build_complete is received
         // But set a fallback timeout in case WebSocket isn't connected
         setTimeout(() => {
           if (building) {
-            console.log('Build timeout - checking results...');
             setBuilding(false);
             setBuildProgress(100);
             loadGraph();
@@ -1331,7 +1311,6 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
 
   const triggerClustering = async () => {
     try {
-      console.log('Triggering clustering for color coding...');
       await graphService.clusterGraph();
       // cluster_complete WebSocket event will trigger loadGraph/loadStats automatically
       // No need for setTimeout - the event-driven approach is more reliable
@@ -1381,7 +1360,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                   await buildConstellation();
                 }}
                 disabled={building || enhancing || processingSources.size > 0}
-                className="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded text-sm disabled:opacity-50 font-medium whitespace-nowrap"
+                className="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-lg text-sm disabled:opacity-50 font-medium whitespace-nowrap"
                 title={processingSources.size > 0 ? `Processing ${processingSources.size} source(s)...` : enhancing ? `Enhancing theme names (${enhanceProgress.current}/${enhanceProgress.total})` : "Rebuild all topics from scratch"}
               >
                 {building ? '🔄 Rebuilding...' : processingSources.size > 0 ? `📥 Processing ${processingSources.size} source(s)...` : enhancing ? `✨ Updating ${enhanceProgress.current}/${enhanceProgress.total}` : '🔄 Rebuild Topics'}
@@ -1410,7 +1389,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                   }
                 }}
                 disabled={scanningInsights}
-                className={`px-2 py-1 rounded text-xs whitespace-nowrap flex items-center gap-1 ${
+                className={`px-2 py-1 rounded-lg text-xs whitespace-nowrap flex items-center gap-1 ${
                   insightCount > 0 
                     ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400' 
                     : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
@@ -1447,7 +1426,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
             {stats && stats.concepts > 0 && (
               <>
                 {showResetConfirm ? (
-                  <div className="flex items-center gap-1 bg-red-50 dark:bg-red-900/30 px-2 py-1 rounded">
+                  <div className="flex items-center gap-1 bg-red-50 dark:bg-red-900/30 px-2 py-1 rounded-lg">
                     <span className="text-xs text-red-600 dark:text-red-400">Clear?</span>
                     <button
                       onClick={async () => {
@@ -1466,7 +1445,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                         }
                       }}
                       disabled={resetting}
-                      className="text-xs px-1.5 py-0.5 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+                      className="text-xs px-1.5 py-0.5 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
                     >
                       {resetting ? '...' : 'Yes'}
                     </button>
@@ -1564,13 +1543,13 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
             <div className="absolute top-4 left-4 flex gap-2">
               <button
                 onClick={navigateBack}
-                className="px-3 py-1.5 bg-white/90 dark:bg-gray-800/90 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-white rounded text-sm flex items-center gap-1 shadow-sm"
+                className="px-3 py-1.5 bg-white/90 dark:bg-gray-800/90 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-white rounded-lg text-sm flex items-center gap-1 shadow-sm"
               >
                 ← Back
               </button>
               <button
                 onClick={resetToFullView}
-                className="px-3 py-1.5 bg-white/90 dark:bg-gray-800/90 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-white rounded text-sm shadow-sm"
+                className="px-3 py-1.5 bg-white/90 dark:bg-gray-800/90 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-white rounded-lg text-sm shadow-sm"
               >
                 ⟲ Full View
               </button>
@@ -1578,7 +1557,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
           )}
           
           {/* Navigation hints - bottom left */}
-          <div className="absolute bottom-4 left-4 text-xs text-gray-600 dark:text-gray-400 bg-white/70 dark:bg-gray-800/70 px-3 py-2 rounded backdrop-blur-sm shadow-sm">
+          <div className="absolute bottom-4 left-4 text-xs text-gray-600 dark:text-gray-400 bg-white/70 dark:bg-gray-800/70 px-3 py-2 rounded-lg backdrop-blur-sm shadow-sm">
             🖱️ Click node to focus • Drag to rotate • Scroll to zoom
           </div>
         </div>

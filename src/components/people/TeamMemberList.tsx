@@ -161,7 +161,7 @@ export const TeamMemberList: React.FC<TeamMemberListProps> = ({
                 {member.tags.slice(0, 2).map(tag => (
                   <span
                     key={tag}
-                    className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                    className="px-1.5 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
                   >
                     {tag}
                   </span>
@@ -183,7 +183,7 @@ export const TeamMemberList: React.FC<TeamMemberListProps> = ({
                 </div>
                 {/* Last collected */}
                 {lastUpdate && (
-                  <span className="flex items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500">
+                  <span className="flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500">
                     <Clock className="w-3 h-3" /> {getTimeSince(lastUpdate)}
                   </span>
                 )}
@@ -195,7 +195,7 @@ export const TeamMemberList: React.FC<TeamMemberListProps> = ({
                     const diffDays = Math.floor(Math.max(0, Date.now() - d.getTime()) / (1000 * 60 * 60 * 24));
                     const label = diffDays === 0 ? 'Today' : diffDays === 1 ? 'Yesterday' : diffDays < 7 ? `${diffDays}d ago` : d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
                     return (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                      <span className="text-xs px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300">
                         {label}
                       </span>
                     );
@@ -206,7 +206,7 @@ export const TeamMemberList: React.FC<TeamMemberListProps> = ({
               {member.activity_profile?.topics && member.activity_profile.topics.length > 0 && (
                 <div className="flex gap-1 mt-0.5">
                   {member.activity_profile.topics.slice(0, 3).map(topic => (
-                    <span key={topic} className="text-[10px] text-gray-400 dark:text-gray-500">
+                    <span key={topic} className="text-xs text-gray-400 dark:text-gray-500">
                       #{topic}
                     </span>
                   ))}
@@ -219,7 +219,7 @@ export const TeamMemberList: React.FC<TeamMemberListProps> = ({
               <button
                 onClick={(e) => handleCollectMember(e, member.id)}
                 disabled={isMemberCollecting}
-                className="p-1.5 text-gray-400 hover:text-blue-500 rounded"
+                className="p-1.5 text-gray-400 hover:text-blue-500 rounded-lg"
                 title="Collect now"
               >
                 {isMemberCollecting ? (
@@ -231,7 +231,7 @@ export const TeamMemberList: React.FC<TeamMemberListProps> = ({
               <button
                 onClick={(e) => handleDeleteMember(e, member.id, member.name)}
                 disabled={deletingMember === member.id}
-                className="p-1.5 text-gray-400 hover:text-red-500 rounded"
+                className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg"
                 title="Remove person"
               >
                 <Trash2 className="w-4 h-4" />

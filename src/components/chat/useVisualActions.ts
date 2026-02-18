@@ -83,11 +83,10 @@ export function useVisualActions(
     }
   }, [notebookId, setMessages]);
 
-  // Open visual in Studio for full editing
+  // Open visual content in the universal canvas
   const openVisualInStudio = useCallback((content: string) => {
-    sessionStorage.setItem('visualContent', content.substring(0, 2000));
-    window.dispatchEvent(new CustomEvent('openStudioVisual', { 
-      detail: { content: content.substring(0, 2000) } 
+    window.dispatchEvent(new CustomEvent('openCanvasVisual', { 
+      detail: { content } 
     }));
   }, []);
 
@@ -105,7 +104,6 @@ export function useVisualActions(
           template_id: visual.template_id,
         }
       );
-      console.log('[Chat] Visual saved to Findings');
       window.dispatchEvent(new CustomEvent('findingsUpdated'));
     } catch (err) {
       console.error('Failed to save visual:', err);
@@ -137,7 +135,6 @@ export function useVisualActions(
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      console.log('[Chat] Exported visual as SVG');
     } else {
       let svgContent = visual.code;
       
@@ -175,7 +172,6 @@ export function useVisualActions(
               a.click();
               document.body.removeChild(a);
               URL.revokeObjectURL(pngUrl);
-              console.log('[Chat] Exported visual as PNG');
             }
           }, 'image/png');
         }

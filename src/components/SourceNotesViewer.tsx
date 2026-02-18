@@ -124,7 +124,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
     return text.replace(regex, (match) => {
       const index = matchIndex++;
       const isCurrent = index === currentMatchIndex;
-      return `<mark class="${isCurrent ? 'bg-orange-300' : 'bg-yellow-200'} px-1 rounded" data-match-index="${index}">${match}</mark>`;
+      return `<mark class="${isCurrent ? 'bg-orange-300' : 'bg-yellow-200'} px-1 rounded-lg" data-match-index="${index}">${match}</mark>`;
     });
   };
 
@@ -283,7 +283,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
       }
 
       // Add delete button (appears on hover)
-      result += `<button class="hidden group-hover:inline-block absolute -top-6 right-0 text-xs bg-red-500 text-white px-2 py-1 rounded shadow" onclick="window.deleteHighlight('${highlight.highlight_id}')">×</button>`;
+      result += `<button class="hidden group-hover:inline-block absolute -top-6 right-0 text-xs bg-red-500 text-white px-2 py-1 rounded-lg shadow" onclick="window.deleteHighlight('${highlight.highlight_id}')">×</button>`;
 
       result += '</span>';
 
@@ -319,7 +319,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
               {tags.map((tag) => (
                 <span
                   key={tag}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 rounded group"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 rounded-lg group"
                 >
                   {tag}
                   <button
@@ -345,7 +345,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
                       }
                     }}
                     placeholder="Add tag..."
-                    className="px-2 py-0.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 w-24"
+                    className="px-2 py-0.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 w-24"
                     autoFocus
                   />
                   <button
@@ -367,7 +367,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
               ) : (
                 <button
                   onClick={() => setShowTagInput(true)}
-                  className="px-2 py-0.5 text-xs text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded border border-dashed border-gray-300 hover:border-blue-400"
+                  className="px-2 py-0.5 text-xs text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg border border-dashed border-gray-300 hover:border-blue-400"
                 >
                   + Tag
                 </button>
@@ -412,7 +412,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
                     placeholder="Search in document..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    className="flex-1 px-3 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="flex-1 px-3 py-1 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   {totalMatches > 0 && (
                     <>
@@ -422,14 +422,14 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
                       <div className="flex gap-1">
                         <button
                           onClick={() => navigateMatch('prev')}
-                          className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded transition-colors"
+                          className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors"
                           title="Previous match"
                         >
                           ↑
                         </button>
                         <button
                           onClick={() => navigateMatch('next')}
-                          className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded transition-colors"
+                          className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors"
                           title="Next match"
                         >
                           ↓
@@ -491,7 +491,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
 
             <div className="mb-4">
               <p className="text-sm text-gray-700 mb-2">Selected text:</p>
-              <div className="p-3 bg-gray-100 rounded text-sm italic border-l-4 border-gray-400">
+              <div className="p-3 bg-gray-100 rounded-lg text-sm italic border-l-4 border-gray-400">
                 "{pendingHighlight.text.substring(0, 150)}
                 {pendingHighlight.text.length > 150 ? '...' : ''}"
               </div>
@@ -506,7 +506,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
                   <button
                     key={color}
                     onClick={() => setSelectedColor(color)}
-                    className={`w-10 h-10 rounded border-2 transition-all ${
+                    className={`w-10 h-10 rounded-lg border-2 transition-all ${
                       selectedColor === color ? 'border-gray-800 scale-110' : 'border-gray-300'
                     } ${
                       color === 'yellow' ? 'bg-yellow-200' :

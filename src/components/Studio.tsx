@@ -18,9 +18,12 @@ interface StudioProps {
   initialTab?: 'documents' | 'audio' | 'quiz' | 'visual' | 'writing';
   onTabChange?: (tab: 'documents' | 'audio' | 'quiz' | 'visual' | 'writing') => void;
   hideHeader?: boolean;
+  onContentGenerated?: (content: string, skillName: string) => void;
+  onQuizGenerated?: (quizHtml: string, topic: string) => void;
+  onVisualGenerated?: (mermaidCode: string, title: string) => void;
 }
 
-export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent, initialTab, onTabChange, hideHeader }) => {
+export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent, initialTab, onTabChange, hideHeader, onContentGenerated, onQuizGenerated, onVisualGenerated }) => {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<string>('');
   const [audioGenerations, setAudioGenerations] = useState<AudioGeneration[]>([]);
@@ -202,6 +205,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
       setContentSkillName(result.skill_name);
       setSelectedContentId(null); // Clear selection since we just generated new
       loadContentGenerations(); // Refresh list
+      onContentGenerated?.(result.content, result.skill_name);
     } catch (err: any) {
       console.error('Failed to generate:', err);
       setError(err.message || 'Failed to generate content');
@@ -524,12 +528,17 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
 
         {/* Quiz Panel */}
         {activeTab === 'quiz' && (
-          <QuizPanel notebookId={notebookId} initialTopic={quizTopic} initialDifficulty={quizDifficulty} />
+          <QuizPanel notebookId={notebookId} initialTopic={quizTopic} initialDifficulty={quizDifficulty} onQuizGenerated={(quiz) => {
+            const html = quiz.questions.map((q, i) => `<p><strong>Q${i+1}:</strong> ${q.question}</p>`).join('');
+            onQuizGenerated?.(html, quiz.topic || 'Quiz');
+          }} />
         )}
 
         {/* Visual Panel */}
         {activeTab === 'visual' && (
-          <VisualPanel notebookId={notebookId} initialContent={visualContentFromChat} />
+          <VisualPanel notebookId={notebookId} initialContent={visualContentFromChat} onVisualGenerated={(code, title) => {
+            onVisualGenerated?.(code, title);
+          }} />
         )}
 
         {/* Writing Panel */}

@@ -162,7 +162,7 @@ export const UpdatesSection: React.FC = () => {
                                 </h4>
                             </div>
                             {updateInfo.release_notes && (
-                                <div className="mb-4 p-3 bg-white dark:bg-gray-800 rounded text-sm text-gray-600 dark:text-gray-400">
+                                <div className="mb-4 p-3 bg-white dark:bg-gray-800 rounded-lg text-sm text-gray-600 dark:text-gray-400">
                                     <p className="font-medium text-gray-900 dark:text-white mb-1">Release Notes:</p>
                                     <p className="whitespace-pre-wrap">{updateInfo.release_notes}</p>
                                 </div>

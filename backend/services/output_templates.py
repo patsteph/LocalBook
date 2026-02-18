@@ -1205,7 +1205,17 @@ def build_document_prompt(template_id: str, topic: str, style: str, source_count
             "Format clearly with appropriate sections using markdown."
         )
     
+    # Chain-of-Thought: instruct the model to reason before writing
+    cot_instruction = "Before writing, analyze the source material step by step: identify key themes, note contradictions, and plan your structure. Then write your response."
+    
+    # StepBack prompting for Feynman curriculum
+    stepback = ""
+    if template_id == "feynman_curriculum":
+        stepback = "\n\nFIRST PRINCIPLES: Before planning the curriculum, identify the underlying principles and foundational concepts. Build your curriculum from these first principles upward, as Feynman would."
+    
     system_prompt = f"""{template.system_prompt}
+
+{cot_instruction}{stepback}
 
 TARGET AUDIENCE: {template.target_audience}
 TONE: {template.tone}
@@ -1235,6 +1245,8 @@ def build_visual_prompt(template_id: str) -> str:
         return "Create a clear, well-structured Mermaid diagram."
     
     return f"""{template['system_prompt']}
+
+Before generating the diagram, analyze the content step by step: identify the key entities, their relationships, and the best visual structure to represent them.
 
 QUALITY CHECKLIST:
 {chr(10).join(f'- {check}' for check in template['quality_checklist'])}

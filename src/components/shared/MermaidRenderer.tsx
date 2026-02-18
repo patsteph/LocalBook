@@ -91,7 +91,6 @@ export const prewarmMermaid = async (): Promise<boolean> => {
     await mermaid.render('mermaid-warmup', warmupCode);
     
     mermaidWarmedUp = true;
-    console.log('[Mermaid] ✓ Renderer prewarmed');
     return true;
   } catch (err) {
     console.warn('[Mermaid] Prewarm failed:', err);
@@ -253,7 +252,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, classNam
             <p className="text-xs text-red-600 dark:text-red-400 mt-1">{error}</p>
             <details className="mt-2">
               <summary className="text-xs text-red-500 cursor-pointer hover:underline">View raw code</summary>
-              <pre className="mt-2 text-xs bg-gray-900 text-green-400 p-2 rounded overflow-x-auto">
+              <pre className="mt-2 text-xs bg-gray-900 text-green-400 p-2 rounded-lg overflow-x-auto">
                 {code}
               </pre>
             </details>

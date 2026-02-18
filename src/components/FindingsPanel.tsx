@@ -248,21 +248,21 @@ export const FindingsPanel: React.FC<FindingsPanelProps> = ({ notebookId }) => {
                 <div className="flex items-center gap-1 flex-shrink-0">
                   <button
                     onClick={() => handleToggleStar(finding)}
-                    className="p-1 hover:bg-black/10 dark:hover:bg-white/10 rounded"
+                    className="p-1 hover:bg-black/10 dark:hover:bg-white/10 rounded-lg"
                     title={finding.starred ? 'Unstar' : 'Star'}
                   >
                     {finding.starred ? '⭐' : '☆'}
                   </button>
                   <button
                     onClick={() => setExpandedId(expandedId === finding.id ? null : finding.id)}
-                    className="p-1 hover:bg-black/10 dark:hover:bg-white/10 rounded text-sm"
+                    className="p-1 hover:bg-black/10 dark:hover:bg-white/10 rounded-lg text-sm"
                     title={expandedId === finding.id ? 'Collapse' : 'Expand'}
                   >
                     {expandedId === finding.id ? '▼' : '▶'}
                   </button>
                   <button
                     onClick={() => handleDelete(finding.id)}
-                    className="p-1 hover:bg-red-200 dark:hover:bg-red-800/50 rounded text-red-600 dark:text-red-400"
+                    className="p-1 hover:bg-red-200 dark:hover:bg-red-800/50 rounded-lg text-red-600 dark:text-red-400"
                     title="Delete"
                   >
                     ✕
@@ -281,7 +281,7 @@ export const FindingsPanel: React.FC<FindingsPanelProps> = ({ notebookId }) => {
                   {finding.tags.map((tag) => (
                     <span
                       key={tag}
-                      className="px-1.5 py-0.5 text-xs bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 rounded"
+                      className="px-1.5 py-0.5 text-xs bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 rounded-lg"
                     >
                       #{tag}
                     </span>

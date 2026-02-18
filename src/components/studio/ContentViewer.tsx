@@ -1,6 +1,6 @@
 import React from 'react';
-import ReactMarkdown from 'react-markdown';
-import { contentService, ContentGeneration } from '../../services/content';
+import { ContentGeneration } from '../../services/content';
+import { useCanvas } from '../canvas/CanvasContext';
 
 interface ContentViewerProps {
   generatedContent: string;
@@ -29,101 +29,77 @@ export const ContentViewer: React.FC<ContentViewerProps> = ({
   onQuizNav,
   onVisualNav,
 }) => {
+  const ctx = useCanvas();
   const effectiveTopic = topic || 'the research content';
 
   return (
     <>
-      {/* Generated Text Content */}
+      {/* Compact success banner — content lives in the canvas overlay, not here */}
       {generatedContent && (
-        <div className="border border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 rounded-lg p-4">
-          <div className="flex justify-between items-center mb-3">
+        <div className="border border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 rounded-lg p-3">
+          <div className="flex items-center justify-between">
             <h4 className="font-medium text-sm text-green-900 dark:text-green-100">
               ✓ {contentSkillName} Generated
             </h4>
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
               <button
-                onClick={async () => {
-                  try {
-                    await contentService.downloadAsPDF(generatedContent, contentSkillName, contentSkillName.toLowerCase().replace(/\s+/g, '-'));
-                  } catch (err) {
-                    console.error('PDF download failed:', err);
-                  }
-                }}
-                className="text-xs px-2 py-1 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30"
+                onClick={() => ctx.openPanel('content-viewer', { content: generatedContent, title: contentSkillName })}
+                className="text-xs px-2.5 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
               >
-                📥 PDF
+                View in Canvas
               </button>
               <button
                 onClick={onClear}
-                className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+                className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
               >
-                Clear
+                ✕
               </button>
             </div>
           </div>
-          <div className="prose prose-sm dark:prose-invert max-w-none max-h-96 overflow-y-auto bg-white dark:bg-gray-800 p-4 rounded border border-gray-200 dark:border-gray-600 prose-p:my-2 prose-headings:mt-4 prose-headings:mb-1 prose-ul:my-2 prose-li:my-0 prose-hr:my-4">
-            <ReactMarkdown>{generatedContent}</ReactMarkdown>
-          </div>
           {selectedSkill === 'feynman_curriculum' && (
-            <div className="mt-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg">
-              <p className="text-sm font-medium text-blue-900 dark:text-blue-100 mb-2">Test Your Understanding</p>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => onQuizNav(effectiveTopic, 'easy')}
-                  className="text-xs px-3 py-1.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg hover:bg-green-200 dark:hover:bg-green-900/50 border border-green-300 dark:border-green-700"
-                >
-                  Part 1: Foundation Quiz
-                </button>
-                <button
-                  onClick={() => onQuizNav(effectiveTopic, 'medium')}
-                  className="text-xs px-3 py-1.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 rounded-lg hover:bg-yellow-200 dark:hover:bg-yellow-900/50 border border-yellow-300 dark:border-yellow-700"
-                >
-                  Part 2: Building Quiz
-                </button>
-                <button
-                  onClick={() => onQuizNav(effectiveTopic, 'hard')}
-                  className="text-xs px-3 py-1.5 bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 rounded-lg hover:bg-orange-200 dark:hover:bg-orange-900/50 border border-orange-300 dark:border-orange-700"
-                >
-                  Part 3: First Principles Quiz
-                </button>
-                <button
-                  onClick={() => onQuizNav(effectiveTopic, 'hard')}
-                  className="text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/50 border border-red-300 dark:border-red-700"
-                >
-                  Part 4: Mastery Quiz
-                </button>
-              </div>
-            </div>
-          )}
-          {selectedSkill === 'feynman_curriculum' && (
-            <div className="mt-3 p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700 rounded-lg">
-              <p className="text-sm font-medium text-purple-900 dark:text-purple-100 mb-2">Visualize Your Learning</p>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => onVisualNav(`Learning progression for ${effectiveTopic}: show the 4-level Feynman journey from Foundation to Mastery with key concepts at each level`)}
-                  className="text-xs px-3 py-1.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg hover:bg-green-200 dark:hover:bg-green-900/50 border border-green-300 dark:border-green-700"
-                >
-                  🎓 Learning Path
-                </button>
-                <button
-                  onClick={() => onVisualNav(`Knowledge map for ${effectiveTopic}: show all core concepts, how they connect, why they work, and what's still unknown`)}
-                  className="text-xs px-3 py-1.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg hover:bg-blue-200 dark:hover:bg-blue-900/50 border border-blue-300 dark:border-blue-700"
-                >
-                  🧠 Knowledge Map
-                </button>
-                <button
-                  onClick={() => onVisualNav(`Common misconceptions vs reality for ${effectiveTopic}: show what people commonly get wrong and why, with the key insight that resolves confusion`)}
-                  className="text-xs px-3 py-1.5 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/50 border border-red-300 dark:border-red-700"
-                >
-                  ❌➡️✅ Misconceptions
-                </button>
-              </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <button
+                onClick={() => onQuizNav(effectiveTopic, 'easy')}
+                className="text-xs px-2 py-1 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg hover:bg-green-200 dark:hover:bg-green-900/50"
+              >
+                Quiz: Foundation
+              </button>
+              <button
+                onClick={() => onQuizNav(effectiveTopic, 'medium')}
+                className="text-xs px-2 py-1 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 rounded-lg hover:bg-yellow-200 dark:hover:bg-yellow-900/50"
+              >
+                Quiz: Building
+              </button>
+              <button
+                onClick={() => onQuizNav(effectiveTopic, 'hard')}
+                className="text-xs px-2 py-1 bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300 rounded-lg hover:bg-orange-200 dark:hover:bg-orange-900/50"
+              >
+                Quiz: First Principles
+              </button>
+              <button
+                onClick={() => onQuizNav(effectiveTopic, 'hard')}
+                className="text-xs px-2 py-1 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/50"
+              >
+                Quiz: Mastery
+              </button>
+              <button
+                onClick={() => onVisualNav(`Learning progression for ${effectiveTopic}: show the 4-level Feynman journey from Foundation to Mastery with key concepts at each level`)}
+                className="text-xs px-2 py-1 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded-lg hover:bg-purple-200 dark:hover:bg-purple-900/50"
+              >
+                🎓 Learning Path
+              </button>
+              <button
+                onClick={() => onVisualNav(`Knowledge map for ${effectiveTopic}: show all core concepts, how they connect, why they work, and what's still unknown`)}
+                className="text-xs px-2 py-1 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded-lg hover:bg-purple-200 dark:hover:bg-purple-900/50"
+              >
+                🧠 Knowledge Map
+              </button>
             </div>
           )}
         </div>
       )}
 
-      {/* Previous Document Generations */}
+      {/* Previous Document Generations — click opens in canvas */}
       {contentGenerations.length > 0 && (
         <div className="mt-4">
           <h4 className="font-medium text-sm mb-3 text-gray-900 dark:text-white">Previous Documents</h4>
@@ -136,7 +112,10 @@ export const ContentViewer: React.FC<ContentViewerProps> = ({
                     ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20'
                     : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
                 }`}
-                onClick={() => onSelectContent(gen)}
+                onClick={() => {
+                  onSelectContent(gen);
+                  ctx.openPanel('content-viewer', { content: gen.content, title: gen.skill_name });
+                }}
               >
                 <div className="flex justify-between items-start">
                   <div className="flex-1 min-w-0">

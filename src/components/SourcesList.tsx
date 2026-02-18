@@ -1,11 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { BookOpen, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { BookOpen, Trash2, PenLine } from 'lucide-react';
 import { sourceService } from '../services/sources';
 import { Source } from '../types';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
 import { SourceNotesViewer } from './SourceNotesViewer';
+import { useCanvas } from './canvas/CanvasContext';
 import { API_BASE_URL } from '../services/api';
+import { useReconnectingWebSocket } from '../hooks/useReconnectingWebSocket';
 
 interface SourcesListProps {
   notebookId: string | null;
@@ -19,43 +21,25 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewingSource, setViewingSource] = useState<Source | null>(null);
+  const ctx = useCanvas();
   const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
   const [autoTagging, setAutoTagging] = useState(false);
   const [showTagCloud, setShowTagCloud] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
 
-  // WebSocket connection for real-time source updates
-  useEffect(() => {
-    if (!notebookId) return;
-
-    const wsUrl = API_BASE_URL.replace('http', 'ws') + '/constellation/ws';
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        if (message.type === 'source_updated' && message.data?.notebook_id === notebookId) {
-          // Refresh sources list when a source is updated
-          loadSources();
-          // Also refresh notebook counts in header
-          onSourcesChange?.();
-        }
-      } catch (e) {
-        console.error('WebSocket message parse error:', e);
+  // WebSocket connection for real-time source updates (auto-reconnecting)
+  const wsUrl = useMemo(() => API_BASE_URL.replace('http', 'ws') + '/constellation/ws', []);
+  useReconnectingWebSocket({
+    url: wsUrl,
+    enabled: !!notebookId,
+    onMessage: useCallback((message: any) => {
+      if (message.type === 'source_updated' && message.data?.notebook_id === notebookId) {
+        loadSources();
+        onSourcesChange?.();
       }
-    };
-
-    ws.onerror = (e) => console.error('WebSocket error:', e);
-
-    return () => {
-      ws.close();
-      wsRef.current = null;
-    };
-  }, [notebookId, onSourcesChange]);
+    }, [notebookId, onSourcesChange]),
+  });
 
   useEffect(() => {
-    console.log('SourcesList useEffect triggered, notebookId:', notebookId);
     if (notebookId) {
       loadSources();
     } else {
@@ -66,13 +50,10 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   const loadSources = async () => {
     if (!notebookId) return;
 
-    console.log('Loading sources for notebook:', notebookId);
     setLoading(true);
     setError(null);
     try {
       const data = await sourceService.list(notebookId);
-      console.log('Sources loaded:', data);
-      console.log('DEBUG: First source structure:', data[0] ? Object.keys(data[0]) : 'no sources');
       setSources(data);
     } catch (err: any) {
       console.error('Failed to load sources:', err);
@@ -125,7 +106,6 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
     setAutoTagging(true);
     try {
       const result = await sourceService.autoTagAll(notebookId);
-      console.log('[AutoTag]', result.message);
       // Poll for updates as tags are generated in background
       const poll = setInterval(async () => {
         await loadSources();
@@ -166,7 +146,6 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
     );
   }
 
-  console.log('Rendering SourcesList, sources count:', sources.length);
 
   return (
     <div className="px-3 py-2">
@@ -178,7 +157,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
           <button
             onClick={handleAutoTagAll}
             disabled={autoTagging}
-            className="px-2 py-1 text-xs font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30 rounded transition-colors disabled:opacity-50"
+            className="px-2 py-1 text-xs font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30 rounded-lg transition-colors disabled:opacity-50"
             title={`Auto-tag ${untaggedCount} untagged sources`}
           >
             {autoTagging ? 'Tagging...' : `Tag ${untaggedCount} untagged`}
@@ -194,16 +173,16 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
           <div className="flex items-center gap-2 mb-1">
             <button
               onClick={() => setShowTagCloud(!showTagCloud)}
-              className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-600 dark:text-gray-300"
+              className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-gray-600 dark:text-gray-300"
             >
               <span>Tag ☁️</span>
               <span className="opacity-50">{tagCounts.length}</span>
-              <span className="text-[10px] opacity-40">{showTagCloud ? '▲' : '▼'}</span>
+              <span className="text-xs opacity-40">{showTagCloud ? '▲' : '▼'}</span>
             </button>
             {activeTagFilter && (
               <button
                 onClick={() => setActiveTagFilter(null)}
-                className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-blue-600 text-white dark:bg-blue-500 hover:bg-blue-700 dark:hover:bg-blue-600 transition-colors"
+                className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-lg bg-blue-600 text-white dark:bg-blue-500 hover:bg-blue-700 dark:hover:bg-blue-600 transition-colors"
               >
                 {activeTagFilter} <span className="ml-1">✕</span>
               </button>
@@ -218,7 +197,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                     setActiveTagFilter(activeTagFilter === tag ? null : tag);
                     setShowTagCloud(false);
                   }}
-                  className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                  className={`px-2 py-0.5 text-xs rounded-lg transition-colors ${
                     activeTagFilter === tag
                       ? 'bg-blue-600 text-white dark:bg-blue-500'
                       : 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50'
@@ -268,24 +247,50 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                     {source.filename}
                   </p>
                   <div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
-                    <button
-                      onClick={() => setViewingSource(source)}
-                      className="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded transition-colors"
-                      title="View source & notes"
-                    >
-                      <BookOpen size={14} />
-                    </button>
+                    {source.type === 'note' ? (
+                      <button
+                        onClick={async () => {
+                          if (!notebookId) return;
+                          try {
+                            const text = await sourceService.getNoteContent(notebookId, source.id);
+                            ctx.clearCanvas();
+                            ctx.addCanvasItem({
+                              type: 'note',
+                              title: source.filename,
+                              content: text,
+                              collapsed: false,
+                            });
+                            ctx.navigateToChat();
+                          } catch (err) {
+                            console.error('Failed to load note:', err);
+                            ctx.addToast({ type: 'error', title: 'Failed to load note' });
+                          }
+                        }}
+                        className="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
+                        title="Edit note in canvas"
+                      >
+                        <PenLine size={14} />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => setViewingSource(source)}
+                        className="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
+                        title="View source & notes"
+                      >
+                        <BookOpen size={14} />
+                      </button>
+                    )}
                     <button
                       onClick={() => handleDeleteSource(source.id)}
-                      className="p-1 text-gray-300 hover:text-red-600 dark:text-gray-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors"
+                      className="p-1 text-gray-300 hover:text-red-600 dark:text-gray-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
                       title="Delete source"
                     >
                       <Trash2 size={14} />
                     </button>
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-gray-500 dark:text-gray-400 overflow-hidden min-w-0">
-                  <span className="shrink-0">{source.format?.toUpperCase() || 'FILE'}</span>
+                <div className="flex items-center gap-1.5 mt-0.5 text-xs text-gray-500 dark:text-gray-400 overflow-hidden min-w-0">
+                  <span className="shrink-0">{source.type === 'note' ? '📝 NOTE' : (source.format?.toUpperCase() || 'FILE')}</span>
                   <span className="shrink-0 opacity-30">·</span>
                   <span className="shrink-0">{((source.char_count || source.characters || 0) / 1000).toFixed(1)}k</span>
                   {source.status !== 'completed' && (
@@ -300,17 +305,17 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                       {displayTags.map((tag: string) => (
                         <span
                           key={tag}
-                          className={`px-1 rounded truncate max-w-[7rem] ${
+                          className={`px-1 rounded-lg truncate max-w-[7rem] ${
                             tag === activeTagFilter
-                              ? 'bg-blue-600 text-white dark:bg-blue-500 text-[10px]'
-                              : 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300 text-[10px]'
+                              ? 'bg-blue-600 text-white dark:bg-blue-500 text-xs'
+                              : 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300 text-xs'
                           }`}
                         >
                           {tag}
                         </span>
                       ))}
                       {remainingCount > 0 && (
-                        <span className="text-[10px] text-gray-400 shrink-0">+{remainingCount}</span>
+                        <span className="text-xs text-gray-400 shrink-0">+{remainingCount}</span>
                       )}
                     </>
                   )}
@@ -330,6 +335,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
           onClose={() => setViewingSource(null)}
         />
       )}
+
     </div>
   );
 };

@@ -79,6 +79,7 @@ export interface ChatQuery {
   enable_web_search?: boolean;
   llm_provider?: string;
   deep_think?: boolean;  // Enable Deep Think mode with chain-of-thought reasoning
+  target?: string;  // v1.4: @mention routing — 'curator', 'collector', or undefined for default RAG
 }
 
 export interface ChatResponse {

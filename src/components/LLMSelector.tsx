@@ -164,7 +164,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                       {provider.name}
                     </div>
                     {provider.special && provider.available && (
-                      <span className="px-2 py-0.5 text-xs font-medium bg-purple-200 dark:bg-purple-800 text-purple-800 dark:text-purple-200 rounded">
+                      <span className="px-2 py-0.5 text-xs font-medium bg-purple-200 dark:bg-purple-800 text-purple-800 dark:text-purple-200 rounded-lg">
                         Secure
                       </span>
                     )}

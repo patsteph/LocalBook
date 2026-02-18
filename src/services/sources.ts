@@ -13,16 +13,8 @@ export const sourceService = {
     formData.append('notebook_id', notebookId);
     formData.append('file', file);
 
-    console.log('[Upload] Starting upload:', {
-      filename: file.name,
-      size: file.size,
-      type: file.type,
-      notebookId,
-    });
-
     try {
       const response = await api.post('/sources/upload', formData);
-      console.log('[Upload] Success:', response.data);
       return response.data;
     } catch (error: any) {
       console.error('[Upload] Failed:', {
@@ -82,5 +74,24 @@ export const sourceService = {
   async autoTagAll(notebookId: string): Promise<{ message: string; queued: number; already_tagged: number; total: number }> {
     const response = await api.post(`/sources/${notebookId}/auto-tag-all`);
     return response.data;
+  },
+
+  // =========================================================================
+  // Notes as Input (v1.3)
+  // =========================================================================
+
+  async createNote(notebookId: string, title: string, content: string): Promise<Source & { source_id: string }> {
+    const response = await api.post(`/sources/${notebookId}/note`, { title, content });
+    return response.data;
+  },
+
+  async updateNote(notebookId: string, sourceId: string, content: string, title?: string): Promise<Source & { source_id: string }> {
+    const response = await api.put(`/sources/${notebookId}/${sourceId}/note`, { content, title });
+    return response.data;
+  },
+
+  async getNoteContent(notebookId: string, sourceId: string): Promise<string> {
+    const response = await api.get(`/source-viewer/${notebookId}/${sourceId}/content`);
+    return response.data?.content || '';
   },
 };

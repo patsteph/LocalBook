@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import { LayoutNode, PanelView } from './types';
+import { LayoutNode, PanelView, CanvasItem } from './types';
 
 export interface CanvasContextValue {
   // Notebook state
@@ -28,6 +28,14 @@ export interface CanvasContextValue {
   splitPanel: (panelId: string, direction: 'horizontal' | 'vertical', newView: PanelView) => void;
   changePanelView: (panelId: string, view: PanelView) => void;
   layout: LayoutNode;
+
+  // Universal Canvas — stacked content workspace inside the chat area
+  canvasItems: CanvasItem[];
+  addCanvasItem: (item: Omit<CanvasItem, 'id' | 'timestamp'> & { id?: string }) => void;
+  removeCanvasItem: (id: string) => void;
+  updateCanvasItem: (id: string, updates: Partial<Pick<CanvasItem, 'title' | 'content'>>) => void;
+  toggleCanvasItemCollapse: (id: string) => void;
+  clearCanvas: () => void;
 
   // Navigation helpers
   openWebResearch: (query?: string) => void;

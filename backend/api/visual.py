@@ -331,8 +331,20 @@ async def smart_visual(request: SmartVisualRequest):
     import asyncio
     from services.visual_cache import visual_cache
     
-    # Use topic as primary content, optionally supplement with sources
+    # Use topic as primary content, supplement with RAG chunks for richer extraction
     content = request.topic
+    
+    # RAG-direct extraction: pull top chunks from LanceDB for richer visual content
+    try:
+        from services.rag_engine import rag_engine
+        rag_chunks = rag_engine.search_chunks(request.notebook_id, request.topic, top_k=3)
+        if rag_chunks:
+            chunk_texts = [c.get("text", "")[:800] for c in rag_chunks]
+            rag_context = "\n\n".join(chunk_texts)
+            content = f"{request.topic}\n\nSource material:\n{rag_context}"
+            print(f"[Visual] RAG-direct: injected {len(rag_chunks)} chunks ({len(rag_context)} chars)")
+    except Exception as e:
+        print(f"[Visual] RAG-direct extraction failed (non-fatal): {e}")
     
     if request.source_ids:
         sources = await source_store.list(request.notebook_id)
@@ -340,7 +352,7 @@ async def smart_visual(request: SmartVisualRequest):
             filtered = [s for s in sources if s.get("id") in request.source_ids]
             source_content = "\n\n".join([s.get("content", "")[:2000] for s in filtered[:3]])
             if source_content:
-                content = f"{request.topic}\n\nContext from sources:\n{source_content}"
+                content = f"{content}\n\nAdditional context:\n{source_content}"
     
     # Route to best template or use provided one
     if request.template_id:
@@ -363,9 +375,8 @@ async def smart_visual(request: SmartVisualRequest):
                 cached = None
         
         if not cached:
-            # No cache hit - do normal analysis
-            # First try regex pattern analysis
-            template, analysis = visual_router.route(content)
+            # No cache hit - do normal analysis with diversity scoring
+            template, analysis = visual_router.route(content, notebook_id=request.notebook_id)
             
             # If regex patterns have LOW confidence, use LLM to semantically understand the content
             max_confidence = max(analysis.confidence_scores.values()) if analysis.confidence_scores else 0

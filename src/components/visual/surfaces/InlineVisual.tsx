@@ -34,7 +34,7 @@ const VisualModal: React.FC<{
       onClick={onClose}
     >
       <div 
-        className="relative bg-gray-900 rounded-xl border border-gray-700 shadow-2xl max-w-[90vw] max-h-[90vh] overflow-auto"
+        className="relative bg-gray-900 rounded-lg border border-gray-700 shadow-2xl max-w-[90vw] max-h-[90vh] overflow-auto"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal header */}
@@ -204,7 +204,7 @@ export const InlineVisual: React.FC<InlineVisualProps> = ({
             {/* Expand inline toggle */}
             <button
               onClick={() => setExpanded(!expanded)}
-              className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
+              className="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
               title={expanded ? 'Collapse' : 'Expand inline'}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -219,7 +219,7 @@ export const InlineVisual: React.FC<InlineVisualProps> = ({
             {/* Popout to full-size modal */}
             <button
               onClick={() => setShowModal(true)}
-              className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
+              className="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
               title="Open full size (PPT slide view)"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -284,7 +284,7 @@ export const InlineVisual: React.FC<InlineVisualProps> = ({
               <button
                 onClick={handleSubmitGuidance}
                 disabled={!guidance.trim()}
-                className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded transition-colors"
+                className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg transition-colors"
               >
                 Regenerate
               </button>
@@ -301,7 +301,7 @@ export const InlineVisual: React.FC<InlineVisualProps> = ({
                   type="text"
                   value={editedTagline}
                   onChange={(e) => setEditedTagline(e.target.value)}
-                  className="flex-1 px-2 py-1 bg-gray-900 border border-gray-600 rounded text-xs text-gray-200 focus:border-purple-500 focus:outline-none"
+                  className="flex-1 px-2 py-1 bg-gray-900 border border-gray-600 rounded-lg text-xs text-gray-200 focus:border-purple-500 focus:outline-none"
                   placeholder="Add a summary or tagline..."
                   autoFocus
                   onKeyDown={(e) => {
@@ -320,7 +320,7 @@ export const InlineVisual: React.FC<InlineVisualProps> = ({
                     onTaglineChange?.(editedTagline);
                     setIsEditingTagline(false);
                   }}
-                  className="px-2 py-1 text-xs bg-purple-600 hover:bg-purple-500 text-white rounded transition-colors"
+                  className="px-2 py-1 text-xs bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors"
                 >
                   Save
                 </button>
@@ -373,7 +373,7 @@ export const InlineVisual: React.FC<InlineVisualProps> = ({
                 <button
                   key={alt.id}
                   onClick={() => onSelectAlternative(alt)}
-                  className="flex-shrink-0 group relative bg-gray-900 rounded border border-gray-700 hover:border-purple-500 transition-colors overflow-hidden"
+                  className="flex-shrink-0 group relative bg-gray-900 rounded-lg border border-gray-700 hover:border-purple-500 transition-colors overflow-hidden"
                   title={`Switch to: ${alt.title || alt.pattern || 'Alternative'}`}
                 >
                   <div className="w-24 h-16 overflow-hidden">
@@ -385,7 +385,7 @@ export const InlineVisual: React.FC<InlineVisualProps> = ({
                     />
                   </div>
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-gray-900 to-transparent px-1 py-0.5">
-                    <span className="text-[10px] text-gray-300 truncate block capitalize">
+                    <span className="text-xs text-gray-300 truncate block capitalize">
                       {alt.pattern?.replace(/-/g, ' ') || 'Alternative'}
                     </span>
                   </div>

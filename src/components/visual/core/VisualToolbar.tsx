@@ -50,7 +50,7 @@ export const VisualToolbar: React.FC<VisualToolbarProps> = ({
   const [showPaletteMenu, setShowPaletteMenu] = useState(false);
 
   const buttonBase = compact
-    ? 'p-1.5 rounded hover:bg-gray-700 transition-colors'
+    ? 'p-1.5 rounded-lg hover:bg-gray-700 transition-colors'
     : 'p-2 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1.5';
 
   const iconSize = compact ? 'w-4 h-4' : 'w-4 h-4';
@@ -147,7 +147,7 @@ export const VisualToolbar: React.FC<VisualToolbarProps> = ({
                 <button
                   key={p.id}
                   onClick={() => { onPaletteChange(p.id); setShowPaletteMenu(false); }}
-                  className={`w-full px-2 py-1.5 text-left text-sm rounded flex items-center gap-2 ${
+                  className={`w-full px-2 py-1.5 text-left text-sm rounded-lg flex items-center gap-2 ${
                     currentPalette === p.id 
                       ? 'bg-purple-600/30 text-purple-300' 
                       : 'text-gray-300 hover:bg-gray-700'

@@ -515,6 +515,74 @@ RULES:
 }
 
 
+# Color intelligence: content domain → Mermaid style palette
+# Each palette is a list of (fill, stroke) tuples for node styling
+DOMAIN_PALETTES = {
+    "financial": {
+        "keywords": ["revenue", "profit", "margin", "earnings", "fiscal", "budget", "cost", "price", "stock", "investment", "roi", "cash flow"],
+        "fills": ["#dbeafe", "#bfdbfe", "#93c5fd", "#60a5fa", "#3b82f6"],
+        "strokes": ["#1e40af", "#1d4ed8", "#2563eb", "#3b82f6", "#60a5fa"],
+        "accent": "#1e40af",
+    },
+    "growth": {
+        "keywords": ["growth", "increase", "expand", "scale", "adoption", "rise", "improve", "gain", "milestone", "progress"],
+        "fills": ["#dcfce7", "#bbf7d0", "#86efac", "#4ade80", "#22c55e"],
+        "strokes": ["#166534", "#15803d", "#16a34a", "#22c55e", "#4ade80"],
+        "accent": "#166534",
+    },
+    "warning": {
+        "keywords": ["risk", "threat", "decline", "challenge", "crisis", "concern", "issue", "problem", "vulnerability", "danger"],
+        "fills": ["#fef3c7", "#fde68a", "#fcd34d", "#fbbf24", "#f59e0b"],
+        "strokes": ["#92400e", "#b45309", "#d97706", "#f59e0b", "#fbbf24"],
+        "accent": "#92400e",
+    },
+    "technology": {
+        "keywords": ["algorithm", "api", "database", "cloud", "ai", "machine learning", "software", "hardware", "system", "architecture", "code"],
+        "fills": ["#ede9fe", "#ddd6fe", "#c4b5fd", "#a78bfa", "#8b5cf6"],
+        "strokes": ["#4c1d95", "#5b21b6", "#6d28d9", "#7c3aed", "#8b5cf6"],
+        "accent": "#4c1d95",
+    },
+    "health": {
+        "keywords": ["health", "patient", "medical", "clinical", "treatment", "diagnosis", "hospital", "disease", "therapy", "wellness"],
+        "fills": ["#fce7f3", "#fbcfe8", "#f9a8d4", "#f472b6", "#ec4899"],
+        "strokes": ["#831843", "#9d174d", "#be185d", "#db2777", "#ec4899"],
+        "accent": "#831843",
+    },
+    "neutral": {
+        "keywords": [],
+        "fills": ["#f3f4f6", "#e5e7eb", "#d1d5db", "#9ca3af", "#6b7280"],
+        "strokes": ["#374151", "#4b5563", "#6b7280", "#9ca3af", "#d1d5db"],
+        "accent": "#374151",
+    },
+}
+
+
+def detect_content_domain(text: str) -> str:
+    """Detect the content domain from text for color palette selection."""
+    text_lower = text.lower()
+    scores = {}
+    for domain, info in DOMAIN_PALETTES.items():
+        if not info["keywords"]:
+            continue
+        score = sum(1 for kw in info["keywords"] if kw in text_lower)
+        if score > 0:
+            scores[domain] = score
+    if scores:
+        return max(scores, key=scores.get)
+    return "neutral"
+
+
+def get_mermaid_style_block(domain: str, node_count: int = 5) -> str:
+    """Generate Mermaid style directives for the detected content domain."""
+    palette = DOMAIN_PALETTES.get(domain, DOMAIN_PALETTES["neutral"])
+    styles = []
+    for i in range(min(node_count, len(palette["fills"]))):
+        fill = palette["fills"][i]
+        stroke = palette["strokes"][i]
+        styles.append(f"    style N{i} fill:{fill},stroke:{stroke},stroke-width:2px")
+    return "\n".join(styles)
+
+
 class VisualGenerator:
     """Generates high-quality visuals using template-specific prompts."""
     

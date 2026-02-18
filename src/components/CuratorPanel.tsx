@@ -241,7 +241,7 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
                   value={nameInput}
                   onChange={e => setNameInput(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleSaveName()}
-                  className="text-sm font-semibold bg-white dark:bg-gray-800 border border-indigo-300 dark:border-indigo-600 rounded px-2 py-0.5 w-32 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  className="text-sm font-semibold bg-white dark:bg-gray-800 border border-indigo-300 dark:border-indigo-600 rounded-lg px-2 py-0.5 w-32 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   autoFocus
                 />
                 <button
@@ -274,11 +274,11 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
               </div>
             )}
           </div>
-          <span className="text-[10px] text-indigo-500 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-900/40 px-2 py-0.5 rounded-full">
+          <span className="text-xs text-indigo-500 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-900/40 px-2 py-0.5 rounded-full">
             Cross-Notebook Advisor
           </span>
         </div>
-        <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-1 ml-10">
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-10">
           {config?.personality || 'Your research advisor with cross-notebook awareness'}
         </p>
       </div>
@@ -307,7 +307,7 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
                 <button
                   key={i}
                   onClick={() => setInput(suggestion)}
-                  className="text-[10px] px-2.5 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 rounded-full hover:bg-indigo-100 dark:hover:bg-indigo-800/40 border border-indigo-200 dark:border-indigo-700 transition-colors"
+                  className="text-xs px-2.5 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 rounded-full hover:bg-indigo-100 dark:hover:bg-indigo-800/40 border border-indigo-200 dark:border-indigo-700 transition-colors"
                 >
                   {suggestion}
                 </button>
@@ -333,7 +333,7 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
                   <div className="w-4 h-4 rounded-full bg-indigo-600 dark:bg-indigo-500 flex items-center justify-center text-white text-[8px] font-bold">
                     {curatorName.charAt(0).toUpperCase()}
                   </div>
-                  <span className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400">
+                  <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400">
                     {curatorName}
                   </span>
                 </div>
@@ -356,7 +356,7 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
                 <div className="w-4 h-4 rounded-full bg-indigo-600 dark:bg-indigo-500 flex items-center justify-center text-white text-[8px] font-bold">
                   {curatorName.charAt(0).toUpperCase()}
                 </div>
-                <span className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400">
+                <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400">
                   {curatorName}
                 </span>
               </div>

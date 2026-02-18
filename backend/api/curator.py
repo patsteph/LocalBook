@@ -204,7 +204,17 @@ async def curator_overwatch(request: OverwatchRequest):
     
     Called after each RAG answer. Returns an aside if relevant, or null.
     Should be lightweight — only surfaces genuinely useful cross-notebook context.
+    Respects oversight.overwatch_enabled config (defaults to True).
     """
+    # Check if overwatch is disabled in curator config
+    try:
+        cfg = curator.get_config()
+        oversight = cfg.get("oversight", {})
+        if isinstance(oversight, dict) and oversight.get("overwatch_enabled") is False:
+            return {"aside": None, "curator_name": curator.name}
+    except Exception:
+        pass
+
     aside = await curator.generate_overwatch_aside(
         query=request.query,
         answer=request.answer,
