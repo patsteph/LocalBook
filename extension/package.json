@@ -1,7 +1,7 @@
 {
   "name": "localbook-extension",
   "displayName": "LocalBook Companion",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Your research companion - capture, summarize, and explore web content with LocalBook",
   "scripts": {
     "dev": "plasmo dev --no-open",
