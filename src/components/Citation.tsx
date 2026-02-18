@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Citation as CitationType } from '../types';
 
@@ -10,6 +10,8 @@ interface CitationProps {
 export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) => {
   const [showFull, setShowFull] = useState(false);
   const [showHover, setShowHover] = useState(false);
+  const [hoverPos, setHoverPos] = useState<{ top: number; left: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
 
   const confidenceBadge = {
     high: { bg: 'bg-green-100 dark:bg-green-900/30', text: 'text-green-800 dark:text-green-300', icon: '🟢', label: 'High Confidence', border: 'border-green-300 dark:border-green-700' },
@@ -17,20 +19,32 @@ export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) =>
     low: { bg: 'bg-red-100 dark:bg-red-900/30', text: 'text-red-800 dark:text-red-300', icon: '🔴', label: 'Low Confidence', border: 'border-red-300 dark:border-red-700' }
   }[citation.confidence_level];
 
+  const handleMouseEnter = useCallback(() => {
+    if (buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setHoverPos({ top: rect.top, left: rect.left + rect.width / 2 });
+    }
+    setShowHover(true);
+  }, []);
+
   return (
-    <span className="relative inline-block">
+    <span className="inline-block">
       <button
+        ref={buttonRef}
         onClick={() => setShowFull(!showFull)}
-        onMouseEnter={() => setShowHover(true)}
+        onMouseEnter={handleMouseEnter}
         onMouseLeave={() => setShowHover(false)}
         className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:underline font-medium mx-0.5"
       >
         [{citation.number}]
       </button>
 
-      {/* Hover Preview Tooltip */}
-      {showHover && !showFull && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 z-40 pointer-events-none">
+      {/* Hover Preview Tooltip — portalled to body so it's never clipped */}
+      {showHover && !showFull && hoverPos && createPortal(
+        <div
+          className="fixed z-50 w-72 pointer-events-none"
+          style={{ top: hoverPos.top - 8, left: hoverPos.left, transform: 'translate(-50%, -100%)' }}
+        >
           <div className={`bg-white dark:bg-gray-800 rounded-lg shadow-lg border ${confidenceBadge.border} p-3`}>
             <div className="flex items-center gap-2 mb-2">
               <span className={`px-1.5 py-0.5 text-xs rounded ${confidenceBadge.bg} ${confidenceBadge.text}`}>
@@ -42,7 +56,8 @@ export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) =>
             <p className="text-xs text-gray-400 mt-1 italic">Click to view full citation</p>
           </div>
           <div className="absolute left-1/2 -translate-x-1/2 -bottom-1 w-2 h-2 bg-white dark:bg-gray-800 border-r border-b border-gray-200 dark:border-gray-700 transform rotate-45"></div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {showFull && createPortal(

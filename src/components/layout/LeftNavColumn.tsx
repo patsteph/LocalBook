@@ -37,13 +37,16 @@ interface DrawerSectionProps {
   onToggle: () => void;
   children: React.ReactNode;
   badge?: number;
+  flexible?: boolean;
 }
 
-const DrawerSection: React.FC<DrawerSectionProps> = ({ title, icon, isOpen, onToggle, children, badge }) => (
-  <div className="border-t border-gray-200 dark:border-gray-700">
+const DrawerSection: React.FC<DrawerSectionProps> = ({ title, icon, isOpen, onToggle, children, badge, flexible }) => (
+  <div className={`border-t border-gray-200 dark:border-gray-700 ${
+    flexible && isOpen ? 'flex-1 min-h-0 flex flex-col overflow-hidden' : 'flex-shrink-0'
+  }`}>
     <button
       onClick={onToggle}
-      className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+      className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors flex-shrink-0"
     >
       <div className="flex items-center gap-2">
         <span className="text-gray-500 dark:text-gray-400">{icon}</span>
@@ -62,7 +65,9 @@ const DrawerSection: React.FC<DrawerSectionProps> = ({ title, icon, isOpen, onTo
       </svg>
     </button>
     {isOpen && (
-      <div className="animate-in slide-in-from-top-1 duration-200">
+      <div className={`animate-in slide-in-from-top-1 duration-200 ${
+        flexible ? 'flex-1 min-h-0 overflow-y-auto' : ''
+      }`}>
         {children}
       </div>
     )}
@@ -128,7 +133,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
   return (
     <div className="flex flex-col h-full w-full bg-white dark:bg-gray-800 overflow-hidden">
       {/* Drawers area — fills remaining space, scrolls when content exceeds available space */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
+      <div className={`min-h-0 ${studio.expanded ? 'overflow-y-auto flex-shrink' : 'flex-1 flex flex-col overflow-hidden'}`}>
       {/* Notebooks drawer */}
       <DrawerSection
         title="Notebooks"
@@ -172,13 +177,14 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
         }
         isOpen={drawers.sources}
         onToggle={() => toggleDrawer('sources')}
+        flexible
       >
         <SourceUpload
           notebookId={selectedNotebookId || ''}
           onUploadComplete={onUploadComplete}
         />
         <div className="border-t border-gray-100 dark:border-gray-700/50" />
-        <div className="max-h-[40vh] overflow-y-auto">
+        <div>
           <SourcesList
             key={`${selectedNotebookId}-${refreshSources}`}
             notebookId={selectedNotebookId}
@@ -201,8 +207,9 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
         }
         isOpen={drawers.collector}
         onToggle={() => toggleDrawer('collector')}
+        flexible
       >
-        <div className="max-h-[40vh] overflow-y-auto">
+        <div>
           <CollectorPanel
             notebookId={selectedNotebookId}
             notebookName={selectedNotebookName}

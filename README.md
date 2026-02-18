@@ -2,7 +2,7 @@
 
 **Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
-[![Version](https://img.shields.io/badge/version-1.20-blue.svg)](https://github.com/patsteph/LocalBook/releases)
+[![Version](https://img.shields.io/badge/version-1.3-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
 [![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -24,45 +24,38 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v1.20
+## 🎉 What's New in v1.3
 
-### People Profiler & Curator
+### UI & Layout Fixes
+| Fix | Description |
+|-----|-------------|
+| �️ **Flexible Drawers** | Sources and Collector panels expand to fill available space — no more dead space gaps |
+| 💬 **Citation Popups** | Hover tooltips now portal to document body, never clipped by sidebar overflow |
+| 🎨 **Compact Chat Input** | Tighter padding on the chat input bar for more content space |
+| 🎛️ **Studio Drawer** | Restored reliable expand/collapse and tab switching |
+
+### Collector Enhancements
 | Feature | Description |
 |---------|-------------|
-| 👥 **People Profiler** | Coaching/team management notebooks with social platform integration |
-| � **Coaching Notes & Goals** | Track notes, goals, and development plans per person |
-| 🤖 **Curator Agent** | Cross-notebook intelligence, morning briefs, activity tracking |
-| 🧠 **Config Inference** | Drop files into a new notebook and Curator auto-detects the topic |
-
-### Knowledge Constellation v2
-| Feature | Description |
-|---------|-------------|
-| 🌌 **Dynamic Zoom** | Camera distance adapts to node connection density |
-| � **Concentric Rings** | Heavily-connected nodes arranged in layered orbits |
-| 🏷️ **Tag-Based Edges** | Auto-tags create concept connections across sources |
-| � **Smart Labels** | Only top-N labels shown to prevent overlap on dense graphs |
-
-### RAG & Performance
-| Feature | Description |
-|---------|-------------|
-| ⚡ **Parallel Sub-Queries** | Decomposed questions searched concurrently |
-| 📐 **Response Format Detection** | Auto-detect list, code, table, or steps formatting |
-| 📅 **Content Date Extraction** | Auto-detect when documents are FROM, not just uploaded |
-| 📈 **Timeline Enhancements** | Content dates and key dates auto-populate timelines |
-
-### Memory System v2
-| Feature | Description |
-|---------|-------------|
-| 🧠 **Deep Consolidation** | Multi-layer memory compaction and pattern analysis |
-| 📊 **User Signals** | Track engagement patterns to improve recommendations |
-| 🔍 **Search Miss Tracking** | Learn from queries that didn't find good results |
-| 📰 **Daily Summaries** | Auto-generated activity digests |
+| ⏱️ **Expanded Frequencies** | New schedule options: every 2h, 8h, twice daily, every 3 days, manual |
+| 🤖 **Full Curator Pipeline** | Scheduled collections now use smart queries, scoring, and judgment |
+| 🧙 **Frequency Picker** | Set collection frequency during Collector setup wizard |
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history.
 
 ---
 
 ## Previous Releases
+
+<details>
+<summary><strong>v1.20</strong> — People Profiler, Curator Agent, Constellation v2, Memory v2</summary>
+
+- People Profiler with coaching notes, goals, and social platform integration
+- Curator Agent for cross-notebook intelligence, morning briefs, config inference
+- Knowledge Constellation v2: dynamic zoom, concentric rings, tag-based edges, smart labels
+- Parallel sub-queries, response format detection, content date extraction
+- Memory v2: deep consolidation, user signals, search miss tracking, daily summaries
+</details>
 
 <details>
 <summary><strong>v1.10</strong> — Visual Studio, Mermaid prewarm, metrics persistence</summary>
@@ -117,7 +110,7 @@ brew install ollama ffmpeg tesseract python@3.12 node
 
 ### Option 1: Download Release (Recommended)
 
-1. Download `LocalBook-v1.20.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-v1.3.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip and drag `LocalBook.app` to `/Applications`
 3. Launch LocalBook — it will download required AI models on first run
 
@@ -285,7 +278,7 @@ LocalBook/
 ### Building a Release
 
 ```bash
-./release.sh 1.20  # Creates versioned archives for distribution
+./release.sh 1.3  # Creates versioned archives for distribution
 ```
 
 ---
