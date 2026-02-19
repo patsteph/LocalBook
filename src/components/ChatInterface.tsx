@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Compass, Radio } from 'lucide-react';
+import { Compass, Radio, BookOpen, Upload, MessageCircle, Sparkles } from 'lucide-react';
 import { chatService } from '../services/chat';
 import { explorationService } from '../services/exploration';
 import { voiceService } from '../services/voice';
@@ -541,9 +541,55 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
         {messages.length === 0 && (
-          <div className="text-center text-gray-500 dark:text-gray-400 mt-8">
-            <p className="text-base mb-2">👋 Ask me anything about your documents!</p>
-            <p className="text-xs">Upload some documents and start chatting.</p>
+          <div className="flex flex-col items-center justify-center text-center px-6 py-12 max-w-md mx-auto animate-fade-in">
+            {!notebookId ? (
+              <>
+                <div className="w-12 h-12 rounded-full bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center mb-4">
+                  <BookOpen className="w-6 h-6 text-blue-500 dark:text-blue-400" />
+                </div>
+                <h3 className="text-base font-semibold text-gray-800 dark:text-white mb-2">Welcome to LocalBook</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mb-5">Get started in three steps:</p>
+                <div className="w-full space-y-3 text-left">
+                  <div className="flex items-start gap-3 p-2.5 rounded-lg bg-gray-50 dark:bg-gray-800/60">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 text-xs font-bold flex items-center justify-center mt-0.5">1</span>
+                    <div>
+                      <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Create a notebook</p>
+                      <p className="text-xs text-gray-400">Use the sidebar to create your first notebook</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3 p-2.5 rounded-lg bg-gray-50 dark:bg-gray-800/60">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 text-xs font-bold flex items-center justify-center mt-0.5">2</span>
+                    <div>
+                      <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Add sources</p>
+                      <p className="text-xs text-gray-400">Upload PDFs, paste text, or use the Collector</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3 p-2.5 rounded-lg bg-gray-50 dark:bg-gray-800/60">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 text-xs font-bold flex items-center justify-center mt-0.5">3</span>
+                    <div>
+                      <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Start learning</p>
+                      <p className="text-xs text-gray-400">Ask questions, generate visuals, or create study audio</p>
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/30 dark:to-indigo-900/30 flex items-center justify-center mb-4">
+                  <MessageCircle className="w-6 h-6 text-blue-500 dark:text-blue-400" />
+                </div>
+                <h3 className="text-base font-semibold text-gray-800 dark:text-white mb-1">Ready to chat</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mb-5">Ask anything about your documents</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-gray-700/60 text-xs text-gray-600 dark:text-gray-400">
+                    <Upload className="w-3 h-3" /> Upload sources in sidebar
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-gray-700/60 text-xs text-gray-600 dark:text-gray-400">
+                    <Sparkles className="w-3 h-3" /> Try @curator for cross-notebook
+                  </span>
+                </div>
+              </>
+            )}
           </div>
         )}
 
