@@ -48,6 +48,16 @@ html:not(.dark) .focus\:ring-blue-500:focus { --tw-ring-color: #5a8ae0 !importan
   }
 }
 
+/* Fade-in animation for loading screen */
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* Panel slide-in animations */
 .animate-slide-up {
   animation: slideUp 0.2s ease-out;

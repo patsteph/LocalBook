@@ -376,6 +376,10 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const contentAreaRef = useRef<HTMLDivElement>(null);
 
+  // Keep a ref to the latest canvas items to avoid stale reads during streaming
+  const canvasItemsRef = useRef(ctx.canvasItems);
+  canvasItemsRef.current = ctx.canvasItems;
+
   // Auto-focus chat input when canvas opens
   useEffect(() => {
     const timer = setTimeout(() => chatInputRef.current?.focus(), 200);
@@ -415,23 +419,25 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
     prevItemCount.current = ctx.canvasItems.length;
   }, [ctx.canvasItems.length]);
 
-  // Get the primary document/note content from canvas items
+  // Get the primary document/note content from canvas items (uses ref for freshness)
   const getPrimaryContent = (): string => {
-    const doc = ctx.canvasItems.find(i => i.type === 'document');
+    const items = canvasItemsRef.current;
+    const doc = items.find(i => i.type === 'document');
     if (doc) return doc.content;
-    const note = ctx.canvasItems.find(i => i.type === 'note');
+    const note = items.find(i => i.type === 'note');
     if (note) return note.content;
-    const chatResp = ctx.canvasItems.find(i => i.type === 'chat-response');
+    const chatResp = items.find(i => i.type === 'chat-response');
     if (chatResp) return chatResp.content;
-    return ctx.canvasItems.map(i => i.content).join('\n\n');
+    return items.map(i => i.content).join('\n\n');
   };
 
   const getPrimaryTitle = (): string => {
-    const doc = ctx.canvasItems.find(i => i.type === 'document');
+    const items = canvasItemsRef.current;
+    const doc = items.find(i => i.type === 'document');
     if (doc) return doc.title;
-    const note = ctx.canvasItems.find(i => i.type === 'note');
+    const note = items.find(i => i.type === 'note');
     if (note) return note.title;
-    return ctx.canvasItems[0]?.title || 'Document';
+    return items[0]?.title || 'Document';
   };
 
   // === Action handlers ===

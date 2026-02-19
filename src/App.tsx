@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { ArrowUpCircle } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { LeftNavColumn } from './components/layout/LeftNavColumn';
@@ -444,32 +445,41 @@ function App() {
   // Show loading screen while backend starts
   if (!backendReady) {
     return (
-      <div className="h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-        <div className="text-center max-w-md">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-            {isUpgrade ? '⬆️ Upgrading LocalBook' : 'Starting LocalBook'}
+      <div className="h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 via-white to-blue-50 dark:from-gray-900 dark:via-gray-900 dark:to-gray-800 animate-fade-in">
+        <div className="text-center max-w-sm w-full px-6">
+          {/* Branded spinner */}
+          <div className="relative mx-auto mb-6 w-14 h-14">
+            <div className="absolute inset-0 rounded-full border-2 border-gray-200 dark:border-gray-700" />
+            <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-blue-600 dark:border-t-blue-400 animate-spin" />
+            {isUpgrade && <ArrowUpCircle className="absolute inset-0 m-auto w-6 h-6 text-blue-600 dark:text-blue-400" />}
+          </div>
+
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
+            {isUpgrade ? 'Upgrading LocalBook' : 'Starting LocalBook'}
           </h2>
           {currentVersion && (
-            <p className="text-sm text-blue-600 dark:text-blue-400 mb-2">v{currentVersion}</p>
+            <p className="text-xs font-medium text-blue-600 dark:text-blue-400 mb-3">v{currentVersion}</p>
           )}
-          <p className="text-gray-600 dark:text-gray-400 min-h-[24px] transition-all duration-200">{backendStatusMessage}</p>
-          <div className="mt-4 w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-            <div 
-              className="bg-blue-600 h-2 rounded-full transition-all duration-500 ease-out"
+          <p className="text-sm text-gray-500 dark:text-gray-400 min-h-[20px] transition-all duration-300">{backendStatusMessage}</p>
+
+          {/* Progress bar with gradient */}
+          <div className="mt-5 w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-blue-500 via-blue-600 to-indigo-600 transition-all duration-700 ease-out"
               style={{ width: `${Math.max(startupProgress, 5)}%` }}
             />
           </div>
+
           {isUpgrade && currentVersion && (
             <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-lg">
-              <p className="text-sm text-blue-800 dark:text-blue-300">
-                Upgrading to v{currentVersion} - please wait...
+              <p className="text-xs text-blue-700 dark:text-blue-300">
+                Upgrading to v{currentVersion} — please wait…
               </p>
             </div>
           )}
           {backendError && (
-            <div className="mt-4 p-4 bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg">
-              <p className="text-sm text-yellow-800 dark:text-yellow-300">{backendError}</p>
+            <div className="mt-4 p-3 bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+              <p className="text-xs text-yellow-800 dark:text-yellow-300">{backendError}</p>
             </div>
           )}
         </div>
