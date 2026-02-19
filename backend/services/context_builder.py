@@ -364,12 +364,14 @@ class ContextBuilder:
                 continue
             
             # Adaptive budget: top sources get full budget, lower ranked get less
+            # But cap any single source to 30% of total budget for diversity
+            max_per_source = int(profile.total_context_chars * 0.30)
             relevance = source.get("_relevance_score", 1.0)
             # Top 3 sources get full budget, rest scale down
             if i < 3:
-                budget = profile.chars_per_source
+                budget = min(profile.chars_per_source, max_per_source)
             else:
-                budget = int(profile.chars_per_source * max(0.4, relevance))
+                budget = min(int(profile.chars_per_source * max(0.4, relevance)), max_per_source)
             
             # Don't exceed remaining total budget
             remaining = profile.total_context_chars - total_chars

@@ -1224,7 +1224,13 @@ STYLE: {style}
 QUALITY REQUIREMENTS:
 {chr(10).join(f'- {check}' for check in template.quality_checklist)}
 
-You are working with {source_count} source document(s). Synthesize across ALL sources."""
+You are working with {source_count} source document(s). Synthesize across ALL sources.
+
+CRITICAL RULES:
+- Draw from EVERY source provided — do not let one source dominate the output
+- NEVER repeat the same sentence, phrase, or paragraph. Each sentence must add new information.
+- If you find yourself writing something you already wrote, STOP and move to the next section.
+- Complete every section fully. End with a proper conclusion — never stop mid-sentence."""
     
     format_instructions = f"""REQUIRED STRUCTURE:
 {chr(10).join(f'{i+1}. {req}' for i, req in enumerate(template.structure_requirements))}

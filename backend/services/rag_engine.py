@@ -2434,8 +2434,18 @@ Answer concisely with inline [N] citations:"""
         options = {"num_predict": num_predict}
         if num_ctx is not None:
             options["num_ctx"] = num_ctx
+        elif num_predict > 500:
+            # Auto-size context window for document generation:
+            # estimate prompt tokens (~1 token per 4 chars) + generation headroom
+            prompt_text = f"{system_prompt}\n\n{prompt}"
+            estimated_prompt_tokens = len(prompt_text) // 3  # conservative estimate
+            options["num_ctx"] = max(8192, estimated_prompt_tokens + num_predict + 512)
         if temperature is not None:
             options["temperature"] = temperature
+        # Repetition penalty — critical for preventing output loops
+        # Apply stronger penalty for document generation (longer outputs loop more)
+        options["repeat_penalty"] = 1.3 if num_predict > 500 else 1.1
+        options["repeat_last_n"] = 256 if num_predict > 500 else 64
         async with httpx.AsyncClient(timeout=timeout) as client:
             print(f"Calling Ollama with model: {use_model}, num_predict: {num_predict}, num_ctx: {num_ctx or 'default'}")
             response = await client.post(
@@ -2503,6 +2513,15 @@ Answer concisely with inline [N] citations:"""
             mode_str = " [Deep Think]" if deep_think else (" [Fast]" if use_fast_model else "")
             print(f"Streaming from Ollama with model: {model}{mode_str} (temp={temperature}, num_predict={effective_num_predict})")
             
+            # Auto-size context window for document generation
+            is_doc_gen = num_predict is not None and num_predict > 500
+            if is_doc_gen:
+                prompt_text = f"{system_prompt}\n\n{prompt}"
+                estimated_prompt_tokens = len(prompt_text) // 3
+                effective_num_ctx = max(8192, estimated_prompt_tokens + effective_num_predict + 512)
+            else:
+                effective_num_ctx = 4096
+            
             # Tier 1 optimizations: keep_alive prevents cold start, num_predict caps runaway generation
             request_json = {
                 "model": model,
@@ -2513,7 +2532,9 @@ Answer concisely with inline [N] citations:"""
                     "temperature": temperature,
                     "top_p": top_p,
                     "num_predict": effective_num_predict,
-                    "num_ctx": 4096,  # Reasonable context window
+                    "num_ctx": effective_num_ctx,
+                    "repeat_penalty": 1.3 if is_doc_gen else 1.1,
+                    "repeat_last_n": 256 if is_doc_gen else 64,
                 }
             }
             if stop_sequences:

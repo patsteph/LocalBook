@@ -4,12 +4,102 @@ Uses professional-grade templates from output_templates.py to ensure
 world-class document quality across all output types.
 """
 import logging
+import re
 import traceback
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 import json
+
+
+def _clean_llm_output(text: str) -> str:
+    """Post-process LLM output: detect repetition loops and ensure clean ending.
+    
+    Addresses three failure modes:
+    1. Sentence-level loops (same sentence repeats 3+ times)
+    2. Paragraph-level loops (same paragraph block repeats)
+    3. Mid-sentence cutoff (output ends abruptly)
+    """
+    if not text or len(text) < 100:
+        return text
+    
+    original_len = len(text)
+    
+    # --- 1. Detect sentence-level repetition ---
+    # Split into sentences and find repeating patterns
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    if len(sentences) > 6:
+        # Look for a repeating sentence (appears 3+ times)
+        seen_count = {}
+        first_repeat_idx = None
+        for i, s in enumerate(sentences):
+            # Normalize for comparison (strip whitespace, lowercase)
+            key = s.strip().lower()[:200]
+            if len(key) < 20:
+                continue
+            seen_count[key] = seen_count.get(key, 0) + 1
+            if seen_count[key] >= 3 and first_repeat_idx is None:
+                # Find where this sentence first appeared after unique content
+                # Keep the first two occurrences, cut at third
+                count = 0
+                for j, s2 in enumerate(sentences):
+                    if s2.strip().lower()[:200] == key:
+                        count += 1
+                        if count == 3:
+                            first_repeat_idx = j
+                            break
+        
+        if first_repeat_idx is not None and first_repeat_idx > 3:
+            # Truncate at the point repetition starts (3rd occurrence)
+            text = ' '.join(sentences[:first_repeat_idx]).strip()
+            logger.warning(f"[PostProcess] Truncated repetitive output: "
+                          f"{original_len} → {len(text)} chars "
+                          f"(cut at sentence {first_repeat_idx}/{len(sentences)})")
+    
+    # --- 2. Detect paragraph-level loops ---
+    # Split into paragraphs and check for repeated blocks
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+    if len(paragraphs) > 4:
+        seen_paras = {}
+        cut_idx = None
+        for i, p in enumerate(paragraphs):
+            key = p[:300].lower()
+            if len(key) < 50:
+                continue
+            if key in seen_paras:
+                # This paragraph is a repeat — if it repeats 2+ times, cut
+                seen_paras[key] += 1
+                if seen_paras[key] >= 2 and cut_idx is None:
+                    cut_idx = i
+            else:
+                seen_paras[key] = 1
+        
+        if cut_idx is not None and cut_idx > 2:
+            text = '\n\n'.join(paragraphs[:cut_idx]).strip()
+            logger.warning(f"[PostProcess] Truncated paragraph loop: "
+                          f"cut at paragraph {cut_idx}/{len(paragraphs)}")
+    
+    # --- 3. Ensure clean sentence ending ---
+    text = text.rstrip()
+    if text and text[-1] not in '.!?:*':
+        # Find the last sentence-ending punctuation
+        last_period = max(text.rfind('. '), text.rfind('.\n'), 
+                         text.rfind('! '), text.rfind('!\n'),
+                         text.rfind('? '), text.rfind('?\n'))
+        # Also check if text ends with period right at the end
+        if text.endswith('.') or text.endswith('!') or text.endswith('?'):
+            pass  # Already ends cleanly
+        elif last_period > len(text) * 0.5:
+            # Only truncate if we keep at least 50% of content
+            text = text[:last_period + 1]
+            logger.warning(f"[PostProcess] Trimmed to last complete sentence: "
+                          f"{original_len} → {len(text)} chars")
+        else:
+            # Can't find a good cut point — append ellipsis
+            text = text.rstrip(',; ') + '...'
+    
+    return text
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +210,13 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
         skill_temp = CONTEXT_PROFILES.get(request.skill_id, CONTEXT_PROFILES["default"]).temperature
         
         # Generate content
-        content = await rag_engine._call_ollama(system_prompt, user_prompt, num_predict=doc_num_predict, temperature=skill_temp)
+        raw_content = await rag_engine._call_ollama(system_prompt, user_prompt, num_predict=doc_num_predict, temperature=skill_temp)
+        
+        # Post-process: detect loops, ensure clean ending
+        content = _clean_llm_output(raw_content)
+        if len(content) < len(raw_content) * 0.8:
+            logger.warning(f"[STUDIO] Post-processing removed {len(raw_content) - len(content)} chars "
+                          f"({len(raw_content)} → {len(content)})")
         
         # Save to content store for persistence
         await content_store.create(

@@ -117,6 +117,8 @@ class StructuredLLMService:
                     "options": {
                         "temperature": temperature,
                         "num_predict": 2000,
+                        "repeat_penalty": 1.2,
+                        "repeat_last_n": 128,
                     }
                 }
             )
