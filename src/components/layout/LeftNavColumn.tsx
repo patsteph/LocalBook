@@ -238,11 +238,19 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
         }`}
       >
 
-        {/* Rainbow gradient accent line */}
+        {/* Rainbow gradient accent line — responds to generation activity */}
         <div
-          className="h-[3px] flex-shrink-0"
+          className={`h-[3px] flex-shrink-0 rainbow-line ${
+            ctx.generationStatus === 'generating' ? 'rainbow-line--generating' :
+            ctx.generationStatus === 'complete' ? 'rainbow-line--complete' :
+            ctx.generationStatus === 'error' ? 'rainbow-line--error' : ''
+          }`}
           style={{
-            background: 'linear-gradient(90deg, rgba(244,114,182,0.25), rgba(251,146,60,0.2), rgba(250,204,21,0.15), rgba(74,222,128,0.2), rgba(96,165,250,0.25), rgba(167,139,250,0.25))',
+            background: ctx.generationStatus === 'generating'
+              ? 'linear-gradient(90deg, rgba(244,114,182,0.7), rgba(251,146,60,0.6), rgba(250,204,21,0.5), rgba(74,222,128,0.6), rgba(96,165,250,0.7), rgba(167,139,250,0.7))'
+              : ctx.generationStatus === 'complete'
+              ? 'linear-gradient(90deg, rgba(74,222,128,0.8), rgba(96,165,250,0.8), rgba(167,139,250,0.8))'
+              : 'linear-gradient(90deg, rgba(244,114,182,0.25), rgba(251,146,60,0.2), rgba(250,204,21,0.15), rgba(74,222,128,0.2), rgba(96,165,250,0.25), rgba(167,139,250,0.25))',
           }}
         />
 
@@ -296,6 +304,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
               onVisualGenerated={(mermaidCode, title) => {
                 ctx.openPanel('visual-viewer', { content: mermaidCode, title });
               }}
+              onGenerationStatus={ctx.setGenerationStatus}
             />
           </div>
         )}

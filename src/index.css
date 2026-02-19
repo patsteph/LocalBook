@@ -88,3 +88,53 @@ html:not(.dark) .focus\:ring-blue-500:focus { --tw-ring-color: #5a8ae0 !importan
     opacity: 1;
   }
 }
+
+/* Rainbow line — generation activity indicator */
+.rainbow-line {
+  position: relative;
+  overflow: hidden;
+  transition: opacity 0.6s ease, height 0.3s ease;
+}
+
+.rainbow-line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+  transform: translateX(-100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.rainbow-line--generating {
+  opacity: 1 !important;
+  height: 4px !important;
+}
+
+.rainbow-line--generating::after {
+  opacity: 1;
+  animation: rainbowShimmer 1.4s ease-in-out infinite;
+}
+
+.rainbow-line--complete {
+  opacity: 1 !important;
+  height: 4px !important;
+  animation: rainbowFlash 0.6s ease-out;
+}
+
+.rainbow-line--error::after {
+  opacity: 1;
+  background: linear-gradient(90deg, transparent, rgba(239,68,68,0.5), transparent);
+  animation: rainbowShimmer 0.5s ease-in-out 2;
+}
+
+@keyframes rainbowShimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes rainbowFlash {
+  0% { filter: brightness(1); }
+  40% { filter: brightness(2.5); }
+  100% { filter: brightness(1); }
+}

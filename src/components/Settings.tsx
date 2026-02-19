@@ -10,11 +10,12 @@ import { ProfileSection } from './settings/ProfileSection';
 import { UpdatesSection } from './settings/UpdatesSection';
 import { APIKeysSection } from './settings/APIKeysSection';
 import { CuratorSettings } from './CuratorSettings';
+import { TemplatesSection } from './settings/TemplatesSection';
 
 export const Settings: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
-    const [activeSection, setActiveSection] = useState<'profile' | 'api-keys' | 'credentials' | 'memory' | 'curator' | 'updates'>('api-keys');
+    const [activeSection, setActiveSection] = useState<'profile' | 'api-keys' | 'credentials' | 'memory' | 'curator' | 'templates' | 'updates'>('api-keys');
 
     return (
         <div className="p-4 max-w-4xl mx-auto">
@@ -71,6 +72,16 @@ export const Settings: React.FC = () => {
                     🧭 Curator
                 </button>
                 <button
+                    onClick={() => setActiveSection('templates')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                        activeSection === 'templates'
+                            ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                            : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                    }`}
+                >
+                    📊 Templates
+                </button>
+                <button
                     onClick={() => setActiveSection('updates')}
                     className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                         activeSection === 'updates'
@@ -99,6 +110,7 @@ export const Settings: React.FC = () => {
             {activeSection === 'credentials' && <CredentialLocker />}
             {activeSection === 'memory' && <MemorySettings />}
             {activeSection === 'curator' && <CuratorSettings />}
+            {activeSection === 'templates' && <TemplatesSection setError={setError} setSuccess={setSuccess} />}
             {activeSection === 'updates' && <UpdatesSection />}
         </div>
     );

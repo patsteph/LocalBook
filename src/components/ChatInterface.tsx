@@ -23,11 +23,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const [input, setInput] = useState('');
   const [deepThink, setDeepThink] = useState(false);  // Deep Think mode toggle
   const [showDeepThinkTip, setShowDeepThinkTip] = useState(() => !localStorage.getItem('lb-deepthink-tip-seen'));
+  const [showWelcome, setShowWelcome] = useState(() => !localStorage.getItem('lb-welcome-seen'));
   const [showMentionMenu, setShowMentionMenu] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   
+  // Auto-dismiss welcome once a notebook is selected (user is no longer a first-timer)
+  useEffect(() => {
+    if (notebookId && showWelcome) {
+      setShowWelcome(false);
+      localStorage.setItem('lb-welcome-seen', '1');
+    }
+  }, [notebookId, showWelcome]);
+
   // Handle prefill from external sources
   useEffect(() => {
     if (prefillQuery) {
@@ -542,7 +551,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center text-center px-6 py-12 max-w-md mx-auto animate-fade-in">
-            {!notebookId ? (
+            {!notebookId && showWelcome ? (
               <>
                 <div className="w-12 h-12 rounded-full bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center mb-4">
                   <BookOpen className="w-6 h-6 text-blue-500 dark:text-blue-400" />
@@ -572,6 +581,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                     </div>
                   </div>
                 </div>
+                <button
+                  onClick={() => { setShowWelcome(false); localStorage.setItem('lb-welcome-seen', '1'); }}
+                  className="mt-5 text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 font-medium"
+                >
+                  Dismiss
+                </button>
+              </>
+            ) : !notebookId ? (
+              <>
+                <div className="w-12 h-12 rounded-full bg-gray-100 dark:bg-gray-700/60 flex items-center justify-center mb-4">
+                  <BookOpen className="w-6 h-6 text-gray-400 dark:text-gray-500" />
+                </div>
+                <h3 className="text-base font-semibold text-gray-800 dark:text-white mb-1">Select a notebook</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Choose a notebook from the sidebar to start chatting</p>
               </>
             ) : (
               <>
@@ -667,7 +690,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               title={deepThink ? "Deep Think: Thorough analysis (slower)" : "Quick: Fast, concise responses"}
             >
               {showDeepThinkTip && (
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 p-2.5 bg-gray-900 dark:bg-gray-700 text-white text-xs rounded-lg shadow-lg z-50 animate-slide-up">
+                <div className="absolute bottom-full left-0 mb-2 w-52 p-2.5 bg-gray-900 dark:bg-gray-700 text-white text-xs rounded-lg shadow-lg z-50 animate-slide-up">
                   <p className="font-medium mb-1">Response Mode</p>
                   <p className="text-gray-300"><span className="text-base">🐇</span> <strong>Quick</strong> — Fast, concise answers</p>
                   <p className="text-gray-300 mt-0.5"><span className="text-base">🧠</span> <strong>Deep Think</strong> — Step-by-step analysis</p>
@@ -678,7 +701,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                   >
                     Got it
                   </button>
-                  <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
+                  <div className="absolute top-full left-4 -mt-px border-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
                 </div>
               )}
               <button

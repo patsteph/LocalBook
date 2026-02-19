@@ -22,9 +22,10 @@ interface StudioProps {
   onContentGenerated?: (content: string, skillName: string) => void;
   onQuizGenerated?: (quizHtml: string, topic: string) => void;
   onVisualGenerated?: (mermaidCode: string, title: string) => void;
+  onGenerationStatus?: (status: 'idle' | 'generating' | 'complete' | 'error') => void;
 }
 
-export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent, initialTab, onTabChange, hideHeader, onContentGenerated, onQuizGenerated, onVisualGenerated }) => {
+export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent, initialTab, onTabChange, hideHeader, onContentGenerated, onQuizGenerated, onVisualGenerated, onGenerationStatus }) => {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkill, setSelectedSkill] = useState<string>('');
   const [audioGenerations, setAudioGenerations] = useState<AudioGeneration[]>([]);
@@ -162,6 +163,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
     setGenerating(true);
     setError(null);
     setGeneratedScript('');
+    onGenerationStatus?.('generating');
 
     try {
       await audioService.generate({
@@ -177,10 +179,12 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
       // API returns instantly — script + audio generate in background.
       // The polling interval (useEffect) will pick up status updates.
       await loadAudioGenerations();
+      onGenerationStatus?.('complete');
 
     } catch (err: any) {
       console.error('Failed to generate:', err);
       setError(err.response?.data?.detail || 'Failed to generate audio');
+      onGenerationStatus?.('error');
     } finally {
       setGenerating(false);
     }
@@ -193,6 +197,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
     setGenerating(true);
     setError(null);
     setGeneratedContent('');
+    onGenerationStatus?.('generating');
 
     try {
       const result = await contentService.generate({
@@ -207,9 +212,11 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
       setSelectedContentId(null); // Clear selection since we just generated new
       loadContentGenerations(); // Refresh list
       onContentGenerated?.(result.content, result.skill_name);
+      onGenerationStatus?.('complete');
     } catch (err: any) {
       console.error('Failed to generate:', err);
       setError(err.message || 'Failed to generate content');
+      onGenerationStatus?.('error');
     } finally {
       setGenerating(false);
     }

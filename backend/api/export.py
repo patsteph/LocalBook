@@ -1,5 +1,5 @@
 """Export API endpoints for notebook export"""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional, List, Any
@@ -7,8 +7,17 @@ from storage.notebook_store import notebook_store
 from storage.source_store import source_store
 from storage.highlights_store import highlights_store
 from datetime import datetime
+from pathlib import Path
+from config import settings
+import json
 
 router = APIRouter()
+
+# Custom PPTX template storage
+TEMPLATES_DIR = settings.data_dir / "pptx_templates"
+TEMPLATES_META = TEMPLATES_DIR / "_meta.json"
+MAX_TEMPLATE_SIZE = 25 * 1024 * 1024  # 25MB
+MAX_TEMPLATES = 5
 
 
 class ChatHistoryItem(BaseModel):
@@ -129,6 +138,86 @@ async def get_export_formats():
         }
     ]
     return {"formats": formats}
+
+
+@router.get("/templates")
+async def list_templates():
+    """List all custom PPTX templates."""
+    if not TEMPLATES_META.exists():
+        return {"templates": []}
+    try:
+        meta = json.loads(TEMPLATES_META.read_text())
+        return {"templates": meta}
+    except Exception:
+        return {"templates": []}
+
+
+@router.post("/templates")
+async def upload_template(file: UploadFile = File(...), name: str = ""):
+    """Upload a custom PPTX template file."""
+    TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Validate file type
+    if not file.filename or not file.filename.lower().endswith('.pptx'):
+        raise HTTPException(status_code=400, detail="Only .pptx files are allowed")
+
+    # Read file and check size
+    data = await file.read()
+    if len(data) > MAX_TEMPLATE_SIZE:
+        raise HTTPException(status_code=400, detail=f"File too large. Max {MAX_TEMPLATE_SIZE // (1024*1024)}MB")
+
+    # Load existing metadata
+    meta = []
+    if TEMPLATES_META.exists():
+        try:
+            meta = json.loads(TEMPLATES_META.read_text())
+        except Exception:
+            meta = []
+
+    if len(meta) >= MAX_TEMPLATES:
+        raise HTTPException(status_code=400, detail=f"Maximum {MAX_TEMPLATES} templates allowed")
+
+    # Generate unique ID and save file
+    import uuid
+    template_id = str(uuid.uuid4())[:8]
+    display_name = name.strip() or file.filename.rsplit('.', 1)[0]
+    file_path = TEMPLATES_DIR / f"{template_id}.pptx"
+    file_path.write_bytes(data)
+
+    # Update metadata
+    meta.append({
+        "id": template_id,
+        "name": display_name,
+        "filename": file.filename,
+        "size": len(data),
+        "uploaded": datetime.now().isoformat(),
+    })
+    TEMPLATES_META.write_text(json.dumps(meta, indent=2))
+
+    return {"id": template_id, "name": display_name}
+
+
+@router.delete("/templates/{template_id}")
+async def delete_template(template_id: str):
+    """Delete a custom PPTX template."""
+    if not TEMPLATES_META.exists():
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    meta = json.loads(TEMPLATES_META.read_text())
+    found = [t for t in meta if t["id"] == template_id]
+    if not found:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Remove file
+    file_path = TEMPLATES_DIR / f"{template_id}.pptx"
+    if file_path.exists():
+        file_path.unlink()
+
+    # Update metadata
+    meta = [t for t in meta if t["id"] != template_id]
+    TEMPLATES_META.write_text(json.dumps(meta, indent=2))
+
+    return {"deleted": template_id}
 
 
 @router.post("/notebook")
@@ -559,12 +648,15 @@ Return ONLY valid JSON array:"""
     return slides  # Return unchanged on failure
 
 
-async def _render_slides_to_pptx(slides: List[SlideData], notebook: dict, theme_name: str) -> bytes:
+async def _render_slides_to_pptx(slides: List[SlideData], notebook: dict, theme_name: str, custom_template_id: str = None) -> bytes:
     """Render structured slide data into a themed .pptx file.
     
     For visual_overview slides with mermaid_code, renders the diagram to PNG
     via Playwright and embeds it in the slide. Falls back to colored boxes
     if rendering is unavailable.
+    
+    If custom_template_id is provided, uses that .pptx file as the base
+    presentation template (inherits slide masters, fonts, colors).
     """
     from pptx import Presentation
     from pptx.util import Inches, Pt
@@ -579,7 +671,22 @@ async def _render_slides_to_pptx(slides: List[SlideData], notebook: dict, theme_
     accent_rgb = RgbColor(*theme["accent"])
     footer_rgb = RgbColor(*theme["footer"])
     
-    prs = Presentation()
+    # Use custom template if available, otherwise create blank presentation
+    custom_template_path = None
+    if custom_template_id:
+        candidate = TEMPLATES_DIR / f"{custom_template_id}.pptx"
+        if candidate.exists():
+            custom_template_path = str(candidate)
+    
+    if custom_template_path:
+        prs = Presentation(custom_template_path)
+        # Clear any existing slides from the template
+        while len(prs.slides) > 0:
+            rId = prs.slides._sldIdLst[0].rId
+            prs.part.drop_rel(rId)
+            del prs.slides._sldIdLst[0]
+    else:
+        prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
     

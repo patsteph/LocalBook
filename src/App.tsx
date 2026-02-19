@@ -44,6 +44,15 @@ function App() {
   const [showLLMModal, setShowLLMModal] = useState(false);
   const [showEmbeddingModal, setShowEmbeddingModal] = useState(false);
   const [canvasItems, setCanvasItems] = useState<CanvasItem[]>([]);
+  const [generationStatus, setGenerationStatusRaw] = useState<'idle' | 'generating' | 'complete' | 'error'>('idle');
+
+  // Auto-reset generation status back to idle after transient states
+  const setGenerationStatus = useCallback((status: 'idle' | 'generating' | 'complete' | 'error') => {
+    setGenerationStatusRaw(status);
+    if (status === 'complete' || status === 'error') {
+      setTimeout(() => setGenerationStatusRaw('idle'), 2500);
+    }
+  }, []);
 
   // Canvas layout, drawer, and studio state (persisted to localStorage)
   const { layout, setLayout } = useCanvasLayout(selectedNotebookId);
@@ -241,13 +250,15 @@ function App() {
     setMorningBrief,
     curatorBriefData,
     setCuratorBriefData,
+    generationStatus,
+    setGenerationStatus,
   }), [
     selectedNotebookId, selectedNotebookName, selectedSourceId, selectedLLMProvider,
     refreshSources, refreshNotebooks, collectorRefreshKey, addToast,
     openPanel, closePanel, splitPanel, changePanelView, layout,
     openWebResearch, openSettings, openLLMSelector, openEmbeddingSelector,
     chatPrefillQuery, navigateToChat, darkMode, toggleDarkMode,
-    morningBrief, curatorBriefData,
+    morningBrief, curatorBriefData, generationStatus, setGenerationStatus,
   ]);
 
   // Fetch notebook name when selection changes

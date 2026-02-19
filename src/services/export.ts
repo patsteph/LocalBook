@@ -322,4 +322,33 @@ export const exportService = {
 
         return doc.output('blob');
     },
+
+    // === Custom PPTX template management ===
+
+    async listTemplates(): Promise<{ id: string; name: string; filename: string; size: number; uploaded: string }[]> {
+        const response = await fetch(`${API_BASE}/export/templates`);
+        if (!response.ok) return [];
+        const data = await response.json();
+        return data.templates || [];
+    },
+
+    async uploadTemplate(file: File, name: string): Promise<{ id: string; name: string }> {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('name', name);
+        const response = await fetch(`${API_BASE}/export/templates`, {
+            method: 'POST',
+            body: formData,
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({ detail: 'Upload failed' }));
+            throw new Error(err.detail || 'Upload failed');
+        }
+        return response.json();
+    },
+
+    async deleteTemplate(templateId: string): Promise<void> {
+        const response = await fetch(`${API_BASE}/export/templates/${templateId}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error('Failed to delete template');
+    },
 };

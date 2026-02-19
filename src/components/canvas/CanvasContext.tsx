@@ -72,6 +72,10 @@ export interface AppShellContextValue {
   setMorningBrief: (brief: any) => void;
   curatorBriefData: any;
   setCuratorBriefData: (data: any) => void;
+
+  // Generation activity status (drives rainbow line animation)
+  generationStatus: 'idle' | 'generating' | 'complete' | 'error';
+  setGenerationStatus: (status: 'idle' | 'generating' | 'complete' | 'error') => void;
 }
 
 const AppShellCtx = createContext<AppShellContextValue | null>(null);

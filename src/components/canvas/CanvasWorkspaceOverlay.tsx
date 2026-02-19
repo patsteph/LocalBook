@@ -2,12 +2,14 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import DOMPurify from 'dompurify';
 import {
   FileText, Palette, Target, Mic, MessageSquare, PenLine,
-  Presentation, Download, Search
+  Presentation, Download, Search, Sparkles, Brain, GitBranch,
+  CalendarDays, Network, BarChart3
 } from 'lucide-react';
 import { useCanvas } from './CanvasContext';
 import { CanvasItem } from './types';
 import ReactMarkdown from 'react-markdown';
 import { MermaidRenderer } from '../shared/MermaidRenderer';
+import { CanvasActionPopover } from './CanvasActionPopover';
 import { contentService } from '../../services/content';
 import { visualService } from '../../services/visual';
 import { quizService } from '../../services/quiz';
@@ -17,6 +19,10 @@ import { curatorService } from '../../services/curatorApi';
 import { sourceService } from '../../services/sources';
 import { voiceService } from '../../services/voice';
 import { settingsService } from '../../services/settings';
+import { skillsService } from '../../services/skills';
+import { writingService, FormatOption } from '../../services/writing';
+import { exportService } from '../../services/export';
+import { Skill } from '../../types';
 
 // Icons for canvas item types
 const iconSm = 'w-3.5 h-3.5';
@@ -360,6 +366,7 @@ interface CanvasAction {
 }
 
 const CANVAS_ACTIONS: CanvasAction[] = [
+  { id: 'docs', icon: <FileText className={iconSm} />, label: 'Generate Document', shortLabel: 'Docs', enabled: (_items, nb) => !!nb },
   { id: 'visual', icon: <Palette className={iconSm} />, label: 'Create Visual', shortLabel: 'Visual', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'chat-response' || i.type === 'note') },
   { id: 'audio', icon: <Mic className={iconSm} />, label: 'Generate Audio', shortLabel: 'Audio', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'note') },
   { id: 'quiz', icon: <Target className={iconSm} />, label: 'Create Quiz', shortLabel: 'Quiz', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'note') },
@@ -376,6 +383,57 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
   const [showCanvasHint, setShowCanvasHint] = useState(() => !localStorage.getItem('lb-canvas-hint-seen'));
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const contentAreaRef = useRef<HTMLDivElement>(null);
+
+  // === Popover state ===
+  const [activePopover, setActivePopover] = useState<string | null>(null);
+
+  // Quiz popover config (remembered via localStorage)
+  const [quizCount, setQuizCount] = useState(() => parseInt(localStorage.getItem('lb-canvas-quiz-count') || '5'));
+  const [quizDifficulty, setQuizDifficulty] = useState(() => localStorage.getItem('lb-canvas-quiz-diff') || 'medium');
+  const [quizTopic, setQuizTopic] = useState('');
+
+  // Audio popover config
+  const [audioSkill, setAudioSkill] = useState(() => localStorage.getItem('lb-canvas-audio-skill') || 'podcast_script');
+  const [audioDuration, setAudioDuration] = useState(() => parseInt(localStorage.getItem('lb-canvas-audio-dur') || '15'));
+  const [audioVoices, setAudioVoices] = useState(() => localStorage.getItem('lb-canvas-audio-voices') || 'mf');
+
+  // Visual popover config
+  type DiagramType = 'auto' | 'mindmap' | 'flowchart' | 'timeline' | 'classDiagram' | 'quadrant';
+  const [visualType, setVisualType] = useState<DiagramType>(() => (localStorage.getItem('lb-canvas-visual-type') as DiagramType) || 'auto');
+
+  // Docs popover config
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [styleFormats, setStyleFormats] = useState<FormatOption[]>([]);
+  const [docsSkill, setDocsSkill] = useState(() => localStorage.getItem('lb-canvas-docs-skill') || 'summary');
+  const [docsStyle, setDocsStyle] = useState(() => localStorage.getItem('lb-canvas-docs-style') || 'professional');
+  const [docsTopic, setDocsTopic] = useState('');
+
+  // PPTX popover config (theme can be built-in id OR custom template id prefixed with 'tpl:')
+  const [pptxTheme, setPptxTheme] = useState(() => localStorage.getItem('lb-canvas-pptx-theme') || 'light');
+  const [customTemplates, setCustomTemplates] = useState<{ id: string; name: string }[]>([]);
+
+  // PDF popover config
+  type PdfLayout = 'clean' | 'academic' | 'report';
+  const [pdfLayout, setPdfLayout] = useState<PdfLayout>(() => (localStorage.getItem('lb-canvas-pdf-layout') as PdfLayout) || 'clean');
+
+  // Load skills, style formats, and custom templates for popovers
+  useEffect(() => {
+    skillsService.list().then(setSkills).catch(() => {});
+    writingService.getFormats().then(setStyleFormats).catch(() => {});
+    exportService.listTemplates().then((t: { id: string; name: string }[]) => setCustomTemplates(t.map((x: { id: string; name: string }) => ({ id: x.id, name: x.name })))).catch(() => {});
+  }, []);
+
+  // Save popover settings to localStorage on change
+  useEffect(() => { localStorage.setItem('lb-canvas-quiz-count', String(quizCount)); }, [quizCount]);
+  useEffect(() => { localStorage.setItem('lb-canvas-quiz-diff', quizDifficulty); }, [quizDifficulty]);
+  useEffect(() => { localStorage.setItem('lb-canvas-audio-skill', audioSkill); }, [audioSkill]);
+  useEffect(() => { localStorage.setItem('lb-canvas-audio-dur', String(audioDuration)); }, [audioDuration]);
+  useEffect(() => { localStorage.setItem('lb-canvas-audio-voices', audioVoices); }, [audioVoices]);
+  useEffect(() => { localStorage.setItem('lb-canvas-visual-type', visualType); }, [visualType]);
+  useEffect(() => { localStorage.setItem('lb-canvas-docs-skill', docsSkill); }, [docsSkill]);
+  useEffect(() => { localStorage.setItem('lb-canvas-docs-style', docsStyle); }, [docsStyle]);
+  useEffect(() => { localStorage.setItem('lb-canvas-pptx-theme', pptxTheme); }, [pptxTheme]);
+  useEffect(() => { localStorage.setItem('lb-canvas-pdf-layout', pdfLayout); }, [pdfLayout]);
 
   // Keep a ref to the latest canvas items to avoid stale reads during streaming
   const canvasItemsRef = useRef(ctx.canvasItems);
@@ -446,13 +504,14 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
   const handleCreateVisual = async () => {
     if (!ctx.selectedNotebookId) return;
     setActionLoading('visual');
+    ctx.setGenerationStatus('generating');
     try {
       const content = getPrimaryContent();
       const title = getPrimaryTitle();
       await visualService.generateSmartStream(
         ctx.selectedNotebookId,
         content,
-        'auto',
+        visualType,
         // onPrimary — add visual to canvas
         (diagram) => {
           ctx.addCanvasItem({
@@ -462,6 +521,7 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
             collapsed: false,
           });
           setActionLoading(null);
+          ctx.setGenerationStatus('complete');
         },
         // onAlternative — ignore for canvas (only show primary)
         () => {},
@@ -472,29 +532,34 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
           console.error('Canvas visual generation failed:', err);
           ctx.addToast({ type: 'error', title: 'Visual generation failed', message: err });
           setActionLoading(null);
+          ctx.setGenerationStatus('error');
         }
       );
     } catch (err) {
       console.error('Canvas visual failed:', err);
       setActionLoading(null);
+      ctx.setGenerationStatus('error');
     }
   };
 
   const handleCreateAudio = async () => {
     if (!ctx.selectedNotebookId) return;
     setActionLoading('audio');
+    ctx.setGenerationStatus('generating');
     try {
       const title = getPrimaryTitle();
       const content = getPrimaryContent();
       // Extract topic from content (first 200 chars as topic hint)
       const topic = content.substring(0, 200).replace(/[#*_\n]/g, ' ').trim();
+      const voiceMap: Record<string, [string, string]> = { mf: ['male', 'female'], fm: ['female', 'male'], mm: ['male', 'male'], ff: ['female', 'female'] };
+      const [h1, h2] = voiceMap[audioVoices] || ['male', 'female'];
       await audioService.generate({
         notebook_id: ctx.selectedNotebookId,
         topic,
-        duration_minutes: 15,
-        skill_id: undefined,
-        host1_gender: 'male',
-        host2_gender: 'female',
+        duration_minutes: audioDuration,
+        skill_id: audioSkill,
+        host1_gender: h1,
+        host2_gender: h2,
         accent: 'us',
       });
       ctx.addCanvasItem({
@@ -504,9 +569,11 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
         collapsed: false,
       });
       ctx.addToast({ type: 'success', title: 'Audio generation started', message: 'Check the Audio tab in Studio when complete' });
+      ctx.setGenerationStatus('complete');
     } catch (err: any) {
       console.error('Canvas audio failed:', err);
       ctx.addToast({ type: 'error', title: 'Audio generation failed', message: err.message || 'Unknown error' });
+      ctx.setGenerationStatus('error');
     }
     setActionLoading(null);
   };
@@ -514,10 +581,11 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
   const handleCreateQuiz = async () => {
     if (!ctx.selectedNotebookId) return;
     setActionLoading('quiz');
+    ctx.setGenerationStatus('generating');
     try {
       const content = getPrimaryContent();
-      const topic = content.substring(0, 300).replace(/[#*_\n]/g, ' ').trim();
-      const quiz = await quizService.generate(ctx.selectedNotebookId, 5, 'medium', topic);
+      const topic = quizTopic || content.substring(0, 300).replace(/[#*_\n]/g, ' ').trim();
+      const quiz = await quizService.generate(ctx.selectedNotebookId, quizCount, quizDifficulty, topic);
       // Format quiz as readable HTML
       const quizHtml = quiz.questions.map((q, i) => {
         const optionsHtml = q.options
@@ -531,18 +599,55 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
         content: quizHtml,
         collapsed: false,
       });
+      ctx.setGenerationStatus('complete');
     } catch (err: any) {
       console.error('Canvas quiz failed:', err);
       ctx.addToast({ type: 'error', title: 'Quiz generation failed', message: err.message || 'Unknown error' });
+      ctx.setGenerationStatus('error');
+    }
+    setActionLoading(null);
+  };
+
+  const handleGenerateDocs = async () => {
+    if (!ctx.selectedNotebookId) return;
+    setActionLoading('docs');
+    ctx.setGenerationStatus('generating');
+    try {
+      const result = await contentService.generate({
+        notebook_id: ctx.selectedNotebookId,
+        skill_id: docsSkill,
+        topic: docsTopic || undefined,
+        style: docsStyle,
+      });
+      ctx.addCanvasItem({
+        type: 'document',
+        title: result.skill_name || 'Generated Document',
+        content: result.content,
+        collapsed: false,
+      });
+      ctx.setGenerationStatus('complete');
+    } catch (err: any) {
+      console.error('Canvas docs generation failed:', err);
+      ctx.addToast({ type: 'error', title: 'Document generation failed', message: err.message || 'Unknown error' });
+      ctx.setGenerationStatus('error');
     }
     setActionLoading(null);
   };
 
   const handleExportPPTX = () => {
-    // Dispatch event to open ExportModal with content pre-loaded
-    window.dispatchEvent(new CustomEvent('openExportModal', {
-      detail: { content: getPrimaryContent(), title: getPrimaryTitle() },
-    }));
+    // Dispatch event to open ExportModal with content pre-loaded and theme/template pre-selected
+    const isCustom = pptxTheme.startsWith('tpl:');
+    const detail: Record<string, string> = {
+      content: getPrimaryContent(),
+      title: getPrimaryTitle(),
+    };
+    if (isCustom) {
+      detail.customTemplateId = pptxTheme.slice(4);
+      detail.theme = 'light'; // fallback theme colors for custom templates
+    } else {
+      detail.theme = pptxTheme;
+    }
+    window.dispatchEvent(new CustomEvent('openExportModal', { detail }));
   };
 
   const handleExportPDF = async () => {
@@ -550,7 +655,7 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
     try {
       const content = getPrimaryContent();
       const title = getPrimaryTitle();
-      await contentService.downloadAsPDF(content, title, title.toLowerCase().replace(/\s+/g, '-'));
+      await contentService.downloadAsPDF(content, title, title.toLowerCase().replace(/\s+/g, '-'), pdfLayout);
     } catch (err) {
       console.error('PDF download failed:', err);
       ctx.addToast({ type: 'error', title: 'PDF download failed' });
@@ -561,6 +666,7 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
   const handleCrossNotebook = async () => {
     if (!ctx.selectedNotebookId) return;
     setActionLoading('crossnb');
+    ctx.setGenerationStatus('generating');
     try {
       const content = getPrimaryContent();
       // Use first 500 chars as the cross-notebook query
@@ -577,14 +683,17 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
           collapsed: false,
         });
       }
+      ctx.setGenerationStatus('complete');
     } catch (err: any) {
       console.error('Cross-notebook discovery failed:', err);
       ctx.addToast({ type: 'error', title: 'Cross-notebook search failed', message: err.message || 'Unknown error' });
+      ctx.setGenerationStatus('error');
     }
     setActionLoading(null);
   };
 
   const ACTION_HANDLERS: Record<string, () => void | Promise<void>> = {
+    docs: handleGenerateDocs,
     visual: handleCreateVisual,
     audio: handleCreateAudio,
     quiz: handleCreateQuiz,
@@ -760,22 +869,225 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
             </div>
           </div>
         )}
+        {/* Popover panels — rendered above the pill row */}
+        <div className="relative">
+          {/* Docs popover */}
+          <CanvasActionPopover
+            isOpen={activePopover === 'docs'}
+            onClose={() => setActivePopover(null)}
+            title="Generate Document"
+            generateLabel="Generate"
+            generating={actionLoading === 'docs'}
+            onGenerate={() => { setActivePopover(null); handleGenerateDocs(); }}
+          >
+            <div className="space-y-2.5">
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Content Type</label>
+                <select value={docsSkill} onChange={e => setDocsSkill(e.target.value)} className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
+                  {skills.filter(s => ['summary', 'study_guide', 'faq', 'briefing', 'deep_dive', 'explain', 'feynman_curriculum'].includes(s.skill_id)).map(s => (
+                    <option key={s.skill_id} value={s.skill_id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+              {styleFormats.length > 0 && (
+                <div>
+                  <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Style</label>
+                  <div className="flex flex-wrap gap-1">
+                    {styleFormats.slice(0, 6).map(f => (
+                      <button key={f.value} onClick={() => setDocsStyle(f.value)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors ${docsStyle === f.value ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{f.label}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Topic <span className="text-gray-400">(optional)</span></label>
+                <input type="text" value={docsTopic} onChange={e => setDocsTopic(e.target.value)} placeholder="e.g., AI use cases in healthcare" className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400" />
+              </div>
+            </div>
+          </CanvasActionPopover>
+
+          {/* Visual popover */}
+          <CanvasActionPopover
+            isOpen={activePopover === 'visual'}
+            onClose={() => setActivePopover(null)}
+            title="Create Visual"
+            generateLabel="Generate"
+            generating={actionLoading === 'visual'}
+            onGenerate={() => { setActivePopover(null); handleCreateVisual(); }}
+          >
+            <div>
+              <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Visual Type</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {([
+                  { type: 'auto' as const, icon: <Sparkles className="w-3.5 h-3.5" />, label: 'Auto' },
+                  { type: 'mindmap' as const, icon: <Brain className="w-3.5 h-3.5" />, label: 'Mindmap' },
+                  { type: 'flowchart' as const, icon: <GitBranch className="w-3.5 h-3.5" />, label: 'Flow' },
+                  { type: 'timeline' as const, icon: <CalendarDays className="w-3.5 h-3.5" />, label: 'Timeline' },
+                  { type: 'classDiagram' as const, icon: <Network className="w-3.5 h-3.5" />, label: 'Hierarchy' },
+                  { type: 'quadrant' as const, icon: <BarChart3 className="w-3.5 h-3.5" />, label: 'Compare' },
+                ]).map(opt => (
+                  <button key={opt.type} onClick={() => setVisualType(opt.type)} className={`flex items-center justify-center gap-1 px-2 py-1.5 text-[11px] rounded-lg border transition-colors ${visualType === opt.type ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                    {opt.icon}
+                    <span>{opt.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </CanvasActionPopover>
+
+          {/* Audio popover */}
+          <CanvasActionPopover
+            isOpen={activePopover === 'audio'}
+            onClose={() => setActivePopover(null)}
+            title="Generate Audio"
+            generateLabel="Generate"
+            generating={actionLoading === 'audio'}
+            onGenerate={() => { setActivePopover(null); handleCreateAudio(); }}
+          >
+            <div className="space-y-2.5">
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Style</label>
+                <select value={audioSkill} onChange={e => setAudioSkill(e.target.value)} className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
+                  <option value="podcast_script">Podcast</option>
+                  <option value="debate">Debate</option>
+                  <option value="feynman_curriculum">Feynman Teaching</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Duration: {audioDuration} min</label>
+                <input type="range" min="5" max={audioSkill === 'feynman_curriculum' ? 45 : 30} value={audioDuration} onChange={e => setAudioDuration(parseInt(e.target.value))} className="w-full h-1.5 accent-blue-600" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Voices</label>
+                <div className="flex gap-1">
+                  {([['mf', 'M / F'], ['fm', 'F / M'], ['mm', 'M / M'], ['ff', 'F / F']] as const).map(([val, label]) => (
+                    <button key={val} onClick={() => setAudioVoices(val)} className={`flex-1 px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${audioVoices === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </CanvasActionPopover>
+
+          {/* Quiz popover */}
+          <CanvasActionPopover
+            isOpen={activePopover === 'quiz'}
+            onClose={() => setActivePopover(null)}
+            title="Create Quiz"
+            generateLabel="Generate"
+            generating={actionLoading === 'quiz'}
+            onGenerate={() => { setActivePopover(null); handleCreateQuiz(); }}
+          >
+            <div className="space-y-2.5">
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Questions: {quizCount}</label>
+                <input type="range" min="3" max="10" value={quizCount} onChange={e => setQuizCount(parseInt(e.target.value))} className="w-full h-1.5 accent-blue-600" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Difficulty</label>
+                <div className="flex gap-1">
+                  {(['easy', 'medium', 'hard'] as const).map(d => (
+                    <button key={d} onClick={() => setQuizDifficulty(d)} className={`flex-1 px-2 py-1.5 text-[11px] rounded-lg border transition-colors capitalize ${quizDifficulty === d ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{d}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Topic <span className="text-gray-400">(optional)</span></label>
+                <input type="text" value={quizTopic} onChange={e => setQuizTopic(e.target.value)} placeholder="Auto-detected from content" className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400" />
+              </div>
+            </div>
+          </CanvasActionPopover>
+
+          {/* PPTX popover */}
+          <CanvasActionPopover
+            isOpen={activePopover === 'pptx'}
+            onClose={() => setActivePopover(null)}
+            title="Create Slides"
+            generateLabel="Build Slides"
+            onGenerate={() => { setActivePopover(null); handleExportPPTX(); }}
+          >
+            <div className="space-y-2.5">
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Theme</label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {([
+                    { id: 'light', label: 'Light', cls: 'bg-white border-gray-300 text-gray-800' },
+                    { id: 'dark', label: 'Dark', cls: 'bg-gray-800 border-gray-600 text-gray-100' },
+                    { id: 'corporate', label: 'Corporate', cls: 'bg-blue-50 border-blue-300 text-blue-900' },
+                    { id: 'academic', label: 'Academic', cls: 'bg-amber-50 border-amber-300 text-amber-900' },
+                  ]).map(t => (
+                    <button key={t.id} onClick={() => setPptxTheme(t.id)} className={`px-2.5 py-1.5 text-[11px] font-medium rounded-lg border transition-all ${t.cls} ${pptxTheme === t.id ? 'ring-2 ring-blue-500 ring-offset-1' : 'opacity-60 hover:opacity-100'}`}>{t.label}</button>
+                  ))}
+                </div>
+              </div>
+              {customTemplates.length > 0 && (
+                <div>
+                  <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Custom Templates</label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {customTemplates.map(t => (
+                      <button key={t.id} onClick={() => setPptxTheme(`tpl:${t.id}`)} className={`px-2.5 py-1.5 text-[11px] font-medium rounded-lg border transition-all border-purple-300 dark:border-purple-600 text-purple-800 dark:text-purple-200 bg-purple-50 dark:bg-purple-900/20 ${pptxTheme === `tpl:${t.id}` ? 'ring-2 ring-purple-500 ring-offset-1' : 'opacity-60 hover:opacity-100'}`}>{t.name}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </CanvasActionPopover>
+
+          {/* PDF popover */}
+          <CanvasActionPopover
+            isOpen={activePopover === 'pdf'}
+            onClose={() => setActivePopover(null)}
+            title="Download PDF"
+            generateLabel="Download"
+            generating={actionLoading === 'pdf'}
+            onGenerate={() => { setActivePopover(null); handleExportPDF(); }}
+          >
+            <div>
+              <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1.5">Layout</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {([
+                  { id: 'clean' as const, label: 'Clean', desc: 'Minimal, modern' },
+                  { id: 'academic' as const, label: 'Academic', desc: 'Serif, numbered' },
+                  { id: 'report' as const, label: 'Report', desc: 'Cover page, TOC' },
+                ]).map(l => (
+                  <button key={l.id} onClick={() => setPdfLayout(l.id)} className={`px-2 py-2 text-center rounded-lg border transition-colors ${pdfLayout === l.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                    <span className={`block text-[11px] font-medium ${pdfLayout === l.id ? 'text-blue-700 dark:text-blue-300' : 'text-gray-700 dark:text-gray-300'}`}>{l.label}</span>
+                    <span className="block text-[10px] text-gray-400 mt-0.5">{l.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </CanvasActionPopover>
+        </div>
+
         {/* Action pill row */}
         <div className="flex items-center gap-1.5 px-3 py-2 overflow-x-auto scrollbar-hide">
           {CANVAS_ACTIONS.map(action => {
             const enabled = action.enabled(ctx.canvasItems, ctx.selectedNotebookId);
             const loading = actionLoading === action.id;
+            const isActive = activePopover === action.id;
+            // Actions that need a popover vs direct-fire
+            const hasPopover = ['docs', 'visual', 'audio', 'quiz', 'pptx', 'pdf'].includes(action.id);
             return (
               <button
                 key={action.id}
-                onClick={() => !loading && enabled && ACTION_HANDLERS[action.id]?.()}
-                disabled={!enabled || !!actionLoading}
+                onClick={() => {
+                  if (loading || !enabled) return;
+                  if (hasPopover) {
+                    setActivePopover(isActive ? null : action.id);
+                  } else {
+                    setActivePopover(null);
+                    ACTION_HANDLERS[action.id]?.();
+                  }
+                }}
+                disabled={!enabled || (!!actionLoading && !isActive)}
                 className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
                   loading
                     ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 animate-pulse'
-                    : enabled && !actionLoading
-                      ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 hover:shadow-sm'
-                      : 'bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed'
+                    : isActive
+                      ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 ring-1 ring-blue-400'
+                      : enabled && !actionLoading
+                        ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 hover:shadow-sm'
+                        : 'bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed'
                 }`}
                 title={action.label}
               >
