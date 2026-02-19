@@ -277,4 +277,188 @@ class WebScraper:
                 "error": str(e)
             }
 
+    async def scrape_with_html(self, url: str) -> Dict:
+        """Scrape a URL and also return the raw HTML for link extraction.
+        
+        Returns the same dict as _scrape_single but with an extra 'html' key.
+        """
+        if self._is_youtube_url(url):
+            result = await self._scrape_youtube(url)
+            result["html"] = None
+            return result
+
+        try:
+            loop = asyncio.get_event_loop()
+            downloaded = await loop.run_in_executor(None, trafilatura.fetch_url, url)
+            if not downloaded:
+                return {"success": False, "url": url, "error": "Failed to download page", "html": None}
+
+            def extract_content(html):
+                return trafilatura.extract(html, include_comments=False, include_tables=True, no_fallback=False)
+
+            text = await loop.run_in_executor(None, extract_content, downloaded)
+            metadata = await loop.run_in_executor(None, trafilatura.extract_metadata, downloaded)
+
+            title = metadata.title if metadata and metadata.title else url
+            author = metadata.author if metadata and metadata.author else None
+            date = metadata.date if metadata and metadata.date else None
+
+            return {
+                "success": True,
+                "url": url,
+                "title": title,
+                "author": author,
+                "date": date,
+                "text": text or "",
+                "word_count": len((text or "").split()),
+                "char_count": len(text or ""),
+                "html": downloaded,
+            }
+        except Exception as e:
+            return {"success": False, "url": url, "error": str(e), "html": None}
+
+    def is_index_page(self, url: str, html: str, extracted_text: str) -> bool:
+        """Detect whether a page is an index/listing page rather than an article.
+        
+        Signals:
+        - URL pattern (ends with /, contains /news/, /category/, /tag/, /topics/)
+        - Low word-to-link ratio (many links, short text between them)
+        - Title contains listing keywords
+        - Many same-domain article-like links
+        """
+        from bs4 import BeautifulSoup
+        from urllib.parse import urlparse
+
+        parsed_url = urlparse(url)
+        base_domain = parsed_url.netloc.lower().replace("www.", "")
+
+        # URL pattern heuristics
+        path = parsed_url.path.rstrip("/").lower()
+        index_path_signals = ["/news", "/articles", "/category", "/categories",
+                              "/tag", "/tags", "/topics", "/topic", "/archive",
+                              "/latest", "/recent", "/blog", "/stories", "/feed"]
+        url_looks_like_index = (
+            parsed_url.path.endswith("/")
+            or any(path.endswith(s) or s + "/" in path for s in index_path_signals)
+        )
+
+        # Parse HTML for links
+        soup = BeautifulSoup(html, "lxml")
+        all_links = soup.find_all("a", href=True)
+
+        # Count internal article-like links
+        article_links = []
+        nav_keywords = {"home", "about", "contact", "login", "signup", "register",
+                        "privacy", "terms", "cookie", "search", "faq", "help",
+                        "subscribe", "newsletter", "sitemap", "careers", "advertise"}
+
+        for a in all_links:
+            href = a["href"]
+            # Resolve relative URLs
+            if href.startswith("/"):
+                href = f"{parsed_url.scheme}://{parsed_url.netloc}{href}"
+            if not href.startswith("http"):
+                continue
+
+            link_parsed = urlparse(href)
+            link_domain = link_parsed.netloc.lower().replace("www.", "")
+            link_path = link_parsed.path.lower().rstrip("/")
+
+            # Must be same domain
+            if link_domain != base_domain:
+                continue
+            # Skip navigation / utility links
+            if any(nav in link_path for nav in nav_keywords):
+                continue
+            # Skip anchors, assets
+            if link_path.endswith((".png", ".jpg", ".css", ".js", ".xml", ".pdf")):
+                continue
+            # Must have path depth > 1 segment (not just "/")
+            segments = [s for s in link_path.split("/") if s]
+            if len(segments) < 2:
+                continue
+            # Must not be the same as current URL path
+            if link_path == path:
+                continue
+
+            anchor_text = a.get_text(strip=True)
+            if anchor_text and len(anchor_text) > 10:
+                article_links.append(href)
+
+        unique_articles = list(dict.fromkeys(article_links))  # dedupe, preserve order
+        text_word_count = len((extracted_text or "").split())
+
+        # Decision: many article links + short/thin content = index page
+        if len(unique_articles) >= 8 and url_looks_like_index:
+            return True
+        if len(unique_articles) >= 5 and text_word_count < 800:
+            return True
+        if len(unique_articles) >= 12:
+            return True
+
+        return False
+
+    def extract_article_links(self, url: str, html: str, max_links: int = 10) -> list:
+        """Extract article-like links from an index/listing page.
+        
+        Returns list of dicts: [{url, title}, ...]
+        """
+        from bs4 import BeautifulSoup
+        from urllib.parse import urlparse
+
+        parsed_url = urlparse(url)
+        base_domain = parsed_url.netloc.lower().replace("www.", "")
+        current_path = parsed_url.path.lower().rstrip("/")
+
+        soup = BeautifulSoup(html, "lxml")
+        all_links = soup.find_all("a", href=True)
+
+        nav_keywords = {"home", "about", "contact", "login", "signup", "register",
+                        "privacy", "terms", "cookie", "search", "faq", "help",
+                        "subscribe", "newsletter", "sitemap", "careers", "advertise"}
+
+        seen_urls = set()
+        articles = []
+
+        for a in all_links:
+            href = a["href"]
+            if href.startswith("/"):
+                href = f"{parsed_url.scheme}://{parsed_url.netloc}{href}"
+            if not href.startswith("http"):
+                continue
+
+            link_parsed = urlparse(href)
+            link_domain = link_parsed.netloc.lower().replace("www.", "")
+            link_path = link_parsed.path.lower().rstrip("/")
+
+            if link_domain != base_domain:
+                continue
+            if any(nav in link_path for nav in nav_keywords):
+                continue
+            if link_path.endswith((".png", ".jpg", ".css", ".js", ".xml", ".pdf")):
+                continue
+            segments = [s for s in link_path.split("/") if s]
+            if len(segments) < 2:
+                continue
+            if link_path == current_path:
+                continue
+
+            # Normalise
+            clean_url = f"{link_parsed.scheme}://{link_parsed.netloc}{link_parsed.path}"
+            if clean_url in seen_urls:
+                continue
+            seen_urls.add(clean_url)
+
+            anchor_text = a.get_text(strip=True)
+            if not anchor_text or len(anchor_text) < 10:
+                continue
+
+            articles.append({"url": clean_url, "title": anchor_text})
+
+            if len(articles) >= max_links:
+                break
+
+        return articles
+
+
 web_scraper = WebScraper()

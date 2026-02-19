@@ -718,21 +718,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               if (!notebookId) return;
               try {
                 const API_BASE = (await import('../services/api')).API_BASE_URL;
-                // Use collector's add-source flow: scrape + ingest
-                const resp = await fetch(`${API_BASE}/chat/query/stream`, {
+                // Add directly to notebook sources (not collector) via /web/quick-add
+                const resp = await fetch(`${API_BASE}/web/quick-add`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
                     notebook_id: notebookId,
-                    question: `add ${result.url}`,
-                    target: 'collector',
+                    url: result.url,
+                    title: result.title,
                   }),
                 });
                 if (resp.ok) {
-                  // Briefly show confirmation in chat
                   setMessages(prev => [...prev, {
                     role: 'assistant',
-                    content: `Added **[${result.title}](${result.url})** to your sources.`,
+                    content: `Added **[${result.title}](${result.url})** to your notebook sources.`,
                     agentType: 'research' as const,
                     agentName: 'Research',
                     timestamp: new Date(),

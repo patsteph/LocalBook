@@ -751,6 +751,86 @@ class GoogleNewsFetcher(BaseFetcher):
         return items
 
 
+class FeedPageFetcher(BaseFetcher):
+    """Fetches articles from index/listing pages (e.g. news category pages).
+    
+    Re-scrapes the index page, extracts article links via BeautifulSoup,
+    then scrapes each individual article for content.
+    """
+
+    async def fetch(
+        self,
+        source_config: Dict[str, Any],
+        keywords: List[str]
+    ) -> List[FetchedItem]:
+        """
+        Fetch articles from a feed/index page.
+        
+        source_config:
+            url: Index page URL
+        """
+        page_url = source_config.get("url")
+        if not page_url:
+            return []
+
+        items: List[FetchedItem] = []
+
+        try:
+            from services.web_scraper import web_scraper
+
+            # Scrape the index page with HTML
+            scraped = await web_scraper.scrape_with_html(page_url)
+            raw_html = scraped.get("html")
+            if not raw_html:
+                logger.warning(f"FeedPageFetcher: could not download {page_url}")
+                return []
+
+            # Extract article links
+            article_links = web_scraper.extract_article_links(page_url, raw_html, max_links=10)
+            if not article_links:
+                logger.info(f"FeedPageFetcher: no article links found on {page_url}")
+                return []
+
+            # Scrape individual articles
+            article_urls = [a["url"] for a in article_links]
+            scraped_articles = await web_scraper.scrape_urls(article_urls)
+
+            for i, sa in enumerate(scraped_articles):
+                if not sa.get("success") or not sa.get("text"):
+                    continue
+                text = sa["text"]
+                if len(text.split()) < 200:
+                    continue
+
+                title = sa.get("title", article_links[i].get("title", "Untitled"))
+                url = sa.get("url", article_links[i]["url"])
+
+                item = FetchedItem(
+                    title=title,
+                    url=url,
+                    content=text[:5000],
+                    summary=text[:300],
+                    source_name=f"via {page_url}",
+                    source_type="feed_page",
+                    source_url=page_url,
+                    published_date=datetime.utcnow(),
+                    metadata={
+                        "feed_source": page_url,
+                        "author": sa.get("author"),
+                        "date": sa.get("date"),
+                    }
+                )
+                item.compute_hash()
+                items.append(item)
+
+            logger.info(f"FeedPageFetcher: {len(items)} articles from {page_url}")
+
+        except Exception as e:
+            logger.error(f"FeedPageFetcher error for {page_url}: {e}")
+
+        return items
+
+
 class UnifiedFetcher:
     """
     Unified interface for all fetchers.
@@ -764,6 +844,7 @@ class UnifiedFetcher:
         self.youtube_fetcher = YouTubeFetcher()
         self.arxiv_fetcher = ArXivFetcher()
         self.news_fetcher = GoogleNewsFetcher()
+        self.feed_page_fetcher = FeedPageFetcher()
     
     async def close(self):
         """Close all fetcher sessions"""
@@ -774,6 +855,7 @@ class UnifiedFetcher:
             self.youtube_fetcher.close(),
             self.arxiv_fetcher.close(),
             self.news_fetcher.close(),
+            self.feed_page_fetcher.close(),
             return_exceptions=True
         )
     
@@ -840,6 +922,10 @@ class UnifiedFetcher:
         # News keywords
         for keyword in sources.get("news_keywords", []):
             tasks.append(self.news_fetcher.fetch({"keyword": keyword}, keywords))
+        
+        # Feed pages (index/listing pages that contain article links)
+        for feed_url in sources.get("feed_pages", []):
+            tasks.append(self.feed_page_fetcher.fetch({"url": feed_url}, keywords))
         
         if not tasks:
             return all_items

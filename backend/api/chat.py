@@ -579,20 +579,58 @@ async def _stream_collector(chat_query: ChatQuery):
                     freq = _parse_freq(schedule_raw) if schedule_raw and schedule_raw != "manual" else "manual"
 
                     from services.web_scraper import web_scraper
-                    scraped = await web_scraper._scrape_single(url)
 
-                    if scraped.get("success") and scraped.get("text"):
-                        title = scraped.get("title", url)
-                        text = scraped["text"]
-                        new_source = await source_store.create(notebook_id, title, {
-                            "content": text, "url": url, "format": "web", "type": "web_page",
-                            "author": scraped.get("author"), "date": scraped.get("date"),
-                        })
+                    # Use scrape_with_html so we can check for index pages
+                    scraped = await web_scraper.scrape_with_html(url)
+                    raw_html = scraped.get("html")
+
+                    # ── Index / feed page detection ──────────────────────
+                    is_index = False
+                    if scraped.get("success") and raw_html:
                         try:
-                            from services.rag_engine import rag_engine
-                            await rag_engine.ingest_document(notebook_id, new_source["id"], text, title)
-                        except Exception as ie:
-                            print(f"[Collector] Ingest warning: {ie}")
+                            is_index = web_scraper.is_index_page(url, raw_html, scraped.get("text", ""))
+                        except Exception:
+                            is_index = False
+
+                    if is_index and raw_html:
+                        # ── FEED PAGE FLOW ───────────────────────────────
+                        yield f"data: {json.dumps({'type': 'status', 'message': 'Index page detected — extracting articles...', 'query_type': 'collector'})}\n\n"
+
+                        article_links = web_scraper.extract_article_links(url, raw_html, max_links=10)
+
+                        if not article_links:
+                            reply = f"**Index page detected** at {url} but could not find article links.\nTry linking to a specific article instead."
+                        else:
+                            # Store index URL as a feed_page for recurring collection
+                            feed_pages = list(config.sources.get("feed_pages", []))
+                            if url not in feed_pages:
+                                feed_pages.append(url)
+                            collector_agent.update_config({
+                                "sources": {**config.sources, "feed_pages": feed_pages},
+                                "schedule": {**config.schedule, "frequency": freq if freq != "manual" else "weekly"},
+                            })
+
+                            # Preview the articles found (but do NOT ingest — collection pipeline handles that)
+                            sched_label = freq if freq != "manual" else "weekly"
+                            lines = [f"**Feed page registered:** [{scraped.get('title', url)}]({url})",
+                                     f"- **Schedule:** {sched_label} checks for new articles",
+                                     f"- **{len(article_links)} articles detected** on this page\n"]
+                            for a in article_links[:8]:
+                                lines.append(f"- [{a['title']}]({a['url']})")
+                            if len(article_links) > 8:
+                                lines.append(f"- *...and {len(article_links) - 8} more*")
+                            lines.append(f"\nThese will be scraped, scored for relevance, and processed on the next **{sched_label}** collection run.")
+                            lines.append("Articles that pass my quality filters will appear in your notebook sources.")
+                            reply = "\n".join(lines)
+                            _notify_curator(f"Collector registered feed page: {url}. {len(article_links)} articles detected.")
+
+                        follow_ups = ['Collect now', 'Show my collection status', 'Add another source']
+
+                    elif scraped.get("success") and scraped.get("text"):
+                        # ── SINGLE URL FLOW ──────────────────────────────
+                        # Register in collector profile only — collection pipeline handles ingestion
+                        title = scraped.get("title", url)
+                        wc = scraped.get("word_count", len(scraped["text"].split()))
 
                         web_pages = list(config.sources.get("web_pages", []))
                         if url not in web_pages:
@@ -601,15 +639,16 @@ async def _stream_collector(chat_query: ChatQuery):
                             "sources": {**config.sources, "web_pages": web_pages},
                             "schedule": {**config.schedule, "frequency": freq},
                         })
-                        lines = [f"Done. **Source added:** [{title}]({url})",
-                                 f"- **{scraped.get('word_count', len(text.split()))}** words indexed"]
+                        lines = [f"Done. **Source registered:** [{title}]({url})",
+                                 f"- **{wc}** words detected on page"]
                         if freq != "manual":
                             lines.append(f"- **Schedule set:** {freq} checks")
                         else:
                             lines.append(f"- **Schedule:** manual (say \"check daily\" to automate)")
-                        lines.append(f"\nThis source is now available for chat and Studio generation.")
+                        lines.append(f"\nThis will be processed through the collection pipeline on the next run.")
+                        lines.append("Say **\"collect now\"** to trigger an immediate collection.")
                         reply = "\n".join(lines)
-                        _notify_curator(f"Collector added web source: {title} ({url}). Schedule: {freq}.")
+                        _notify_curator(f"Collector registered web source: {title} ({url}). Schedule: {freq}.")
                     else:
                         error = scraped.get("error", "Could not extract content")
                         reply = f"**Could not fetch:** {url}\n- Reason: {error}\n\nTry a different URL, or add content manually via the Sources panel."
