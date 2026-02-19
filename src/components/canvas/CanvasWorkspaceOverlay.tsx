@@ -373,6 +373,7 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [showCanvasHint, setShowCanvasHint] = useState(() => !localStorage.getItem('lb-canvas-hint-seen'));
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const contentAreaRef = useRef<HTMLDivElement>(null);
 
@@ -739,6 +740,26 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
 
       {/* Bottom control surface — action bar + chat input */}
       <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex-shrink-0">
+        {/* Onboarding hint — shown once */}
+        {showCanvasHint && (
+          <div className="px-3 pt-2 pb-1 animate-slide-up">
+            <div className="flex items-start gap-2.5 p-2.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-lg">
+              <span className="text-blue-500 dark:text-blue-400 mt-0.5 flex-shrink-0">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-blue-800 dark:text-blue-200">Canvas Workspace</p>
+                <p className="text-[11px] text-blue-600 dark:text-blue-300 mt-0.5">Use the pills below to create visuals, audio, quizzes, or slides from your content. Chat to refine or ask follow-ups.</p>
+              </div>
+              <button
+                onClick={() => { setShowCanvasHint(false); localStorage.setItem('lb-canvas-hint-seen', '1'); }}
+                className="text-blue-400 hover:text-blue-600 dark:hover:text-blue-200 text-xs flex-shrink-0 p-0.5"
+              >
+                &#x2715;
+              </button>
+            </div>
+          </div>
+        )}
         {/* Action pill row */}
         <div className="flex items-center gap-1.5 px-3 py-2 overflow-x-auto scrollbar-hide">
           {CANVAS_ACTIONS.map(action => {
