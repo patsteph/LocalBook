@@ -469,6 +469,7 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
   const [audioSkill, setAudioSkill] = useState(() => localStorage.getItem('lb-canvas-audio-skill') || 'podcast_script');
   const [audioDuration, setAudioDuration] = useState(() => parseInt(localStorage.getItem('lb-canvas-audio-dur') || '15'));
   const [audioVoices, setAudioVoices] = useState(() => localStorage.getItem('lb-canvas-audio-voices') || 'mf');
+  const [audioAccent, setAudioAccent] = useState(() => localStorage.getItem('lb-canvas-audio-accent') || 'us');
 
   // Visual popover config
   type DiagramType = 'auto' | 'mindmap' | 'flowchart' | 'timeline' | 'classDiagram' | 'quadrant';
@@ -505,6 +506,7 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
   useEffect(() => { localStorage.setItem('lb-canvas-audio-skill', audioSkill); }, [audioSkill]);
   useEffect(() => { localStorage.setItem('lb-canvas-audio-dur', String(audioDuration)); }, [audioDuration]);
   useEffect(() => { localStorage.setItem('lb-canvas-audio-voices', audioVoices); }, [audioVoices]);
+  useEffect(() => { localStorage.setItem('lb-canvas-audio-accent', audioAccent); }, [audioAccent]);
   useEffect(() => { localStorage.setItem('lb-canvas-visual-type', visualType); }, [visualType]);
   useEffect(() => { localStorage.setItem('lb-canvas-docs-skill', docsSkill); }, [docsSkill]);
   useEffect(() => { localStorage.setItem('lb-canvas-docs-style', docsStyle); }, [docsStyle]);
@@ -636,7 +638,7 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
         skill_id: audioSkill,
         host1_gender: h1,
         host2_gender: h2,
-        accent: 'us',
+        accent: audioAccent,
       });
       ctx.addCanvasItem({
         type: 'audio',
@@ -968,16 +970,19 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
               <div>
                 <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Content Type</label>
                 <select value={docsSkill} onChange={e => setDocsSkill(e.target.value)} className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
-                  {skills.filter(s => ['summary', 'study_guide', 'faq', 'briefing', 'deep_dive', 'explain', 'feynman_curriculum'].includes(s.skill_id)).map(s => (
+                  {skills.filter(s => !['podcast_script', 'debate'].includes(s.skill_id)).map(s => (
                     <option key={s.skill_id} value={s.skill_id}>{s.name}</option>
                   ))}
                 </select>
+                {skills.find(s => s.skill_id === docsSkill)?.description && (
+                  <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500 leading-snug">{skills.find(s => s.skill_id === docsSkill)!.description}</p>
+                )}
               </div>
               {styleFormats.length > 0 && (
                 <div>
                   <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Style</label>
                   <div className="flex flex-wrap gap-1">
-                    {styleFormats.slice(0, 6).map(f => (
+                    {styleFormats.map(f => (
                       <button key={f.value} onClick={() => setDocsStyle(f.value)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors ${docsStyle === f.value ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{f.label}</button>
                     ))}
                   </div>
@@ -1032,10 +1037,20 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
               <div>
                 <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Style</label>
                 <select value={audioSkill} onChange={e => setAudioSkill(e.target.value)} className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
-                  <option value="podcast_script">Podcast</option>
-                  <option value="debate">Debate</option>
-                  <option value="feynman_curriculum">Feynman Teaching</option>
+                  {skills.filter(s => ['podcast_script', 'debate', 'feynman_curriculum'].includes(s.skill_id)).map(s => (
+                    <option key={s.skill_id} value={s.skill_id}>{s.name}</option>
+                  ))}
+                  {skills.filter(s => !['podcast_script', 'debate', 'feynman_curriculum'].includes(s.skill_id)).length > 0 && (
+                    <optgroup label="Podcast about...">
+                      {skills.filter(s => !['podcast_script', 'debate', 'feynman_curriculum'].includes(s.skill_id)).map(s => (
+                        <option key={s.skill_id} value={s.skill_id}>{s.name}</option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
+                {audioSkill === 'feynman_curriculum' && (
+                  <p className="mt-1 text-[11px] text-blue-500 dark:text-blue-400 leading-snug">4-part progressive teaching: Foundation → Building → First Principles → Mastery (recommended: 30-45 min)</p>
+                )}
               </div>
               <div>
                 <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Duration: {audioDuration} min</label>
@@ -1046,6 +1061,14 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
                 <div className="flex gap-1">
                   {([['mf', 'M / F'], ['fm', 'F / M'], ['mm', 'M / M'], ['ff', 'F / F']] as const).map(([val, label]) => (
                     <button key={val} onClick={() => setAudioVoices(val)} className={`flex-1 px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${audioVoices === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Accent</label>
+                <div className="flex gap-1">
+                  {([['us', 'American'], ['uk', 'British']] as const).map(([val, label]) => (
+                    <button key={val} onClick={() => setAudioAccent(val)} className={`flex-1 px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${audioAccent === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
                   ))}
                 </div>
               </div>
