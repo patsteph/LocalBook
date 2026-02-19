@@ -70,7 +70,8 @@ export interface ChatMessage {
   curatorAside?: string;  // Curator overwatch: cross-notebook insight aside
   curatorName?: string;  // Curator overwatch: name of the curator
   agentName?: string;    // Agent identity: display name (e.g. "Scout", "Curator")
-  agentType?: 'curator' | 'collector';  // Agent identity: type for color coding
+  agentType?: 'curator' | 'collector' | 'research';  // Agent identity: type for color coding
+  researchResults?: ResearchResult[];  // @research: structured results for approval UI
 }
 
 export interface ChatQuery {
@@ -81,7 +82,20 @@ export interface ChatQuery {
   enable_web_search?: boolean;
   llm_provider?: string;
   deep_think?: boolean;  // Enable Deep Think mode with chain-of-thought reasoning
-  target?: string;  // v1.4: @mention routing — 'curator', 'collector', or undefined for default RAG
+  target?: string;  // v1.4: @mention routing — 'curator', 'collector', 'research', or undefined for default RAG
+}
+
+export interface ResearchResult {
+  id: string;
+  title: string;
+  url: string;
+  snippet: string;
+  word_count: number;
+  quality_score: number;
+  quality_reasons: string[];
+  already_sourced: boolean;
+  author?: string;
+  date?: string;
 }
 
 export interface ChatResponse {

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Compass, Radio, BookOpen, Upload, MessageCircle, Sparkles } from 'lucide-react';
+import { Compass, Radio, Search, BookOpen, Upload, MessageCircle, Sparkles } from 'lucide-react';
 import { chatService } from '../services/chat';
 import { explorationService } from '../services/exploration';
 import { voiceService } from '../services/voice';
@@ -28,6 +28,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const [showMentionMenu, setShowMentionMenu] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [activeMention, setActiveMention] = useState<'curator' | 'collector' | 'research' | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   
   // Auto-dismiss welcome once a notebook is selected (user is no longer a first-timer)
@@ -134,10 +135,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const MENTION_OPTIONS: { key: string; icon: React.ReactNode; desc: string }[] = [
     { key: 'curator', icon: <Compass className="w-3.5 h-3.5" />, desc: 'Cross-notebook synthesis' },
     { key: 'collector', icon: <Radio className="w-3.5 h-3.5" />, desc: 'Collection status & commands' },
+    { key: 'research', icon: <Search className="w-3.5 h-3.5" />, desc: 'Web, site, or deep-dive research' },
   ];
 
   const parseMention = (text: string): { target: string | null; cleanQuestion: string } => {
-    const match = text.match(/^@(curator|collector)\s+([\s\S]*)$/i);
+    // If activeMention is set, target comes from state — input is already clean
+    if (activeMention) {
+      return { target: activeMention, cleanQuestion: text.trim() };
+    }
+    // Fallback: parse manually typed @mention
+    const match = text.match(/^@(curator|collector|research)\s+([\s\S]*)$/i);
     if (match) {
       return { target: match[1].toLowerCase(), cleanQuestion: match[2].trim() };
     }
@@ -145,7 +152,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const val = e.target.value;
+    let val = e.target.value;
+
+    // If user manually types @collector/@curator and space, promote to activeMention
+    const manualMention = val.match(/^@(curator|collector|research)\s+$/i);
+    if (manualMention && !activeMention) {
+      setActiveMention(manualMention[1].toLowerCase() as 'curator' | 'collector' | 'research');
+      val = '';
+    }
+
     setInput(val);
 
     // Auto-resize textarea
@@ -153,8 +168,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     target.style.height = 'auto';
     target.style.height = Math.min(target.scrollHeight, 120) + 'px';
 
-    // Show @mention menu when user types '@' at the start
-    if (val === '@' || val.match(/^@[a-z]*$/i)) {
+    // Show @mention menu when user types '@' at the start (and no activeMention)
+    if (!activeMention && (val === '@' || val.match(/^@[a-z]*$/i))) {
       setShowMentionMenu(true);
       setMentionFilter(val.slice(1));
       setMentionIndex(0);
@@ -189,6 +204,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
         return;
       }
     }
+    // Backspace with empty input clears the activeMention pill
+    if (e.key === 'Backspace' && !input && activeMention) {
+      setActiveMention(null);
+      e.preventDefault();
+      return;
+    }
     // Enter to submit, Shift+Enter for newline
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -199,7 +220,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   };
 
   const insertMention = (key: string) => {
-    setInput(`@${key} `);
+    setActiveMention(key as 'curator' | 'collector' | 'research');
+    setInput('');
     setShowMentionMenu(false);
     setMentionFilter('');
     inputRef.current?.focus();
@@ -214,13 +236,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     
     const userMessage: ChatMessage = {
       role: 'user',
-      content: input,
+      content: currentQuestion,
       timestamp: new Date(),
-      ...(target ? { agentType: target as 'curator' | 'collector' } : {}),
+      ...(target ? { agentType: target as 'curator' | 'collector' | 'research' } : {}),
     };
 
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
+    setActiveMention(null);
     setShowMentionMenu(false);
     // Reset textarea height after clearing
     if (inputRef.current) inputRef.current.style.height = 'auto';
@@ -233,7 +256,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       content: '',
       citations: [],
       timestamp: new Date(),
-      ...(target ? { agentType: target as 'curator' | 'collector' } : {}),
+      ...(target ? { agentType: target as 'curator' | 'collector' | 'research' } : {}),
     };
     
     // Add the streaming message placeholder
@@ -367,6 +390,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               return updated;
             });
           },
+          onResearchResults: (results) => {
+            // @research: attach structured results for approval UI
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (updated[lastIdx]?.role === 'assistant') {
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  researchResults: results,
+                };
+              }
+              return updated;
+            });
+          },
           onDone: (followUpQuestions, curatorName, agentName, agentType) => {
             // Finalize the message with follow-up questions and low confidence prompt
             setMessages((prev) => {
@@ -406,7 +443,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                   lowConfidenceQuery,
                   ...(curatorName ? { curatorName } : {}),
                   ...(agentName ? { agentName } : {}),
-                  ...(agentType ? { agentType: agentType as 'curator' | 'collector' } : {}),
+                  ...(agentType ? { agentType: agentType as 'curator' | 'collector' | 'research' } : {}),
                 };
               }
               return updated;
@@ -677,6 +714,34 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               ));
             }}
             onOpenWebSearch={onOpenWebSearch}
+            onAddResearchResult={async (result) => {
+              if (!notebookId) return;
+              try {
+                const API_BASE = (await import('../services/api')).API_BASE_URL;
+                // Use collector's add-source flow: scrape + ingest
+                const resp = await fetch(`${API_BASE}/chat/query/stream`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    notebook_id: notebookId,
+                    question: `add ${result.url}`,
+                    target: 'collector',
+                  }),
+                });
+                if (resp.ok) {
+                  // Briefly show confirmation in chat
+                  setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: `Added **[${result.title}](${result.url})** to your sources.`,
+                    agentType: 'research' as const,
+                    agentName: 'Research',
+                    timestamp: new Date(),
+                  }]);
+                }
+              } catch (err) {
+                console.error('Failed to add research result:', err);
+              }
+            }}
           />
         ))}
 
@@ -743,14 +808,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               />
             )}
             <div className="relative flex-1">
-              {/* @mention active target indicator */}
-              {parseMention(input).target && (
-                <span className={`absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold px-1.5 py-0.5 rounded-lg pointer-events-none z-10 ${
-                  parseMention(input).target === 'curator'
+              {/* @mention active target pill */}
+              {activeMention && (
+                <span className={`absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold px-1.5 py-0.5 rounded-lg z-10 flex items-center gap-1 cursor-pointer ${
+                  activeMention === 'curator'
                     ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300'
-                    : 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                }`}>
-                  @{parseMention(input).target}
+                    : activeMention === 'research'
+                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+                      : 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300'
+                }`} onClick={() => setActiveMention(null)} title="Click or press Backspace to remove">
+                  {activeMention === 'collector' ? <Radio className="w-3 h-3" /> : activeMention === 'research' ? <Search className="w-3 h-3" /> : <Compass className="w-3 h-3" />}
+                  @{activeMention}
                 </span>
               )}
               <textarea
@@ -763,7 +831,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 disabled={!notebookId || loading || isTranscribing}
                 rows={1}
                 className={`w-full py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-700 bg-white dark:bg-gray-700 text-gray-900 dark:text-white resize-none min-h-[38px] max-h-[120px] ${
-                  parseMention(input).target ? 'pl-[4.5rem] pr-4' : 'px-4'
+                  activeMention ? 'pl-[7.5rem] pr-4' : 'px-4'
                 }`}
               />
               {/* @mention autocomplete dropdown */}

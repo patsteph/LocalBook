@@ -53,18 +53,8 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
   const renderContent = () => {
     switch (view) {
       case 'chat':
-        return (
-          <div className="relative h-full">
-            <ChatInterface
-              notebookId={ctx.selectedNotebookId}
-              llmProvider={ctx.selectedLLMProvider}
-              onOpenWebSearch={(query) => ctx.openWebResearch(query)}
-              prefillQuery={ctx.chatPrefillQuery}
-            />
-            {/* Universal Canvas workspace — overlays chat when items exist */}
-            {ctx.canvasItems.length > 0 && <CanvasWorkspaceOverlay />}
-          </div>
-        );
+        // Chat is always mounted below — this case just returns null
+        return null;
 
       case 'constellation':
         return (
@@ -324,8 +314,20 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
       </div>
 
       {/* Panel content */}
-      <div className="flex-1 overflow-hidden">
-        {renderContent()}
+      <div className="flex-1 overflow-hidden relative">
+        {/* Chat is always mounted to preserve state; hidden when another view is active */}
+        <div className={`absolute inset-0 ${view === 'chat' ? '' : 'invisible pointer-events-none'}`}>
+          <div className="relative h-full">
+            <ChatInterface
+              notebookId={ctx.selectedNotebookId}
+              llmProvider={ctx.selectedLLMProvider}
+              onOpenWebSearch={(query) => ctx.openWebResearch(query)}
+              prefillQuery={ctx.chatPrefillQuery}
+            />
+            {ctx.canvasItems.length > 0 && <CanvasWorkspaceOverlay />}
+          </div>
+        </div>
+        {view !== 'chat' && renderContent()}
       </div>
     </div>
   );

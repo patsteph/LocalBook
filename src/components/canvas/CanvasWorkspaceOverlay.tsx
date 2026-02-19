@@ -3,7 +3,7 @@ import DOMPurify from 'dompurify';
 import {
   FileText, Palette, Target, Mic, MessageSquare, PenLine,
   Presentation, Download, Search, Sparkles, Brain, GitBranch,
-  CalendarDays, Network, BarChart3
+  CalendarDays, Network, BarChart3, BookOpen
 } from 'lucide-react';
 import { useCanvas } from './CanvasContext';
 import { CanvasItem } from './types';
@@ -392,7 +392,7 @@ const CanvasItemRenderer: React.FC<CanvasItemRendererProps> = ({ item, onToggleC
           {item.sourceNames && item.sourceNames.length > 0 && (
             <details className="mt-4 border-t border-gray-100 dark:border-gray-700/50 pt-3">
               <summary className="text-[11px] font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-300 select-none">
-                📚 {item.sourceNames.length} source{item.sourceNames.length !== 1 ? 's' : ''} used
+                <BookOpen className="w-3 h-3 inline mr-1" />{item.sourceNames.length} source{item.sourceNames.length !== 1 ? 's' : ''} used
               </summary>
               <div className="mt-2 space-y-1.5">
                 {item.sourceNames.map((name, idx) => {

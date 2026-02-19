@@ -1,6 +1,6 @@
 // Chat API service
 import api, { API_BASE_URL } from './api';
-import { ChatQuery, ChatResponse, Citation } from '../types';
+import { ChatQuery, ChatResponse, Citation, ResearchResult } from '../types';
 
 export interface QueryAnalysis {
   entities: string[];
@@ -23,6 +23,7 @@ export interface StreamCallbacks {
   onCitations?: (citations: Citation[], sources: string[], lowConfidence: boolean) => void;
   onToken?: (token: string) => void;
   onReplaceAnswer?: (content: string) => void;
+  onResearchResults?: (results: ResearchResult[]) => void;
   onDone?: (followUpQuestions: string[], curatorName?: string, agentName?: string, agentType?: string) => void;
   onError?: (error: string) => void;
 }
@@ -79,6 +80,8 @@ export const chatService = {
             callbacks.onToken?.(data.content);
           } else if (data.type === 'replace_answer') {
             callbacks.onReplaceAnswer?.(data.content);
+          } else if (data.type === 'research_results') {
+            callbacks.onResearchResults?.(data.results || []);
           } else if (data.type === 'done') {
             callbacks.onDone?.(data.follow_up_questions || [], data.curator_name, data.agent_name, data.agent_type);
           }

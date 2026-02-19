@@ -1,9 +1,10 @@
 import React from 'react';
-import { ChatMessage, Citation as CitationType, InlineVisualData } from '../../types';
+import { ChatMessage, Citation as CitationType, InlineVisualData, ResearchResult } from '../../types';
 import { Citation, CitationList } from '../Citation';
 import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { InlineVisual } from '../visual';
 import { BookmarkButton } from '../shared/BookmarkButton';
+import { Radio, Compass, Search, ExternalLink, Plus, Check } from 'lucide-react';
 
 interface ChatMessageBubbleProps {
   message: ChatMessage;
@@ -20,6 +21,7 @@ interface ChatMessageBubbleProps {
   onTaglineChange: (index: number, tagline: string) => void;
   onDismissLowConfidence: (message: ChatMessage) => void;
   onOpenWebSearch?: (query?: string) => void;
+  onAddResearchResult?: (result: ResearchResult) => void;
 }
 
 // Render message content with inline clickable citations and mermaid diagrams
@@ -149,7 +151,9 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
   onTaglineChange,
   onDismissLowConfidence,
   onOpenWebSearch,
+  onAddResearchResult,
 }) => {
+  const [addedResults, setAddedResults] = React.useState<Set<string>>(new Set());
   return (
     <div className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
       <div
@@ -159,21 +163,25 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
               ? 'bg-teal-600 text-white'
               : message.agentType === 'curator'
                 ? 'bg-purple-600 text-white'
-                : 'bg-blue-600 text-white'
+                : message.agentType === 'research'
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-blue-600 text-white'
             : message.agentType === 'collector'
               ? 'bg-teal-50 dark:bg-teal-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-teal-500'
-              : (message.curatorName || message.agentType === 'curator')
-                ? 'bg-purple-50 dark:bg-purple-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-purple-500'
-                : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+              : message.agentType === 'research'
+                ? 'bg-emerald-50 dark:bg-emerald-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-emerald-500'
+                : (message.curatorName || message.agentType === 'curator')
+                  ? 'bg-purple-50 dark:bg-purple-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-purple-500'
+                  : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
         }`}
       >
         {message.role === 'user' ? (
           <>
             {message.agentType && (
               <div className={`flex items-center gap-1.5 mb-1.5 text-[10px] font-semibold uppercase tracking-wide ${
-                message.agentType === 'collector' ? 'text-teal-200' : 'text-purple-200'
+                message.agentType === 'collector' ? 'text-teal-200' : message.agentType === 'research' ? 'text-emerald-200' : 'text-purple-200'
               }`}>
-                <span>{message.agentType === 'collector' ? '📡' : '🧭'}</span>
+                {message.agentType === 'collector' ? <Radio className="w-3 h-3" /> : message.agentType === 'research' ? <Search className="w-3 h-3" /> : <Compass className="w-3 h-3" />}
                 @{message.agentType}
               </div>
             )}
@@ -181,15 +189,20 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
           </>
         ) : (
           <>
-            {/* Agent badge — collector or curator */}
+            {/* Agent badge — collector, curator, or research */}
             {message.agentType === 'collector' && (
               <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-teal-600 dark:text-teal-400">
-                <span>📡</span> {message.agentName || 'Collector'}
+                <Radio className="w-3.5 h-3.5" /> {message.agentName || 'Collector'}
+              </div>
+            )}
+            {message.agentType === 'research' && (
+              <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                <Search className="w-3.5 h-3.5" /> {message.agentName || 'Research'}
               </div>
             )}
             {(message.curatorName || message.agentType === 'curator') && (
               <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-purple-600 dark:text-purple-400">
-                <span>🧭</span> {message.agentName || message.curatorName || 'Curator'}
+                <Compass className="w-3.5 h-3.5" /> {message.agentName || message.curatorName || 'Curator'}
               </div>
             )}
             {/* Status message - shown while processing (Phase 1.2) */}
@@ -349,6 +362,64 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                     }}
                   />
                 )}
+              </div>
+            )}
+            {/* Research Results Approval Cards */}
+            {message.researchResults && message.researchResults.length > 0 && (
+              <div className="mt-3 pt-2 border-t border-emerald-200 dark:border-emerald-800">
+                <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 mb-2 uppercase tracking-wider">Add to Sources</p>
+                <div className="space-y-2">
+                  {message.researchResults.map((result) => {
+                    const isAdded = addedResults.has(result.id);
+                    return (
+                      <div
+                        key={result.id}
+                        className={`p-2.5 rounded-lg border transition-all ${
+                          isAdded
+                            ? 'bg-emerald-50 dark:bg-emerald-900/30 border-emerald-300 dark:border-emerald-700 opacity-70'
+                            : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-emerald-400 dark:hover:border-emerald-600'
+                        }`}
+                      >
+                        <div className="flex items-start gap-2">
+                          <div className="flex-1 min-w-0">
+                            <a
+                              href={result.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs font-medium text-emerald-700 dark:text-emerald-400 hover:underline flex items-center gap-1"
+                            >
+                              {result.title}
+                              <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                            </a>
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">{result.snippet}</p>
+                            {result.quality_reasons && result.quality_reasons.length > 0 && (
+                              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1 italic">
+                                {result.quality_reasons.slice(0, 3).join(' · ')}
+                              </p>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => {
+                              if (!isAdded && onAddResearchResult) {
+                                onAddResearchResult(result);
+                                setAddedResults(prev => new Set(prev).add(result.id));
+                              }
+                            }}
+                            disabled={isAdded}
+                            className={`flex-shrink-0 p-1.5 rounded-lg text-xs font-medium transition-colors ${
+                              isAdded
+                                ? 'bg-emerald-200 dark:bg-emerald-800 text-emerald-600 dark:text-emerald-400 cursor-default'
+                                : 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-800'
+                            }`}
+                            title={isAdded ? 'Added to sources' : 'Add to sources'}
+                          >
+                            {isAdded ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
             {/* Curator Overwatch Aside */}

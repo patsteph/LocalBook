@@ -76,7 +76,10 @@ class CuratorService {
   async getNotebooks(): Promise<{ id: string; title: string; source_count: number }[]> {
     const response = await fetch(`${API_BASE_URL}/notebooks`);
     if (!response.ok) throw new Error('Failed to fetch notebooks');
-    return response.json();
+    const data = await response.json();
+    // Backend returns {notebooks: [...], primary_notebook_id: ...}
+    const notebooks = data.notebooks || data;
+    return Array.isArray(notebooks) ? notebooks : [];
   }
 }
 
