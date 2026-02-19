@@ -75,6 +75,15 @@ export const CuratorSettings: React.FC<CuratorSettingsProps> = ({ onClose }) => 
     });
   };
 
+  if (error && !config) {
+    return (
+      <div className="p-4 space-y-3 text-center">
+        <p className="text-sm text-red-500">{error}</p>
+        <button onClick={loadData} className="px-3 py-1.5 text-xs font-medium bg-gray-100 dark:bg-gray-700 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300">Retry</button>
+      </div>
+    );
+  }
+
   if (!config) {
     return <div className="p-4 text-sm text-gray-400">Loading curator settings...</div>;
   }

@@ -23,6 +23,7 @@ import { skillsService } from '../../services/skills';
 import { writingService, FormatOption } from '../../services/writing';
 import { exportService } from '../../services/export';
 import { Skill } from '../../types';
+import { WritingAssistBar } from '../WritingAssistBar';
 
 // Icons for canvas item types
 const iconSm = 'w-3.5 h-3.5';
@@ -45,6 +46,33 @@ const NoteCanvasEditor: React.FC<NoteEditorProps> = ({ item }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [saving, setSaving] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [selectedText, setSelectedText] = useState('');
+
+  const handleTextSelect = useCallback(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);
+    setSelectedText(sel);
+  }, []);
+
+  const handleWritingReplace = useCallback((newText: string, replaceSelection: boolean) => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    if (replaceSelection && selectedText) {
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const updated = item.content.substring(0, start) + newText + item.content.substring(end);
+      ctx.updateCanvasItem(item.id, { content: updated });
+      setSelectedText('');
+    } else {
+      ctx.updateCanvasItem(item.id, { content: newText });
+    }
+  }, [item.id, item.content, selectedText, ctx]);
+
+  const handleWritingContinue = useCallback((continuation: string) => {
+    const separator = item.content.endsWith('\n') ? '' : '\n\n';
+    ctx.updateCanvasItem(item.id, { content: item.content + separator + continuation });
+  }, [item.id, item.content, ctx]);
 
   // Undo/redo history
   const undoStackRef = useRef<string[]>([]);
@@ -230,6 +258,16 @@ const NoteCanvasEditor: React.FC<NoteEditorProps> = ({ item }) => {
         onKeyDown={handleKeyDown}
         placeholder="Start writing your note... Speak or type. Use AI actions below to expand, refine, or generate from your notes."
         className="w-full min-h-[200px] resize-none bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 font-mono leading-relaxed outline-none focus:border-blue-400 dark:focus:border-blue-600 transition-colors"
+        onSelect={handleTextSelect}
+        onMouseUp={handleTextSelect}
+      />
+
+      {/* Writing assist */}
+      <WritingAssistBar
+        text={item.content}
+        selectedText={selectedText}
+        onReplace={handleWritingReplace}
+        onContinue={handleWritingContinue}
       />
 
       {/* Note toolbar */}
@@ -372,7 +410,7 @@ const CANVAS_ACTIONS: CanvasAction[] = [
   { id: 'quiz', icon: <Target className={iconSm} />, label: 'Create Quiz', shortLabel: 'Quiz', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'note') },
   { id: 'pptx', icon: <Presentation className={iconSm} />, label: 'Create Slides', shortLabel: 'PPTX', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'note') },
   { id: 'pdf', icon: <Download className={iconSm} />, label: 'Download PDF', shortLabel: 'PDF', enabled: (items) => items.some(i => i.type === 'document' || i.type === 'note') },
-  { id: 'crossnb', icon: <Search className={iconSm} />, label: 'Cross-Notebook', shortLabel: 'Discover', enabled: (items, nb) => !!nb && items.length > 0 },
+  { id: 'crossnb', icon: <Search className={iconSm} />, label: 'Cross-Notebook Discovery', shortLabel: 'Discover', enabled: (_items, nb) => !!nb },
 ];
 
 export const CanvasWorkspaceOverlay: React.FC = () => {
@@ -415,6 +453,9 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
   // PDF popover config
   type PdfLayout = 'clean' | 'academic' | 'report';
   const [pdfLayout, setPdfLayout] = useState<PdfLayout>(() => (localStorage.getItem('lb-canvas-pdf-layout') as PdfLayout) || 'clean');
+
+  // Discover popover config
+  const [discoverQuery, setDiscoverQuery] = useState('');
 
   // Load skills, style formats, and custom templates for popovers
   useEffect(() => {
@@ -669,8 +710,14 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
     ctx.setGenerationStatus('generating');
     try {
       const content = getPrimaryContent();
-      // Use first 500 chars as the cross-notebook query
-      const query = content.substring(0, 500).replace(/[#*_\n]/g, ' ').trim();
+      // Use explicit discover query if provided, otherwise extract from content
+      const query = discoverQuery.trim() || content.substring(0, 500).replace(/[#*_\n]/g, ' ').trim();
+      if (!query) {
+        ctx.addToast({ type: 'info', title: 'Nothing to discover', message: 'Type a query or add content first' });
+        setActionLoading(null);
+        ctx.setGenerationStatus('idle');
+        return;
+      }
       const result = await curatorService.chat(
         `Find connections and insights across all my notebooks related to: ${query}`,
         ctx.selectedNotebookId
@@ -1057,6 +1104,28 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
               </div>
             </div>
           </CanvasActionPopover>
+
+          {/* Discover popover */}
+          <CanvasActionPopover
+            isOpen={activePopover === 'crossnb'}
+            onClose={() => setActivePopover(null)}
+            title="Cross-Notebook Discovery"
+            generateLabel="Discover"
+            generating={actionLoading === 'crossnb'}
+            onGenerate={() => { setActivePopover(null); handleCrossNotebook(); }}
+          >
+            <div className="space-y-2">
+              <p className="text-[11px] text-gray-500 dark:text-gray-400">Search across all your notebooks for connections, patterns, and related insights.</p>
+              <input
+                type="text"
+                value={discoverQuery}
+                onChange={e => setDiscoverQuery(e.target.value)}
+                placeholder="What do you want to explore? (or leave blank to use current content)"
+                className="w-full px-2.5 py-1.5 text-xs border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                onKeyDown={e => { if (e.key === 'Enter') { setActivePopover(null); handleCrossNotebook(); } }}
+              />
+            </div>
+          </CanvasActionPopover>
         </div>
 
         {/* Action pill row */}
@@ -1066,7 +1135,7 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
             const loading = actionLoading === action.id;
             const isActive = activePopover === action.id;
             // Actions that need a popover vs direct-fire
-            const hasPopover = ['docs', 'visual', 'audio', 'quiz', 'pptx', 'pdf'].includes(action.id);
+            const hasPopover = ['docs', 'visual', 'audio', 'quiz', 'pptx', 'pdf', 'crossnb'].includes(action.id);
             return (
               <button
                 key={action.id}
@@ -1100,6 +1169,14 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
 
         {/* Chat input */}
         <div className="px-3 pb-3">
+          {chatInput.trim().length > 20 && (
+            <WritingAssistBar
+              text={chatInput}
+              onReplace={(newText) => setChatInput(newText)}
+              compact
+              className="mb-1.5"
+            />
+          )}
           <div className="flex items-end gap-2 bg-gray-50 dark:bg-gray-900/60 rounded-lg border border-gray-200 dark:border-gray-700 focus-within:border-blue-400 dark:focus-within:border-blue-600 transition-colors">
             <textarea
               ref={chatInputRef}

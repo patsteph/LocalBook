@@ -12,6 +12,35 @@ import { APIKeysSection } from './settings/APIKeysSection';
 import { CuratorSettings } from './CuratorSettings';
 import { TemplatesSection } from './settings/TemplatesSection';
 
+class SettingsErrorBoundary extends React.Component<
+  { children: React.ReactNode; fallbackLabel: string },
+  { hasError: boolean; error: string }
+> {
+  state = { hasError: false, error: '' };
+  static getDerivedStateFromError(err: Error) {
+    return { hasError: true, error: err.message || 'Unknown error' };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-6 text-center space-y-3">
+          <p className="text-sm font-medium text-red-600 dark:text-red-400">
+            {this.props.fallbackLabel} failed to load
+          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">{this.state.error}</p>
+          <button
+            onClick={() => this.setState({ hasError: false, error: '' })}
+            className="px-3 py-1.5 text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600"
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export const Settings: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
@@ -108,8 +137,8 @@ export const Settings: React.FC = () => {
             {activeSection === 'profile' && <ProfileSection setError={setError} setSuccess={setSuccess} />}
             {activeSection === 'api-keys' && <APIKeysSection setError={setError} setSuccess={setSuccess} />}
             {activeSection === 'credentials' && <CredentialLocker />}
-            {activeSection === 'memory' && <MemorySettings />}
-            {activeSection === 'curator' && <CuratorSettings />}
+            {activeSection === 'memory' && <SettingsErrorBoundary fallbackLabel="Memory"><MemorySettings /></SettingsErrorBoundary>}
+            {activeSection === 'curator' && <SettingsErrorBoundary fallbackLabel="Curator"><CuratorSettings /></SettingsErrorBoundary>}
             {activeSection === 'templates' && <TemplatesSection setError={setError} setSuccess={setSuccess} />}
             {activeSection === 'updates' && <UpdatesSection />}
         </div>

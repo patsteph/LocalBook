@@ -10,6 +10,7 @@ import { ErrorMessage } from './shared/ErrorMessage';
 import { SourceNotesViewer } from './SourceNotesViewer';
 import { ChatMessageBubble } from './chat/ChatMessageBubble';
 import { useVisualActions } from './chat/useVisualActions';
+import { WritingAssistBar } from './WritingAssistBar';
 
 interface ChatInterfaceProps {
   notebookId: string | null;
@@ -608,7 +609,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                     <Upload className="w-3 h-3" /> Upload sources in sidebar
                   </span>
                   <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-gray-700/60 text-xs text-gray-600 dark:text-gray-400">
-                    <Sparkles className="w-3 h-3" /> Try @curator for cross-notebook
+                    <Sparkles className="w-3 h-3" /> Try @curator or @collector
                   </span>
                 </div>
               </>
@@ -729,6 +730,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 🧠
               </button>
             </div>
+            {input.trim().length > 20 && (
+              <WritingAssistBar
+                text={input}
+                onReplace={(newText) => setInput(newText)}
+                compact
+                className="mr-2"
+              />
+            )}
             <div className="relative flex-1">
               {/* @mention active target indicator */}
               {parseMention(input).target && (
