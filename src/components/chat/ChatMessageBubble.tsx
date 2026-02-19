@@ -155,20 +155,41 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
       <div
         className={`max-w-3xl rounded-lg p-3 ${
           message.role === 'user'
-            ? 'bg-blue-600 text-white'
-            : message.curatorName
-              ? 'bg-purple-50 dark:bg-purple-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-purple-500'
-              : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+            ? message.agentType === 'collector'
+              ? 'bg-teal-600 text-white'
+              : message.agentType === 'curator'
+                ? 'bg-purple-600 text-white'
+                : 'bg-blue-600 text-white'
+            : message.agentType === 'collector'
+              ? 'bg-teal-50 dark:bg-teal-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-teal-500'
+              : (message.curatorName || message.agentType === 'curator')
+                ? 'bg-purple-50 dark:bg-purple-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-purple-500'
+                : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
         }`}
       >
         {message.role === 'user' ? (
-          <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+          <>
+            {message.agentType && (
+              <div className={`flex items-center gap-1.5 mb-1.5 text-[10px] font-semibold uppercase tracking-wide ${
+                message.agentType === 'collector' ? 'text-teal-200' : 'text-purple-200'
+              }`}>
+                <span>{message.agentType === 'collector' ? '📡' : '🧭'}</span>
+                @{message.agentType}
+              </div>
+            )}
+            <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+          </>
         ) : (
           <>
-            {/* Curator badge */}
-            {message.curatorName && (
+            {/* Agent badge — collector or curator */}
+            {message.agentType === 'collector' && (
+              <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-teal-600 dark:text-teal-400">
+                <span>📡</span> {message.agentName || 'Collector'}
+              </div>
+            )}
+            {(message.curatorName || message.agentType === 'curator') && (
               <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-purple-600 dark:text-purple-400">
-                <span>🧭</span> {message.curatorName}
+                <span>🧭</span> {message.agentName || message.curatorName || 'Curator'}
               </div>
             )}
             {/* Status message - shown while processing (Phase 1.2) */}

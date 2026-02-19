@@ -69,6 +69,8 @@ export interface ChatMessage {
   visualLoadingMessage?: string;  // Canvas: custom loading message (e.g., "Analyzing your guidance...")
   curatorAside?: string;  // Curator overwatch: cross-notebook insight aside
   curatorName?: string;  // Curator overwatch: name of the curator
+  agentName?: string;    // Agent identity: display name (e.g. "Scout", "Curator")
+  agentType?: 'curator' | 'collector';  // Agent identity: type for color coding
 }
 
 export interface ChatQuery {

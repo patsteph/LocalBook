@@ -282,7 +282,7 @@ Answer:"""
         for i in range(0, len(reply), chunk_size):
             yield f"data: {json.dumps({'type': 'token', 'content': reply[i:i+chunk_size]})}\n\n"
 
-        yield f"data: {json.dumps({'type': 'done', 'follow_up_questions': ['What patterns exist across all notebooks?', 'Compare the key findings', 'What contradictions do you see?'], 'curator_name': curator.name})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'follow_up_questions': ['What patterns exist across all notebooks?', 'Compare the key findings', 'What contradictions do you see?'], 'curator_name': curator.name, 'agent_name': curator.name, 'agent_type': 'curator'})}\n\n"
 
         # Log the interaction
         try:
@@ -297,45 +297,152 @@ Answer:"""
 
 
 async def _stream_collector(chat_query: ChatQuery):
-    """Stream a Collector response in SSE format — ask mode only for now."""
+    """Stream a Collector response in SSE format.
+    
+    Handles two modes:
+    1. COMMANDS — user asks collector to add a URL, set schedule, etc.
+    2. STATUS  — user asks about collection status, sources, health
+    """
+    import re as _re
     from storage.source_store import source_store
-    from agents.collector import collector
+    from agents.collector import get_collector
 
-    yield f"data: {json.dumps({'type': 'status', 'message': '📡 Collector checking status...', 'query_type': 'collector'})}\n\n"
+    collector_agent = get_collector(chat_query.notebook_id)
+    collector_name = collector_agent.config.name or "Collector"
+    notebook_id = chat_query.notebook_id
+    question = chat_query.question
+
+    yield f"data: {json.dumps({'type': 'status', 'message': f'📡 {collector_name} processing...', 'query_type': 'collector'})}\n\n"
 
     try:
-        notebook_id = chat_query.notebook_id
-        sources = await source_store.list(notebook_id)
-        source_count = len(sources)
+        # --- Detect if this is a command (add URL, set schedule) vs status query ---
+        url_match = _re.search(r'(https?://[^\s,]+)', question)
+        schedule_match = _re.search(
+            r'(?:check(?:ed)?|monitor(?:ed)?|update(?:d)?|refresh(?:ed)?|poll(?:ed)?)\s+'
+            r'(?:every\s+|once\s+(?:a|per)\s+|each\s+)?'
+            r'(hourly|daily|weekly|once\s+a\s+day|once\s+a\s+week|every\s+hour|every\s+day|every\s+week)',
+            question, _re.IGNORECASE
+        )
 
-        pending = [s for s in sources if s.get("status") != "completed"]
-        recent = sorted(sources, key=lambda s: s.get("created_at", ""), reverse=True)[:5]
+        if url_match:
+            # ===== COMMAND MODE: Add URL as source =====
+            url = url_match.group(1).rstrip('.,;:)')
+            yield f"data: {json.dumps({'type': 'status', 'message': f'📡 {collector_name} fetching {url}...', 'query_type': 'collector'})}\n\n"
 
-        config = None
-        try:
-            config = collector.load_config(notebook_id)
-        except Exception:
-            pass
+            # Determine schedule from message
+            freq = "manual"
+            if schedule_match:
+                raw = schedule_match.group(1).lower().strip()
+                if "hour" in raw:
+                    freq = "hourly"
+                elif "day" in raw or "daily" in raw:
+                    freq = "daily"
+                elif "week" in raw or "weekly" in raw:
+                    freq = "weekly"
 
-        lines = [f"Here's your collection status for this notebook:\n"]
-        lines.append(f"- **{source_count}** total sources indexed")
-        if pending:
-            lines.append(f"- **{len(pending)}** sources still processing")
-        if recent:
-            lines.append(f"\n**Recent sources:**")
-            for s in recent:
-                lines.append(f"- {s.get('filename', 'Unknown')} ({s.get('format', 'file').upper()}, {s.get('status', 'unknown')})")
-        if config:
-            schedule = getattr(config, 'collection_schedule', None) or config.get('collection_schedule', 'manual') if isinstance(config, dict) else 'manual'
-            lines.append(f"\n**Schedule:** {schedule}")
+            # Fetch URL content
+            from services.web_scraper import web_scraper
+            scraped = await web_scraper._scrape_single(url)
 
-        reply = "\n".join(lines)
+            reply_lines = []
+            source_added = False
 
+            if scraped.get("success") and scraped.get("text"):
+                title = scraped.get("title", url)
+                text = scraped["text"]
+
+                # Create source in source store
+                source_meta = {
+                    "content": text,
+                    "url": url,
+                    "format": "web",
+                    "type": "web_page",
+                    "author": scraped.get("author"),
+                    "date": scraped.get("date"),
+                }
+                new_source = await source_store.create(notebook_id, title, source_meta)
+                source_id = new_source["id"]
+                source_added = True
+
+                # Ingest into RAG (background — index chunks + embeddings)
+                try:
+                    from services.rag_engine import rag_engine
+                    await rag_engine.ingest_document(notebook_id, source_id, text, title)
+                except Exception as ingest_err:
+                    print(f"[Collector] Ingestion warning (will retry on next load): {ingest_err}")
+
+                # Update collector config: add URL to web_pages + update schedule
+                current_config = collector_agent.get_config()
+                web_pages = list(current_config.sources.get("web_pages", []))
+                if url not in web_pages:
+                    web_pages.append(url)
+                collector_agent.update_config({
+                    "sources": {**current_config.sources, "web_pages": web_pages},
+                    "schedule": {**current_config.schedule, "frequency": freq},
+                })
+
+                reply_lines.append(f"✅ **Source added:** [{title}]({url})")
+                reply_lines.append(f"- **{scraped.get('word_count', len(text.split()))}** words indexed")
+                if freq != "manual":
+                    reply_lines.append(f"- **Schedule set:** {freq} checks")
+                else:
+                    reply_lines.append(f"- **Schedule:** manual (say \"check daily\" to automate)")
+                reply_lines.append(f"\nThis source is now available for chat and Studio generation.")
+
+                # Notify Curator of the new addition
+                try:
+                    from agents.curator import curator
+                    from storage.memory_store import memory_store, AgentNamespace
+                    from models.memory import ArchivalMemoryEntry, MemorySourceType, MemoryImportance
+                    memory_store.add_archival_memory(ArchivalMemoryEntry(
+                        content=f"Collector added new web source: {title} ({url}) to notebook {notebook_id}. Schedule: {freq}.",
+                        source_type=MemorySourceType.AGENT_GENERATED,
+                        importance=MemoryImportance.MEDIUM,
+                        notebook_id=notebook_id,
+                    ), namespace=AgentNamespace.CURATOR)
+                except Exception:
+                    pass
+            else:
+                error = scraped.get("error", "Could not extract content from this URL")
+                reply_lines.append(f"⚠️ **Could not fetch:** {url}")
+                reply_lines.append(f"- Reason: {error}")
+                reply_lines.append(f"\nTry a different URL, or add the content manually via the Sources panel.")
+
+            reply = "\n".join(reply_lines)
+
+        else:
+            # ===== STATUS MODE: Report collection status =====
+            sources = await source_store.list(notebook_id)
+            source_count = len(sources)
+            recent = sorted(sources, key=lambda s: s.get("created_at", ""), reverse=True)[:5]
+            config = collector_agent.get_config()
+
+            lines = [f"Here's your collection status for this notebook:\n"]
+            lines.append(f"- **{source_count}** total sources indexed")
+            
+            web_pages = config.sources.get("web_pages", [])
+            if web_pages:
+                lines.append(f"- **{len(web_pages)}** monitored web pages")
+            
+            schedule_freq = config.schedule.get("frequency", "manual")
+            lines.append(f"- **Schedule:** {schedule_freq}")
+
+            if recent:
+                lines.append(f"\n**Recent sources:**")
+                for s in recent:
+                    lines.append(f"- {s.get('filename', 'Unknown')} ({s.get('format', 'file').upper()})")
+
+            lines.append(f"\n💡 *Tip: Send me a URL to add it as a source, e.g. \"@collector add https://example.com, check daily\"*")
+            reply = "\n".join(lines)
+
+        # Stream the reply
         chunk_size = 12
         for i in range(0, len(reply), chunk_size):
             yield f"data: {json.dumps({'type': 'token', 'content': reply[i:i+chunk_size]})}\n\n"
 
-        yield f"data: {json.dumps({'type': 'done', 'follow_up_questions': ['Find new sources about this topic', 'Show approval queue', 'What sources need attention?']})}\n\n"
+        follow_ups = ['Show my collection status', 'Find new sources about this topic', 'What sources need attention?']
+        yield f"data: {json.dumps({'type': 'done', 'follow_up_questions': follow_ups, 'agent_name': collector_name, 'agent_type': 'collector'})}\n\n"
+
     except Exception as e:
         import traceback
         traceback.print_exc()

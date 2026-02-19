@@ -216,6 +216,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       role: 'user',
       content: input,
       timestamp: new Date(),
+      ...(target ? { agentType: target as 'curator' | 'collector' } : {}),
     };
 
     setMessages((prev) => [...prev, userMessage]);
@@ -232,6 +233,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       content: '',
       citations: [],
       timestamp: new Date(),
+      ...(target ? { agentType: target as 'curator' | 'collector' } : {}),
     };
     
     // Add the streaming message placeholder
@@ -365,7 +367,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               return updated;
             });
           },
-          onDone: (followUpQuestions, curatorName) => {
+          onDone: (followUpQuestions, curatorName, agentName, agentType) => {
             // Finalize the message with follow-up questions and low confidence prompt
             setMessages((prev) => {
               const updated = [...prev];
@@ -403,6 +405,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                   follow_up_questions: followUpQuestions,
                   lowConfidenceQuery,
                   ...(curatorName ? { curatorName } : {}),
+                  ...(agentName ? { agentName } : {}),
+                  ...(agentType ? { agentType: agentType as 'curator' | 'collector' } : {}),
                 };
               }
               return updated;
