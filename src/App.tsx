@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { LeftNavColumn } from './components/layout/LeftNavColumn';
 import { CanvasWorkspace } from './components/canvas/CanvasWorkspace';
-import { CanvasProvider, CanvasContextValue } from './components/canvas/CanvasContext';
+import { AppShellProvider, CanvasItemsProvider, AppShellContextValue, CanvasItemsContextValue } from './components/canvas/CanvasContext';
 import { CanvasItem } from './components/canvas/types';
 import { LayoutNode, PanelView, countLeaves, replaceLeaf, removeLeaf, findLeaf } from './components/canvas/types';
 import { useCanvasLayout, useDrawerState, useStudioState } from './hooks/useLayoutPersistence';
@@ -198,8 +198,19 @@ function App() {
     });
   }, []);
 
-  // === Canvas context value ===
-  const canvasContext: CanvasContextValue = useMemo(() => ({
+  // === Split context values ===
+  // Canvas items context — changes frequently during streaming
+  const canvasItemsCtx: CanvasItemsContextValue = useMemo(() => ({
+    canvasItems,
+    addCanvasItem,
+    removeCanvasItem,
+    updateCanvasItem,
+    toggleCanvasItemCollapse,
+    clearCanvas,
+  }), [canvasItems, addCanvasItem, removeCanvasItem, updateCanvasItem, toggleCanvasItemCollapse, clearCanvas]);
+
+  // App shell context — changes infrequently (notebook, layout, dark mode)
+  const appShellCtx: AppShellContextValue = useMemo(() => ({
     selectedNotebookId,
     selectedNotebookName,
     selectedSourceId,
@@ -230,20 +241,13 @@ function App() {
     setMorningBrief,
     curatorBriefData,
     setCuratorBriefData,
-    canvasItems,
-    addCanvasItem,
-    removeCanvasItem,
-    updateCanvasItem,
-    toggleCanvasItemCollapse,
-    clearCanvas,
   }), [
     selectedNotebookId, selectedNotebookName, selectedSourceId, selectedLLMProvider,
     refreshSources, refreshNotebooks, collectorRefreshKey, addToast,
     openPanel, closePanel, splitPanel, changePanelView, layout,
     openWebResearch, openSettings, openLLMSelector, openEmbeddingSelector,
     chatPrefillQuery, navigateToChat, darkMode, toggleDarkMode,
-    morningBrief, curatorBriefData, canvasItems, addCanvasItem,
-    removeCanvasItem, updateCanvasItem, toggleCanvasItemCollapse, clearCanvas,
+    morningBrief, curatorBriefData,
   ]);
 
   // Fetch notebook name when selection changes
@@ -488,7 +492,8 @@ function App() {
   }
 
   return (
-    <CanvasProvider value={canvasContext}>
+    <AppShellProvider value={appShellCtx}>
+    <CanvasItemsProvider value={canvasItemsCtx}>
       <div className="h-screen flex flex-col bg-gray-50 dark:bg-gray-900">
         {/* Morning Brief — floats above canvas */}
         {morningBrief && (
@@ -576,9 +581,6 @@ function App() {
           </Group>
         </div>
 
-        {/* Toast notifications */}
-        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
-
         {/* Settings Modal */}
         <Modal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} title="Settings" size="lg">
           <Settings />
@@ -594,7 +596,9 @@ function App() {
           <EmbeddingSelector notebookId={selectedNotebookId} />
         </Modal>
       </div>
-    </CanvasProvider>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+    </CanvasItemsProvider>
+    </AppShellProvider>
   );
 }
 

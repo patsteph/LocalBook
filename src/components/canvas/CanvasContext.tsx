@@ -1,7 +1,32 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useMemo } from 'react';
 import { LayoutNode, PanelView, CanvasItem } from './types';
 
-export interface CanvasContextValue {
+// ---------------------------------------------------------------------------
+// Canvas Items context — high-frequency updates (streaming tokens, edits)
+// ---------------------------------------------------------------------------
+export interface CanvasItemsContextValue {
+  canvasItems: CanvasItem[];
+  addCanvasItem: (item: Omit<CanvasItem, 'id' | 'timestamp'> & { id?: string }) => void;
+  removeCanvasItem: (id: string) => void;
+  updateCanvasItem: (id: string, updates: Partial<Pick<CanvasItem, 'title' | 'content'>>) => void;
+  toggleCanvasItemCollapse: (id: string) => void;
+  clearCanvas: () => void;
+}
+
+const CanvasItemsCtx = createContext<CanvasItemsContextValue | null>(null);
+export const CanvasItemsProvider = CanvasItemsCtx.Provider;
+
+/** Focused hook — only re-renders when canvas items change */
+export function useCanvasItems(): CanvasItemsContextValue {
+  const ctx = useContext(CanvasItemsCtx);
+  if (!ctx) throw new Error('useCanvasItems must be used within CanvasItemsProvider');
+  return ctx;
+}
+
+// ---------------------------------------------------------------------------
+// App Shell context — low-frequency updates (notebook, layout, dark mode…)
+// ---------------------------------------------------------------------------
+export interface AppShellContextValue {
   // Notebook state
   selectedNotebookId: string | null;
   selectedNotebookName: string;
@@ -29,14 +54,6 @@ export interface CanvasContextValue {
   changePanelView: (panelId: string, view: PanelView) => void;
   layout: LayoutNode;
 
-  // Universal Canvas — stacked content workspace inside the chat area
-  canvasItems: CanvasItem[];
-  addCanvasItem: (item: Omit<CanvasItem, 'id' | 'timestamp'> & { id?: string }) => void;
-  removeCanvasItem: (id: string) => void;
-  updateCanvasItem: (id: string, updates: Partial<Pick<CanvasItem, 'title' | 'content'>>) => void;
-  toggleCanvasItemCollapse: (id: string) => void;
-  clearCanvas: () => void;
-
   // Navigation helpers
   openWebResearch: (query?: string) => void;
   openSettings: () => void;
@@ -57,12 +74,25 @@ export interface CanvasContextValue {
   setCuratorBriefData: (data: any) => void;
 }
 
-const CanvasContext = createContext<CanvasContextValue | null>(null);
+const AppShellCtx = createContext<AppShellContextValue | null>(null);
+export const AppShellProvider = AppShellCtx.Provider;
 
-export function useCanvas(): CanvasContextValue {
-  const ctx = useContext(CanvasContext);
-  if (!ctx) throw new Error('useCanvas must be used within CanvasProvider');
+/** Focused hook — only re-renders on shell changes (notebook, layout, dark mode) */
+export function useAppShell(): AppShellContextValue {
+  const ctx = useContext(AppShellCtx);
+  if (!ctx) throw new Error('useAppShell must be used within AppShellProvider');
   return ctx;
 }
 
-export const CanvasProvider = CanvasContext.Provider;
+// ---------------------------------------------------------------------------
+// Composite — backward-compatible useCanvas() that merges both contexts
+// ---------------------------------------------------------------------------
+export type CanvasContextValue = AppShellContextValue & CanvasItemsContextValue;
+
+/** Legacy composite hook — reads from both contexts. Prefer useAppShell() or useCanvasItems() for performance. */
+export function useCanvas(): CanvasContextValue {
+  const shell = useContext(AppShellCtx);
+  const items = useContext(CanvasItemsCtx);
+  if (!shell || !items) throw new Error('useCanvas must be used within CanvasProvider');
+  return useMemo(() => ({ ...shell, ...items }), [shell, items]);
+}
