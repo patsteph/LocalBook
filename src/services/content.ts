@@ -19,6 +19,8 @@ export interface ContentGenerateResponse {
     skill_name: string;
     content: string;
     sources_used: number;
+    source_names: string[];
+    relevance_scores: Record<string, number>;
 }
 
 export interface ContentGeneration {

@@ -127,6 +127,8 @@ class ContentGenerateResponse(BaseModel):
     skill_name: str
     content: str
     sources_used: int
+    source_names: list[str] = []
+    relevance_scores: dict[str, float] = {}
 
 
 class ContentExportRequest(BaseModel):
@@ -233,7 +235,9 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
             skill_id=request.skill_id,
             skill_name=skill_name,
             content=content,
-            sources_used=built.sources_used
+            sources_used=built.sources_used,
+            source_names=built.source_names,
+            relevance_scores=built.topic_relevance_scores,
         )
         
     except HTTPException:

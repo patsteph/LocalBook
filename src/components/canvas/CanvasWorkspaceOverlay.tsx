@@ -387,6 +387,41 @@ const CanvasItemRenderer: React.FC<CanvasItemRendererProps> = ({ item, onToggleC
               <ReactMarkdown>{item.content}</ReactMarkdown>
             </div>
           )}
+
+          {/* Source attribution bar */}
+          {item.sourceNames && item.sourceNames.length > 0 && (
+            <details className="mt-4 border-t border-gray-100 dark:border-gray-700/50 pt-3">
+              <summary className="text-[11px] font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-300 select-none">
+                📚 {item.sourceNames.length} source{item.sourceNames.length !== 1 ? 's' : ''} used
+              </summary>
+              <div className="mt-2 space-y-1.5">
+                {item.sourceNames.map((name, idx) => {
+                  // Find relevance score by matching source name (scores keyed by ID, but we display names)
+                  const scores = Object.values(item.relevanceScores || {});
+                  const score = scores[idx] ?? null;
+                  const pct = score !== null ? Math.round(score * 100) : null;
+                  return (
+                    <div key={idx} className="flex items-center gap-2">
+                      <span className="text-[11px] text-gray-600 dark:text-gray-400 truncate flex-1 min-w-0" title={name}>
+                        {name}
+                      </span>
+                      {pct !== null && (
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <div className="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${pct >= 70 ? 'bg-green-500' : pct >= 40 ? 'bg-yellow-500' : 'bg-gray-400'}`}
+                              style={{ width: `${Math.max(8, pct)}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] text-gray-400 dark:text-gray-500 w-7 text-right">{pct}%</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </details>
+          )}
         </div>
         )
       )}
@@ -665,6 +700,8 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
         title: result.skill_name || 'Generated Document',
         content: result.content,
         collapsed: false,
+        sourceNames: result.source_names || [],
+        relevanceScores: result.relevance_scores || {},
       });
       ctx.setGenerationStatus('complete');
     } catch (err: any) {

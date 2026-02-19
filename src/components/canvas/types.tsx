@@ -113,4 +113,6 @@ export interface CanvasItem {
   content: string;       // markdown, mermaid code, quiz HTML, audio URL, chat markdown, or editable note text
   collapsed: boolean;
   timestamp: number;
+  sourceNames?: string[];                    // filenames of sources used in generation
+  relevanceScores?: Record<string, number>;  // source_id → relevance score
 }
