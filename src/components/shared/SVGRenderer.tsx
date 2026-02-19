@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import DOMPurify from 'dompurify';
 
 interface SVGRendererProps {
   svg: string;
@@ -52,7 +53,7 @@ export const SVGRenderer: React.FC<SVGRendererProps> = ({ svg, className = '', t
       )}
       <div 
         className="svg-content p-2"
-        dangerouslySetInnerHTML={{ __html: svg }}
+        dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true } }) }}
       />
     </div>
   );

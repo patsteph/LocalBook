@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { Compass, Radio } from 'lucide-react';
 import { chatService } from '../services/chat';
 import { explorationService } from '../services/exploration';
 import { voiceService } from '../services/voice';
@@ -21,8 +22,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [deepThink, setDeepThink] = useState(false);  // Deep Think mode toggle
+  const [showDeepThinkTip, setShowDeepThinkTip] = useState(() => !localStorage.getItem('lb-deepthink-tip-seen'));
   const [showMentionMenu, setShowMentionMenu] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
+  const [mentionIndex, setMentionIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   
   // Handle prefill from external sources
@@ -42,6 +45,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const [isTranscribing, setIsTranscribing] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+
+  // Cleanup: stop MediaRecorder and release mic on unmount
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+        mediaRecorderRef.current.stop();
+      }
+    };
+  }, []);
 
   // Source viewer state
   const [sourceViewerOpen, setSourceViewerOpen] = useState(false);
@@ -108,9 +121,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   // @Mention Parser & Autocomplete
   // =========================================================================
 
-  const MENTION_OPTIONS: { key: string; icon: string; desc: string }[] = [
-    { key: 'curator', icon: '🧭', desc: 'Cross-notebook synthesis' },
-    { key: 'collector', icon: '📡', desc: 'Collection status & commands' },
+  const MENTION_OPTIONS: { key: string; icon: React.ReactNode; desc: string }[] = [
+    { key: 'curator', icon: <Compass className="w-3.5 h-3.5" />, desc: 'Cross-notebook synthesis' },
+    { key: 'collector', icon: <Radio className="w-3.5 h-3.5" />, desc: 'Collection status & commands' },
   ];
 
   const parseMention = (text: string): { target: string | null; cleanQuestion: string } => {
@@ -134,25 +147,40 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     if (val === '@' || val.match(/^@[a-z]*$/i)) {
       setShowMentionMenu(true);
       setMentionFilter(val.slice(1));
+      setMentionIndex(0);
     } else {
       setShowMentionMenu(false);
     }
   };
 
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (showMentionMenu && e.key === 'Escape') {
-      setShowMentionMenu(false);
-      e.preventDefault();
-    }
-    if (showMentionMenu && e.key === 'Tab') {
+    if (showMentionMenu) {
       const filtered = MENTION_OPTIONS.filter(opt => !mentionFilter || opt.key.includes(mentionFilter.toLowerCase()));
-      if (filtered.length === 1) {
-        insertMention(filtered[0].key);
+      if (e.key === 'Escape') {
+        setShowMentionMenu(false);
         e.preventDefault();
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        setMentionIndex(prev => (prev + 1) % filtered.length);
+        e.preventDefault();
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        setMentionIndex(prev => (prev - 1 + filtered.length) % filtered.length);
+        e.preventDefault();
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        if (filtered.length > 0) {
+          insertMention(filtered[mentionIndex]?.key || filtered[0].key);
+        }
+        e.preventDefault();
+        return;
       }
     }
     // Enter to submit, Shift+Enter for newline
-    if (e.key === 'Enter' && !e.shiftKey && !showMentionMenu) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (input.trim() && notebookId && !loading) {
         handleSubmit(e as any);
@@ -592,6 +620,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               className="relative flex items-center bg-gray-100 dark:bg-gray-700 rounded-full p-0.5"
               title={deepThink ? "Deep Think: Thorough analysis (slower)" : "Quick: Fast, concise responses"}
             >
+              {showDeepThinkTip && (
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 p-2.5 bg-gray-900 dark:bg-gray-700 text-white text-xs rounded-lg shadow-lg z-50 animate-slide-up">
+                  <p className="font-medium mb-1">Response Mode</p>
+                  <p className="text-gray-300"><span className="text-base">🐇</span> <strong>Quick</strong> — Fast, concise answers</p>
+                  <p className="text-gray-300 mt-0.5"><span className="text-base">🧠</span> <strong>Deep Think</strong> — Step-by-step analysis</p>
+                  <button
+                    type="button"
+                    onClick={() => { setShowDeepThinkTip(false); localStorage.setItem('lb-deepthink-tip-seen', '1'); }}
+                    className="mt-1.5 text-blue-400 hover:text-blue-300 font-medium"
+                  >
+                    Got it
+                  </button>
+                  <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => setDeepThink(false)}
@@ -647,12 +690,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                   <div className="px-3 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">Agents</div>
                   {MENTION_OPTIONS
                     .filter(opt => !mentionFilter || opt.key.includes(mentionFilter.toLowerCase()))
-                    .map(opt => (
+                    .map((opt, idx) => (
                       <button
                         key={opt.key}
                         type="button"
                         onMouseDown={(e) => { e.preventDefault(); insertMention(opt.key); }}
-                        className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"
+                        onMouseEnter={() => setMentionIndex(idx)}
+                        className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 transition-colors ${
+                          idx === mentionIndex
+                            ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                            : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
+                        }`}
                       >
                         <span className="text-base">{opt.icon}</span>
                         <div>

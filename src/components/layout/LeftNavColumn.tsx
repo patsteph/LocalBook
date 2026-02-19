@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { FileText, Mic, Target, Brain, PenTool, Globe } from 'lucide-react';
 import { DrawerState, StudioState } from '../../hooks/useLayoutPersistence';
 import { useCanvas } from '../canvas/CanvasContext';
 import { NotebookManager } from '../NotebookManager';
@@ -65,7 +66,7 @@ const DrawerSection: React.FC<DrawerSectionProps> = ({ title, icon, isOpen, onTo
       </svg>
     </button>
     {isOpen && (
-      <div className={`animate-in slide-in-from-top-1 duration-200 ${
+      <div className={`animate-slide-down ${
         flexible ? 'flex-1 min-h-0 overflow-y-auto' : ''
       }`}>
         {children}
@@ -83,14 +84,14 @@ const WebResearchDrawerContent: React.FC<{ notebookId: string | null; onOpenModa
           disabled={!notebookId}
           className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          🌐 Web Search
+          <Globe className="w-3.5 h-3.5" /> Web Search
         </button>
         <button
           onClick={() => onOpenModal('site')}
           disabled={!notebookId}
           className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          🎯 Site Search
+          <Target className="w-3.5 h-3.5" /> Site Search
         </button>
       </div>
       {!notebookId && (
@@ -100,12 +101,13 @@ const WebResearchDrawerContent: React.FC<{ notebookId: string | null; onOpenModa
   );
 };
 
-const STUDIO_TABS: { id: StudioState['activeTab']; icon: string; label: string }[] = [
-  { id: 'documents', icon: '📄', label: 'Docs' },
-  { id: 'audio', icon: '🎙️', label: 'Audio' },
-  { id: 'quiz', icon: '🎯', label: 'Quiz' },
-  { id: 'visual', icon: '🧠', label: 'Visual' },
-  { id: 'writing', icon: '✍️', label: 'Write' },
+const studioIconClass = 'w-3 h-3';
+const STUDIO_TABS: { id: StudioState['activeTab']; icon: React.ReactNode; label: string }[] = [
+  { id: 'documents', icon: <FileText className={studioIconClass} />, label: 'Docs' },
+  { id: 'audio', icon: <Mic className={studioIconClass} />, label: 'Audio' },
+  { id: 'quiz', icon: <Target className={studioIconClass} />, label: 'Quiz' },
+  { id: 'visual', icon: <Brain className={studioIconClass} />, label: 'Visual' },
+  { id: 'writing', icon: <PenTool className={studioIconClass} />, label: 'Write' },
 ];
 
 export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
@@ -197,7 +199,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
               });
               ctx.navigateToChat();
             }}
-            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+            className="w-full flex items-center gap-2.5 px-3 py-2 text-sm font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -336,7 +338,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
                   : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
               }`}
             >
-              🌐 Web Search
+              <Globe className="w-3.5 h-3.5 inline-block mr-1" />Web Search
             </button>
             <button
               onClick={() => setWebResearchModal('site')}
@@ -346,7 +348,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
                   : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
               }`}
             >
-              🎯 Site Search
+              <Target className="w-3.5 h-3.5 inline-block mr-1" />Site Search
             </button>
           </div>
           {/* Tab content */}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import DOMPurify from 'dompurify';
 import { sourceViewerService, SourceContent } from '../services/sourceViewer';
 import { sourceService } from '../services/sources';
 import { highlightService } from '../services/highlights';
@@ -445,7 +446,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
                   className="prose max-w-none text-sm leading-relaxed whitespace-pre-wrap font-mono select-text"
                   onMouseUp={handleTextSelection}
                   dangerouslySetInnerHTML={{
-                    __html: content ? renderContentWithHighlights(content.content) : '',
+                    __html: content ? DOMPurify.sanitize(renderContentWithHighlights(content.content)) : '',
                   }}
                 />
                 <div className="mt-4 text-xs text-gray-500">

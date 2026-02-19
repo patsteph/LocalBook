@@ -1,3 +1,9 @@
+import React from 'react';
+import {
+  MessageSquare, Sparkles, CalendarDays, Bookmark, Lightbulb,
+  Settings, Brain, BarChart3, Globe, FileText, Target, Palette
+} from 'lucide-react';
+
 export type PanelView =
   | 'chat'
   | 'constellation'
@@ -43,19 +49,21 @@ export const VIEW_LABELS: Record<PanelView, string> = {
   'visual-viewer': 'Visual',
 };
 
-export const VIEW_ICONS: Record<PanelView, string> = {
-  'chat': '💬',
-  'constellation': '✨',
-  'timeline': '📅',
-  'findings': '🔖',
-  'curator': '💡',
-  'settings': '⚙️',
-  'llm-selector': '🧠',
-  'embedding-selector': '📊',
-  'web-research': '🌐',
-  'content-viewer': '📄',
-  'quiz-viewer': '🎯',
-  'visual-viewer': '🎨',
+const iconClass = 'w-3.5 h-3.5';
+
+export const VIEW_ICONS: Record<PanelView, React.ReactNode> = {
+  'chat': <MessageSquare className={iconClass} />,
+  'constellation': <Sparkles className={iconClass} />,
+  'timeline': <CalendarDays className={iconClass} />,
+  'findings': <Bookmark className={iconClass} />,
+  'curator': <Lightbulb className={iconClass} />,
+  'settings': <Settings className={iconClass} />,
+  'llm-selector': <Brain className={iconClass} />,
+  'embedding-selector': <BarChart3 className={iconClass} />,
+  'web-research': <Globe className={iconClass} />,
+  'content-viewer': <FileText className={iconClass} />,
+  'quiz-viewer': <Target className={iconClass} />,
+  'visual-viewer': <Palette className={iconClass} />,
 };
 
 export function countLeaves(node: LayoutNode): number {

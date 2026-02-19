@@ -1,4 +1,5 @@
 import React from 'react';
+import { FileText, Mic, Target, Brain, PenTool } from 'lucide-react';
 import { Studio } from '../Studio';
 import { StudioState } from '../../hooks/useLayoutPersistence';
 
@@ -10,12 +11,13 @@ interface StudioMiniPlayerProps {
   visualContent: string;
 }
 
-const TABS: { id: StudioState['activeTab']; icon: string; label: string }[] = [
-  { id: 'documents', icon: '📄', label: 'Docs' },
-  { id: 'audio', icon: '🎙️', label: 'Audio' },
-  { id: 'quiz', icon: '🎯', label: 'Quiz' },
-  { id: 'visual', icon: '🧠', label: 'Visual' },
-  { id: 'writing', icon: '✍️', label: 'Write' },
+const tabIconClass = 'w-3 h-3';
+const TABS: { id: StudioState['activeTab']; icon: React.ReactNode; label: string }[] = [
+  { id: 'documents', icon: <FileText className={tabIconClass} />, label: 'Docs' },
+  { id: 'audio', icon: <Mic className={tabIconClass} />, label: 'Audio' },
+  { id: 'quiz', icon: <Target className={tabIconClass} />, label: 'Quiz' },
+  { id: 'visual', icon: <Brain className={tabIconClass} />, label: 'Visual' },
+  { id: 'writing', icon: <PenTool className={tabIconClass} />, label: 'Write' },
 ];
 
 export const StudioMiniPlayer: React.FC<StudioMiniPlayerProps> = ({

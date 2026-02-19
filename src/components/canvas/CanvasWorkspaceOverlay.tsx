@@ -1,4 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import DOMPurify from 'dompurify';
+import {
+  FileText, Palette, Target, Mic, MessageSquare, PenLine,
+  Presentation, Download, Search
+} from 'lucide-react';
 import { useCanvas } from './CanvasContext';
 import { CanvasItem } from './types';
 import ReactMarkdown from 'react-markdown';
@@ -14,13 +19,14 @@ import { voiceService } from '../../services/voice';
 import { settingsService } from '../../services/settings';
 
 // Icons for canvas item types
-const TYPE_ICONS: Record<CanvasItem['type'], string> = {
-  'document': '📄',
-  'visual': '🎨',
-  'quiz': '🎯',
-  'audio': '🎙️',
-  'chat-response': '💬',
-  'note': '📝',
+const iconSm = 'w-3.5 h-3.5';
+const TYPE_ICONS: Record<CanvasItem['type'], React.ReactNode> = {
+  'document': <FileText className={iconSm} />,
+  'visual': <Palette className={iconSm} />,
+  'quiz': <Target className={iconSm} />,
+  'audio': <Mic className={iconSm} />,
+  'chat-response': <MessageSquare className={iconSm} />,
+  'note': <PenLine className={iconSm} />,
 };
 
 // === Note Editor Component ===
@@ -33,9 +39,45 @@ const NoteCanvasEditor: React.FC<NoteEditorProps> = ({ item }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [saving, setSaving] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+
+  // Undo/redo history
+  const undoStackRef = useRef<string[]>([]);
+  const redoStackRef = useRef<string[]>([]);
+  const snapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const MAX_UNDO = 50;
+
+  // Take a snapshot for undo (debounced — called on content change)
+  const scheduleSnapshot = useCallback((currentContent: string) => {
+    if (snapshotTimerRef.current) clearTimeout(snapshotTimerRef.current);
+    snapshotTimerRef.current = setTimeout(() => {
+      const stack = undoStackRef.current;
+      if (stack.length === 0 || stack[stack.length - 1] !== currentContent) {
+        stack.push(currentContent);
+        if (stack.length > MAX_UNDO) stack.shift();
+        redoStackRef.current = []; // new edit clears redo
+      }
+    }, 1000);
+  }, []);
+
+  // Seed initial snapshot
+  useEffect(() => {
+    if (item.content) {
+      undoStackRef.current = [item.content];
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [isTranscribing, setIsTranscribing] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+
+  // Cleanup: stop MediaRecorder and release mic on unmount
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+        mediaRecorderRef.current.stop();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     // For new notes: fetch user name and set default title, then focus
@@ -59,11 +101,40 @@ const NoteCanvasEditor: React.FC<NoteEditorProps> = ({ item }) => {
   };
 
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    ctx.updateCanvasItem(item.id, { content: e.target.value });
+    const newContent = e.target.value;
+    scheduleSnapshot(item.content); // snapshot the PREVIOUS content before updating
+    ctx.updateCanvasItem(item.id, { content: newContent });
     // Auto-resize textarea
     const target = e.target;
     target.style.height = 'auto';
     target.style.height = Math.max(target.scrollHeight, 200) + 'px';
+  };
+
+  const handleUndo = () => {
+    const stack = undoStackRef.current;
+    if (stack.length === 0) return;
+    const prev = stack.pop()!;
+    redoStackRef.current.push(item.content);
+    ctx.updateCanvasItem(item.id, { content: prev });
+  };
+
+  const handleRedo = () => {
+    const stack = redoStackRef.current;
+    if (stack.length === 0) return;
+    const next = stack.pop()!;
+    undoStackRef.current.push(item.content);
+    ctx.updateCanvasItem(item.id, { content: next });
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        handleRedo();
+      } else {
+        handleUndo();
+      }
+    }
   };
 
   const handleSaveAsSource = async () => {
@@ -150,6 +221,7 @@ const NoteCanvasEditor: React.FC<NoteEditorProps> = ({ item }) => {
         ref={textareaRef}
         value={item.content}
         onChange={handleContentChange}
+        onKeyDown={handleKeyDown}
         placeholder="Start writing your note... Speak or type. Use AI actions below to expand, refine, or generate from your notes."
         className="w-full min-h-[200px] resize-none bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 font-mono leading-relaxed outline-none focus:border-blue-400 dark:focus:border-blue-600 transition-colors"
       />
@@ -255,7 +327,7 @@ const CanvasItemRenderer: React.FC<CanvasItemRendererProps> = ({ item, onToggleC
             )
           )}
           {item.type === 'quiz' && (
-            <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: item.content }} />
+            <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(item.content) }} />
           )}
           {item.type === 'audio' && (
             <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-900/40 rounded-lg">
@@ -281,19 +353,19 @@ const CanvasItemRenderer: React.FC<CanvasItemRendererProps> = ({ item, onToggleC
 // Canvas action definitions
 interface CanvasAction {
   id: string;
-  icon: string;
+  icon: React.ReactNode;
   label: string;
   shortLabel: string;
   enabled: (items: CanvasItem[], notebookId: string | null) => boolean;
 }
 
 const CANVAS_ACTIONS: CanvasAction[] = [
-  { id: 'visual', icon: '🎨', label: 'Create Visual', shortLabel: 'Visual', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'chat-response' || i.type === 'note') },
-  { id: 'audio', icon: '🎙️', label: 'Generate Audio', shortLabel: 'Audio', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'note') },
-  { id: 'quiz', icon: '🎯', label: 'Create Quiz', shortLabel: 'Quiz', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'note') },
-  { id: 'pptx', icon: '📊', label: 'Create Slides', shortLabel: 'PPTX', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'note') },
-  { id: 'pdf', icon: '📥', label: 'Download PDF', shortLabel: 'PDF', enabled: (items) => items.some(i => i.type === 'document' || i.type === 'note') },
-  { id: 'crossnb', icon: '🔍', label: 'Cross-Notebook', shortLabel: 'Discover', enabled: (items, nb) => !!nb && items.length > 0 },
+  { id: 'visual', icon: <Palette className={iconSm} />, label: 'Create Visual', shortLabel: 'Visual', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'chat-response' || i.type === 'note') },
+  { id: 'audio', icon: <Mic className={iconSm} />, label: 'Generate Audio', shortLabel: 'Audio', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'note') },
+  { id: 'quiz', icon: <Target className={iconSm} />, label: 'Create Quiz', shortLabel: 'Quiz', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'note') },
+  { id: 'pptx', icon: <Presentation className={iconSm} />, label: 'Create Slides', shortLabel: 'PPTX', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'note') },
+  { id: 'pdf', icon: <Download className={iconSm} />, label: 'Download PDF', shortLabel: 'PDF', enabled: (items) => items.some(i => i.type === 'document' || i.type === 'note') },
+  { id: 'crossnb', icon: <Search className={iconSm} />, label: 'Cross-Notebook', shortLabel: 'Discover', enabled: (items, nb) => !!nb && items.length > 0 },
 ];
 
 export const CanvasWorkspaceOverlay: React.FC = () => {
@@ -328,11 +400,19 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
     ctx.removeCanvasItem(id);
   };
 
-  // Scroll to bottom when new items are added
+  // Scroll to bottom when new items are added (delayed for DOM render)
+  const prevItemCount = useRef(ctx.canvasItems.length);
   useEffect(() => {
-    if (contentAreaRef.current) {
-      contentAreaRef.current.scrollTop = contentAreaRef.current.scrollHeight;
+    if (ctx.canvasItems.length > prevItemCount.current && contentAreaRef.current) {
+      const timer = setTimeout(() => {
+        contentAreaRef.current?.scrollTo({
+          top: contentAreaRef.current.scrollHeight,
+          behavior: 'smooth',
+        });
+      }, 100);
+      return () => clearTimeout(timer);
     }
+    prevItemCount.current = ctx.canvasItems.length;
   }, [ctx.canvasItems.length]);
 
   // Get the primary document/note content from canvas items
@@ -600,7 +680,7 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
   };
 
   return (
-    <div className="absolute inset-0 bg-white dark:bg-gray-800 z-20 flex flex-col animate-in slide-in-from-bottom-2 duration-200">
+    <div className="absolute inset-0 bg-white dark:bg-gray-800 z-20 flex flex-col animate-slide-up">
       {/* Minimal header — just title + close */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-900/60 flex-shrink-0">
         <div className="flex items-center gap-2">
@@ -608,9 +688,9 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
             className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse"
             title="Canvas active"
           />
-          <h2 className="text-sm font-semibold text-gray-900 dark:text-white">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
             {ctx.canvasItems.length === 1
-              ? `${TYPE_ICONS[ctx.canvasItems[0].type]} ${ctx.canvasItems[0].title}`
+              ? <>{TYPE_ICONS[ctx.canvasItems[0].type]} {ctx.canvasItems[0].title}</>
               : `Canvas · ${ctx.canvasItems.length} items`
             }
           </h2>

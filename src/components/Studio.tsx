@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { FileText, Mic, Target, Brain, PenTool } from 'lucide-react';
 import { skillsService } from '../services/skills';
 import { audioService } from '../services/audio';
 import { contentService, ContentGeneration } from '../services/content';
@@ -240,11 +241,11 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
           <h3 className="font-semibold text-base mb-2 text-gray-900 dark:text-white">Studio</h3>
           <div className="grid grid-cols-5 gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
             {[
-              { id: 'documents' as const, icon: '📄', label: 'Docs' },
-              { id: 'audio' as const, icon: '🎙️', label: 'Audio' },
-              { id: 'quiz' as const, icon: '🎯', label: 'Quiz' },
-              { id: 'visual' as const, icon: '🧠', label: 'Visual' },
-              { id: 'writing' as const, icon: '✍️', label: 'Write' },
+              { id: 'documents' as const, icon: <FileText className="w-3.5 h-3.5" />, label: 'Docs' },
+              { id: 'audio' as const, icon: <Mic className="w-3.5 h-3.5" />, label: 'Audio' },
+              { id: 'quiz' as const, icon: <Target className="w-3.5 h-3.5" />, label: 'Quiz' },
+              { id: 'visual' as const, icon: <Brain className="w-3.5 h-3.5" />, label: 'Visual' },
+              { id: 'writing' as const, icon: <PenTool className="w-3.5 h-3.5" />, label: 'Write' },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -264,7 +265,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
       )}
 
       {/* Main Content - Scrollable */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 pb-8 space-y-3">
+      <div className="flex-1 overflow-y-auto px-3 py-2 pb-4 space-y-3">
         {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
 
         {/* Documents & Audio Tab Content */}

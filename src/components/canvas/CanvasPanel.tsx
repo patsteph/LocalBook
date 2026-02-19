@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useSystemHealth, STATUS_COLORS } from '../../hooks/useSystemHealth';
 import { PanelView, VIEW_LABELS, VIEW_ICONS, findFirstLeafId } from './types';
 import { useCanvas } from './CanvasContext';
 import { CanvasWorkspaceOverlay } from './CanvasWorkspaceOverlay';
@@ -34,6 +35,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
   const menuRef = useRef<HTMLDivElement>(null);
   const utilMenuRef = useRef<HTMLDivElement>(null);
   const isFirstLeaf = findFirstLeafId(ctx.layout) === panelId;
+  const health = useSystemHealth();
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
@@ -298,16 +300,16 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
                 {showUtilMenu && (
                   <div className="absolute top-full right-0 mt-1 w-52 bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-lg shadow-lg z-50 py-1">
                     <button onClick={() => { ctx.openLLMSelector(); setShowUtilMenu(false); }} className="w-full text-left px-3 py-2 text-xs flex items-center gap-2.5 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
-                      <svg className="w-4 h-4 text-purple-600 dark:text-purple-400 flex-shrink-0" fill="currentColor" viewBox="0 0 512 512"><path d="M184 0c30.9 0 56 25.1 56 56V456c0 30.9-25.1 56-56 56c-28.9 0-52.7-21.9-55.7-50.1c-5.2 1.4-10.7 2.1-16.3 2.1c-35.3 0-64-28.7-64-64c0-7.4 1.3-14.6 3.6-21.2C21.4 367.4 0 338.2 0 304c0-31.9 18.7-59.5 45.8-72.3C37.1 220.8 32 207 32 192c0-30.7 21.6-56.3 50.4-62.6C80.8 123.9 80 118 80 112c0-29.9 20.6-55.1 48.3-62.1C131.3 21.9 155.1 0 184 0zM328 0c28.9 0 52.6 21.9 55.7 49.9c27.8 7 48.3 32.1 48.3 62.1c0 6-.8 11.9-2.4 17.4c28.8 6.2 50.4 31.9 50.4 62.6c0 15-5.1 28.8-13.8 39.7C493.3 244.5 512 272.1 512 304c0 34.2-21.4 63.4-51.6 74.8c2.3 6.6 3.6 13.8 3.6 21.2c0 35.3-28.7 64-64 64c-5.6 0-11.1-.7-16.3-2.1c-3 28.2-26.8 50.1-55.7 50.1c-30.9 0-56-25.1-56-56V56c0-30.9 25.1-56 56-56z"/></svg>
-                      AI Brain
+                      <svg className={`w-4 h-4 flex-shrink-0 ${STATUS_COLORS[health.llm] || 'text-purple-600 dark:text-purple-400'}`} fill="currentColor" viewBox="0 0 512 512"><path d="M184 0c30.9 0 56 25.1 56 56V456c0 30.9-25.1 56-56 56c-28.9 0-52.7-21.9-55.7-50.1c-5.2 1.4-10.7 2.1-16.3 2.1c-35.3 0-64-28.7-64-64c0-7.4 1.3-14.6 3.6-21.2C21.4 367.4 0 338.2 0 304c0-31.9 18.7-59.5 45.8-72.3C37.1 220.8 32 207 32 192c0-30.7 21.6-56.3 50.4-62.6C80.8 123.9 80 118 80 112c0-29.9 20.6-55.1 48.3-62.1C131.3 21.9 155.1 0 184 0zM328 0c28.9 0 52.6 21.9 55.7 49.9c27.8 7 48.3 32.1 48.3 62.1c0 6-.8 11.9-2.4 17.4c28.8 6.2 50.4 31.9 50.4 62.6c0 15-5.1 28.8-13.8 39.7C493.3 244.5 512 272.1 512 304c0 34.2-21.4 63.4-51.6 74.8c2.3 6.6 3.6 13.8 3.6 21.2c0 35.3-28.7 64-64 64c-5.6 0-11.1-.7-16.3-2.1c-3 28.2-26.8 50.1-55.7 50.1c-30.9 0-56-25.1-56-56V56c0-30.9 25.1-56 56-56z"/></svg>
+                      AI Brain {health.llm === 'error' && <span className="text-red-500 text-[10px]">●</span>}
                     </button>
                     <button onClick={() => { ctx.openEmbeddingSelector(); setShowUtilMenu(false); }} className="w-full text-left px-3 py-2 text-xs flex items-center gap-2.5 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
-                      <svg className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
-                      Embedding Model
+                      <svg className={`w-4 h-4 flex-shrink-0 ${STATUS_COLORS[health.embedding] || 'text-blue-600 dark:text-blue-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                      Embedding Model {health.embedding === 'error' && <span className="text-red-500 text-[10px]">●</span>}
                     </button>
                     <button onClick={() => { openUrl(`${API_BASE_URL}/health/portal`); setShowUtilMenu(false); }} className="w-full text-left px-3 py-2 text-xs flex items-center gap-2.5 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
-                      <svg className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
-                      System Health
+                      <svg className={`w-4 h-4 flex-shrink-0 ${STATUS_COLORS[health.system] || 'text-green-600 dark:text-green-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                      System Health {health.system === 'error' && <span className="text-red-500 text-[10px]">●</span>}
                     </button>
                     <div className="border-t dark:border-gray-700 my-1" />
                     <button onClick={() => { ctx.openSettings(); setShowUtilMenu(false); }} className="w-full text-left px-3 py-2 text-xs flex items-center gap-2.5 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">

@@ -1,4 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import {
+  Sparkles, Brain, GitBranch, CalendarDays, Network, BarChart3
+} from 'lucide-react';
 import mermaid from 'mermaid';
 import { visualService, Diagram } from '../services/visual';
 import { Button } from './shared/Button';
@@ -130,13 +133,14 @@ interface VisualPanelProps {
 type DiagramType = 'mindmap' | 'flowchart' | 'timeline' | 'classDiagram' | 'quadrant' | 'auto';
 
 // Quick access diagram types - 6 options in 2 rows of 3
-const QUICK_DIAGRAM_OPTIONS: { type: DiagramType; icon: string; label: string }[] = [
-  { type: 'auto', icon: '✨', label: 'AI Visual' },
-  { type: 'mindmap', icon: '🧠', label: 'Mindmap' },
-  { type: 'flowchart', icon: '📊', label: 'Flow' },
-  { type: 'timeline', icon: '📅', label: 'Timeline' },
-  { type: 'classDiagram', icon: '🏗️', label: 'Hierarchy' },
-  { type: 'quadrant', icon: '📈', label: 'Compare' },
+const diagramIconClass = 'w-4 h-4';
+const QUICK_DIAGRAM_OPTIONS: { type: DiagramType; icon: React.ReactNode; label: string }[] = [
+  { type: 'auto', icon: <Sparkles className={diagramIconClass} />, label: 'AI Visual' },
+  { type: 'mindmap', icon: <Brain className={diagramIconClass} />, label: 'Mindmap' },
+  { type: 'flowchart', icon: <GitBranch className={diagramIconClass} />, label: 'Flow' },
+  { type: 'timeline', icon: <CalendarDays className={diagramIconClass} />, label: 'Timeline' },
+  { type: 'classDiagram', icon: <Network className={diagramIconClass} />, label: 'Hierarchy' },
+  { type: 'quadrant', icon: <BarChart3 className={diagramIconClass} />, label: 'Compare' },
 ];
 
 // Helper to strip citation markers like [1], [2], etc.

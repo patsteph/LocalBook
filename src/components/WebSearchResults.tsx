@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import DOMPurify from 'dompurify';
 import { webService, WebSearchResult } from '../services/web';
 import { API_BASE_URL } from '../services/api';
 
@@ -369,7 +370,7 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
                                             </div>
                                             
                                             {/* Snippet */}
-                                            <p className="mt-1 text-xs text-gray-600 dark:text-gray-300 line-clamp-2" dangerouslySetInnerHTML={{ __html: result.snippet }} />
+                                            <p className="mt-1 text-xs text-gray-600 dark:text-gray-300 line-clamp-2" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(result.snippet) }} />
                                         </div>
                                         
                                         {/* Add Button - positioned like Site Search action */}

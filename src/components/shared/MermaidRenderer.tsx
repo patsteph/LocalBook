@@ -6,6 +6,7 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
+import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 
 interface MermaidRendererProps {
@@ -269,7 +270,7 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, classNam
       style={{
         animation: 'fadeInScale 0.4s ease-out forwards',
       }}
-      dangerouslySetInnerHTML={{ __html: svgContent }}
+      dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svgContent, { USE_PROFILES: { svg: true } }) }}
     />
   );
 };
