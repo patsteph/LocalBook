@@ -1374,34 +1374,36 @@ Respond with JSON only:
     # Approval Queue Management (Enhancement #10)
     # =========================================================================
     
-    async def _add_to_approval_queue(self, item: CollectedItem) -> bool:
+    async def _add_to_approval_queue(self, item: CollectedItem) -> str:
         """Add item to approval queue based on approval mode.
         
         Returns:
-            True if item was queued for user review, False if auto-approved
+            'queued' if item was queued for user review,
+            'stored' if auto-approved and stored successfully,
+            'skipped' if auto-approved but storage failed (dedup, shallow, error)
         """
         # Dedup: skip if URL already in queue or known sources
         if item.url:
             if item.url in self._known_urls:
                 logger.info(f"Skipping queue add (URL known): {item.url}")
-                return False
+                return 'skipped'
             for q in self._approval_queue:
                 if q.item.url == item.url:
                     logger.info(f"Skipping queue add (already queued): {item.url}")
-                    return False
+                    return 'skipped'
 
         if self.config.approval_mode == ApprovalMode.TRUST_ME:
             # Auto-approve
             item.status = "approved"
-            await self._store_approved_item(item)
-            return False
+            was_stored = await self._store_approved_item(item)
+            return 'stored' if was_stored else 'skipped'
         
         if self.config.approval_mode == ApprovalMode.MIXED:
             # Auto-approve high confidence
             if item.overall_confidence >= 0.85:
                 item.status = "approved"
-                await self._store_approved_item(item)
-                return False
+                was_stored = await self._store_approved_item(item)
+                return 'stored' if was_stored else 'skipped'
         
         # Queue for approval
         queue_item = ApprovalQueueItem(
@@ -1412,7 +1414,7 @@ Respond with JSON only:
         if item.url:
             self._known_urls.add(item.url)
         self._save_approval_queue()
-        return True
+        return 'queued'
     
     async def _store_approved_item(self, item: CollectedItem) -> bool:
         """Store an approved item as a notebook source AND in Collector memory.
@@ -1423,10 +1425,12 @@ Respond with JSON only:
         from services.rag_engine import rag_engine
         
         # Final dedup guard: check if this URL already exists in stored sources
+        print(f"[STORE] Attempting to store: '{item.title}' ({len(item.content)} chars, URL: {item.url})")
         if item.url:
             existing = await source_store.list(self.notebook_id)
             for src in existing:
                 if src.get("url") == item.url:
+                    print(f"[STORE] ✗ SKIPPED (duplicate URL): {item.url}")
                     logger.info(f"Skipping duplicate store (URL exists): {item.url}")
                     self._known_urls.add(item.url)
                     return False
@@ -1453,6 +1457,7 @@ Respond with JSON only:
                             if scraped.get("title") and len(scraped["title"]) > len(item.title):
                                 item.title = scraped["title"]
             except Exception as enrich_err:
+                print(f"[STORE] Content enrichment failed for '{item.title}': {enrich_err}")
                 logger.debug(f"Content enrichment failed (using original): {enrich_err}")
         
         # Gate: reject sources that are still too shallow after enrichment
@@ -1463,8 +1468,8 @@ Respond with JSON only:
                 f"Type: {item.source_type}, URL: {item.url}"
             )
             print(
-                f"[COLLECTOR] ⚠ Skipped shallow source: '{item.title}' "
-                f"({len(content)} chars) — headline only, no substantive content"
+                f"[STORE] ✗ SKIPPED (shallow): '{item.title}' "
+                f"({len(content)} chars < {MIN_CONTENT_CHARS} minimum)"
             )
             return False
         
@@ -1510,6 +1515,7 @@ Respond with JSON only:
                 "status": "completed"
             })
             
+            print(f"[STORE] ✓ STORED: '{item.title}' → {chunks} chunks, status=completed")
             logger.info(f"Approved item stored as source: {item.title} ({chunks} chunks)")
             
             # Notify Constellation/frontend that a new source was added
@@ -1526,6 +1532,7 @@ Respond with JSON only:
                 logger.debug(f"WebSocket notification failed (non-fatal): {ws_err}")
             
         except Exception as e:
+            print(f"[STORE] ✗ FAILED to store '{item.title}': {type(e).__name__}: {e}")
             logger.error(f"Failed to store approved item as source: {e}")
             return False
         

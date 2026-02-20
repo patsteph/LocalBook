@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { BookOpen, Trash2, PenLine } from 'lucide-react';
+import { BookOpen, Trash2, PenLine, Archive } from 'lucide-react';
 import { sourceService } from '../services/sources';
 import { Source } from '../types';
 import { LoadingSpinner } from './shared/LoadingSpinner';
@@ -45,6 +45,23 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
     } else {
       setSources([]);
     }
+  }, [notebookId]);
+
+  // Polling fallback: when any source is still "processing", poll until settled
+  useEffect(() => {
+    const hasProcessing = sources.some(s => s.status === 'processing');
+    if (!hasProcessing || !notebookId) return;
+    const interval = setInterval(() => loadSources(), 3000);
+    return () => clearInterval(interval);
+  }, [sources, notebookId]);
+
+  // Visibility-based refresh: catch missed WebSocket events when tab regains focus
+  useEffect(() => {
+    const handleFocus = () => {
+      if (notebookId) loadSources();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
   }, [notebookId]);
 
   const loadSources = async () => {
@@ -219,6 +236,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
         <div className="space-y-2">
           {filteredSources.map((source) => {
             const isSelected = selectedSourceId === source.id;
+            const isCollectorSource = source.collected_by === 'collector';
             const sourceTags = source.tags || [];
             // Show active filter tag first if present, then up to 1 more
             const displayTags: string[] = [];
@@ -238,12 +256,15 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                 className={`group px-3 py-2 rounded-lg border transition cursor-pointer overflow-hidden ${
                   isSelected
                     ? 'border-purple-500 dark:border-purple-400 bg-purple-50 dark:bg-purple-900/20 ring-1 ring-purple-500 dark:ring-purple-400'
-                    : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-700'
+                    : isCollectorSource
+                      ? 'border-l-teal-500 dark:border-l-teal-400 border-l-2 border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-700'
+                      : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500 bg-white dark:bg-gray-700'
                 }`}
               >
                 <div className="flex items-center justify-between gap-1">
                   <p className={`font-medium text-sm truncate flex-1 min-w-0 ${isSelected ? 'text-purple-700 dark:text-purple-300' : 'text-gray-900 dark:text-white'}`} title={source.filename}>
                     {isSelected && <span className="text-purple-600 dark:text-purple-400 text-xs mr-1">●</span>}
+                    {isCollectorSource && !isSelected && <Archive size={12} className="inline-block mr-1 text-teal-500 dark:text-teal-400 align-text-bottom" />}
                     {source.filename}
                   </p>
                   <div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
@@ -290,7 +311,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5 mt-0.5 text-xs text-gray-500 dark:text-gray-400 overflow-hidden min-w-0">
-                  <span className="shrink-0">{source.type === 'note' ? '📝 NOTE' : (source.format?.toUpperCase() || 'FILE')}</span>
+                  <span className="shrink-0">{source.type === 'note' ? '📝 NOTE' : isCollectorSource ? 'COLLECTED' : (source.format?.toUpperCase() || 'FILE')}</span>
                   <span className="shrink-0 opacity-30">·</span>
                   <span className="shrink-0">{((source.char_count || source.characters || 0) / 1000).toFixed(1)}k</span>
                   {source.status !== 'completed' && (

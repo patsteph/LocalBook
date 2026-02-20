@@ -253,11 +253,11 @@ class CollectorService {
   /**
    * Toggle a source on/off
    */
-  async toggleSource(notebookId: string, sourceUrl: string, enabled: boolean): Promise<any> {
+  async toggleSource(notebookId: string, sourceId: string, enabled: boolean): Promise<any> {
     const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/source-toggle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source_url: sourceUrl, enabled })
+      body: JSON.stringify({ source_id: sourceId, enabled })
     });
     if (!response.ok) throw new Error('Failed to toggle source');
     return response.json();

@@ -14,11 +14,11 @@ class SourceDiscoveryService {
     return response.json();
   }
 
-  async approve(notebookId: string, sources: any[]): Promise<any> {
+  async approve(notebookId: string, approvedSources: any[], rejectedSources: any[] = []): Promise<any> {
     const response = await fetch(`${API_BASE_URL}/source-discovery/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notebook_id: notebookId, sources }),
+      body: JSON.stringify({ notebook_id: notebookId, approved_sources: approvedSources, rejected_sources: rejectedSources }),
     });
     if (!response.ok) throw new Error('Failed to approve sources');
     return response.json();

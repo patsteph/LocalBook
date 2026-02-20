@@ -1881,18 +1881,15 @@ Respond with ONLY a JSON array of strings, no other text:
                 rejected += 1
             else:
                 # Queue for user review (may auto-approve if high confidence in mixed mode)
-                was_queued = await collector._add_to_approval_queue(item)
-                if was_queued:
+                queue_result = await collector._add_to_approval_queue(item)
+                if queue_result == 'queued':
                     pending += 1
+                elif queue_result == 'stored':
+                    approved += 1
+                    approved_titles.append({"id": item.id, "title": item.title, "source": item.source_name, "confidence": item.overall_confidence})
                 else:
-                    # Was auto-approved by queue logic — check if actually stored
-                    was_stored = True  # _add_to_approval_queue already called _store_approved_item
-                    if was_stored:
-                        approved += 1
-                        approved_titles.append({"id": item.id, "title": item.title, "source": item.source_name, "confidence": item.overall_confidence})
-                    else:
-                        filtered += 1
-                        filtered_titles.append({"title": item.title, "source": item.source_name, "confidence": item.overall_confidence, "reason": "shallow_or_duplicate"})
+                    filtered += 1
+                    filtered_titles.append({"title": item.title, "source": item.source_name, "confidence": item.overall_confidence, "reason": "shallow_or_duplicate"})
         
         print(f"[CURATOR] Done: {approved} approved, {pending} pending, {rejected} rejected, {filtered} filtered (shallow/dup)")
         

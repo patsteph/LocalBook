@@ -21,6 +21,8 @@ export interface Source {
   type?: string;
   url?: string;
   tags?: string[];  // v0.6.0: Document tags
+  collected_by?: string;  // 'collector' for auto-collected sources
+  confidence_score?: number;  // Collector confidence score
 }
 
 export interface Citation {

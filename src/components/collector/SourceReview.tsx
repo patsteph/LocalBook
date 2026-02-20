@@ -235,8 +235,9 @@ export const SourceReview: React.FC<SourceReviewProps> = ({
     
     try {
       const approved = sources.filter(s => selectedSources.has(s.id));
+      const rejected = sources.filter(s => !selectedSources.has(s.id));
       
-      const result = await sourceDiscoveryService.approve(notebookId, approved);
+      const result = await sourceDiscoveryService.approve(notebookId, approved, rejected);
       onComplete(result.sources_added);
       
     } catch (err) {

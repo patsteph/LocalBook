@@ -249,6 +249,38 @@ async def approve_sources(request: ApproveSourcesRequest):
                 if keyword and keyword not in config.sources.get("news_keywords", []):
                     config.sources.setdefault("news_keywords", []).append(keyword)
                     sources_added += 1
+                    
+            elif source_type in ["youtube_channel", "YOUTUBE_CHANNEL"]:
+                # YouTube channels: prefer RSS feed if available, else store URL as web_page
+                rss = source.get("rss_url")
+                if rss and rss not in config.sources.get("rss_feeds", []):
+                    config.sources.setdefault("rss_feeds", []).append(rss)
+                    sources_added += 1
+                elif url and url not in config.sources.get("web_pages", []):
+                    config.sources.setdefault("web_pages", []).append(url)
+                    sources_added += 1
+                    
+            elif source_type in ["blog", "BLOG", "podcast", "PODCAST", "newsletter", "NEWSLETTER"]:
+                # Blogs/podcasts/newsletters: prefer RSS if discovered, else web_page
+                rss = source.get("rss_url")
+                if rss and rss not in config.sources.get("rss_feeds", []):
+                    config.sources.setdefault("rss_feeds", []).append(rss)
+                    sources_added += 1
+                elif url and url not in config.sources.get("web_pages", []):
+                    config.sources.setdefault("web_pages", []).append(url)
+                    sources_added += 1
+                    
+            elif source_type in ["community", "COMMUNITY"]:
+                # Community sources (Reddit, forums): store as web_page
+                if url and url not in config.sources.get("web_pages", []):
+                    config.sources.setdefault("web_pages", []).append(url)
+                    sources_added += 1
+            
+            else:
+                # Fallback: any unknown source type with a URL goes to web_pages
+                if url and url not in config.sources.get("web_pages", []):
+                    config.sources.setdefault("web_pages", []).append(url)
+                    sources_added += 1
         
         # Save updated config
         collector.update_config({"sources": config.sources})

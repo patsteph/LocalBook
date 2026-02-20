@@ -124,6 +124,16 @@ interface SuggestedConfig {
   curator_message?: string;
 }
 
+interface ExistingCollectorConfig {
+  name?: string;
+  subject?: string;
+  intent?: string;
+  focus_areas?: string[];
+  collection_mode?: string;
+  approval_mode?: string;
+  schedule?: { frequency?: string; max_items_per_run?: number };
+}
+
 interface CollectorSetupWizardProps {
   notebookId: string;
   notebookName: string;
@@ -131,6 +141,7 @@ interface CollectorSetupWizardProps {
   onClose: () => void;
   onComplete: (curatorFollowUp?: string) => void;
   initialConfig?: SuggestedConfig;
+  existingConfig?: ExistingCollectorConfig;
 }
 
 type WizardScreen = 'template' | 'refine';
@@ -142,28 +153,50 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
   onClose,
   onComplete,
   initialConfig,
+  existingConfig,
 }) => {
+  const isEditMode = !!existingConfig;
+
   // If initialConfig is provided (e.g. from file-drop), skip to refinement
-  const [screen, setScreen] = useState<WizardScreen>(initialConfig ? 'refine' : 'template');
+  // If existingConfig is provided (edit mode), also skip to refinement
+  const [screen, setScreen] = useState<WizardScreen>(
+    existingConfig || initialConfig ? 'refine' : 'template'
+  );
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(() => {
+    if (existingConfig) {
+      // In edit mode, try to match the existing intent to a template
+      const intent = (existingConfig.intent || '').toLowerCase();
+      const matched = TEMPLATES.find(t =>
+        t.id !== 'custom' && t.id !== 'people' &&
+        t.defaults.intent_template &&
+        intent.includes(t.defaults.intent_template.split('{subject}')[0].trim().toLowerCase().slice(0, 20))
+      );
+      return matched || TEMPLATES.find(t => t.id === 'custom') || TEMPLATES[4];
+    }
     if (initialConfig?.suggested_template) {
       return TEMPLATES.find(t => t.id === initialConfig.suggested_template) || TEMPLATES[4]; // fallback to Custom
     }
     return null;
   });
 
-  // Refinement state — pre-populate from initialConfig if available
-  const [subject, setSubject] = useState(initialConfig?.suggested_subject || notebookName || '');
-  const [focusAreas, setFocusAreas] = useState<string[]>(initialConfig?.suggested_focus_areas || []);
+  // Refinement state — pre-populate from existingConfig (edit) or initialConfig (new)
+  const [subject, setSubject] = useState(
+    existingConfig?.subject || initialConfig?.suggested_subject || notebookName || ''
+  );
+  const [focusAreas, setFocusAreas] = useState<string[]>(
+    existingConfig?.focus_areas || initialConfig?.suggested_focus_areas || []
+  );
   const [chipInput, setChipInput] = useState('');
   const [approvalMode, setApprovalMode] = useState(
-    selectedTemplate?.defaults.approval_mode || 'mixed'
+    existingConfig?.approval_mode || selectedTemplate?.defaults.approval_mode || 'mixed'
   );
   const [collectionMode, setCollectionMode] = useState(
-    selectedTemplate?.defaults.collection_mode || 'hybrid'
+    existingConfig?.collection_mode || selectedTemplate?.defaults.collection_mode || 'hybrid'
   );
 
-  const [frequency, setFrequency] = useState('daily');
+  const [frequency, setFrequency] = useState(
+    existingConfig?.schedule?.frequency || 'daily'
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showSourceReview, setShowSourceReview] = useState(false);
@@ -243,6 +276,12 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
       };
 
       await collectorService.updateConfig(notebookId, config as any);
+
+      // In edit mode, just save and close — no source discovery
+      if (isEditMode) {
+        onComplete();
+        return;
+      }
 
       // Check if this looks like a coaching/people notebook
       if (looksLikeCoaching(subject, intent)) {
@@ -395,21 +434,25 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Set Up Your Collector"
+      title={isEditMode ? 'Edit Collector Configuration' : 'Set Up Your Collector'}
       size="md"
     >
       <div className="collector-wizard">
-        <div className="wizard-progress">
-          <div className="progress-dot active" />
-          <div className="progress-dot active" />
-        </div>
+        {!isEditMode && (
+          <div className="wizard-progress">
+            <div className="progress-dot active" />
+            <div className="progress-dot active" />
+          </div>
+        )}
 
         <div className="wizard-content">
           {/* Template badge */}
+          {selectedTemplate && (
           <div className="refine-template-badge">
             <span>{selectedTemplate?.icon}</span>
             <span>{selectedTemplate?.label}</span>
           </div>
+          )}
 
           {/* Subject */}
           <label className="refine-label">Subject</label>
@@ -498,16 +541,22 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
 
         <div className="wizard-actions">
           <div className="actions-left">
-            <Button variant="secondary" onClick={() => { setScreen('template'); setSelectedTemplate(null); }}>
-              Back
-            </Button>
+            {isEditMode ? (
+              <Button variant="secondary" onClick={onClose}>
+                Cancel
+              </Button>
+            ) : (
+              <Button variant="secondary" onClick={() => { setScreen('template'); setSelectedTemplate(null); }}>
+                Back
+              </Button>
+            )}
           </div>
           <div className="actions-right">
             <Button
               onClick={saveConfig}
               disabled={!subject.trim() || saving}
             >
-              {saving ? 'Saving...' : 'Discover Sources →'}
+              {saving ? 'Saving...' : isEditMode ? 'Save Changes' : 'Discover Sources →'}
             </Button>
           </div>
         </div>

@@ -13,6 +13,7 @@ router = APIRouter()
 class NotebookCreate(BaseModel):
     title: str
     description: Optional[str] = None
+    color: Optional[str] = None
 
 class Notebook(BaseModel):
     id: str
@@ -50,7 +51,7 @@ async def list_notebooks():
 @router.post("/", response_model=Notebook)
 async def create_notebook(notebook: NotebookCreate):
     """Create a new notebook"""
-    result = await notebook_store.create(notebook.title, notebook.description)
+    result = await notebook_store.create(notebook.title, notebook.description, notebook.color)
     return result
 
 @router.get("/{notebook_id}", response_model=Notebook)

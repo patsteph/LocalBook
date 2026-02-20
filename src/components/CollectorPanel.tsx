@@ -10,10 +10,12 @@ import { PeoplePanel } from './people/PeoplePanel';
 
 interface CollectorConfig {
   name: string;
+  subject: string;
   intent: string;
   focus_areas: string[];
   collection_mode: string;
   approval_mode: string;
+  schedule: { frequency: string; max_items_per_run: number };
 }
 
 interface CollectorPanelProps {
@@ -34,6 +36,7 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
   const [pendingCount, setPendingCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
+  const [wizardEditMode, setWizardEditMode] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [lastCollection, setLastCollection] = useState<string | null>(null);
   const [collecting, setCollecting] = useState(false);
@@ -53,6 +56,7 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
     setCollecting(false);
     setExpanded(false);
     setShowSetupWizard(false);
+    setWizardEditMode(false);
     setHasPeopleConfig(false);
     setPeopleMemberCount(0);
     setShowSourceSection(false);
@@ -119,6 +123,10 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
       await loadCollectorStatus();
       // Tell parent to refresh sources list
       onSourcesRefresh?.();
+      // Safety-net: delayed second refresh to catch any async storage lag
+      if ((data.items_approved || 0) > 0) {
+        setTimeout(() => onSourcesRefresh?.(), 2000);
+      }
     } catch (err) {
       console.error('Error triggering collection:', err);
       const errMsg = err instanceof Error ? err.message : 'Connection error';
@@ -218,7 +226,7 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
                   Set up your Collector to automatically find and curate content for this notebook.
                 </p>
                 <button
-                  onClick={() => setShowSetupWizard(true)}
+                  onClick={() => { setWizardEditMode(false); setShowSetupWizard(true); }}
                   className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors"
                 >
                   Configure Collector
@@ -268,7 +276,7 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
                             Profile
                           </button>
                           <button
-                            onClick={() => setShowSetupWizard(true)}
+                            onClick={() => { setWizardEditMode(true); setShowSetupWizard(true); }}
                             className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
                           >
                             Edit
@@ -317,7 +325,7 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
                       </span>
                       <span className="text-gray-300 dark:text-gray-600">|</span>
                       <button
-                        onClick={(e) => { e.stopPropagation(); setShowSetupWizard(true); }}
+                        onClick={(e) => { e.stopPropagation(); setWizardEditMode(true); setShowSetupWizard(true); }}
                         className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
                       >
                         Edit
@@ -513,13 +521,26 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
           notebookId={notebookId}
           notebookName={notebookName}
           isOpen={showSetupWizard}
-          onClose={() => setShowSetupWizard(false)}
+          onClose={() => { setShowSetupWizard(false); setWizardEditMode(false); }}
+          existingConfig={wizardEditMode && config ? {
+            name: config.name,
+            subject: config.subject,
+            intent: config.intent,
+            focus_areas: config.focus_areas,
+            collection_mode: config.collection_mode,
+            approval_mode: config.approval_mode,
+            schedule: config.schedule,
+          } : undefined}
           onComplete={(followUp?: string) => {
+            const wasEdit = wizardEditMode;
             setShowSetupWizard(false);
+            setWizardEditMode(false);
             loadCollectorStatus();
-            // Auto-expand and auto-collect after wizard completes
             setExpanded(true);
-            setTimeout(() => handleCollectNow(), 500);
+            // Only auto-collect after initial setup, not after editing
+            if (!wasEdit) {
+              setTimeout(() => handleCollectNow(), 500);
+            }
             if (followUp) setCuratorFollowUp(followUp);
           }}
         />
