@@ -61,13 +61,13 @@ export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) =>
       )}
 
       {showFull && createPortal(
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto">
             {/* Header */}
-            <div className="sticky top-0 bg-white border-b p-4 flex justify-between items-start">
+            <div className="sticky top-0 bg-white dark:bg-gray-800 border-b dark:border-gray-700 p-4 flex justify-between items-start">
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
-                  <h3 className="font-semibold text-lg">Citation [{citation.number}]</h3>
+                  <h3 className="font-semibold text-lg text-gray-900 dark:text-gray-100">Citation [{citation.number}]</h3>
                   <span className={`px-2 py-0.5 text-xs rounded-lg ${confidenceBadge.bg} ${confidenceBadge.text}`}>
                     {confidenceBadge.icon} {confidenceBadge.label} ({citation.confidence}%)
                   </span>
@@ -79,7 +79,7 @@ export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) =>
               </div>
               <button
                 onClick={() => setShowFull(false)}
-                className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-2xl leading-none"
               >
                 ×
               </button>
@@ -88,15 +88,15 @@ export const Citation: React.FC<CitationProps> = ({ citation, onViewSource }) =>
             {/* Content */}
             <div className="p-4">
               <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Source Text:</h4>
-              <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
+              <div className="bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap leading-relaxed">
                   {citation.text}
                 </p>
               </div>
             </div>
 
             {/* Footer */}
-            <div className="border-t p-4 bg-gray-50 flex gap-2">
+            <div className="border-t dark:border-gray-700 p-4 bg-gray-50 dark:bg-gray-800/50 flex gap-2">
               {onViewSource && (
                 <button
                   onClick={() => {

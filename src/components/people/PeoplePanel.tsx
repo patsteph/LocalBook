@@ -78,24 +78,6 @@ export const PeoplePanel: React.FC<PeoplePanelProps> = ({
   };
 
   // =========================================================================
-  // If viewing a specific member profile
-  // =========================================================================
-
-  if (selectedMemberId) {
-    return (
-      <PersonProfileView
-        notebookId={notebookId}
-        memberId={selectedMemberId}
-        coachingEnabled={coachingEnabled}
-        onBack={() => {
-          setSelectedMemberId(null);
-          loadConfig();
-        }}
-      />
-    );
-  }
-
-  // =========================================================================
   // Loading or no config — render nothing.
   // The parent (CollectorPanel) gates rendering behind hasPeopleConfig,
   // but guard here too for safety.
@@ -193,6 +175,18 @@ export const PeoplePanel: React.FC<PeoplePanelProps> = ({
           isOpen={showWizard}
           onClose={() => setShowWizard(false)}
           onComplete={handleWizardComplete}
+        />
+      )}
+
+      {selectedMemberId && (
+        <PersonProfileView
+          notebookId={notebookId}
+          memberId={selectedMemberId}
+          coachingEnabled={coachingEnabled}
+          onBack={() => {
+            setSelectedMemberId(null);
+            loadConfig();
+          }}
         />
       )}
     </div>

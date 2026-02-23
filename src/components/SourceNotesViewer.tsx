@@ -306,10 +306,10 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
   }, [highlights]);
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col">
         {/* Header */}
-        <div className="border-b px-4 py-3 flex justify-between items-center">
+        <div className="border-b dark:border-gray-700 px-4 py-3 flex justify-between items-center">
           <div className="flex-1">
             <h2 className="text-base font-semibold text-gray-900 dark:text-white">{sourceName}</h2>
             <p className="text-sm text-gray-600 dark:text-gray-400">
@@ -368,7 +368,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
               ) : (
                 <button
                   onClick={() => setShowTagInput(true)}
-                  className="px-2 py-0.5 text-xs text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg border border-dashed border-gray-300 hover:border-blue-400"
+                  className="px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-400"
                 >
                   + Tag
                 </button>
@@ -384,7 +384,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
             )}
             <button
               onClick={onClose}
-              className="text-gray-400 hover:text-gray-600 text-3xl leading-none"
+              className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-2xl leading-none"
             >
               ×
             </button>
@@ -404,8 +404,8 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
         ) : (
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* Source Content Section */}
-            <div className="flex-1 border-b overflow-hidden flex flex-col">
-              <div className="p-4 border-b bg-gray-50">
+            <div className="flex-1 border-b dark:border-gray-700 overflow-hidden flex flex-col">
+              <div className="p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Source Content</h3>
                   <input
@@ -413,24 +413,24 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
                     placeholder="Search in document..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    className="flex-1 px-3 py-1 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="flex-1 px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   {totalMatches > 0 && (
                     <>
-                      <span className="text-xs text-gray-600 whitespace-nowrap">
+                      <span className="text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">
                         {currentMatchIndex + 1} of {totalMatches}
                       </span>
                       <div className="flex gap-1">
                         <button
                           onClick={() => navigateMatch('prev')}
-                          className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors"
+                          className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg transition-colors"
                           title="Previous match"
                         >
                           ↑
                         </button>
                         <button
                           onClick={() => navigateMatch('next')}
-                          className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors"
+                          className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg transition-colors"
                           title="Next match"
                         >
                           ↓
@@ -440,7 +440,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
                   )}
                 </div>
               </div>
-              <div className="flex-1 overflow-y-auto p-4 bg-white">
+              <div className="flex-1 overflow-y-auto p-4 bg-white dark:bg-gray-800">
                 <div
                   ref={contentRef}
                   className="prose max-w-none text-sm leading-relaxed whitespace-pre-wrap font-mono select-text"
@@ -457,8 +457,8 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
 
             {/* Notes Section */}
             <div className="h-1/3 flex flex-col overflow-hidden">
-              <div className="p-4 border-b bg-gray-50">
-                <h3 className="text-sm font-semibold text-gray-700">📝 Notes</h3>
+              <div className="p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">📝 Notes</h3>
                 <p className="text-xs text-gray-500 mt-1">
                   Your notes are automatically saved as you type
                 </p>
@@ -467,14 +467,14 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 placeholder="Take notes about this source... (Markdown supported)"
-                className="flex-1 p-4 text-sm resize-none border-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="flex-1 p-4 text-sm resize-none border-none bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
           </div>
         )}
 
         {/* Footer */}
-        <div className="border-t p-4 bg-gray-50 flex justify-end gap-2">
+        <div className="border-t dark:border-gray-700 p-4 bg-gray-50 dark:bg-gray-800/50 flex justify-end gap-2">
           <button
             onClick={onClose}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
@@ -486,13 +486,13 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
 
       {/* Annotation Modal */}
       {showAnnotationModal && pendingHighlight && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60]">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-4 max-w-md w-full mx-4">
-            <h3 className="text-base font-semibold mb-3">Add Highlight</h3>
+            <h3 className="text-base font-semibold mb-3 text-gray-900 dark:text-gray-100">Add Highlight</h3>
 
             <div className="mb-4">
-              <p className="text-sm text-gray-700 mb-2">Selected text:</p>
-              <div className="p-3 bg-gray-100 rounded-lg text-sm italic border-l-4 border-gray-400">
+              <p className="text-sm text-gray-700 dark:text-gray-300 mb-2">Selected text:</p>
+              <div className="p-3 bg-gray-100 dark:bg-gray-900/50 rounded-lg text-sm italic border-l-4 border-gray-400 dark:border-gray-500 text-gray-700 dark:text-gray-300">
                 "{pendingHighlight.text.substring(0, 150)}
                 {pendingHighlight.text.length > 150 ? '...' : ''}"
               </div>

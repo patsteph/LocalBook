@@ -885,6 +885,18 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
                     dark_mode=True  # Always dark mode for now
                 )
                 
+                # VALIDATION GATE: Reject visuals with no meaningful text content
+                # Count text elements (native SVG) and foreignObject HTML content
+                svg_code = result.get("svg", "")
+                import re as _re
+                text_elements = _re.findall(r'<text[^>]*>([^<]+)</text>', svg_code)
+                foreign_texts = _re.findall(r'<div[^>]*>([^<]+)</div>', svg_code)
+                meaningful_texts = [t.strip() for t in (text_elements + foreign_texts) if t.strip() and len(t.strip()) > 2]
+                # Must have at least 2 meaningful text labels (title alone isn't enough)
+                if len(meaningful_texts) < 2:
+                    print(f"[Visual Stream] ⚠️ REJECTED {tmpl.id}: only {len(meaningful_texts)} text labels found (need ≥2)")
+                    return None
+                
                 # Extract tagline/summary for user editing
                 tagline = structure.get("insight") or ""
                 if not tagline and structure.get("themes"):

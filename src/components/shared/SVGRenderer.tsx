@@ -53,7 +53,11 @@ export const SVGRenderer: React.FC<SVGRendererProps> = ({ svg, className = '', t
       )}
       <div 
         className="svg-content p-2"
-        dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true } }) }}
+        dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg, { 
+          USE_PROFILES: { svg: true, svgFilters: true },
+          ADD_TAGS: ['foreignObject', 'div', 'span'],
+          ADD_ATTR: ['xmlns', 'style'],
+        }) }}
       />
     </div>
   );
