@@ -281,18 +281,22 @@ cd backend
 source .venv/bin/activate
 
 if [ -f "scripts/local/test_bundle.py" ]; then
-    if python scripts/local/test_bundle.py 2>&1 | grep -E "^\\[|Passed:|Failed:|BUNDLE"; then
-        # Check if tests passed
-        if python scripts/local/test_bundle.py 2>&1 | grep -q "Bundle verification passed"; then
-            echo -e "${GREEN}  ✓ Bundle API tests passed${NC}"
-        else
-            echo -e "${RED}  ✗ Bundle API tests failed${NC}"
-            deactivate
-            cd ..
-            # Close the app
-            osascript -e 'quit app "LocalBook"' 2>/dev/null || true
-            exit 1
-        fi
+    # Run tests once and capture output
+    BUNDLE_OUTPUT=$(python scripts/local/test_bundle.py 2>&1)
+    BUNDLE_EXIT=$?
+    
+    # Display filtered output
+    echo "$BUNDLE_OUTPUT" | grep -E "^\[|Passed:|Failed:|Skipped:|BUNDLE|verification"
+    
+    # Check result via exit code (0 = pass) or output string
+    if [ $BUNDLE_EXIT -eq 0 ] && echo "$BUNDLE_OUTPUT" | grep -q "Bundle verification passed"; then
+        echo -e "${GREEN}  ✓ Bundle API tests passed${NC}"
+    else
+        echo -e "${RED}  ✗ Bundle API tests failed${NC}"
+        deactivate
+        cd ..
+        osascript -e 'quit app "LocalBook"' 2>/dev/null || true
+        exit 1
     fi
 else
     echo -e "${YELLOW}  ⚠ Bundle tests not found, skipping${NC}"
