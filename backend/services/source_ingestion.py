@@ -111,7 +111,16 @@ async def create_and_ingest_source(
         })
         raise
 
-    # 4. Log event
+    # 4. Auto-tag the source (non-fatal)
+    try:
+        from services.auto_tagger import auto_tagger
+        await auto_tagger.tag_source_in_notebook(
+            notebook_id, sid, filename, text[:3000]
+        )
+    except Exception as tag_err:
+        logger.debug(f"[SourceIngestion] Auto-tagging failed (non-fatal): {tag_err}")
+
+    # 5. Log event
     try:
         log_document_captured(notebook_id, url or filename, filename, source_type)
     except Exception:

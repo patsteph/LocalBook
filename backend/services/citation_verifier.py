@@ -228,10 +228,13 @@ class CitationVerifier:
         score = max(0.0, min(1.0, score))  # Clamp to [0, 1]
         
         # Determine hallucination risk
-        unsupported_ratio = (unsupported + no_cite) / total
-        if unsupported_ratio >= 0.5:
+        # Weight no_citation at 0.3x — missing a [N] marker is a formatting
+        # issue, not hallucination.  Only truly unsupported claims count fully.
+        weighted_unsupported = unsupported + no_cite * 0.3
+        unsupported_ratio = weighted_unsupported / total
+        if unsupported_ratio >= 0.6:
             risk = "high"
-        elif unsupported_ratio >= 0.25:
+        elif unsupported_ratio >= 0.3:
             risk = "medium"
         else:
             risk = "low"

@@ -1,10 +1,11 @@
 import React from 'react';
+import ReactMarkdown from 'react-markdown';
 import { ChatMessage, Citation as CitationType, InlineVisualData, ResearchResult } from '../../types';
 import { Citation, CitationList } from '../Citation';
 import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { InlineVisual } from '../visual';
 import { BookmarkButton } from '../shared/BookmarkButton';
-import { Radio, Compass, Search, ExternalLink, Plus, Check } from 'lucide-react';
+import { Radio, Compass, Search, ExternalLink, Plus, Check, Wand2 } from 'lucide-react';
 
 interface ChatMessageBubbleProps {
   message: ChatMessage;
@@ -24,88 +25,133 @@ interface ChatMessageBubbleProps {
   onAddResearchResult?: (result: ResearchResult) => void;
 }
 
-// Render message content with inline clickable citations and mermaid diagrams
+// ── Markdown + Citation rendering for chat messages ────────────────────────
+
+// Inject clickable Citation components into a text string wherever [N] appears
+const injectCitations = (
+  text: string,
+  citations: CitationType[],
+  onViewSource: (sourceId: string, sourceName: string, searchTerm: string) => void,
+  keyPrefix: string
+): (string | React.ReactElement)[] => {
+  const parts: (string | React.ReactElement)[] = [];
+  const regex = /\[(\d+)\]/g;
+  let last = 0;
+  let m;
+  while ((m = regex.exec(text)) !== null) {
+    const num = parseInt(m[1], 10);
+    const cite = citations.find(c => c.number === num);
+    if (cite) {
+      if (m.index > last) parts.push(text.substring(last, m.index));
+      parts.push(
+        <Citation key={`${keyPrefix}-${m.index}`} citation={cite} onViewSource={onViewSource} />
+      );
+      last = m.index + m[0].length;
+    }
+  }
+  if (last === 0) return [text]; // no citations matched
+  if (last < text.length) parts.push(text.substring(last));
+  return parts;
+};
+
+// Recursively walk React children and replace [N] text with Citation components
+const processChildren = (
+  children: React.ReactNode,
+  citations: CitationType[],
+  onViewSource: (sourceId: string, sourceName: string, searchTerm: string) => void,
+  keyPrefix: string
+): React.ReactNode => {
+  return React.Children.map(children, (child, i) => {
+    if (typeof child === 'string') {
+      const parts = injectCitations(child, citations, onViewSource, `${keyPrefix}-${i}`);
+      return parts.length === 1 && typeof parts[0] === 'string' ? parts[0] : <React.Fragment key={`${keyPrefix}-${i}`}>{parts}</React.Fragment>;
+    }
+    if (React.isValidElement(child) && (child.props as any)?.children) {
+      const props = child.props as any;
+      return React.cloneElement(
+        child,
+        { ...props, key: child.key || `${keyPrefix}-${i}` },
+        processChildren(props.children, citations, onViewSource, `${keyPrefix}-${i}`)
+      );
+    }
+    return child;
+  });
+};
+
+// Build ReactMarkdown component overrides that inject citations into rendered text
+const buildCitationComponents = (
+  citations: CitationType[] | undefined,
+  onViewSource: (sourceId: string, sourceName: string, searchTerm: string) => void
+): Record<string, React.FC<any>> | undefined => {
+  if (!citations || citations.length === 0) return undefined;
+  // Wrap common text-bearing elements so [N] becomes clickable
+  const wrap = (Tag: string) => {
+    const Comp: React.FC<any> = ({ children, ...props }) => {
+      const processed = processChildren(children, citations, onViewSource, Tag);
+      return React.createElement(Tag, props, processed);
+    };
+    Comp.displayName = `Cite_${Tag}`;
+    return Comp;
+  };
+  return {
+    p: wrap('p'),
+    li: wrap('li'),
+    td: wrap('td'),
+    // Mermaid code blocks → MermaidRenderer; everything else normal
+    code: ({ className, children, ...props }: any) => {
+      if (className === 'language-mermaid') {
+        return (
+          <MermaidRenderer
+            code={String(children).trim()}
+            className="border border-gray-200 dark:border-gray-600 rounded-lg my-3"
+          />
+        );
+      }
+      return <code className={className} {...props}>{children}</code>;
+    },
+    // Prevent <pre> wrapping around mermaid blocks (renders inside code override)
+    pre: ({ children, ...props }: any) => {
+      const child = React.Children.toArray(children)[0];
+      if (React.isValidElement(child) && (child.props as any)?.className === 'language-mermaid') {
+        return <>{children}</>;
+      }
+      return <pre {...props}>{children}</pre>;
+    },
+  };
+};
+
+// Render message content with Markdown formatting, inline citations, and mermaid
 const renderMessageWithCitations = (
   content: string,
   citations: CitationType[] | undefined,
   onViewSource: (sourceId: string, sourceName: string, searchTerm: string) => void
 ) => {
-  // First, detect and extract mermaid code blocks
-  const mermaidBlockRegex = /```mermaid\s*([\s\S]*?)```/g;
-  const segments: { type: 'text' | 'mermaid'; content: string }[] = [];
-  let lastIndex = 0;
-  let mermaidMatch;
-
-  while ((mermaidMatch = mermaidBlockRegex.exec(content)) !== null) {
-    if (mermaidMatch.index > lastIndex) {
-      segments.push({ type: 'text', content: content.substring(lastIndex, mermaidMatch.index) });
-    }
-    segments.push({ type: 'mermaid', content: mermaidMatch[1].trim() });
-    lastIndex = mermaidMatch.index + mermaidMatch[0].length;
-  }
-
-  if (lastIndex < content.length) {
-    segments.push({ type: 'text', content: content.substring(lastIndex) });
-  }
-
-  // If no mermaid blocks and no citations, return simple text
-  if (segments.length === 1 && segments[0].type === 'text' && (!citations || citations.length === 0)) {
-    return <p className="text-sm whitespace-pre-wrap">{content}</p>;
-  }
+  const components: Record<string, React.FC<any>> = {
+    // Mermaid code blocks
+    code: ({ className, children, ...props }: any) => {
+      if (className === 'language-mermaid') {
+        return (
+          <MermaidRenderer
+            code={String(children).trim()}
+            className="border border-gray-200 dark:border-gray-600 rounded-lg my-3"
+          />
+        );
+      }
+      return <code className={className} {...props}>{children}</code>;
+    },
+    pre: ({ children, ...props }: any) => {
+      const child = React.Children.toArray(children)[0];
+      if (React.isValidElement(child) && (child.props as any)?.className === 'language-mermaid') {
+        return <>{children}</>;
+      }
+      return <pre {...props}>{children}</pre>;
+    },
+    ...(buildCitationComponents(citations, onViewSource) || {}),
+  };
 
   return (
-    <div className="space-y-3">
-      {segments.map((segment, segIndex) => {
-        if (segment.type === 'mermaid') {
-          return (
-            <div key={segIndex} className="my-3">
-              <MermaidRenderer code={segment.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
-            </div>
-          );
-        }
-
-        const textContent = segment.content;
-        if (!citations || citations.length === 0) {
-          return textContent.trim() ? (
-            <p key={segIndex} className="text-sm whitespace-pre-wrap">{textContent}</p>
-          ) : null;
-        }
-
-        // Parse citations within text
-        const parts: (string | React.ReactElement)[] = [];
-        let textLastIndex = 0;
-        const citationRegex = /\[(\d+)\]/g;
-        let match;
-
-        while ((match = citationRegex.exec(textContent)) !== null) {
-          const citationNumber = parseInt(match[1], 10);
-          const citation = citations.find(c => c.number === citationNumber);
-
-          if (match.index > textLastIndex) {
-            parts.push(textContent.substring(textLastIndex, match.index));
-          }
-
-          if (citation) {
-            parts.push(<Citation key={`cite-${segIndex}-${citationNumber}-${match.index}`} citation={citation} onViewSource={onViewSource} />);
-          } else {
-            parts.push(match[0]);
-          }
-
-          textLastIndex = match.index + match[0].length;
-        }
-
-        if (textLastIndex < textContent.length) {
-          parts.push(textContent.substring(textLastIndex));
-        }
-
-        return parts.length > 0 ? (
-          <p key={segIndex} className="text-sm whitespace-pre-wrap">
-            {parts.map((part, i) =>
-              typeof part === 'string' ? <span key={i}>{part}</span> : part
-            )}
-          </p>
-        ) : null;
-      })}
+    <div className="text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-headings:mt-3 prose-headings:mb-1 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0 prose-hr:my-3 prose-blockquote:my-2">
+      <ReactMarkdown components={components}>{content}</ReactMarkdown>
     </div>
   );
 };
@@ -165,23 +211,27 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                 ? 'bg-purple-600 text-white'
                 : message.agentType === 'research'
                   ? 'bg-emerald-600 text-white'
-                  : 'bg-blue-600 text-white'
+                  : message.agentType === 'studio'
+                    ? 'bg-amber-600 text-white'
+                    : 'bg-blue-600 text-white'
             : message.agentType === 'collector'
               ? 'bg-teal-50 dark:bg-teal-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-teal-500'
               : message.agentType === 'research'
                 ? 'bg-emerald-50 dark:bg-emerald-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-emerald-500'
-                : (message.curatorName || message.agentType === 'curator')
-                  ? 'bg-purple-50 dark:bg-purple-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-purple-500'
-                  : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                : message.agentType === 'studio'
+                  ? 'bg-amber-50 dark:bg-amber-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-amber-500'
+                  : (message.curatorName || message.agentType === 'curator')
+                    ? 'bg-purple-50 dark:bg-purple-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-purple-500'
+                    : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
         }`}
       >
         {message.role === 'user' ? (
           <>
             {message.agentType && (
               <div className={`flex items-center gap-1.5 mb-1.5 text-[10px] font-semibold uppercase tracking-wide ${
-                message.agentType === 'collector' ? 'text-teal-200' : message.agentType === 'research' ? 'text-emerald-200' : 'text-purple-200'
+                message.agentType === 'collector' ? 'text-teal-200' : message.agentType === 'research' ? 'text-emerald-200' : message.agentType === 'studio' ? 'text-amber-200' : 'text-purple-200'
               }`}>
-                {message.agentType === 'collector' ? <Radio className="w-3 h-3" /> : message.agentType === 'research' ? <Search className="w-3 h-3" /> : <Compass className="w-3 h-3" />}
+                {message.agentType === 'collector' ? <Radio className="w-3 h-3" /> : message.agentType === 'research' ? <Search className="w-3 h-3" /> : message.agentType === 'studio' ? <Wand2 className="w-3 h-3" /> : <Compass className="w-3 h-3" />}
                 @{message.agentType}
               </div>
             )}
@@ -203,6 +253,11 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
             {(message.curatorName || message.agentType === 'curator') && (
               <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-purple-600 dark:text-purple-400">
                 <Compass className="w-3.5 h-3.5" /> {message.agentName || message.curatorName || 'Curator'}
+              </div>
+            )}
+            {message.agentType === 'studio' && (
+              <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                <Wand2 className="w-3.5 h-3.5" /> {message.agentName || 'Studio'}
               </div>
             )}
             {/* Status message - shown while processing (Phase 1.2) */}
@@ -391,12 +446,13 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                               {result.title}
                               <ExternalLink className="w-3 h-3 flex-shrink-0" />
                             </a>
-                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">{result.snippet}</p>
-                            {result.quality_reasons && result.quality_reasons.length > 0 && (
-                              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1 italic">
-                                {result.quality_reasons.slice(0, 3).join(' · ')}
-                              </p>
+                            {(result.domain || result.read_time) && (
+                              <div className="flex items-center gap-2 mt-0.5 text-[10px] text-gray-400 dark:text-gray-500">
+                                {result.domain && <span className="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded">{result.domain}</span>}
+                                {result.read_time && <span>📖 {result.read_time}</span>}
+                              </div>
                             )}
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2">{result.snippet}</p>
                           </div>
                           <button
                             onClick={() => {

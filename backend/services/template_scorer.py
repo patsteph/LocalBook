@@ -46,6 +46,10 @@ MINIMUM_VIABLE: Dict[str, Dict[str, int]] = {
     "argument": {"themes": 2},
     "trend_chart": {"numbers": 2},
     "distribution": {"themes": 2},
+    "line_chart": {"numbers": 2},
+    "bar_chart": {"numbers": 2},
+    "area_chart": {"numbers": 2},
+    "composed_chart": {"numbers": 3},
     "exec_summary": {"themes": 2},
     "call_to_action": {"themes": 1},
     "scope": {"themes": 2},
@@ -82,6 +86,10 @@ TEMPLATE_PATTERNS: Dict[str, str] = {
     "decision_tree": "hierarchy",
     "argument": "hierarchy",
     "mece": "hierarchy",
+    "line_chart": "data_chart",
+    "bar_chart": "data_chart",
+    "area_chart": "data_chart",
+    "composed_chart": "data_chart",
 }
 
 
@@ -213,7 +221,7 @@ TEMPLATE_REQUIREMENTS: Dict[str, List[Tuple[str, int, int, str]]] = {
         ("recommendations", 1, 10, "hierarchy"),
     ],
     
-    # === CHARTS ===
+    # === CHARTS (Mermaid-based) ===
     "trend_chart": [
         ("dates_events", 2, 15, "chart"),
         ("numbers", 3, 20, "chart"),
@@ -221,6 +229,28 @@ TEMPLATE_REQUIREMENTS: Dict[str, List[Tuple[str, int, int, str]]] = {
     "distribution": [
         ("numbers", 3, 18, "chart"),
         ("themes", 2, 8, "chart"),
+    ],
+    
+    # === DATA CHARTS (Recharts-based) ===
+    "line_chart": [
+        ("metrics", 3, 28, "data_chart"),
+        ("dates_events", 2, 18, "data_chart"),
+        ("numbers", 3, 15, "data_chart"),
+    ],
+    "bar_chart": [
+        ("metrics", 2, 25, "data_chart"),
+        ("numbers", 2, 18, "data_chart"),
+        ("themes", 2, 8, "data_chart"),
+    ],
+    "area_chart": [
+        ("metrics", 3, 22, "data_chart"),
+        ("dates_events", 2, 18, "data_chart"),
+        ("numbers", 3, 15, "data_chart"),
+    ],
+    "composed_chart": [
+        ("metrics", 4, 30, "data_chart"),
+        ("numbers", 3, 18, "data_chart"),
+        ("dates_events", 2, 12, "data_chart"),
     ],
     
     # === PERSUASION ===

@@ -163,7 +163,7 @@ class NotebookStore:
         """Update a notebook with the given updates"""
         if self._use_sqlite:
             now = datetime.utcnow().isoformat()
-            allowed = {'title', 'description', 'color', 'source_count'}
+            allowed = {'title', 'description', 'color', 'source_count', 'section_id', 'sort_order'}
             sets = []
             params = []
             for k, v in updates.items():
@@ -212,5 +212,74 @@ class NotebookStore:
     def get_color_palette(self) -> List[str]:
         """Get the available color palette"""
         return self.DEFAULT_COLORS
+
+    async def list_sections(self) -> List[Dict]:
+        """List all notebook sections ordered by sort_order"""
+        if self._use_sqlite:
+            rows = self._get_db().execute(
+                "SELECT * FROM notebook_sections ORDER BY sort_order, created_at"
+            ).fetchall()
+            return [{**dict(r), 'collapsed': bool(r['collapsed'])} for r in rows]
+        return []
+
+    async def create_section(self, name: str) -> Dict:
+        """Create a new notebook section"""
+        section_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+        if self._use_sqlite:
+            conn = self._get_db()
+            max_order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) FROM notebook_sections").fetchone()[0]
+            section = {
+                "id": section_id, "name": name,
+                "sort_order": max_order + 1, "collapsed": False, "created_at": now
+            }
+            conn.execute(
+                "INSERT INTO notebook_sections (id, name, sort_order, collapsed, created_at) VALUES (?, ?, ?, 0, ?)",
+                (section_id, name, max_order + 1, now)
+            )
+            conn.commit()
+            return section
+        return {"id": section_id, "name": name, "sort_order": 0, "collapsed": False, "created_at": now}
+
+    async def update_section(self, section_id: str, updates: dict) -> Optional[Dict]:
+        """Update a section's name or collapsed state"""
+        if self._use_sqlite:
+            sets = []
+            params = []
+            if "name" in updates:
+                sets.append("name = ?")
+                params.append(updates["name"])
+            if "collapsed" in updates:
+                sets.append("collapsed = ?")
+                params.append(1 if updates["collapsed"] else 0)
+            if not sets:
+                return None
+            params.append(section_id)
+            conn = self._get_db()
+            cursor = conn.execute(f"UPDATE notebook_sections SET {', '.join(sets)} WHERE id = ?", params)
+            conn.commit()
+            if cursor.rowcount == 0:
+                return None
+            row = conn.execute("SELECT * FROM notebook_sections WHERE id = ?", (section_id,)).fetchone()
+            return {**dict(row), 'collapsed': bool(row['collapsed'])} if row else None
+        return None
+
+    async def delete_section(self, section_id: str) -> bool:
+        """Delete a section; notebooks in it become unsectioned"""
+        if self._use_sqlite:
+            conn = self._get_db()
+            conn.execute("UPDATE notebooks SET section_id = NULL WHERE section_id = ?", (section_id,))
+            cursor = conn.execute("DELETE FROM notebook_sections WHERE id = ?", (section_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        return False
+
+    async def reorder_sections(self, section_ids: list):
+        """Set sort_order based on position in the provided list"""
+        if self._use_sqlite:
+            conn = self._get_db()
+            for idx, sid in enumerate(section_ids):
+                conn.execute("UPDATE notebook_sections SET sort_order = ? WHERE id = ?", (idx, sid))
+            conn.commit()
 
 notebook_store = NotebookStore()

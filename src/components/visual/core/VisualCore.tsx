@@ -8,12 +8,14 @@
 import React from 'react';
 import { SVGRenderer } from '../../shared/SVGRenderer';
 import { MermaidRenderer } from '../../shared/MermaidRenderer';
+import { ChartRenderer, type ChartConfig } from '../../shared/ChartRenderer';
 import { DesignSystem, type PaletteId } from '../design/DesignSystem';
 
 export interface VisualData {
   id: string;
-  type: 'svg' | 'mermaid';
+  type: 'svg' | 'mermaid' | 'chart';
   code: string;
+  chart_config?: ChartConfig;  // JSON config for Recharts-based data charts
   title?: string;
   template_id?: string;
   pattern?: string;
@@ -51,7 +53,8 @@ export const VisualCore: React.FC<VisualCoreProps> = ({
     : `visual-core rounded-lg overflow-hidden ${className}`;
 
   // Determine which renderer to use
-  const isSVG = visual.type === 'svg' || visual.code.includes('<svg');
+  const isChart = visual.type === 'chart' && visual.chart_config;
+  const isSVG = !isChart && (visual.type === 'svg' || visual.code.includes('<svg'));
 
   return (
     <div 
@@ -81,7 +84,13 @@ export const VisualCore: React.FC<VisualCoreProps> = ({
 
       {/* Visual content */}
       <div className={compact ? 'p-2' : 'p-4'}>
-        {isSVG ? (
+        {isChart ? (
+          <ChartRenderer
+            config={visual.chart_config!}
+            className="w-full"
+            height={compact ? 200 : 350}
+          />
+        ) : isSVG ? (
           <SVGRenderer 
             svg={visual.code}
             className="w-full"

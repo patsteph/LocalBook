@@ -194,6 +194,35 @@ def migrate_audio(data_dir: Path, conn):
     return count
 
 
+def migrate_video(data_dir: Path, conn):
+    """Migrate video_generations.json → video_generations table."""
+    data = _load_json_safe(data_dir / "video_generations.json")
+    generations = data.get("generations", {})
+    count = 0
+    for g in generations.values():
+        conn.execute(
+            """INSERT OR IGNORE INTO video_generations
+               (video_id, notebook_id, topic, duration_minutes,
+                visual_style, voice, format_type,
+                video_file_path, duration_seconds, storyboard,
+                narration_script, slide_count, status, error_message,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (g['video_id'], g.get('notebook_id', ''),
+             g.get('topic', ''), g.get('duration_minutes', 5),
+             g.get('visual_style', 'classic'), g.get('voice', 'us_female'),
+             g.get('format_type', 'explainer'),
+             g.get('video_file_path'), g.get('duration_seconds'),
+             g.get('storyboard'), g.get('narration_script'),
+             g.get('slide_count'), g.get('status', 'pending'),
+             g.get('error_message'),
+             g.get('created_at', ''), g.get('updated_at', ''))
+        )
+        count += 1
+    logger.info(f"[Migration] Migrated {count} video generations")
+    return count
+
+
 def migrate_content(data_dir: Path, conn):
     """Migrate content_generations.json → content_generations table."""
     data = _load_json_safe(data_dir / "content_generations.json")
@@ -318,6 +347,7 @@ def run_migration():
         migrate_skills(data_dir, conn)
         migrate_findings(data_dir, conn)
         migrate_audio(data_dir, conn)
+        migrate_video(data_dir, conn)
         migrate_content(data_dir, conn)
         migrate_exploration(data_dir, conn)
         

@@ -7,6 +7,7 @@ import { ApprovalQueue } from './collector/ApprovalQueue';
 import { CollectorSetupWizard } from './collector/CollectorSetupWizard';
 import { CollectorProfile } from './collector/CollectorProfile';
 import { PeoplePanel } from './people/PeoplePanel';
+import { useCanvas } from './canvas/CanvasContext';
 
 interface CollectorConfig {
   name: string;
@@ -31,6 +32,7 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
   refreshKey = 0,
   onSourcesRefresh
 }) => {
+  const ctx = useCanvas();
   const [expanded, setExpanded] = useState(false);
   const [config, setConfig] = useState<CollectorConfig | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
@@ -45,7 +47,6 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
   const [hasPeopleConfig, setHasPeopleConfig] = useState(false);
   const [peopleMemberCount, setPeopleMemberCount] = useState(0);
   const [showSourceSection, setShowSourceSection] = useState(false);
-  const [curatorFollowUp, setCuratorFollowUp] = useState<string | null>(null);
 
   useEffect(() => {
     // Reset all notebook-specific state when switching notebooks
@@ -60,7 +61,6 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
     setHasPeopleConfig(false);
     setPeopleMemberCount(0);
     setShowSourceSection(false);
-    setCuratorFollowUp(null);
 
     if (notebookId) {
       loadCollectorStatus();
@@ -205,20 +205,6 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
         {/* Expanded Content */}
         {expanded && (
           <div className="px-3 pb-3 space-y-3">
-            {/* Curator follow-up banner */}
-            {curatorFollowUp && (
-              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3 flex items-start gap-2">
-                <span className="text-sm mt-0.5">💬</span>
-                <p className="text-sm text-blue-800 dark:text-blue-200 flex-1">{curatorFollowUp}</p>
-                <button
-                  onClick={() => setCuratorFollowUp(null)}
-                  className="text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 text-xs ml-2"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
-
             {!hasConfig && !hasPeopleConfig ? (
               /* No Config at all - Show Setup Prompt */
               <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
@@ -541,7 +527,10 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
             if (!wasEdit) {
               setTimeout(() => handleCollectNow(), 500);
             }
-            if (followUp) setCuratorFollowUp(followUp);
+            if (followUp) {
+              ctx.setChatPrefillQuery(followUp);
+              ctx.navigateToChat();
+            }
           }}
         />
       )}

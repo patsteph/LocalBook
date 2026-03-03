@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920, height=1080">
+<style>
+/* Reset */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  font-family: {{font_family}};
+  background: {{bg_color}};
+  color: {{text_color}};
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slide {
+  width: 1920px;
+  height: 1080px;
+  padding: 80px 120px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Accent bar on left */
+.slide::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  background: {{accent_color}};
+}
+
+/* ========== TITLE SLIDE ========== */
+.title-slide {
+  text-align: center;
+  justify-content: center;
+  align-items: center;
+}
+.title-slide::before { display: none; }
+.title-slide .title {
+  font-size: 72px;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-bottom: 24px;
+  color: {{heading_color}};
+}
+.title-slide .subtitle {
+  font-size: 32px;
+  font-weight: 400;
+  opacity: 0.7;
+  max-width: 1200px;
+}
+.title-slide .accent-line {
+  width: 120px;
+  height: 4px;
+  background: {{accent_color}};
+  margin: 32px auto;
+  border-radius: 2px;
+}
+
+/* ========== STAT CALLOUT ========== */
+.stat-callout {
+  text-align: center;
+  align-items: center;
+}
+.stat-callout .number {
+  font-size: 180px;
+  font-weight: 800;
+  color: {{accent_color}};
+  line-height: 1.0;
+  margin-bottom: 16px;
+}
+.stat-callout .label {
+  font-size: 42px;
+  font-weight: 500;
+  max-width: 1000px;
+  line-height: 1.4;
+}
+.stat-callout .context {
+  font-size: 24px;
+  opacity: 0.5;
+  margin-top: 24px;
+}
+
+/* ========== BULLET LIST ========== */
+.bullet-list .section-title {
+  font-size: 48px;
+  font-weight: 700;
+  color: {{heading_color}};
+  margin-bottom: 48px;
+}
+.bullet-list .items {
+  list-style: none;
+  padding: 0;
+}
+.bullet-list .items li {
+  font-size: 36px;
+  line-height: 1.6;
+  padding: 12px 0 12px 48px;
+  position: relative;
+}
+.bullet-list .items li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 24px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: {{accent_color}};
+}
+
+/* ========== QUOTE ========== */
+.quote-slide {
+  text-align: center;
+  align-items: center;
+}
+.quote-slide .quote-mark {
+  font-size: 120px;
+  color: {{accent_color}};
+  opacity: 0.3;
+  line-height: 0.8;
+  margin-bottom: 16px;
+}
+.quote-slide .quote-text {
+  font-size: 44px;
+  font-style: italic;
+  line-height: 1.5;
+  max-width: 1400px;
+  font-weight: 400;
+}
+.quote-slide .attribution {
+  font-size: 28px;
+  opacity: 0.6;
+  margin-top: 32px;
+}
+
+/* ========== KEY POINT ========== */
+.key-point .heading {
+  font-size: 56px;
+  font-weight: 700;
+  color: {{heading_color}};
+  margin-bottom: 32px;
+  line-height: 1.3;
+}
+.key-point .body {
+  font-size: 34px;
+  line-height: 1.6;
+  max-width: 1400px;
+  opacity: 0.85;
+}
+
+/* ========== COMPARISON ========== */
+.comparison .comp-title {
+  font-size: 48px;
+  font-weight: 700;
+  color: {{heading_color}};
+  margin-bottom: 48px;
+  text-align: center;
+  width: 100%;
+}
+.comparison .columns {
+  display: flex;
+  gap: 80px;
+  width: 100%;
+}
+.comparison .column {
+  flex: 1;
+  padding: 40px;
+  border-radius: 16px;
+  background: {{card_bg}};
+}
+.comparison .column-label {
+  font-size: 36px;
+  font-weight: 700;
+  color: {{accent_color}};
+  margin-bottom: 24px;
+}
+.comparison .column ul {
+  list-style: none;
+  padding: 0;
+}
+.comparison .column li {
+  font-size: 28px;
+  line-height: 1.6;
+  padding: 8px 0;
+}
+
+/* ========== TIMELINE POINT ========== */
+.timeline-point {
+  align-items: center;
+  text-align: center;
+}
+.timeline-point .step-indicator {
+  font-size: 24px;
+  font-weight: 600;
+  color: {{accent_color}};
+  text-transform: uppercase;
+  letter-spacing: 4px;
+  margin-bottom: 24px;
+}
+.timeline-point .step-label {
+  font-size: 56px;
+  font-weight: 700;
+  color: {{heading_color}};
+  margin-bottom: 24px;
+}
+.timeline-point .step-description {
+  font-size: 34px;
+  line-height: 1.5;
+  max-width: 1200px;
+  opacity: 0.85;
+}
+.timeline-point .progress-bar {
+  width: 600px;
+  height: 6px;
+  background: {{card_bg}};
+  border-radius: 3px;
+  margin-top: 48px;
+  position: relative;
+  overflow: hidden;
+}
+.timeline-point .progress-fill {
+  height: 100%;
+  background: {{accent_color}};
+  border-radius: 3px;
+}
+
+/* ========== DIAGRAM PLACEHOLDER ========== */
+.diagram-placeholder {
+  align-items: center;
+  text-align: center;
+}
+.diagram-placeholder .placeholder-box {
+  width: 800px;
+  height: 500px;
+  border: 3px dashed {{accent_color}};
+  border-radius: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 32px;
+  opacity: 0.4;
+}
+.diagram-placeholder .placeholder-icon {
+  font-size: 120px;
+  opacity: 0.5;
+}
+.diagram-placeholder .caption {
+  font-size: 32px;
+  opacity: 0.7;
+  max-width: 1000px;
+}
+
+/* ========== CLOSING ========== */
+.closing {
+  text-align: center;
+  align-items: center;
+}
+.closing::before { display: none; }
+.closing .closing-title {
+  font-size: 56px;
+  font-weight: 700;
+  color: {{heading_color}};
+  margin-bottom: 48px;
+}
+.closing .takeaways {
+  list-style: none;
+  padding: 0;
+  text-align: left;
+  max-width: 1200px;
+}
+.closing .takeaways li {
+  font-size: 34px;
+  line-height: 1.5;
+  padding: 16px 0 16px 56px;
+  position: relative;
+}
+.closing .takeaways li::before {
+  content: '✓';
+  position: absolute;
+  left: 0;
+  color: {{accent_color}};
+  font-weight: 700;
+  font-size: 36px;
+}
+
+/* ========== STYLE OVERRIDES ========== */
+{{style_overrides}}
+</style>
+</head>
+<body>
+<div class="slide {{slide_class}}">
+{{slide_content}}
+</div>
+</body>
+</html>

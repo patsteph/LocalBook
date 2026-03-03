@@ -2,7 +2,7 @@
 
 **Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
-[![Version](https://img.shields.io/badge/version-1.3-blue.svg)](https://github.com/patsteph/LocalBook/releases)
+[![Version](https://img.shields.io/badge/version-1.5-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
 [![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -18,34 +18,65 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 - 🌌 **Knowledge Constellation** — 3D visualization of concepts across documents
 - 🧠 **Memory System** — AI remembers your preferences across sessions
 - 🎙️ **Podcast Generator** — Turn documents into audio discussions
+- 🎬 **Video Explainers** — Generate narrated slide videos from your research
 - 🧩 **Browser Extension** — Research companion for web browsing
 - 👥 **People Profiler** — Coaching and team management with social integration
-- 🤖 **Curator Agent** — Morning briefs and cross-notebook intelligence
+- 🤖 **Curator Agent** — Morning briefs, weekly wrap-ups, and cross-notebook intelligence
 
 ---
 
-## 🎉 What's New in v1.3
+## 🎉 What's New in v1.5
 
-### UI & Layout Fixes
-| Fix | Description |
-|-----|-------------|
-| �️ **Flexible Drawers** | Sources and Collector panels expand to fill available space — no more dead space gaps |
-| 💬 **Citation Popups** | Hover tooltips now portal to document body, never clipped by sidebar overflow |
-| 🎨 **Compact Chat Input** | Tighter padding on the chat input bar for more content space |
-| 🎛️ **Studio Drawer** | Restored reliable expand/collapse and tab switching |
-
-### Collector Enhancements
+### Video Explainers
 | Feature | Description |
 |---------|-------------|
-| ⏱️ **Expanded Frequencies** | New schedule options: every 2h, 8h, twice daily, every 3 days, manual |
-| 🤖 **Full Curator Pipeline** | Scheduled collections now use smart queries, scoring, and judgment |
-| 🧙 **Frequency Picker** | Set collection frequency during Collector setup wizard |
+| 🎬 **Video Generation** | Generate narrated explainer videos from notebooks with auto-storyboarding |
+| 🎨 **Visual Styles** | Multiple slide styles: classic, dark, whiteboard, and more |
+| 🎤 **TTS Narration** | Natural voice narration via LFM2.5-Audio with per-chunk progress tracking |
+
+### Feynman Learning Suite
+| Feature | Description |
+|---------|-------------|
+| 🧠 **Feynman Curriculum** | 4-part progressive learning: Foundation → Building → First Principles → Mastery |
+| 🎙️ **Teaching Podcasts** | Dedicated teacher/learner audio format (up to 45 min) |
+| 📊 **Learning Visuals** | Progression flowcharts, knowledge maps, and misconception diagrams |
+| 🧪 **Self-Tests** | Integrated quiz generation at multiple difficulty levels |
+
+### Studio & Content Generation
+| Feature | Description |
+|---------|-------------|
+| 📝 **Outline-First Documents** | Multi-step pipeline for deep dives, debates, and curricula — eliminates cutoffs and repetition |
+| 🔁 **Completion Verification** | Post-generation gate ensures all required sections are present |
+| 🎧 **Chain-of-Density Audio** | Running summaries between podcast sections prevent topic repetition |
+
+### Weekly Wrap-Up & Curator
+| Feature | Description |
+|---------|-------------|
+| 📅 **Weekly Wrap-Up** | Monday morning summary of all research activity across notebooks |
+| 🔍 **Feed Page Detection** | Collector auto-detects index/listing pages and extracts article links |
+| 📰 **RSS & Feed Pages** | Recurring collection from RSS feeds and content index pages |
+
+### Chat & Rendering
+| Feature | Description |
+|---------|-------------|
+| 💬 **Markdown Chat** | Chat messages now render full Markdown (headings, bold, lists, tables, code) with inline citations |
+| 📐 **Consistent Formatting** | Unified Markdown rendering across chat, canvas, curator, and all panels |
+| ⚡ **Adaptive Response Format** | Auto-detects list, table, step-by-step, and code queries for optimized formatting |
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history.
 
 ---
 
 ## Previous Releases
+
+<details>
+<summary><strong>v1.3</strong> — Flexible drawers, citation popups, collector enhancements</summary>
+
+- Flexible drawer panels — Sources and Collector fill available space
+- Citation popup portals — tooltips never clipped by sidebar overflow
+- Compact chat input, reliable Studio drawer expand/collapse
+- Collector: expanded frequencies (2h, 8h, twice daily, every 3 days), full Curator pipeline, frequency picker wizard
+</details>
 
 <details>
 <summary><strong>v1.20</strong> — People Profiler, Curator Agent, Constellation v2, Memory v2</summary>
@@ -110,7 +141,7 @@ brew install ollama ffmpeg tesseract python@3.12 node
 
 ### Option 1: Download Release (Recommended)
 
-1. Download `LocalBook-v1.3.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-v1.5.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip and drag `LocalBook.app` to `/Applications`
 3. Launch LocalBook — it will download required AI models on first run
 
@@ -278,7 +309,7 @@ LocalBook/
 ### Building a Release
 
 ```bash
-./release.sh 1.3  # Creates versioned archives for distribution
+./release.sh 1.5  # Creates versioned archives for distribution
 ```
 
 ---

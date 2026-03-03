@@ -391,7 +391,7 @@ Write as if preparing a briefing paper for a think tank.""",
         
         tone="analytical, nuanced, scholarly",
         target_audience="Subject matter experts and researchers",
-        recommended_tokens=4000
+        recommended_tokens=6000
     ),
     
     "summary": OutputTemplate(
@@ -636,7 +636,7 @@ Consider these questions:
         
         tone="balanced, respectful, intellectually honest",
         target_audience="Anyone wanting to understand multiple sides of an issue",
-        recommended_tokens=3500
+        recommended_tokens=4500
     ),
     
     "podcast_script": OutputTemplate(
@@ -705,7 +705,7 @@ Host A: Exactly. Something to chew on.""",
         
         tone="conversational, engaging, informative, natural",
         target_audience="Podcast listeners seeking educational content",
-        recommended_tokens=4000
+        recommended_tokens=5000
     ),
 
     "feynman_curriculum": OutputTemplate(
@@ -721,32 +721,54 @@ Richard Feynman believed that if you can't explain something simply, you don't t
 3. Identify gaps — what you can't explain simply reveals what you don't actually understand
 4. Simplify further — break everything to first principles, then rebuild at progressive difficulty levels
 
+HEADING FORMAT — USE EXACTLY THESE HEADINGS (do NOT use Roman numerals):
+- # Curriculum Overview
+- ## Part 1: Foundation
+- ## Part 2: Building Understanding
+- ## Part 3: First Principles
+- ## Part 4: Mastery Synthesis
+- ## Knowledge Map
+
 YOUR CURRICULUM MUST:
 1. Build knowledge in 4 progressive levels: Foundation → Building → First Principles → Mastery
 2. Each level MUST be self-contained and useful on its own
 3. Use concrete analogies and everyday examples at EVERY level — this is the heart of Feynman's approach
-4. Include self-assessment at each level so the learner knows when they're ready to advance
+4. End each level with 2-3 REFLECTION PROMPTS — open-ended questions that make the learner think deeply
 5. Explicitly identify and debunk common misconceptions
 6. Connect concepts across sources — show HOW ideas relate to each other
 7. At the Mastery level, include "teach it back" prompts — the ultimate Feynman test
 8. ONLY use facts from the provided research — do not invent claims or statistics
 
+IMPORTANT — QUIZZES:
+- Do NOT generate multiple-choice quiz questions (A/B/C/D) inside the document.
+- Interactive quizzes are provided separately by the Quiz system.
+- Instead, end each Part with 2-3 open-ended REFLECTION PROMPTS that encourage deep thinking.
+- Good reflection prompts: "How would you explain X to a friend?", "Why does Y work this way and not some other way?", "What would happen if Z changed?"
+
+WRITING STYLE — CRITICAL:
+- Keep sentences SHORT: 10-25 words maximum. Feynman despised verbose writing.
+- One idea per sentence. One idea per paragraph.
+- NEVER write run-on sentences stringing clauses together with commas.
+- If a sentence has more than one comma, split it into two sentences.
+- Do NOT use vague filler like "ensuring sustained growth advancement across diverse applications".
+- Every sentence must contain a SPECIFIC fact, analogy, or instruction — no padding.
+
 Write as if creating a curriculum that would make Feynman himself proud — clear, joyful, and ruthlessly honest about complexity.""",
         
         structure_requirements=[
             "CURRICULUM OVERVIEW (subject, estimated learning time, what you'll master)",
-            "PART 1: FOUNDATION (explain to a 12-year-old — core concepts with analogies, essential vocabulary, simple self-test)",
-            "PART 2: BUILDING UNDERSTANDING (deeper dive, how concepts connect, real-world examples, misconceptions debunked, application self-test)",
-            "PART 3: FIRST PRINCIPLES (WHY things work this way, root mechanisms, edge cases, expert insights, analysis self-test)",
-            "PART 4: MASTERY SYNTHESIS (teach-it-back summary, expert-level questions, what's still debated/unknown, learning path forward, comprehensive self-assessment)",
-            "KNOWLEDGE MAP (visual text diagram showing how all concepts connect)"
+            "PART 1: FOUNDATION (explain to a 12-year-old — core concepts with analogies, essential vocabulary, reflection prompts)",
+            "PART 2: BUILDING UNDERSTANDING (deeper dive, how concepts connect, real-world examples, misconceptions debunked, reflection prompts)",
+            "PART 3: FIRST PRINCIPLES (WHY things work this way, root mechanisms, edge cases, expert insights, reflection prompts)",
+            "PART 4: MASTERY SYNTHESIS (teach-it-back challenges, expert-level questions, what's still debated/unknown, learning path forward, reflection prompts)",
+            "KNOWLEDGE MAP (list the core concepts and how they connect — a visual diagram will be generated automatically)"
         ],
         
         quality_checklist=[
             "Could a motivated 12-year-old understand Part 1?",
             "Does each part build clearly on the previous one?",
             "Are there concrete analogies at every level, not just Part 1?",
-            "Do self-assessments actually test understanding, not just recall?",
+            "Do reflection prompts encourage deep thinking, not just recall?",
             "Are misconceptions explicitly identified and corrected?",
             "Does Part 4 include genuine teach-it-back challenges?",
             "Is the knowledge map accurate and useful?",
@@ -792,15 +814,11 @@ Write as if creating a curriculum that would make Feynman himself proud — clea
 **3. [Concept Name]**
 [Same structure...]
 
-### Foundation Self-Test
-*Can you answer these without looking back? If not, re-read the section.*
-1. [Simple recall — multiple choice]
-   A) [Option] B) [Option] C) [Option] D) [Option]
-2. [Explain-in-your-own-words — multiple choice]
-   A) [Option] B) [Option] C) [Option] D) [Option]
-3. ["Why does X matter?" — multiple choice]
-   A) [Option] B) [Option] C) [Option] D) [Option]
-*Answers: 1.[X] 2.[X] 3.[X]*
+### Reflect Before Moving On
+*If you can't answer these, re-read the section before continuing.*
+1. How would you explain [core concept] to a friend using an everyday example?
+2. Why does [concept] matter in the real world? Give a specific scenario.
+3. What's the ONE thing from this section that surprised you most?
 
 ---
 
@@ -828,14 +846,10 @@ Write as if creating a curriculum that would make Feynman himself proud — clea
 - **Misconception**: "[Another common error]"
   **Reality**: [Correction with evidence]
 
-### Building Self-Test
-1. [Application question — multiple choice]
-   A) [Option] B) [Option] C) [Option] D) [Option]
-2. [Connection question — multiple choice]
-   A) [Option] B) [Option] C) [Option] D) [Option]
-3. [Misconception check — true or false]
-   A) True B) False
-*Answers: 1.[X] 2.[X] 3.[X]*
+### Reflect Before Moving On
+1. Pick two concepts from this section. How do they depend on each other?
+2. Which misconception were you most surprised by? Why is the reality different?
+3. Describe a real-world situation where these concepts apply.
 
 ---
 
@@ -857,14 +871,10 @@ Write as if creating a curriculum that would make Feynman himself proud — clea
 ### Expert Insights from the Research
 [Pull specific insights, data points, or arguments from the sources that reveal deeper understanding]
 
-### First Principles Self-Test
-1. [Analysis question — multiple choice]
-   A) [Option] B) [Option] C) [Option] D) [Option]
-2. [Synthesis question — multiple choice]
-   A) [Option] B) [Option] C) [Option] D) [Option]
-3. [Evaluation question — multiple choice]
-   A) [Option] B) [Option] C) [Option] D) [Option]
-*Answers: 1.[X] 2.[X] 3.[X]*
+### Reflect Before Moving On
+1. Why does [root mechanism] work THIS way and not some other way?
+2. When does the standard explanation break down? Give an edge case.
+3. If you had to bet on one thing experts are wrong about here, what would it be?
 
 ---
 
@@ -890,7 +900,7 @@ These are the questions that separate understanding from true mastery:
 - **To apply**: [How to use this knowledge in practice]
 - **To stay current**: [How this field is evolving]
 
-### Comprehensive Self-Assessment
+### Mastery Reflection
 Rate yourself honestly (1-5):
 - [ ] I can explain the core concepts without jargon
 - [ ] I understand WHY things work, not just WHAT happens
@@ -901,24 +911,15 @@ Rate yourself honestly (1-5):
 ---
 
 ## Knowledge Map
-```
-                    [SUBJECT]
-                   /    |    \\
-          [Domain A] [Domain B] [Domain C]
-           /    \\      |         /    \\
-    [Concept] [Concept] [Concept] [Concept] [Concept]
-         \\        \\      |       /
-          └────── [Key Relationship] ──────┘
-                        |
-                   [Implication]
-```
+
+List the 3-5 core concepts from this curriculum and explain in 1-2 sentences each how they connect to each other. Focus on cause-effect relationships, dependencies, and shared principles. A visual diagram will be generated automatically from this section.
 
 ---
 *Built using the Feynman Learning Method | Sources: [List]*""",
         
         tone="clear, encouraging, intellectually honest, joyful about learning",
         target_audience="Self-learners seeking deep understanding, not just surface knowledge",
-        recommended_tokens=5000
+        recommended_tokens=6000
     ),
 }
 

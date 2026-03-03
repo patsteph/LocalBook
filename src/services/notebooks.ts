@@ -1,6 +1,6 @@
 // Notebook API service
 import api from './api';
-import { Notebook } from '../types';
+import { Notebook, NotebookSection } from '../types';
 
 // Default color palette for notebooks
 export const NOTEBOOK_COLORS = [
@@ -39,5 +39,38 @@ export const notebookService = {
   async updateColor(id: string, color: string): Promise<Notebook> {
     const response = await api.put(`/notebooks/${id}/color`, { color });
     return response.data;
+  },
+
+  async rename(id: string, title: string): Promise<Notebook> {
+    const response = await api.put(`/notebooks/${id}/rename`, { title });
+    return response.data;
+  },
+
+  async move(id: string, sectionId: string | null, sortOrder?: number): Promise<Notebook> {
+    const response = await api.put(`/notebooks/${id}/move`, { section_id: sectionId, sort_order: sortOrder });
+    return response.data;
+  },
+
+  async listSections(): Promise<NotebookSection[]> {
+    const response = await api.get('/notebooks/sections/list');
+    return response.data.sections;
+  },
+
+  async createSection(name: string): Promise<NotebookSection> {
+    const response = await api.post('/notebooks/sections/', { name });
+    return response.data;
+  },
+
+  async updateSection(id: string, updates: { name?: string; collapsed?: boolean }): Promise<NotebookSection> {
+    const response = await api.put(`/notebooks/sections/${id}`, updates);
+    return response.data;
+  },
+
+  async deleteSection(id: string): Promise<void> {
+    await api.delete(`/notebooks/sections/${id}`);
+  },
+
+  async reorderSections(sectionIds: string[]): Promise<void> {
+    await api.put('/notebooks/sections/reorder', { section_ids: sectionIds });
   },
 };

@@ -5,12 +5,13 @@ This provides phenomenal audio quality with native speech synthesis.
 """
 import asyncio
 import math
+import random
 import re
 import struct
 import subprocess
 import wave
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from config import settings
 from storage.audio_store import audio_store
 from storage.source_store import source_store
@@ -41,6 +42,29 @@ class AudioGenerator:
         
         self._voice_index = 0  # Track voice rotation for variety
 
+    # Gender × accent name pools — picked randomly for each generation
+    HOST_NAME_POOLS = {
+        "us": {
+            "male": ["Marcus", "David", "James", "Alex", "Ryan", "Chris", "Jordan", "Tyler", "Ethan", "Noah"],
+            "female": ["Sarah", "Emily", "Maya", "Rachel", "Nicole", "Olivia", "Sophia", "Ava", "Chloe", "Lily"],
+        },
+        "uk": {
+            "male": ["Oliver", "George", "William", "Thomas", "Edward", "Henry", "James", "Arthur", "Hugo", "Alfie"],
+            "female": ["Charlotte", "Emma", "Sophie", "Amelia", "Grace", "Isla", "Eleanor", "Lily", "Ruby", "Poppy"],
+        },
+    }
+
+    def _pick_host_names(self, host1_gender: str, host2_gender: str, accent: str) -> Tuple[str, str]:
+        """Pick two distinct, gender/accent-appropriate character names."""
+        pool = self.HOST_NAME_POOLS.get(accent, self.HOST_NAME_POOLS["us"])
+        pool1 = pool.get(host1_gender, pool["male"])
+        pool2 = pool.get(host2_gender, pool["female"])
+        name1 = random.choice(pool1)
+        # Ensure name2 is different from name1
+        candidates = [n for n in pool2 if n != name1]
+        name2 = random.choice(candidates) if candidates else random.choice(pool2)
+        return name1, name2
+
     async def generate(
         self,
         notebook_id: str,
@@ -49,7 +73,8 @@ class AudioGenerator:
         skill_id: Optional[str] = None,
         host1_gender: str = "male",
         host2_gender: str = "female",
-        accent: str = "us"
+        accent: str = "us",
+        chat_context: Optional[str] = None,
     ) -> Dict:
         """Generate podcast audio.
         
@@ -85,7 +110,8 @@ class AudioGenerator:
                 host1_gender=host1_gender,
                 host2_gender=host2_gender,
                 accent=accent,
-                is_two_host=is_two_host
+                is_two_host=is_two_host,
+                chat_context=chat_context,
             )
         )
         # Keep reference to prevent garbage collection
@@ -99,7 +125,9 @@ class AudioGenerator:
         notebook_id: str,
         topic: Optional[str],
         duration_minutes: int,
-        skill_id: Optional[str]
+        skill_id: Optional[str],
+        host_names: Optional[Tuple[str, str]] = None,
+        chat_context: Optional[str] = None,
     ) -> str:
         """Generate podcast script from notebook sources.
         
@@ -120,94 +148,226 @@ class AudioGenerator:
         
         context = built.context
         
-        # Feynman curriculum uses a specialized teaching-style prompt
-        is_feynman = skill_id == 'feynman_curriculum'
+        # Prepend chat context if provided ("From Chat" mode)
+        if chat_context:
+            context = f"""The user has been exploring this topic in a chat conversation. Use their discussion to focus the podcast on what matters most:
+
+--- RECENT CHAT ---
+{chat_context[:3000]}
+--- END CHAT ---
+
+{context}"""
         
+        # ── Resolve character names ──
+        name_a = host_names[0] if host_names else "Host A"
+        name_b = host_names[1] if host_names else "Host B"
+        
+        # ── Shared TTS rules (all styles) ──
+        _TTS_RULES = f"""ABSOLUTE RULES — EVERY LINE WILL BE READ ALOUD BY A TEXT-TO-SPEECH ENGINE:
+- Write ONLY spoken dialogue. Every character you type will be spoken aloud.
+- Format: {name_a}: [spoken words] then {name_b}: [spoken words] — one speaker per line.
+- FORBIDDEN — these will be read aloud and ruin the audio:
+  * NO stage directions: [intro music], [Clash Intensity Rising], (Opening Positions), (laughs)
+  * NO markdown: #, **, ---, bullet points, numbered lists
+  * NO separator lines of dashes, equals, or underscores
+  * NO section headers: Part 1, Opening, Closing Statement, etc.
+  * NO meta-text: "End Transcript", "End of Episode", "Conclusion"
+  * NO parenthetical labels: (Name), ({name_a}), ({name_b})
+  * NO action descriptions: *walks away*, they laugh together
+- If it is not a word {name_a} or {name_b} would speak out loud, DO NOT WRITE IT."""
+
+        target_words = duration_minutes * 130  # TTS speaks at ~130 wpm
+        _GROUNDING = f"""LENGTH REQUIREMENT: You MUST write at least {target_words} words. This script must fill {duration_minutes} minutes of audio.
+A 1-minute segment is about 130 words. Count your output — if it's under {target_words} words, you have not written enough.
+Do NOT wrap up early. Do NOT summarize quickly. Fill the full {duration_minutes} minutes with substantive dialogue.
+
+GROUNDING: ONLY discuss facts and claims from the provided research. Do NOT invent statistics, quotes, or claims.
+Topic focus: {topic or 'the main topics and insights from the research'}"""
+
+        # ── Character intro rule (all styles) ──
+        _INTRO_RULE = f"""OPENING: Within the first 2-3 lines, both speakers must naturally introduce themselves by name.
+Example: {name_a}: Hey, I'm {name_a}, and today we're diving into something fascinating...
+         {name_b}: And I'm {name_b}. I've been looking into this all week and..."""
+
+        # ── Style-specific prompts ──
+        is_feynman = skill_id == 'feynman_curriculum'
+
         if is_feynman:
             system_prompt = f"""You are writing a TEACHING podcast script that will be converted directly to audio via text-to-speech.
-This is a Feynman Learning Curriculum — a progressive teaching conversation where one host teaches and the other learns.
-Every single word you write will be spoken aloud. Write ONLY the words the hosts say.
+This is a Feynman Learning Curriculum — a progressive teaching conversation where {name_a} teaches and {name_b} learns.
+Every single word you write will be spoken aloud. Write ONLY the words the characters say.
 
-CRITICAL RULES FOR TTS OUTPUT:
-- NEVER write stage directions, sound effects, or music cues (no "[intro music]", no "*theme plays*", no "(laughs)")
-- NEVER use markdown formatting (no #, **, ---, or bullet points)
-- NEVER describe actions — only write spoken dialogue
-- Use ONLY this format: Host A: [spoken words]  /  Host B: [spoken words]
+{_TTS_RULES}
+
+{_INTRO_RULE}
 
 FEYNMAN TEACHING STYLE:
-- Host A is the TEACHER who has studied the material deeply. Host B is an eager LEARNER.
-- Host A explains concepts simply using everyday analogies and examples (Feynman's "explain to a 12-year-old" principle)
-- Host B asks genuine questions, requests clarification, and occasionally challenges Host A to explain more simply
-- When Host B doesn't understand, Host A must find a simpler way — never just repeat the same explanation
-- Include "check your understanding" moments where Host A quizzes Host B with quick questions
-- Host B sometimes connects new ideas to things they already know — this validates learning
+- {name_a} is the TEACHER who has studied the material deeply. {name_b} is an eager LEARNER.
+- {name_a} explains concepts simply using everyday analogies and examples (Feynman's "explain to a 12-year-old" principle)
+- {name_b} asks genuine questions, requests clarification, and occasionally challenges {name_a} to explain more simply
+- When {name_b} doesn't understand, {name_a} must find a simpler way — never just repeat the same explanation
+- Include "check your understanding" moments where {name_a} quizzes {name_b} with quick questions
+- {name_b} sometimes connects new ideas to things they already know — this validates learning
 - Use concrete examples and analogies for every abstract concept
 - Progress naturally from simple foundations to deeper understanding
 
-GROUNDING: ONLY discuss facts and claims from the provided research. Do NOT invent statistics, quotes, or claims.
+{_GROUNDING}"""
 
-Target length: approximately {duration_minutes} minutes when read aloud (~{duration_minutes * 150} words).
-Topic focus: {topic or 'the main topics and insights from the research'}"""
+        elif skill_id == 'debate':
+            system_prompt = f"""You are writing a DEBATE podcast script that will be converted directly to audio via text-to-speech.
+{name_a} and {name_b} take opposing sides on the topic and argue their positions passionately but respectfully.
+Every single word you write will be spoken aloud. Write ONLY the words the characters say.
+
+{_TTS_RULES}
+
+OPENING: Both debaters MUST introduce themselves by name and state their position in the first few lines.
+Example: {name_a}: I'm {name_a}, and I'm here to argue that this changes everything...
+         {name_b}: And I'm {name_b}, and I think that's a dangerous oversimplification. Here's why...
+
+DEBATE STYLE:
+- {name_a} argues FOR the main thesis/position. {name_b} argues AGAINST or presents the counter-position.
+- Each speaker should make strong, evidence-based arguments drawn from the research
+- They challenge each other directly: "But that ignores...", "You're cherry-picking...", "Fair point, but consider..."
+- Include rebuttals — don't just alternate monologues. They should respond to each other's specific points
+- Build intensity: start with opening positions, escalate through clashes, reach a climax, then wind down
+- Neither side should "win" cleanly — leave the listener thinking about both perspectives
+- Use rhetorical devices: analogies, hypotheticals, reductio ad absurdum
+- End with each speaker giving a concise closing statement
+
+{_GROUNDING}"""
+
+        elif skill_id == 'interview':
+            system_prompt = f"""You are writing an INTERVIEW podcast script that will be converted directly to audio via text-to-speech.
+{name_a} is the INTERVIEWER who asks probing questions. {name_b} is the EXPERT who has deep knowledge of the topic.
+Every single word you write will be spoken aloud. Write ONLY the words the characters say.
+
+{_TTS_RULES}
+
+OPENING: {name_a} introduces themselves and {name_b} by name in the first few lines.
+Example: {name_a}: I'm {name_a}, and today I'm sitting down with {name_b}, who knows more about this than just about anyone...
+
+INTERVIEW STYLE:
+- {name_a} (Interviewer): Curious, prepared, asks follow-up questions, pushes for clarity and real-world implications
+- {name_b} (Expert): Authoritative but accessible, uses examples and analogies, occasionally shares surprising insights
+- Open with a compelling hook question right after the brief intro
+- Good hooks: "So I have to ask — the thing everyone's wondering about..." or "Let's start with what surprised you most..."
+- Follow the thread — {name_a} picks up on interesting things {name_b} says and digs deeper
+- Include "wait, explain that" moments where {name_a} asks {name_b} to unpack jargon or complex ideas
+- Mix big-picture questions with specific details
+- End with a forward-looking question: "What should people watch for?" or "What's the one thing you'd want listeners to take away?"
+
+{_GROUNDING}"""
+
+        elif skill_id == 'storytelling':
+            system_prompt = f"""You are writing a STORYTELLING podcast script that will be converted directly to audio via text-to-speech.
+{name_a} and {name_b} weave the research content into a compelling narrative with a beginning, middle, and end.
+Every single word you write will be spoken aloud. Write ONLY the words the characters say.
+
+{_TTS_RULES}
+
+{_INTRO_RULE}
+
+STORYTELLING STYLE:
+- Structure the content as a STORY with a narrative arc: setup → rising action → climax → resolution
+- {name_a} is the primary STORYTELLER. {name_b} is the engaged LISTENER who reacts, asks "then what happened?", and adds color
+- After the brief intro, open with a hook: "Picture this..." or "It all started when..." or "Here's something nobody saw coming..."
+- Use vivid language and concrete scenes — make abstract research feel tangible and real
+- Include "characters" — the researchers, the subjects, the key players in the story
+- Build suspense: "But here's where it gets interesting..." "And nobody expected what happened next..."
+- {name_b}'s reactions drive the narrative forward: "No way." "So what did they find?" "That changes everything."
+- Connect research findings to human experiences and real-world consequences
+- End with a satisfying conclusion that ties back to the opening hook
+
+{_GROUNDING}"""
+
         else:
-            # Standard two-host conversation
+            # Standard two-host conversation (podcast_script and fallback)
             system_prompt = f"""You are writing a podcast script that will be converted directly to audio via text-to-speech.
-Every single word you write will be spoken aloud. Write ONLY the words the hosts say.
+Every single word you write will be spoken aloud. Write ONLY the words {name_a} and {name_b} say.
 
-CRITICAL RULES FOR TTS OUTPUT:
-- NEVER write stage directions, sound effects, or music cues (no "[intro music]", no "*theme plays*", no "(laughs)")
-- NEVER use markdown formatting (no #, **, ---, or bullet points)
-- NEVER describe actions — only write spoken dialogue
-- NEVER start with a generic "Welcome to the show" opening
-- Use ONLY this format: Host A: [spoken words]  /  Host B: [spoken words]
+{_TTS_RULES}
+
+{_INTRO_RULE}
 
 NATURAL CONVERSATION STYLE:
-- Open mid-conversation or with a compelling hook
-- Good openings: a surprising fact, a provocative question, a "you won't believe what I found" moment
-- BAD openings: "Welcome to our podcast, I'm [name] and today we'll discuss..."
-- Hosts interrupt each other occasionally, react genuinely ("Wait, really?", "That's wild", "Okay but here's the thing...")
+- After the brief intro, jump into a compelling hook or surprising fact
+- BAD openings: "Welcome to our podcast, today we'll discuss..." — too generic
+- {name_a} and {name_b} interrupt each other occasionally, react genuinely ("Wait, really?", "That's wild", "Okay but here's the thing...")
 - Use short sentences. People don't speak in paragraphs
 - Include natural transitions ("So here's what gets me...", "Right, and building on that...", "Okay let's shift gears...")
 - Reference sources naturally ("I was reading this piece that said...") — never "According to Source 1"
 - End with a natural wind-down, a final thought, or a question for the listener
 
-GROUNDING: ONLY discuss facts and claims from the provided research. Do NOT invent statistics, quotes, or claims.
-
-Target length: approximately {duration_minutes} minutes when read aloud (~{duration_minutes * 150} words).
-Topic focus: {topic or 'the main topics and insights from the research'}"""
+{_GROUNDING}"""
 
         # Feynman always uses multi-pass with 4 curriculum parts
         if is_feynman:
             script = await self._generate_feynman_multipass(
-                system_prompt, context, topic, duration_minutes
+                system_prompt, context, topic, duration_minutes, host_names=(name_a, name_b)
             )
-        elif duration_minutes > 15:
+        elif duration_minutes >= 7:
             script = await self._generate_script_multipass(
-                system_prompt, context, topic, duration_minutes
+                system_prompt, context, topic, duration_minutes, host_names=(name_a, name_b)
             )
         else:
-            # Single-pass generation
+            # Single-pass generation (short scripts < 7 min)
             # Cap context to leave room for output in the context window
             max_context = min(len(context), 10000)
-            prompt = f"""Based ONLY on the following research content, write a natural podcast conversation between Host A and Host B.
-ONLY spoken words. No stage directions, no music cues, no markdown. Start with a hook, not a welcome.
+            prompt = f"""Based ONLY on the following research content, write a natural podcast conversation between {name_a} and {name_b}.
+ONLY spoken words. No stage directions, no music cues, no markdown.
+You MUST write at least {target_words} words to fill {duration_minutes} minutes of audio.
 Only discuss facts and claims that appear in the research below.
 
 Research content:
 {context[:max_context]}
 
-Host A:"""
+{name_a}:"""
             
-            audio_num_predict = max(2000, duration_minutes * 400)
-            audio_num_ctx = max(4096, audio_num_predict + 3000)
+            # Budget: ~1.5 tokens per word, target_words * 1.5 gives headroom
+            audio_num_predict = max(2000, int(target_words * 1.5))
+            audio_num_ctx = max(8192, audio_num_predict + 4000)
             script = await rag_engine._call_ollama(
                 system_prompt, prompt, 
-                num_predict=audio_num_predict, num_ctx=audio_num_ctx
+                num_predict=audio_num_predict, num_ctx=audio_num_ctx,
+                temperature=0.8, repeat_penalty=1.1
             )
         
-        # Estimate duration from script length (~150 words/min, ~5 chars/word)
+        # Estimate duration from script length (~130 words/min for TTS)
         word_count = len(script.split())
-        est_minutes = word_count / 150
+        est_minutes = word_count / 130
         print(f"[AudioGen] Script: {word_count} words, est. {est_minutes:.1f} min (target: {duration_minutes} min)")
+        
+        # If script is significantly short, try to extend it
+        min_words = int(target_words * 0.6)
+        if word_count < min_words and not is_feynman:
+            print(f"[AudioGen] ⚠ Script too short ({word_count} < {min_words} min words). Generating extension...")
+            
+            extension_words = target_words - word_count
+            last_lines = script.strip().split('\n')[-6:]
+            prev_tail = "\n".join(last_lines)
+            ext_prompt = f"""Continue this conversation for at least {extension_words} more words. Do NOT repeat what was already said.
+Do NOT wrap up or conclude — keep the discussion going with new points and deeper analysis.
+Pick up EXACTLY where this left off:
+
+{prev_tail}
+
+{name_a}:"""
+            
+            ext_predict = max(2000, int(extension_words * 2.0))
+            ext_ctx = max(8192, ext_predict + 4000)
+            extension = await rag_engine._call_ollama(
+                system_prompt, ext_prompt,
+                num_predict=ext_predict, num_ctx=ext_ctx,
+                temperature=0.8, repeat_penalty=1.1
+            )
+            
+            if extension and len(extension.split()) > 50:
+                script = script.rstrip() + "\n\n" + extension
+                new_count = len(script.split())
+                new_est = new_count / 130
+                print(f"[AudioGen] Extended: {word_count} → {new_count} words, est. {new_est:.1f} min")
+            else:
+                print(f"[AudioGen] Extension produced insufficient content, using original script")
         
         return script
     
@@ -216,21 +376,25 @@ Host A:"""
         system_prompt: str,
         context: str,
         topic: Optional[str],
-        duration_minutes: int
+        duration_minutes: int,
+        host_names: Optional[Tuple[str, str]] = None
     ) -> str:
         """Generate a long-form script in sections for coherence.
         
         Splits the target duration into 5-8 minute sections, generates each
         with awareness of what came before.
         """
-        section_minutes = 7  # Each section targets ~7 min
+        section_minutes = 5  # Each section targets ~5 min for better length control
         num_sections = max(2, math.ceil(duration_minutes / section_minutes))
         minutes_per_section = duration_minutes / num_sections
-        words_per_section = int(minutes_per_section * 150)
+        words_per_section = int(minutes_per_section * 130)  # TTS speaks at ~130 wpm
         
         print(f"[AudioGen] Multi-pass: {num_sections} sections × ~{minutes_per_section:.0f} min")
         
+        name_a = host_names[0] if host_names else "Host A"
+        
         sections = []
+        running_summary = ""  # Chain-of-Density summary for global coherence
         for s in range(num_sections):
             is_first = s == 0
             is_last = s == num_sections - 1
@@ -243,32 +407,45 @@ Host A:"""
             else:
                 section_inst = f"This is section {s+1} of {num_sections}. Continue the conversation naturally from where the previous section left off."
             
-            # Include previous section ending for continuity
+            # Continuity: running summary + last few lines for voice/tone pickup
             prev_context = ""
             if sections:
                 last_lines = sections[-1].strip().split('\n')[-6:]
-                prev_context = f"\n\nPREVIOUS SECTION ENDED WITH:\n" + "\n".join(last_lines)
+                prev_context = f"\n\nTOPICS ALREADY COVERED (do NOT repeat these):\n{running_summary}"
+                prev_context += f"\n\nPREVIOUS SECTION ENDED WITH:\n" + "\n".join(last_lines)
             
             max_context = min(len(context), 8000)
             prompt = f"""{section_inst}
-Target: ~{words_per_section} words (~{minutes_per_section:.0f} minutes when spoken).
+You MUST write at least {words_per_section} words for this section (~{minutes_per_section:.0f} minutes when spoken). Do NOT wrap up early.
 Topic: {topic or 'the main topics and insights'}
 {prev_context}
 
 Research content:
 {context[:max_context]}
 
-Host A:"""
+{name_a}:"""
             
-            section_predict = max(1500, int(words_per_section * 1.5))
-            section_ctx = max(4096, section_predict + 3000)
+            section_predict = max(2000, int(words_per_section * 2.0))
+            section_ctx = max(8192, section_predict + 4000)
             
             section_script = await rag_engine._call_ollama(
                 system_prompt, prompt,
-                num_predict=section_predict, num_ctx=section_ctx
+                num_predict=section_predict, num_ctx=section_ctx,
+                temperature=0.8, repeat_penalty=1.1
             )
             sections.append(section_script)
             print(f"   Section {s+1}/{num_sections}: {len(section_script.split())} words")
+            
+            # Update running summary (Chain of Density) for next section
+            all_script = "\n\n".join(sections)
+            if len(all_script) > 300:
+                running_summary = await rag_engine._call_ollama(
+                    "You are a precise summarizer. List every topic, argument, and key point "
+                    "discussed so far in this conversation. Be information-dense. Do not add new content.",
+                    f"Summarize the topics covered in this podcast script in 150-200 words:\n\n{all_script[:6000]}",
+                    num_predict=300,
+                    temperature=0.2,
+                )
         
         # Join sections with a break marker for transition stingers
         SECTION_BREAK = "\n\n---SECTION_BREAK---\n\n"
@@ -279,7 +456,8 @@ Host A:"""
         system_prompt: str,
         context: str,
         topic: Optional[str],
-        duration_minutes: int
+        duration_minutes: int,
+        host_names: Optional[Tuple[str, str]] = None
     ) -> str:
         """Generate a 4-part Feynman teaching podcast matching the curriculum structure.
         
@@ -289,81 +467,109 @@ Host A:"""
         3. First Principles — why things work, root mechanisms
         4. Mastery Synthesis — teach-back, challenges, synthesis
         """
+        name_a = host_names[0] if host_names else "Host A"
+        name_b = host_names[1] if host_names else "Host B"
+        
         feynman_parts = [
             {
                 "name": "Foundation",
                 "instruction": (
-                    "This is PART 1: FOUNDATION. Host A introduces the topic and explains the core concepts "
-                    "as simply as possible — like explaining to a 12-year-old. Use everyday analogies. "
-                    "Host B is a complete beginner and asks basic 'what is this?' and 'why should I care?' questions. "
-                    "End with Host A giving Host B a quick check — 'So tell me in your own words, what is X?' — "
-                    "and Host B attempts to explain it back."
+                    f"This is PART 1: FOUNDATION. {name_a} introduces the topic and explains the core concepts "
+                    f"as simply as possible — like explaining to a 12-year-old. Use everyday analogies. "
+                    f"{name_b} is a complete beginner and asks basic 'what is this?' and 'why should I care?' questions. "
+                    f"End with {name_a} giving {name_b} a quick check — 'So tell me in your own words, what is X?' — "
+                    f"and {name_b} attempts to explain it back."
                 )
             },
             {
                 "name": "Building Understanding",
                 "instruction": (
-                    "This is PART 2: BUILDING UNDERSTANDING. Now that Host B gets the basics, go deeper. "
-                    "Host A shows how concepts connect to each other and gives real-world examples. "
-                    "Host B starts making their own connections ('Oh, so it's kind of like when...'). "
-                    "Address common misconceptions — Host B might voice one and Host A corrects it gently. "
-                    "End with a slightly harder check question that tests whether Host B sees the connections."
+                    f"This is PART 2: BUILDING UNDERSTANDING. Now that {name_b} gets the basics, go deeper. "
+                    f"{name_a} shows how concepts connect to each other and gives real-world examples. "
+                    f"{name_b} starts making their own connections ('Oh, so it's kind of like when...'). "
+                    f"Address common misconceptions — {name_b} might voice one and {name_a} corrects it gently. "
+                    f"End with a slightly harder check question that tests whether {name_b} sees the connections."
                 )
             },
             {
                 "name": "First Principles",
                 "instruction": (
-                    "This is PART 3: FIRST PRINCIPLES. Go beyond what to WHY. Host A explains the root mechanisms "
-                    "and underlying principles. Why does this work this way and not some other way? "
-                    "Host B pushes back with 'but why?' and 'what if?' questions. Discuss edge cases and nuances. "
-                    "Reference specific insights from the research. Host B should be noticeably more confident now. "
-                    "End with an analysis question — 'Why does X happen instead of Y?'"
+                    f"This is PART 3: FIRST PRINCIPLES. Go beyond what to WHY. {name_a} explains the root mechanisms "
+                    f"and underlying principles. Why does this work this way and not some other way? "
+                    f"{name_b} pushes back with 'but why?' and 'what if?' questions. Discuss edge cases and nuances. "
+                    f"Reference specific insights from the research. {name_b} should be noticeably more confident now. "
+                    f"End with an analysis question — 'Why does X happen instead of Y?'"
                 )
             },
             {
                 "name": "Mastery Synthesis",
                 "instruction": (
-                    "This is PART 4: MASTERY SYNTHESIS. The roles partially flip — Host B now tries to teach "
-                    "the subject back to Host A (the Feynman test). Host A plays a skeptical student, "
-                    "asking tough questions and poking holes. Host B synthesizes everything from earlier parts. "
-                    "Discuss what's still unknown or debated. End with both hosts reflecting on what they learned "
-                    "and Host A suggesting where to go next for deeper study."
+                    f"This is PART 4: MASTERY SYNTHESIS. The roles partially flip — {name_b} now tries to teach "
+                    f"the subject back to {name_a} (the Feynman test). {name_a} plays a skeptical student, "
+                    f"asking tough questions and poking holes. {name_b} synthesizes everything from earlier parts. "
+                    f"Discuss what's still unknown or debated. End with both reflecting on what they learned "
+                    f"and {name_a} suggesting where to go next for deeper study."
                 )
             }
         ]
         
         minutes_per_part = duration_minutes / 4
-        words_per_part = int(minutes_per_part * 150)
+        words_per_part = int(minutes_per_part * 130)  # TTS speaks at ~130 wpm
         
         print(f"[AudioGen] Feynman multi-pass: 4 parts × ~{minutes_per_part:.0f} min")
         
         sections = []
+        running_summary = ""  # Chain-of-Density summary for global coherence
         for i, part in enumerate(feynman_parts):
+            # Continuity: running summary + last few lines for voice/tone pickup
             prev_context = ""
             if sections:
                 last_lines = sections[-1].strip().split('\n')[-6:]
-                prev_context = f"\n\nPREVIOUS SECTION ENDED WITH:\n" + "\n".join(last_lines)
+                prev_context = f"\n\nTOPICS ALREADY COVERED (do NOT repeat these):\n{running_summary}"
+                prev_context += f"\n\nPREVIOUS SECTION ENDED WITH:\n" + "\n".join(last_lines)
             
             max_context = min(len(context), 8000)
             prompt = f"""{part['instruction']}
-Target: ~{words_per_part} words (~{minutes_per_part:.0f} minutes when spoken).
+
+STYLE RULES (apply to EVERY part):
+- Keep sentences SHORT: 8-20 words max. This is spoken audio, not an essay.
+- One idea per sentence. If a sentence has more than one comma, split it.
+- NEVER say "User" or "the user" — say "the listener", "you", or use {name_b}'s name.
+- Do NOT repeat points, analogies, or examples from previous parts.
+- Use natural conversational pauses: "Okay so...", "Right, and...", "Here's the thing..."
+
+You MUST write at least {words_per_part} words for this part (~{minutes_per_part:.0f} minutes when spoken). Do NOT wrap up early.
 Topic: {topic or 'the main topics and insights'}
 {prev_context}
 
 Research content:
 {context[:max_context]}
 
-Host A:"""
+{name_a}:"""
             
-            section_predict = max(1500, int(words_per_part * 1.5))
-            section_ctx = max(4096, section_predict + 3000)
+            section_predict = max(2000, int(words_per_part * 2.0))
+            section_ctx = max(8192, section_predict + 4000)
             
+            # Increase repeat_penalty for later parts to fight repetition
+            part_repeat_penalty = 1.1 + (i * 0.05)  # 1.1, 1.15, 1.2, 1.25
             section_script = await rag_engine._call_ollama(
                 system_prompt, prompt,
-                num_predict=section_predict, num_ctx=section_ctx
+                num_predict=section_predict, num_ctx=section_ctx,
+                temperature=0.8, repeat_penalty=part_repeat_penalty
             )
             sections.append(section_script)
             print(f"   Part {i+1}/4 ({part['name']}): {len(section_script.split())} words")
+            
+            # Update running summary (Chain of Density) for next part
+            all_script = "\n\n".join(sections)
+            if len(all_script) > 300:
+                running_summary = await rag_engine._call_ollama(
+                    "You are a precise summarizer. List every topic, concept, analogy, and key point "
+                    "discussed so far in this teaching conversation. Be information-dense. Do not add new content.",
+                    f"Summarize the topics covered in this Feynman teaching podcast in 150-200 words:\n\n{all_script[:6000]}",
+                    num_predict=300,
+                    temperature=0.2,
+                )
         
         SECTION_BREAK = "\n\n---SECTION_BREAK---\n\n"
         return SECTION_BREAK.join(sections)
@@ -375,35 +581,55 @@ Host A:"""
     def _clean_script_for_tts(self, script: str) -> str:
         """Strip non-spoken artifacts from script before sending to TTS.
         
-        Removes stage directions, markdown formatting, speaker labels,
-        and other text that should not be read aloud.
+        Aggressively removes stage directions, markdown, speaker labels,
+        parenthetical text, separator lines, section headers, transcript
+        markers, and anything else that should not be read aloud.
         """
         lines = script.split('\n')
         cleaned = []
+        
+        # Lines to skip entirely
+        skip_re = re.compile(
+            r'^[\s]*[-=_]{3,}[\s]*$'
+            r'|^\s*\[.*\]\s*$'
+            r'|^(?:end\s+)?transcript\b'
+            r'|^(?:end\s+of\s+)?(?:episode|podcast|debate|interview)\b'
+            r'|^(?:opening|closing)\s+(?:positions?|statements?|remarks?)\s*$'
+            r'|^(?:part|section|segment|act)\s+\d+\b'
+            r'|^(?:clash|intensity|rising|climax|resolution|rebuttal|conclusion)\b',
+            re.IGNORECASE
+        )
         
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             
-            # Remove stage directions: *[anything]*, [anything in brackets], (stage directions)
-            line = re.sub(r'\*\[.*?\]\*', '', line)
-            line = re.sub(r'\[.*?\]', '', line)
-            line = re.sub(r'\((?:laughs?|chuckles?|sighs?|pauses?|music|theme|intro|outro|sfx|sound|transition|beat)[^)]*\)', '', line, flags=re.IGNORECASE)
+            # Skip non-spoken lines entirely
+            if skip_re.match(line):
+                continue
+            
+            # Remove ALL bracketed text
+            line = re.sub(r'\*?\[.*?\]\*?', '', line)
+            
+            # Remove ALL parenthetical text
+            line = re.sub(r'\([^)]*\)', '', line)
             
             # Remove markdown formatting
             line = re.sub(r'^#{1,6}\s+', '', line)       # Headings
             line = re.sub(r'\*\*(.+?)\*\*', r'\1', line) # Bold
             line = re.sub(r'\*(.+?)\*', r'\1', line)     # Italic
-            line = re.sub(r'^---+\s*$', '', line)         # Horizontal rules
-            line = re.sub(r'^\s*[-*]\s+', '', line)       # Bullet points
+            line = re.sub(r'^\s*[-*•]\s+', '', line)      # Bullet points
             line = re.sub(r'^\s*\d+\.\s+', '', line)      # Numbered lists
             
-            # Strip speaker labels (Host A:, Host B:, Speaker 1:, etc.)
+            # Strip speaker labels (Host A:, Host B:, Speaker 1:, Name:, etc.)
             line = re.sub(r'^(?:Host|Speaker)\s*[AB12]?\s*:\s*', '', line, flags=re.IGNORECASE)
             
-            # Remove leftover empty parens, brackets, asterisks
-            line = re.sub(r'\(\s*\)', '', line)
+            # Replace "User" / "the user" with "the listener" (bleeds from source metadata)
+            line = re.sub(r'\bthe user\b', 'the listener', line, flags=re.IGNORECASE)
+            line = re.sub(r'\bUser\b', 'the listener', line)
+            
+            # Remove leftover artifacts
             line = re.sub(r'\[\s*\]', '', line)
             line = re.sub(r'\*+', '', line)
             
@@ -606,7 +832,8 @@ Host A:"""
         host1_gender: str,
         host2_gender: str,
         accent: str,
-        is_two_host: bool = True
+        is_two_host: bool = True,
+        chat_context: Optional[str] = None,
     ):
         """Full background pipeline: script generation → audio synthesis.
         
@@ -614,6 +841,10 @@ Host A:"""
         Updates audio_store status at each stage for frontend polling.
         """
         import traceback
+        
+        # Pick character names for this generation
+        host_names = self._pick_host_names(host1_gender, host2_gender, accent)
+        print(f"🎭 Characters: {host_names[0]} (A) and {host_names[1]} (B)")
         
         try:
             # Stage 1: Generate script
@@ -626,7 +857,9 @@ Host A:"""
                 notebook_id=notebook_id,
                 topic=topic,
                 duration_minutes=duration_minutes,
-                skill_id=skill_id
+                skill_id=skill_id,
+                host_names=host_names,
+                chat_context=chat_context,
             )
             
             if not script or len(script.strip()) < 20:
@@ -646,7 +879,8 @@ Host A:"""
                 host1_gender=host1_gender,
                 host2_gender=host2_gender,
                 accent=accent,
-                is_two_host=is_two_host
+                is_two_host=is_two_host,
+                host_names=host_names
             )
             
         except Exception as e:
@@ -664,7 +898,8 @@ Host A:"""
         host1_gender: str,
         host2_gender: str,
         accent: str,
-        is_two_host: bool = True
+        is_two_host: bool = True,
+        host_names: Optional[Tuple[str, str]] = None
     ):
         """Background task to generate audio using LFM2.5-Audio.
         
@@ -695,7 +930,7 @@ Host A:"""
             
             # Parse script into generation segments
             if is_two_host:
-                segments = self._parse_script_for_tts(script)
+                segments = self._parse_script_for_tts(script, host_names=host_names)
                 print(f"   Two-host mode: {len(segments)} speaker turns")
             else:
                 # Single narrator — clean and chunk using local method
@@ -784,6 +1019,20 @@ Host A:"""
                         print(f"   ✓ Segment {real_done}/{total_real} ({speaker}): {len(text)} chars → {part_path.name}")
                     else:
                         print(f"   ⚠ Segment {real_done}/{total_real} produced no file, skipping")
+                    # Resource guardrails: prevent thermal throttling and memory pressure
+                    # Clear GPU/MPS memory caches and yield to event loop between segments
+                    import gc
+                    gc.collect()
+                    try:
+                        import torch as _torch
+                        if hasattr(_torch, 'mps') and _torch.backends.mps.is_available():
+                            _torch.mps.empty_cache()
+                        elif _torch.cuda.is_available():
+                            _torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+                    # Brief pause to let GPU cool and OS reclaim resources
+                    await asyncio.sleep(0.5)
                 except asyncio.TimeoutError:
                     last_error = f"Segment {real_done} timed out after {seg_timeout}s"
                     print(f"   ⚠ {last_error}, skipping")
@@ -819,6 +1068,13 @@ Host A:"""
             # Post-process: normalize volume for consistent listening
             self._normalize_audio(final_path)
             
+            # ── Verification: validate audio before marking complete ──
+            await audio_store.update(audio_id, {
+                "status": "processing",
+                "error_message": "Verifying audio quality..."
+            })
+            self._verify_audio(final_path)
+            
             duration_seconds = self._get_audio_duration(final_path)
             
             await audio_store.update(audio_id, {
@@ -845,7 +1101,7 @@ Host A:"""
             except Exception:
                 pass
 
-    def _parse_script_for_tts(self, script: str) -> List[tuple]:
+    def _parse_script_for_tts(self, script: str, host_names: Optional[Tuple[str, str]] = None) -> List[tuple]:
         """Parse script into speaker turns, cleaned for TTS.
         
         Returns list of (speaker, clean_text) tuples where speaker is 'A' or 'B'
@@ -853,7 +1109,7 @@ Host A:"""
         Long turns are further chunked at sentence boundaries for reliable generation.
         """
         # First parse into raw speaker segments
-        raw_segments = self._parse_script(script)
+        raw_segments = self._parse_script(script, host_names=host_names)
         
         # Clean each segment's text for TTS
         cleaned = []
@@ -867,9 +1123,10 @@ Host A:"""
             if not clean or len(clean.strip()) < 2:
                 continue
             
-            # If a turn is very long (>750 chars), sub-chunk it but keep same speaker
-            if len(clean) > 750:
-                sub_chunks = self._sub_chunk_text(clean, max_chars=750)
+            # If a turn is very long (>350 chars), sub-chunk it but keep same speaker
+            # Shorter chunks produce dramatically better prosody from LFM2.5-Audio
+            if len(clean) > 350:
+                sub_chunks = self._sub_chunk_text(clean, max_chars=350)
                 for chunk in sub_chunks:
                     if chunk.strip():
                         cleaned.append((speaker, chunk.strip()))
@@ -885,18 +1142,41 @@ Host A:"""
         return cleaned
     
     def _clean_text_for_tts(self, text: str) -> str:
-        """Clean a single text segment for TTS (no speaker labels to strip)."""
-        # Remove stage directions
-        text = re.sub(r'\*\[.*?\]\*', '', text)
-        text = re.sub(r'\[.*?\]', '', text)
-        text = re.sub(r'\((?:laughs?|chuckles?|sighs?|pauses?|music|theme|intro|outro|sfx|sound|transition|beat)[^)]*\)', '', text, flags=re.IGNORECASE)
-        # Remove markdown
+        """Clean a single text segment for TTS (no speaker labels to strip).
+        
+        Aggressively removes ALL non-spoken artifacts that LLMs commonly inject:
+        stage directions, markdown, section headers, dashed lines, parenthetical
+        labels, transcript markers, etc. Only spoken dialogue should survive.
+        """
+        # Remove ALL bracketed text — stage directions, annotations, etc.
+        text = re.sub(r'\*?\[.*?\]\*?', '', text)
+        
+        # Remove ALL parenthetical text — (laughs), (Opening Positions), (Name), etc.
+        # This is aggressive but necessary — LLMs inject parenthetical non-speech constantly
+        text = re.sub(r'\([^)]*\)', '', text)
+        
+        # Remove markdown formatting
         text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
         text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
         text = re.sub(r'\*(.+?)\*', r'\1', text)
-        text = re.sub(r'^---+\s*$', '', text, flags=re.MULTILINE)
+        
+        # Remove dashed/equals separator lines (any line that is mostly dashes, equals, or underscores)
+        text = re.sub(r'^[\s]*[-=_]{3,}[\s]*$', '', text, flags=re.MULTILINE)
+        
+        # Remove transcript/episode markers
+        text = re.sub(r'^(?:end\s+)?transcript\b.*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
+        text = re.sub(r'^(?:end\s+of\s+)?(?:episode|podcast|debate|interview|conversation)\b.*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
+        text = re.sub(r'^(?:opening|closing)\s+(?:positions?|statements?|remarks?)\s*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
+        
+        # Remove section/part headers the LLM might inject
+        text = re.sub(r'^(?:part|section|segment|chapter|act)\s+\d+\b.*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
+        text = re.sub(r'^(?:clash|intensity|rising|climax|resolution|rebuttal|conclusion)\b.*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
+        
+        # Remove bullet points and numbered lists
+        text = re.sub(r'^\s*[-*•]\s+', '', text, flags=re.MULTILINE)
+        text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+        
         # Clean leftover artifacts
-        text = re.sub(r'\(\s*\)', '', text)
         text = re.sub(r'\[\s*\]', '', text)
         text = re.sub(r'\*+', '', text)
         text = re.sub(r'\s+', ' ', text).strip()
@@ -918,7 +1198,13 @@ Host A:"""
         return chunks
     
     def _concatenate_wav_parts(self, part_paths: List[Path], output_path: Path):
-        """Concatenate multiple WAV files into one. Pure Python, no ffmpeg needed."""
+        """Concatenate multiple WAV files with crossfading for seamless joins.
+        
+        Uses short crossfades at segment boundaries to eliminate clicks/pops.
+        Also normalizes each segment's volume before joining for consistency.
+        """
+        import array
+        
         if not part_paths:
             return
         
@@ -928,29 +1214,60 @@ Host A:"""
             shutil.copy2(part_paths[0], output_path)
             return
         
-        # Read all parts and concatenate raw audio data with silence gaps
-        all_frames = b""
+        # Read all parts as sample arrays
+        segments = []
         params = None
-        SILENCE_MS = 300  # milliseconds of silence between segments
         
-        for idx, p in enumerate(part_paths):
+        for p in part_paths:
             try:
                 with wave.open(str(p), 'rb') as wf:
                     if params is None:
                         params = wf.getparams()
-                    all_frames += wf.readframes(wf.getnframes())
-                    # Add silence between segments (not after the last one)
-                    if idx < len(part_paths) - 1 and params:
-                        silence_frames = int(params.framerate * SILENCE_MS / 1000) * params.sampwidth
-                        all_frames += b'\x00' * silence_frames
+                    raw = wf.readframes(wf.getnframes())
+                    if raw and params.sampwidth == 2:
+                        samples = array.array('h', raw)
+                        # Per-segment peak normalization to -3dB for consistent volume
+                        peak = max(abs(s) for s in samples) if samples else 0
+                        if peak > 0:
+                            target = 32767 * 0.708  # -3dB
+                            gain = target / peak
+                            if gain < 0.8 or gain > 1.3:
+                                for i in range(len(samples)):
+                                    samples[i] = max(-32767, min(32767, int(samples[i] * gain)))
+                        segments.append(samples)
             except Exception as e:
                 print(f"   Warning: couldn't read {p.name}: {e}")
                 continue
         
-        if params and all_frames:
-            with wave.open(str(output_path), 'wb') as out:
-                out.setparams(params)
-                out.writeframes(all_frames)
+        if not segments or params is None:
+            return
+        
+        # Crossfade between segments (30ms at 24kHz = 720 samples)
+        crossfade_len = int(params.framerate * 0.03)
+        # Natural pause between speaker turns (100ms silence)
+        pause_len = int(params.framerate * 0.10)
+        pause_samples = array.array('h', [0] * pause_len)
+        
+        merged = segments[0]
+        for j in range(1, len(segments)):
+            nxt = segments[j]
+            # Add a short natural pause
+            merged.extend(pause_samples)
+            # Apply crossfade if both segments are long enough
+            if len(merged) > crossfade_len and len(nxt) > crossfade_len:
+                for k in range(crossfade_len):
+                    fade_out = 1.0 - (k / crossfade_len)
+                    fade_in = k / crossfade_len
+                    idx = len(merged) - crossfade_len + k
+                    blended = int(merged[idx] * fade_out + nxt[k] * fade_in)
+                    merged[idx] = max(-32767, min(32767, blended))
+                merged.extend(nxt[crossfade_len:])
+            else:
+                merged.extend(nxt)
+        
+        with wave.open(str(output_path), 'wb') as out:
+            out.setparams(params)
+            out.writeframes(merged.tobytes())
     
     def _normalize_audio(self, wav_path: Path, target_db: float = -1.0):
         """Peak-normalize a WAV file to target dB level.
@@ -1000,21 +1317,110 @@ Host A:"""
         except Exception as e:
             print(f"   Warning: audio normalization failed: {e}")
 
-    def _parse_script(self, script: str) -> List[tuple]:
+    def _verify_audio(self, wav_path: Path):
+        """Verify generated audio meets minimum quality standards.
+        
+        Checks:
+        1. File is a valid readable WAV
+        2. Sample rate is 24000 Hz (LFM2.5-Audio native)
+        3. Duration is at least 5 seconds (catches truncated/empty output)
+        4. Audio is not silent (RMS energy above threshold)
+        
+        Raises RuntimeError on failure so the pipeline marks the generation as failed.
+        """
+        import array
+        
+        if not wav_path.exists():
+            raise RuntimeError(f"Audio file not found: {wav_path}")
+        
+        file_size = wav_path.stat().st_size
+        if file_size < 1000:
+            raise RuntimeError(f"Audio file too small ({file_size} bytes) — likely corrupt")
+        
+        try:
+            with wave.open(str(wav_path), 'rb') as wf:
+                params = wf.getparams()
+                n_frames = wf.getnframes()
+                raw = wf.readframes(n_frames)
+        except Exception as e:
+            raise RuntimeError(f"Cannot read WAV file: {e}")
+        
+        # Check sample rate
+        if params.framerate not in (24000, 22050, 44100, 48000):
+            print(f"   ⚠ Unexpected sample rate: {params.framerate} Hz")
+        
+        # Check minimum duration
+        duration = n_frames / params.framerate if params.framerate > 0 else 0
+        if duration < 5.0:
+            raise RuntimeError(f"Audio too short ({duration:.1f}s) — generation likely failed")
+        
+        # Check for silence (RMS energy)
+        if params.sampwidth == 2 and raw:
+            samples = array.array('h', raw)
+            if samples:
+                rms = (sum(s * s for s in samples) / len(samples)) ** 0.5
+                if rms < 50:
+                    raise RuntimeError(f"Audio appears silent (RMS={rms:.0f}) — generation likely failed")
+                print(f"   🔊 Audio verification passed: {duration:.1f}s, RMS={rms:.0f}")
+            else:
+                raise RuntimeError("Audio file has no samples")
+        else:
+            print(f"   🔊 Audio verification passed: {duration:.1f}s (skipped RMS check — {params.sampwidth}-byte samples)")
+
+    def _parse_script(self, script: str, host_names: Optional[Tuple[str, str]] = None) -> List[tuple]:
         """Parse script into speaker segments.
         
         Handles various label formats the LLM might produce:
           Host A: ...       **Host A:** ...      *Host A:* ...
           Speaker A: ...    ## Host A: ...       A: ...
           Host 1: ...       Speaker 1: ...
+          Sarah: ...        Marcus: ...          (character names)
+          (Sarah) ...       (Marcus) ...         (parenthetical names)
         """
-        # Regex: optional markdown prefix (**/*/##), then label, then colon
-        speaker_re = re.compile(
+        # Build name → speaker mapping for character names
+        name_map: dict = {}
+        if host_names:
+            name_map[host_names[0].lower()] = "A"
+            name_map[host_names[1].lower()] = "B"
+        
+        # Regex for traditional Host A/B labels
+        host_re = re.compile(
             r'^[\s*#]*'                        # leading whitespace, *, #
             r'(?:host|speaker)?\s*'            # optional "host" / "speaker"
             r'([AaBb1-2])'                     # speaker identifier
             r'[\s*#]*:[\s*]*'                  # colon with optional surrounding markdown
             r'(.*)',                            # rest of line
+            re.IGNORECASE
+        )
+        
+        # Regexes for character name labels
+        name_re = None
+        name_paren_re = None
+        if host_names:
+            escaped = [re.escape(n) for n in host_names]
+            name_pattern = '|'.join(escaped)
+            # "Sarah: ..." or "**Sarah:** ..."
+            name_re = re.compile(
+                r'^[\s*#]*'
+                r'(' + name_pattern + r')'
+                r'[\s*#]*:[\s*]*'
+                r'(.*)',
+                re.IGNORECASE
+            )
+            # "(Sarah) ..." or "(Sarah)" on its own line
+            name_paren_re = re.compile(
+                r'^\s*\(\s*(' + name_pattern + r')\s*\)\s*(.*)',
+                re.IGNORECASE
+            )
+        
+        # Lines to skip entirely — non-spoken content
+        skip_re = re.compile(
+            r'^[\s]*[-=_]{3,}[\s]*$'           # dashed/equals separator lines
+            r'|^\s*\[.*\]\s*$'                  # [stage directions] on own line
+            r'|^(?:end\s+)?transcript\b'          # End Transcript
+            r'|^(?:end\s+of\s+)?(?:episode|podcast|debate|interview)\b'
+            r'|^(?:opening|closing)\s+(?:positions?|statements?|remarks?)\s*$'
+            r'|^(?:part|section|segment|act)\s+\d+\b',
             re.IGNORECASE
         )
         
@@ -1035,18 +1441,45 @@ Host A:"""
                 segments.append(("BREAK", ""))
                 continue
             
-            m = speaker_re.match(line)
-            if m:
-                # Save previous segment
-                if current_text:
-                    segments.append((current_speaker, ' '.join(current_text)))
-                
-                ident = m.group(1).upper()
-                current_speaker = "A" if ident in ("A", "1") else "B"
-                rest = m.group(2).strip().rstrip('*').strip()
-                current_text = [rest] if rest else []
-            else:
-                current_text.append(line)
+            # Skip non-spoken lines entirely
+            if skip_re.match(line):
+                continue
+            
+            # Try character name match first — colon format: "Sarah: ..."
+            matched = False
+            if name_re:
+                m = name_re.match(line)
+                if m:
+                    if current_text:
+                        segments.append((current_speaker, ' '.join(current_text)))
+                    current_speaker = name_map.get(m.group(1).lower(), "A")
+                    rest = m.group(2).strip().rstrip('*').strip()
+                    current_text = [rest] if rest else []
+                    matched = True
+            
+            # Try parenthetical name format: "(Sarah) ..."
+            if not matched and name_paren_re:
+                m = name_paren_re.match(line)
+                if m:
+                    if current_text:
+                        segments.append((current_speaker, ' '.join(current_text)))
+                    current_speaker = name_map.get(m.group(1).lower(), "A")
+                    rest = m.group(2).strip()
+                    current_text = [rest] if rest else []
+                    matched = True
+            
+            # Fall back to Host A/B pattern
+            if not matched:
+                m = host_re.match(line)
+                if m:
+                    if current_text:
+                        segments.append((current_speaker, ' '.join(current_text)))
+                    ident = m.group(1).upper()
+                    current_speaker = "A" if ident in ("A", "1") else "B"
+                    rest = m.group(2).strip().rstrip('*').strip()
+                    current_text = [rest] if rest else []
+                else:
+                    current_text.append(line)
         
         # Add final segment
         if current_text:

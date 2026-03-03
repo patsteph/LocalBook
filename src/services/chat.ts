@@ -24,6 +24,7 @@ export interface StreamCallbacks {
   onToken?: (token: string) => void;
   onReplaceAnswer?: (content: string) => void;
   onResearchResults?: (results: ResearchResult[]) => void;
+  onFollowUpQuestions?: (questions: string[]) => void;
   onDone?: (followUpQuestions: string[], curatorName?: string, agentName?: string, agentType?: string) => void;
   onError?: (error: string) => void;
 }
@@ -82,6 +83,8 @@ export const chatService = {
             callbacks.onReplaceAnswer?.(data.content);
           } else if (data.type === 'research_results') {
             callbacks.onResearchResults?.(data.results || []);
+          } else if (data.type === 'follow_up_questions') {
+            callbacks.onFollowUpQuestions?.(data.questions || []);
           } else if (data.type === 'done') {
             callbacks.onDone?.(data.follow_up_questions || [], data.curator_name, data.agent_name, data.agent_type);
           }

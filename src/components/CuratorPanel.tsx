@@ -36,6 +36,12 @@ interface BriefNotebook {
   upcoming_key_dates?: string[];
   collection_runs?: number;
   collection_items_found?: number;
+  interactions_since?: number;
+  chat_queries?: number;
+  searches?: number;
+  docs_read?: number;
+  total_sources?: number;
+  sources_this_week?: number;
   unfinished_threads?: string[];
   emerging_topics?: string[];
   one_week_ago_items?: string[];
@@ -107,7 +113,22 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
           lines.push(`  - ...and ${nb.items_added - nb.recent_stories.length} more`);
         }
       } else if (nb.items_added > 0) {
-        lines.push(`  - ${nb.items_added} new items collected`);
+        lines.push(`  - ${nb.items_added} new source${nb.items_added !== 1 ? 's' : ''} added`);
+      }
+
+      // Research velocity
+      if (nb.total_sources && nb.sources_this_week && nb.sources_this_week > 0) {
+        const prior = nb.total_sources - nb.sources_this_week;
+        lines.push(`  - 📊 Library grew from ${prior} to ${nb.total_sources} sources this week (+${nb.sources_this_week})`);
+      }
+
+      // User activity
+      if (nb.interactions_since && nb.interactions_since > 0) {
+        const parts: string[] = [];
+        if (nb.chat_queries && nb.chat_queries > 0) parts.push(`${nb.chat_queries} chat${nb.chat_queries !== 1 ? 's' : ''}`);
+        if (nb.searches && nb.searches > 0) parts.push(`${nb.searches} search${nb.searches !== 1 ? 'es' : ''}`);
+        if (nb.docs_read && nb.docs_read > 0) parts.push(`${nb.docs_read} doc${nb.docs_read !== 1 ? 's' : ''} read`);
+        if (parts.length > 0) lines.push(`  - 🔄 Your activity: ${parts.join(', ')}`);
       }
 
       // People updates

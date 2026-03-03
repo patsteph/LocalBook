@@ -64,14 +64,19 @@ else
     echo -e "${YELLOW}Starting Ollama...${NC}"
     ollama serve > /dev/null 2>&1 &
     OLLAMA_PID=$!
-    sleep 2
     
-    if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-        echo -e "${GREEN}✓ Ollama started${NC}"
-    else
-        echo -e "${RED}Error: Failed to start Ollama${NC}"
-        exit 1
-    fi
+    # Fast poll instead of fixed sleep — usually ready in <1s
+    for i in {1..30}; do
+        if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ Ollama started${NC}"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            echo -e "${RED}Error: Failed to start Ollama${NC}"
+            exit 1
+        fi
+        sleep 0.3
+    done
 fi
 
 # Check for required models
@@ -114,21 +119,20 @@ source .venv/bin/activate
 python main.py > "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 cd ..
-sleep 3
 echo -e "${BLUE}Backend logs: $BACKEND_LOG${NC}"
 
-# Wait for backend to be ready
-for i in {1..30}; do
+# Fast poll for backend readiness — no fixed sleep
+for i in {1..60}; do
     if curl -s http://localhost:8000/health > /dev/null 2>&1; then
         echo -e "${GREEN}✓ Backend ready${NC}"
         break
     fi
-    if [ $i -eq 30 ]; then
-        echo -e "${RED}Error: Backend failed to start${NC}"
+    if [ $i -eq 60 ]; then
+        echo -e "${RED}Error: Backend failed to start. Check $BACKEND_LOG${NC}"
         cleanup
         exit 1
     fi
-    sleep 1
+    sleep 0.5
 done
 
 # Install npm dependencies if needed

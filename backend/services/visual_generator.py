@@ -512,6 +512,34 @@ RULES:
 - Show how evidence supports conclusions
 - Identify triangulation (multiple sources → same conclusion)
 - Academic research standard""",
+
+    # === FEYNMAN LEARNING TEMPLATES ===
+
+    "feynman_knowledge_map": """You are creating a KNOWLEDGE MAP mindmap for a Feynman-style learning curriculum.
+
+TASK: Create a mindmap showing how the core concepts in this curriculum connect to each other.
+The central node is the main subject. First-level branches are the 3-5 CORE CONCEPTS.
+Second-level branches show HOW concepts connect with simple explanations.
+Third-level branches show WHY (first principles / underlying mechanisms).
+
+OUTPUT FORMAT (JSON):
+{
+    "mermaid": "mindmap\\n  root((Subject Name))\\n    Core Concept A\\n      How it works\\n        Simple analogy\\n      Why it matters\\n        Underlying mechanism\\n    Core Concept B\\n      Connection to A\\n      Real-world example\\n        Practical application\\n    Core Concept C\\n      First principle\\n      Edge case\\n    Open Questions\\n      What experts debate\\n      Frontier of knowledge",
+    "title": "Knowledge Map: Subject",
+    "description": "How core concepts relate to each other",
+    "key_points": ["Central concept", "Key relationship", "Open question"]
+}
+
+RULES:
+- Central node uses double parentheses: root((Subject Name))
+- 3-5 core concept branches (NOT more — keep it readable)
+- Every concept should show at least one connection to another concept
+- Use clear, simple language — as if explaining to someone learning for the first time
+- Include an 'Open Questions' branch showing what's still debated or unknown
+- Maximum 3 levels deep — do not overcrowd
+- Each node label must be SHORT (2-6 words)
+- Do NOT use special characters in labels: no parentheses, brackets, quotes, colons, or semicolons inside node text
+- Indent with exactly 2 spaces per level (root at column 2, children at column 4, etc.)""",
 }
 
 

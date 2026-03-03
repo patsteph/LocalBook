@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  Sparkles, Brain, GitBranch, CalendarDays, Network, BarChart3
+  Sparkles, Brain, GitBranch, CalendarDays, Network, BarChart3, TrendingUp
 } from 'lucide-react';
 import mermaid from 'mermaid';
 import { visualService, Diagram } from '../services/visual';
@@ -8,6 +8,7 @@ import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { MermaidRenderer } from './shared/MermaidRenderer';
 import { SVGRenderer } from './shared/SVGRenderer';
+import { ChartRenderer } from './shared/ChartRenderer';
 import { BookmarkButton } from './shared/BookmarkButton';
 
 // Phase 4: Refinement Chat Component
@@ -141,6 +142,7 @@ const QUICK_DIAGRAM_OPTIONS: { type: DiagramType; icon: React.ReactNode; label: 
   { type: 'timeline', icon: <CalendarDays className={diagramIconClass} />, label: 'Timeline' },
   { type: 'classDiagram', icon: <Network className={diagramIconClass} />, label: 'Hierarchy' },
   { type: 'quadrant', icon: <BarChart3 className={diagramIconClass} />, label: 'Compare' },
+  { type: 'line_chart' as DiagramType, icon: <TrendingUp className={diagramIconClass} />, label: 'Chart' },
 ];
 
 // Helper to strip citation markers like [1], [2], etc.
@@ -179,6 +181,12 @@ const ADVANCED_TEMPLATES = {
     { id: 'roadmap', icon: '🛣️', label: 'Roadmap', desc: 'Future milestones' },
     { id: 'before_after', icon: '🔀', label: 'Before/After', desc: 'Transformation story' },
   ],
+  'Data Charts': [
+    { id: 'line_chart', icon: '📈', label: 'Line Chart', desc: 'Trends & metrics over time' },
+    { id: 'bar_chart', icon: '📊', label: 'Bar Chart', desc: 'Compare values side by side' },
+    { id: 'area_chart', icon: '📉', label: 'Area Chart', desc: 'Cumulative trends & volume' },
+    { id: 'composed_chart', icon: '📋', label: 'Mixed Chart', desc: 'Bar + line combo' },
+  ],
   'Feynman Learning': [
     { id: 'feynman_progression', icon: '🎓', label: 'Learning Path', desc: '4-level Feynman progression' },
     { id: 'feynman_knowledge_map', icon: '🧠', label: 'Knowledge Map', desc: 'Concepts & connections' },
@@ -213,7 +221,6 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
   const [loadingAlternatives, setLoadingAlternatives] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diagrams, setDiagrams] = useState<Diagram[]>([]);
-  const [keyPoints, setKeyPoints] = useState<string[]>([]);
   const [selectedDiagram, setSelectedDiagram] = useState<Diagram | null>(null);
   const [diagramType, setDiagramType] = useState<DiagramType>('auto');
   const [topic, setTopic] = useState(initialContent);
@@ -240,49 +247,6 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
     }
   }, [initialContent]);
 
-  const handleGenerate = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      // Use selected template or diagram type
-      const templateToUse = selectedTemplate || diagramType;
-      const result = await visualService.generateSummary(notebookId, [templateToUse], topic || undefined, colorTheme);
-      
-      // Validate diagrams before showing - filter out ones that won't render
-      const rawDiagrams = result.diagrams || [];
-      const validatedDiagrams: Diagram[] = [];
-      
-      for (const diagram of rawDiagrams) {
-        // SVG diagrams don't need Mermaid validation
-        if (diagram.svg || diagram.render_type === 'svg') {
-          validatedDiagrams.push(diagram);
-        } else if (diagram.code) {
-          // Validate Mermaid code
-          const cleanedCode = cleanMermaidCode(diagram.code);
-          const isValid = await validateMermaidCode(cleanedCode);
-          if (isValid) {
-            validatedDiagrams.push({ ...diagram, code: cleanedCode });
-          } else {
-            console.warn('[Visual] Filtered out invalid diagram:', diagram.diagram_type);
-          }
-        }
-      }
-      
-      setDiagrams(validatedDiagrams);
-      setKeyPoints(result.key_points);
-      if (validatedDiagrams.length > 0) {
-        setSelectedDiagram(validatedDiagrams[0]);
-        onVisualGenerated?.(validatedDiagrams[0].code || '', validatedDiagrams[0].title || topic || 'Visual');
-      } else if (rawDiagrams.length > 0) {
-        setError('Generated diagram had syntax errors. Try regenerating.');
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to generate visual summary');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleSmartGenerate = async () => {
     if (!topic.trim()) {
       setError('Please describe what you want to visualize');
@@ -295,18 +259,21 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
     
     try {
       // Use streaming endpoint - primary appears first, alternatives follow
+      // Pass explicit template_id if user selected a specific chart or template
+      const forceTemplate = selectedTemplate || (diagramType !== 'auto' ? diagramType : undefined);
       await visualService.generateSmartStream(
         notebookId,
         topic,
         colorTheme,
         // onPrimary - show immediately, then start loading alternatives
         async (diagram) => {
-          // SVG diagrams don't need Mermaid validation
-          if (diagram.svg || diagram.render_type === 'svg') {
+          // SVG and Chart diagrams don't need Mermaid validation
+          if (diagram.svg || diagram.render_type === 'svg' || diagram.render_type === 'chart') {
             setDiagrams([diagram]);
             setSelectedDiagram(diagram);
             setLoading(false);
             setLoadingAlternatives(true); // Start loading alternatives indicator
+            onVisualGenerated?.(diagram.code || diagram.svg || '', diagram.title || topic);
             return;
           }
           
@@ -318,18 +285,20 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
             setDiagrams([validDiagram]);
             setSelectedDiagram(validDiagram);
             setLoading(false);
+            onVisualGenerated?.(cleanedCode, diagram.title || topic);
           } else {
             console.warn('[Visual] Primary diagram failed validation:', cleanedCode.substring(0, 200));
             const rawDiagram = { ...diagram, code: cleanedCode };
             setDiagrams([rawDiagram]);
             setSelectedDiagram(rawDiagram);
             setLoading(false);
+            onVisualGenerated?.(cleanedCode, diagram.title || topic);
           }
         },
         // onAlternative - add to list
         async (diagram) => {
-          // SVG diagrams don't need validation
-          if (diagram.svg || diagram.render_type === 'svg') {
+          // SVG and Chart diagrams don't need validation
+          if (diagram.svg || diagram.render_type === 'svg' || diagram.render_type === 'chart') {
             setDiagrams(prev => [...prev, diagram]);
             return;
           }
@@ -349,7 +318,8 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
         (errorMsg) => {
           setError(errorMsg);
           setLoading(false);
-        }
+        },
+        forceTemplate,  // Pass template_id for forced chart/template selection
       );
     } catch (err: any) {
       setError(err.message || 'Failed to generate visual');
@@ -570,7 +540,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
 
       {/* Single Generate Button */}
       <Button 
-        onClick={diagramType === 'auto' && !selectedTemplate ? handleSmartGenerate : handleGenerate} 
+        onClick={handleSmartGenerate} 
         disabled={loading || !topic.trim()} 
         className="w-full"
       >
@@ -586,21 +556,6 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
       {error && (
         <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 p-3 rounded-lg text-sm">
           {error}
-        </div>
-      )}
-
-      {/* Key Points */}
-      {keyPoints.length > 0 && (
-        <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
-          <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Key Points</h4>
-          <ul className="space-y-1">
-            {keyPoints.map((point, i) => (
-              <li key={i} className="text-sm text-gray-600 dark:text-gray-400 flex gap-2">
-                <span className="text-blue-500">•</span>
-                {point}
-              </li>
-            ))}
-          </ul>
         </div>
       )}
 
@@ -665,8 +620,12 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
             className="cursor-zoom-in relative group"
             title="Click to view larger"
           >
-            {/* Use SVGRenderer for SVG visuals, MermaidRenderer for legacy Mermaid code */}
-            {selectedDiagram.svg ? (
+            {/* Use ChartRenderer for data charts, SVGRenderer for SVG, MermaidRenderer for legacy */}
+            {selectedDiagram.render_type === 'chart' && selectedDiagram.chart_config ? (
+              <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-900">
+                <ChartRenderer config={selectedDiagram.chart_config} height={350} />
+              </div>
+            ) : selectedDiagram.svg ? (
               <SVGRenderer svg={selectedDiagram.svg} className="border border-gray-200 dark:border-gray-700 rounded-lg" />
             ) : (
               <MermaidRenderer code={selectedDiagram.code || ''} className="border border-gray-200 dark:border-gray-700" />
@@ -678,8 +637,8 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
             </div>
           </div>
           
-          {/* Phase 4: Refinement Chat - only for Mermaid diagrams */}
-          {selectedDiagram.code && !selectedDiagram.svg && (
+          {/* Phase 4: Refinement Chat - only for Mermaid diagrams (not charts or SVG) */}
+          {selectedDiagram.code && !selectedDiagram.svg && selectedDiagram.render_type !== 'chart' && (
             <RefinementChat 
               notebookId={notebookId}
               currentCode={selectedDiagram.code}
@@ -693,11 +652,13 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
           {/* Code Block (collapsible) - shows Mermaid code or SVG code */}
           <details className="mt-2">
             <summary className="text-xs text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-300">
-              📝 View {selectedDiagram.svg ? 'SVG' : 'Mermaid'} code
+              📝 View {selectedDiagram.render_type === 'chart' ? 'Chart Config' : selectedDiagram.svg ? 'SVG' : 'Mermaid'} code
             </summary>
             <div className="bg-gray-900 rounded-lg p-3 overflow-x-auto mt-2">
               <pre className="text-xs text-green-400 font-mono whitespace-pre-wrap max-h-60 overflow-y-auto">
-                {selectedDiagram.code || selectedDiagram.svg || ''}
+                {selectedDiagram.render_type === 'chart' && selectedDiagram.chart_config
+                  ? JSON.stringify(selectedDiagram.chart_config, null, 2)
+                  : (selectedDiagram.code || selectedDiagram.svg || '')}
               </pre>
             </div>
           </details>
@@ -785,7 +746,11 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
             
             {/* Full-size diagram */}
             <div className="min-w-[600px]">
-              {selectedDiagram.svg ? (
+              {selectedDiagram.render_type === 'chart' && selectedDiagram.chart_config ? (
+                <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-6 bg-gray-900">
+                  <ChartRenderer config={selectedDiagram.chart_config} height={500} />
+                </div>
+              ) : selectedDiagram.svg ? (
                 <SVGRenderer svg={selectedDiagram.svg} className="border border-gray-200 dark:border-gray-700 rounded-lg" />
               ) : (
                 <MermaidRenderer code={selectedDiagram.code || ''} className="border border-gray-200 dark:border-gray-700" />

@@ -11,6 +11,7 @@ export interface ContentGenerateRequest {
     skill_id: string;
     topic?: string;
     style?: string;  // Output style: professional, casual, academic, etc.
+    chat_context?: string;  // Recent chat conversation for "From Chat" mode
 }
 
 export interface ContentGenerateResponse {

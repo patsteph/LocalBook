@@ -90,16 +90,14 @@ async def warm_embedding_model() -> bool:
                 )
                 return response.status_code == 200
         else:
-            # Import here to avoid circular imports
-            from services.rag_engine import rag_engine
+            # Use rag_embeddings module directly (model lives there, not on rag_engine)
+            from services.rag_embeddings import load_embedding_model, encode
             
             # This will load the model if not already loaded
-            if rag_engine.embedding_model is None:
-                rag_engine._load_embedding_model()
+            load_embedding_model()
             
             # Encode a short text to keep it warm
-            if rag_engine.embedding_model:
-                _ = rag_engine.embedding_model.encode("warmup", show_progress_bar=False)
+            encode("warmup")
             return True
     except Exception as e:
         print(f"⚠️ Embedding warmup failed: {e}")
@@ -112,8 +110,8 @@ async def warm_reranker_model() -> bool:
         if not getattr(settings, 'use_reranker', True):
             return True  # Reranker disabled, skip
         
-        from services.rag_engine import rag_engine
-        rag_engine._load_reranker()
+        from services import rag_search
+        rag_search._get_reranker()
         return True
     except Exception as e:
         print(f"⚠️ Reranker warmup failed: {e}")

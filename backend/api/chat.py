@@ -11,6 +11,86 @@ import json
 router = APIRouter()
 
 
+# ─── Agent Help Text (shown for ?, /help, help) ──────────────────────────────
+
+_CURATOR_HELP = """**@curator — Your cross-notebook research advisor**
+
+| Command | What it does |
+|---|---|
+| `@curator what's new?` | Generate your **Morning Brief** — a summary of activity across all notebooks |
+| `@curator find patterns` | Discover **cross-notebook patterns** — shared entities, themes, contradictions |
+| `@curator play devil's advocate` | Get **counterarguments** to your thesis or the notebook's main claims |
+| `@curator <any question>` | **Cross-notebook search** — synthesizes answers from all your notebooks |
+| `@curator change your name to <name>` | Rename the Curator |
+| `@curator be more <personality>` | Change the Curator's personality/tone |
+| `@curator enable/disable overwatch` | Toggle whether the Curator chimes in during regular chat |
+| `@curator exclude <notebook>` | Exclude a notebook from cross-notebook operations |
+| `@curator show profile` | Show current Curator configuration |
+| `@curator ?` | Show this help |"""
+
+_COLLECTOR_HELP = """**@collector — Your automated content collection agent**
+
+| Command | What it does |
+|---|---|
+| `@collector add <URL>` | Add a **URL as a monitored source** (RSS feed or web page) |
+| `@collector remove <URL>` | Remove a source |
+| `@collector add keyword <topic>` | Track a **news keyword** for alerts |
+| `@collector set intent <description>` | Set the notebook's **collection intent/purpose** |
+| `@collector set subject <name>` | Set the **research subject** |
+| `@collector set focus <areas>` | Set or add **focus areas** |
+| `@collector exclude <topics>` | Exclude topics from collection |
+| `@collector set schedule daily/hourly/weekly` | Set **collection frequency** |
+| `@collector set mode auto/manual/hybrid` | Set collection mode |
+| `@collector set approval auto/review/mixed` | Set approval mode |
+| `@collector collect now` | Trigger an **immediate collection run** |
+| `@collector show pending` | Show items **awaiting your approval** |
+| `@collector approve all` | Approve all pending items |
+| `@collector source health` | Check **source health** — find broken or failing sources |
+| `@collector show history` | Show recent **collection run history** |
+| `@collector show status` | Overview of Collector configuration and stats |
+| `@collector show profile` | Show full Collector profile |
+| `@collector ?` | Show this help |"""
+
+_RESEARCH_HELP = """**@research — Your web research agent**
+
+| Command | What it does |
+|---|---|
+| `@research <query>` | **Web search** — find and summarize results from across the web |
+| `@research <query> site:arxiv.org` | **Site search** — search a specific domain |
+| `@research deep dive <query>` | **Deep dive** — multi-source, quality-filtered, thorough research |
+| `@research ?` | Show this help |
+
+**Deep dive modifiers:** You can add quality criteria like *"peer reviewed"*, *"last 7 days"*, *"minimum 1000 words"* and the agent will apply them as filters."""
+
+_STUDIO_HELP = """**@studio — Create content from your conversation**
+
+| Command | What it does |
+|---|---|
+| `@studio make a podcast on this` | Generate a **podcast/audio** based on the current conversation |
+| `@studio create a study guide` | Generate a **document** (brief, guide, cheat sheet, etc.) |
+| `@studio quiz me on this` | Generate a **quiz** to test your understanding |
+| `@studio visualize this` | Create a **diagram, flowchart, or mind map** |
+| `@studio make a video explainer` | Create a **video** with narration |
+| `@studio ?` | Show this help |
+
+**Tips:** Describe what you want naturally — specify format, style, duration, hosts, difficulty, etc. The conversation context is included automatically."""
+
+
+def _is_help_request(question: str) -> bool:
+    """Check if the user is asking for help."""
+    q = question.strip().lower()
+    return q in ('?', '/help', 'help', '?help', 'commands', '/commands', 'what can you do', 'what can you do?')
+
+
+def _stream_help(text: str, agent_name: str, agent_type: str):
+    """Generator that streams a help message as SSE events."""
+    import json as _json
+    chunk_size = 40
+    for i in range(0, len(text), chunk_size):
+        yield f"data: {_json.dumps({'type': 'token', 'content': text[i:i+chunk_size]})}\n\n"
+    yield f"data: {_json.dumps({'type': 'done', 'follow_up_questions': [], 'agent_name': agent_name, 'agent_type': agent_type})}\n\n"
+
+
 class ChatQuery(BaseModel):
     """Chat query request - matches frontend ChatQuery interface"""
     notebook_id: str
@@ -21,7 +101,8 @@ class ChatQuery(BaseModel):
     llm_provider: Optional[str] = None
     deep_think: Optional[bool] = False  # Enable Deep Think mode with chain-of-thought reasoning
     use_orchestrator: Optional[bool] = True  # v0.60: Auto-detect complex queries and decompose
-    target: Optional[str] = None  # v1.4: @mention routing — 'curator', 'collector', or None for default RAG
+    target: Optional[str] = None  # v1.4: @mention routing — 'curator', 'collector', 'studio', or None for default RAG
+    chat_context: Optional[str] = None  # v1.5: @studio — recent conversation context for content generation
 
 
 class WebSource(BaseModel):
@@ -134,6 +215,12 @@ async def query_stream(chat_query: ChatQuery):
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
+    if chat_query.target == "studio":
+        return StreamingResponse(
+            _stream_studio(chat_query),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
     
     # Fallback intent detection: auto-route cross-notebook queries to Curator
     # Uses fast regex first; only invokes LLM classifier if regex is inconclusive
@@ -204,6 +291,12 @@ async def _stream_curator(chat_query: ChatQuery):
 
     curator_name = curator.name or "Curator"
     q = chat_query.question
+
+    # ── Help shortcut (no LLM call) ──
+    if _is_help_request(q):
+        for chunk in _stream_help(_CURATOR_HELP, curator_name, "curator"):
+            yield chunk
+        return
 
     yield f"data: {json.dumps({'type': 'status', 'message': f'{curator_name} processing...', 'query_type': 'curator'})}\n\n"
 
@@ -332,6 +425,41 @@ async def _stream_curator(chat_query: ChatQuery):
                 follow_ups = ['What patterns exist?', 'Show me details on the first item', 'Compare findings']
             except Exception as be:
                 reply = f"Could not generate brief: {be}"
+            handled = True
+
+        # -----------------------------------------------------------------
+        # WEEKLY WRAP UP
+        # -----------------------------------------------------------------
+        elif intent == "weekly_wrap_up":
+            yield f"data: {json.dumps({'type': 'status', 'message': f'{curator_name} preparing your weekly wrap up...', 'query_type': 'curator'})}\n\n"
+            try:
+                from datetime import datetime
+                from pathlib import Path
+                from services.event_logger import event_logger
+                import json as _json
+
+                # Try to recall a saved wrap first
+                wrap_dir = Path(event_logger.data_dir) / "memory"
+                saved_wrap = None
+                wrap_files = sorted(wrap_dir.glob("weekly_wrap_*.json"), reverse=True) if wrap_dir.exists() else []
+                if wrap_files:
+                    try:
+                        saved_wrap = _json.loads(wrap_files[0].read_text())
+                    except Exception:
+                        pass
+
+                if saved_wrap and saved_wrap.get("narrative"):
+                    reply = saved_wrap["narrative"]
+                    if saved_wrap.get("cross_notebook_insight"):
+                        reply += f"\n\n**Cross-Notebook Insight:** {saved_wrap['cross_notebook_insight']}"
+                else:
+                    wrap = await curator.generate_weekly_wrap_up()
+                    reply = wrap.narrative if wrap.narrative else "Not enough activity this week for a wrap up."
+                    if wrap.cross_notebook_insight:
+                        reply += f"\n\n**Cross-Notebook Insight:** {wrap.cross_notebook_insight}"
+                follow_ups = ['What were the key themes?', 'Show me collector discoveries', 'Compare to last week']
+            except Exception as we:
+                reply = f"Could not generate weekly wrap up: {we}"
             handled = True
 
         # -----------------------------------------------------------------
@@ -510,6 +638,12 @@ async def _stream_collector(chat_query: ChatQuery):
     collector_name = collector_agent.config.name or "Collector"
     notebook_id = chat_query.notebook_id
     q = chat_query.question
+
+    # ── Help shortcut (no LLM call) ──
+    if _is_help_request(q):
+        for chunk in _stream_help(_COLLECTOR_HELP, collector_name, "collector"):
+            yield chunk
+        return
 
     yield f"data: {json.dumps({'type': 'status', 'message': f'{collector_name} processing...', 'query_type': 'collector'})}\n\n"
 
@@ -969,6 +1103,12 @@ async def _stream_research(chat_query: ChatQuery):
     q = chat_query.question
     notebook_id = chat_query.notebook_id
 
+    # ── Help shortcut (no LLM call) ──
+    if _is_help_request(q):
+        for chunk in _stream_help(_RESEARCH_HELP, "Research", "research"):
+            yield chunk
+        return
+
     yield f"data: {json.dumps({'type': 'status', 'message': 'Research agent analysing your request...', 'query_type': 'research'})}\n\n"
 
     try:
@@ -1052,7 +1192,7 @@ async def _stream_research(chat_query: ChatQuery):
 
             mode_label = "Deep Dive"
 
-        # ── Build narrative summary ──────────────────────────────────────
+        # ── Build clean header (no verbose narrative) ───────────────────
         new_results = [r for r in results if not r.already_sourced]
         dupes = [r for r in results if r.already_sourced]
 
@@ -1063,34 +1203,22 @@ async def _stream_research(chat_query: ChatQuery):
             else:
                 reply += " Try broadening your query or adjusting filters."
         else:
-            lines = [f"**{mode_label} — {len(new_results)} results found**\n"]
-            for i, r in enumerate(new_results, 1):
-                score_bar = ""
-                if r.quality_score > 0:
-                    filled = round(r.quality_score * 5)
-                    score_bar = f" {'●' * filled}{'○' * (5 - filled)}"
-                lines.append(f"**{i}. [{r.title}]({r.url})**{score_bar}")
-                lines.append(f"   {r.snippet[:200]}")
-                if r.quality_reasons:
-                    lines.append(f"   *{' · '.join(r.quality_reasons[:4])}*")
-                lines.append("")
+            reply = f"**{mode_label} — {len(new_results)} results found**"
             if dupes:
-                lines.append(f"*({len(dupes)} results already in your sources — skipped)*")
-            lines.append("\nSelect results below to add as sources, or say *\"add all\"*.")
-            reply = "\n".join(lines)
+                reply += f"  ·  *{len(dupes)} already in sources*"
 
-        # ── Stream narrative as tokens ───────────────────────────────────
+        # ── Stream header as tokens ───────────────────────────────────
         chunk_size = 12
         for i in range(0, len(reply), chunk_size):
             yield f"data: {json.dumps({'type': 'token', 'content': reply[i:i+chunk_size]})}\n\n"
 
-        # ── Emit structured results for approval UI ──────────────────────
+        # ── Emit structured results for card UI ───────────────────────
         if new_results:
             yield f"data: {json.dumps({'type': 'research_results', 'results': research_engine.serialize_results(new_results)})}\n\n"
 
         follow_ups = []
         if new_results:
-            follow_ups = ['Add all results as sources', f'Deep dive into the top result', 'Narrow the search']
+            follow_ups = ['Add all results as sources', 'Deep dive into the top result', 'Narrow the search']
         else:
             follow_ups = ['Try a broader search', 'Search a specific site', 'Deep dive with filters']
 
@@ -1100,6 +1228,274 @@ async def _stream_research(chat_query: ChatQuery):
         import traceback
         traceback.print_exc()
         yield f"data: {json.dumps({'error': f'Research error: {e}'})}\n\n"
+
+
+async def _stream_studio(chat_query: ChatQuery):
+    """Stream a Studio agent response in SSE format.
+
+    LLM-based intent router — lets the user create Studio content (audio,
+    documents, quizzes, visuals, videos) directly from the chat, using the
+    current conversation as context.
+    """
+    from services.ollama_client import ollama_client
+    from services.intent_classifier import classify_intent
+    from services.event_logger import log_content_generated
+
+    q = chat_query.question
+    notebook_id = chat_query.notebook_id
+    chat_context = chat_query.chat_context or ""
+
+    # ── Help shortcut ──
+    if _is_help_request(q):
+        for chunk in _stream_help(_STUDIO_HELP, "Studio", "studio"):
+            yield chunk
+        return
+
+    yield f"data: {json.dumps({'type': 'status', 'message': 'Studio interpreting your request...', 'query_type': 'studio'})}\n\n"
+
+    try:
+        # ── Intent classification ────────────────────────────────────────
+        classified = await classify_intent(q, "studio", ollama_client)
+        intent = classified["intent"]
+        params = classified.get("params", {})
+        topic = (params.get("topic") or "").strip() or None
+        reply = ""
+        follow_ups = ['Make a podcast on this', 'Create a study guide', 'Quiz me on this topic']
+
+        # -----------------------------------------------------------------
+        # GENERATE AUDIO (podcast, interview, etc.)
+        # -----------------------------------------------------------------
+        if intent == "generate_audio":
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Studio generating podcast...', 'query_type': 'studio'})}\n\n"
+            try:
+                from services.audio_generator import audio_service
+
+                skill_id = (params.get("skill_id") or "podcast").strip()
+                host1 = (params.get("host1_gender") or "male").strip().lower()
+                host2 = (params.get("host2_gender") or "female").strip().lower()
+                duration = int(params.get("duration_minutes", 10))
+                if duration < 5: duration = 5
+                if duration > 45: duration = 45
+
+                result = await audio_service.generate(
+                    notebook_id=notebook_id,
+                    topic=topic or "the current discussion",
+                    duration_minutes=duration,
+                    skill_id=skill_id,
+                    host1_gender=host1,
+                    host2_gender=host2,
+                    accent="us",
+                    chat_context=chat_context,
+                )
+                audio_id = result.get("audio_id", "")
+                status = result.get("status", "pending")
+                log_content_generated(notebook_id, "audio", skill_id, topic or "chat-context")
+
+                lines = [
+                    f"**Podcast generation started!** 🎙️",
+                    f"",
+                    f"- **Style:** {skill_id.replace('_', ' ').title()}",
+                    f"- **Duration:** ~{duration} min",
+                    f"- **Hosts:** {host1.title()} & {host2.title()}",
+                    f"- **Status:** {status}",
+                    f"",
+                    f"The podcast is being generated in the background. You'll find it in **Studio → Audio** when it's ready.",
+                ]
+                reply = "\n".join(lines)
+                follow_ups = ['Create a study guide too', 'Make a quiz on this', 'Show me a visual']
+
+            except Exception as ae:
+                reply = f"Podcast generation failed: {ae}"
+
+        # -----------------------------------------------------------------
+        # GENERATE DOCUMENT (brief, guide, summary, etc.)
+        # -----------------------------------------------------------------
+        elif intent == "generate_document":
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Studio generating document...', 'query_type': 'studio'})}\n\n"
+            try:
+                from api.content import generate_content as _gen_content, ContentGenerateRequest
+
+                skill_id = (params.get("skill_id") or "research_summary").strip()
+                style = (params.get("style") or "professional").strip()
+
+                result = await _gen_content(ContentGenerateRequest(
+                    notebook_id=notebook_id,
+                    skill_id=skill_id,
+                    topic=topic,
+                    style=style,
+                    chat_context=chat_context,
+                ))
+                content = result.content
+                skill_name = result.skill_name
+                log_content_generated(notebook_id, "document", skill_id, topic or "chat-context")
+
+                lines = [
+                    f"**{skill_name} generated!** 📄",
+                    f"",
+                    f"---",
+                    f"",
+                    content[:3000] if len(content) > 3000 else content,
+                ]
+                if len(content) > 3000:
+                    lines.append(f"\n\n*...truncated. Full document available in Studio → Documents.*")
+                reply = "\n".join(lines)
+                follow_ups = ['Make a podcast on this', 'Quiz me on this', 'Create a visual']
+
+            except Exception as de:
+                reply = f"Document generation failed: {de}"
+
+        # -----------------------------------------------------------------
+        # GENERATE QUIZ
+        # -----------------------------------------------------------------
+        elif intent == "generate_quiz":
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Studio generating quiz...', 'query_type': 'studio'})}\n\n"
+            try:
+                from api.quiz import generate_quiz as _gen_quiz, GenerateQuizRequest
+
+                num_q = int(params.get("num_questions", 5))
+                if num_q < 3: num_q = 3
+                if num_q > 10: num_q = 10
+                difficulty = (params.get("difficulty") or "medium").strip().lower()
+                if difficulty not in ("easy", "medium", "hard"):
+                    difficulty = "medium"
+
+                result = await _gen_quiz(GenerateQuizRequest(
+                    notebook_id=notebook_id,
+                    num_questions=num_q,
+                    difficulty=difficulty,
+                    topic=topic,
+                    chat_context=chat_context,
+                ))
+                questions = result.questions
+                log_content_generated(notebook_id, "quiz", "quiz", topic or "chat-context")
+
+                lines = [
+                    f"**Quiz generated!** 🎯  ({len(questions)} questions, {difficulty})",
+                    f"",
+                    f"Head to **Studio → Quiz** to take it interactively, or preview below:",
+                    f"",
+                ]
+                for i, q_item in enumerate(questions[:5]):
+                    lines.append(f"**Q{i+1}.** {q_item.question}")
+                    for opt in (q_item.options or []):
+                        lines.append(f"  - {opt}")
+                    lines.append("")
+                if len(questions) > 5:
+                    lines.append(f"*...plus {len(questions) - 5} more questions*")
+                reply = "\n".join(lines)
+                follow_ups = ['Make it harder', 'Create a study guide', 'Podcast on this topic']
+
+            except Exception as qe:
+                reply = f"Quiz generation failed: {qe}"
+
+        # -----------------------------------------------------------------
+        # GENERATE VISUAL (diagram, chart, etc.)
+        # -----------------------------------------------------------------
+        elif intent == "generate_visual":
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Studio generating visual...', 'query_type': 'studio'})}\n\n"
+            try:
+                from api.visual import generate_visual_summary as _gen_visual, GenerateVisualRequest
+
+                result = await _gen_visual(GenerateVisualRequest(
+                    notebook_id=notebook_id,
+                    diagram_types=["mindmap", "flowchart"],
+                    focus_topic=topic or q,
+                ))
+                diagrams = result.diagrams
+                log_content_generated(notebook_id, "visual", "visual", topic or "chat-context")
+
+                if diagrams:
+                    lines = []
+                    for d in diagrams:
+                        lines.append(f"**{d.title}** ({d.diagram_type}) 📊")
+                        lines.append(f"")
+                        lines.append(f"```mermaid")
+                        lines.append(d.code)
+                        lines.append(f"```")
+                        lines.append(f"")
+                    lines.append(f"*Open in Studio → Visual for an interactive view.*")
+                    reply = "\n".join(lines)
+                else:
+                    reply = "Could not generate a visual from the current context. Try providing more specific content."
+                follow_ups = ['Make a flowchart instead', 'Create a document', 'Make a podcast']
+
+            except Exception as ve:
+                reply = f"Visual generation failed: {ve}"
+
+        # -----------------------------------------------------------------
+        # GENERATE VIDEO
+        # -----------------------------------------------------------------
+        elif intent == "generate_video":
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Studio generating video...', 'query_type': 'studio'})}\n\n"
+            try:
+                from services.video_generator import video_generator
+
+                duration = int(params.get("duration_minutes", 5))
+                if duration < 1: duration = 1
+                if duration > 10: duration = 10
+                visual_style = (params.get("visual_style") or "classic").strip()
+                voice = (params.get("voice") or "us_female").strip()
+
+                result = await video_generator.generate(
+                    notebook_id=notebook_id,
+                    topic=topic or "the current discussion",
+                    duration_minutes=duration,
+                    visual_style=visual_style,
+                    voice=voice,
+                    format_type="explainer",
+                    chat_context=chat_context,
+                )
+                video_id = result.get("video_id", "")
+                status = result.get("status", "pending")
+                log_content_generated(notebook_id, "video", "explainer", topic or "chat-context")
+
+                lines = [
+                    f"**Video generation started!** 🎬",
+                    f"",
+                    f"- **Duration:** ~{duration} min",
+                    f"- **Style:** {visual_style}",
+                    f"- **Status:** {status}",
+                    f"",
+                    f"You'll find the video in **Studio → Video** when it's ready.",
+                ]
+                reply = "\n".join(lines)
+                follow_ups = ['Create a podcast too', 'Make a study guide', 'Quiz me']
+
+            except Exception as vie:
+                reply = f"Video generation failed: {vie}"
+
+        # -----------------------------------------------------------------
+        # FALLBACK
+        # -----------------------------------------------------------------
+        else:
+            reply = (
+                "I'm not sure what type of content you'd like me to create. "
+                "Try something like:\n\n"
+                "- *\"Make a podcast on this topic\"*\n"
+                "- *\"Create a study guide\"*\n"
+                "- *\"Quiz me on what we discussed\"*\n"
+                "- *\"Visualize this as a flowchart\"*\n"
+                "- *\"Make a video explainer\"*\n\n"
+                "Type **@studio ?** for full help."
+            )
+
+        # Stream the reply
+        chunk_size = 12
+        for i in range(0, len(reply), chunk_size):
+            yield f"data: {json.dumps({'type': 'token', 'content': reply[i:i+chunk_size]})}\n\n"
+
+        yield f"data: {json.dumps({'type': 'done', 'follow_up_questions': follow_ups, 'agent_name': 'Studio', 'agent_type': 'studio'})}\n\n"
+
+        # Log interaction
+        try:
+            log_chat_qa(notebook_id, f"@studio {q}", reply[:500], [])
+        except Exception:
+            pass
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        yield f"data: {json.dumps({'error': f'Studio error: {e}'})}\n\n"
 
 
 class ChatHistoryMessage(BaseModel):

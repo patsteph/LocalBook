@@ -36,6 +36,7 @@ class GenerateQuizRequest(BaseModel):
     question_types: Optional[List[str]] = None
     source_ids: Optional[List[str]] = None  # Specific sources to quiz on
     from_highlights: bool = False  # Generate from user highlights only
+    chat_context: Optional[str] = None  # Recent chat conversation for "From Chat" mode
 
 
 class QuizQuestionResponse(BaseModel):
@@ -87,6 +88,32 @@ class FSRSRating(BaseModel):
     """User's rating after reviewing a card."""
     card_id: str
     rating: int = Field(ge=1, le=4, description="1=Again, 2=Hard, 3=Good, 4=Easy")
+
+
+class MissedQuestion(BaseModel):
+    question: str
+    correct_answer: str
+    user_answer: str
+    explanation: str = ""
+
+
+class GapAnalysisRequest(BaseModel):
+    notebook_id: str
+    missed_questions: List[MissedQuestion]
+    quiz_topic: Optional[str] = None
+
+
+class KnowledgeGap(BaseModel):
+    gap_title: str = Field(description="Short title for the knowledge gap")
+    description: str = Field(description="What the user doesn't understand yet")
+    study_suggestion: str = Field(description="Specific suggestion for what to study")
+    suggested_topic: str = Field(description="Topic string to pre-fill in Studio for targeted content generation")
+
+
+class GapAnalysisResponse(BaseModel):
+    gaps: List[KnowledgeGap]
+    summary: str = Field(description="Brief overall assessment")
+    score_percent: int
 
 
 # =============================================================================
@@ -192,6 +219,16 @@ async def generate_quiz(request: GenerateQuizRequest):
         # Add topic focus if provided
         if request.topic:
             content = f"FOCUS TOPIC: {request.topic}\nGenerate questions specifically about this topic.\n\n{content}"
+        
+        # Inject chat context if provided ("From Chat" mode)
+        if request.chat_context:
+            content = f"""The user has been learning about this topic in a chat conversation. Focus quiz questions on what they discussed:
+
+--- RECENT CHAT ---
+{request.chat_context[:3000]}
+--- END CHAT ---
+
+{content}"""
         
         # Generate quiz using structured LLM
         quiz_output = await structured_llm.generate_quiz(
@@ -382,3 +419,102 @@ async def get_quiz_stats(notebook_id: str):
         "cards_due": due_count,
         "total_reviews": len(cards_data.get("reviews", []))
     }
+
+
+@router.post("/gap-analysis", response_model=GapAnalysisResponse)
+async def analyze_knowledge_gaps(request: GapAnalysisRequest):
+    """Analyze missed quiz questions to identify knowledge gaps and suggest targeted study.
+    
+    Takes the questions a user got wrong, uses LLM to group them into
+    knowledge gap themes, and returns suggestions for Studio content generation
+    to address each gap.
+    """
+    if not request.missed_questions:
+        return GapAnalysisResponse(gaps=[], summary="Perfect score — no gaps detected!", score_percent=100)
+    
+    # Build prompt with missed questions
+    missed_text = ""
+    for i, mq in enumerate(request.missed_questions, 1):
+        missed_text += f"\n{i}. Question: {mq.question}\n"
+        missed_text += f"   Correct answer: {mq.correct_answer}\n"
+        missed_text += f"   User answered: {mq.user_answer}\n"
+        if mq.explanation:
+            missed_text += f"   Why: {mq.explanation}\n"
+    
+    topic_context = f" on the topic of '{request.quiz_topic}'" if request.quiz_topic else ""
+    
+    prompt = f"""A user just took a quiz{topic_context} and got these questions wrong:
+{missed_text}
+
+Analyze the missed questions and identify the KNOWLEDGE GAPS — the underlying concepts or areas the user doesn't fully understand yet. Group related misses into gap themes (1-3 gaps max).
+
+For each gap, provide:
+1. A short title (e.g., "Supply Chain Economics" or "Neural Network Architectures")
+2. A description of what the user is missing (1-2 sentences)
+3. A specific study suggestion (what to read/review)
+4. A suggested_topic string that could be used to generate a focused study document or podcast (keep it specific and actionable, e.g., "Supply chain cost structures and pricing models" not just "supply chains")
+
+Also provide a brief overall summary (1 sentence) of the user's understanding level.
+
+Respond in valid JSON with this exact structure:
+{{
+  "gaps": [
+    {{
+      "gap_title": "...",
+      "description": "...",
+      "study_suggestion": "...",
+      "suggested_topic": "..."
+    }}
+  ],
+  "summary": "..."
+}}"""
+
+    try:
+        result = await structured_llm._call_ollama_json(
+            system_prompt="You are a learning assessment expert. Identify knowledge gaps from quiz results and suggest targeted study areas. Always respond in valid JSON.",
+            user_prompt=prompt,
+        )
+        
+        if not result or "gaps" not in result:
+            # Fallback: create a single gap from the quiz topic
+            fallback_topic = request.quiz_topic or "the topics covered in this quiz"
+            return GapAnalysisResponse(
+                gaps=[KnowledgeGap(
+                    gap_title=f"Review: {fallback_topic}",
+                    description=f"You missed {len(request.missed_questions)} question(s). A focused review would help solidify your understanding.",
+                    study_suggestion=f"Generate a study document or podcast focused on {fallback_topic}.",
+                    suggested_topic=fallback_topic,
+                )],
+                summary=f"Review recommended on {fallback_topic}.",
+                score_percent=0,
+            )
+        
+        gaps = []
+        for g in result.get("gaps", [])[:3]:
+            gaps.append(KnowledgeGap(
+                gap_title=g.get("gap_title", "Knowledge Gap"),
+                description=g.get("description", ""),
+                study_suggestion=g.get("study_suggestion", ""),
+                suggested_topic=g.get("suggested_topic", request.quiz_topic or ""),
+            ))
+        
+        return GapAnalysisResponse(
+            gaps=gaps,
+            summary=result.get("summary", ""),
+            score_percent=0,  # Frontend will fill this from its own score calc
+        )
+    
+    except Exception as e:
+        logger.error(f"Gap analysis failed: {e}")
+        logger.error(traceback.format_exc())
+        fallback_topic = request.quiz_topic or "the quiz topics"
+        return GapAnalysisResponse(
+            gaps=[KnowledgeGap(
+                gap_title=f"Review: {fallback_topic}",
+                description=f"You missed {len(request.missed_questions)} question(s).",
+                study_suggestion=f"Try generating a focused document on {fallback_topic}.",
+                suggested_topic=fallback_topic,
+            )],
+            summary=f"Gap analysis unavailable — review {fallback_topic}.",
+            score_percent=0,
+        )

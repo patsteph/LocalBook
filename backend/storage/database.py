@@ -164,6 +164,32 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_audio_notebook ON audio_generations(notebook_id)
         """)
         
+        # -- video_generations --
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS video_generations (
+                video_id TEXT PRIMARY KEY,
+                notebook_id TEXT NOT NULL,
+                topic TEXT DEFAULT '',
+                duration_minutes INTEGER DEFAULT 5,
+                visual_style TEXT DEFAULT 'classic',
+                voice TEXT DEFAULT 'us_female',
+                format_type TEXT DEFAULT 'explainer',
+                video_file_path TEXT,
+                duration_seconds REAL,
+                storyboard TEXT,
+                narration_script TEXT,
+                slide_count INTEGER,
+                status TEXT DEFAULT 'pending',
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_video_notebook ON video_generations(notebook_id)
+        """)
+        
         # -- content_generations --
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS content_generations (
@@ -224,6 +250,27 @@ class Database:
                 FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
             )
         """)
+        
+        # -- notebook_sections --
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS notebook_sections (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                sort_order INTEGER DEFAULT 0,
+                collapsed INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        
+        # Add section_id and sort_order to notebooks if missing (safe migration)
+        try:
+            cursor.execute("ALTER TABLE notebooks ADD COLUMN section_id TEXT REFERENCES notebook_sections(id) ON DELETE SET NULL")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE notebooks ADD COLUMN sort_order INTEGER DEFAULT 0")
+        except Exception:
+            pass
         
         # -- migration tracking --
         cursor.execute("""

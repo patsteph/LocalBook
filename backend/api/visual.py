@@ -861,7 +861,7 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
         if not themes or len(themes) < 2:
             print(f"[Visual Stream] ⚠️ WARNING: Rendering with {len(themes)} themes - visual will be sparse!")
         
-        # Helper to generate SVG for a template - uses pre-classified structure
+        # Helper to generate SVG or Chart for a template - uses pre-classified structure
         async def gen_visual(tmpl):
             try:
                 # Get title from cached structure or topic - create concise title if too long
@@ -876,7 +876,41 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
                 else:
                     title = "Key Insights"
                 
-                # Use SVG builder instead of Mermaid for reliable rendering
+                # CHART TEMPLATES: Use chart builder instead of SVG builder
+                if tmpl.mermaid_type == "chart":
+                    print(f"[Visual Stream] 📊 Building CHART for template: {tmpl.id}")
+                    result = structured_llm.build_chart_from_structure(
+                        structure=structure,
+                        template_id=tmpl.id,
+                        title=title,
+                    )
+                    
+                    # Validate chart has data points
+                    chart_config = result.get("chart_config", {})
+                    data_points = chart_config.get("data", [])
+                    if len(data_points) < 2:
+                        print(f"[Visual Stream] ⚠️ REJECTED chart {tmpl.id}: only {len(data_points)} data points (need ≥2)")
+                        return None
+                    
+                    tagline = structure.get("insight") or ""
+                    if not tagline:
+                        tagline = f"Data chart with {len(data_points)} data points"
+                    
+                    display_title = result["title"]
+                    if tmpl.name.lower() not in display_title.lower():
+                        display_title = f"{result['title']} ({tmpl.name})"
+                    
+                    return {
+                        "render_type": "chart",
+                        "chart_config": chart_config,
+                        "title": display_title,
+                        "description": result["description"],
+                        "template_id": tmpl.id,
+                        "template_name": tmpl.name,
+                        "tagline": tagline,
+                    }
+                
+                # SVG TEMPLATES: Use SVG builder (existing path)
                 result = structured_llm.build_svg_from_structure(
                     structure=structure,
                     template_id=tmpl.id,

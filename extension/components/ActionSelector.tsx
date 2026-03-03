@@ -53,29 +53,40 @@ export function ActionSelector({ loading, onAction }: ActionSelectorProps) {
 
       {/* Secondary actions — expandable */}
       {showMore && (
-        <div className="flex gap-1.5 mt-1.5">
-          <button
-            onClick={() => { onAction("links"); setShowMore(false) }}
-            disabled={loading}
-            className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-[10px] text-gray-400 transition-colors disabled:opacity-40"
-          >
-            🔗 Links
-          </button>
-          <button
-            onClick={() => { onAction("compare"); setShowMore(false) }}
-            disabled={loading}
-            className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-[10px] text-gray-400 transition-colors disabled:opacity-40"
-          >
-            ⚖️ Compare
-          </button>
-          <button
-            onClick={() => { onAction("automate"); setShowMore(false) }}
-            disabled={loading}
-            className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-[10px] text-gray-400 transition-colors disabled:opacity-40"
-          >
-            🤖 Automate
-          </button>
-        </div>
+        <>
+          <div className="flex gap-1.5 mt-1.5">
+            <button
+              onClick={() => { onAction("links"); setShowMore(false) }}
+              disabled={loading}
+              className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-[10px] text-gray-400 transition-colors disabled:opacity-40"
+            >
+              🔗 Links
+            </button>
+            <button
+              onClick={() => { onAction("compare"); setShowMore(false) }}
+              disabled={loading}
+              className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-[10px] text-gray-400 transition-colors disabled:opacity-40"
+            >
+              ⚖️ Compare
+            </button>
+            <button
+              onClick={() => { onAction("automate"); setShowMore(false) }}
+              disabled={loading}
+              className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-[10px] text-gray-400 transition-colors disabled:opacity-40"
+            >
+              🤖 Automate
+            </button>
+          </div>
+          <div className="flex gap-1.5 mt-1.5">
+            <button
+              onClick={() => { onAction("collector"); setShowMore(false) }}
+              disabled={loading}
+              className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-gray-800 hover:bg-amber-900/40 border border-gray-700 hover:border-amber-500/40 rounded text-[10px] text-gray-400 transition-colors disabled:opacity-40"
+            >
+              📋 Add to Collector
+            </button>
+          </div>
+        </>
       )}
     </div>
   )

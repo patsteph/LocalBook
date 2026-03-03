@@ -10,7 +10,8 @@ export interface Diagram {
   diagram_type?: string;
   code?: string;  // Mermaid code (legacy)
   svg?: string;   // SVG code (new)
-  render_type?: 'svg' | 'mermaid';
+  render_type?: 'svg' | 'mermaid' | 'chart';
+  chart_config?: any;  // JSON config for Recharts-based data charts
   title: string;
   description: string;
   template_id?: string;

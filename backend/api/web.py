@@ -339,6 +339,30 @@ async def _scrape_and_ingest_background(notebook_id: str, source_id: str, url: s
                 "characters": characters
             })
             
+            # Background vision: extract and describe images from raw HTML
+            # Runs AFTER text ingestion is complete — if this fails, source is already usable
+            raw_html = scraped.get("html")
+            if raw_html and len(raw_html) > 1000 and source_type == "web":
+                try:
+                    from services.multimodal_extractor import multimodal_extractor
+                    image_descriptions = await multimodal_extractor.extract_and_describe_html(
+                        html_content=raw_html,
+                        source_id=source_id,
+                        base_url=url,
+                        page_title=actual_title,
+                    )
+                    if image_descriptions:
+                        image_text = multimodal_extractor.format_for_indexing(image_descriptions)
+                        if image_text:
+                            await rag_engine.append_to_document(
+                                notebook_id=notebook_id,
+                                source_id=source_id,
+                                text=image_text,
+                            )
+                            print(f"[Web] Vision: added {len(image_descriptions)} image descriptions for {actual_title}")
+                except Exception as vis_err:
+                    print(f"[Web] Background vision failed (non-fatal): {vis_err}")
+            
         except Exception as e:
             print(f"[Web] Background error for {url}: {e}")
             await source_store.update(notebook_id, source_id, {

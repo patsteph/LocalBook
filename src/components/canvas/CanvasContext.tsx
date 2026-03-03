@@ -8,7 +8,7 @@ export interface CanvasItemsContextValue {
   canvasItems: CanvasItem[];
   addCanvasItem: (item: Omit<CanvasItem, 'id' | 'timestamp'> & { id?: string }) => void;
   removeCanvasItem: (id: string) => void;
-  updateCanvasItem: (id: string, updates: Partial<Pick<CanvasItem, 'title' | 'content'>>) => void;
+  updateCanvasItem: (id: string, updates: Partial<Pick<CanvasItem, 'title' | 'content' | 'status' | 'metadata'>>) => void;
   toggleCanvasItemCollapse: (id: string) => void;
   clearCanvas: () => void;
 }
@@ -76,6 +76,10 @@ export interface AppShellContextValue {
   // Generation activity status (drives rainbow line animation)
   generationStatus: 'idle' | 'generating' | 'complete' | 'error';
   setGenerationStatus: (status: 'idle' | 'generating' | 'complete' | 'error') => void;
+
+  // Chat context for "From Chat" mode — recent conversation summary
+  chatContext: string;
+  setChatContext: (context: string) => void;
 }
 
 const AppShellCtx = createContext<AppShellContextValue | null>(null);

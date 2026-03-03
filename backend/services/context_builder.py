@@ -96,6 +96,13 @@ CONTEXT_PROFILES: Dict[str, ContextProfile] = {
         temperature=0.55  # Teaching clarity
     ),
     
+    # Video storyboard — needs breadth for explainer content
+    "video_storyboard": ContextProfile(
+        max_sources=12, chars_per_source=3000, total_context_chars=20000,
+        strategy="breadth", use_chunks=True, chunk_top_k=15, use_map_reduce=False,
+        temperature=0.55  # Structured but engaging
+    ),
+    
     # Audio — scales with duration (overridden dynamically)
     "podcast_script": ContextProfile(
         max_sources=15, chars_per_source=4000, total_context_chars=24000,

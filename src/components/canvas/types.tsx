@@ -108,11 +108,13 @@ export function makeDefaultLayout(): LayoutNode {
 // Canvas workspace item — content stacked in the universal canvas
 export interface CanvasItem {
   id: string;
-  type: 'document' | 'visual' | 'quiz' | 'audio' | 'chat-response' | 'note';
+  type: 'document' | 'visual' | 'quiz' | 'audio' | 'video' | 'chat-response' | 'note';
   title: string;
   content: string;       // markdown, mermaid code, quiz HTML, audio URL, chat markdown, or editable note text
   collapsed: boolean;
   timestamp: number;
   sourceNames?: string[];                    // filenames of sources used in generation
   relevanceScores?: Record<string, number>;  // source_id → relevance score
+  status?: 'generating' | 'processing' | 'complete' | 'error';  // real-time generation status
+  metadata?: Record<string, any>;            // extra data (e.g. audioId, notebookId, errorMessage)
 }

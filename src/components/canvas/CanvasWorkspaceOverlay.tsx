@@ -1,14 +1,16 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import DOMPurify from 'dompurify';
 import {
-  FileText, Palette, Target, Mic, MessageSquare, PenLine,
+  FileText, Palette, Target, Mic, Video, MessageSquare, PenLine,
   Presentation, Download, Search, Sparkles, Brain, GitBranch,
-  CalendarDays, Network, BarChart3, BookOpen
+  CalendarDays, Network, BarChart3, BookOpen, MessageCircle
 } from 'lucide-react';
 import { useCanvas } from './CanvasContext';
 import { CanvasItem } from './types';
 import ReactMarkdown from 'react-markdown';
 import { MermaidRenderer } from '../shared/MermaidRenderer';
+import { SVGRenderer } from '../shared/SVGRenderer';
+import { FeynmanQuizBlock, FeynmanAudioBlock, isFeynmanBlock } from '../shared/FeynmanBlocks';
 import { CanvasActionPopover } from './CanvasActionPopover';
 import { contentService } from '../../services/content';
 import { visualService } from '../../services/visual';
@@ -24,6 +26,7 @@ import { writingService, FormatOption } from '../../services/writing';
 import { exportService } from '../../services/export';
 import { Skill } from '../../types';
 import { WritingAssistBar } from '../WritingAssistBar';
+import { AudioCanvasPlayer } from '../chat/AudioCanvasPlayer';
 
 // Icons for canvas item types
 const iconSm = 'w-3.5 h-3.5';
@@ -32,6 +35,7 @@ const TYPE_ICONS: Record<CanvasItem['type'], React.ReactNode> = {
   'visual': <Palette className={iconSm} />,
   'quiz': <Target className={iconSm} />,
   'audio': <Mic className={iconSm} />,
+  'video': <Video className={iconSm} />,
   'chat-response': <MessageSquare className={iconSm} />,
   'note': <PenLine className={iconSm} />,
 };
@@ -358,29 +362,126 @@ const CanvasItemRenderer: React.FC<CanvasItemRendererProps> = ({ item, onToggleC
           <NoteCanvasEditor item={item} />
         ) : (
         <div className="px-6 py-4">
-          {item.type === 'document' && (
+          {/* Generating placeholder */}
+          {item.status === 'generating' && !item.content && item.type !== 'audio' && (
+            <div className="flex items-center gap-3 py-4">
+              <div className="flex gap-1">
+                <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+                <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '150ms' }} />
+                <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                Generating {item.type === 'document' ? 'document' : item.type === 'quiz' ? 'quiz' : item.type === 'visual' ? 'visual' : 'content'}…
+              </span>
+            </div>
+          )}
+          {/* Error state */}
+          {item.status === 'error' && !item.content && item.type !== 'audio' && (
+            <div className="flex items-center gap-2 py-3 text-red-500 dark:text-red-400">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+              </svg>
+              <span className="text-xs">Generation failed — try again</span>
+            </div>
+          )}
+          {item.type === 'document' && item.content && (
             <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-headings:mt-4 prose-headings:mb-1 prose-ul:my-2 prose-li:my-0 prose-hr:my-4">
-              <ReactMarkdown>{item.content}</ReactMarkdown>
+              <ReactMarkdown components={{
+                a: ({ href, children, ...props }) => {
+                  // Intercept Feynman quiz links: #feynman-quiz:difficulty:label
+                  if (href?.startsWith('#feynman-quiz:')) {
+                    const parts = href.replace('#feynman-quiz:', '').split(':');
+                    const difficulty = parts[0] || 'medium';
+                    const label = parts.slice(1).join(':') || 'Quiz';
+                    return (
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          const topic = item.title?.replace(/^Document:\s*/i, '').replace(/^Feynman.*?:\s*/i, '') || '';
+                          window.dispatchEvent(new CustomEvent('feynmanQuizNav', {
+                            detail: { topic: `${label}: ${topic}`.trim(), difficulty }
+                          }));
+                        }}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg no-underline cursor-pointer transition-colors bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-800/50 border border-purple-300 dark:border-purple-700"
+                      >
+                        <Target className="w-4 h-4" />
+                        {children}
+                      </button>
+                    );
+                  }
+                  return <a href={href} {...props}>{children}</a>;
+                },
+                code: ({ className, children, ...props }) => {
+                  const raw = String(children).replace(/\n$/, '');
+                  // Render ```mermaid blocks as interactive diagrams
+                  if (/language-mermaid/.test(className || '')) {
+                    return (
+                      <div className="not-prose my-4">
+                        <MermaidRenderer code={raw} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+                      </div>
+                    );
+                  }
+                  // Render ```feynman-quiz blocks as interactive quiz buttons
+                  if (/language-feynman-quiz/.test(className || '')) {
+                    return <FeynmanQuizBlock json={raw} docTitle={item.title} />;
+                  }
+                  // Render ```feynman-audio blocks as interactive audio buttons
+                  if (/language-feynman-audio/.test(className || '')) {
+                    return <FeynmanAudioBlock json={raw} />;
+                  }
+                  // Render ```feynman-knowledge-map blocks as inline SVG
+                  if (/language-feynman-knowledge-map/.test(className || '')) {
+                    return (
+                      <div className="not-prose my-4">
+                        <SVGRenderer svg={raw} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+                      </div>
+                    );
+                  }
+                  return <code className={className} {...props}>{children}</code>;
+                },
+                pre: ({ children, ...props }) => {
+                  // Unwrap <pre> for custom-rendered blocks (mermaid, feynman-quiz, feynman-audio)
+                  const child = children as any;
+                  if (child?.props?.className && (isFeynmanBlock(child.props.className) || /language-mermaid/.test(child.props.className) || /language-feynman-knowledge-map/.test(child.props.className))) {
+                    return <>{children}</>;
+                  }
+                  return <pre {...props}>{children}</pre>;
+                }
+              }}>{item.content}</ReactMarkdown>
             </div>
           )}
           {item.type === 'visual' && (
             item.content ? (
               <MermaidRenderer code={item.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
-            ) : (
+            ) : item.status !== 'generating' && item.status !== 'error' ? (
               <p className="text-gray-400 text-sm">No visual content</p>
-            )
+            ) : null
           )}
-          {item.type === 'quiz' && (
+          {item.type === 'quiz' && item.content && (
             <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(item.content) }} />
           )}
           {item.type === 'audio' && (
-            <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-900/40 rounded-lg">
-              <span className="text-2xl">🎙️</span>
-              <div>
-                <p className="text-sm font-medium text-gray-900 dark:text-white">{item.title}</p>
-                <p className="text-xs text-gray-500 dark:text-gray-400">Audio generation started — check Audio tab when complete</p>
+            item.metadata?.audioId && item.metadata?.notebookId ? (
+              <AudioCanvasPlayer
+                audioId={item.metadata.audioId}
+                notebookId={item.metadata.notebookId}
+                title={item.title}
+              />
+            ) : (
+              <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-900/40 rounded-lg">
+                <div className="flex-shrink-0 w-9 h-9 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-500 flex items-center justify-center">
+                  <Mic className="w-4 h-4 animate-pulse" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-900 dark:text-white">{item.title}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {item.status === 'error'
+                      ? (item.metadata?.errorMessage || 'Audio generation failed')
+                      : 'Starting audio generation…'}
+                  </p>
+                </div>
               </div>
-            </div>
+            )
           )}
           {item.type === 'chat-response' && (
             <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-headings:mt-3 prose-headings:mb-1">
@@ -482,6 +583,13 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
   const [docsStyle, setDocsStyle] = useState(() => localStorage.getItem('lb-canvas-docs-style') || 'professional');
   const [docsTopic, setDocsTopic] = useState('');
 
+  // Strip @chat qualifier from topic strings before sending to API
+  const stripAtChat = (s: string) => s.replace(/\s*@chat\s*/gi, '').trim();
+
+  // @chat qualifier detection — visual feedback when user types @chat in topic fields
+  const hasAtChatDocs = useMemo(() => /\b@chat\b/i.test(docsTopic), [docsTopic]);
+  const hasAtChatQuiz = useMemo(() => /\b@chat\b/i.test(quizTopic), [quizTopic]);
+
   // PPTX popover config (theme can be built-in id OR custom template id prefixed with 'tpl:')
   const [pptxTheme, setPptxTheme] = useState(() => localStorage.getItem('lb-canvas-pptx-theme') || 'light');
   const [customTemplates, setCustomTemplates] = useState<{ id: string; name: string }[]>([]);
@@ -541,15 +649,18 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
     ctx.removeCanvasItem(id);
   };
 
-  // Scroll to bottom when new items are added (delayed for DOM render)
+  // Scroll to show the newest item when items are added
   const prevItemCount = useRef(ctx.canvasItems.length);
   useEffect(() => {
     if (ctx.canvasItems.length > prevItemCount.current && contentAreaRef.current) {
       const timer = setTimeout(() => {
-        contentAreaRef.current?.scrollTo({
-          top: contentAreaRef.current.scrollHeight,
-          behavior: 'smooth',
-        });
+        // Find the last item's DOM element and scroll it into view at the top
+        const container = contentAreaRef.current;
+        if (!container) return;
+        const lastChild = container.lastElementChild as HTMLElement | null;
+        if (lastChild) {
+          lastChild.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
       }, 100);
       return () => clearTimeout(timer);
     }
@@ -596,7 +707,8 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
             type: 'visual',
             title: diagram.title || `Visual: ${title}`,
             content: diagram.svg || diagram.code || '',
-            collapsed: false,
+            collapsed: true,
+            metadata: { notebookId: ctx.selectedNotebookId },
           });
           setActionLoading(null);
           ctx.setGenerationStatus('complete');
@@ -624,14 +736,28 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
     if (!ctx.selectedNotebookId) return;
     setActionLoading('audio');
     ctx.setGenerationStatus('generating');
+    const itemId = `audio-${Date.now()}`;
+    const audioFormatLabels: Record<string, string> = {
+      podcast_script: 'Conversation', debate: 'Debate Format', interview: 'Interview Format',
+      storytelling: 'Story Format', feynman_curriculum: 'Feynman Lesson',
+    };
+    const formatLabel = audioFormatLabels[audioSkill] || 'Audio';
+    // Add placeholder immediately
+    ctx.addCanvasItem({
+      id: itemId,
+      type: 'audio',
+      title: `Podcast: ${formatLabel}`,
+      content: '',
+      collapsed: true,
+      status: 'generating',
+      metadata: { notebookId: ctx.selectedNotebookId },
+    });
     try {
-      const title = getPrimaryTitle();
       const content = getPrimaryContent();
-      // Extract topic from content (first 200 chars as topic hint)
       const topic = content.substring(0, 200).replace(/[#*_\n]/g, ' ').trim();
       const voiceMap: Record<string, [string, string]> = { mf: ['male', 'female'], fm: ['female', 'male'], mm: ['male', 'male'], ff: ['female', 'female'] };
       const [h1, h2] = voiceMap[audioVoices] || ['male', 'female'];
-      await audioService.generate({
+      const result = await audioService.generate({
         notebook_id: ctx.selectedNotebookId,
         topic,
         duration_minutes: audioDuration,
@@ -639,17 +765,21 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
         host1_gender: h1,
         host2_gender: h2,
         accent: audioAccent,
+        ...(ctx.chatContext ? { chat_context: ctx.chatContext } : {}),
       });
-      ctx.addCanvasItem({
-        type: 'audio',
-        title: `Podcast: ${title}`,
-        content: '',
-        collapsed: false,
+      // Update with real audio_id so the inline player can poll
+      ctx.updateCanvasItem(itemId, {
+        status: 'processing',
+        metadata: { audioId: result.audio_id, notebookId: ctx.selectedNotebookId },
       });
-      ctx.addToast({ type: 'success', title: 'Audio generation started', message: 'Check the Audio tab in Studio when complete' });
       ctx.setGenerationStatus('complete');
+      window.dispatchEvent(new CustomEvent('studioAudioRefresh'));
     } catch (err: any) {
       console.error('Canvas audio failed:', err);
+      ctx.updateCanvasItem(itemId, {
+        status: 'error',
+        metadata: { notebookId: ctx.selectedNotebookId, errorMessage: err.message || 'Audio generation failed' },
+      });
       ctx.addToast({ type: 'error', title: 'Audio generation failed', message: err.message || 'Unknown error' });
       ctx.setGenerationStatus('error');
     }
@@ -660,26 +790,35 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
     if (!ctx.selectedNotebookId) return;
     setActionLoading('quiz');
     ctx.setGenerationStatus('generating');
+    const itemId = `quiz-${Date.now()}`;
+    ctx.addCanvasItem({
+      id: itemId,
+      type: 'quiz',
+      title: 'Quiz',
+      content: '',
+      collapsed: true,
+      status: 'generating',
+      metadata: { notebookId: ctx.selectedNotebookId },
+    });
     try {
       const content = getPrimaryContent();
-      const topic = quizTopic || content.substring(0, 300).replace(/[#*_\n]/g, ' ').trim();
-      const quiz = await quizService.generate(ctx.selectedNotebookId, quizCount, quizDifficulty, topic);
-      // Format quiz as readable HTML
+      const topic = stripAtChat(quizTopic) || content.substring(0, 300).replace(/[#*_\n]/g, ' ').trim();
+      const quiz = await quizService.generate(ctx.selectedNotebookId, quizCount, quizDifficulty, topic, ctx.chatContext || undefined);
       const quizHtml = quiz.questions.map((q, i) => {
         const optionsHtml = q.options
           ? q.options.map((opt, j) => `<li>${String.fromCharCode(65 + j)}. ${opt}</li>`).join('')
           : '';
         return `<div class="mb-4"><p><strong>Q${i + 1}.</strong> ${q.question}</p>${optionsHtml ? `<ul>${optionsHtml}</ul>` : ''}<details class="mt-1"><summary class="text-sm text-blue-600 cursor-pointer">Show Answer</summary><p class="text-sm text-green-700 dark:text-green-400 mt-1"><strong>Answer:</strong> ${q.answer}</p><p class="text-sm text-gray-600 dark:text-gray-400">${q.explanation}</p></details></div>`;
       }).join('');
-      ctx.addCanvasItem({
-        type: 'quiz',
+      ctx.updateCanvasItem(itemId, {
         title: `Quiz: ${quiz.topic || getPrimaryTitle()}`,
         content: quizHtml,
-        collapsed: false,
+        status: 'complete',
       });
       ctx.setGenerationStatus('complete');
     } catch (err: any) {
       console.error('Canvas quiz failed:', err);
+      ctx.updateCanvasItem(itemId, { status: 'error', content: '' });
       ctx.addToast({ type: 'error', title: 'Quiz generation failed', message: err.message || 'Unknown error' });
       ctx.setGenerationStatus('error');
     }
@@ -690,24 +829,41 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
     if (!ctx.selectedNotebookId) return;
     setActionLoading('docs');
     ctx.setGenerationStatus('generating');
+    const skillName = skills.find(s => s.skill_id === docsSkill)?.name || 'Document';
+    const itemId = `doc-${Date.now()}`;
+    ctx.addCanvasItem({
+      id: itemId,
+      type: 'document',
+      title: `Document: ${skillName}`,
+      content: '',
+      collapsed: true,
+      status: 'generating',
+      metadata: { notebookId: ctx.selectedNotebookId },
+    });
     try {
       const result = await contentService.generate({
         notebook_id: ctx.selectedNotebookId,
         skill_id: docsSkill,
-        topic: docsTopic || undefined,
+        topic: stripAtChat(docsTopic) || undefined,
         style: docsStyle,
+        ...(ctx.chatContext ? { chat_context: ctx.chatContext } : {}),
       });
+      // Replace placeholder with final content (need full replace to set sourceNames/relevanceScores)
+      ctx.removeCanvasItem(itemId);
       ctx.addCanvasItem({
         type: 'document',
-        title: result.skill_name || 'Generated Document',
+        title: `Document: ${result.skill_name || skillName}`,
         content: result.content,
-        collapsed: false,
+        collapsed: true,
         sourceNames: result.source_names || [],
         relevanceScores: result.relevance_scores || {},
+        status: 'complete',
+        metadata: { notebookId: ctx.selectedNotebookId },
       });
       ctx.setGenerationStatus('complete');
     } catch (err: any) {
       console.error('Canvas docs generation failed:', err);
+      ctx.updateCanvasItem(itemId, { status: 'error', content: '' });
       ctx.addToast({ type: 'error', title: 'Document generation failed', message: err.message || 'Unknown error' });
       ctx.setGenerationStatus('error');
     }
@@ -766,7 +922,8 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
           type: 'chat-response',
           title: 'Cross-Notebook Discovery',
           content: result.response,
-          collapsed: false,
+          collapsed: true,
+          metadata: { notebookId: ctx.selectedNotebookId },
         });
       }
       ctx.setGenerationStatus('complete');
@@ -808,7 +965,8 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
         type: 'chat-response',
         title: 'Conversation',
         content: '',
-        collapsed: false,
+        collapsed: true,
+        metadata: { notebookId: ctx.selectedNotebookId },
       });
     }
 
@@ -970,7 +1128,7 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
               <div>
                 <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Content Type</label>
                 <select value={docsSkill} onChange={e => setDocsSkill(e.target.value)} className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
-                  {skills.filter(s => !['podcast_script', 'debate'].includes(s.skill_id)).map(s => (
+                  {skills.filter(s => !['podcast_script', 'debate', 'interview', 'storytelling'].includes(s.skill_id)).map(s => (
                     <option key={s.skill_id} value={s.skill_id}>{s.name}</option>
                   ))}
                 </select>
@@ -990,8 +1148,20 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
               )}
               <div>
                 <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Topic <span className="text-gray-400">(optional)</span></label>
-                <input type="text" value={docsTopic} onChange={e => setDocsTopic(e.target.value)} placeholder="e.g., AI use cases in healthcare" className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400" />
+                <input type="text" value={docsTopic} onChange={e => setDocsTopic(e.target.value)} placeholder={ctx.chatContext ? 'e.g., @chat transformers attention' : 'e.g., AI use cases in healthcare'} className={`w-full px-2.5 py-1.5 text-xs border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 ${hasAtChatDocs ? 'border-purple-400 dark:border-purple-500 ring-1 ring-purple-300 dark:ring-purple-600' : 'border-gray-300 dark:border-gray-600'}`} />
+                {hasAtChatDocs && (
+                  <p className="mt-1 text-[10px] text-purple-600 dark:text-purple-400 flex items-center gap-1">
+                    <MessageCircle className="w-3 h-3" />
+                    Chat context will focus this generation
+                  </p>
+                )}
               </div>
+              {ctx.chatContext && !hasAtChatDocs && (
+                <div className="flex items-center gap-1.5 px-2 py-1 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg">
+                  <MessageCircle className="w-3 h-3 text-purple-500 dark:text-purple-400" />
+                  <span className="text-[10px] text-purple-700 dark:text-purple-300">Using chat context</span>
+                </div>
+              )}
             </div>
           </CanvasActionPopover>
 
@@ -1037,16 +1207,9 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
               <div>
                 <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Style</label>
                 <select value={audioSkill} onChange={e => setAudioSkill(e.target.value)} className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
-                  {skills.filter(s => ['podcast_script', 'debate', 'feynman_curriculum'].includes(s.skill_id)).map(s => (
+                  {skills.filter(s => ['podcast_script', 'debate', 'interview', 'storytelling', 'feynman_curriculum'].includes(s.skill_id)).map(s => (
                     <option key={s.skill_id} value={s.skill_id}>{s.name}</option>
                   ))}
-                  {skills.filter(s => !['podcast_script', 'debate', 'feynman_curriculum'].includes(s.skill_id)).length > 0 && (
-                    <optgroup label="Podcast about...">
-                      {skills.filter(s => !['podcast_script', 'debate', 'feynman_curriculum'].includes(s.skill_id)).map(s => (
-                        <option key={s.skill_id} value={s.skill_id}>{s.name}</option>
-                      ))}
-                    </optgroup>
-                  )}
                 </select>
                 {audioSkill === 'feynman_curriculum' && (
                   <p className="mt-1 text-[11px] text-blue-500 dark:text-blue-400 leading-snug">4-part progressive teaching: Foundation → Building → First Principles → Mastery (recommended: 30-45 min)</p>
@@ -1099,8 +1262,20 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
               </div>
               <div>
                 <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">Topic <span className="text-gray-400">(optional)</span></label>
-                <input type="text" value={quizTopic} onChange={e => setQuizTopic(e.target.value)} placeholder="Auto-detected from content" className="w-full px-2.5 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400" />
+                <input type="text" value={quizTopic} onChange={e => setQuizTopic(e.target.value)} placeholder={ctx.chatContext ? 'e.g., @chat transformers attention' : 'Auto-detected from content'} className={`w-full px-2.5 py-1.5 text-xs border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 ${hasAtChatQuiz ? 'border-purple-400 dark:border-purple-500 ring-1 ring-purple-300 dark:ring-purple-600' : 'border-gray-300 dark:border-gray-600'}`} />
+                {hasAtChatQuiz && (
+                  <p className="mt-1 text-[10px] text-purple-600 dark:text-purple-400 flex items-center gap-1">
+                    <MessageCircle className="w-3 h-3" />
+                    Chat context will focus this generation
+                  </p>
+                )}
               </div>
+              {ctx.chatContext && !hasAtChatQuiz && (
+                <div className="flex items-center gap-1.5 px-2 py-1 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg">
+                  <MessageCircle className="w-3 h-3 text-purple-500 dark:text-purple-400" />
+                  <span className="text-[10px] text-purple-700 dark:text-purple-300">Using chat context</span>
+                </div>
+              )}
             </div>
           </CanvasActionPopover>
 

@@ -24,7 +24,9 @@ class OllamaClient:
         model: Optional[str] = None,
         system: Optional[str] = None,
         temperature: float = 0.7,
-        timeout: float = 300.0
+        timeout: float = 300.0,
+        num_predict: Optional[int] = None,
+        extra_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Generate a response from Ollama.
@@ -35,26 +37,34 @@ class OllamaClient:
             system: System prompt (optional)
             temperature: Sampling temperature
             timeout: Request timeout in seconds
+            num_predict: Max tokens to generate (optional)
+            extra_options: Additional Ollama options (optional)
             
         Returns:
             Dict with 'response' key containing the generated text
         """
         model = model or settings.ollama_model
         
+        options: Dict[str, Any] = {
+            "temperature": temperature
+        }
+        if num_predict is not None:
+            options["num_predict"] = num_predict
+        if extra_options:
+            options.update(extra_options)
+        
         payload = {
             "model": model,
             "prompt": prompt,
             "stream": False,
-            "options": {
-                "temperature": temperature
-            }
+            "options": options,
         }
         
         if system:
             payload["system"] = system
         
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=timeout)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=timeout)) as client:
                 response = await client.post(
                     f"{self.base_url}/api/generate",
                     json=payload

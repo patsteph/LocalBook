@@ -79,7 +79,9 @@ async def _get_browser():
         if _browser is not None and _browser.is_connected():
             return _browser
         try:
+            from services.playwright_utils import ensure_playwright_browsers_path
             from playwright.async_api import async_playwright
+            ensure_playwright_browsers_path()
             pw = await async_playwright().start()
             _browser = await pw.chromium.launch(
                 headless=True,

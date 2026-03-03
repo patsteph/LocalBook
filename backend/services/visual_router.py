@@ -868,6 +868,52 @@ CRITICAL RULES:
     style I fill:#fef3c7,stroke:#d97706,stroke-width:2px""",
         best_for=["learning", "misconceptions", "feynman", "comparison", "gaps"]
     ),
+    
+    # === DATA CHARTS (Recharts-based, render_type='chart') ===
+    
+    "line_chart": VisualTemplate(
+        id="line_chart",
+        name="Line Chart",
+        category=TemplateCategory.PATTERN,
+        description="Trends and metrics over time — line graph",
+        mermaid_type="chart",  # Special: signals chart render path
+        prompt_enhancement="Extract numeric data and time periods. Show trends with line series.",
+        example_code="",  # Charts use JSON config, not Mermaid code
+        best_for=["temporal", "numbers_stats", "trends", "forecast"]
+    ),
+    
+    "bar_chart": VisualTemplate(
+        id="bar_chart",
+        name="Bar Chart",
+        category=TemplateCategory.PATTERN,
+        description="Compare values side by side — bar graph",
+        mermaid_type="chart",
+        prompt_enhancement="Extract labeled values for comparison. Show as vertical bars.",
+        example_code="",
+        best_for=["numbers_stats", "comparison", "categories", "ranking"]
+    ),
+    
+    "area_chart": VisualTemplate(
+        id="area_chart",
+        name="Area Chart",
+        category=TemplateCategory.PATTERN,
+        description="Cumulative trends and volume over time — area graph",
+        mermaid_type="chart",
+        prompt_enhancement="Show cumulative or stacked data with filled areas under lines.",
+        example_code="",
+        best_for=["temporal", "numbers_stats", "trends"]
+    ),
+    
+    "composed_chart": VisualTemplate(
+        id="composed_chart",
+        name="Mixed Chart",
+        category=TemplateCategory.PATTERN,
+        description="Bar + line combo for comparing related metrics",
+        mermaid_type="chart",
+        prompt_enhancement="Combine bars and lines to show related metrics with different scales.",
+        example_code="",
+        best_for=["numbers_stats", "comparison", "temporal"]
+    ),
 }
 
 

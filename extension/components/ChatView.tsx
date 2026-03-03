@@ -116,7 +116,7 @@ export function ChatView({
           value={chatInput}
           onChange={(e) => onInputChange(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && onSend()}
-          placeholder="Ask about this page or your notebook..."
+          placeholder="Ask anything... or @curator @collector @research"
           className="flex-1 p-2 bg-gray-800 border border-gray-600 rounded text-sm"
           disabled={loading}
         />

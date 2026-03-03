@@ -44,12 +44,33 @@ export interface QuizStats {
   total_reviews: number;
 }
 
+export interface KnowledgeGap {
+  gap_title: string;
+  description: string;
+  study_suggestion: string;
+  suggested_topic: string;
+}
+
+export interface GapAnalysisResponse {
+  gaps: KnowledgeGap[];
+  summary: string;
+  score_percent: number;
+}
+
+export interface MissedQuestion {
+  question: string;
+  correct_answer: string;
+  user_answer: string;
+  explanation: string;
+}
+
 export const quizService = {
   async generate(
     notebookId: string,
     numQuestions: number = 5,
     difficulty: string = 'medium',
-    topic?: string
+    topic?: string,
+    chatContext?: string,
   ): Promise<Quiz> {
     const response = await fetch(`${API_BASE}/quiz/generate`, {
       method: 'POST',
@@ -59,6 +80,7 @@ export const quizService = {
         num_questions: numQuestions,
         difficulty,
         topic: topic || undefined,
+        ...(chatContext ? { chat_context: chatContext } : {}),
       }),
     });
     if (!response.ok) throw new Error('Failed to generate quiz');
@@ -84,6 +106,24 @@ export const quizService = {
   async getStats(notebookId: string): Promise<QuizStats> {
     const response = await fetch(`${API_BASE}/quiz/stats/${notebookId}`);
     if (!response.ok) throw new Error('Failed to get stats');
+    return response.json();
+  },
+
+  async analyzeGaps(
+    notebookId: string,
+    missedQuestions: MissedQuestion[],
+    quizTopic?: string,
+  ): Promise<GapAnalysisResponse> {
+    const response = await fetch(`${API_BASE}/quiz/gap-analysis`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        notebook_id: notebookId,
+        missed_questions: missedQuestions,
+        quiz_topic: quizTopic || undefined,
+      }),
+    });
+    if (!response.ok) throw new Error('Failed to analyze knowledge gaps');
     return response.json();
   },
 };

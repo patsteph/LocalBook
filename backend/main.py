@@ -33,7 +33,7 @@ from storage.findings_store import init_findings_store
 init_findings_store(settings.data_dir)
 
 # NOW import API modules — stores will read the (possibly corrected) use_sqlite flag
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings, curator, collector, source_discovery, people
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings, curator, collector, source_discovery, people, video
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
 from services.startup_checks import run_all_startup_checks
@@ -43,70 +43,99 @@ async def _run_startup_tasks():
     """Run all startup tasks in background after HTTP server is ready.
     
     This allows the frontend to poll /updates/startup-status while we work.
+    Each visual step has a minimum display duration (MIN_STEP_MS) so the
+    frontend's 1-second polling interval reliably catches every message.
+    Real work runs concurrently with the timer via asyncio.gather, so no
+    artificial delay is added when the work itself takes longer.
     """
+    MIN_STEP_MS = 1.2  # seconds — guarantees each step is visible to 1s poller
+
+    async def _step(status: str, message: str, progress: int, work=None):
+        """Show a status step, do optional work, guarantee minimum visibility."""
+        set_startup_status(status, message, progress)
+        print(f"[Startup] {message}")
+        if work is not None:
+            # Run real work and minimum timer in parallel
+            await asyncio.gather(work, asyncio.sleep(MIN_STEP_MS))
+        else:
+            await asyncio.sleep(MIN_STEP_MS)
+
+    # ── Banner ────────────────────────────────────────────────────────────
     print(f"🚀 LocalBook API starting on {settings.api_host}:{settings.api_port}")
     print(f"📁 Data directory: {settings.data_dir}")
     print(f"🤖 LLM Provider: {settings.llm_provider}")
     print(f"🔥 Models: {settings.ollama_model} (think), {settings.ollama_fast_model} (fast)")
     print(f"💾 Storage: {'SQLite' if settings.use_sqlite else 'JSON files'}")
     
-    # Check if this is an upgrade
+    # ── Step 1: Upgrade check ─────────────────────────────────────────────
     is_upgrade, previous_version = check_if_upgrade()
     if is_upgrade:
         print(f"⬆️ Upgrading from v{previous_version} to v{CURRENT_VERSION}")
-        set_startup_status("upgrading", f"Upgrading from v{previous_version}...", 5)
+        await _step("upgrading", f"Upgrading from v{previous_version}...", 5)
     else:
-        set_startup_status("starting", "Starting LocalBook...", 5)
-    
-    # v0.60: Check for data migration needs and run migration with progress updates
+        await _step("starting", "Starting LocalBook...", 5)
+
+    # ── Step 2: Data migration ────────────────────────────────────────────
     migration_status = await check_and_migrate_on_startup()
     if migration_status.get("needs_migration"):
         migration_type = migration_status.get('migration_type')
         print(f"📦 Migration needed: {migration_type}")
-        
-        # Import migration manager and run with progress updates
         from services.migration_manager import migration_manager
         async for update in migration_manager.migrate():
             progress = update.get("progress", 0)
             status_msg = update.get("status", "Migrating...")
-            # Scale migration progress to 10-40% of startup
             scaled_progress = 10 + int(progress * 0.3)
             set_startup_status("migrating", status_msg, scaled_progress)
             print(f"[Migration] {status_msg} ({progress}%)")
-            
-            # Check for errors
             if update.get("error"):
                 print(f"[Migration] ERROR: {update.get('error')}")
             if update.get("warning"):
                 print(f"[Migration] WARNING: {update.get('warning')}")
-    
-    # Run comprehensive startup checks (data migration, models, embeddings)
-    await run_all_startup_checks(status_callback=set_startup_status)
-    
-    # Warm up models (blocks until ready)
-    set_startup_status("starting", "Warming up AI models...", 85)
-    await initial_warmup()
-    
-    # Start background task to keep models warm (periodic keep-alive)
-    set_startup_status("starting", "Starting background services...", 95)
-    await start_warmup_task()
-    
-    # Start stuck source recovery (checks every 5 min, recovers after 10 min stuck)
-    from services.stuck_source_recovery import stuck_source_recovery
-    stuck_source_recovery.start_background_task()
-    
-    # Start memory consolidation manager (background memory lifecycle)
-    from services.memory_manager import memory_manager
-    asyncio.create_task(memory_manager.start_scheduler())
-    print("📝 Memory consolidation manager started")
-    
-    # Note: Collection scheduler starts on-demand via API, not auto-start
-    # Users control when collection runs via the Collector UI
-    
-    # Check for stale people coaching insights (background, non-blocking)
-    from services.coaching_insights import check_stale_insights_on_startup
-    asyncio.create_task(check_stale_insights_on_startup())
-    print("🧠 Coaching insights staleness check queued")
+
+    # ── Step 3: Verify data directory ─────────────────────────────────────
+    await _step("checking", "Verifying data directory...", 15)
+
+    # ── Step 4: Check AI models ───────────────────────────────────────────
+    await _step("checking", "Checking AI models...", 30,
+                run_all_startup_checks(status_callback=set_startup_status))
+
+    # ── Step 5: Checking embeddings ───────────────────────────────────────
+    await _step("checking", "Checking embedding compatibility...", 55)
+
+    # ── Step 6: Starting background services ──────────────────────────────
+    async def _start_services():
+        from services.stuck_source_recovery import stuck_source_recovery
+        stuck_source_recovery.start_background_task()
+        from services.memory_manager import memory_manager
+        asyncio.create_task(memory_manager.start_scheduler())
+        print("📝 Memory consolidation manager started")
+        from services.collection_scheduler import collection_scheduler
+        asyncio.create_task(collection_scheduler.start())
+        print("📅 Collection scheduler started (first check in 2 min)")
+        from services.coaching_insights import check_stale_insights_on_startup
+        asyncio.create_task(check_stale_insights_on_startup())
+        print("🧠 Coaching insights staleness check queued")
+
+    await _step("starting", "Starting background services...", 75, _start_services())
+
+    # ── Step 7: Preparing workspace ───────────────────────────────────────
+    await _step("starting", "Preparing workspace...", 90)
+
+    # ── Mark startup complete — UI appears ────────────────────────────────
+    mark_startup_complete()
+    print(f"✅ LocalBook v{CURRENT_VERSION} ready!")
+
+    # ── Deferred: warm models in background (first query may be ~3s slower) ─
+    async def _deferred_warmup():
+        try:
+            print("🔥 Warming AI models in background...")
+            await initial_warmup()
+            await start_warmup_task()
+            print("🔥 All models warm and ready")
+        except Exception as e:
+            print(f"⚠️ Background warmup error: {e}")
+            await start_warmup_task()
+    asyncio.create_task(_deferred_warmup())
 
     # Pre-download MLX Whisper model in background (no-op if already cached)
     async def _predownload_whisper():
@@ -114,7 +143,6 @@ async def _run_startup_tasks():
             from huggingface_hub import snapshot_download
             import os
             repo_id = "mlx-community/whisper-base-mlx"
-            # Check if already cached by looking for the repo in HF cache
             cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
             repo_dir = os.path.join(cache_dir, "models--mlx-community--whisper-base-mlx")
             if os.path.exists(repo_dir):
@@ -144,10 +172,6 @@ async def _run_startup_tasks():
         except Exception as e:
             print(f"🔊 LFM2.5-Audio pre-download skipped: {e}")
     asyncio.create_task(_predownload_audio_llm())
-
-    # Mark startup complete
-    mark_startup_complete()
-    print(f"✅ LocalBook v{CURRENT_VERSION} ready!")
 
 
 # Background task reference for cleanup
@@ -183,6 +207,10 @@ async def lifespan(app: FastAPI):
     from services.memory_manager import memory_manager
     memory_manager.stop_scheduler()
     
+    # Stop collection scheduler on shutdown
+    from services.collection_scheduler import collection_scheduler
+    collection_scheduler.stop()
+    
     # Save RAG metrics on shutdown
     from services.rag_metrics import rag_metrics
     rag_metrics.force_save()
@@ -212,6 +240,7 @@ app.include_router(sources.router, prefix="/sources", tags=["sources"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(skills.router, prefix="/skills", tags=["skills"])
 app.include_router(audio.router, prefix="/audio", tags=["audio"])
+app.include_router(video.router, prefix="/video", tags=["video"])
 app.include_router(source_viewer.router, prefix="/source-viewer", tags=["source-viewer"])
 app.include_router(web.router, prefix="/web", tags=["web"])
 app.include_router(settings_api.router, prefix="/settings", tags=["settings"])

@@ -15,7 +15,7 @@ export interface DrawerState {
 
 export interface StudioState {
   expanded: boolean;
-  activeTab: 'documents' | 'audio' | 'quiz' | 'visual' | 'writing';
+  activeTab: 'documents' | 'audio' | 'video' | 'quiz' | 'visual' | 'writing';
 }
 
 const DEFAULT_DRAWERS: DrawerState = {

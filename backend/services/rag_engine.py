@@ -34,6 +34,12 @@ from services.community_detection import community_detector
 from services import rag_query_analyzer
 from services import rag_chunking
 from services import rag_generation
+from services import rag_embeddings
+from services import rag_llm
+from services import rag_search
+from services import rag_context
+from services import rag_verification
+from services import rag_storage
 
 # BM25 for hybrid search
 try:
@@ -76,33 +82,11 @@ class RAGEngine:
     
     def _get_reranker(self):
         """Lazy load the reranker model - prefers FlashRank for speed"""
-        # Prefer FlashRank (ultra-fast, no torch)
-        if HAS_FLASHRANK and settings.reranker_type == "flashrank":
-            if self.flashrank_reranker is None:
-                # Use persistent cache dir (not /tmp which gets cleared on reboot)
-                cache_dir = settings.data_dir / "models" / "flashrank"
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                self.flashrank_reranker = FlashRanker(
-                    model_name=settings.reranker_model,
-                    cache_dir=str(cache_dir),
-                    max_length=256  # Optimized for typical chunk sizes
-                )
-                print(f"[RAG] Loaded FlashRank reranker: {settings.reranker_model} (cache: {cache_dir})")
-            return self.flashrank_reranker
-        
-        # Fallback to cross-encoder (slower but works without FlashRank)
-        if self.reranker is None:
-            from sentence_transformers import CrossEncoder
-            reranker_model = "BAAI/bge-reranker-v2-m3"  # Cross-encoder fallback
-            self.reranker = CrossEncoder(reranker_model, max_length=512)
-            print(f"[RAG] Loaded cross-encoder reranker: {reranker_model}")
-        return self.reranker
+        return rag_search._get_reranker()
     
     def _load_reranker(self):
         """Force load the reranker model (used for warmup)"""
-        if self._use_reranker:
-            return self._get_reranker()
-        return None
+        return rag_search.load_reranker()
     
     def _hybrid_search(
         self, 
@@ -113,342 +97,44 @@ class RAGEngine:
     ) -> List[Dict]:
         """Perform hybrid search combining vector similarity and BM25 keyword matching.
         
-        This dramatically improves retrieval accuracy by catching both:
-        - Semantic matches (vector search): "employee performance" matches "staff evaluation"
-        - Exact keyword matches (BM25): "Christopher Norman" matches documents with that exact name
-        
         Uses Reciprocal Rank Fusion (RRF) to combine rankings.
         """
-        # Get ALL documents for BM25 (not just vector-similar ones)
-        try:
-            all_docs = table.search().limit(10000).to_list()
-        except Exception as e:
-            print(f"[RAG] Hybrid search fallback to vector-only: {e}")
-            return table.search(query_embedding).limit(k).to_list()
-        
-        if not all_docs or not HAS_BM25:
-            return table.search(query_embedding).limit(k).to_list()
-        
-        # Vector search results (separate query for proper ranking)
-        try:
-            vector_results = table.search(query_embedding).limit(k*2).to_list()
-        except:
-            vector_results = all_docs[:k*2]
-        
-        # BM25 keyword search
-        try:
-            # Tokenize documents
-            corpus = [doc.get("text", "").lower().split() for doc in all_docs]
-            bm25 = BM25Okapi(corpus)
-            
-            # Tokenize query
-            query_tokens = query.lower().split()
-            
-            # Get BM25 scores
-            bm25_scores = bm25.get_scores(query_tokens)
-            
-            # Create ranked lists
-            vector_ranking = {doc["source_id"] + str(doc.get("chunk_index", 0)): i 
-                           for i, doc in enumerate(vector_results)}
-            
-            bm25_ranked_indices = np.argsort(bm25_scores)[::-1][:k*2]
-            bm25_ranking = {all_docs[idx]["source_id"] + str(all_docs[idx].get("chunk_index", 0)): i 
-                          for i, idx in enumerate(bm25_ranked_indices)}
-            
-            # Reciprocal Rank Fusion (RRF)
-            rrf_scores = {}
-            rrf_k = 60  # RRF constant
-            
-            all_doc_keys = set(vector_ranking.keys()) | set(bm25_ranking.keys())
-            
-            for doc_key in all_doc_keys:
-                vector_rank = vector_ranking.get(doc_key, 1000)  # Default high rank if not found
-                bm25_rank = bm25_ranking.get(doc_key, 1000)
-                
-                # RRF formula: 1/(k + rank)
-                rrf_scores[doc_key] = (1 / (rrf_k + vector_rank)) + (1 / (rrf_k + bm25_rank))
-            
-            # Sort by RRF score
-            sorted_keys = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
-            
-            # Map back to documents, preserving _distance from vector results
-            doc_map = {doc["source_id"] + str(doc.get("chunk_index", 0)): doc for doc in all_docs}
-            vector_dist_map = {doc["source_id"] + str(doc.get("chunk_index", 0)): doc.get("_distance", 200) 
-                              for doc in vector_results}
-            
-            # Max RRF score for normalization (top result)
-            max_rrf = max(rrf_scores.values()) if rrf_scores else 1.0
-            
-            hybrid_results = []
-            for key in sorted_keys[:k]:
-                if key in doc_map:
-                    doc = doc_map[key].copy()
-                    # Preserve vector distance if available, otherwise estimate from RRF rank
-                    doc["_distance"] = vector_dist_map.get(key, 200)
-                    # Store normalized RRF score (0-1, higher is better) for confidence fallback
-                    doc["_rrf_score"] = rrf_scores[key] / max_rrf
-                    hybrid_results.append(doc)
-            
-            print(f"[RAG] Hybrid search: {len(hybrid_results)} results (vector + BM25 fusion)")
-            return hybrid_results
-            
-        except Exception as e:
-            print(f"[RAG] BM25 failed, using vector-only: {e}")
-            return vector_results[:k]
+        return rag_search.hybrid_search(query, table, query_embedding, k=k)
     
     def rerank(self, query: str, documents: List[Dict], top_k: int = 5) -> List[Dict]:
         """Rerank documents using FlashRank (preferred) or cross-encoder for better relevance"""
-        if not documents:
-            return documents
-        
-        reranker = self._get_reranker()
-        
-        # Use FlashRank if available (ultra-fast, no torch)
-        if HAS_FLASHRANK and settings.reranker_type == "flashrank":
-            # FlashRank expects list of dicts with 'id' and 'text' keys
-            passages = [
-                {"id": i, "text": doc.get("text", ""), "meta": {"original_idx": i}}
-                for i, doc in enumerate(documents)
-            ]
-            
-            rerank_request = RerankRequest(query=query, passages=passages)
-            results = reranker.rerank(rerank_request)
-            
-            # Map back to original documents with scores
-            for result in results:
-                orig_idx = result["meta"]["original_idx"]
-                documents[orig_idx]["rerank_score"] = float(result["score"])
-            
-            # Sort by rerank score (higher is better) and take top_k
-            ranked = sorted(documents, key=lambda x: x.get("rerank_score", 0), reverse=True)
-            return ranked[:top_k]
-        
-        # Fallback to cross-encoder
-        pairs = [(query, doc.get("text", "")) for doc in documents]
-        scores = reranker.predict(pairs)
-        
-        for doc, score in zip(documents, scores):
-            doc["rerank_score"] = float(score)
-        
-        ranked = sorted(documents, key=lambda x: x.get("rerank_score", 0), reverse=True)
-        return ranked[:top_k]
+        return rag_search.rerank(query, documents, top_k=top_k)
     
     def _load_embedding_model(self):
         """Force load the embedding model (used for warmup)"""
-        if self._use_ollama_embeddings:
-            # For Ollama, we just need to make sure the model is pulled
-            # Warmup is handled by model_warmup.py
-            return None
-        if self.embedding_model is None:
-            from sentence_transformers import SentenceTransformer
-            self.embedding_model = SentenceTransformer(settings.embedding_model)
-        return self.embedding_model
+        return rag_embeddings.load_embedding_model()
     
     def _get_embedding_model(self):
         """Lazy load embedding model (for sentence-transformers fallback)"""
-        if self._use_ollama_embeddings:
-            return None
-        if self.embedding_model is None:
-            from sentence_transformers import SentenceTransformer
-            self.embedding_model = SentenceTransformer(settings.embedding_model)
-        return self.embedding_model
-    
-    def _get_ollama_embedding_sync(self, text: str) -> List[float]:
-        """Get embedding from Ollama synchronously"""
-        import requests
-        response = requests.post(
-            f"{settings.ollama_base_url}/api/embeddings",
-            json={
-                "model": settings.embedding_model,
-                "prompt": text
-            },
-            timeout=60
-        )
-        result = response.json()
-        return result.get("embedding", [])
-    
-    def _get_ollama_embeddings_batch_sync(self, texts: List[str]) -> List[List[float]]:
-        """Get embeddings for multiple texts from Ollama.
-        
-        Uses sequential processing with exponential backoff retry.
-        Logs failures for monitoring - zero vectors indicate retrieval gaps.
-        """
-        embeddings = []
-        failed_chunks = []
-        
-        for i, text in enumerate(texts):
-            embedding = None
-            max_retries = 3
-            
-            for attempt in range(max_retries):
-                try:
-                    embedding = self._get_ollama_embedding_sync(text)
-                    if embedding and len(embedding) == settings.embedding_dim:
-                        break  # Success
-                    
-                    # Empty or wrong dimension - retry
-                    if attempt < max_retries - 1:
-                        wait_time = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
-                        print(f"[RAG] Empty embedding for chunk {i}, retry {attempt + 1}/{max_retries} in {wait_time}s...")
-                        time.sleep(wait_time)
-                        
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        wait_time = 0.5 * (2 ** attempt)
-                        print(f"[RAG] Embedding failed for chunk {i} (attempt {attempt + 1}): {e}")
-                        time.sleep(wait_time)
-                    else:
-                        print(f"[RAG] ⚠️ EMBEDDING FAILED after {max_retries} attempts for chunk {i}: {e}")
-            
-            if embedding and len(embedding) == settings.embedding_dim:
-                embeddings.append(embedding)
-            else:
-                # Last resort: zero vector (will be logged for later repair)
-                embeddings.append([0.0] * settings.embedding_dim)
-                failed_chunks.append(i)
-        
-        if failed_chunks:
-            print(f"[RAG] ⚠️ {len(failed_chunks)} chunks got zero vectors (indices: {failed_chunks[:5]}{'...' if len(failed_chunks) > 5 else ''})")
-        
-        return embeddings
-    
-    async def _get_ollama_embedding(self, text: str) -> List[float]:
-        """Get embedding from Ollama asynchronously"""
-        timeout = httpx.Timeout(60.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/embeddings",
-                json={
-                    "model": settings.embedding_model,
-                    "prompt": text
-                }
-            )
-            result = response.json()
-            return result.get("embedding", [])
-    
-    async def _get_ollama_embeddings_batch_async(self, texts: List[str], max_concurrent: int = 10) -> List[List[float]]:
-        """Get embeddings for multiple texts in parallel using asyncio.gather.
-        
-        This is 10-20x faster than sequential processing for large batches.
-        Uses semaphore to limit concurrent requests and avoid overwhelming Ollama.
-        """
-        semaphore = asyncio.Semaphore(max_concurrent)
-        timeout = httpx.Timeout(60.0)
-        
-        async def get_single_embedding(text: str, index: int) -> Tuple[int, List[float]]:
-            async with semaphore:
-                try:
-                    async with httpx.AsyncClient(timeout=timeout) as client:
-                        response = await client.post(
-                            f"{settings.ollama_base_url}/api/embeddings",
-                            json={"model": settings.embedding_model, "prompt": text}
-                        )
-                        result = response.json()
-                        embedding = result.get("embedding", [])
-                        if not embedding:
-                            print(f"[RAG] Empty embedding for chunk {index}, using zero vector")
-                            return (index, [0.0] * settings.embedding_dim)
-                        return (index, embedding)
-                except Exception as e:
-                    print(f"[RAG] Embedding failed for chunk {index}: {e}")
-                    return (index, [0.0] * settings.embedding_dim)
-        
-        # Run all embedding requests in parallel
-        tasks = [get_single_embedding(text, i) for i, text in enumerate(texts)]
-        results = await asyncio.gather(*tasks)
-        
-        # Sort by index to preserve order
-        results.sort(key=lambda x: x[0])
-        return [emb for _, emb in results]
+        return rag_embeddings.get_embedding_model()
     
     def encode(self, texts: Union[str, List[str]]) -> np.ndarray:
         """Encode texts to embeddings (compatible with SentenceTransformer interface)"""
-        if isinstance(texts, str):
-            texts = [texts]
-        
-        if self._use_ollama_embeddings:
-            embeddings = self._get_ollama_embeddings_batch_sync(texts)
-            return np.array(embeddings)
-        else:
-            model = self._get_embedding_model()
-            return model.encode(texts)
+        return rag_embeddings.encode(texts)
     
     async def encode_async(self, texts: Union[str, List[str]]) -> np.ndarray:
         """Async encode texts to embeddings using parallel processing.
         
         Use this instead of encode() in async contexts for 10-20x speedup.
         """
-        if isinstance(texts, str):
-            texts = [texts]
-        
-        if self._use_ollama_embeddings:
-            embeddings = await self._get_ollama_embeddings_batch_async(texts)
-            return np.array(embeddings)
-        else:
-            # Fallback to sync for sentence-transformers
-            model = self._get_embedding_model()
-            return model.encode(texts)
+        return await rag_embeddings.encode_async(texts)
 
     def _get_stored_vector_dim(self, table) -> Optional[int]:
         """Get the dimension of vectors stored in a table from schema"""
-        try:
-            schema = table.schema
-            for field in schema:
-                if field.name == "vector":
-                    type_str = str(field.type)
-                    if "fixed_size_list" in type_str:
-                        match = re.search(r'\[(\d+)\]', type_str)
-                        if match:
-                            return int(match.group(1))
-        except Exception:
-            pass
-        return None
+        return rag_storage.get_stored_vector_dim(table)
 
     def _get_table(self, notebook_id: str):
         """Get or create LanceDB table for notebook"""
-        if self.db is None:
-            self.db = lancedb.connect(str(self.db_path))
-
-        table_name = f"notebook_{notebook_id}"
-
-        # Try to open existing table first (fast path)
-        try:
-            return self.db.open_table(table_name)
-        except Exception:
-            pass
-
-        # Table doesn't exist — create with placeholder to define schema
-        try:
-            placeholder_embedding = self.encode("placeholder")[0].tolist()
-            self.db.create_table(
-                table_name,
-                data=[{
-                    "vector": placeholder_embedding,
-                    "text": "placeholder",
-                    "parent_text": "",  # v0.60: Parent document context
-                    "source_id": "placeholder",
-                    "chunk_index": 0,
-                    "filename": "placeholder",
-                    "source_type": "placeholder"
-                }]
-            )
-            table = self.db.open_table(table_name)
-            table.delete("source_id = 'placeholder'")
-            return table
-        except Exception:
-            # Race condition: another request created it between our check and create
-            return self.db.open_table(table_name)
+        return rag_storage.get_table(notebook_id)
     
     def _table_has_parent_text(self, table) -> bool:
         """Check if table schema includes parent_text column"""
-        try:
-            schema = table.schema
-            for field in schema:
-                if field.name == "parent_text":
-                    return True
-        except Exception:
-            pass
-        return False
+        return rag_storage.table_has_parent_text(table)
 
     async def _build_citations_and_context(
         self, 
@@ -459,112 +145,7 @@ class RAGEngine:
         
         Returns: (citations, sources_set, context_string, low_confidence)
         """
-        # Get source filenames for citations
-        source_filenames = {}
-        for result in results:
-            sid = result["source_id"]
-            if sid not in source_filenames:
-                source_data = await source_store.get(sid)
-                source_filenames[sid] = source_data.get("filename", "Unknown") if source_data else "Unknown"
-
-        # Build citations from search results
-        all_citations = []
-        for i, result in enumerate(results):
-            text = result.get("text", "")
-            
-            # Use rerank_score if available AND meaningful, otherwise use vector distance
-            rerank_score = result.get("rerank_score")
-            distance = result.get("_distance", 100.0)
-            
-            # FlashRank returns very low scores (< 0.01) for holistic/thematic queries
-            # In those cases, fall back to vector distance which better captures semantic similarity
-            use_rerank = rerank_score is not None and rerank_score > 0.01
-            
-            if use_rerank:
-                # FlashRank returns scores 0-1 (0 = irrelevant, 1 = highly relevant)
-                # Cross-encoder returns scores roughly -10 to +10
-                if rerank_score <= 1.0:
-                    # FlashRank: boost scores since it's conservative
-                    # 0.1 → 0.24, 0.3 → 0.52, 0.5 → 0.80
-                    confidence = min(1.0, rerank_score * 1.4 + 0.1)
-                else:
-                    # Cross-encoder fallback: scores are -10 to +10
-                    confidence = max(0, min(1, (rerank_score + 5) / 10))
-                
-                print(f"{log_prefix} Citation {i+1}: rerank_score={rerank_score:.3f} -> confidence={confidence:.0%}")
-            else:
-                # FlashRank returned low scores - use hybrid of vector distance and RRF score
-                # RRF score captures both semantic (vector) and keyword (BM25) relevance
-                rrf_score = result.get("_rrf_score", 0)
-                
-                if rrf_score > 0:
-                    # Use RRF score (already normalized 0-1, higher is better)
-                    # Scale to reasonable confidence range: top result ~85%, lower results differentiated
-                    confidence = 0.5 + (rrf_score * 0.4)  # Range: 50-90%
-                    print(f"{log_prefix} Citation {i+1}: rerank={rerank_score if rerank_score is not None else 'None'} low, using RRF={rrf_score:.2f} -> confidence={confidence:.0%}")
-                else:
-                    # Pure vector distance fallback
-                    # 0 dist = 100%, 50 dist = 88%, 100 dist = 75%, 200 dist = 50%, 400+ dist = 0%
-                    confidence = max(0, min(1, 1 - (distance / 400)))
-                    if rerank_score is not None:
-                        print(f"{log_prefix} Citation {i+1}: rerank={rerank_score:.4f} low, using distance={distance:.2f} -> confidence={confidence:.0%}")
-                    else:
-                        print(f"{log_prefix} Citation {i+1}: distance={distance:.2f} -> confidence={confidence:.0%}")
-            
-            confidence_level = "high" if confidence >= 0.6 else "medium" if confidence >= 0.4 else "low"
-            
-            all_citations.append({
-                "number": i + 1,
-                "source_id": result.get("source_id", "unknown"),
-                "filename": source_filenames.get(result.get("source_id", ""), "Unknown"),
-                "chunk_index": result.get("chunk_index", 0),
-                "text": text,
-                "parent_text": result.get("parent_text", ""),  # v0.60: Parent document context
-                "snippet": text[:150] + "..." if len(text) > 150 else text,
-                "page": result.get("metadata", {}).get("page") if isinstance(result.get("metadata"), dict) else None,
-                "confidence": round(confidence, 2),
-                "confidence_level": confidence_level
-            })
-
-        # Only filter out truly irrelevant results (< 20% confidence)
-        # Lowered from 25% because L2 distances can be high even for relevant results
-        # The reranker will handle fine-grained relevance if enabled
-        quality_citations = [c for c in all_citations if c["confidence"] >= 0.20]
-        
-        # Check if ALL citations are very low confidence (< 10%) - this means we have no relevant sources
-        max_confidence = max((c["confidence"] for c in all_citations), default=0)
-        very_low_confidence = max_confidence < 0.10
-        
-        # If filtering removed everything but we have some decent sources, keep top 3
-        if len(quality_citations) == 0 and len(all_citations) > 0 and not very_low_confidence:
-            quality_citations = all_citations[:3]
-            print(f"{log_prefix} Low confidence fallback: using top 3 citations")
-        elif very_low_confidence:
-            # All sources are essentially irrelevant - don't use any
-            print(f"{log_prefix} VERY LOW CONFIDENCE: max={max_confidence:.0%}, refusing to use sources")
-            quality_citations = []
-        
-        print(f"{log_prefix} Citations: {len(quality_citations)} used (from {len(all_citations)} found, max_conf={max_confidence:.0%})")
-        
-        # Renumber citations after filtering
-        sources = set()
-        for i, citation in enumerate(quality_citations):
-            citation["number"] = i + 1
-            sources.add(citation["source_id"])
-        
-        # Build numbered context
-        # v0.60: Use parent_text for expanded context if available
-        numbered_context = []
-        for i, c in enumerate(quality_citations):
-            # Prefer parent_text for richer context, fall back to text
-            context_text = c.get('parent_text') or c.get('text', '')
-            numbered_context.append(f"[{i+1}] {context_text}")
-        context = "\n\n".join(numbered_context)
-        
-        # Mark as low confidence if no quality citations OR all sources are very low
-        low_confidence = len(quality_citations) == 0 or very_low_confidence
-        
-        return quality_citations, sources, context, low_confidence
+        return await rag_context.build_citations_and_context(results, log_prefix)
 
     async def ingest_document(
         self,
@@ -575,116 +156,7 @@ class RAGEngine:
         source_type: str = "document"
     ) -> Dict:
         """Ingest a document into the RAG system"""
-
-        # Use source-type-aware chunking for better retrieval
-        chunks = self._chunk_text_smart(text, source_type, filename)
-
-        # Skip summary for web sources (they have search snippets already)
-        # Only generate summaries for uploaded files (PDFs, docs, etc.)
-        summary = None
-        if source_type not in ['web', 'youtube']:
-            summary = await self._generate_document_summary(text, filename, source_type)
-            if summary:
-                print(f"[RAG] Generated summary for {filename}: {len(summary)} chars")
-
-        # Generate embeddings
-        embeddings = self.encode(chunks)
-
-        # Insert into LanceDB
-        table = self._get_table(notebook_id)
-        
-        # Check if table supports parent_text (v0.60 feature)
-        # Older tables may not have this column
-        has_parent_text = self._table_has_parent_text(table)
-        
-        # Prepare data for insertion with metadata
-        data = []
-        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-            row = {
-                "vector": embedding.tolist(),
-                "text": chunk,
-                "source_id": source_id,
-                "chunk_index": i,
-                "filename": filename,
-                "source_type": source_type
-            }
-            # Only include parent_text if table supports it
-            if has_parent_text:
-                row["parent_text"] = self._get_parent_context(chunks, i, max_parent_chars=2000)
-            data.append(row)
-        
-        # Add summary as a special chunk (chunk_index = -1) for quick retrieval
-        if summary:
-            summary_embedding = self.encode(summary)[0].tolist()
-            summary_row = {
-                "vector": summary_embedding,
-                "text": f"[SUMMARY] {summary}",
-                "source_id": source_id,
-                "chunk_index": -1,  # Special index for summaries
-                "filename": filename,
-                "source_type": "summary"
-            }
-            if has_parent_text:
-                summary_row["parent_text"] = ""
-            data.append(summary_row)
-
-        table.add(data)
-
-        # Fire-and-forget topic modeling in background
-        # Source is usable for RAG queries immediately after embedding
-        # Topics build in background for Knowledge Graph visualization
-        # v0.6.5: Use BERTopic with ALL chunks (no more 2000 char limit)
-        asyncio.create_task(self._add_to_topic_model(
-            notebook_id=notebook_id,
-            source_id=source_id,
-            chunks=chunks,
-            embeddings=embeddings
-        ))
-        print(f"[RAG] Queued topic modeling for {filename} (background)")
-
-        # v1.0.3: Entity extraction + relationship mapping in background
-        async def _extract_entities_and_relationships_background():
-            try:
-                entities = await entity_extractor.extract_from_text(
-                    text=text[:8000],  # Limit for speed
-                    notebook_id=notebook_id,
-                    source_id=source_id,
-                    use_llm=len(text) > 500  # Only use LLM for substantial docs
-                )
-                if entities:
-                    print(f"[RAG] Extracted {len(entities)} entities from {filename}")
-                    
-                    # v1.0.4: Extract relationships between entities (Phase 2 Graph RAG)
-                    if len(entities) >= 2:
-                        entity_dicts = [{"name": e.name, "type": e.type} for e in entities]
-                        relationships = await entity_graph.extract_relationships(
-                            text=text[:4000],
-                            notebook_id=notebook_id,
-                            source_id=source_id,
-                            entities=entity_dicts
-                        )
-                        if relationships:
-                            print(f"[RAG] Extracted {len(relationships)} relationships from {filename}")
-            except Exception as e:
-                print(f"[RAG] Entity/relationship extraction failed (non-fatal): {e}")
-        
-        asyncio.create_task(_extract_entities_and_relationships_background())
-
-        # Auto-refresh people coaching insights when new sources are added
-        # Skip people_profile/coaching_notes to avoid infinite loops
-        if source_type not in ("people_profile", "coaching_notes", "summary"):
-            try:
-                from services.coaching_insights import schedule_insight_refresh
-                schedule_insight_refresh(notebook_id)
-            except Exception:
-                pass  # Non-fatal — insights refresh is best-effort
-
-        return {
-            "source_id": source_id,
-            "chunks": len(chunks),
-            "characters": len(text),
-            "summary": summary
-        }
+        return await rag_storage.ingest_document(notebook_id, source_id, text, filename, source_type)
 
     async def append_to_document(
         self,
@@ -693,169 +165,16 @@ class RAGEngine:
         text: str,
         chunk_prefix: str = ""
     ) -> Dict:
-        """Append additional content to an existing source's index.
-        
-        Used for background processing (e.g., image descriptions) that should
-        be added to an already-indexed document without re-processing everything.
-        
-        Args:
-            notebook_id: The notebook containing the source
-            source_id: The source to append to
-            text: Additional text to chunk and index
-            chunk_prefix: Optional prefix for chunk text (e.g., "[IMAGE] ")
-        
-        Returns: Dict with chunks added count
-        """
-        if not text or not text.strip():
-            return {"chunks_added": 0}
-        
-        # Chunk the new text
-        chunks = self._chunk_text_smart(text, "supplementary", "background")
-        
-        if not chunks:
-            return {"chunks_added": 0}
-        
-        # Add prefix to chunks if specified
-        if chunk_prefix:
-            chunks = [f"{chunk_prefix}{chunk}" for chunk in chunks]
-        
-        # Generate embeddings
-        embeddings = self.encode(chunks)
-        
-        # Get existing table
-        table = self._get_table(notebook_id)
-        
-        # Get existing chunk count for this source to continue numbering
-        try:
-            existing = table.search([0.0] * self.embedding_dim).where(
-                f"source_id = '{source_id}'"
-            ).limit(1000).to_list()
-            max_chunk_index = max((r.get("chunk_index", 0) for r in existing), default=0)
-        except Exception:
-            max_chunk_index = 0
-        
-        # Check if table supports parent_text
-        has_parent_text = self._table_has_parent_text(table)
-        
-        # Prepare data for insertion
-        data = []
-        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-            row = {
-                "vector": embedding.tolist(),
-                "text": chunk,
-                "source_id": source_id,
-                "chunk_index": max_chunk_index + i + 1,
-                "filename": "background_content",
-                "source_type": "supplementary"
-            }
-            if has_parent_text:
-                row["parent_text"] = ""
-            data.append(row)
-        
-        table.add(data)
-        
-        print(f"[RAG] Appended {len(chunks)} chunks to source {source_id}")
-        return {"chunks_added": len(chunks)}
+        """Append additional content to an existing source's index."""
+        return await rag_storage.append_to_document(notebook_id, source_id, text, chunk_prefix)
 
     async def delete_source(self, notebook_id: str, source_id: str) -> bool:
-        """Delete all chunks for a source from LanceDB.
-        
-        This should be called when a source is deleted to clean up vector embeddings.
-        Designed to be robust - returns True even if source was never indexed.
-        """
-        try:
-            if self.db is None:
-                self.db = lancedb.connect(str(self.db_path))
-            
-            table_name = f"notebook_{notebook_id}"
-            
-            # Check if table even exists - if not, nothing to delete
-            if table_name not in self.db.table_names():
-                print(f"[RAG] No table exists for notebook {notebook_id}, nothing to delete")
-                return True
-            
-            table = self.db.open_table(table_name)
-            
-            # LanceDB delete uses SQL-like filter syntax
-            # This is safe even if no matching rows exist
-            table.delete(f"source_id = '{source_id}'")
-            print(f"[RAG] Deleted all chunks for source {source_id} from LanceDB")
-            
-            # v1.0.3: Clean up entities for this source
-            entity_extractor.delete_source_entities(notebook_id, source_id)
-            
-            return True
-        except Exception as e:
-            print(f"[RAG] Error deleting source {source_id} from LanceDB: {e}")
-            # Return True anyway - the source might never have been indexed
-            # (e.g., empty content). Don't block source deletion.
-            return True
+        """Delete all chunks for a source from LanceDB."""
+        return await rag_storage.delete_source(notebook_id, source_id)
 
     async def _generate_document_summary(self, text: str, filename: str, source_type: str) -> Optional[str]:
-        """Phase 3.1: Generate a summary of the document at ingestion time.
-        
-        This summary is stored as a special chunk and helps with:
-        - Quick overview queries
-        - Better context for factual questions
-        - Faster retrieval for general questions about the document
-        """
-        # For very short documents, don't generate summary
-        if len(text) < 500:
-            return None
-        
-        # Truncate for summary generation (first ~4000 chars is usually enough)
-        text_sample = text[:4000]
-        
-        # Different prompts for different source types
-        if source_type in ['xlsx', 'csv', 'tabular']:
-            prompt = f"""Summarize this tabular data from '{filename}'. Include:
-- What entities/people are tracked
-- What metrics/values are recorded  
-- Time periods covered
-- Key totals or patterns
-
-Data sample:
-{text_sample}
-
-Summary (2-3 sentences):"""
-        else:
-            prompt = f"""Summarize the key points from '{filename}' in 2-3 sentences. Focus on:
-- Main topic/purpose
-- Key facts or findings
-- Important entities mentioned
-
-Content:
-{text_sample}
-
-Summary:"""
-        
-        try:
-            # Use fast model for summary generation (it's good at summarization)
-            timeout = httpx.Timeout(30.0, read=60.0)
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": settings.ollama_fast_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {
-                            "temperature": 0.3,
-                            "num_predict": 200,
-                        }
-                    }
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    summary = result.get("response", "").strip()
-                    # Clean up any artifacts
-                    if summary and len(summary) > 20:
-                        return summary
-        except Exception as e:
-            print(f"[RAG] Summary generation failed for {filename}: {e}")
-        
-        return None
+        """Generate a summary of the document at ingestion time."""
+        return await rag_storage.generate_document_summary(text, filename, source_type)
 
     async def _add_to_topic_model(
         self,
@@ -864,88 +183,12 @@ Summary:"""
         chunks: List[str],
         embeddings: np.ndarray
     ):
-        """Add document chunks to BERTopic model for topic discovery.
-        
-        v0.6.5: Replaces concept extraction with BERTopic topic modeling.
-        Uses ALL chunks (not limited to 2000 chars) for better topic discovery.
-        Two-stage naming: instant c-TF-IDF + background LLM enhancement.
-        """
-        async with _concept_extraction_semaphore:
-            try:
-                from services.topic_modeling import topic_modeling_service
-                
-                if not chunks:
-                    print(f"[TopicModel] No chunks for source {source_id}, skipping")
-                    return
-                
-                print(f"[TopicModel] Adding {len(chunks)} chunks from source {source_id}")
-                
-                result = await topic_modeling_service.add_documents(
-                    texts=chunks,
-                    source_id=source_id,
-                    notebook_id=notebook_id,
-                    embeddings=embeddings
-                )
-                
-                topic_count = len(result.get("topics", []))
-                if topic_count > 0:
-                    print(f"[TopicModel] Found {topic_count} topics for source {source_id}")
-                else:
-                    print(f"[TopicModel] No new topics for source {source_id} (status: {result.get('status', 'unknown')})")
-                
-                # Check if we should auto-rebuild topics for better discovery
-                if topic_modeling_service.should_rebuild(notebook_id):
-                    try:
-                        from services.job_queue import job_queue, JobType, JobStatus
-                        # Guard: don't submit if a rebuild is already running for this notebook
-                        running_jobs = await job_queue.list_jobs(notebook_id=notebook_id, status=JobStatus.RUNNING)
-                        has_running_rebuild = any(
-                            j.get("job_type") == JobType.TOPIC_REBUILD.value 
-                            for j in running_jobs
-                        )
-                        if not has_running_rebuild:
-                            topic_modeling_service.mark_rebuild_started(notebook_id)
-                            job_id = await job_queue.submit(
-                                job_type=JobType.TOPIC_REBUILD,
-                                params={"notebook_id": notebook_id},
-                                notebook_id=notebook_id
-                            )
-                            print(f"[TopicModel] Auto-triggered rebuild for {notebook_id} (job {job_id})")
-                        else:
-                            print(f"[TopicModel] Rebuild already running for {notebook_id}, skipping auto-trigger")
-                    except Exception as rebuild_err:
-                        print(f"[TopicModel] Auto-rebuild trigger failed (non-fatal): {rebuild_err}")
-                
-            except Exception as e:
-                import traceback
-                print(f"[TopicModel] Error adding to topic model: {e}")
-                traceback.print_exc()
+        """Add document chunks to BERTopic model for topic discovery."""
+        await rag_storage._add_to_topic_model(notebook_id, source_id, chunks, embeddings)
 
     def search_chunks(self, notebook_id: str, query_text: str, top_k: int = 5) -> List[Dict]:
-        """Public API: Search for relevant chunks in a notebook's vector store.
-        
-        Simple vector similarity search without LLM generation.
-        Use this when you need raw chunks (e.g., visual generation, slide content).
-        
-        Args:
-            notebook_id: The notebook to search in
-            query_text: Text to search for (will be embedded)
-            top_k: Number of results to return
-            
-        Returns:
-            List of chunk dicts with 'text', 'source_id', 'filename', etc.
-            Empty list if table doesn't exist or has no data.
-        """
-        try:
-            table = self._get_table(notebook_id)
-            if table.count_rows() == 0:
-                return []
-            query_emb = self.encode(query_text)[0].tolist()
-            results = table.search(query_emb).limit(top_k).to_list()
-            return results
-        except Exception as e:
-            print(f"[RAG] search_chunks failed for {notebook_id}: {e}")
-            return []
+        """Search for relevant chunks in a notebook's vector store."""
+        return rag_storage.search_chunks(notebook_id, query_text, top_k)
 
     async def query(
         self,
@@ -1366,6 +609,12 @@ JSON:"""
                 end = result.rfind("}") + 1
                 if start >= 0 and end > start:
                     analysis = json.loads(result[start:end])
+                    # Sanitize: LLM can return null for any field — guard all expected keys
+                    analysis["search_terms"] = analysis.get("search_terms") or []
+                    analysis["entities"] = analysis.get("entities") or []
+                    analysis["time_periods"] = analysis.get("time_periods") or []
+                    analysis["data_type"] = analysis.get("data_type") or "explanation"
+                    analysis["key_metric"] = analysis.get("key_metric") or ""
                     print(f"[RAG] LLM Query Analysis: {analysis}")
                     return analysis
         except Exception as e:
@@ -1412,243 +661,14 @@ JSON:"""
     
     async def _adaptive_search(self, table, question: str, query_embedding: List[float], 
                                 analysis: Dict, top_k: int) -> List[Dict]:
-        """Adaptive search with multiple strategies and verification.
-        
-        Tries different search strategies until good results are found.
-        """
-        strategies_tried = []
-        
-        # Strategy 1: Standard hybrid search with expanded query
-        expanded_query = self._build_search_query(analysis, question)
-        if HAS_BM25:
-            results = self._hybrid_search(expanded_query, table, query_embedding, k=top_k * 2)
-        else:
-            results = table.search(query_embedding).limit(top_k * 2).to_list()
-        
-        is_good, reason = self._verify_retrieval_quality(results, analysis)
-        strategies_tried.append(("hybrid", is_good, reason))
-        
-        if is_good:
-            print("[RAG] Adaptive search: Strategy 1 (hybrid) succeeded")
-            return results
-        
-        print(f"[RAG] Adaptive search: Strategy 1 failed - {reason}")
-        
-        # Strategy 2: Entity-focused search
-        # Search specifically for chunks containing the entities
-        entities = analysis.get("entities", [])
-        if entities:
-            try:
-                all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
-                entity_matches = []
-                for doc in all_docs:
-                    text = doc.get("text", "").lower()
-                    for entity in entities:
-                        if entity.lower() in text:
-                            entity_matches.append(doc)
-                            break
-                
-                if entity_matches:
-                    # Re-rank entity matches by relevance to query
-                    if HAS_BM25:
-                        corpus = [doc.get("text", "").lower().split() for doc in entity_matches]
-                        bm25 = BM25Okapi(corpus)
-                        scores = bm25.get_scores(expanded_query.lower().split())
-                        ranked_indices = np.argsort(scores)[::-1][:top_k * 2]
-                        results = [entity_matches[i] for i in ranked_indices]
-                    else:
-                        results = entity_matches[:top_k * 2]
-                    
-                    is_good, reason = self._verify_retrieval_quality(results, analysis)
-                    strategies_tried.append(("entity_focused", is_good, reason))
-                    
-                    if is_good:
-                        print("[RAG] Adaptive search: Strategy 2 (entity-focused) succeeded")
-                        return results
-                    
-                    print(f"[RAG] Adaptive search: Strategy 2 failed - {reason}")
-            except Exception as e:
-                print(f"[RAG] Adaptive search: Strategy 2 error - {e}")
-        
-        # Strategy 3: Time-period focused search
-        time_periods = analysis.get("time_periods", [])
-        if time_periods:
-            try:
-                all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
-                time_matches = []
-                for doc in all_docs:
-                    text = doc.get("text", "").lower()
-                    filename = doc.get("filename", "").lower()
-                    combined = f"{text} {filename}"
-                    for period in time_periods:
-                        if period.lower() in combined:
-                            time_matches.append(doc)
-                            break
-                
-                if time_matches:
-                    # Re-rank by BM25
-                    if HAS_BM25 and len(time_matches) > 1:
-                        corpus = [doc.get("text", "").lower().split() for doc in time_matches]
-                        bm25 = BM25Okapi(corpus)
-                        scores = bm25.get_scores(expanded_query.lower().split())
-                        ranked_indices = np.argsort(scores)[::-1][:top_k * 2]
-                        results = [time_matches[i] for i in ranked_indices if i < len(time_matches)]
-                    else:
-                        results = time_matches[:top_k * 2]
-                    
-                    is_good, reason = self._verify_retrieval_quality(results, analysis)
-                    strategies_tried.append(("time_focused", is_good, reason))
-                    
-                    if is_good:
-                        print("[RAG] Adaptive search: Strategy 3 (time-focused) succeeded")
-                        return results
-                    
-                    print(f"[RAG] Adaptive search: Strategy 3 failed - {reason}")
-            except Exception as e:
-                print(f"[RAG] Adaptive search: Strategy 3 error - {e}")
-        
-        # Strategy 4: Full-text scan with keyword matching
-        # Last resort - scan all docs for any relevant keywords
-        try:
-            all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
-            key_metric = analysis.get("key_metric", "")
-            
-            keyword_matches = []
-            search_terms = [key_metric] if key_metric else []
-            search_terms.extend(entities)
-            search_terms.extend(time_periods)
-            
-            for doc in all_docs:
-                text = doc.get("text", "").lower()
-                match_count = sum(1 for term in search_terms if term.lower() in text)
-                if match_count >= 2:  # At least 2 keywords match
-                    keyword_matches.append((match_count, doc))
-            
-            if keyword_matches:
-                keyword_matches.sort(key=lambda x: -x[0])
-                results = [doc for _, doc in keyword_matches[:top_k * 2]]
-                strategies_tried.append(("keyword_scan", True, "Found keyword matches"))
-                print(f"[RAG] Adaptive search: Strategy 4 (keyword scan) found {len(results)} matches")
-                return results
-        except Exception as e:
-            print(f"[RAG] Adaptive search: Strategy 4 error - {e}")
-        
-        # Return best results we have
-        print(f"[RAG] Adaptive search: All strategies tried: {strategies_tried}")
+        """Adaptive search with multiple strategies and verification."""
+        results, _ = await rag_search.adaptive_search(table, question, query_embedding, analysis, top_k)
         return results
     
     async def _adaptive_search_progressive(self, table, question: str, query_embedding: List[float], 
                                            analysis: Dict, top_k: int) -> Tuple[List[Dict], List[str]]:
-        """Adaptive search that returns strategies tried for progressive UI.
-        
-        v1.1.0: Wrapper around _adaptive_search that tracks and returns strategy info.
-        
-        Returns:
-            Tuple of (results, strategies_used)
-        """
-        strategies_used = []
-        
-        # Strategy 1: Standard hybrid search with expanded query
-        expanded_query = self._build_search_query(analysis, question)
-        if HAS_BM25:
-            results = self._hybrid_search(expanded_query, table, query_embedding, k=top_k * 2)
-            strategies_used.append("hybrid_search")
-        else:
-            results = table.search(query_embedding).limit(top_k * 2).to_list()
-            strategies_used.append("vector_search")
-        
-        is_good, reason = self._verify_retrieval_quality(results, analysis)
-        
-        if is_good:
-            return results, strategies_used
-        
-        # Strategy 2: Entity-focused search
-        entities = analysis.get("entities", [])
-        if entities:
-            try:
-                all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
-                entity_matches = []
-                for doc in all_docs:
-                    text = doc.get("text", "").lower()
-                    for entity in entities:
-                        if entity.lower() in text:
-                            entity_matches.append(doc)
-                            break
-                
-                if entity_matches:
-                    strategies_used.append("entity_focused")
-                    if HAS_BM25:
-                        corpus = [doc.get("text", "").lower().split() for doc in entity_matches]
-                        bm25 = BM25Okapi(corpus)
-                        scores = bm25.get_scores(expanded_query.lower().split())
-                        ranked_indices = np.argsort(scores)[::-1][:top_k * 2]
-                        results = [entity_matches[i] for i in ranked_indices]
-                    else:
-                        results = entity_matches[:top_k * 2]
-                    
-                    is_good, reason = self._verify_retrieval_quality(results, analysis)
-                    if is_good:
-                        return results, strategies_used
-            except Exception as e:
-                print(f"[RAG] Strategy 2 error: {e}")
-        
-        # Strategy 3: Time-period focused search
-        time_periods = analysis.get("time_periods", [])
-        if time_periods:
-            try:
-                all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
-                time_matches = []
-                for doc in all_docs:
-                    text = doc.get("text", "").lower()
-                    filename = doc.get("filename", "").lower()
-                    combined = f"{text} {filename}"
-                    for period in time_periods:
-                        if period.lower() in combined:
-                            time_matches.append(doc)
-                            break
-                
-                if time_matches:
-                    strategies_used.append("time_focused")
-                    if HAS_BM25 and len(time_matches) > 1:
-                        corpus = [doc.get("text", "").lower().split() for doc in time_matches]
-                        bm25 = BM25Okapi(corpus)
-                        scores = bm25.get_scores(expanded_query.lower().split())
-                        ranked_indices = np.argsort(scores)[::-1][:top_k * 2]
-                        results = [time_matches[i] for i in ranked_indices if i < len(time_matches)]
-                    else:
-                        results = time_matches[:top_k * 2]
-                    
-                    is_good, reason = self._verify_retrieval_quality(results, analysis)
-                    if is_good:
-                        return results, strategies_used
-            except Exception as e:
-                print(f"[RAG] Strategy 3 error: {e}")
-        
-        # Strategy 4: Keyword scan
-        try:
-            all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
-            key_metric = analysis.get("key_metric", "")
-            
-            keyword_matches = []
-            search_terms = [key_metric] if key_metric else []
-            search_terms.extend(entities)
-            search_terms.extend(time_periods)
-            
-            for doc in all_docs:
-                text = doc.get("text", "").lower()
-                match_count = sum(1 for term in search_terms if term.lower() in text)
-                if match_count >= 2:
-                    keyword_matches.append((match_count, doc))
-            
-            if keyword_matches:
-                strategies_used.append("keyword_scan")
-                keyword_matches.sort(key=lambda x: -x[0])
-                results = [doc for _, doc in keyword_matches[:top_k * 2]]
-                return results, strategies_used
-        except Exception as e:
-            print(f"[RAG] Strategy 4 error: {e}")
-        
-        return results, strategies_used
+        """Adaptive search that returns strategies tried for progressive UI."""
+        return await rag_search.adaptive_search(table, question, query_embedding, analysis, top_k)
     
     def _classify_query(self, question: str) -> str:
         """Classify query type for optimal prompt and model selection.
@@ -1675,82 +695,16 @@ JSON:"""
     
     async def _corrective_retrieval(self, table, question: str, analysis: Dict, 
                                      top_k: int, original_results: List[Dict]) -> List[Dict]:
-        """Corrective retrieval using query variants when initial retrieval fails.
-        
-        Called when answer quality check fails. Generates variant queries and
-        retrieves again to get better results.
-        """
-        print("[RAG] Corrective retrieval triggered - generating query variants")
-        
-        variants = await self._generate_query_variants(question)
-        print(f"[RAG] Query variants: {variants}")
-        
-        all_results = list(original_results)  # Start with original
-        seen_ids = {r.get('chunk_id', r.get('text', '')[:50]) for r in original_results}
-        
-        for variant in variants[1:]:  # Skip original (index 0)
-            # Generate embedding for variant
-            embedding = self.encode(variant)[0].tolist()
-            
-            # Search with variant
-            if HAS_BM25:
-                variant_results = self._hybrid_search(variant, table, embedding, k=top_k)
-            else:
-                variant_results = table.search(embedding).limit(top_k).to_list()
-            
-            # Add new unique results
-            for r in variant_results:
-                r_id = r.get('chunk_id', r.get('text', '')[:50])
-                if r_id not in seen_ids:
-                    all_results.append(r)
-                    seen_ids.add(r_id)
-        
-        print(f"[RAG] Corrective retrieval found {len(all_results)} total results")
-        return all_results[:top_k * 2]  # Return expanded set for reranking
+        """Corrective retrieval using query variants when initial retrieval fails."""
+        return await rag_search.corrective_retrieval(table, question, analysis, top_k, original_results)
     
     def _get_prompt_for_query_type(self, query_type: str, num_citations: int, avg_confidence: float = 0.5) -> str:
         """Get optimized prompt based on query classification."""
         return rag_generation.get_prompt_for_query_type(query_type, num_citations, avg_confidence)
 
     def _extract_mentioned_sources(self, question: str, notebook_id: str) -> List[str]:
-        """Extract source IDs if the user mentions specific filenames in their query.
-        
-        This allows queries like "What does document.xlsx say about X" to filter
-        to that specific source for better relevance.
-        """
-        import re
-        
-        # Common file extensions to look for - capture full filename
-        file_pattern = r'([\w\-\.]+\.(?:xlsx|xls|pdf|docx|doc|pptx|ppt|csv|txt|epub|ipynb|odt|rtf|mp3|wav|mp4|mov))'
-        
-        mentioned_files = re.findall(file_pattern, question, re.IGNORECASE)
-        if not mentioned_files:
-            return []
-        
-        print(f"[RAG] Found filename references in query: {mentioned_files}")
-        
-        # Get all sources for this notebook
-        try:
-            sources_data = source_store._load_data()
-            notebook_sources = [
-                (sid, s) for sid, s in sources_data.get("sources", {}).items()
-                if s.get("notebook_id") == notebook_id
-            ]
-            
-            matched_source_ids = []
-            for sid, source in notebook_sources:
-                filename = source.get("filename", "").lower()
-                for mentioned in mentioned_files:
-                    # Check if the mentioned filename matches (case-insensitive)
-                    if mentioned.lower() in filename or filename in mentioned.lower():
-                        matched_source_ids.append(sid)
-                        print(f"[RAG] Matched source: '{mentioned}' -> {source.get('filename')} ({sid})")
-                        break
-            
-            return matched_source_ids
-        except Exception as e:
-            print(f"[RAG] Error extracting mentioned sources: {e}")
-            return []
+        """Extract source IDs if the user mentions specific filenames in their query."""
+        return rag_query_analyzer.extract_mentioned_sources(question, notebook_id)
 
     async def query_stream(
         self,
@@ -1894,6 +848,12 @@ JSON:"""
         if source_ids:
             results = [r for r in results if r["source_id"] in source_ids]
 
+        # P1: Start follow-up generation EARLY — uses raw search text, runs parallel with rerank+LLM
+        early_context = "\n\n".join([r.get("text", "")[:300] for r in results[:5]])
+        followup_task = asyncio.create_task(
+            self._generate_follow_up_questions_fast(question, early_context)
+        )
+
         # Step 2c: Rerank
         rerank_time = 0
         if self._use_reranker and len(results) > top_k:
@@ -1945,13 +905,9 @@ JSON:"""
         if low_confidence or num_citations == 0 or not context.strip():
             no_info_msg = "I don't have enough relevant information in your documents to answer this question accurately. Try uploading more documents related to this topic, or rephrase your question."
             yield {"type": "token", "content": no_info_msg}
+            followup_task.cancel()
             yield {"type": "done", "follow_up_questions": []}
             return
-
-        # Step 4b: Start follow-up generation in background (parallel with main answer)
-        followup_task = asyncio.create_task(
-            self._generate_follow_up_questions_fast(question, context)
-        )
 
         # Step 5: Classify query and select optimal prompt + model
         from api.settings import get_user_profile_sync, build_user_context
@@ -1975,11 +931,11 @@ JSON:"""
         temporal_note = ""
         if temporal_filter:
             periods = []
-            for q in temporal_filter.get('quarters', []):
+            for q in (temporal_filter.get('quarters') or []):
                 periods.append(f"Q{q}")
-            for y in temporal_filter.get('years', []):
+            for y in (temporal_filter.get('years') or []):
                 periods.append(y)
-            for fy in temporal_filter.get('fiscal_years', []):
+            for fy in (temporal_filter.get('fiscal_years') or []):
                 periods.append(f"FY {fy}")
             if periods:
                 temporal_note = f"\n\nIMPORTANT: This question is specifically about {', '.join(periods)}. Only use data from this exact time period."
@@ -2015,7 +971,7 @@ Answer with [N] citations:"""
         model_choice = "phi4-mini (fast)" if use_fast_model else "olmo-3:7b-instruct (main)"
         print(f"[RAG STREAM] Query type: {query_type}, using {model_choice}")
         
-        # Status 4: Generating answer (final status before streaming)
+        # Status 4: Generating answer
         thinking_msg = "🧠 Deep thinking..." if deep_think else ("🤔 Synthesizing answer..." if query_type == 'complex' else "✍️ Generating answer...")
         yield {
             "type": "status",
@@ -2023,103 +979,107 @@ Answer with [N] citations:"""
             "query_type": query_type
         }
 
+        # ── Stream-First, Verify-After ──────────────────────────────────────
+        # Tokens stream to the frontend in real-time for immediate feedback.
+        # After generation completes, CaRR verification runs silently.
+        # If high hallucination risk is detected and a better answer is produced,
+        # a replace_answer event swaps the content (frontend already handles this).
         step_start = time.time()
         full_answer = ""
-        buffer = ""
         references_started = False
         
+        # Phase 1: STREAM — emit tokens in real-time as they arrive
         async for token in self._stream_ollama(system_prompt, prompt, deep_think=deep_think, use_fast_model=use_fast_model):
-            buffer += token
             full_answer += token
             
-            # Check if we've hit a References section - stop streaming if so
+            # Detect references section — stop streaming there
             if not references_started:
-                lower_buffer = buffer.lower()
+                lower_buf = full_answer.lower()
                 for marker in ["\nreferences:", "\nreferences\n", "\nsources:\n", "\ncitations:\n", "\n\n[1] "]:
-                    if marker in lower_buffer:
+                    if marker in lower_buf:
                         references_started = True
-                        print("[RAG STREAM] Detected references section, stopping output")
+                        idx = lower_buf.find(marker)
+                        full_answer = full_answer[:idx]
+                        print("[RAG STREAM] Detected references section, truncating")
                         break
             
+            # Stream token to frontend immediately (skip if in references)
             if not references_started:
-                # Send token directly - don't clean individual tokens as it strips spaces
-                # _clean_llm_output is for complete text, not streaming tokens
-                if token:
-                    yield {"type": "token", "content": token}
+                yield {"type": "token", "content": token}
         
-        print(f"[RAG STREAM] Step 6 - LLM streaming: {time.time() - step_start:.2f}s")
+        gen_time = time.time() - step_start
+        # Post-generation cleanup: strip trailing reference stubs the marker
+        # detection missed (e.g. "---\n\nN." or trailing "---")
+        import re as _re
+        full_answer = _re.sub(r'\n\n---+\s*\n[\s\S]{0,40}$', '', full_answer)
+        full_answer = _re.sub(r'\n\n---+\s*$', '', full_answer)
+        full_answer = _re.sub(r'\n\n[A-Z0-9]\.\s*$', '', full_answer)
+        print(f"[RAG STREAM] Step 6a - LLM generation (streamed): {gen_time:.2f}s ({len(full_answer)} chars)")
 
-        # Step 7: Wait for follow-up questions
+        # Phase 2: VERIFY — silent citation check after streaming completes
         step_start = time.time()
-        follow_up_questions = await followup_task
-        print(f"[RAG STREAM] Step 7 - Follow-ups ready: {time.time() - step_start:.2f}s")
-
-        # Step 7b: CaRR verification loop (v1.2) — verify + conditional retry via LangGraph
-        verification_result = None
+        verification_result = rag_verification.verify_answer(full_answer, citations)
         carr_retried = False
-        try:
-            from services.citation_verifier import citation_verifier
-            verification_result = citation_verifier.verify_answer(full_answer, citations)
-            print(f"[RAG STREAM] CaRR verification: score={verification_result.overall_score:.2f}, risk={verification_result.hallucination_risk}")
+        
+        if verification_result and verification_result.hallucination_risk == "high":
+            print(f"[RAG STREAM] CaRR: high hallucination risk detected, running retry...")
+            yield {"type": "status", "message": "🔄 Improving answer accuracy..."}
+            should_replace, new_answer, updated_verif = await rag_verification.attempt_carr_retry(
+                verification_result=verification_result,
+                system_prompt=system_prompt,
+                user_prompt=prompt,
+                citations=citations,
+                deep_think=deep_think,
+                use_fast_model=use_fast_model,
+                original_answer=full_answer,
+            )
+            if should_replace and new_answer:
+                full_answer = new_answer
+                carr_retried = True
+                if updated_verif:
+                    verification_result = updated_verif
+                # Replace the already-streamed answer with the improved version
+                yield {"type": "replace_answer", "content": new_answer}
+                print(f"[RAG STREAM] CaRR: retry accepted, replaced streamed answer")
+            else:
+                print(f"[RAG STREAM] CaRR: retry rejected, keeping streamed answer")
+        
+        verify_time = time.time() - step_start
+        print(f"[RAG STREAM] Step 6b - Verification{' + CaRR retry' if carr_retried else ''}: {verify_time:.2f}s")
 
-            # If high hallucination risk, retry once with grounding instructions
-            if verification_result.hallucination_risk == "high":
-                try:
-                    from agents.carr_graph import verified_generate
-                    yield {"type": "status", "message": "🔍 Verifying answer quality..."}
+        # Step 7: Collect follow-ups (started early at Step 2b, should be ready by now)
+        step_start = time.time()
+        follow_up_questions = []
+        if followup_task.done():
+            follow_up_questions = followup_task.result()
+            print(f"[RAG STREAM] Step 7 - Follow-ups ready (instant): {time.time() - step_start:.2f}s")
+        else:
+            try:
+                follow_up_questions = await asyncio.wait_for(followup_task, timeout=2.0)
+                print(f"[RAG STREAM] Step 7 - Follow-ups ready (waited): {time.time() - step_start:.2f}s")
+            except asyncio.TimeoutError:
+                print(f"[RAG STREAM] Step 7 - Follow-ups timed out, sending done without them")
 
-                    carr_result = await verified_generate(
-                        system_prompt=system_prompt,
-                        user_prompt=prompt,
-                        citations=citations,
-                        deep_think=deep_think,
-                        use_fast_model=use_fast_model,
-                        max_retries=1,
-                    )
-                    if carr_result.get("retried") and carr_result.get("answer"):
-                        # Replace the streamed answer with the verified one
-                        new_answer = carr_result["answer"]
-                        # Strip references section from retry answer
-                        for marker in ["\nReferences:", "\nreferences\n", "\nSources:\n"]:
-                            idx = new_answer.lower().find(marker.lower())
-                            if idx > 0:
-                                new_answer = new_answer[:idx]
-                                break
+        if follow_up_questions:
+            yield {"type": "follow_up_questions", "questions": follow_up_questions}
 
-                        # Send a replace event so frontend can swap in the better answer
-                        yield {"type": "replace_answer", "content": new_answer}
-                        full_answer = new_answer
-                        carr_retried = True
-
-                        # Update verification from the CaRR graph result
-                        carr_verif = carr_result.get("verification")
-                        if carr_verif:
-                            verification_result = type(verification_result)(
-                                overall_score=carr_verif.get("score", verification_result.overall_score),
-                                hallucination_risk=carr_verif.get("hallucination_risk", "medium"),
-                                feedback=carr_verif.get("feedback", ""),
-                                claims=[],
-                                fully_supported_count=carr_verif.get("fully_supported", 0),
-                                partially_supported_count=carr_verif.get("partially_supported", 0),
-                                unsupported_count=carr_verif.get("unsupported", 0),
-                                no_citation_count=carr_verif.get("no_citation", 0),
-                            )
-                        print(f"[RAG STREAM] CaRR retry complete: new score={verification_result.overall_score:.2f}")
-                except Exception as carr_err:
-                    print(f"[RAG STREAM] CaRR retry failed (non-fatal): {carr_err}")
-        except Exception as e:
-            print(f"[RAG STREAM] CaRR verification failed (non-fatal): {e}")
-
+        # Build verification payload for done event
+        verification_payload = rag_verification.build_verification_payload(verification_result, carr_retried)
+        
         yield {
             "type": "done",
             "follow_up_questions": follow_up_questions,
-            "verification": {
-                "score": verification_result.overall_score if verification_result else None,
-                "hallucination_risk": verification_result.hallucination_risk if verification_result else None,
-                "feedback": verification_result.feedback if verification_result else None,
-                "retried": carr_retried,
-            } if verification_result else None
+            "verification": verification_payload
         }
+
+        # Late follow-ups (if not ready at done time)
+        if not follow_up_questions and not followup_task.cancelled():
+            try:
+                follow_up_questions = await asyncio.wait_for(followup_task, timeout=5.0)
+                if follow_up_questions:
+                    yield {"type": "follow_up_questions", "questions": follow_up_questions}
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
 
         # Step 8: Memory extraction (fire-and-forget)
         async def _extract_memories_background():
@@ -2164,421 +1124,62 @@ Answer with [N] citations:"""
         return rag_generation.clean_llm_output(text)
 
     async def generate_proactive_insights(self, notebook_id: str, limit: int = 3) -> List[Dict]:
-        """Phase 4.1: Generate proactive insights from document content.
-        
-        Analyzes document summaries and content to suggest interesting
-        questions or observations the user might want to explore.
-        """
-        try:
-            # Get table and sample some content
-            table = self._get_table(notebook_id)
-            
-            # Look for summary chunks first (they have chunk_index = -1)
-            try:
-                all_rows = table.search([0.0] * settings.embedding_dim).limit(50).to_list()
-                summaries = [r for r in all_rows if r.get('chunk_index') == -1]
-                regular_chunks = [r for r in all_rows if r.get('chunk_index') != -1][:10]
-            except Exception:
-                return []
-            
-            if not summaries and not regular_chunks:
-                return []
-            
-            # Build context from summaries or sample chunks
-            if summaries:
-                context = "\n\n".join([s.get('text', '')[:500] for s in summaries[:5]])
-            else:
-                context = "\n\n".join([c.get('text', '')[:300] for c in regular_chunks[:5]])
-            
-            prompt = f"""Based on these document summaries/excerpts, suggest {limit} interesting questions or insights the user might want to explore.
-
-Documents:
-{context}
-
-Generate {limit} insights in this format (one per line):
-💡 [Interesting observation or question about the data]
-
-Be specific and actionable. Focus on patterns, comparisons, or notable findings."""
-
-            response = await self._call_ollama(
-                "You are a helpful analyst. Generate brief, specific insights.",
-                prompt,
-                model=settings.ollama_fast_model
-            )
-            
-            insights = []
-            for line in response.strip().split('\n'):
-                line = line.strip()
-                if line and ('💡' in line or line.startswith('-')):
-                    # Clean up the line
-                    insight = line.replace('💡', '').strip().lstrip('-').strip()
-                    if insight and len(insight) > 10:
-                        insights.append({
-                            "text": insight,
-                            "type": "proactive"
-                        })
-            
-            return insights[:limit]
-            
-        except Exception as e:
-            print(f"[RAG] Proactive insights generation failed: {e}")
-            return []
+        """Generate proactive insights from document content."""
+        return await rag_generation.generate_proactive_insights(notebook_id, limit)
 
     async def _generate_follow_up_questions_fast(self, question: str, context: str, answer: str = "") -> List[str]:
-        """Phase 3.4: Generate contextual follow-up questions using fast model.
-        
-        Enhanced to consider the answer given, making follow-ups more relevant
-        and encouraging deeper exploration of the topic.
-        """
-        try:
-            # More contextual prompt that considers the answer
-            system_prompt = """Generate exactly 3 follow-up questions that would help the user explore this topic deeper.
-Questions should:
-- Build on what was just answered
-- Explore related aspects not yet covered
-- Be specific and actionable
-Output ONLY the questions, one per line. No numbering, no preamble."""
-            prompt = f"Topic: {question}\n\nContext: {context[:1000]}\n\n3 questions:"
-            
-            response = await self._call_ollama(system_prompt, prompt, model=settings.ollama_fast_model)
-            
-            questions = []
-            for line in response.strip().split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
-                # Strip numbering/bullets
-                line = line.lstrip('0123456789.-) ')
-                # Only keep lines that end with ? (actual questions)
-                if line.endswith('?'):
-                    questions.append(line)
-            
-            return questions[:3] if questions else []
-        except Exception as e:
-            print(f"Failed to generate follow-up questions: {e}")
-            return []
+        """Generate contextual follow-up questions using fast model."""
+        return await rag_generation.generate_follow_up_questions_fast(question, context, answer)
 
     async def get_suggested_questions(self, notebook_id: str) -> List[str]:
-        """Tier 3: Generate suggested questions based on actual document content.
-        
-        Uses document summaries (if available) or sample chunks to generate
-        relevant questions the user might want to ask.
-        """
-        try:
-            table = self._get_table(notebook_id)
-            
-            # Try to get document summaries first (chunk_index = -1)
-            try:
-                all_rows = table.search([0.0] * settings.embedding_dim).limit(30).to_list()
-                summaries = [r for r in all_rows if r.get('chunk_index') == -1]
-                regular_chunks = [r for r in all_rows if r.get('chunk_index') != -1][:5]
-            except Exception:
-                return self._default_suggested_questions()
-            
-            if not summaries and not regular_chunks:
-                return self._default_suggested_questions()
-            
-            # Build context from summaries or sample chunks
-            if summaries:
-                context = "\n\n".join([s.get('text', '')[:400] for s in summaries[:3]])
-            else:
-                context = "\n\n".join([c.get('text', '')[:300] for c in regular_chunks[:3]])
-            
-            # Use fast model to generate questions quickly
-            prompt = f"""Based on these document excerpts, generate 3 specific questions a user might want to ask.
-
-Documents:
-{context}
-
-Generate exactly 3 questions, one per line. Questions should be specific to the content, not generic.
-No numbering, no preamble, just the questions."""
-
-            response = await self._call_ollama(
-                "Generate 3 specific questions based on document content. Output only questions, one per line.",
-                prompt,
-                model=settings.ollama_fast_model
-            )
-            
-            # Parse questions from response
-            questions = []
-            for line in response.strip().split('\n'):
-                line = line.strip()
-                # Skip empty lines and lines that look like numbering
-                if line and not line[0].isdigit() and '?' in line:
-                    # Clean up the line
-                    question = line.lstrip('- •').strip()
-                    if question and len(question) > 10:
-                        questions.append(question)
-            
-            # Return parsed questions or defaults
-            return questions[:3] if questions else self._default_suggested_questions()
-            
-        except Exception as e:
-            print(f"[RAG] Suggested questions generation failed: {e}")
-            return self._default_suggested_questions()
+        """Generate suggested questions based on actual document content."""
+        return await rag_generation.get_suggested_questions(notebook_id)
     
     def _default_suggested_questions(self) -> List[str]:
         """Fallback suggested questions"""
         return rag_generation.default_suggested_questions()
 
     async def _generate_answer(self, question: str, context: str, num_citations: int = 5, llm_provider: Optional[str] = None, notebook_id: Optional[str] = None, conversation_id: Optional[str] = None, deep_think: bool = False) -> Dict:
-        """Generate answer using LLM with memory augmentation and user personalization. Returns dict with answer and memory_used info."""
-        
-        # If no citations/context, refuse to answer to prevent hallucination
-        if num_citations == 0 or not context.strip():
-            return {
-                "answer": "I don't have enough relevant information in your documents to answer this question accurately. Try uploading more documents related to this topic, or rephrase your question.",
-                "memory_used": [],
-                "memory_context_summary": None
-            }
-        
-        # Check if memory is enabled (frontend can disable via localStorage)
-        memory_used = []
-        
-        # Get user profile for personalization
-        from api.settings import get_user_profile_sync, build_user_context
-        user_profile = get_user_profile_sync()
-        user_context = build_user_context(user_profile)
-        
-        # Get memory context to augment the prompt
-        memory_context = await memory_agent.get_memory_context(
-            query=question,
-            notebook_id=notebook_id,
-            max_tokens=500  # Reserve tokens for memory
+        """Generate answer using LLM with memory augmentation and user personalization."""
+        return await rag_generation.generate_answer(
+            question, context, num_citations=num_citations, llm_provider=llm_provider,
+            notebook_id=notebook_id, conversation_id=conversation_id, deep_think=deep_think,
+            detect_response_format_fn=self._detect_response_format
         )
-        
-        # Build system prompt with universal guardrails
-        universal_rules = """STRICT RULES:
-- State facts confidently - NEVER use hedging phrases like "however", "it should be noted"
-- Put citations inline like [1] or [2] - NEVER write [N] or [Summary]
-- NEVER create a "Citation Numbers:" section or list citations separately
-- NEVER add a References section at the end"""
-
-        base_prompt = f"""Answer directly in 1-2 paragraphs with inline citations.
-
-{universal_rules}
-
-Highlight key insights from the sources."""
-        
-        # Add Deep Think chain-of-thought instructions
-        if deep_think:
-            base_prompt = f"""Analyze step by step, then give a clear conclusion.
-
-{universal_rules}
-
-Be thorough but concise (2-3 paragraphs). Inline citations only."""
-        
-        # Combine user context + memory + base prompt
-        system_parts = []
-        if user_context:
-            system_parts.append(f"User context: {user_context}")
-            memory_used.append("user_profile")
-        if memory_context.core_memory_block:
-            system_parts.append(memory_context.core_memory_block)
-            if memory_context.core_memory_block.strip():
-                memory_used.append("core_context")
-        system_parts.append(base_prompt)
-        
-        # Zero-latency format hint (list, code, table, steps, or empty)
-        format_hint = self._detect_response_format(question)
-        if format_hint:
-            system_parts.append(format_hint)
-        
-        system_prompt = "\n\n".join(system_parts)
-        
-        # Add retrieved memories to context if available
-        memory_section = ""
-        if memory_context.retrieved_memories:
-            memory_section = "\n\nRelevant past context:\n" + "\n".join(memory_context.retrieved_memories) + "\n"
-            memory_used.append("retrieved_memories")
-
-        prompt = f"""Sources:
-{context}
-{memory_section}
-Q: {question}
-
-Answer concisely with inline [N] citations:"""
-
-        # Determine which provider to use
-        provider = llm_provider or settings.llm_provider
-
-        # Call LLM based on provider
-        if provider == "ollama":
-            answer = await self._call_ollama(system_prompt, prompt)
-        elif provider == "openai":
-            answer = await self._call_openai(system_prompt, prompt)
-        elif provider == "anthropic":
-            answer = await self._call_anthropic(system_prompt, prompt)
-        else:
-            answer = await self._call_ollama(system_prompt, prompt)  # Default to ollama
-        
-        return {
-            "answer": answer,
-            "memory_used": memory_used,
-            "memory_context_summary": memory_context.core_memory_block[:200] if memory_context.core_memory_block else None
-        }
     
-    async def _call_ollama(self, system_prompt: str, prompt: str, model: str = None, num_predict: int = 500, num_ctx: int = None, temperature: float = None) -> str:
+    async def _call_ollama(self, system_prompt: str, prompt: str, model: str = None, num_predict: int = 500, num_ctx: int = None, temperature: float = None, repeat_penalty: float = None, extra_options: dict = None) -> str:
         """Call Ollama API
         
         Args:
             num_predict: Max tokens to generate. 500 for chat Q&A, 2000-4000 for documents.
             num_ctx: Context window size. None = Ollama default. Set higher (8192+) for long generation.
             temperature: LLM temperature. None = Ollama default (~0.7).
+            repeat_penalty: Repetition penalty. None = auto. Use 1.1 for dialogue scripts.
+            extra_options: Additional Ollama options merged last (e.g., Mirostat overrides).
         """
-        # Use very long timeout - LLM generation can take minutes for complex queries
-        timeout = httpx.Timeout(10.0, read=600.0)  # 10s connect, 10 min read
-        # Default to fast model for non-streaming calls - faster response times
-        # Main model (olmo-3:7b-instruct) used for streaming queries
-        use_model = model or settings.ollama_fast_model
-        options = {"num_predict": num_predict}
-        if num_ctx is not None:
-            options["num_ctx"] = num_ctx
-        elif num_predict > 500:
-            # Auto-size context window for document generation:
-            # estimate prompt tokens (~1 token per 4 chars) + generation headroom
-            prompt_text = f"{system_prompt}\n\n{prompt}"
-            estimated_prompt_tokens = len(prompt_text) // 3  # conservative estimate
-            options["num_ctx"] = max(8192, estimated_prompt_tokens + num_predict + 512)
-        if temperature is not None:
-            options["temperature"] = temperature
-        # Repetition penalty — critical for preventing output loops
-        # Apply stronger penalty for document generation (longer outputs loop more)
-        options["repeat_penalty"] = 1.3 if num_predict > 500 else 1.1
-        options["repeat_last_n"] = 256 if num_predict > 500 else 64
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            print(f"Calling Ollama with model: {use_model}, num_predict: {num_predict}, num_ctx: {num_ctx or 'default'}")
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={
-                    "model": use_model,
-                    "prompt": f"{system_prompt}\n\n{prompt}",
-                    "stream": False,
-                    "keep_alive": -1,  # Keep model loaded (Tier 1 optimization)
-                    "options": options
-                }
-            )
-            result = response.json()
-            print(f"Ollama response received, length: {len(result.get('response', ''))}")
-            return result.get("response", "No response from LLM")
+        return await rag_llm.call_ollama(system_prompt, prompt, model=model, num_predict=num_predict, num_ctx=num_ctx, temperature=temperature, repeat_penalty=repeat_penalty, extra_options=extra_options)
 
-    async def _stream_ollama(self, system_prompt: str, prompt: str, deep_think: bool = False, use_fast_model: bool = False, num_predict: Optional[int] = None, temperature_override: Optional[float] = None) -> AsyncGenerator[str, None]:
+    async def _stream_ollama(self, system_prompt: str, prompt: str, deep_think: bool = False, use_fast_model: bool = False, num_predict: Optional[int] = None, temperature_override: Optional[float] = None, extra_options: dict = None) -> AsyncGenerator[str, None]:
         """Stream response from Ollama API with stop sequences to prevent citation lists
         
         Args:
             deep_think: Use CoT prompting with lower temperature for thorough analysis
             use_fast_model: Use phi4-mini (System 1) instead of olmo-3:7b-instruct (System 2)
-            num_predict: Override token limit. None = use defaults (400 chat / 800 deep think).
+            num_predict: Override token limit. None = use defaults (800 chat / 1500 deep think).
                          Set higher (2000-4000) for document generation.
             temperature_override: Per-skill adaptive temperature. None = use model defaults.
+            extra_options: Additional Ollama options merged last (e.g., Mirostat overrides).
         """
-        timeout = httpx.Timeout(10.0, read=600.0)
-        
-        # Two-tier model selection:
-        # - System 1 (phi4-mini): Factual queries, fast responses
-        # - System 2 (olmo-3:7b-instruct): Synthesis, complex queries, Deep Think
-        if use_fast_model and not deep_think:
-            model = settings.ollama_fast_model
-            temperature = temperature_override or 0.7
-            top_p = 0.9
-        else:
-            model = settings.ollama_model
-            # Lower temperature for Deep Think mode (more focused reasoning)
-            temperature = temperature_override or (0.5 if deep_think else 0.7)
-            top_p = 0.9
-        
-        # Stop sequences to prevent LLM from generating citation/reference lists
-        # Only apply for chat Q&A, not document generation (which needs References sections)
-        stop_sequences = []
-        if num_predict is None:
-            stop_sequences = [
-                "\n\nReferences",
-                "\n\nSources:",
-                "\n\nSources\n",
-                "\n\nCitations:",
-                "\n\nCitations\n",
-                "\n\n---\n[",
-                "\n\n[1]:",
-                "\n\n**References",
-                "\n\n**Sources",
-            ]
-        
-        # Determine token limit
-        if num_predict is not None:
-            effective_num_predict = num_predict
-        else:
-            effective_num_predict = 800 if deep_think else 400
-        
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            mode_str = " [Deep Think]" if deep_think else (" [Fast]" if use_fast_model else "")
-            print(f"Streaming from Ollama with model: {model}{mode_str} (temp={temperature}, num_predict={effective_num_predict})")
-            
-            # Auto-size context window for document generation
-            is_doc_gen = num_predict is not None and num_predict > 500
-            if is_doc_gen:
-                prompt_text = f"{system_prompt}\n\n{prompt}"
-                estimated_prompt_tokens = len(prompt_text) // 3
-                effective_num_ctx = max(8192, estimated_prompt_tokens + effective_num_predict + 512)
-            else:
-                effective_num_ctx = 4096
-            
-            # Tier 1 optimizations: keep_alive prevents cold start, num_predict caps runaway generation
-            request_json = {
-                "model": model,
-                "prompt": f"{system_prompt}\n\n{prompt}",
-                "stream": True,
-                "keep_alive": -1,  # Keep model loaded indefinitely (eliminates cold start)
-                "options": {
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "num_predict": effective_num_predict,
-                    "num_ctx": effective_num_ctx,
-                    "repeat_penalty": 1.3 if is_doc_gen else 1.1,
-                    "repeat_last_n": 256 if is_doc_gen else 64,
-                }
-            }
-            if stop_sequences:
-                request_json["stop"] = stop_sequences
-            
-            async with client.stream(
-                "POST",
-                f"{settings.ollama_base_url}/api/generate",
-                json=request_json
-            ) as response:
-                async for line in response.aiter_lines():
-                    if line:
-                        import json
-                        data = json.loads(line)
-                        # olmo-3:7b-instruct streams response tokens directly
-                        if data.get("response"):
-                            yield data["response"]
+        async for token in rag_llm.stream_ollama(system_prompt, prompt, deep_think=deep_think, use_fast_model=use_fast_model, num_predict=num_predict, temperature_override=temperature_override, extra_options=extra_options):
+            yield token
 
     async def _call_openai(self, system_prompt: str, prompt: str) -> str:
         """Call OpenAI API"""
-        from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
-
-        response = await client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        return response.choices[0].message.content
+        return await rag_llm.call_openai(system_prompt, prompt)
 
     async def _call_anthropic(self, system_prompt: str, prompt: str) -> str:
         """Call Anthropic API"""
-        from anthropic import AsyncAnthropic
-        client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-
-        response = await client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=1024,
-            system=system_prompt,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text
+        return await rag_llm.call_anthropic(system_prompt, prompt)
 
     def _chunk_text_smart(self, text: str, source_type: str, filename: str) -> List[str]:
         """Smart chunking that adapts strategy based on source type."""
@@ -2610,31 +1211,12 @@ Answer concisely with inline [N] citations:"""
 
     def get_current_embedding_dim(self) -> int:
         """Get the dimension of the current embedding model"""
-        test_embedding = self.encode("test")[0]
-        return len(test_embedding)
+        return rag_embeddings.get_current_embedding_dim()
 
     def check_embedding_dimension_mismatch(self) -> List[str]:
         """Check all notebook tables for embedding dimension mismatch.
         Returns list of notebook IDs that need re-indexing."""
-        if self.db is None:
-            self.db = lancedb.connect(str(self.db_path))
-        
-        current_dim = self.get_current_embedding_dim()
-        mismatched_notebooks = []
-        
-        for table_name in self.db.table_names():
-            if table_name.startswith("notebook_"):
-                try:
-                    table = self.db.open_table(table_name)
-                    stored_dim = self._get_stored_vector_dim(table)
-                    if stored_dim is not None and stored_dim != current_dim:
-                        notebook_id = table_name.replace("notebook_", "")
-                        mismatched_notebooks.append(notebook_id)
-                        print(f"[RAG] Dimension mismatch: {table_name} has {stored_dim}-dim vectors, current model uses {current_dim}-dim")
-                except Exception as e:
-                    print(f"[RAG] Error checking {table_name}: {e}")
-        
-        return mismatched_notebooks
+        return rag_storage.check_embedding_dimension_mismatch()
 
 
 # Global instance

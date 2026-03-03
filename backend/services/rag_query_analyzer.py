@@ -17,16 +17,14 @@ def classify_query(question: str) -> str:
     """
     q_lower = question.lower()
     
-    factual_patterns = [
-        'how many', 'how much', 'what is the', 'what was the',
-        'when did', 'when was', 'who is', 'who was', 'who did',
-        'what date', 'what time', 'what number', 'what percentage',
-        'list the', 'name the', 'count of', 'total of',
-        'did chris', 'did christopher',
-    ]
-    for pattern in factual_patterns:
-        if pattern in q_lower:
-            return 'factual'
+    # Multi-part detection: questions joined by 'and' or with multiple '?' are never purely factual
+    is_multi_part = (
+        question.count('?') > 1 or
+        ' and what ' in q_lower or ' and how ' in q_lower or
+        ' and who ' in q_lower or ' and why ' in q_lower or
+        ' and which ' in q_lower or ' and where ' in q_lower or
+        re.search(r'\band\b.{5,}\?', q_lower) is not None
+    )
     
     complex_patterns = [
         'compare', 'contrast', 'analyze', 'explain why', 'explain how',
@@ -44,6 +42,21 @@ def classify_query(question: str) -> str:
     if len(question) > 100 or question.count('?') > 1:
         return 'complex'
     
+    # Multi-part questions get synthesis even if they start with factual patterns
+    if is_multi_part:
+        return 'synthesis'
+    
+    factual_patterns = [
+        'how many', 'how much', 'what is the', 'what was the',
+        'when did', 'when was', 'who is', 'who was', 'who did',
+        'what date', 'what time', 'what number', 'what percentage',
+        'list the', 'name the', 'count of', 'total of',
+        'did chris', 'did christopher',
+    ]
+    for pattern in factual_patterns:
+        if pattern in q_lower:
+            return 'factual'
+    
     return 'synthesis'
 
 
@@ -56,7 +69,7 @@ def detect_response_format(question: str) -> str:
     q_lower = question.lower()
 
     # LIST
-    if re.search(r'\b(\d+|top|key|main|major|all)\s+(things?|items?|points?|reasons?|ways?|tips?|examples?|factors?|features?|benefits?|risks?|issues?|steps?|ideas?|recommendations?|priorities?|strengths?|weaknesses?|areas?)\b', q_lower):
+    if re.search(r'\b(\d+|top|key|main|major|all)\s+(things?|items?|points?|reasons?|ways?|tips?|examples?|factors?|features?|benefits?|risks?|issues?|steps?|ideas?|recommendations?|priorities?|strengths?|weaknesses?|areas?|industries|sectors?|use\s*cases?|applications?|tools?|platforms?|technologies?|strategies?|challenges?|trends?|methods?|approaches?|techniques?|components?|types?|categories?|advantages?|disadvantages?|differences?)\b', q_lower):
         return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
     if re.search(r'\blist\s+(the|all|every|my|our|their)\b', q_lower):
         return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
@@ -197,11 +210,11 @@ def boost_temporal_relevance(results: List[Dict], temporal_filter: Dict) -> List
         return results
     
     patterns = []
-    for q in temporal_filter.get('quarters', []):
+    for q in (temporal_filter.get('quarters') or []):
         patterns.extend([f'q{q}', f'q {q}', f'quarter {q}'])
-    for y in temporal_filter.get('years', []):
+    for y in (temporal_filter.get('years') or []):
         patterns.append(y)
-    for fy in temporal_filter.get('fiscal_years', []):
+    for fy in (temporal_filter.get('fiscal_years') or []):
         patterns.extend([f'fy {fy}', f'fy{fy}', fy])
     
     if not patterns:
@@ -330,15 +343,15 @@ def build_search_query(analysis: Dict, original_question: str) -> str:
     """Build an optimized search query from LLM analysis."""
     parts = [original_question]
     
-    for term in analysis.get("search_terms", []):
+    for term in (analysis.get("search_terms") or []):
         if term.lower() not in original_question.lower():
             parts.append(term)
     
-    for entity in analysis.get("entities", []):
+    for entity in (analysis.get("entities") or []):
         if entity.lower() not in original_question.lower():
             parts.append(entity)
     
-    for period in analysis.get("time_periods", []):
+    for period in (analysis.get("time_periods") or []):
         parts.append(period)
     
     if analysis.get("key_metric"):
@@ -492,3 +505,45 @@ def check_answer_quality(question: str, answer: str, query_type: str) -> Tuple[b
         return False, "Answer contains meta-commentary instead of actual data"
     
     return True, "Answer looks good"
+
+
+# ─── Source Mention Extraction ───────────────────────────────────────────────────
+
+def extract_mentioned_sources(question: str, notebook_id: str) -> List[str]:
+    """Extract source IDs if the user mentions specific filenames in their query.
+    
+    This allows queries like "What does document.xlsx say about X" to filter
+    to that specific source for better relevance.
+    """
+    from storage.source_store import source_store
+
+    # Common file extensions to look for - capture full filename
+    file_pattern = r'([\w\-\.]+\.(?:xlsx|xls|pdf|docx|doc|pptx|ppt|csv|txt|epub|ipynb|odt|rtf|mp3|wav|mp4|mov))'
+
+    mentioned_files = re.findall(file_pattern, question, re.IGNORECASE)
+    if not mentioned_files:
+        return []
+
+    print(f"[RAG] Found filename references in query: {mentioned_files}")
+
+    # Get all sources for this notebook
+    try:
+        sources_data = source_store._load_data()
+        notebook_sources = [
+            (sid, s) for sid, s in sources_data.get("sources", {}).items()
+            if s.get("notebook_id") == notebook_id
+        ]
+
+        matched_source_ids = []
+        for sid, source in notebook_sources:
+            filename = source.get("filename", "").lower()
+            for mentioned in mentioned_files:
+                if mentioned.lower() in filename or filename in mentioned.lower():
+                    matched_source_ids.append(sid)
+                    print(f"[RAG] Matched source: '{mentioned}' -> {source.get('filename')} ({sid})")
+                    break
+
+        return matched_source_ids
+    except Exception as e:
+        print(f"[RAG] Error extracting mentioned sources: {e}")
+        return []

@@ -33,7 +33,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
     enabled: !!notebookId,
     onMessage: useCallback((message: any) => {
       if (message.type === 'source_updated' && message.data?.notebook_id === notebookId) {
-        loadSources();
+        loadSources(true);
         onSourcesChange?.();
       }
     }, [notebookId, onSourcesChange]),
@@ -51,33 +51,35 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   useEffect(() => {
     const hasProcessing = sources.some(s => s.status === 'processing');
     if (!hasProcessing || !notebookId) return;
-    const interval = setInterval(() => loadSources(), 3000);
+    const interval = setInterval(() => loadSources(true), 3000);
     return () => clearInterval(interval);
   }, [sources, notebookId]);
 
   // Visibility-based refresh: catch missed WebSocket events when tab regains focus
   useEffect(() => {
     const handleFocus = () => {
-      if (notebookId) loadSources();
+      if (notebookId) loadSources(true);
     };
     window.addEventListener('focus', handleFocus);
     return () => window.removeEventListener('focus', handleFocus);
   }, [notebookId]);
 
-  const loadSources = async () => {
+  const loadSources = async (silent = false) => {
     if (!notebookId) return;
 
-    setLoading(true);
-    setError(null);
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const data = await sourceService.list(notebookId);
       setSources(data);
     } catch (err: any) {
       console.error('Failed to load sources:', err);
       console.error('Error response:', err.response?.data);
-      setError('Failed to load documents');
+      if (!silent) setError('Failed to load documents');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -123,15 +125,15 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
     setAutoTagging(true);
     try {
       const result = await sourceService.autoTagAll(notebookId);
-      // Poll for updates as tags are generated in background
+      // Poll silently for updates as tags are generated in background
       const poll = setInterval(async () => {
-        await loadSources();
-      }, 3000);
+        await loadSources(true);
+      }, 4000);
       // Stop polling after reasonable time (2s per source)
       setTimeout(() => {
         clearInterval(poll);
         setAutoTagging(false);
-        loadSources();
+        loadSources(true);
       }, Math.max(15000, result.queued * 2000));
     } catch (err) {
       console.error('Auto-tag failed:', err);
@@ -280,6 +282,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                               title: source.filename,
                               content: text,
                               collapsed: false,
+                              metadata: { notebookId },
                             });
                             ctx.navigateToChat();
                           } catch (err) {

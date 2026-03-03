@@ -20,6 +20,7 @@ CURATOR_INTENTS: List[Dict[str, str]] = [
     {"id": "exclude_notebook", "desc": "User wants to exclude a notebook from cross-notebook operations", "params": "notebook_name: name of the notebook"},
     {"id": "include_notebook", "desc": "User wants to include a notebook back into cross-notebook operations", "params": "notebook_name: name of the notebook"},
     {"id": "morning_brief", "desc": "User wants their morning brief, catch-up, or summary of what they missed", "params": "none"},
+    {"id": "weekly_wrap_up", "desc": "User wants a weekly wrap up, week in review, or weekly summary of research activity", "params": "none"},
     {"id": "discover_patterns", "desc": "User wants to find patterns, connections, or common themes across notebooks", "params": "none"},
     {"id": "devils_advocate", "desc": "User wants counterarguments, challenges, or a devil's advocate perspective", "params": "thesis: the claim or topic to challenge (if specified)"},
     {"id": "show_profile", "desc": "User wants to see the curator's current configuration or settings", "params": "none"},
@@ -30,6 +31,14 @@ RESEARCH_INTENTS: List[Dict[str, str]] = [
     {"id": "web_search", "desc": "User wants to search the web broadly for information on a topic (default)", "params": "query: the search query, max_results: number of results if specified"},
     {"id": "site_search", "desc": "User wants to search a specific website or domain (mentions site:, domain, or a specific website name)", "params": "query: the search query, site: the domain to search (e.g. arxiv.org, reddit.com)"},
     {"id": "deep_dive", "desc": "User wants an in-depth, thorough, multi-source research with quality filters. Triggered by words like 'deep dive', 'thorough research', 'comprehensive', 'in-depth', or when user specifies quality criteria like citation count, recency, sentiment, peer review, etc.", "params": "query: the search query, recency_days: max age in days, min_word_count: minimum article length, topic_qualifiers: list of quality criteria the user specified"},
+]
+
+STUDIO_INTENTS: List[Dict[str, str]] = [
+    {"id": "generate_audio", "desc": "User wants to create a podcast, audio, interview, discussion, or listen to content. Keywords: podcast, audio, listen, interview, discussion, conversation, debate, hosts", "params": "topic: the topic or focus, skill_id: podcast style if specified (podcast/interview/feynman_curriculum/deep_analysis), host1_gender: male or female, host2_gender: male or female, duration_minutes: length if specified"},
+    {"id": "generate_document", "desc": "User wants to create a written document, summary, report, brief, study guide, cheat sheet, or any text-based content", "params": "topic: the topic or focus, skill_id: document type if clear (executive_brief/study_guide/cheat_sheet/research_summary/white_paper/lesson_plan), style: writing style if mentioned"},
+    {"id": "generate_quiz", "desc": "User wants to create a quiz, test, practice questions, or knowledge check", "params": "topic: the topic or focus, num_questions: number of questions if specified, difficulty: easy/medium/hard if specified"},
+    {"id": "generate_visual", "desc": "User wants to create a visual, diagram, chart, infographic, mind map, flowchart, or any visual representation", "params": "topic: the topic or focus, visual_type: type of visual if specified"},
+    {"id": "generate_video", "desc": "User wants to create a video, explainer video, or visual presentation with narration", "params": "topic: the topic or focus, duration_minutes: length if specified, visual_style: style if specified, voice: voice preference if specified"},
 ]
 
 COLLECTOR_INTENTS: List[Dict[str, str]] = [
@@ -96,6 +105,9 @@ async def classify_intent(
     elif agent_type == "research":
         intents = RESEARCH_INTENTS
         fallback = "web_search"
+    elif agent_type == "studio":
+        intents = STUDIO_INTENTS
+        fallback = "generate_document"
     else:
         intents = COLLECTOR_INTENTS
         fallback = "show_status"

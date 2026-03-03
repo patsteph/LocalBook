@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { FileText, Mic, Target, Brain, PenTool } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { FileText, Mic, Target, Brain, PenTool, MessageCircle, X } from 'lucide-react';
+import { useAppShell } from './canvas/CanvasContext';
 import { skillsService } from '../services/skills';
 import { audioService } from '../services/audio';
 import { contentService, ContentGeneration } from '../services/content';
@@ -12,12 +13,13 @@ import { VisualPanel } from './VisualPanel';
 import { WritingPanel } from './WritingPanel';
 import { ContentViewer } from './studio/ContentViewer';
 import { AudioHistory } from './studio/AudioHistory';
+import { VideoHistory } from './studio/VideoHistory';
 
 interface StudioProps {
   notebookId: string | null;
   initialVisualContent?: string;
-  initialTab?: 'documents' | 'audio' | 'quiz' | 'visual' | 'writing';
-  onTabChange?: (tab: 'documents' | 'audio' | 'quiz' | 'visual' | 'writing') => void;
+  initialTab?: 'documents' | 'audio' | 'video' | 'quiz' | 'visual' | 'writing';
+  onTabChange?: (tab: 'documents' | 'audio' | 'video' | 'quiz' | 'visual' | 'writing') => void;
   hideHeader?: boolean;
   onContentGenerated?: (content: string, skillName: string) => void;
   onQuizGenerated?: (quizHtml: string, topic: string) => void;
@@ -32,7 +34,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
   const [contentGenerations, setContentGenerations] = useState<ContentGeneration[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [activeTab, setActiveTab] = useState<'documents' | 'audio' | 'quiz' | 'visual' | 'writing'>(initialTab || 'documents');
+  const [activeTab, setActiveTab] = useState<'documents' | 'audio' | 'video' | 'quiz' | 'visual' | 'writing'>(initialTab || 'documents');
   const [visualContentFromChat, setVisualContentFromChat] = useState<string>(initialVisualContent || '');
 
   // Sync with parent tab control
@@ -72,6 +74,18 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
   const [quizTopic, setQuizTopic] = useState('');
   const [quizDifficulty, setQuizDifficulty] = useState('medium');
   const [showScript, setShowScript] = useState(false);
+  const [chatDismissed, setChatDismissed] = useState(false);
+  const { chatContext } = useAppShell();
+
+  // Reset dismiss when chat context changes (new messages arrived)
+  useEffect(() => { setChatDismissed(false); }, [chatContext]);
+
+  // @chat qualifier: explicit intent to use chat context
+  const hasAtChat = useMemo(() => /\b@chat\b/i.test(topic), [topic]);
+  // Effective topic: strip @chat before sending to API
+  const effectiveTopic = useMemo(() => topic.replace(/\s*@chat\s*/gi, '').trim(), [topic]);
+  // Should we include chat context? @chat forces it; otherwise auto-include unless dismissed
+  const useChatContext = chatContext && (hasAtChat || !chatDismissed);
 
   // Custom skill creation
   const [showCustomSkillForm, setShowCustomSkillForm] = useState(false);
@@ -98,6 +112,20 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
       loadAudioGenerations();
       loadContentGenerations();
     }
+  }, [notebookId]);
+
+  // Listen for refresh events from ChatActionBar pills
+  useEffect(() => {
+    const handleContentRefresh = () => { if (notebookId) loadContentGenerations(); };
+    const handleAudioRefresh = () => { if (notebookId) loadAudioGenerations(); };
+    // Note: feynmanQuizNav and feynmanAudioNav listeners live in LeftNavColumn
+    // (always mounted). Studio receives quiz topic/difficulty via props instead.
+    window.addEventListener('studioContentRefresh', handleContentRefresh);
+    window.addEventListener('studioAudioRefresh', handleAudioRefresh);
+    return () => {
+      window.removeEventListener('studioContentRefresh', handleContentRefresh);
+      window.removeEventListener('studioAudioRefresh', handleAudioRefresh);
+    };
   }, [notebookId]);
 
   // Poll when there's an active generation (pending or processing)
@@ -168,12 +196,13 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
     try {
       await audioService.generate({
         notebook_id: notebookId,
-        topic: topic || 'the research content',
+        topic: effectiveTopic || 'the research content',
         duration_minutes: duration,
         skill_id: selectedSkill,
         host1_gender: host1Gender,
         host2_gender: host2Gender,
         accent: accent,
+        ...(useChatContext ? { chat_context: chatContext } : {}),
       });
 
       // API returns instantly — script + audio generate in background.
@@ -203,8 +232,9 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
       const result = await contentService.generate({
         notebook_id: notebookId,
         skill_id: selectedSkill,
-        topic: topic || undefined,
+        topic: effectiveTopic || undefined,
         style: selectedStyle,
+        ...(useChatContext ? { chat_context: chatContext } : {}),
       });
 
       setGeneratedContent(result.content);
@@ -223,7 +253,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
   };
 
   // Skills that produce audio vs text-only
-  const audioSkillIds = ['podcast_script', 'debate'];
+  const audioSkillIds = ['podcast_script', 'debate', 'interview', 'storytelling', 'feynman_curriculum'];
   const textSkillIds = ['summary', 'study_guide', 'faq', 'briefing', 'deep_dive', 'explain', 'feynman_curriculum'];
   
   // Filter skills based on active tab
@@ -369,9 +399,19 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
             type="text"
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
-            placeholder="e.g., AI use cases in healthcare"
-            className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            placeholder={chatContext ? 'e.g., @chat transformers attention' : 'e.g., AI use cases in healthcare'}
+            className={`w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white ${
+              hasAtChat
+                ? 'border-purple-400 dark:border-purple-500 ring-1 ring-purple-300 dark:ring-purple-600'
+                : 'border-gray-300 dark:border-gray-600'
+            }`}
           />
+          {hasAtChat && (
+            <p className="mt-1 text-xs text-purple-600 dark:text-purple-400 flex items-center gap-1">
+              <MessageCircle className="w-3 h-3" />
+              Chat context will focus this generation on your conversation
+            </p>
+          )}
         </div>
 
         {/* Style Selection - Only for documents tab */}
@@ -470,6 +510,23 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
         </details>
         )}
 
+        {/* Chat context auto-detect indicator */}
+        {useChatContext && !hasAtChat && (activeTab === 'documents' || activeTab === 'audio') && (
+          <div className="flex items-center justify-between px-2.5 py-1.5 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg">
+            <span className="flex items-center gap-1.5 text-xs text-purple-700 dark:text-purple-300">
+              <MessageCircle className="w-3.5 h-3.5" />
+              Using chat context
+            </span>
+            <button
+              onClick={() => setChatDismissed(true)}
+              className="p-0.5 rounded hover:bg-purple-100 dark:hover:bg-purple-800 text-purple-500 dark:text-purple-400"
+              title="Don't use chat context for this generation"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+
         {/* Generate Button - different action based on tab */}
         <Button
           onClick={activeTab === 'audio' ? handleGenerate : handleGenerateText}
@@ -532,6 +589,11 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
               }
             }}
           />
+        )}
+
+        {/* Video Panel */}
+        {activeTab === 'video' && (
+          <VideoHistory notebookId={notebookId} />
         )}
 
         {/* Quiz Panel */}

@@ -240,35 +240,65 @@ async def infer_config_from_content(request: InferConfigRequest):
 
 
 @router.get("/morning-brief/should-show")
-async def should_show_morning_brief():
-    """Check if a morning brief should be displayed.
+async def should_show_morning_brief(local_hour: int = -1):
+    """Check if a morning brief or weekly wrap up should be displayed.
     
-    Returns should_show=True when:
-    1. There was user activity (events) logged yesterday or earlier today
-    2. A morning brief hasn't already been shown today
+    Triggers when BOTH conditions are met:
+    1. Time-of-day: user's local hour is in the morning window (5 AM – 12 PM),
+       OR the user has been away for 8+ hours (long absence override).
+    2. There is recent notebook activity to report on.
     
-    The frontend calls this on app focus/visibility to catch the case
-    where the app was left running overnight.
+    The frontend passes local_hour so the backend respects the user's timezone.
+    
+    Returns:
+    - should_show=True for a regular morning brief (Tue-Sun)
+    - should_show_weekly=True on Mondays (replaces morning brief with weekly wrap up)
     """
     from services.event_logger import event_logger
     from pathlib import Path
+    import logging
     
+    log = logging.getLogger("curator.brief")
     now = datetime.utcnow()
     today_str = now.strftime("%Y-%m-%d")
     yesterday = now - timedelta(days=1)
     yesterday_str = yesterday.strftime("%Y-%m-%d")
     
-    # Check if we already showed a brief today
+    # ── 1. Read marker file (stores ISO timestamp of last brief shown) ──
     brief_marker = Path(event_logger.data_dir) / "memory" / "last_morning_brief.txt"
+    last_shown_ts: Optional[datetime] = None
     if brief_marker.exists():
         try:
-            last_brief_date = brief_marker.read_text().strip()
-            if last_brief_date == today_str:
-                return {"should_show": False, "reason": "already_shown_today"}
+            raw = brief_marker.read_text().strip()
+            # Support both legacy date-only ("2026-02-27") and new ISO format
+            if "T" in raw:
+                last_shown_ts = datetime.fromisoformat(raw)
+            else:
+                last_shown_ts = datetime.strptime(raw, "%Y-%m-%d")
         except Exception:
             pass
     
-    # Check for activity yesterday or today
+    # ── 2. Compute real hours since last brief ──
+    if last_shown_ts:
+        hours_since_last = (now - last_shown_ts).total_seconds() / 3600
+    else:
+        hours_since_last = 999  # never shown before
+    
+    # Already shown within last 6 hours — don't spam
+    if hours_since_last < 6:
+        return {"should_show": False, "should_show_weekly": False, "reason": "shown_recently", "hours_since_last": round(hours_since_last, 1)}
+    
+    # ── 3. Time-of-day gating ──
+    # Use frontend-provided local_hour if available, otherwise fall back to UTC
+    hour = local_hour if 0 <= local_hour <= 23 else now.hour
+    is_morning = 5 <= hour < 12
+    is_long_absence = hours_since_last >= 8
+    
+    if not is_morning and not is_long_absence:
+        log.debug(f"Brief suppressed: local_hour={hour}, hours_since_last={hours_since_last:.1f}")
+        return {"should_show": False, "should_show_weekly": False, "reason": "not_morning_and_not_long_absence", "local_hour": hour, "hours_since_last": round(hours_since_last, 1)}
+    
+    # ── 4. Check for activity yesterday or today ──
     has_activity = False
     events_dir = event_logger.events_dir
     for date_str in [yesterday_str, today_str]:
@@ -278,22 +308,31 @@ async def should_show_morning_brief():
             break
     
     if not has_activity:
-        return {"should_show": False, "reason": "no_recent_activity"}
+        return {"should_show": False, "should_show_weekly": False, "reason": "no_recent_activity"}
     
-    return {"should_show": True, "hours_away": max(1, min(24, int((now - yesterday).total_seconds() / 3600)))}
+    hours_away = max(1, min(48, round(hours_since_last)))
+    
+    # Monday check uses the frontend's local day-of-week context via local_hour
+    # (if it's morning locally on Monday, the frontend will know)
+    is_monday = now.weekday() == 0  # rough check; frontend can override
+    
+    if is_monday and is_morning:
+        return {"should_show": False, "should_show_weekly": True, "hours_away": hours_away, "trigger": "morning" if is_morning else "long_absence"}
+    
+    return {"should_show": True, "should_show_weekly": False, "hours_away": hours_away, "trigger": "morning" if is_morning else "long_absence"}
 
 
 @router.post("/morning-brief/mark-shown")
 async def mark_morning_brief_shown():
-    """Mark that the morning brief was shown today so we don't repeat it."""
+    """Mark that the morning brief was shown — stores full ISO timestamp for accurate time tracking."""
     from pathlib import Path
     from services.event_logger import event_logger
     
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    now_iso = datetime.utcnow().isoformat()
     brief_marker = Path(event_logger.data_dir) / "memory" / "last_morning_brief.txt"
     brief_marker.parent.mkdir(parents=True, exist_ok=True)
-    brief_marker.write_text(today_str)
-    return {"success": True, "date": today_str}
+    brief_marker.write_text(now_iso)
+    return {"success": True, "timestamp": now_iso}
 
 
 BRIEF_RETENTION_DAYS = 7
@@ -352,3 +391,82 @@ async def recall_morning_brief():
         return {"brief": brief, "date": brief_file.stem.replace("morning_brief_", "")}
     except Exception:
         return {"brief": None, "reason": "parse_error"}
+
+
+# =========================================================================
+# Weekly Wrap Up
+# =========================================================================
+
+@router.get("/weekly-wrap")
+async def get_weekly_wrap():
+    """Generate a Weekly Wrap Up covering the past 7 days."""
+    wrap = await curator.generate_weekly_wrap_up()
+    
+    return {
+        "week_start": wrap.week_start,
+        "week_end": wrap.week_end,
+        "notebooks": [nb.model_dump() for nb in wrap.notebook_summaries],
+        "cross_notebook_insight": wrap.cross_notebook_insight,
+        "narrative": wrap.narrative,
+        "generated_at": wrap.generated_at.isoformat(),
+        "totals": {
+            "sources_added": wrap.total_sources_added,
+            "collector_added": wrap.total_collector_added,
+            "user_added": wrap.total_user_added,
+            "conversations": wrap.total_conversations,
+            "audio_generated": wrap.total_audio_generated,
+            "documents_generated": wrap.total_documents_generated,
+        }
+    }
+
+
+WEEKLY_RETENTION_WEEKS = 4
+
+
+@router.post("/weekly-wrap/save")
+async def save_weekly_wrap(wrap: dict):
+    """Persist this week's wrap up so it can be recalled later."""
+    import json
+    from pathlib import Path
+    from services.event_logger import event_logger
+    
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    wrap_dir = Path(event_logger.data_dir) / "memory"
+    wrap_dir.mkdir(parents=True, exist_ok=True)
+    wrap_file = wrap_dir / f"weekly_wrap_{today_str}.json"
+    wrap_file.write_text(json.dumps(wrap, default=str))
+    
+    # Age out old wraps
+    cutoff = (datetime.utcnow() - timedelta(weeks=WEEKLY_RETENTION_WEEKS)).strftime("%Y-%m-%d")
+    cleaned = 0
+    for old_file in wrap_dir.glob("weekly_wrap_*.json"):
+        date_part = old_file.stem.replace("weekly_wrap_", "")
+        if date_part < cutoff:
+            old_file.unlink()
+            cleaned += 1
+    
+    return {"success": True, "date": today_str, "cleaned": cleaned}
+
+
+@router.get("/weekly-wrap/recall")
+async def recall_weekly_wrap():
+    """Retrieve the most recent saved weekly wrap up."""
+    import json
+    from pathlib import Path
+    from services.event_logger import event_logger
+    
+    wrap_dir = Path(event_logger.data_dir) / "memory"
+    if not wrap_dir.exists():
+        return {"wrap": None, "reason": "no_wraps_saved"}
+    
+    # Find most recent wrap file
+    wrap_files = sorted(wrap_dir.glob("weekly_wrap_*.json"), reverse=True)
+    if not wrap_files:
+        return {"wrap": None, "reason": "no_wraps_saved"}
+    
+    wrap_file = wrap_files[0]
+    try:
+        wrap = json.loads(wrap_file.read_text())
+        return {"wrap": wrap, "date": wrap_file.stem.replace("weekly_wrap_", "")}
+    except Exception:
+        return {"wrap": None, "reason": "parse_error"}

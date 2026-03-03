@@ -276,6 +276,57 @@ function SidePanel() {
       case "links": await handleExtractLinks(); break
       case "compare": await handleCompareWithNotebook(); break
       case "chat": handleStartChatDirect(); break
+      case "collector": await handleAddToCollector(); break
+    }
+  }
+
+  async function handleAddToCollector() {
+    if (!pageInfo || !selectedNotebook) return
+    setLoading(true)
+    setCurrentAction("collector")
+
+    try {
+      // Fetch current collector config
+      const configRes = await fetch(`${API_BASE}/collector/${selectedNotebook}/config`)
+      if (!configRes.ok) throw new Error("Collector not configured for this notebook")
+      const config = await configRes.json()
+
+      const url = pageInfo.cleanUrl || pageInfo.url
+      const sources = config.sources || { rss_feeds: [], web_pages: [], news_keywords: [] }
+
+      // Detect RSS feed URLs
+      const isRss = /(\/feed|\/rss|atom\.xml|\.rss|\.xml|feedburner)/i.test(url)
+      const sourceType = isRss ? "rss_feeds" : "web_pages"
+      const sourceList: string[] = sources[sourceType] || []
+
+      // Check for duplicates
+      if (sourceList.includes(url)) {
+        showMessage(`Already in Collector ${isRss ? "RSS feeds" : "web sources"}`, "info")
+        setLoading(false)
+        return
+      }
+
+      // Add the URL to the appropriate source list
+      const updatedSources = {
+        ...sources,
+        [sourceType]: [...sourceList, url]
+      }
+
+      const updateRes = await fetch(`${API_BASE}/collector/${selectedNotebook}/config`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sources: updatedSources })
+      })
+
+      if (!updateRes.ok) throw new Error("Failed to update Collector config")
+
+      const label = isRss ? "RSS feed" : "web source"
+      showMessage(`Added as Collector ${label}!`, "success")
+      trackAction("collector_add")
+    } catch (e: any) {
+      showMessage(e.message || "Failed to add to Collector", "error")
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -510,6 +561,21 @@ function SidePanel() {
     }
   }
 
+  /**
+   * Parse @mention from chat input.
+   * Returns { target, cleanQuestion } if a mention is found, otherwise null.
+   */
+  function parseMention(input: string): { target: string; cleanQuestion: string } | null {
+    const mentionMatch = input.match(/^@(curator|collector|research)\s+(.*)/is)
+    if (mentionMatch) {
+      return {
+        target: mentionMatch[1].toLowerCase(),
+        cleanQuestion: mentionMatch[2].trim()
+      }
+    }
+    return null
+  }
+
   async function handleSendChat() {
     if (!chatInput.trim() || !selectedNotebook) return
 
@@ -524,41 +590,13 @@ function SidePanel() {
     const currentMessages = [...chatMessages, userMessage]
 
     setChatMessages(currentMessages)
+    const inputSnapshot = chatInput
     setChatInput("")
     setLoading(true)
 
     try {
-      // Build history from currentMessages (not stale chatMessages closure)
-      // Filter out the welcome message, keep last 12 messages (6 exchanges)
-      const historyForRequest = currentMessages
-        .filter(m => {
-          if (m.role === "assistant" && m.content.includes("I've analyzed")) return false
-          return true
-        })
-        .slice(-12)
-        .map(m => ({ role: m.role, content: m.content }))
-
-      const requestBody = {
-        notebook_id: selectedNotebook,
-        question: chatInput,
-        page_context: summaryResult ? {
-          title: pageInfo?.title || "",
-          summary: summaryResult.summary,
-          key_points: summaryResult.key_points,
-          key_concepts: summaryResult.key_concepts,
-          raw_content: summaryResult.raw_content
-        } : (pageInfo ? {
-          title: pageInfo.title,
-          summary: null,
-          key_points: [],
-          key_concepts: []
-        } : null),
-        chat_history: historyForRequest,
-        enable_web_search: true
-      }
-
-      // Use streaming endpoint for real-time response
-      const streamUrl = `${API_BASE}/chat/query-with-context/stream`
+      // Detect @mention routing
+      const mention = parseMention(inputSnapshot)
 
       // Add a placeholder assistant message that we'll stream into
       const placeholderId = Date.now()
@@ -567,6 +605,48 @@ function SidePanel() {
         content: "",
         timestamp: placeholderId
       }])
+
+      let streamUrl: string
+      let requestBody: any
+
+      if (mention) {
+        // Route to the main agent-aware streaming endpoint
+        streamUrl = `${API_BASE}/chat/query/stream`
+        requestBody = {
+          notebook_id: selectedNotebook,
+          question: mention.cleanQuestion,
+          target: mention.target
+        }
+      } else {
+        // Default: page-context Q&A endpoint
+        const historyForRequest = currentMessages
+          .filter(m => {
+            if (m.role === "assistant" && m.content.includes("I've analyzed")) return false
+            return true
+          })
+          .slice(-12)
+          .map(m => ({ role: m.role, content: m.content }))
+
+        streamUrl = `${API_BASE}/chat/query-with-context/stream`
+        requestBody = {
+          notebook_id: selectedNotebook,
+          question: inputSnapshot,
+          page_context: summaryResult ? {
+            title: pageInfo?.title || "",
+            summary: summaryResult.summary,
+            key_points: summaryResult.key_points,
+            key_concepts: summaryResult.key_concepts,
+            raw_content: summaryResult.raw_content
+          } : (pageInfo ? {
+            title: pageInfo.title,
+            summary: null,
+            key_points: [],
+            key_concepts: []
+          } : null),
+          chat_history: historyForRequest,
+          enable_web_search: true
+        }
+      }
 
       const res = await fetch(streamUrl, {
         method: "POST",
@@ -599,9 +679,26 @@ function SidePanel() {
                     m.timestamp === placeholderId ? { ...m, content: accumulated } : m
                   )
                 )
+              } else if (data.type === "answer_chunk") {
+                // Main RAG stream uses answer_chunk instead of token
+                accumulated += data.content
+                setChatMessages(prev =>
+                  prev.map(m =>
+                    m.timestamp === placeholderId ? { ...m, content: accumulated } : m
+                  )
+                )
+              } else if (data.type === "replace_answer") {
+                // Deep-think or orchestrator may replace the full answer
+                accumulated = data.content
+                setChatMessages(prev =>
+                  prev.map(m =>
+                    m.timestamp === placeholderId ? { ...m, content: accumulated } : m
+                  )
+                )
               } else if (data.type === "error") {
-                accumulated += `\n\nError: ${data.content}`
+                accumulated += `\n\nError: ${data.content || data.error}`
               }
+              // status, citations, done events are silently consumed
             } catch { /* skip malformed lines */ }
           }
         }

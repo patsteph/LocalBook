@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { quizService, Quiz, ReviewCard, QuizStats } from '../services/quiz';
+import { quizService, Quiz, ReviewCard, QuizStats, GapAnalysisResponse, KnowledgeGap } from '../services/quiz';
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { BookmarkButton } from './shared/BookmarkButton';
+import { useAppShell } from './canvas/CanvasContext';
 
 interface QuizPanelProps {
   notebookId: string;
@@ -19,6 +20,7 @@ interface QuizResult {
 }
 
 export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, initialDifficulty, onQuizGenerated }) => {
+  const { chatContext } = useAppShell();
   const [mode, setMode] = useState<'generate' | 'review' | 'results'>('generate');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +43,10 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
   
   // Stats
   const [stats, setStats] = useState<QuizStats | null>(null);
+  
+  // Gap analysis
+  const [gapAnalysis, setGapAnalysis] = useState<GapAnalysisResponse | null>(null);
+  const [analyzingGaps, setAnalyzingGaps] = useState(false);
 
   // Update from props when navigating from Feynman curriculum
   useEffect(() => {
@@ -75,7 +81,7 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
     setLoading(true);
     setError(null);
     try {
-      const result = await quizService.generate(notebookId, numQuestions, difficulty, topic || undefined);
+      const result = await quizService.generate(notebookId, numQuestions, difficulty, topic || undefined, chatContext || undefined);
       setQuiz(result);
       setCurrentQuestionIndex(0);
       setUserAnswers({});
@@ -124,6 +130,35 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
     } else {
       setQuizComplete(true);
     }
+  };
+
+  useEffect(() => {
+    if (!quizComplete || !quiz) return;
+    const missed = quizResults.filter(r => !r.correct);
+    if (missed.length === 0) return;
+    
+    setAnalyzingGaps(true);
+    const missedQuestions = missed.map(m => {
+      const q = quiz.questions.find(qq => qq.id === m.questionId);
+      return {
+        question: q?.question || '',
+        correct_answer: m.correctAnswer,
+        user_answer: m.userAnswer,
+        explanation: q?.explanation || '',
+      };
+    });
+    
+    quizService.analyzeGaps(notebookId, missedQuestions, topic || quiz.topic)
+      .then(setGapAnalysis)
+      .catch(err => console.error('Gap analysis failed:', err))
+      .finally(() => setAnalyzingGaps(false));
+  }, [quizComplete]);
+
+  const handleStudyGap = (gap: KnowledgeGap) => {
+    setTopic(gap.suggested_topic);
+    setQuiz(null);
+    setQuizComplete(false);
+    setGapAnalysis(null);
   };
 
   // Calculate score
@@ -426,6 +461,42 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
             })}
           </div>
 
+          {/* Knowledge Gap Analysis */}
+          {analyzingGaps && (
+            <div className="flex items-center gap-2 p-4 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg">
+              <LoadingSpinner size="sm" />
+              <span className="text-sm text-purple-700 dark:text-purple-300">Analyzing knowledge gaps...</span>
+            </div>
+          )}
+
+          {gapAnalysis && gapAnalysis.gaps.length > 0 && (
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium text-purple-700 dark:text-purple-300 flex items-center gap-1.5">
+                <span>🎯</span> Knowledge Gaps Detected
+              </h4>
+              {gapAnalysis.summary && (
+                <p className="text-sm text-gray-600 dark:text-gray-400">{gapAnalysis.summary}</p>
+              )}
+              {gapAnalysis.gaps.map((gap, i) => (
+                <div key={i} className="p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-lg space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-purple-800 dark:text-purple-200">{gap.gap_title}</p>
+                      <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">{gap.description}</p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 italic">{gap.study_suggestion}</p>
+                  <button
+                    onClick={() => handleStudyGap(gap)}
+                    className="w-full text-left px-3 py-2 text-xs font-medium bg-purple-100 dark:bg-purple-800/40 text-purple-700 dark:text-purple-300 rounded-lg hover:bg-purple-200 dark:hover:bg-purple-800/60 transition-colors"
+                  >
+                    🎯 Quiz me on: {gap.suggested_topic}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="flex gap-2">
             <BookmarkButton
               notebookId={notebookId}
@@ -442,7 +513,7 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
                 })),
               }}
             />
-            <Button onClick={() => { setQuiz(null); setQuizComplete(false); }} className="flex-1">
+            <Button onClick={() => { setQuiz(null); setQuizComplete(false); setGapAnalysis(null); }} className="flex-1">
               Generate New Quiz
             </Button>
           </div>

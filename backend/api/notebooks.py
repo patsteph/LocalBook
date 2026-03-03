@@ -28,6 +28,23 @@ class Notebook(BaseModel):
 class NotebookColorUpdate(BaseModel):
     color: str
 
+class NotebookRename(BaseModel):
+    title: str
+
+class SectionCreate(BaseModel):
+    name: str
+
+class SectionUpdate(BaseModel):
+    name: Optional[str] = None
+    collapsed: Optional[bool] = None
+
+class SectionReorder(BaseModel):
+    section_ids: list
+
+class NotebookMove(BaseModel):
+    section_id: Optional[str] = None
+    sort_order: Optional[int] = None
+
 @router.get("/")
 async def list_notebooks():
     """List all notebooks, with primary notebook first"""
@@ -129,7 +146,79 @@ async def update_notebook_color(notebook_id: str, update: NotebookColorUpdate):
         raise HTTPException(status_code=404, detail="Notebook not found")
     return result
 
+@router.put("/{notebook_id}/rename")
+async def rename_notebook(notebook_id: str, body: NotebookRename):
+    """Rename a notebook"""
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+    result = await notebook_store.update(notebook_id, {"title": title})
+    if not result:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+    return result
+
+@router.put("/{notebook_id}/move")
+async def move_notebook(notebook_id: str, body: NotebookMove):
+    """Move a notebook to a section and/or set its sort order"""
+    updates = {}
+    if body.section_id is not None:
+        updates["section_id"] = body.section_id if body.section_id else None
+    if body.sort_order is not None:
+        updates["sort_order"] = body.sort_order
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updates provided")
+    result = await notebook_store.update(notebook_id, updates)
+    if not result:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+    return result
+
 @router.get("/colors/palette")
 async def get_color_palette():
     """Get available color palette"""
     return {"colors": notebook_store.get_color_palette()}
+
+# --- Notebook Sections ---
+
+@router.get("/sections/list")
+async def list_sections():
+    """List all notebook sections"""
+    sections = await notebook_store.list_sections()
+    return {"sections": sections}
+
+@router.post("/sections/")
+async def create_section(body: SectionCreate):
+    """Create a new notebook section"""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Section name cannot be empty")
+    section = await notebook_store.create_section(name)
+    return section
+
+@router.put("/sections/{section_id}")
+async def update_section(section_id: str, body: SectionUpdate):
+    """Update a section's name or collapsed state"""
+    updates = {}
+    if body.name is not None:
+        updates["name"] = body.name.strip()
+    if body.collapsed is not None:
+        updates["collapsed"] = body.collapsed
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updates provided")
+    result = await notebook_store.update_section(section_id, updates)
+    if not result:
+        raise HTTPException(status_code=404, detail="Section not found")
+    return result
+
+@router.delete("/sections/{section_id}")
+async def delete_section(section_id: str):
+    """Delete a section (notebooks in it become unsectioned)"""
+    success = await notebook_store.delete_section(section_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Section not found")
+    return {"message": "Section deleted"}
+
+@router.put("/sections/reorder")
+async def reorder_sections(body: SectionReorder):
+    """Reorder sections by providing ordered list of section IDs"""
+    await notebook_store.reorder_sections(body.section_ids)
+    return {"message": "Sections reordered"}

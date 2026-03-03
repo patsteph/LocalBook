@@ -24,6 +24,7 @@ class AudioGenerateRequest(BaseModel):
     host1_gender: str = "male"
     host2_gender: str = "female"
     accent: str = "us"
+    chat_context: Optional[str] = None  # Recent chat conversation for "From Chat" mode
 
 
 class AudioGeneration(BaseModel):
@@ -50,7 +51,8 @@ async def generate_audio(request: AudioGenerateRequest):
             skill_id=request.skill_id,
             host1_gender=request.host1_gender,
             host2_gender=request.host2_gender,
-            accent=request.accent
+            accent=request.accent,
+            chat_context=request.chat_context,
         )
         logger.info(f"[STUDIO] Podcast generation completed: audio_id={result.get('audio_id', 'unknown')}")
         log_content_generated(request.notebook_id, "audio", request.skill_id or "podcast", request.topic or "")

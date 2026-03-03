@@ -648,7 +648,7 @@ RULES:
         
         is_metric_heavy = len(metrics) >= 3 or (len(metrics) >= 2 and number_density > 0.04)
         
-        # Determine best chart type
+        # Determine best chart type — route to Recharts data charts
         metric_type = None
         if is_metric_heavy:
             # Check if values look like percentages that sum to ~100 (pie chart)
@@ -656,13 +656,15 @@ RULES:
             if len(pct_metrics) >= 3:
                 total = sum(m["value"] for m in pct_metrics)
                 if 80 <= total <= 120:
-                    metric_type = "distribution"  # pie chart
+                    metric_type = "bar_chart"  # Recharts bar chart for % breakdown
                 else:
-                    metric_type = "trend_chart"  # bar chart
+                    metric_type = "bar_chart"  # Recharts bar chart
+            elif len(metrics) >= 4:
+                metric_type = "bar_chart"  # Recharts bar chart for labeled values
             elif len(metrics) >= 3:
-                metric_type = "trend_chart"  # bar chart for labeled values
+                metric_type = "line_chart"  # Recharts line chart for trends
             else:
-                metric_type = "key_stats"  # hub-spoke with stat values
+                metric_type = "bar_chart"  # Default to bar chart for 2+ metrics
         
         return {
             "is_metric_heavy": is_metric_heavy,
@@ -741,14 +743,16 @@ RULES:
                     title = query[:50] if len(query) <= 50 else query[:47] + "..."
                 
                 visual_type = "STATS"
-                suggested_template = metric_type or "trend_chart"
+                suggested_template = metric_type or "bar_chart"
                 
-                # Also keep themes as secondary option
+                # Also keep themes and other chart types as secondary options
                 secondary = ["key_takeaways", "key_stats"]
-                if metric_type != "trend_chart":
-                    secondary.append("trend_chart")
-                if metric_type != "distribution":
-                    secondary.append("distribution")
+                if metric_type != "bar_chart":
+                    secondary.append("bar_chart")
+                if metric_type != "line_chart":
+                    secondary.append("line_chart")
+                if metric_type != "area_chart":
+                    secondary.append("area_chart")
                 
                 classification = VisualClassification(
                     query=query,

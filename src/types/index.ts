@@ -7,6 +7,16 @@ export interface Notebook {
   color?: string;
   created_at: string;
   source_count: number;
+  section_id?: string | null;
+  sort_order?: number;
+}
+
+export interface NotebookSection {
+  id: string;
+  name: string;
+  sort_order: number;
+  collapsed: boolean;
+  created_at: string;
 }
 
 export interface Source {
@@ -72,7 +82,7 @@ export interface ChatMessage {
   curatorAside?: string;  // Curator overwatch: cross-notebook insight aside
   curatorName?: string;  // Curator overwatch: name of the curator
   agentName?: string;    // Agent identity: display name (e.g. "Scout", "Curator")
-  agentType?: 'curator' | 'collector' | 'research';  // Agent identity: type for color coding
+  agentType?: 'curator' | 'collector' | 'research' | 'studio';  // Agent identity: type for color coding
   researchResults?: ResearchResult[];  // @research: structured results for approval UI
 }
 
@@ -84,7 +94,8 @@ export interface ChatQuery {
   enable_web_search?: boolean;
   llm_provider?: string;
   deep_think?: boolean;  // Enable Deep Think mode with chain-of-thought reasoning
-  target?: string;  // v1.4: @mention routing — 'curator', 'collector', 'research', or undefined for default RAG
+  target?: string;  // v1.4: @mention routing — 'curator', 'collector', 'research', 'studio', or undefined for default RAG
+  chat_context?: string;  // v1.5: @studio — recent conversation context for content generation
 }
 
 export interface ResearchResult {
@@ -98,6 +109,8 @@ export interface ResearchResult {
   already_sourced: boolean;
   author?: string;
   date?: string;
+  read_time?: string;
+  domain?: string;
 }
 
 export interface ChatResponse {
@@ -138,6 +151,7 @@ export interface AudioGenerateRequest {
   host1_gender: string;
   host2_gender: string;
   accent: string;
+  chat_context?: string;
 }
 
 export interface Highlight {

@@ -117,6 +117,8 @@ class SkillsStore:
         "faq": ("FAQ", "Generate a list of frequently asked questions and detailed answers based on the content. Include both basic and advanced questions.", "Create Q&A from the content"),
         "briefing": ("Executive Briefing", "Create a concise executive briefing document with key findings, implications, and recommended actions. Use bullet points and clear sections.", "Professional briefing document"),
         "feynman_curriculum": ("Feynman Learning Curriculum", "Create a multi-part learning curriculum using the Feynman Technique. Progress from novice to near-expert in 4 parts: Foundation (explain to a 12-year-old), Building Understanding (connections and examples), First Principles (why things work), and Mastery Synthesis (teach it back). Include self-assessments at each level.", "Novice-to-expert learning path using the Feynman method"),
+        "interview": ("Interview", "Create a podcast-style interview where one host asks probing questions and the other responds as a subject matter expert, drawing on the research content.", "Expert Q&A interview format"),
+        "storytelling": ("Storytelling", "Create a narrative-driven podcast where two hosts weave the research into a compelling story with a beginning, middle, and end. Use vivid descriptions, real-world examples, and a narrative arc.", "Narrative-driven audio storytelling"),
     }
 
     def _add_missing_builtins(self):

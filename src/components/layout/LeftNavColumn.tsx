@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FileText, Mic, Target, Brain, PenTool, Globe, BookOpen, Search, FileBox, Archive, ChevronDown } from 'lucide-react';
+import { FileText, Mic, Video, Target, Brain, PenTool, Globe, BookOpen, Search, FileBox, Archive, ChevronDown } from 'lucide-react';
 import { DrawerState, StudioState } from '../../hooks/useLayoutPersistence';
 import { useCanvas } from '../canvas/CanvasContext';
 import { NotebookManager } from '../NotebookManager';
@@ -102,8 +102,9 @@ const studioIconClass = 'w-3 h-3';
 const STUDIO_TABS: { id: StudioState['activeTab']; icon: React.ReactNode; label: string }[] = [
   { id: 'documents', icon: <FileText className={studioIconClass} />, label: 'Docs' },
   { id: 'audio', icon: <Mic className={studioIconClass} />, label: 'Audio' },
-  { id: 'quiz', icon: <Target className={studioIconClass} />, label: 'Quiz' },
+  { id: 'video', icon: <Video className={studioIconClass} />, label: 'Video' },
   { id: 'visual', icon: <Brain className={studioIconClass} />, label: 'Visual' },
+  { id: 'quiz', icon: <Target className={studioIconClass} />, label: 'Quiz' },
   { id: 'writing', icon: <PenTool className={studioIconClass} />, label: 'Write' },
 ];
 
@@ -181,6 +182,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
                 title: '',
                 content: '',
                 collapsed: false,
+                metadata: { notebookId: selectedNotebookId },
               });
               ctx.navigateToChat();
             }}
@@ -238,26 +240,37 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
         }`}
       >
 
-        {/* Rainbow gradient accent line — responds to generation activity */}
-        <div
-          className={`h-[3px] flex-shrink-0 rainbow-line ${
-            ctx.generationStatus === 'generating' ? 'rainbow-line--generating' :
-            ctx.generationStatus === 'complete' ? 'rainbow-line--complete' :
-            ctx.generationStatus === 'error' ? 'rainbow-line--error' : ''
-          }`}
-          style={{
-            background: ctx.generationStatus === 'generating'
-              ? 'linear-gradient(90deg, rgba(244,114,182,0.7), rgba(251,146,60,0.6), rgba(250,204,21,0.5), rgba(74,222,128,0.6), rgba(96,165,250,0.7), rgba(167,139,250,0.7))'
-              : ctx.generationStatus === 'complete'
-              ? 'linear-gradient(90deg, rgba(74,222,128,0.8), rgba(96,165,250,0.8), rgba(167,139,250,0.8))'
-              : 'linear-gradient(90deg, rgba(244,114,182,0.25), rgba(251,146,60,0.2), rgba(250,204,21,0.15), rgba(74,222,128,0.2), rgba(96,165,250,0.25), rgba(167,139,250,0.25))',
-          }}
-        />
+        {/* Rainbow gradient accent line — responds to generation activity.
+            Derives state from BOTH explicit generationStatus AND canvas items
+            that are actively generating/processing (covers background tasks
+            like video and audio that process after the API call returns). */}
+        {(() => {
+          const hasActiveWork = ctx.canvasItems.some(
+            item => item.status === 'generating' || item.status === 'processing'
+          );
+          const effectiveStatus = hasActiveWork ? 'generating' : ctx.generationStatus;
+          return (
+            <div
+              className={`h-[3px] flex-shrink-0 rainbow-line ${
+                effectiveStatus === 'generating' ? 'rainbow-line--generating' :
+                effectiveStatus === 'complete' ? 'rainbow-line--complete' :
+                effectiveStatus === 'error' ? 'rainbow-line--error' : ''
+              }`}
+              style={{
+                background: effectiveStatus === 'generating'
+                  ? 'linear-gradient(90deg, rgba(244,114,182,0.7), rgba(251,146,60,0.6), rgba(250,204,21,0.5), rgba(74,222,128,0.6), rgba(96,165,250,0.7), rgba(167,139,250,0.7))'
+                  : effectiveStatus === 'complete'
+                  ? 'linear-gradient(90deg, rgba(74,222,128,0.8), rgba(96,165,250,0.8), rgba(167,139,250,0.8))'
+                  : 'linear-gradient(90deg, rgba(244,114,182,0.25), rgba(251,146,60,0.2), rgba(250,204,21,0.15), rgba(74,222,128,0.2), rgba(96,165,250,0.25), rgba(167,139,250,0.25))',
+              }}
+            />
+          );
+        })()}
 
         {/* Studio header bar — at bottom when collapsed, at top when expanded */}
         <button
           onClick={toggleStudio}
-          className="w-full flex items-center justify-between px-3 h-9 bg-gray-50/80 dark:bg-gray-900/60 flex-shrink-0 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          className="w-full flex items-center justify-between px-3 h-11 bg-gray-50/80 dark:bg-gray-900/60 flex-shrink-0 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
         >
           <div className="flex items-center gap-1.5">
             <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Studio</span>

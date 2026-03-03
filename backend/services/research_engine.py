@@ -46,6 +46,8 @@ class ResearchResult:
     full_text: Optional[str] = None      # populated in deep-dive after scrape
     author: Optional[str] = None
     date: Optional[str] = None
+    read_time: Optional[str] = None      # e.g. "3 min read"
+    domain: Optional[str] = None         # e.g. "arxiv.org"
 
 
 class ResearchEngine:
@@ -82,6 +84,8 @@ class ResearchEngine:
                 word_count=0,
                 quality_score=0.0,
                 already_sourced=self._is_duplicate(url, existing_urls),
+                read_time=r.get("read_time"),
+                domain=self._extract_domain(url),
             ))
 
         return results
@@ -211,6 +215,12 @@ class ResearchEngine:
                 score += 0.05
                 reasons.append(f"By {s['author']}")
 
+            # Compute read_time from actual word count
+            dd_minutes = max(1, round(wc / 238))
+            if dd_minutes >= 5:
+                dd_minutes = 5 * round(dd_minutes / 5)
+            dd_read_time = f"{dd_minutes} min read" if dd_minutes < 5 else f"~{dd_minutes} min read"
+
             results.append(ResearchResult(
                 id=f"dd-{i}",
                 title=s.get("title", c.get("title", "Untitled")),
@@ -223,6 +233,8 @@ class ResearchEngine:
                 full_text=text,
                 author=s.get("author"),
                 date=article_date,
+                read_time=dd_read_time,
+                domain=self._extract_domain(url),
             ))
 
         # ── Step 4: LLM quality evaluation (for topic-specific criteria) ─
@@ -326,6 +338,20 @@ Respond with ONLY valid JSON:
             return urls
         except Exception:
             return set()
+
+    def _extract_domain(self, url: str) -> Optional[str]:
+        """Extract clean domain from URL (e.g. 'arxiv.org' from 'https://arxiv.org/abs/...')."""
+        if not url:
+            return None
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            host = parsed.hostname or ""
+            if host.startswith("www."):
+                host = host[4:]
+            return host or None
+        except Exception:
+            return None
 
     def _is_duplicate(self, url: str, existing_urls: set) -> bool:
         """Check if a URL (or its canonical form) already exists."""

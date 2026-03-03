@@ -945,36 +945,54 @@ class SVGTemplateBuilder:
             text_y = by - (len(branch_lines) - 1) * 8 + 5
             svg += self._multiline_text(bx, text_y, branch_lines, 12, "#ffffff", line_height=16)
             
-            # Sub-items as small pills extending outward
+            # Sub-items as word-wrapped pills extending outward
+            # Pure SVG text with tspan wrapping (foreignObject stripped by DOMPurify)
             if sub_items:
                 branch_subs = self._find_sub_items(branch_text, sub_items)
                 if branch_subs:
-                    for j, sub in enumerate(branch_subs[:2]):  # Max 2 sub-items
-                        sub_y = by - 20 + j * 28
-                        clean_sub = clean_label_text(sub)
-                        
-                        # NO TRUNCATION - use full text
-                        sub_text = clean_sub
-                        
-                        sub_w = min(len(sub_text) * 5.2 + 20, 350)  # Much wider pills
-                        
-                        # Position pills to stay on canvas - CLAMP to available space
+                    sub_w = 220
+                    chars_per_line = 35  # ~35 chars fit in 220px at 9px font
+                    line_h = 12
+                    for j, sub in enumerate(branch_subs[:2]):
+                        clean_sub = html.escape(clean_label_text(sub))
+                        # Word wrap into lines
+                        sub_lines = []
+                        cur = ""
+                        for word in clean_sub.split():
+                            test = cur + (" " if cur else "") + word
+                            if len(test) <= chars_per_line:
+                                cur = test
+                            else:
+                                if cur:
+                                    sub_lines.append(cur)
+                                cur = word
+                                if len(sub_lines) >= 3:
+                                    break
+                        if cur and len(sub_lines) < 3:
+                            sub_lines.append(cur)
+                        if not sub_lines:
+                            sub_lines = [clean_sub[:chars_per_line]]
+                        num_lines = len(sub_lines)
+                        sub_h = max(28, num_lines * line_h + 16)
+                        sub_y = by - sub_h // 2 + j * (sub_h + 6) - (len(branch_subs) - 1) * (sub_h + 6) // 4
+
                         if is_left:
-                            # Calculate available space on left - use more of the canvas
-                            available_space = bx - branch_w // 2 - 20  # Smaller margin
-                            if sub_w > available_space:
-                                # Clamp width to available space - text will be smaller font
-                                sub_w = max(available_space, 120)
-                            
-                            pill_x = max(15, bx - branch_w // 2 - sub_w - 15)
-                            svg += self._line(bx - branch_w // 2, by, pill_x + sub_w, sub_y, color, 2, opacity=0.5)
-                            svg += f'  <rect x="{pill_x}" y="{sub_y - 10}" width="{sub_w}" height="20" rx="10" fill="{color}" opacity="0.3"/>\n'
-                            svg += self._text_element(pill_x + sub_w // 2, sub_y + 4, sub_text, 9, "#e0e0e0", "middle", max_len=200)
+                            pill_x = max(10, bx - branch_w // 2 - sub_w - 15)
+                            svg += self._line(bx - branch_w // 2, by, pill_x + sub_w, sub_y + sub_h // 2, color, 2, opacity=0.5)
                         else:
-                            pill_x = bx + branch_w // 2 + 20
-                            svg += self._line(bx + branch_w // 2, by, pill_x, sub_y, color, 2, opacity=0.5)
-                            svg += f'  <rect x="{pill_x}" y="{sub_y - 10}" width="{sub_w}" height="20" rx="10" fill="{color}" opacity="0.3"/>\n'
-                            svg += self._text_element(pill_x + sub_w // 2, sub_y + 4, sub_text, 9, "#e0e0e0", "middle", max_len=200)
+                            pill_x = bx + branch_w // 2 + 15
+                            svg += self._line(bx + branch_w // 2, by, pill_x, sub_y + sub_h // 2, color, 2, opacity=0.5)
+                        svg += f'  <rect x="{pill_x}" y="{sub_y}" width="{sub_w}" height="{sub_h}" rx="8" fill="{color}" opacity="0.25"/>\n'
+                        # Render tspan lines centered in pill
+                        text_x = pill_x + sub_w // 2
+                        first_line_y = sub_y + (sub_h - (num_lines - 1) * line_h) // 2 + 3
+                        svg += f'  <text x="{text_x}" y="{first_line_y}" font-family="{self.config.font_family}" font-size="9" fill="#e0e0e0" text-anchor="middle">\n'
+                        for li, line_text in enumerate(sub_lines):
+                            if li == 0:
+                                svg += f'    <tspan x="{text_x}">{line_text}</tspan>\n'
+                            else:
+                                svg += f'    <tspan x="{text_x}" dy="{line_h}">{line_text}</tspan>\n'
+                        svg += '  </text>\n'
         
         # Draw left branches (top to bottom)
         left_start_y = cy - (len(left_branches) - 1) * v_spacing // 2

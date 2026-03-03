@@ -77,7 +77,11 @@ class AudioLLMService:
             self._initializing = False
     
     def _load_model(self):
-        """Load the LFM2.5-Audio model (runs in thread)."""
+        """Load the LFM2.5-Audio model (runs in thread).
+        
+        Falls back to local_files_only=True if HuggingFace network check fails
+        (SSL errors, timeouts, etc.) but the model is already cached.
+        """
         print("[AudioLLM] Step 1/5: importing audio deps...")
         _ensure_audio_deps()
         
@@ -94,11 +98,32 @@ class AudioLLMService:
         else:
             self._device = torch.device("cpu")
         
-        print(f"[AudioLLM] Step 3/5: loading processor on {self._device}...")
-        self._processor = LFM2AudioProcessor.from_pretrained(HF_REPO, device=self._device).eval()
+        # Try online first, fall back to local cache on network errors
+        processor = None
+        model = None
+        for attempt, local_only in enumerate([False, True]):
+            try:
+                label = "offline (cached)" if local_only else "online"
+                print(f"[AudioLLM] Step 3/5: loading processor on {self._device} ({label})...")
+                processor = LFM2AudioProcessor.from_pretrained(
+                    HF_REPO, device=self._device, local_files_only=local_only
+                ).eval()
+                print(f"[AudioLLM] Step 4/5: loading model ({label})...")
+                model = LFM2AudioModel.from_pretrained(
+                    HF_REPO, device=self._device, local_files_only=local_only
+                ).eval()
+                break
+            except (OSError, ConnectionError, Exception) as e:
+                if local_only:
+                    raise  # Both attempts failed — re-raise
+                err_str = str(e).lower()
+                if any(k in err_str for k in ("ssl", "connection", "timeout", "resolve", "network", "urlopen")):
+                    print(f"[AudioLLM] ⚠ Network error ({type(e).__name__}), retrying with local cache...")
+                    continue
+                raise  # Non-network error — don't retry
         
-        print("[AudioLLM] Step 4/5: loading model...")
-        self._model = LFM2AudioModel.from_pretrained(HF_REPO, device=self._device).eval()
+        self._processor = processor
+        self._model = model
         
         print("[AudioLLM] Step 5/5: loading detokenizer (our own, bypasses processor.decode())...")
         self._load_detokenizer()
@@ -306,17 +331,17 @@ class AudioLLMService:
             chat.new_turn("assistant")
             
             # Generate audio for this chunk
-            # Scale max_new_tokens: ~2 tokens per char gives headroom
+            # Scale max_new_tokens: ~2.5 tokens per char gives headroom for shorter chunks
             import time
-            chunk_max_tokens = min(1500, max(600, len(chunk) * 2))
+            chunk_max_tokens = min(1500, max(400, int(len(chunk) * 2.5)))
             audio_out = []
             gen_start = time.time()
             token_count = 0
             for t in self._model.generate_sequential(
                 **chat, 
                 max_new_tokens=chunk_max_tokens,
-                audio_temperature=0.7,
-                audio_top_k=50
+                audio_temperature=0.8,
+                audio_top_k=64
             ):
                 token_count += 1
                 if t.numel() > 1:
@@ -343,18 +368,34 @@ class AudioLLMService:
         if not all_waveforms:
             raise RuntimeError("No audio generated from any text chunk")
         
-        # Add 200ms silence between chunks to prevent rushed/overlapping audio
-        if len(all_waveforms) > 1:
-            silence = torch.zeros(1, int(24000 * 0.2))  # 200ms at 24kHz
-            padded = []
-            for j, w in enumerate(all_waveforms):
-                padded.append(w)
-                if j < len(all_waveforms) - 1:
-                    padded.append(silence)
-            all_waveforms = padded
+        # Trim leading/trailing near-silence from each waveform to reduce dead air
+        trimmed = []
+        for w in all_waveforms:
+            trimmed.append(self._trim_silence(w))
+        all_waveforms = trimmed
         
-        # Concatenate all waveforms
-        final_waveform = torch.cat(all_waveforms, dim=-1)
+        # Crossfade between adjacent waveforms for seamless joins
+        if len(all_waveforms) > 1:
+            crossfade_samples = int(24000 * 0.03)  # 30ms crossfade at 24kHz
+            merged = all_waveforms[0]
+            for j in range(1, len(all_waveforms)):
+                nxt = all_waveforms[j]
+                # Add a small natural pause (80ms silence) then crossfade
+                pause = torch.zeros(1, int(24000 * 0.08))
+                merged = torch.cat([merged, pause], dim=-1)
+                # Apply crossfade if both segments are long enough
+                if merged.shape[-1] > crossfade_samples and nxt.shape[-1] > crossfade_samples:
+                    tail = merged[..., -crossfade_samples:]
+                    head = nxt[..., :crossfade_samples]
+                    fade_out = torch.linspace(1.0, 0.0, crossfade_samples)
+                    fade_in = torch.linspace(0.0, 1.0, crossfade_samples)
+                    blended = tail * fade_out + head * fade_in
+                    merged = torch.cat([merged[..., :-crossfade_samples], blended, nxt[..., crossfade_samples:]], dim=-1)
+                else:
+                    merged = torch.cat([merged, nxt], dim=-1)
+            final_waveform = merged
+        else:
+            final_waveform = all_waveforms[0]
         print(f"[AudioLLM] TTS complete: {final_waveform.shape[-1]/24000:.1f}s total")
         
         # Save to file
@@ -367,12 +408,29 @@ class AudioLLMService:
         
         return output_path
     
-    def _chunk_text_for_tts(self, text: str, max_chunk_chars: int = 750) -> list:
-        """Split text into paragraph/sentence chunks for TTS generation.
+    def _trim_silence(self, waveform, threshold: float = 0.01, min_samples: int = 480) -> 'torch.Tensor':
+        """Trim leading/trailing near-silence from a waveform tensor.
         
-        Chunk budget math (Mimi codec @ 12.5 fps):
-          750 chars ≈ 100 words ≈ 40s speech ≈ 500 audio frames + ~150 text tokens = ~650 total
-          max_new_tokens scales dynamically per chunk for efficiency.
+        Preserves at least min_samples (20ms at 24kHz) at each end to avoid
+        cutting into actual speech. Only trims truly silent padding.
+        """
+        audio = waveform.squeeze()
+        abs_audio = audio.abs()
+        # Find first and last sample above threshold
+        above = (abs_audio > threshold).nonzero(as_tuple=True)[0]
+        if len(above) == 0:
+            return waveform  # All silence, return as-is
+        start = max(0, above[0].item() - min_samples)
+        end = min(len(audio), above[-1].item() + min_samples + 1)
+        return audio[start:end].unsqueeze(0)
+    
+    def _chunk_text_for_tts(self, text: str, max_chunk_chars: int = 350) -> list:
+        """Split text into sentence-level chunks for TTS generation.
+        
+        Shorter chunks (2-3 sentences) produce dramatically better prosody
+        and natural speech from the LFM2.5-Audio model. The official Liquid
+        examples use single sentences. We use ~350 chars (~50 words, ~15s)
+        as the sweet spot between quality and efficiency.
         """
         import re
         

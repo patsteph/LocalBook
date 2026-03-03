@@ -117,7 +117,80 @@ class WebScraper:
         """Scrape a single URL - routes to appropriate handler"""
         if self._is_youtube_url(url):
             return await self._scrape_youtube(url)
+        elif self._is_arxiv_url(url):
+            return await self._scrape_arxiv_pdf(url)
         else:
+            return await self._scrape_web_page(url)
+
+    def _is_arxiv_url(self, url: str) -> bool:
+        """Check if URL is an arxiv.org paper link"""
+        return bool(re.search(r'arxiv\.org/(abs|html|pdf)/', url))
+
+    def _arxiv_to_pdf_url(self, url: str) -> str:
+        """Convert any arxiv paper URL to its PDF download URL"""
+        # arxiv.org/abs/2301.12345 → arxiv.org/pdf/2301.12345
+        # arxiv.org/html/2301.12345v2 → arxiv.org/pdf/2301.12345v2
+        # arxiv.org/pdf/2301.12345 → stays as-is
+        pdf_url = re.sub(r'arxiv\.org/(abs|html)/', 'arxiv.org/pdf/', url)
+        # Ensure .pdf extension for direct download
+        if not pdf_url.endswith('.pdf'):
+            pdf_url = pdf_url.rstrip('/') + '.pdf'
+        return pdf_url
+
+    async def _scrape_arxiv_pdf(self, url: str) -> Dict:
+        """Download and extract text from an arxiv paper PDF"""
+        pdf_url = self._arxiv_to_pdf_url(url)
+        print(f"[WebScraper] arxiv detected: {url} → PDF: {pdf_url}")
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                response = await client.get(pdf_url)
+                if response.status_code != 200:
+                    print(f"[WebScraper] arxiv PDF download failed: HTTP {response.status_code}")
+                    # Fall back to HTML scraping if PDF fails
+                    return await self._scrape_web_page(url)
+
+                pdf_bytes = response.content
+                if len(pdf_bytes) < 1000:
+                    return await self._scrape_web_page(url)
+
+            # Extract text from PDF using document_processor
+            from services.document_processor import document_processor
+            text = await document_processor._extract_from_pdf(pdf_bytes)
+
+            if not text or len(text.strip()) < 200:
+                print(f"[WebScraper] arxiv PDF extraction yielded thin text, falling back to HTML")
+                return await self._scrape_web_page(url)
+
+            # Extract arxiv ID for title fetching
+            arxiv_id_match = re.search(r'(\d{4}\.\d{4,5})(v\d+)?', url)
+            arxiv_id = arxiv_id_match.group(0) if arxiv_id_match else None
+
+            # Try to get title from first lines of PDF text
+            title = f"arxiv:{arxiv_id}" if arxiv_id else url
+            first_lines = text[:500].split('\n')
+            for line in first_lines:
+                clean = line.strip().strip('#').strip()
+                if len(clean) > 15 and len(clean) < 200 and not clean.startswith('==='):
+                    title = clean
+                    break
+
+            word_count = len(text.split())
+            print(f"[WebScraper] arxiv PDF extracted: {word_count} words, title: {title[:80]}")
+
+            return {
+                "success": True,
+                "url": url,
+                "title": title,
+                "author": None,
+                "date": None,
+                "text": text,
+                "word_count": word_count,
+                "char_count": len(text)
+            }
+
+        except Exception as e:
+            print(f"[WebScraper] arxiv PDF extraction failed: {e}, falling back to HTML")
             return await self._scrape_web_page(url)
 
     def _is_youtube_url(self, url: str) -> bool:
@@ -232,6 +305,9 @@ class WebScraper:
                     "error": "Failed to download page"
                 }
 
+            # Extract image references from HTML before trafilatura strips them
+            image_refs = self._extract_image_references(downloaded, base_url=url)
+
             # Run blocking trafilatura.extract in thread pool
             def extract_content(html):
                 return trafilatura.extract(
@@ -249,6 +325,10 @@ class WebScraper:
                     "url": url,
                     "error": "Failed to extract text from page"
                 }
+
+            # Append image references (additive-only — original text untouched)
+            if image_refs:
+                text = text + image_refs
 
             # Run blocking metadata extraction in thread pool
             metadata = await loop.run_in_executor(None, trafilatura.extract_metadata, downloaded)
@@ -268,7 +348,8 @@ class WebScraper:
                 "date": date,
                 "text": text,
                 "word_count": word_count,
-                "char_count": char_count
+                "char_count": char_count,
+                "html": downloaded,  # Raw HTML for optional background vision processing
             }
         except Exception as e:
             return {
@@ -287,6 +368,11 @@ class WebScraper:
             result["html"] = None
             return result
 
+        if self._is_arxiv_url(url):
+            result = await self._scrape_arxiv_pdf(url)
+            result["html"] = None
+            return result
+
         try:
             loop = asyncio.get_event_loop()
             downloaded = await loop.run_in_executor(None, trafilatura.fetch_url, url)
@@ -296,6 +382,9 @@ class WebScraper:
             def extract_content(html):
                 return trafilatura.extract(html, include_comments=False, include_tables=True, no_fallback=False)
 
+            # Extract image references before trafilatura strips them
+            image_refs = self._extract_image_references(downloaded, base_url=url)
+
             text = await loop.run_in_executor(None, extract_content, downloaded)
             metadata = await loop.run_in_executor(None, trafilatura.extract_metadata, downloaded)
 
@@ -303,15 +392,19 @@ class WebScraper:
             author = metadata.author if metadata and metadata.author else None
             date = metadata.date if metadata and metadata.date else None
 
+            full_text = (text or "")
+            if image_refs and full_text:
+                full_text = full_text + image_refs
+
             return {
                 "success": True,
                 "url": url,
                 "title": title,
                 "author": author,
                 "date": date,
-                "text": text or "",
-                "word_count": len((text or "").split()),
-                "char_count": len(text or ""),
+                "text": full_text,
+                "word_count": len(full_text.split()),
+                "char_count": len(full_text),
                 "html": downloaded,
             }
         except Exception as e:
@@ -459,6 +552,76 @@ class WebScraper:
                 break
 
         return articles
+
+
+    # ── Image reference extraction ─────────────────────────────────────────────
+
+    def _extract_image_references(self, html: str, base_url: str = "") -> str:
+        """Extract image alt text and figure captions from HTML.
+
+        Runs BEFORE trafilatura strips the HTML, preserving visual context
+        that would otherwise be lost.  Returns a formatted text section
+        to append to the scraped text, or "" if no meaningful images found.
+
+        This is a lightweight, additive-only operation — no downloads,
+        no vision model calls.  Never raises.
+        """
+        try:
+            from bs4 import BeautifulSoup
+            from urllib.parse import urljoin
+
+            soup = BeautifulSoup(html, "html.parser")
+            refs: List[str] = []
+            seen_alts: set = set()
+
+            # 1. <figure> with <figcaption> — richest signal
+            for fig in soup.find_all("figure"):
+                caption_tag = fig.find("figcaption")
+                caption = caption_tag.get_text(strip=True) if caption_tag else ""
+                img = fig.find("img")
+                alt = img.get("alt", "").strip() if img else ""
+
+                desc = caption or alt
+                if not desc or len(desc) < 5:
+                    continue
+                desc_key = desc[:60].lower()
+                if desc_key in seen_alts:
+                    continue
+                seen_alts.add(desc_key)
+                # Also mark the alt text as seen so pass 2 skips the same <img>
+                if alt and caption:
+                    seen_alts.add(alt[:60].lower())
+                label = "[FIGURE] " if caption else "[IMAGE] "
+                refs.append(f"{label}{desc}")
+
+            # 2. Standalone <img> with alt text (not already captured in figures)
+            for img in soup.find_all("img"):
+                alt = img.get("alt", "").strip()
+                if not alt or len(alt) < 5:
+                    continue
+                # Skip common decorative alt text
+                alt_lower = alt.lower()
+                if alt_lower in ("image", "photo", "picture", "icon", "logo",
+                                 "banner", "avatar", "thumbnail", "img"):
+                    continue
+                alt_key = alt[:60].lower()
+                if alt_key in seen_alts:
+                    continue
+                seen_alts.add(alt_key)
+                refs.append(f"[IMAGE] {alt}")
+
+            if not refs:
+                return ""
+
+            # Cap at 20 references to avoid bloating the text
+            refs = refs[:20]
+            section = "\n\n=== IMAGE REFERENCES ===\n"
+            section += "\n".join(refs)
+            return section
+
+        except Exception:
+            # Never break scraping — if parsing fails, just skip images
+            return ""
 
 
 web_scraper = WebScraper()

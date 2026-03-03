@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Compass, Radio, Search, BookOpen, Upload, MessageCircle, Sparkles } from 'lucide-react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Compass, Radio, Search, BookOpen, Upload, MessageCircle, Sparkles, Wand2 } from 'lucide-react';
 import { chatService } from '../services/chat';
 import { explorationService } from '../services/exploration';
 import { voiceService } from '../services/voice';
@@ -11,6 +11,10 @@ import { SourceNotesViewer } from './SourceNotesViewer';
 import { ChatMessageBubble } from './chat/ChatMessageBubble';
 import { useVisualActions } from './chat/useVisualActions';
 import { WritingAssistBar } from './WritingAssistBar';
+import { ChatActionBar } from './chat/ChatActionBar';
+import { CanvasItemCard } from './chat/CanvasItemCard';
+import { useCanvasItems, useAppShell } from './canvas/CanvasContext';
+import { CanvasItem } from './canvas/types';
 
 interface ChatInterfaceProps {
   notebookId: string | null;
@@ -28,7 +32,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const [showMentionMenu, setShowMentionMenu] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
-  const [activeMention, setActiveMention] = useState<'curator' | 'collector' | 'research' | null>(null);
+  const [activeMention, setActiveMention] = useState<'curator' | 'collector' | 'research' | 'studio' | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   
   // Auto-dismiss welcome once a notebook is selected (user is no longer a first-timer)
@@ -82,15 +86,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
 
   // Note: We intentionally do NOT load suggested questions before the user starts chatting.
   // Follow-up questions come with each response after the user asks their first question.
-  // Messages are preserved when switching tabs, but cleared when notebook changes
+  // Per-notebook message cache — preserves chat history when switching between notebooks
+  const messageCacheRef = useRef<Map<string, ChatMessage[]>>(new Map());
   const prevNotebookId = React.useRef(notebookId);
   useEffect(() => {
-    // Only clear messages when switching to a DIFFERENT notebook
     if (notebookId && notebookId !== prevNotebookId.current) {
-      setMessages([]);
+      // Save current notebook's messages before switching
+      if (prevNotebookId.current && messages.length > 0) {
+        messageCacheRef.current.set(prevNotebookId.current, messages);
+      }
+      // Restore target notebook's cached messages (or start fresh)
+      const cached = messageCacheRef.current.get(notebookId);
+      setMessages(cached || []);
       prevNotebookId.current = notebookId;
     }
-  }, [notebookId]);
+  }, [notebookId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -105,6 +115,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       /\n\n(?:References|Sources|Citations):\s*\n(?:\s*[-•*]?\s*\[?\d+\]?[.:]\s*[^\n]+\n?)+$/i,
       // Horizontal rule followed by numbered list
       /\n\n---+\s*\n(?:\s*\[?\d+\]?[.:]\s*[^\n]+\n?)+$/,
+      // Trailing --- followed by short stub (e.g. "---\n\nN." or "---\n1. Source")
+      /\n\n---+\s*\n[\s\S]{0,40}$/,
+      // Trailing --- with nothing after (or just whitespace)
+      /\n\n---+\s*$/,
+      // Standalone short reference stubs at end (e.g. "\n\nN." or "\n\n1.")
+      /\n\n[A-Z0-9]\.\s*$/,
     ];
     
     let result = content;
@@ -136,6 +152,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     { key: 'curator', icon: <Compass className="w-3.5 h-3.5" />, desc: 'Cross-notebook synthesis' },
     { key: 'collector', icon: <Radio className="w-3.5 h-3.5" />, desc: 'Collection status & commands' },
     { key: 'research', icon: <Search className="w-3.5 h-3.5" />, desc: 'Web, site, or deep-dive research' },
+    { key: 'studio', icon: <Wand2 className="w-3.5 h-3.5" />, desc: 'Create content from conversation' },
   ];
 
   const parseMention = (text: string): { target: string | null; cleanQuestion: string } => {
@@ -144,7 +161,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       return { target: activeMention, cleanQuestion: text.trim() };
     }
     // Fallback: parse manually typed @mention
-    const match = text.match(/^@(curator|collector|research)\s+([\s\S]*)$/i);
+    const match = text.match(/^@(curator|collector|research|studio)\s+([\s\S]*)$/i);
     if (match) {
       return { target: match[1].toLowerCase(), cleanQuestion: match[2].trim() };
     }
@@ -155,9 +172,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     let val = e.target.value;
 
     // If user manually types @collector/@curator and space, promote to activeMention
-    const manualMention = val.match(/^@(curator|collector|research)\s+$/i);
+    const manualMention = val.match(/^@(curator|collector|research|studio)\s+$/i);
     if (manualMention && !activeMention) {
-      setActiveMention(manualMention[1].toLowerCase() as 'curator' | 'collector' | 'research');
+      setActiveMention(manualMention[1].toLowerCase() as 'curator' | 'collector' | 'research' | 'studio');
       val = '';
     }
 
@@ -220,7 +237,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   };
 
   const insertMention = (key: string) => {
-    setActiveMention(key as 'curator' | 'collector' | 'research');
+    setActiveMention(key as 'curator' | 'collector' | 'research' | 'studio');
     setInput('');
     setShowMentionMenu(false);
     setMentionFilter('');
@@ -238,7 +255,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       role: 'user',
       content: currentQuestion,
       timestamp: new Date(),
-      ...(target ? { agentType: target as 'curator' | 'collector' | 'research' } : {}),
+      ...(target ? { agentType: target as 'curator' | 'collector' | 'research' | 'studio' } : {}),
     };
 
     setMessages((prev) => [...prev, userMessage]);
@@ -256,7 +273,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       content: '',
       citations: [],
       timestamp: new Date(),
-      ...(target ? { agentType: target as 'curator' | 'collector' | 'research' } : {}),
+      ...(target ? { agentType: target as 'curator' | 'collector' | 'research' | 'studio' } : {}),
     };
     
     // Add the streaming message placeholder
@@ -280,6 +297,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
           llm_provider: llmProvider,
           deep_think: deepThink,
           target: target || undefined,
+          ...(target === 'studio' ? { chat_context: messages.slice(-8).map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 400)}`).join('\n\n').slice(0, 3000) } : {}),
         },
         {
           onMode: (isDeepThink, _autoUpgraded) => {
@@ -404,6 +422,22 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               return updated;
             });
           },
+          onFollowUpQuestions: (questions) => {
+            // Show follow-up questions immediately (decoupled from CaRR/done)
+            if (questions.length > 0) {
+              setMessages((prev) => {
+                const updated = [...prev];
+                const lastIdx = updated.length - 1;
+                if (updated[lastIdx]?.role === 'assistant') {
+                  updated[lastIdx] = {
+                    ...updated[lastIdx],
+                    follow_up_questions: questions,
+                  };
+                }
+                return updated;
+              });
+            }
+          },
           onDone: (followUpQuestions, curatorName, agentName, agentType) => {
             // Finalize the message with follow-up questions and low confidence prompt
             setMessages((prev) => {
@@ -443,7 +477,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                   lowConfidenceQuery,
                   ...(curatorName ? { curatorName } : {}),
                   ...(agentName ? { agentName } : {}),
-                  ...(agentType ? { agentType: agentType as 'curator' | 'collector' | 'research' } : {}),
+                  ...(agentType ? { agentType: agentType as 'curator' | 'collector' | 'research' | 'studio' } : {}),
                 };
               }
               return updated;
@@ -581,6 +615,57 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   // Visual actions (generate, save, export, open in studio)
   const { generateInlineVisual, openVisualInStudio, saveVisualToFindings, exportVisual } = useVisualActions(notebookId, setMessages);
 
+  // Update shared chat context for "From Chat" mode in Studio
+  const { setChatContext } = useAppShell();
+  useEffect(() => {
+    if (messages.length === 0) {
+      setChatContext('');
+      return;
+    }
+    // Extract last 8 turns as context (truncate to ~3000 chars)
+    const recentMsgs = messages.slice(-8);
+    const contextStr = recentMsgs
+      .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 400)}`)
+      .join('\n\n');
+    setChatContext(contextStr.slice(0, 3000));
+  }, [messages, setChatContext]);
+
+  // Canvas items — scoped to current notebook
+  const canvasCtx = useCanvasItems();
+  const notebookCanvasItems = useMemo(() =>
+    canvasCtx.canvasItems.filter(item =>
+      !item.metadata?.notebookId || item.metadata.notebookId === notebookId
+    ),
+    [canvasCtx.canvasItems, notebookId]
+  );
+  // Auto-scroll when canvas items are added
+  useEffect(() => {
+    if (notebookCanvasItems.length > 0) scrollToBottom();
+  }, [notebookCanvasItems.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Unified chronological timeline — interleave messages and canvas items by timestamp
+  const timeline = useMemo(() => {
+    const items: Array<{ type: 'message'; index: number; ts: number } | { type: 'canvas'; item: CanvasItem; ts: number }> = [];
+    messages.forEach((msg, index) => {
+      items.push({ type: 'message', index, ts: msg.timestamp ? msg.timestamp.getTime() : 0 });
+    });
+    notebookCanvasItems.forEach((item) => {
+      items.push({ type: 'canvas', item, ts: item.timestamp || 0 });
+    });
+    items.sort((a, b) => a.ts - b.ts);
+    return items;
+  }, [messages, notebookCanvasItems]);
+  const [actionBarExpanded, setActionBarExpanded] = useState(() => {
+    const saved = localStorage.getItem('lb-action-bar-expanded');
+    return saved !== null ? saved === '1' : true;
+  });
+  const toggleActionBar = () => {
+    setActionBarExpanded(prev => {
+      localStorage.setItem('lb-action-bar-expanded', !prev ? '1' : '0');
+      return !prev;
+    });
+  };
+
   return (
     <div className="flex flex-col h-full">
       {error && (
@@ -591,7 +676,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
 
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
-        {messages.length === 0 && (
+        {messages.length === 0 && notebookCanvasItems.length === 0 && (
           <div className="flex flex-col items-center justify-center text-center px-6 py-12 max-w-md mx-auto animate-fade-in">
             {!notebookId && showWelcome ? (
               <>
@@ -658,104 +743,117 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
           </div>
         )}
 
-        {messages.map((message, index) => (
-          <ChatMessageBubble
-            key={index}
-            message={message}
-            index={index}
-            previousMessage={index > 0 ? messages[index - 1] : undefined}
-            notebookId={notebookId}
-            onFollowUp={handleFollowUpQuestion}
-            onViewSource={handleViewSource}
-            onGenerateVisual={generateInlineVisual}
-            onSaveVisual={saveVisualToFindings}
-            onOpenInStudio={openVisualInStudio}
-            onExportVisual={exportVisual}
-            onSelectAlternative={(idx, alt) => {
-              const msg = messages[idx];
-              const currentPrimary = msg.inlineVisual;
-              const remainingAlts = (msg.alternativeVisuals || []).filter(a => a.id !== alt.id);
-              const newAlts = currentPrimary ? [currentPrimary, ...remainingAlts].slice(0, 3) : remainingAlts;
-              
-              setMessages(prev => prev.map((m, i) => 
-                i === idx 
-                  ? { 
-                      ...m, 
-                      inlineVisual: { 
-                        id: alt.id, 
-                        type: alt.type as 'svg' | 'mermaid', 
-                        code: alt.code, 
-                        title: alt.title, 
-                        template_id: alt.template_id, 
-                        pattern: alt.pattern 
-                      },
-                      alternativeVisuals: newAlts.map(a => ({
-                        id: a.id,
-                        type: a.type as 'svg' | 'mermaid',
-                        code: a.code,
-                        title: a.title,
-                        template_id: a.template_id,
-                        pattern: a.pattern,
-                      }))
-                    }
-                  : m
-              ));
-            }}
-            onTaglineChange={(idx, newTagline) => {
-              setMessages(prev => prev.map((m, i) => 
-                i === idx && m.inlineVisual
-                  ? { ...m, inlineVisual: { ...m.inlineVisual, tagline: newTagline } }
-                  : m
-              ));
-            }}
-            onDismissLowConfidence={(msg) => {
-              setMessages(prev => prev.map(m => 
-                m === msg ? { ...m, lowConfidenceQuery: undefined, content: m.content.replace(/\n\n---\n\n\*\*(Would you like me to search|I found limited information).*$/s, '') } : m
-              ));
-            }}
-            onOpenWebSearch={onOpenWebSearch}
-            onAddResearchResult={async (result) => {
-              if (!notebookId) return;
-              try {
-                const API_BASE = (await import('../services/api')).API_BASE_URL;
-                // Add directly to notebook sources (not collector) via /web/quick-add
-                const resp = await fetch(`${API_BASE}/web/quick-add`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    notebook_id: notebookId,
-                    url: result.url,
-                    title: result.title,
-                  }),
-                });
-                if (resp.ok) {
-                  setMessages(prev => [...prev, {
-                    role: 'assistant',
-                    content: `Added **[${result.title}](${result.url})** to your notebook sources.`,
-                    agentType: 'research' as const,
-                    agentName: 'Research',
-                    timestamp: new Date(),
-                  }]);
+        {/* Unified chronological timeline — messages and canvas items interleaved by timestamp */}
+        {timeline.map((entry) => {
+          if (entry.type === 'canvas') {
+            return <CanvasItemCard key={entry.item.id} item={entry.item} />;
+          }
+          const index = entry.index;
+          const message = messages[index];
+          if (!message) return null;
+          return (
+            <ChatMessageBubble
+              key={`msg-${index}`}
+              message={message}
+              index={index}
+              previousMessage={index > 0 ? messages[index - 1] : undefined}
+              notebookId={notebookId}
+              onFollowUp={handleFollowUpQuestion}
+              onViewSource={handleViewSource}
+              onGenerateVisual={generateInlineVisual}
+              onSaveVisual={saveVisualToFindings}
+              onOpenInStudio={openVisualInStudio}
+              onExportVisual={exportVisual}
+              onSelectAlternative={(idx, alt) => {
+                const msg = messages[idx];
+                const currentPrimary = msg.inlineVisual;
+                const remainingAlts = (msg.alternativeVisuals || []).filter(a => a.id !== alt.id);
+                const newAlts = currentPrimary ? [currentPrimary, ...remainingAlts].slice(0, 3) : remainingAlts;
+                
+                setMessages(prev => prev.map((m, mi) => 
+                  mi === idx 
+                    ? { 
+                        ...m, 
+                        inlineVisual: { 
+                          id: alt.id, 
+                          type: alt.type as 'svg' | 'mermaid', 
+                          code: alt.code, 
+                          title: alt.title, 
+                          template_id: alt.template_id, 
+                          pattern: alt.pattern 
+                        },
+                        alternativeVisuals: newAlts.map(a => ({
+                          id: a.id,
+                          type: a.type as 'svg' | 'mermaid',
+                          code: a.code,
+                          title: a.title,
+                          template_id: a.template_id,
+                          pattern: a.pattern,
+                        }))
+                      }
+                    : m
+                ));
+              }}
+              onTaglineChange={(idx, newTagline) => {
+                setMessages(prev => prev.map((m, mi) => 
+                  mi === idx && m.inlineVisual
+                    ? { ...m, inlineVisual: { ...m.inlineVisual, tagline: newTagline } }
+                    : m
+                ));
+              }}
+              onDismissLowConfidence={(msg) => {
+                setMessages(prev => prev.map(m => 
+                  m === msg ? { ...m, lowConfidenceQuery: undefined, content: m.content.replace(/\n\n---\n\n\*\*(Would you like me to search|I found limited information).*$/s, '') } : m
+                ));
+              }}
+              onOpenWebSearch={onOpenWebSearch}
+              onAddResearchResult={async (result) => {
+                if (!notebookId) return;
+                try {
+                  const API_BASE = (await import('../services/api')).API_BASE_URL;
+                  const resp = await fetch(`${API_BASE}/web/quick-add`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      notebook_id: notebookId,
+                      url: result.url,
+                      title: result.title,
+                    }),
+                  });
+                  if (resp.ok) {
+                    setMessages(prev => [...prev, {
+                      role: 'assistant',
+                      content: `Added **[${result.title}](${result.url})** to your notebook sources.`,
+                      agentType: 'research' as const,
+                      agentName: 'Research',
+                      timestamp: new Date(),
+                    }]);
+                  }
+                } catch (err) {
+                  console.error('Failed to add research result:', err);
                 }
-              } catch (err) {
-                console.error('Failed to add research result:', err);
-              }
-            }}
-          />
-        ))}
-
-        {/* Old loading indicator removed - now using statusMessage in the message bubble */}
+              }}
+            />
+          );
+        })}
 
         <div ref={messagesEndRef} />
       </div>
 
+      {/* Studio action bar — pills + popovers */}
+      <ChatActionBar
+        notebookId={notebookId}
+        expanded={actionBarExpanded}
+        onToggleExpand={toggleActionBar}
+      />
+
       {/* Input area */}
-      <div className="border-t dark:border-gray-700 px-3 py-2 bg-white dark:bg-gray-800 flex-shrink-0">
+      <div className="border-t dark:border-gray-700 px-2.5 py-1.5 bg-white dark:bg-gray-800 flex-shrink-0">
         <form onSubmit={handleSubmit}>
-          <div className="flex gap-2 items-end">
+          <div className="flex gap-1.5 items-center">
             {/* Quick/Deep Toggle - Rabbit vs Brain */}
             <div 
-              className="relative flex items-center bg-gray-100 dark:bg-gray-700 rounded-full p-0.5"
+              className="relative flex items-center bg-gray-100 dark:bg-gray-700 rounded-full p-0.5 h-9"
               title={deepThink ? "Deep Think: Thorough analysis (slower)" : "Quick: Fast, concise responses"}
             >
               {showDeepThinkTip && (
@@ -777,7 +875,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 type="button"
                 onClick={() => setDeepThink(false)}
                 disabled={!notebookId || loading}
-                className={`px-2.5 py-1.5 rounded-full text-lg transition-all ${
+                className={`px-2 py-1.5 rounded-full text-sm transition-all ${
                   !deepThink
                     ? 'bg-white dark:bg-gray-600 shadow-sm'
                     : 'hover:bg-gray-200 dark:hover:bg-gray-600'
@@ -789,7 +887,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 type="button"
                 onClick={() => setDeepThink(true)}
                 disabled={!notebookId || loading}
-                className={`px-2.5 py-1.5 rounded-full text-lg transition-all ${
+                className={`px-2 py-1.5 rounded-full text-sm transition-all ${
                   deepThink
                     ? 'bg-purple-500 shadow-sm'
                     : 'hover:bg-gray-200 dark:hover:bg-gray-600'
@@ -814,9 +912,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                     ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300'
                     : activeMention === 'research'
                       ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
-                      : 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300'
+                      : activeMention === 'studio'
+                        ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                        : 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300'
                 }`} onClick={() => setActiveMention(null)} title="Click or press Backspace to remove">
-                  {activeMention === 'collector' ? <Radio className="w-3 h-3" /> : activeMention === 'research' ? <Search className="w-3 h-3" /> : <Compass className="w-3 h-3" />}
+                  {activeMention === 'collector' ? <Radio className="w-3 h-3" /> : activeMention === 'research' ? <Search className="w-3 h-3" /> : activeMention === 'studio' ? <Wand2 className="w-3 h-3" /> : <Compass className="w-3 h-3" />}
                   @{activeMention}
                 </span>
               )}
@@ -829,7 +929,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 title={deepThink ? "Deep Think mode: AI will analyze step-by-step for thorough answers" : "Quick mode: Fast, concise responses"}
                 disabled={!notebookId || loading || isTranscribing}
                 rows={1}
-                className={`w-full py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-700 bg-white dark:bg-gray-700 text-gray-900 dark:text-white resize-none min-h-[38px] max-h-[120px] ${
+                className={`w-full h-9 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-700 bg-white dark:bg-gray-700 text-gray-900 dark:text-white resize-none max-h-[100px] ${
                   activeMention ? 'pl-[7.5rem] pr-4' : 'px-4'
                 }`}
               />
@@ -867,26 +967,28 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               onClick={isRecording ? stopRecording : startRecording}
               disabled={!notebookId || loading || isTranscribing}
               title={isRecording ? "Stop recording" : "Voice input (Whisper)"}
-              className={`p-2 rounded-lg transition-colors ${
+              className={`h-9 w-9 flex items-center justify-center rounded-lg transition-colors ${
                 isRecording 
                   ? 'bg-red-500 text-white animate-pulse' 
                   : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600'
               } disabled:opacity-50`}
             >
               {isTranscribing ? (
-                <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
               ) : (
-                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" />
                 </svg>
               )}
             </button>
             <Button
               type="submit"
+              size="sm"
               disabled={!input.trim() || !notebookId || loading}
+              className="h-9 px-4"
             >
               Send
             </Button>

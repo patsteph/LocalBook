@@ -51,7 +51,7 @@ export interface PageContext {
 }
 
 export type ViewMode = "actions" | "chat" | "research" | "transform"
-export type ActionType = "summary" | "scrape" | "links" | "compare" | "automate" | "chat" | null
+export type ActionType = "summary" | "scrape" | "links" | "compare" | "automate" | "chat" | "collector" | null
 
 export interface SearchResult {
   title: string

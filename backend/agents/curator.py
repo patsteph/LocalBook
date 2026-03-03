@@ -76,6 +76,9 @@ class NotebookSummary(BaseModel):
     upcoming_key_dates: List[str] = []
     collection_runs: int = 0
     collection_items_found: int = 0
+    # Source origin breakdown — collector vs user
+    collector_added: int = 0  # sources auto-gathered by background collector
+    user_added: int = 0       # sources manually added by the user
     # Wow features
     total_sources: int = 0
     sources_this_week: int = 0
@@ -84,6 +87,18 @@ class NotebookSummary(BaseModel):
     sources_unread: int = 0
     highlights_since: int = 0
     recent_highlight_texts: List[str] = []
+    # User interaction tracking — separate from items_added (source additions)
+    interactions_since: int = 0
+    chat_queries: int = 0
+    searches: int = 0
+    docs_read: int = 0
+    # Studio content generation — what the user created (not just consumed)
+    docs_generated: int = 0
+    audio_generated: int = 0
+    visuals_generated: int = 0
+    quizzes_generated: int = 0
+    videos_generated: int = 0
+    studio_topics: List[str] = []  # topics the user generated content about
     # Unfinished threads from recall memory
     unfinished_threads: List[str] = []
     # Topic drift — new topics emerging vs established ones
@@ -98,6 +113,24 @@ class MorningBrief(BaseModel):
     cross_notebook_insight: Optional[str] = None
     narrative: str = ""  # LLM-generated newsletter-quality summary
     generated_at: datetime
+
+
+class WeeklyWrapUp(BaseModel):
+    """Broader weekly summary covering the full week's research activity.
+    Generated lazily on Monday (covers previous Mon-Sun), replaces that day's Morning Brief."""
+    week_start: str  # ISO date of the Monday that starts the covered week
+    week_end: str    # ISO date of the Sunday that ends the covered week
+    notebook_summaries: List[NotebookSummary]
+    cross_notebook_insight: Optional[str] = None
+    narrative: str = ""
+    generated_at: datetime
+    # Weekly aggregate stats
+    total_sources_added: int = 0
+    total_collector_added: int = 0
+    total_user_added: int = 0
+    total_conversations: int = 0
+    total_audio_generated: int = 0
+    total_documents_generated: int = 0
 
 
 class ProactiveInsight(BaseModel):
@@ -141,7 +174,7 @@ class CuratorAgent:
         self.config = self._load_config()
         self.name = self.config.get("name", "Curator")
         self.personality = self.config.get("personality", "helpful and thorough")
-        self._pending_insights: List[ProactiveInsight] = []
+        self._pending_insights: List[ProactiveInsight] = self._load_insights()
     
     def _get_config_path(self) -> Path:
         """Get path to curator config file"""
@@ -171,6 +204,32 @@ class CuratorAgent:
         
         with open(config_path, 'w') as f:
             yaml.dump(config, f, default_flow_style=False)
+    
+    def _get_insights_path(self) -> Path:
+        """Get path to persisted proactive insights file"""
+        return Path(settings.data_dir) / "curator_insights.json"
+    
+    def _load_insights(self) -> List['ProactiveInsight']:
+        """Load persisted proactive insights from disk."""
+        path = self._get_insights_path()
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text())
+            return [ProactiveInsight(**item) for item in data]
+        except Exception as e:
+            logger.warning(f"Could not load persisted insights (starting fresh): {e}")
+            return []
+    
+    def _save_insights(self) -> None:
+        """Persist proactive insights to disk."""
+        path = self._get_insights_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = [ins.model_dump() for ins in self._pending_insights]
+            path.write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            logger.warning(f"Could not save insights: {e}")
     
     def update_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         """Update curator configuration"""
@@ -287,7 +346,7 @@ Respond with JSON only:
             response = await ollama_client.generate(
                 prompt=prompt,
                 system="You are an editorial judgment system. Respond only with valid JSON.",
-                model=settings.ollama_model,  # Main model — this is the gatekeeper decision
+                model=settings.ollama_fast_model,  # Fast model — sufficient for approve/reject JSON
                 temperature=0.3
             )
             
@@ -669,6 +728,11 @@ Be concise and cite which notebook each insight comes from."""
                 continue
             
             # Include notebook if it has ANY recent activity signal
+            studio_created = (
+                stats.get("docs_generated", 0) + stats.get("audio_generated", 0) +
+                stats.get("visuals_generated", 0) + stats.get("quizzes_generated", 0) +
+                stats.get("videos_generated", 0)
+            )
             has_activity = (
                 stats["items_added"] > 0 or stats["pending_approval"] > 0 or
                 stats.get("person_changes") or stats.get("upcoming_key_dates") or
@@ -676,7 +740,9 @@ Be concise and cite which notebook each insight comes from."""
                 stats.get("collection_runs", 0) > 0 or
                 stats.get("sources_this_week", 0) > 0 or
                 stats.get("highlights_since", 0) > 0 or
-                stats.get("unfinished_threads")
+                stats.get("interactions_since", 0) > 0 or
+                stats.get("unfinished_threads") or
+                studio_created > 0
             )
             if has_activity:
                 # Get the collector subject for this notebook
@@ -689,6 +755,13 @@ Be concise and cite which notebook each insight comes from."""
                 except Exception:
                     pass
                 
+                # Strip 'origin' from story dicts before passing to RecentStory model
+                stories_raw = stats.get("recent_stories", [])
+                stories = []
+                for sr in stories_raw:
+                    sr_copy = {k: v for k, v in sr.items() if k != "origin"}
+                    stories.append(RecentStory(**sr_copy))
+                
                 summaries.append(NotebookSummary(
                     notebook_id=notebook["id"],
                     name=notebook.get("title", notebook.get("name", "Untitled")),
@@ -697,13 +770,13 @@ Be concise and cite which notebook each insight comes from."""
                     flagged_important=stats.get("flagged", 0),
                     pending_approval=stats.get("pending_approval", 0),
                     top_finding=stats.get("top_item"),
-                    recent_stories=[
-                        RecentStory(**s) for s in stats.get("recent_stories", [])
-                    ],
+                    recent_stories=stories,
                     person_changes=stats.get("person_changes", []),
                     upcoming_key_dates=stats.get("upcoming_key_dates", []),
                     collection_runs=stats.get("collection_runs", 0),
                     collection_items_found=stats.get("collection_items_found", 0),
+                    collector_added=stats.get("collector_added", 0),
+                    user_added=stats.get("user_added", 0),
                     total_sources=stats.get("total_sources", 0),
                     sources_this_week=stats.get("sources_this_week", 0),
                     sources_last_week=stats.get("sources_last_week", 0),
@@ -711,6 +784,16 @@ Be concise and cite which notebook each insight comes from."""
                     sources_unread=stats.get("sources_unread", 0),
                     highlights_since=stats.get("highlights_since", 0),
                     recent_highlight_texts=stats.get("recent_highlight_texts", []),
+                    interactions_since=stats.get("interactions_since", 0),
+                    chat_queries=stats.get("chat_queries", 0),
+                    searches=stats.get("searches", 0),
+                    docs_read=stats.get("docs_read", 0),
+                    docs_generated=stats.get("docs_generated", 0),
+                    audio_generated=stats.get("audio_generated", 0),
+                    visuals_generated=stats.get("visuals_generated", 0),
+                    quizzes_generated=stats.get("quizzes_generated", 0),
+                    videos_generated=stats.get("videos_generated", 0),
+                    studio_topics=stats.get("studio_topics", []),
                     unfinished_threads=stats.get("unfinished_threads", []),
                     emerging_topics=stats.get("emerging_topics", []),
                     one_week_ago_items=stats.get("one_week_ago_items", []),
@@ -734,6 +817,306 @@ Be concise and cite which notebook each insight comes from."""
             narrative=narrative,
             generated_at=now
         )
+    
+    async def generate_weekly_wrap_up(self) -> WeeklyWrapUp:
+        """Generate a Weekly Wrap Up covering the past 7 days of research activity.
+        
+        Designed to replace the Monday Morning Brief — gives a broader view of
+        what was discovered, debated, and created over the entire week.
+        Generated lazily on Monday morning (or on demand).
+        """
+        from datetime import timedelta
+        import asyncio
+        
+        now = datetime.utcnow()
+        # Cover the past 7 days (previous Mon through Sun)
+        week_end = now
+        week_start = now - timedelta(days=7)
+        
+        notebooks = await notebook_store.list()
+        
+        # Pre-load all sources once
+        from storage.source_store import source_store
+        all_sources_by_nb = await source_store.list_all()
+        
+        # Gather activity for the full week in parallel
+        activity_tasks = [
+            self._get_activity_since(nb["id"], week_start, all_sources_by_nb.get(nb["id"], []))
+            for nb in notebooks
+        ]
+        all_stats = await asyncio.gather(*activity_tasks, return_exceptions=True)
+        
+        summaries = []
+        total_sources = 0
+        total_collector = 0
+        total_user = 0
+        total_convos = 0
+        
+        for notebook, stats in zip(notebooks, all_stats):
+            if isinstance(stats, Exception):
+                logger.error(f"Weekly stats failed for {notebook['id']}: {stats}")
+                continue
+            
+            has_activity = (
+                stats["items_added"] > 0 or stats.get("collection_runs", 0) > 0 or
+                stats.get("interactions_since", 0) > 0 or stats.get("highlights_since", 0) > 0
+            )
+            if not has_activity:
+                continue
+            
+            subject = ""
+            try:
+                from agents.collector import get_collector
+                collector = get_collector(notebook["id"])
+                cfg = collector.get_config()
+                subject = cfg.subject if hasattr(cfg, "subject") and cfg.subject else ""
+            except Exception:
+                pass
+            
+            stories_raw = stats.get("recent_stories", [])
+            stories = []
+            for sr in stories_raw:
+                sr_copy = {k: v for k, v in sr.items() if k != "origin"}
+                stories.append(RecentStory(**sr_copy))
+            
+            summaries.append(NotebookSummary(
+                notebook_id=notebook["id"],
+                name=notebook.get("title", notebook.get("name", "Untitled")),
+                subject=subject,
+                items_added=stats["items_added"],
+                flagged_important=stats.get("flagged", 0),
+                pending_approval=stats.get("pending_approval", 0),
+                top_finding=stats.get("top_item"),
+                recent_stories=stories,
+                person_changes=stats.get("person_changes", []),
+                upcoming_key_dates=stats.get("upcoming_key_dates", []),
+                collection_runs=stats.get("collection_runs", 0),
+                collection_items_found=stats.get("collection_items_found", 0),
+                collector_added=stats.get("collector_added", 0),
+                user_added=stats.get("user_added", 0),
+                total_sources=stats.get("total_sources", 0),
+                sources_this_week=stats.get("sources_this_week", 0),
+                sources_last_week=stats.get("sources_last_week", 0),
+                sources_summarized=stats.get("sources_summarized", 0),
+                sources_unread=stats.get("sources_unread", 0),
+                highlights_since=stats.get("highlights_since", 0),
+                recent_highlight_texts=stats.get("recent_highlight_texts", []),
+                interactions_since=stats.get("interactions_since", 0),
+                chat_queries=stats.get("chat_queries", 0),
+                searches=stats.get("searches", 0),
+                docs_read=stats.get("docs_read", 0),
+                docs_generated=stats.get("docs_generated", 0),
+                audio_generated=stats.get("audio_generated", 0),
+                visuals_generated=stats.get("visuals_generated", 0),
+                quizzes_generated=stats.get("quizzes_generated", 0),
+                videos_generated=stats.get("videos_generated", 0),
+                studio_topics=stats.get("studio_topics", []),
+                unfinished_threads=stats.get("unfinished_threads", []),
+                emerging_topics=stats.get("emerging_topics", []),
+                one_week_ago_items=stats.get("one_week_ago_items", []),
+            ))
+            
+            total_sources += stats["items_added"]
+            total_collector += stats.get("collector_added", 0)
+            total_user += stats.get("user_added", 0)
+            total_convos += stats.get("chat_queries", 0)
+        
+        # Count audio and document generations this week (from event logger, more accurate)
+        total_audio = sum(s.audio_generated for s in summaries)
+        total_docs = sum(s.docs_generated for s in summaries)
+        
+        # Cross-notebook insight
+        cross_insight = None
+        if self._pending_insights:
+            cross_insight = self._pending_insights[0].summary
+        
+        narrative = await self._synthesize_weekly_narrative(
+            summaries, cross_insight, total_sources, total_collector,
+            total_user, total_convos, total_audio, total_docs
+        )
+        
+        return WeeklyWrapUp(
+            week_start=week_start.strftime("%Y-%m-%d"),
+            week_end=week_end.strftime("%Y-%m-%d"),
+            notebook_summaries=summaries,
+            cross_notebook_insight=cross_insight,
+            narrative=narrative,
+            generated_at=now,
+            total_sources_added=total_sources,
+            total_collector_added=total_collector,
+            total_user_added=total_user,
+            total_conversations=total_convos,
+            total_audio_generated=total_audio,
+            total_documents_generated=total_docs,
+        )
+    
+    async def _synthesize_weekly_narrative(
+        self,
+        summaries: List['NotebookSummary'],
+        cross_insight: Optional[str],
+        total_sources: int,
+        total_collector: int,
+        total_user: int,
+        total_convos: int,
+        total_audio: int,
+        total_docs: int,
+    ) -> str:
+        """Use LLM to generate a Weekly Wrap Up narrative."""
+        if not summaries:
+            return ""
+        
+        # Build structured data (reuse the same format as morning brief)
+        notebook_sections = []
+        for nb in summaries:
+            section = f"Notebook: {nb.name}"
+            if nb.subject:
+                section += f" (tracking: {nb.subject})"
+            details = []
+            
+            if nb.recent_stories:
+                for story in nb.recent_stories[:5]:
+                    detail = f"  - \"{story.title}\""
+                    if story.source_name:
+                        detail += f" ({story.source_name})"
+                    if story.summary:
+                        detail += f" — {story.summary[:150]}"
+                    details.append(detail)
+            
+            if nb.collector_added > 0 or nb.user_added > 0:
+                origin_parts = []
+                if nb.collector_added > 0:
+                    origin_parts.append(f"{nb.collector_added} auto-collected")
+                if nb.user_added > 0:
+                    origin_parts.append(f"{nb.user_added} you added")
+                details.append(f"  - Sources this week: {'; '.join(origin_parts)}")
+            
+            if nb.collection_runs > 0:
+                details.append(f"  - Collector ran {nb.collection_runs}x, found {nb.collection_items_found} items")
+            
+            if nb.total_sources > 0:
+                details.append(f"  - Library: {nb.total_sources} total sources")
+            
+            if nb.interactions_since > 0:
+                activity_parts = []
+                if nb.chat_queries > 0:
+                    activity_parts.append(f"{nb.chat_queries} conversations")
+                if nb.searches > 0:
+                    activity_parts.append(f"{nb.searches} searches")
+                if activity_parts:
+                    details.append(f"  - Your activity: {', '.join(activity_parts)}")
+            
+            # Studio content creation
+            studio_total = nb.docs_generated + nb.audio_generated + nb.visuals_generated + nb.quizzes_generated + nb.videos_generated
+            if studio_total > 0:
+                studio_parts = []
+                if nb.docs_generated > 0:
+                    studio_parts.append(f"{nb.docs_generated} document{'s' if nb.docs_generated != 1 else ''}")
+                if nb.audio_generated > 0:
+                    studio_parts.append(f"{nb.audio_generated} podcast{'s' if nb.audio_generated != 1 else ''}")
+                if nb.visuals_generated > 0:
+                    studio_parts.append(f"{nb.visuals_generated} visual{'s' if nb.visuals_generated != 1 else ''}")
+                if nb.quizzes_generated > 0:
+                    studio_parts.append(f"{nb.quizzes_generated} quiz{'zes' if nb.quizzes_generated != 1 else ''}")
+                if nb.videos_generated > 0:
+                    studio_parts.append(f"{nb.videos_generated} video{'s' if nb.videos_generated != 1 else ''}")
+                details.append(f"  - Studio output: created {', '.join(studio_parts)}")
+                if nb.studio_topics:
+                    details.append(f"    Topics: {', '.join(nb.studio_topics)}")
+            
+            if nb.highlights_since > 0:
+                details.append(f"  - Highlighted {nb.highlights_since} passages")
+            
+            if nb.unfinished_threads:
+                details.append(f"  - Open threads: {'; '.join(nb.unfinished_threads[:2])}")
+            
+            if nb.emerging_topics:
+                details.append(f"  - Emerging topics: {', '.join(nb.emerging_topics)}")
+            
+            if details:
+                section += "\n" + "\n".join(details)
+            notebook_sections.append(section)
+        
+        raw_data = "\n\n".join(notebook_sections)
+        if cross_insight:
+            raw_data += f"\n\nCross-notebook insight: {cross_insight}"
+        
+        # Aggregate stats block
+        total_visuals = sum(s.visuals_generated for s in summaries)
+        total_quizzes = sum(s.quizzes_generated for s in summaries)
+        total_videos = sum(s.videos_generated for s in summaries)
+        
+        raw_data += f"\n\nWEEKLY TOTALS:"
+        raw_data += f"\n  - Total sources added: {total_sources} ({total_collector} by collector, {total_user} by you)"
+        raw_data += f"\n  - Conversations: {total_convos}"
+        studio_total_week = total_audio + total_docs + total_visuals + total_quizzes + total_videos
+        if studio_total_week > 0:
+            studio_week_parts = []
+            if total_docs > 0:
+                studio_week_parts.append(f"{total_docs} document{'s' if total_docs != 1 else ''}")
+            if total_audio > 0:
+                studio_week_parts.append(f"{total_audio} podcast{'s' if total_audio != 1 else ''}")
+            if total_visuals > 0:
+                studio_week_parts.append(f"{total_visuals} visual{'s' if total_visuals != 1 else ''}")
+            if total_quizzes > 0:
+                studio_week_parts.append(f"{total_quizzes} quiz{'zes' if total_quizzes != 1 else ''}")
+            if total_videos > 0:
+                studio_week_parts.append(f"{total_videos} video{'s' if total_videos != 1 else ''}")
+            raw_data += f"\n  - Studio output: {', '.join(studio_week_parts)}"
+        
+        today_str = datetime.utcnow().strftime("%B %d, %Y")
+        prompt = f"""You are a personal research assistant writing a WEEKLY WRAP UP for {today_str}. This covers the ENTIRE past week of the user's research activity — a broader, more reflective view than the daily morning brief.
+
+RAW DATA:
+{raw_data}
+
+WEEKLY WRAP UP STRUCTURE:
+1. **Opening** — A warm "Here's your week in review" opening. Set a reflective tone.
+2. **The Big Picture** — What were the major themes across all notebooks this week? Any patterns emerging?
+3. **Per-notebook highlights** — For each active notebook, summarize the week's key additions and discoveries. Use actual titles.
+4. **Collector Report** — If the background collector gathered sources, summarize what it found. Distinguish clearly from what the user added themselves.
+5. **Your Activity** — How actively did the user engage? Conversations, searches, highlights. Frame it positively.
+6. **Threads to Pick Up** — Open questions and unfinished conversations worth revisiting this week.
+7. **Looking Ahead** — Based on this week's momentum, what should the user focus on next week? Any upcoming dates?
+8. **Weekly Stat Line** — End with a clean summary: "This week: X sources added, Y conversations, Z audio pieces generated."
+
+RULES:
+- Use exact numbers from the data. Never invent or round.
+- This is a WEEKLY summary — use "this week", "over the past week", "this week's research" framing.
+- Distinguish collector-gathered sources from user-added ones.
+- Tone: warm, reflective, slightly celebratory of progress. Like a trusted advisor reviewing the week together.
+- Length: 300-500 words. More substantial than the daily brief.
+- Use markdown for structure.
+
+Write the weekly wrap up now:"""
+        
+        try:
+            from services.ollama_client import ollama_client
+            from config import settings
+            
+            response = await ollama_client.generate(
+                prompt=prompt,
+                system="You are a concise, insightful research assistant. Write engaging weekly summaries that help people reflect on their research progress.",
+                model=settings.ollama_model,
+                temperature=0.7,
+                timeout=120.0
+            )
+            narrative = response.get("response", "").strip()
+            if narrative and not narrative.startswith(("Request timed out", "Error:")):
+                return narrative
+        except Exception as e:
+            logger.error(f"Weekly narrative generation failed: {e}")
+        
+        # Fallback
+        lines = [f"# Weekly Wrap Up — {today_str}\n"]
+        for nb in summaries:
+            line = f"**{nb.name}**: {nb.items_added} sources added"
+            if nb.collector_added > 0:
+                line += f" ({nb.collector_added} by collector)"
+            lines.append(line)
+        lines.append(f"\n**Week totals:** {total_sources} sources, {total_convos} conversations")
+        if total_audio > 0:
+            lines.append(f", {total_audio} audio pieces")
+        return "\n".join(lines)
     
     async def _get_activity_since(self, notebook_id: str, since: datetime, preloaded_sources: Optional[List[Dict]] = None) -> Dict[str, Any]:
         """Get activity stats for a notebook since a given time.
@@ -770,20 +1153,6 @@ Be concise and cite which notebook each insight comes from."""
                 stats["top_item"] = top.get("title", "")[:100]
                 stats["flagged"] = len([p for p in pending if p.get("confidence", 0) >= 0.8])
             
-            # Count items added to memory since last_seen
-            results = memory_store.search_archival_memory(
-                query="*",
-                namespace=AgentNamespace.COLLECTOR,
-                notebook_id=notebook_id,
-                limit=50
-            )
-            
-            items_since = [
-                r for r in results 
-                if r.entry.created_at > since
-            ]
-            stats["items_added"] = len(items_since)
-            
         except Exception as e:
             logger.error(f"Error getting activity for {notebook_id}: {e}")
         
@@ -799,11 +1168,39 @@ Be concise and cite which notebook each insight comes from."""
         except Exception:
             pass
         
-        # Event logger — count user actions since last_seen
+        # User interactions — track activity types separately (never conflate with items_added)
         try:
-            from services.event_logger import event_logger
+            from services.event_logger import event_logger, EventType
             events = event_logger.get_events_since(since, notebook_id=notebook_id)
-            stats["items_added"] = max(stats["items_added"], len(events))
+            stats["interactions_since"] = len(events)
+            stats["chat_queries"] = len([e for e in events if e.event_type == EventType.CHAT_QA.value])
+            stats["searches"] = len([e for e in events if e.event_type == EventType.SEARCH_PERFORMED.value])
+            stats["docs_read"] = len([e for e in events if e.event_type == EventType.DOCUMENT_READ.value])
+            stats["docs_captured"] = len([e for e in events if e.event_type == EventType.DOCUMENT_CAPTURED.value])
+            
+            # Studio content generation — what the user actively created
+            content_events = [e for e in events if e.event_type == EventType.CONTENT_GENERATED.value]
+            quiz_events = [e for e in events if e.event_type == EventType.QUIZ_COMPLETED.value]
+            studio_topics = set()
+            for ce in content_events:
+                ctype = ce.data.get("content_type", "")
+                topic = ce.data.get("topic", "")
+                if ctype == "audio":
+                    stats["audio_generated"] = stats.get("audio_generated", 0) + 1
+                elif ctype == "visual":
+                    stats["visuals_generated"] = stats.get("visuals_generated", 0) + 1
+                elif ctype == "video":
+                    stats["videos_generated"] = stats.get("videos_generated", 0) + 1
+                else:
+                    stats["docs_generated"] = stats.get("docs_generated", 0) + 1
+                if topic:
+                    studio_topics.add(topic[:80])
+            stats["quizzes_generated"] = len(quiz_events)
+            for qe in quiz_events:
+                topic = qe.data.get("topic", "")
+                if topic:
+                    studio_topics.add(topic[:80])
+            stats["studio_topics"] = list(studio_topics)[:5]
         except Exception:
             pass
         
@@ -862,34 +1259,47 @@ Be concise and cite which notebook each insight comes from."""
             ]
             # Sort newest first, take top 5
             recent.sort(key=lambda s: s.get("created_at", ""), reverse=True)
+            
+            # Determine origin for each source (collector vs user)
+            # metadata_json is merged into the source dict by source_store,
+            # so collected_by is a top-level key
+            def _is_collector_source(src):
+                return src.get("collected_by") == "collector"
+            
             stats["recent_stories"] = [
                 {
                     "title": s.get("title") or s.get("filename", "Untitled"),
                     "source_name": s.get("source_type", s.get("format", "")),
                     "url": s.get("url"),
                     "summary": (s.get("summary") or s.get("description") or "")[:200],
+                    "origin": "collector" if _is_collector_source(s) else "user",
                 }
                 for s in recent[:5]
             ]
-            # Update items_added to reflect actual source count if higher
-            if len(recent) > stats["items_added"]:
-                stats["items_added"] = len(recent)
+            # items_added = actual number of sources created since user was last seen
+            # This is the ONLY place items_added is set — no conflation with event logger
+            stats["items_added"] = len(recent)
             
-            # Research velocity — compare this week vs last week
+            # Split by origin
+            stats["collector_added"] = len([s for s in recent if _is_collector_source(s)])
+            stats["user_added"] = len(recent) - stats["collector_added"]
+            
+            # Research velocity — compare this week vs last week (deltas, not totals)
             from datetime import timedelta
             now = datetime.utcnow()
             week_ago = (now - timedelta(days=7)).isoformat()
             two_weeks_ago = (now - timedelta(days=14)).isoformat()
-            this_week = len([s for s in all_sources if s.get("created_at", "") > week_ago])
-            last_week = len([s for s in all_sources if week_ago >= s.get("created_at", "") > two_weeks_ago])
+            added_this_week = len([s for s in all_sources if s.get("created_at", "") > week_ago])
+            added_last_week = len([s for s in all_sources if week_ago >= s.get("created_at", "") > two_weeks_ago])
             stats["total_sources"] = len(all_sources)
-            stats["sources_this_week"] = this_week
-            stats["sources_last_week"] = last_week
+            stats["sources_this_week"] = added_this_week
+            stats["sources_last_week"] = added_last_week
             
-            # Reading progress — how many sources have been summarized
-            summarized = len([s for s in all_sources if s.get("summary") or s.get("status") == "completed"])
-            stats["sources_summarized"] = summarized
-            stats["sources_unread"] = len(all_sources) - summarized
+            # Reading progress — sources the user has actively engaged with
+            # (tagged by user = reviewed; no tags = unreviewed)
+            tagged = len([s for s in all_sources if s.get("tags") and len(s.get("tags", [])) > 0])
+            stats["sources_summarized"] = tagged
+            stats["sources_unread"] = len(all_sources) - tagged
         except Exception:
             pass
         
@@ -1049,11 +1459,20 @@ Be concise and cite which notebook each insight comes from."""
                         detail += f" — {story.summary[:150]}"
                     details.append(detail)
             
+            # Source origin breakdown — distinguish collector from user
+            if nb.collector_added > 0 or nb.user_added > 0:
+                origin_parts = []
+                if nb.collector_added > 0:
+                    origin_parts.append(f"{nb.collector_added} auto-gathered by your background collector (REVIEW RECOMMENDED — you didn't add these manually)")
+                if nb.user_added > 0:
+                    origin_parts.append(f"{nb.user_added} added by you")
+                details.append(f"  - Source breakdown: {'; '.join(origin_parts)}")
+            
             # Collection activity
             if nb.collection_runs > 0:
-                details.append(f"  - Collector ran {nb.collection_runs}x, found {nb.collection_items_found} items")
+                details.append(f"  - Background collector ran {nb.collection_runs}x overnight, discovered {nb.collection_items_found} potential items")
             if nb.pending_approval > 0:
-                details.append(f"  - {nb.pending_approval} items awaiting your review")
+                details.append(f"  - {nb.pending_approval} collector items awaiting your review")
             
             # People updates
             if nb.person_changes:
@@ -1065,22 +1484,56 @@ Be concise and cite which notebook each insight comes from."""
                 for kd in nb.upcoming_key_dates[:2]:
                     details.append(f"  - Coming up: {kd}")
             
-            # Research velocity
+            # Research velocity — explicit deltas, never conflate total with added
             if nb.total_sources > 0:
-                velocity_note = f"  - Research library: {nb.total_sources} total sources"
-                if nb.sources_this_week > 0 and nb.sources_last_week > 0:
-                    if nb.sources_this_week > nb.sources_last_week:
-                        pct = int(((nb.sources_this_week - nb.sources_last_week) / nb.sources_last_week) * 100)
-                        velocity_note += f" (up {pct}% vs last week)"
-                    elif nb.sources_this_week < nb.sources_last_week:
-                        velocity_note += f" (slowed down vs last week)"
-                elif nb.sources_this_week > 0:
-                    velocity_note += f" ({nb.sources_this_week} added this week)"
-                details.append(velocity_note)
+                if nb.sources_this_week > 0:
+                    prior_total = nb.total_sources - nb.sources_this_week
+                    velocity_note = f"  - Research library: grew from {prior_total} to {nb.total_sources} sources this week (+{nb.sources_this_week} new)"
+                    if nb.sources_last_week > 0:
+                        if nb.sources_this_week > nb.sources_last_week:
+                            pct = int(((nb.sources_this_week - nb.sources_last_week) / nb.sources_last_week) * 100)
+                            velocity_note += f" — up {pct}% vs last week's {nb.sources_last_week}"
+                        elif nb.sources_this_week < nb.sources_last_week:
+                            velocity_note += f" — slower than last week's {nb.sources_last_week}"
+                        else:
+                            velocity_note += f" — same pace as last week"
+                    details.append(velocity_note)
+                else:
+                    details.append(f"  - Research library: {nb.total_sources} sources (no new additions this week)")
             
-            # Reading progress
-            if nb.sources_unread > 0:
-                details.append(f"  - Reading progress: {nb.sources_summarized} summarized, {nb.sources_unread} still unread")
+            # Review progress — how many sources user has tagged/reviewed
+            if nb.sources_unread > 0 and nb.sources_summarized > 0:
+                details.append(f"  - Review progress: {nb.sources_summarized} of {nb.total_sources} sources tagged/reviewed, {nb.sources_unread} still unreviewed")
+            
+            # User activity — how the user has been engaging with this notebook
+            if nb.interactions_since > 0:
+                activity_parts = []
+                if nb.chat_queries > 0:
+                    activity_parts.append(f"{nb.chat_queries} chat conversation{'s' if nb.chat_queries != 1 else ''}")
+                if nb.searches > 0:
+                    activity_parts.append(f"{nb.searches} search{'es' if nb.searches != 1 else ''}")
+                if nb.docs_read > 0:
+                    activity_parts.append(f"{nb.docs_read} document{'s' if nb.docs_read != 1 else ''} read")
+                if activity_parts:
+                    details.append(f"  - Your activity: {', '.join(activity_parts)}")
+            
+            # Studio content creation — what the user actively produced
+            studio_total = nb.docs_generated + nb.audio_generated + nb.visuals_generated + nb.quizzes_generated + nb.videos_generated
+            if studio_total > 0:
+                studio_parts = []
+                if nb.docs_generated > 0:
+                    studio_parts.append(f"{nb.docs_generated} document{'s' if nb.docs_generated != 1 else ''}")
+                if nb.audio_generated > 0:
+                    studio_parts.append(f"{nb.audio_generated} podcast{'s' if nb.audio_generated != 1 else ''}")
+                if nb.visuals_generated > 0:
+                    studio_parts.append(f"{nb.visuals_generated} visual{'s' if nb.visuals_generated != 1 else ''}")
+                if nb.quizzes_generated > 0:
+                    studio_parts.append(f"{nb.quizzes_generated} quiz{'zes' if nb.quizzes_generated != 1 else ''}")
+                if nb.videos_generated > 0:
+                    studio_parts.append(f"{nb.videos_generated} video{'s' if nb.videos_generated != 1 else ''}")
+                details.append(f"  - Studio output: created {', '.join(studio_parts)}")
+                if nb.studio_topics:
+                    details.append(f"    Topics: {', '.join(nb.studio_topics)}")
             
             # Highlights — strongest signal of what the user cares about
             if nb.highlights_since > 0:
@@ -1121,23 +1574,54 @@ Be concise and cite which notebook each insight comes from."""
 RAW DATA:
 {raw_data}
 
+CRITICAL ACCURACY RULES — you MUST follow these:
+- "grew from X to Y" means the library went from X sources to Y sources. The DELTA is Y-X. NEVER report Y as the number "added" — the number added is Y minus X.
+- "sources_this_week" is the number of NEW sources added THIS WEEK, not the total count. If data says "+23 new", say "23 new sources" not "73 sources added."
+- NEVER invent or round numbers. Use the exact figures from the data.
+- If something says "no new additions this week," do NOT claim growth occurred.
+- "tagged/reviewed" means the user has actively organized those sources with tags. "unreviewed" means no tags yet — not that the sources are unread.
+
+TEMPORAL FRAMING — match the user's actual rhythm:
+- The user was away for {duration_str}. Use that to frame your language:
+  * If away < 24 hours: say "overnight", "since yesterday", "while you slept" — NOT "this week"
+  * If away 1-2 days: say "over the past day" or "since you were last here"
+  * If away 3+ days: then "this week" or "over the past few days" is appropriate
+- NEVER default to "this week / last week" framing when the user is active daily. It feels disconnected.
+- The user works in these notebooks every day. Acknowledge that continuity — "your research is building momentum" not "here's what happened this week."
+
+COLLECTOR vs USER SOURCES — this distinction is CRITICAL:
+- If the data shows "auto-gathered by background collector (REVIEW RECOMMENDED)", call this out prominently
+- Collector-gathered sources arrived WITHOUT the user's involvement — the user needs to know these exist and should examine them
+- Say things like: "While you were away, your collector pulled in N new sources — worth a look since you didn't add these yourself"
+- User-added sources need no special callout — the user already knows about those
+- If there are collector sources pending review, make this the most actionable item in the brief
+
+STUDIO CONTENT CREATION — acknowledge what the user is BUILDING, not just reading:
+- If "Studio output" data is present, the user actively generated materials (documents, podcasts, visuals, quizzes, videos)
+- This is a strong engagement signal — acknowledge it warmly. Examples:
+  * "You've been actively creating — 2 podcasts and a visual on [topic] show you're moving from research to synthesis"
+  * "The quiz you generated on [topic] is a great way to solidify your understanding"
+  * "You created 3 documents since your last session — your research is producing tangible output"
+- If studio topics overlap with unfinished threads or emerging topics, connect the dots — "You're generating content on the same topics you were exploring in chat — your research is maturing"
+- Keep it brief — 1-2 sentences integrated naturally into the per-notebook section, not a separate block
+
 NEWSLETTER STRUCTURE (use the sections that have data, skip empty ones):
-1. **Lead** — Start with the single most interesting or actionable finding. If there's a specific article title, use it.
-2. **Per-notebook updates** — For each notebook with activity, write 1-3 sentences highlighting specifics. Use actual titles, names, and details. Never say "1 new items" — say what the item IS.
-3. **Research momentum** — If there's velocity data (sources growing, highlights being made), weave in an encouraging note about their research momentum. Make it feel like progress, not a chore.
-4. **Coming up** — If there are upcoming events or key dates, make them feel urgent.
-5. **Unfinished threads** — If there are unfinished conversations, gently remind the user: "You were exploring [topic] a few days ago — want to pick that back up?" Frame it as helpful, not nagging.
-6. **Emerging interests** — If topic drift is detected (emerging topics that are new this week), mention it: "I'm noticing a growing interest in [topic] — this is new territory for your research." Make the user feel seen.
-7. **One week ago** — If there are temporal lookback items, create a "This time last week" moment: "A week ago you were reading about [X] — since then, [Y] has happened." Connect past to present.
-8. **Did you know?** — If the data is thin (few new items), generate one thought-provoking question or insight based on the notebook subjects. Something that makes the reader think "huh, I should look into that."
-9. **Suggested action** — End with ONE specific, actionable next step (e.g., "Review the 3 pending items in your AI Research notebook" or "Continue your conversation about [unfinished thread topic]").
+1. **Lead** — Start with the single most interesting or actionable finding. If there's a specific article title, use it. If the collector found new sources, lead with that.
+2. **Per-notebook updates** — For each notebook with activity, write 1-3 sentences highlighting specifics. Use actual titles, names, and details. Never say "1 new items" — say what the item IS. Include Studio output here if present.
+3. **Collector discoveries** — If the background collector gathered sources, dedicate a short section to these. Name the titles, note that they arrived automatically, and nudge the user to review them.
+4. **Research momentum** — If there's velocity data (sources growing), report the EXACT delta: "Your library grew by N sources, from X to Y." Never conflate total library size with additions.
+5. **Coming up** — If there are upcoming events or key dates, make them feel urgent.
+6. **Unfinished threads** — If there are unfinished conversations, gently remind the user: "You were exploring [topic] — want to pick that back up?" Frame it as helpful, not nagging.
+7. **Emerging interests** — If topic drift is detected, mention it: "I'm noticing a growing interest in [topic] — this is new territory for your research." Make the user feel seen.
+8. **One week ago** — If there are temporal lookback items, create a "This time last week" moment. Connect past to present.
+9. **Suggested action** — End with ONE specific, actionable next step. If collector sources need review, that should be the action.
 
 TONE:
 - Warm, professional, like a trusted advisor who knows your research intimately
 - Confident and specific — never vague or generic
 - Brief — aim for 200-400 words total
 - Use markdown: **bold** for emphasis, bullet points for lists, but keep it readable
-- The unfinished threads, emerging interests, and lookback sections are what make this feel MAGICAL — these show the user the system is paying attention. Prioritize them when present.
+- The collector callouts, studio output, unfinished threads, emerging interests, and lookback sections are what make this feel MAGICAL — these show the user the system is paying attention. Prioritize them when present.
 
 Write the brief now:"""
 
@@ -1150,7 +1634,9 @@ Write the brief now:"""
                 system="You are a concise, insightful research assistant. Write engaging morning briefs that make people smarter about their research topics.",
                 model=settings.ollama_model,
                 temperature=0.7,
-                timeout=90.0
+                timeout=90.0,
+                num_predict=800,
+                extra_options={"keep_alive": "5m"},
             )
             narrative = response.get("response", "").strip()
             # Guard against error strings from ollama_client being treated as valid narrative
@@ -1218,6 +1704,7 @@ Write the brief now:"""
                 insights.append(insight)
         
         self._pending_insights = insights
+        self._save_insights()
         return insights
     
     async def _find_shared_entities(self, notebooks: List[Dict]) -> Dict[str, List[Dict]]:
@@ -1563,17 +2050,39 @@ Respond with JSON only:
             notebook_intent=config.intent
         )
         
-        # Step 4: Apply judgments
+        CONFIDENCE_FLOOR = 0.50
+        
+        # Pre-fetch existing URLs for dedup
+        from storage.source_store import source_store
+        existing_sources = await source_store.list(notebook_id)
+        existing_urls = {s.get("url") for s in existing_sources if s.get("url")}
+        
+        # Step 4: Apply judgments (same pattern as assign_immediate_collection)
         for item, judgment in zip(collected_items, judgments):
-            if judgment.decision == JudgmentDecision.APPROVE:
-                await collector.approve_item(item.id, curator_approved=True)
-                result["items_approved"] += 1
-            elif judgment.decision == JudgmentDecision.REJECT:
-                await collector.reject_item(item.id, judgment.reason, "curator_rejected")
+            if item.overall_confidence < CONFIDENCE_FLOOR:
                 result["items_rejected"] += 1
-            else:  # DEFER_TO_USER or MODIFY
-                # Leave in pending queue for user review
-                result["items_pending"] += 1
+                continue
+            
+            if judgment.decision == JudgmentDecision.APPROVE:
+                try:
+                    was_stored = await collector._store_approved_item(item, _existing_urls=existing_urls)
+                    if was_stored:
+                        result["items_approved"] += 1
+                    else:
+                        result["items_rejected"] += 1
+                except Exception as e:
+                    logger.error(f"Failed to store approved item '{item.title}': {e}")
+                    result["items_rejected"] += 1
+            elif judgment.decision == JudgmentDecision.REJECT:
+                result["items_rejected"] += 1
+            else:  # DEFER_TO_USER or MODIFY — queue for user review
+                queue_result = await collector._add_to_approval_queue(item)
+                if queue_result == 'queued':
+                    result["items_pending"] += 1
+                elif queue_result == 'stored':
+                    result["items_approved"] += 1
+                else:
+                    result["items_rejected"] += 1
         
         return result
     
@@ -1791,17 +2300,21 @@ Respond with ONLY a JSON array of strings, no other text:
     async def assign_immediate_collection(
         self,
         notebook_id: str,
-        specific_query: Optional[str] = None
+        specific_query: Optional[str] = None,
+        deadline_seconds: Optional[int] = 120,
+        trigger: str = "manual",
     ) -> Dict[str, Any]:
         """
         Curator assigns an immediate collection task for a specific notebook.
         Called when user clicks "Collect Now" - but Curator still orchestrates.
         
-        Uses an internal deadline so the pipeline gracefully finishes within ~2 minutes.
-        Each stage checks remaining time and skips non-essential work if tight.
+        Args:
+            deadline_seconds: Max seconds for the pipeline. None = no deadline
+                              (used by background scheduler for thorough runs).
+            trigger: 'manual', 'scheduled', or 'specific' — recorded in history.
         """
         import time as _time
-        deadline = _time.time() + 120  # 2-minute budget for entire pipeline
+        deadline = (_time.time() + deadline_seconds) if deadline_seconds else None
         
         from agents.collector import get_collector
         
@@ -1823,7 +2336,10 @@ Respond with ONLY a JSON array of strings, no other text:
         # Pass deadline to collector so it can manage its time
         task["_deadline"] = deadline
         
-        print(f"[CURATOR] Task created. Executing collection... (budget: {deadline - _time.time():.0f}s remaining)")
+        if deadline:
+            print(f"[CURATOR] Task created. Executing collection... (budget: {deadline - _time.time():.0f}s remaining)")
+        else:
+            print(f"[CURATOR] Task created. Executing collection... (no deadline)")
         
         # Execute collection
         collected_items = await collector.execute_collection_task(task)
@@ -1834,8 +2350,11 @@ Respond with ONLY a JSON array of strings, no other text:
             return {"items_collected": 0, "message": "No new items found"}
         
         # Judge results (pass deadline so judgment can auto-defer if time is tight)
-        remaining = deadline - _time.time()
-        print(f"[CURATOR] Judging {len(collected_items)} items... ({remaining:.0f}s remaining)")
+        if deadline:
+            remaining = deadline - _time.time()
+            print(f"[CURATOR] Judging {len(collected_items)} items... ({remaining:.0f}s remaining)")
+        else:
+            print(f"[CURATOR] Judging {len(collected_items)} items... (no deadline)")
         judgments = await self.judge_collection(
             collector_id=notebook_id,
             proposed_items=collected_items,
@@ -1852,6 +2371,11 @@ Respond with ONLY a JSON array of strings, no other text:
         
         CONFIDENCE_FLOOR = 0.50  # Hard minimum — nothing below 50% is ever added
         
+        # Pre-fetch existing URLs once for dedup (avoids N × source_store.list() calls)
+        from storage.source_store import source_store
+        existing_sources = await source_store.list(notebook_id)
+        existing_urls = {s.get("url") for s in existing_sources if s.get("url")}
+        
         for item, judgment in zip(collected_items, judgments):
             # Hard confidence floor: items below threshold are always filtered
             if item.overall_confidence < CONFIDENCE_FLOOR:
@@ -1866,7 +2390,7 @@ Respond with ONLY a JSON array of strings, no other text:
             if judgment.decision == JudgmentDecision.APPROVE:
                 # Directly store approved items (they aren't in the approval queue)
                 try:
-                    was_stored = await collector._store_approved_item(item)
+                    was_stored = await collector._store_approved_item(item, _existing_urls=existing_urls)
                     if was_stored:
                         approved += 1
                         approved_titles.append({"id": item.id, "title": item.title, "source": item.source_name, "confidence": item.overall_confidence})
@@ -1903,7 +2427,7 @@ Respond with ONLY a JSON array of strings, no other text:
                 items_pending=pending,
                 items_rejected=rejected,
                 sources_checked=len(config.sources.get("rss_feeds", [])) + len(config.sources.get("web_pages", [])) + len(config.sources.get("news_keywords", [])),
-                trigger="specific" if specific_query else "manual",
+                trigger="specific" if specific_query else trigger,
                 keywords_used=task.get("focus_areas", [])[:5],
             )
         except Exception as hist_err:
@@ -1982,7 +2506,18 @@ Respond with ONLY a JSON array of strings, no other text:
                                 _fd = brief_file.stem.replace('morning_brief_', '')
                             lines = [f"Here's your brief from **{_fd}**:\n"]
                             for nb in notebooks:
-                                lines.append(f"**{nb.get('name', 'Notebook')}**: {nb.get('items_added', 0)} new items")
+                                parts = []
+                                added = nb.get('items_added', 0)
+                                if added > 0:
+                                    parts.append(f"{added} new source{'s' if added != 1 else ''}")
+                                interactions = nb.get('interactions_since', 0)
+                                if interactions > 0:
+                                    parts.append(f"{interactions} interaction{'s' if interactions != 1 else ''}")
+                                pending = nb.get('pending_approval', 0)
+                                if pending > 0:
+                                    parts.append(f"{pending} pending review")
+                                summary = ", ".join(parts) if parts else "no recent activity"
+                                lines.append(f"**{nb.get('name', 'Notebook')}**: {summary}")
                                 for story in (nb.get('recent_stories') or [])[:3]:
                                     lines.append(f"  - \"{story.get('title', '')}\"")
                             return "\n".join(lines) + "\n\n---\n*Want me to dig deeper into any of these topics?*"

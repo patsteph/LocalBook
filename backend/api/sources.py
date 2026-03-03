@@ -57,10 +57,13 @@ async def upload_source(
             notebook_id=notebook_id
         )
         
-        # Auto-extract timeline in background (fire and forget)
-        if background_tasks and result.get("source_id"):
-            # Get the processed text content for timeline extraction
+        # Fetch source record for background tasks and auto-tagging
+        source = None
+        if result.get("source_id"):
             source = await source_store.get(result["source_id"])
+
+        # Auto-extract timeline in background (fire and forget)
+        if background_tasks and source:
             if source and source.get("content"):
                 background_tasks.add_task(
                     extract_timeline_for_source,
@@ -84,6 +87,16 @@ async def upload_source(
                 )
                 print(f"[UPLOAD] Queued background image processing for {file.filename}")
         
+        # Auto-tag the uploaded document (non-fatal)
+        try:
+            from services.auto_tagger import auto_tagger
+            tag_text = (source.get("content", "") if source else "")[:3000]
+            await auto_tagger.tag_source_in_notebook(
+                notebook_id, result["source_id"], file.filename, tag_text
+            )
+        except Exception as tag_err:
+            print(f"[UPLOAD] Auto-tagging failed (non-fatal): {tag_err}")
+
         # Log document capture event
         try:
             log_document_captured(notebook_id, file.filename, file.filename, "upload")
@@ -150,6 +163,15 @@ async def create_note(notebook_id: str, request: NoteCreateRequest, background_t
                 extract_timeline_for_source,
                 notebook_id, source["id"], text, title
             )
+
+        # Auto-tag the note (non-fatal, same as browser/web/collector paths)
+        try:
+            from services.auto_tagger import auto_tagger
+            await auto_tagger.tag_source_in_notebook(
+                notebook_id, source["id"], title, text[:3000]
+            )
+        except Exception as tag_err:
+            print(f"[NOTE] Auto-tagging failed (non-fatal): {tag_err}")
 
         try:
             log_document_captured(notebook_id, title, title, "note")

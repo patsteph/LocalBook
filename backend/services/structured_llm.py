@@ -11,12 +11,16 @@ Uses Ollama as the backend with automatic retry on validation failures.
 Uses professional-grade templates from output_templates.py for quality.
 """
 import asyncio
+import json
+import logging
 import re
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 import httpx
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 from services.output_templates import VISUAL_TEMPLATES
 from services.svg_templates import build_svg_visual, COLOR_THEMES as SVG_COLOR_THEMES
 
@@ -38,9 +42,9 @@ class QuizQuestion(BaseModel):
 
 class QuizOutput(BaseModel):
     """Complete quiz output with multiple questions."""
-    questions: List[QuizQuestion] = Field(description="List of quiz questions")
-    topic: str = Field(description="The main topic of the quiz")
-    source_summary: str = Field(description="Brief summary of source material used")
+    questions: List[QuizQuestion] = Field(default_factory=list, description="List of quiz questions")
+    topic: str = Field(default="", description="The main topic of the quiz")
+    source_summary: str = Field(default="", description="Brief summary of source material used")
 
 
 class MermaidDiagram(BaseModel):
@@ -114,20 +118,29 @@ class StructuredLLMService:
                     "prompt": f"{system_prompt}\n\nUser request:\n{user_prompt}",
                     "stream": False,
                     "format": "json",
+                    "keep_alive": -1,
                     "options": {
                         "temperature": temperature,
-                        "num_predict": 2000,
+                        "num_predict": 3000,
                         "repeat_penalty": 1.2,
                         "repeat_last_n": 128,
                     }
                 }
             )
+            if response.status_code != 200:
+                logger.error(f"[StructuredLLM] Ollama returned HTTP {response.status_code}: {response.text[:200]}")
+                return {}
             result = response.json()
-            
-            import json
+            raw_response = result.get("response", "")
+            if not raw_response.strip():
+                logger.warning(f"[StructuredLLM] Ollama returned empty response")
+                return {}
             try:
-                return json.loads(result.get("response", "{}"))
-            except json.JSONDecodeError:
+                parsed = json.loads(raw_response)
+                logger.debug(f"[StructuredLLM] Parsed JSON keys: {list(parsed.keys()) if isinstance(parsed, dict) else type(parsed)}")
+                return parsed
+            except json.JSONDecodeError as e:
+                logger.warning(f"[StructuredLLM] JSON parse failed: {e}. Raw: {raw_response[:200]}")
                 return {}
     
     async def generate_quiz(
@@ -170,6 +183,7 @@ QUESTION QUALITY REQUIREMENTS:
    - Distractors should represent common misconceptions
    - Options should be similar in length and structure
    - Avoid "all of the above" or "none of the above"
+   - CRITICAL: The "answer" field MUST be an EXACT COPY of one of the options strings. Do NOT paraphrase or reword it. Copy-paste the correct option text verbatim into the "answer" field.
 4. For true_false:
    - Statement must be unambiguously true or false
    - False statements should be plausibly incorrect
@@ -183,19 +197,162 @@ DIFFICULTY GUIDELINES:
 
         for attempt in range(self.max_retries):
             try:
-                result = await self._call_ollama_json(system_prompt, f"Content:\n{content[:8000]}")
-                return QuizOutput(**result)
+                # Use simpler prompt on retries
+                use_prompt = system_prompt
+                if attempt > 0:
+                    use_prompt = f"""Generate a JSON quiz with {num_questions} questions about the content below.
+
+Return ONLY a JSON object like this:
+{{
+  "questions": [
+    {{
+      "question": "question text",
+      "answer": "correct answer",
+      "explanation": "why correct",
+      "difficulty": "{difficulty}",
+      "question_type": "multiple_choice",
+      "options": ["A", "B", "C", "D"]
+    }}
+  ],
+  "topic": "topic name",
+  "source_summary": "brief summary"
+}}"""
+
+                result = await self._call_ollama_json(
+                    use_prompt,
+                    f"Content:\n{content[:8000]}",
+                    temperature=0.4 + (attempt * 0.15),
+                    timeout_seconds=120.0,
+                )
+                logger.info(f"[Quiz] Attempt {attempt+1}: LLM returned keys={list(result.keys()) if result else 'empty'}")
+
+                # Robust parsing: handle common LLM JSON variations
+                quiz = self._parse_quiz_result(result, difficulty)
+                if quiz and quiz.questions:
+                    logger.info(f"[Quiz] Generated {len(quiz.questions)} questions on attempt {attempt+1}")
+                    return quiz
+                logger.warning(f"[Quiz] Attempt {attempt+1}: parsed 0 questions, retrying")
             except Exception as e:
-                if attempt == self.max_retries - 1:
-                    # Return minimal valid output on final failure
-                    return QuizOutput(
-                        questions=[],
-                        topic="Quiz generation failed",
-                        source_summary=str(e)
-                    )
+                logger.warning(f"[Quiz] Attempt {attempt+1} failed: {type(e).__name__}: {e}")
+            if attempt < self.max_retries - 1:
                 await asyncio.sleep(1)
         
-        return QuizOutput(questions=[], topic="Failed", source_summary="Max retries exceeded")
+        return QuizOutput(questions=[], topic="Quiz generation failed", source_summary="All retries exhausted")
+
+    def _parse_quiz_result(self, result: Dict[str, Any], difficulty: str) -> Optional[QuizOutput]:
+        """Parse quiz JSON from LLM with flexible field matching."""
+        if not result or not isinstance(result, dict):
+            return None
+        try:
+            # Try direct parse first
+            quiz = QuizOutput(**result)
+            if quiz.questions:
+                return quiz
+        except Exception:
+            pass
+
+        # Handle common variations: {"quiz": [...]}, {"quiz_questions": [...]}
+        questions_raw = None
+        for key in ['questions', 'quiz', 'quiz_questions', 'items']:
+            if key in result and isinstance(result[key], list):
+                questions_raw = result[key]
+                break
+
+        # Handle nested: {"quiz": {"questions": [...]}}
+        if not questions_raw:
+            for key in ['quiz', 'data', 'result']:
+                if key in result and isinstance(result[key], dict):
+                    inner = result[key]
+                    if 'questions' in inner and isinstance(inner['questions'], list):
+                        questions_raw = inner['questions']
+                        break
+
+        if not questions_raw:
+            logger.warning(f"[Quiz] Could not find questions array in keys: {list(result.keys())}")
+            return None
+
+        # Parse individual questions with flexible field names
+        parsed_questions = []
+        for q in questions_raw:
+            if not isinstance(q, dict):
+                continue
+            try:
+                q_type = q.get('question_type', q.get('type', 'multiple_choice'))
+                answer = q.get('answer', q.get('correct_answer', q.get('correct', '')))
+                options = q.get('options', q.get('choices', q.get('answers', None)))
+
+                # Fix True/False questions: ensure both options exist
+                answer_lower = str(answer).strip().lower()
+                is_tf = (q_type == 'true_false'
+                         or answer_lower in ('true', 'false')
+                         or (isinstance(options, list) and set(o.lower() for o in options) <= {'true', 'false'}))
+                if is_tf:
+                    q_type = 'true_false'
+                    options = ['True', 'False']
+                    # Normalize answer to match option casing
+                    answer = 'True' if answer_lower == 'true' else 'False'
+
+                # Fix MC questions missing options: skip them (can't display without options)
+                if q_type == 'multiple_choice' and (not options or len(options) < 2):
+                    logger.debug(f"[Quiz] Skipping MC question with no options: {q.get('question', '')[:60]}")
+                    continue
+
+                # Ensure answer is in the options list — LLMs often paraphrase
+                if options and answer and answer not in options:
+                    # Try case-insensitive exact match first
+                    matched = [o for o in options if o.lower().strip() == answer.lower().strip()]
+                    if matched:
+                        answer = matched[0]
+                    else:
+                        # Fuzzy match: find the option with highest word overlap
+                        answer_words = set(answer.lower().split())
+                        best_option = None
+                        best_score = 0
+                        for opt in options:
+                            opt_words = set(opt.lower().split())
+                            if not opt_words or not answer_words:
+                                continue
+                            # Jaccard-like overlap: shared words / total unique words
+                            shared = len(answer_words & opt_words)
+                            total = len(answer_words | opt_words)
+                            score = shared / total if total > 0 else 0
+                            # Also check substring containment (one contains the other)
+                            if answer.lower() in opt.lower() or opt.lower() in answer.lower():
+                                score += 0.3
+                            if score > best_score:
+                                best_score = score
+                                best_option = opt
+                        if best_option and best_score >= 0.25:
+                            logger.info(f"[Quiz] Snapped answer to closest option "
+                                       f"(score={best_score:.2f}): '{answer[:60]}' → '{best_option[:60]}'")
+                            answer = best_option
+                        else:
+                            # Last resort: force answer to be option A (better than impossible answer)
+                            logger.warning(f"[Quiz] Answer '{answer[:60]}' matches no option "
+                                          f"(best={best_score:.2f}). Forcing to first option.")
+                            answer = options[0]
+
+                parsed_questions.append(QuizQuestion(
+                    question=q.get('question', q.get('text', q.get('q', ''))),
+                    answer=answer,
+                    explanation=q.get('explanation', q.get('rationale', q.get('reason', 'See source material'))),
+                    difficulty=q.get('difficulty', difficulty),
+                    question_type=q_type,
+                    options=options,
+                    source_reference=q.get('source_reference', q.get('source', None)),
+                ))
+            except Exception as e:
+                logger.debug(f"[Quiz] Skipping malformed question: {e}")
+                continue
+
+        if not parsed_questions:
+            return None
+
+        return QuizOutput(
+            questions=parsed_questions,
+            topic=result.get('topic', result.get('title', result.get('subject', ''))),
+            source_summary=result.get('source_summary', result.get('summary', '')),
+        )
     
     # Color theme palettes - synced with frontend VisualToolbar.tsx and svg_templates.py
     COLOR_THEMES = {
@@ -611,6 +768,155 @@ DIFFICULTY GUIDELINES:
             "description": description,
             "template_id": template_id,
             "render_type": "svg"
+        }
+    
+    def build_chart_from_structure(
+        self,
+        structure: dict,
+        template_id: str,
+        title: str = "",
+    ) -> dict:
+        """Build a Recharts-compatible JSON chart config from extracted structure.
+        
+        Converts metrics/numbers extracted by visual_analyzer into a chart_config
+        that the frontend ChartRenderer component can render directly.
+        
+        Args:
+            structure: Pre-extracted content structure (must contain 'metrics' or 'themes'+'numbers')
+            template_id: One of line_chart, bar_chart, area_chart, composed_chart
+            title: Chart title
+            
+        Returns:
+            dict with 'chart_config', 'title', 'description', 'template_id', 'render_type'
+        """
+        CHART_COLORS = [
+            "#6366f1", "#22c55e", "#f59e0b", "#ef4444",
+            "#8b5cf6", "#06b6d4", "#ec4899", "#14b8a6",
+        ]
+        
+        metrics = structure.get("metrics", [])
+        themes = structure.get("themes", [])
+        numbers = structure.get("numbers", [])
+        dates_events = structure.get("dates_events", [])  # Used as x-axis labels
+        
+        # Map template_id to chart_type
+        chart_type_map = {
+            "line_chart": "line",
+            "bar_chart": "bar",
+            "area_chart": "area",
+            "composed_chart": "composed",
+        }
+        chart_type = chart_type_map.get(template_id, "bar")
+        
+        # Build chart data from extracted metrics
+        chart_config = {
+            "chart_type": chart_type,
+            "title": title,
+            "show_grid": True,
+            "show_legend": True,
+            "show_tooltip": True,
+            "data": [],
+            "series": [],
+            "x_axis": {"key": "name"},
+            "y_axis": {},
+        }
+        
+        if metrics and len(metrics) >= 2:
+            # METRICS PATH: We have labeled metric objects from _detect_metrics_fast
+            # Each metric has {label, value, display}
+            # Build one data point per metric (bar/line chart of named values)
+            data = []
+            for m in metrics[:12]:
+                data.append({
+                    "name": m.get("label", "")[:25],
+                    "value": m.get("value", 0),
+                })
+            
+            chart_config["data"] = data
+            chart_config["series"] = [{
+                "key": "value",
+                "label": title or "Value",
+                "color": CHART_COLORS[0],
+                "type": "bar" if chart_type == "composed" else None,
+            }]
+            
+            # For composed charts, add a trend line overlay
+            if chart_type == "composed" and len(data) >= 3:
+                chart_config["series"].append({
+                    "key": "value",
+                    "label": "Trend",
+                    "color": CHART_COLORS[1],
+                    "type": "line",
+                })
+            
+            # Detect if values look like percentages
+            pct_count = sum(1 for m in metrics if "%" in m.get("display", ""))
+            if pct_count > len(metrics) / 2:
+                chart_config["y_axis"]["label"] = "Percentage (%)"
+            elif any("$" in m.get("display", "") for m in metrics):
+                chart_config["y_axis"]["label"] = "Value ($)"
+                
+        elif dates_events and numbers and len(numbers) >= 2:
+            # TIME SERIES PATH: dates_events as x-axis labels, numbers as values
+            labels = dates_events[:len(numbers)]
+            data = []
+            for i, val in enumerate(numbers[:12]):
+                label = labels[i] if i < len(labels) else f"Point {i+1}"
+                try:
+                    data.append({"name": str(label)[:20], "value": float(val)})
+                except (ValueError, TypeError):
+                    continue
+            
+            chart_config["data"] = data
+            chart_config["series"] = [{
+                "key": "value",
+                "label": title or "Value",
+                "color": CHART_COLORS[0],
+            }]
+            
+        elif themes and numbers and len(numbers) >= 2:
+            # THEMES + NUMBERS PATH: themes as labels, numbers as values
+            data = []
+            for i, theme in enumerate(themes[:len(numbers)]):
+                try:
+                    val = float(numbers[i]) if i < len(numbers) else 0
+                    data.append({"name": str(theme)[:25], "value": val})
+                except (ValueError, TypeError):
+                    continue
+            
+            chart_config["data"] = data
+            chart_config["series"] = [{
+                "key": "value",
+                "label": title or "Value",
+                "color": CHART_COLORS[0],
+            }]
+            
+        else:
+            # FALLBACK: Create a simple chart from whatever themes we have
+            data = []
+            for i, theme in enumerate(themes[:8]):
+                data.append({"name": str(theme)[:25], "value": i + 1})
+            
+            chart_config["data"] = data
+            chart_config["series"] = [{
+                "key": "value",
+                "label": "Items",
+                "color": CHART_COLORS[0],
+            }]
+        
+        # Clean up None types in series
+        for s in chart_config["series"]:
+            if s.get("type") is None:
+                s.pop("type", None)
+        
+        description = f"{chart_type.title()} chart: {title}" if title else f"{chart_type.title()} chart visualization"
+        
+        return {
+            "chart_config": chart_config,
+            "title": title or template_id.replace("_", " ").title(),
+            "description": description,
+            "template_id": template_id,
+            "render_type": "chart",
         }
     
     def _build_for_template(

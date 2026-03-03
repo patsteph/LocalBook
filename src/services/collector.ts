@@ -64,6 +64,12 @@ export interface SchedulerStatus {
   running: boolean;
   notebooks_tracked: number;
   last_runs: Record<string, string>;
+  schedule_details?: Record<string, {
+    frequency: string;
+    last_run: string;
+    next_due: string;
+    overdue: boolean;
+  }>;
 }
 
 class CollectorService {

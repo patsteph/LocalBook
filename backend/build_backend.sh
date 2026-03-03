@@ -58,6 +58,7 @@ pyinstaller \
     --add-data="$SCRIPT_DIR/utils:utils" \
     --add-data="$SCRIPT_DIR/agents:agents" \
     --add-data="$SCRIPT_DIR/static:static" \
+    --add-data="$SCRIPT_DIR/templates:templates" \
     --add-data="$SCRIPT_DIR/config.py:." \
     --hidden-import=api \
     --hidden-import=api.agent \
@@ -96,6 +97,7 @@ pyinstaller \
     --hidden-import=api.visual \
     --hidden-import=api.voice \
     --hidden-import=api.web \
+    --hidden-import=api.video \
     --hidden-import=api.writing \
     --hidden-import=services \
     --hidden-import=services.agent_browser \
@@ -155,6 +157,12 @@ pyinstaller \
     --hidden-import=services.profile_indexer \
     --hidden-import=services.coaching_insights \
     --hidden-import=services.change_detector \
+    --hidden-import=services.playwright_utils \
+    --hidden-import=services.mermaid_renderer \
+    --hidden-import=services.video_storyboard \
+    --hidden-import=services.video_slide_renderer \
+    --hidden-import=services.video_compositor \
+    --hidden-import=services.video_generator \
     --hidden-import=services.activity_analyzer \
     --hidden-import=services.auto_tagger \
     --hidden-import=api.people \
@@ -174,6 +182,7 @@ pyinstaller \
     --hidden-import=storage.notebook_store \
     --hidden-import=storage.source_store \
     --hidden-import=storage.audio_store \
+    --hidden-import=storage.video_store \
     --hidden-import=storage.content_store \
     --hidden-import=storage.exploration_store \
     --hidden-import=storage.highlights_store \

@@ -681,7 +681,7 @@ class CollectorAgent:
         from services.content_fetcher import unified_fetcher
         import time as _time
         
-        deadline = task.get("_deadline", 0)
+        deadline = task.get("_deadline") or None
         
         print(f"[COLLECTOR] execute_collection_task starting for {self.notebook_id}")
         logger.info(f"Executing Curator-assigned task for notebook {self.notebook_id}")
@@ -910,8 +910,8 @@ class CollectorAgent:
         
         # Contextualize items — Temporal Intelligence (Enhancement #6)
         # Adds delta insights: what's new vs what user already knows
-        # Skip entirely if deadline is tight — this is enrichment, not essential
-        if deadline and _time.time() > deadline - 25:
+        # Skip during manual "Collect Now" (deadline set) — enrichment, not essential
+        if deadline and _time.time() > deadline - 60:
             print(f"[COLLECTOR] Skipping contextualization — only {deadline - _time.time():.0f}s left for judgment")
         else:
             ctx_semaphore = asyncio.Semaphore(4)
@@ -1260,48 +1260,70 @@ class CollectorAgent:
         item.confidence_reasons = reasons
         return item
     
+    def _get_intent_embedding(self):
+        """Get (and cache) the embedding for this notebook's intent + focus areas."""
+        if not hasattr(self, '_intent_embedding') or self._intent_embedding is None:
+            from services.rag_embeddings import encode
+            import numpy as np
+            
+            focus_parts = []
+            if self.config.intent:
+                focus_parts.append(self.config.intent)
+            if self.config.focus_areas:
+                focus_parts.extend(self.config.focus_areas[:5])
+            
+            if not focus_parts:
+                return None
+            
+            reference_text = " ".join(focus_parts)
+            embs = encode([reference_text])
+            self._intent_embedding = np.array(embs[0]) if len(embs) > 0 else None
+        return self._intent_embedding
+
     async def _score_relevance(self, item: CollectedItem) -> Dict[str, Any]:
-        """Score how relevant an item is to the notebook intent"""
+        """Score how relevant an item is to the notebook intent using embedding similarity.
+        
+        Uses cosine similarity between item content and notebook intent/focus areas.
+        This is ~100x faster than LLM scoring (~5ms vs ~3-5s per item).
+        """
         if not self.config.intent and not self.config.focus_areas:
             return {"score": 0.5, "reason": "No intent configured"}
         
-        # Use LLM for relevance scoring
         try:
-            focus = ", ".join(self.config.focus_areas) if self.config.focus_areas else self.config.intent
+            from services.rag_embeddings import encode
+            import numpy as np
             
-            # Include notebook.md behavioral guidance if present
-            behavioral_context = self._load_notebook_md()
-            guidance_section = ""
-            if behavioral_context:
-                guidance_section = f"\n\nAdditional guidance from the user:\n{behavioral_context[:1000]}\n"
+            ref_emb = self._get_intent_embedding()
+            if ref_emb is None:
+                return {"score": 0.5, "reason": "Could not encode intent"}
             
-            prompt = f"""Rate the relevance of this content to the research focus.
-
-Research focus: {focus}{guidance_section}
-
-Content title: {item.title}
-Content preview: {item.content[:500]}
-
-Respond with JSON only:
-{{"score": 0.0-1.0, "reason": "brief explanation"}}"""
-
-            response = await ollama_client.generate(
-                prompt=prompt,
-                model=settings.ollama_fast_model,
-                temperature=0.2
-            )
+            # Build item text from title + preview
+            item_text = f"{item.title} {item.content[:500]}"
             
-            text = response.get("response", "")
-            json_start = text.find("{")
-            json_end = text.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                result = json.loads(text[json_start:json_end])
-                return {
-                    "score": float(result.get("score", 0.5)),
-                    "reason": result.get("reason", "")
-                }
+            # Encode item and compute cosine similarity
+            item_embs = encode([item_text])
+            if len(item_embs) > 0:
+                item_emb = np.array(item_embs[0])
+                
+                dot = np.dot(ref_emb, item_emb)
+                norm = np.linalg.norm(ref_emb) * np.linalg.norm(item_emb)
+                similarity = float(dot / norm) if norm > 0 else 0.0
+                
+                # Map similarity to 0-1 score (typical range is 0.3-0.9)
+                # Shift and scale so 0.3 → 0.0, 0.9 → 1.0
+                score = max(0.0, min(1.0, (similarity - 0.3) / 0.6))
+                
+                reason = f"Embedding relevance: {similarity:.2f}"
+                if score >= 0.7:
+                    reason = "Strong semantic match to research focus"
+                elif score >= 0.4:
+                    reason = "Moderate match to research focus"
+                else:
+                    reason = "Weak match to research focus"
+                
+                return {"score": round(score, 2), "reason": reason}
         except Exception as e:
-            logger.error(f"Relevance scoring failed: {e}")
+            logger.error(f"Embedding relevance scoring failed: {e}")
         
         return {"score": 0.5, "reason": "Could not score relevance"}
     
@@ -1416,10 +1438,11 @@ Respond with JSON only:
         self._save_approval_queue()
         return 'queued'
     
-    async def _store_approved_item(self, item: CollectedItem) -> bool:
+    async def _store_approved_item(self, item: CollectedItem, _existing_urls: set = None) -> bool:
         """Store an approved item as a notebook source AND in Collector memory.
         
         Returns True if the item was actually stored, False if skipped (dedup, shallow, error).
+        Pass _existing_urls to avoid repeated source_store.list() calls in batch operations.
         """
         from storage.source_store import source_store
         from services.rag_engine import rag_engine
@@ -1427,13 +1450,14 @@ Respond with JSON only:
         # Final dedup guard: check if this URL already exists in stored sources
         print(f"[STORE] Attempting to store: '{item.title}' ({len(item.content)} chars, URL: {item.url})")
         if item.url:
-            existing = await source_store.list(self.notebook_id)
-            for src in existing:
-                if src.get("url") == item.url:
-                    print(f"[STORE] ✗ SKIPPED (duplicate URL): {item.url}")
-                    logger.info(f"Skipping duplicate store (URL exists): {item.url}")
-                    self._known_urls.add(item.url)
-                    return False
+            if _existing_urls is None:
+                existing = await source_store.list(self.notebook_id)
+                _existing_urls = {src.get("url") for src in existing if src.get("url")}
+            if item.url in _existing_urls:
+                print(f"[STORE] ✗ SKIPPED (duplicate URL): {item.url}")
+                logger.info(f"Skipping duplicate store (URL exists): {item.url}")
+                self._known_urls.add(item.url)
+                return False
         
         # Enrich thin content by scraping full article (RSS feeds only have summaries)
         # Minimum content threshold — anything below this is a headline, not a source
@@ -1518,6 +1542,10 @@ Respond with JSON only:
             print(f"[STORE] ✓ STORED: '{item.title}' → {chunks} chunks, status=completed")
             logger.info(f"Approved item stored as source: {item.title} ({chunks} chunks)")
             
+            # Track URL in the dedup set for batch operations
+            if item.url and _existing_urls is not None:
+                _existing_urls.add(item.url)
+            
             # Notify Constellation/frontend that a new source was added
             try:
                 from api.constellation_ws import notify_source_updated
@@ -1536,21 +1564,25 @@ Respond with JSON only:
             logger.error(f"Failed to store approved item as source: {e}")
             return False
         
-        # 3. Auto-tag the source using LLM (non-fatal, background-quality)
-        try:
-            from services.auto_tagger import auto_tagger
-            tags = await auto_tagger.generate_tags(
-                title=item.title,
-                content=item.content[:3000],
-                notebook_subject=self.config.subject,
-                focus_areas=self.config.focus_areas,
-            )
-            if tags:
-                from storage.source_store import source_store as _ss
-                await _ss.set_tags(self.notebook_id, item.id, tags)
-                logger.info(f"Auto-tagged source '{item.title[:50]}' with: {tags}")
-        except Exception as tag_err:
-            logger.debug(f"Auto-tagging failed (non-fatal): {tag_err}")
+        # 3. Auto-tag the source using LLM (fire-and-forget, non-blocking)
+        async def _tag_in_background():
+            try:
+                from services.auto_tagger import auto_tagger
+                tags = await auto_tagger.generate_tags(
+                    title=item.title,
+                    content=item.content[:3000],
+                    notebook_subject=self.config.subject,
+                    focus_areas=self.config.focus_areas,
+                )
+                if tags:
+                    from storage.source_store import source_store as _ss
+                    await _ss.set_tags(self.notebook_id, item.id, tags)
+                    logger.info(f"Auto-tagged source '{item.title[:50]}' with: {tags}")
+            except Exception as tag_err:
+                logger.debug(f"Auto-tagging failed (non-fatal): {tag_err}")
+        
+        import asyncio
+        asyncio.create_task(_tag_in_background())
         
         # 4. Also store in Collector memory for pattern tracking (non-fatal)
         try:
