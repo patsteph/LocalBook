@@ -63,12 +63,21 @@ def _preflight_check():
         if not found:
             errors.append("FFmpeg not found. Install with: brew install ffmpeg")
 
-    # ── Playwright: same check as health_portal.py ──
+    # ── Playwright: check package, then auto-install browsers if needed ──
     try:
         import playwright  # noqa: F401
     except ImportError:
         errors.append("Playwright not installed. Run: pip install playwright && playwright install chromium")
         return errors
+
+    # Trigger auto-install of Chromium browsers if missing.
+    # Without this, a fresh machine would fail the browser check below
+    # even though playwright_utils can auto-download Chromium.
+    try:
+        from services.playwright_utils import ensure_playwright_browsers_path
+        ensure_playwright_browsers_path()
+    except Exception as e:
+        logger.warning(f"[Video] Playwright browser auto-install failed: {e}")
 
     pw_browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
     chromium_found = False
