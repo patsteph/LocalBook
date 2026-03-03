@@ -158,7 +158,8 @@ async def full_health_check():
     
     # ============ CORE SERVICES SECTION ============
     
-    # Ollama Connection
+    # Ollama Connection — gates all downstream Ollama-dependent checks
+    ollama_ok = False
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{settings.ollama_base_url}/api/tags")
@@ -171,6 +172,7 @@ async def full_health_check():
                     "status": "pass",
                     "details": {"url": settings.ollama_base_url, "model_count": len(models)}
                 })
+                ollama_ok = True
             else:
                 add_check("core_services", {
                     "name": "ollama_connection",
@@ -241,187 +243,206 @@ async def full_health_check():
     
     # ============ AI & MODELS SECTION ============
     
-    # Ollama Version
-    version_ok, current_version, min_version = await check_ollama_version()
-    add_check("ai_models", {
-        "name": "ollama_version",
-        "display": "Ollama Version",
-        "status": "pass" if version_ok else "warn",
-        "details": {"current": current_version, "minimum": min_version}
-    })
-    if not version_ok and current_version != "unknown":
-        results["issues"].append({
-            "severity": "medium",
-            "title": "Ollama Version Outdated",
-            "message": f"Version {current_version} is below minimum {min_version}. Update from ollama.ai",
-            "repair": None
-        })
-        if results["overall"] == "healthy":
-            results["overall"] = "degraded"
-    
-    # Models Installed Check
-    available, missing = await check_ollama_models()
-    add_check("ai_models", {
-        "name": "models",
-        "display": "Models Installed",
-        "status": "pass" if not missing else "fail",
-        "details": {"installed": available, "missing": [m[0] for m in missing], "required": [m[0] for m in REQUIRED_MODELS]}
-    })
-    if missing:
-        for model_name, description in missing:
-            results["issues"].append({
-                "severity": "high",
-                "title": f"Missing Model: {model_name}",
-                "message": f"{description}",
-                "repair": "pull_model",
-                "repair_params": {"model": model_name}
+    # Skip all Ollama-dependent checks when connection failed — avoids
+    # stacking timeouts (version 10s + models 10s + loading 5s + embedding
+    # 10s + LLM 30s ≈ 65s) that cause /health/full to exceed client timeouts.
+    if not ollama_ok:
+        for skip_name, skip_display in [
+            ("ollama_version", "Ollama Version"),
+            ("models", "Models Installed"),
+            ("model_loading", "Models Loaded"),
+            ("embedding_test", "Embedding Generation"),
+            ("llm_test", "LLM Generation"),
+        ]:
+            add_check("ai_models", {
+                "name": skip_name,
+                "display": skip_display,
+                "status": "fail",
+                "error": "Skipped — Ollama not connected"
             })
-        if results["overall"] == "healthy":
-            results["overall"] = "degraded"
     
-    # Model Loading Status (cold start detection)
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.ollama_base_url}/api/ps")
-            if resp.status_code == 200:
-                running = resp.json().get("models", [])
-                loaded_models = [m.get("name", "") for m in running]
-                main_loaded = any(settings.ollama_model in m for m in loaded_models)
-                fast_loaded = any(settings.ollama_fast_model in m for m in loaded_models)
-                
-                add_check("ai_models", {
-                    "name": "model_loading",
-                    "display": "Models Loaded",
-                    "status": "pass" if main_loaded else "warn",
-                    "details": {"main_model": settings.ollama_model, "main_loaded": main_loaded, "fast_loaded": fast_loaded}
-                })
-                
-                if not main_loaded:
-                    results["issues"].append({
-                        "severity": "low",
-                        "title": "Main Model Not Loaded",
-                        "message": f"{settings.ollama_model} not in memory. First query will be slow.",
-                        "repair": "warmup_model",
-                        "repair_params": {"model": settings.ollama_model}
-                    })
-    except Exception as e:
-        add_log("WARN", f"Model loading check failed: {e}", "health_portal")
+    if ollama_ok:
+      # Ollama Version
+      version_ok, current_version, min_version = await check_ollama_version()
+      add_check("ai_models", {
+          "name": "ollama_version",
+          "display": "Ollama Version",
+          "status": "pass" if version_ok else "warn",
+          "details": {"current": current_version, "minimum": min_version}
+      })
+      if not version_ok and current_version != "unknown":
+          results["issues"].append({
+              "severity": "medium",
+              "title": "Ollama Version Outdated",
+              "message": f"Version {current_version} is below minimum {min_version}. Update from ollama.ai",
+              "repair": None
+          })
+          if results["overall"] == "healthy":
+              results["overall"] = "degraded"
+      
+      # Models Installed Check
+      available, missing = await check_ollama_models()
+      add_check("ai_models", {
+          "name": "models",
+          "display": "Models Installed",
+          "status": "pass" if not missing else "fail",
+          "details": {"installed": available, "missing": [m[0] for m in missing], "required": [m[0] for m in REQUIRED_MODELS]}
+      })
+      if missing:
+          for model_name, description in missing:
+              results["issues"].append({
+                  "severity": "high",
+                  "title": f"Missing Model: {model_name}",
+                  "message": f"{description}",
+                  "repair": "pull_model",
+                  "repair_params": {"model": model_name}
+              })
+          if results["overall"] == "healthy":
+              results["overall"] = "degraded"
+      
+      # Model Loading Status (cold start detection)
+      try:
+          async with httpx.AsyncClient(timeout=5.0) as client:
+              resp = await client.get(f"{settings.ollama_base_url}/api/ps")
+              if resp.status_code == 200:
+                  running = resp.json().get("models", [])
+                  loaded_models = [m.get("name", "") for m in running]
+                  main_loaded = any(settings.ollama_model in m for m in loaded_models)
+                  fast_loaded = any(settings.ollama_fast_model in m for m in loaded_models)
+                  
+                  add_check("ai_models", {
+                      "name": "model_loading",
+                      "display": "Models Loaded",
+                      "status": "pass" if main_loaded else "warn",
+                      "details": {"main_model": settings.ollama_model, "main_loaded": main_loaded, "fast_loaded": fast_loaded}
+                  })
+                  
+                  if not main_loaded:
+                      results["issues"].append({
+                          "severity": "low",
+                          "title": "Main Model Not Loaded",
+                          "message": f"{settings.ollama_model} not in memory. First query will be slow.",
+                          "repair": "warmup_model",
+                          "repair_params": {"model": settings.ollama_model}
+                      })
+      except Exception as e:
+          add_log("WARN", f"Model loading check failed: {e}", "health_portal")
+      
+      # Embedding Model Test - verify embeddings actually work
+      try:
+          async with httpx.AsyncClient(timeout=10.0) as client:
+              resp = await client.post(
+                  f"{settings.ollama_base_url}/api/embeddings",
+                  json={"model": settings.embedding_model, "prompt": "test"}
+              )
+              if resp.status_code == 200:
+                  emb_data = resp.json()
+                  emb_dim = len(emb_data.get("embedding", []))
+                  add_check("ai_models", {
+                      "name": "embedding_test",
+                      "display": "Embedding Generation",
+                      "status": "pass" if emb_dim == EXPECTED_EMBEDDING_DIM else "warn",
+                      "details": {"model": settings.embedding_model, "dimension": emb_dim, "expected": EXPECTED_EMBEDDING_DIM}
+                  })
+              else:
+                  add_check("ai_models", {
+                      "name": "embedding_test",
+                      "display": "Embedding Generation",
+                      "status": "fail",
+                      "error": f"HTTP {resp.status_code}"
+                  })
+                  results["issues"].append({
+                      "severity": "high",
+                      "title": "Embedding Model Not Working",
+                      "message": "Cannot generate embeddings. Search will not work.",
+                      "repair": "pull_model",
+                      "repair_params": {"model": settings.embedding_model}
+                  })
+                  if results["overall"] == "healthy":
+                      results["overall"] = "degraded"
+      except Exception as e:
+          add_check("ai_models", {
+              "name": "embedding_test",
+              "display": "Embedding Generation",
+              "status": "fail",
+              "error": str(e)[:50]
+          })
+          results["issues"].append({
+              "severity": "high",
+              "title": "Embedding Test Failed",
+              "message": f"Cannot test embeddings: {str(e)[:50]}",
+              "repair": None
+          })
+          if results["overall"] == "healthy":
+              results["overall"] = "degraded"
+      
+      # LLM Generation Test - verify chat/generation works
+      try:
+          async with httpx.AsyncClient(timeout=30.0) as client:
+              resp = await client.post(
+                  f"{settings.ollama_base_url}/api/generate",
+                  json={"model": settings.ollama_fast_model, "prompt": "Say OK", "stream": False, "options": {"num_predict": 5}}
+              )
+              if resp.status_code == 200:
+                  gen_data = resp.json()
+                  response_text = gen_data.get("response", "")
+                  add_check("ai_models", {
+                      "name": "llm_test",
+                      "display": "LLM Generation",
+                      "status": "pass" if len(response_text) > 0 else "warn",
+                      "details": {"model": settings.ollama_fast_model, "responded": len(response_text) > 0}
+                  })
+              else:
+                  error_text = resp.text[:200] if resp.text else ""
+                  is_corrupted = "unable to load model" in error_text.lower()
+                  
+                  add_check("ai_models", {
+                      "name": "llm_test",
+                      "display": "LLM Generation",
+                      "status": "fail",
+                      "error": f"HTTP {resp.status_code}" + (" (model corrupted)" if is_corrupted else "")
+                  })
+                  
+                  if is_corrupted:
+                      results["issues"].append({
+                          "severity": "high",
+                          "title": "Model File Corrupted",
+                          "message": f"The model {settings.ollama_fast_model} is corrupted. Click Repair to re-download it.",
+                          "repair": "repair_model",
+                          "repair_params": {"model": settings.ollama_fast_model}
+                      })
+                  else:
+                      results["issues"].append({
+                          "severity": "high",
+                          "title": "LLM Not Responding",
+                          "message": "Language model failed to generate. Chat will not work.",
+                          "repair": "restart_ollama"
+                      })
+                  if results["overall"] == "healthy":
+                      results["overall"] = "degraded"
+      except Exception as e:
+          error_str = str(e).lower()
+          is_corrupted = "unable to load model" in error_str
+          
+          add_check("ai_models", {
+              "name": "llm_test",
+              "display": "LLM Generation",
+              "status": "fail" if is_corrupted else "warn",
+              "error": "Model corrupted" if is_corrupted else f"Timeout or error: {str(e)[:30]}"
+          })
+          
+          if is_corrupted:
+              results["issues"].append({
+                  "severity": "high",
+                  "title": "Model File Corrupted",
+                  "message": "The model file is corrupted. Click Repair to re-download it.",
+                  "repair": "repair_model",
+                  "repair_params": {"model": settings.ollama_fast_model}
+              })
+          if results["overall"] == "healthy":
+              results["overall"] = "degraded"
     
-    # NEW: Embedding Model Test - verify embeddings actually work
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{settings.ollama_base_url}/api/embeddings",
-                json={"model": settings.embedding_model, "prompt": "test"}
-            )
-            if resp.status_code == 200:
-                emb_data = resp.json()
-                emb_dim = len(emb_data.get("embedding", []))
-                add_check("ai_models", {
-                    "name": "embedding_test",
-                    "display": "Embedding Generation",
-                    "status": "pass" if emb_dim == EXPECTED_EMBEDDING_DIM else "warn",
-                    "details": {"model": settings.embedding_model, "dimension": emb_dim, "expected": EXPECTED_EMBEDDING_DIM}
-                })
-            else:
-                add_check("ai_models", {
-                    "name": "embedding_test",
-                    "display": "Embedding Generation",
-                    "status": "fail",
-                    "error": f"HTTP {resp.status_code}"
-                })
-                results["issues"].append({
-                    "severity": "high",
-                    "title": "Embedding Model Not Working",
-                    "message": "Cannot generate embeddings. Search will not work.",
-                    "repair": "pull_model",
-                    "repair_params": {"model": settings.embedding_model}
-                })
-                if results["overall"] == "healthy":
-                    results["overall"] = "degraded"
-    except Exception as e:
-        add_check("ai_models", {
-            "name": "embedding_test",
-            "display": "Embedding Generation",
-            "status": "fail",
-            "error": str(e)[:50]
-        })
-        results["issues"].append({
-            "severity": "high",
-            "title": "Embedding Test Failed",
-            "message": f"Cannot test embeddings: {str(e)[:50]}",
-            "repair": None
-        })
-        if results["overall"] == "healthy":
-            results["overall"] = "degraded"
-    
-    # NEW: LLM Generation Test - verify chat/generation works
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={"model": settings.ollama_fast_model, "prompt": "Say OK", "stream": False, "options": {"num_predict": 5}}
-            )
-            if resp.status_code == 200:
-                gen_data = resp.json()
-                response_text = gen_data.get("response", "")
-                add_check("ai_models", {
-                    "name": "llm_test",
-                    "display": "LLM Generation",
-                    "status": "pass" if len(response_text) > 0 else "warn",
-                    "details": {"model": settings.ollama_fast_model, "responded": len(response_text) > 0}
-                })
-            else:
-                error_text = resp.text[:200] if resp.text else ""
-                is_corrupted = "unable to load model" in error_text.lower()
-                
-                add_check("ai_models", {
-                    "name": "llm_test",
-                    "display": "LLM Generation",
-                    "status": "fail",
-                    "error": f"HTTP {resp.status_code}" + (" (model corrupted)" if is_corrupted else "")
-                })
-                
-                if is_corrupted:
-                    results["issues"].append({
-                        "severity": "high",
-                        "title": "Model File Corrupted",
-                        "message": f"The model {settings.ollama_fast_model} is corrupted. Click Repair to re-download it.",
-                        "repair": "repair_model",
-                        "repair_params": {"model": settings.ollama_fast_model}
-                    })
-                else:
-                    results["issues"].append({
-                        "severity": "high",
-                        "title": "LLM Not Responding",
-                        "message": "Language model failed to generate. Chat will not work.",
-                        "repair": "restart_ollama"
-                    })
-                if results["overall"] == "healthy":
-                    results["overall"] = "degraded"
-    except Exception as e:
-        error_str = str(e).lower()
-        is_corrupted = "unable to load model" in error_str
-        
-        add_check("ai_models", {
-            "name": "llm_test",
-            "display": "LLM Generation",
-            "status": "fail" if is_corrupted else "warn",
-            "error": "Model corrupted" if is_corrupted else f"Timeout or error: {str(e)[:30]}"
-        })
-        
-        if is_corrupted:
-            results["issues"].append({
-                "severity": "high",
-                "title": "Model File Corrupted",
-                "message": "The model file is corrupted. Click Repair to re-download it.",
-                "repair": "repair_model",
-                "repair_params": {"model": settings.ollama_fast_model}
-            })
-            if results["overall"] == "healthy":
-                results["overall"] = "degraded"
-    
-    # NEW: Reranker Status Check
+    # Reranker Status Check
     try:
         from flashrank import Ranker
         # Use persistent cache dir (not /tmp which gets cleared on reboot)
