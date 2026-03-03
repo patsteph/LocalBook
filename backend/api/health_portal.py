@@ -1150,6 +1150,16 @@ async def full_health_check():
     # Playwright Browser Check (required for LinkedIn/social collection)
     try:
         import os
+        
+        # Proactively trigger auto-install if Chromium is missing.
+        # ensure_playwright_browsers_path() is fast when browsers exist
+        # (just checks a directory) and only does real work on first run.
+        try:
+            from services.playwright_utils import ensure_playwright_browsers_path
+            ensure_playwright_browsers_path()
+        except Exception:
+            pass  # auto-install is best-effort; check below will report status
+        
         pw_browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
         chromium_found = False
         chromium_path = ""
@@ -1714,38 +1724,33 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             return {"status": "error", "message": str(e)}
     
     elif action == "install_playwright":
-        # Install Playwright Chromium browser
+        # Install Playwright Chromium browser using the same multi-strategy
+        # installer that works in both source builds and PyInstaller bundles.
+        # NOTE: sys.executable -m playwright does NOT work in frozen bundles
+        # because sys.executable is the backend binary, not Python.
         try:
             add_log("INFO", "Installing Playwright Chromium...", "health_portal")
             
-            # Set browser path to system cache
+            from services.playwright_utils import ensure_playwright_browsers_path
+            
+            # Clear any cached "already checked" state so it re-runs install
             import os
             home = Path.home()
             if platform.system() == "Darwin":
                 browsers_path = home / "Library" / "Caches" / "ms-playwright"
             else:
                 browsers_path = home / ".cache" / "ms-playwright"
-            
             os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
             
-            result = subprocess.run(
-                [sys.executable, "-m", "playwright", "install", "chromium"],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(browsers_path)}
-            )
+            ensure_playwright_browsers_path()
             
-            if result.returncode == 0:
+            # Verify installation succeeded
+            if browsers_path.is_dir() and any(browsers_path.glob("chromium-*")):
                 add_log("INFO", f"Playwright Chromium installed to {browsers_path}", "health_portal")
                 return {"status": "success", "message": f"Chromium installed to {browsers_path}"}
             else:
-                error_msg = result.stderr[:200] if result.stderr else "Unknown error"
-                add_log("ERROR", f"Playwright install failed: {error_msg}", "health_portal")
-                return {"status": "error", "message": f"Install failed: {error_msg}"}
-        except subprocess.TimeoutExpired:
-            add_log("ERROR", "Playwright install timed out", "health_portal")
-            return {"status": "error", "message": "Installation timed out after 120 seconds"}
+                add_log("ERROR", "Playwright install completed but Chromium not found", "health_portal")
+                return {"status": "error", "message": "Install ran but Chromium binaries not found. Try manually: playwright install chromium"}
         except Exception as e:
             add_log("ERROR", f"Playwright install failed: {e}", "health_portal")
             return {"status": "error", "message": str(e)}
