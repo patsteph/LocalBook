@@ -91,7 +91,7 @@ export const sourceService = {
   },
 
   async getNoteContent(notebookId: string, sourceId: string): Promise<string> {
-    const response = await api.get(`/source-viewer/${notebookId}/${sourceId}/content`);
+    const response = await api.get(`/source-viewer/content/${notebookId}/${sourceId}`);
     return response.data?.content || '';
   },
 };

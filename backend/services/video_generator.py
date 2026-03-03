@@ -109,6 +109,22 @@ class VideoGenerator:
         pipeline_start = time.time()
 
         try:
+            # ── Pre-flight: Check audio model availability ──
+            from services.audio_llm import audio_llm
+            if not audio_llm.is_available:
+                await audio_llm.initialize()
+            if not audio_llm.is_available:
+                err = audio_llm._init_error or "unknown error"
+                await video_store.update(video_id, {
+                    "status": "failed",
+                    "error_message": (
+                        "LFM2.5-Audio model not available — required for video narration. "
+                        "Open Health Portal and click Repair to download (~3 GB). "
+                        f"Detail: {str(err)[:200]}"
+                    ),
+                })
+                return
+
             # ── Stage 1: Generate Storyboard ──
             await video_store.update(video_id, {
                 "status": "processing",

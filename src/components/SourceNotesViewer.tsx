@@ -280,7 +280,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
 
       // Add annotation indicator and tooltip
       if (highlight.annotation) {
-        result += `<span class="ml-1 text-xs text-gray-600">💬</span>`;
+        result += `<span class="ml-1 text-xs text-gray-600 dark:text-gray-300">💬</span>`;
       }
 
       // Add delete button (appears on hover)
@@ -346,7 +346,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
                       }
                     }}
                     placeholder="Add tag..."
-                    className="px-2 py-0.5 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 w-24"
+                    className="px-2 py-0.5 text-xs border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-24"
                     autoFocus
                   />
                   <button
@@ -443,7 +443,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
               <div className="flex-1 overflow-y-auto p-4 bg-white dark:bg-gray-800">
                 <div
                   ref={contentRef}
-                  className="prose max-w-none text-sm leading-relaxed whitespace-pre-wrap font-mono select-text"
+                  className="prose dark:prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap font-mono select-text text-gray-900 dark:text-gray-100"
                   onMouseUp={handleTextSelection}
                   dangerouslySetInnerHTML={{
                     __html: content ? DOMPurify.sanitize(renderContentWithHighlights(content.content)) : '',

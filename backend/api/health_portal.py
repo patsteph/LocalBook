@@ -507,6 +507,51 @@ async def full_health_check():
             "error": f"Check failed: {str(e)[:30]}"
         })
     
+    # LFM2.5-Audio Model Check (required for video narration & podcast audio)
+    try:
+        from services.audio_llm import audio_llm, check_audio_llm_available
+        audio_status = await check_audio_llm_available()
+        
+        if audio_llm.is_available:
+            add_check("ai_models", {
+                "name": "audio_model",
+                "display": "LFM2.5-Audio (TTS)",
+                "status": "pass",
+                "details": {"model": "LiquidAI/LFM2.5-Audio-1.5B", "purpose": "Video narration & podcast audio"}
+            })
+        elif audio_status.get("available"):
+            # liquid_audio package exists but model not loaded yet
+            add_check("ai_models", {
+                "name": "audio_model",
+                "display": "LFM2.5-Audio (TTS)",
+                "status": "warn",
+                "error": "Model not loaded — will download on first use (~3 GB)",
+                "details": {"init_error": (audio_llm._init_error or "")[:200]}
+            })
+            results["issues"].append({
+                "severity": "medium",
+                "title": "Audio Model Not Loaded",
+                "message": "LFM2.5-Audio not loaded. Click Repair to download (~3 GB). Required for video narration.",
+                "repair": "download_audio_model"
+            })
+            if results["overall"] == "healthy":
+                results["overall"] = "degraded"
+        else:
+            add_check("ai_models", {
+                "name": "audio_model",
+                "display": "LFM2.5-Audio (TTS)",
+                "status": "warn",
+                "error": "liquid-audio package not available",
+                "details": audio_status.get("diagnostics", {})
+            })
+    except Exception as e:
+        add_check("ai_models", {
+            "name": "audio_model",
+            "display": "LFM2.5-Audio (TTS)",
+            "status": "warn",
+            "error": str(e)[:80]
+        })
+    
     # ============ DATA INTEGRITY SECTION ============
     
     # Sources Storage Integrity Check (SQLite-aware)
@@ -1721,6 +1766,41 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             return {"status": "success", "message": "JSON→SQLite re-migration complete. All data restored from JSON backups."}
         except Exception as e:
             add_log("ERROR", f"Re-migration failed: {e}", "health_portal")
+            return {"status": "error", "message": str(e)}
+    
+    elif action == "download_audio_model":
+        # Download LFM2.5-Audio model from HuggingFace (~3 GB)
+        try:
+            add_log("INFO", "Starting LFM2.5-Audio model download...", "health_portal")
+            
+            from services.audio_llm import audio_llm
+            
+            import threading
+            def download_audio_model_background():
+                try:
+                    add_log("INFO", "Downloading LFM2.5-Audio model (~3 GB)...", "health_portal")
+                    audio_llm._initialized = False
+                    audio_llm._initializing = False
+                    audio_llm._init_error = None
+                    audio_llm._load_model()
+                    audio_llm._initialized = True
+                    add_log("INFO", "LFM2.5-Audio model downloaded and loaded successfully", "health_portal")
+                except Exception as e:
+                    import traceback
+                    tb = traceback.format_exc()
+                    audio_llm._init_error = tb
+                    audio_llm._initializing = False
+                    add_log("ERROR", f"LFM2.5-Audio download failed: {e}", "health_portal")
+            
+            thread = threading.Thread(target=download_audio_model_background, daemon=True)
+            thread.start()
+            
+            return {
+                "status": "started",
+                "message": "LFM2.5-Audio model download started (~3 GB). This may take 5-15 minutes. Refresh Health Portal to check progress."
+            }
+        except Exception as e:
+            add_log("ERROR", f"Audio model download failed: {e}", "health_portal")
             return {"status": "error", "message": str(e)}
     
     elif action == "install_playwright":

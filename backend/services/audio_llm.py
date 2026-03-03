@@ -79,8 +79,8 @@ class AudioLLMService:
     def _load_model(self):
         """Load the LFM2.5-Audio model (runs in thread).
         
-        Falls back to local_files_only=True if HuggingFace network check fails
-        (SSL errors, timeouts, etc.) but the model is already cached.
+        Downloads ~3 GB from HuggingFace on first use via snapshot_download.
+        Once cached (~/.cache/huggingface/hub/), loads locally with no network.
         """
         print("[AudioLLM] Step 1/5: importing audio deps...")
         _ensure_audio_deps()
@@ -98,29 +98,29 @@ class AudioLLMService:
         else:
             self._device = torch.device("cpu")
         
-        # Try online first, fall back to local cache on network errors
-        processor = None
-        model = None
-        for attempt, local_only in enumerate([False, True]):
-            try:
-                label = "offline (cached)" if local_only else "online"
-                print(f"[AudioLLM] Step 3/5: loading processor on {self._device} ({label})...")
-                processor = LFM2AudioProcessor.from_pretrained(
-                    HF_REPO, device=self._device, local_files_only=local_only
-                ).eval()
-                print(f"[AudioLLM] Step 4/5: loading model ({label})...")
-                model = LFM2AudioModel.from_pretrained(
-                    HF_REPO, device=self._device, local_files_only=local_only
-                ).eval()
-                break
-            except (OSError, ConnectionError, Exception) as e:
-                if local_only:
-                    raise  # Both attempts failed — re-raise
-                err_str = str(e).lower()
-                if any(k in err_str for k in ("ssl", "connection", "timeout", "resolve", "network", "urlopen")):
-                    print(f"[AudioLLM] ⚠ Network error ({type(e).__name__}), retrying with local cache...")
-                    continue
-                raise  # Non-network error — don't retry
+        # snapshot_download (inside liquid_audio) handles caching automatically:
+        # - If model is cached: returns cached path instantly (no network needed)
+        # - If not cached: downloads ~3 GB from HuggingFace (needs internet)
+        # NOTE: liquid_audio's from_pretrained does NOT support local_files_only —
+        #       passing it causes TypeError. The device param IS supported and required
+        #       (defaults to "cuda" which crashes on macOS).
+        try:
+            print(f"[AudioLLM] Step 3/5: loading processor on {self._device}...")
+            processor = LFM2AudioProcessor.from_pretrained(
+                HF_REPO, device=self._device
+            ).eval()
+            print(f"[AudioLLM] Step 4/5: loading model on {self._device}...")
+            model = LFM2AudioModel.from_pretrained(
+                HF_REPO, device=self._device
+            ).eval()
+        except Exception as e:
+            raise RuntimeError(
+                f"LFM2.5-Audio model failed to load. The model (~3 GB) downloads "
+                f"from HuggingFace on first use and requires internet. If this is "
+                f"a fresh machine, ensure you have internet access and ~4 GB free "
+                f"disk space, then try again via Health Portal → Repair. "
+                f"Error: {e}"
+            ) from e
         
         self._processor = processor
         self._model = model
