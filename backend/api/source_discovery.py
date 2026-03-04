@@ -94,12 +94,37 @@ async def discover_sources(request: DiscoverRequest):
         except Exception:
             pass
         
+        # Read stored notebook_purpose from collector config — the wizard sets this
+        # BEFORE source discovery runs, so it's the authoritative purpose.
+        # This prevents the LLM from re-classifying e.g. topic_research as company_research.
+        effective_purpose = request.override_purpose
+        if not effective_purpose:
+            try:
+                collector = get_collector(request.notebook_id)
+                stored_purpose = collector.get_config().notebook_purpose
+                if stored_purpose:
+                    # Map collector template IDs to discovery purpose types
+                    template_to_purpose = {
+                        "company_intel": "company_research",
+                        "industry_watch": "industry_monitoring",
+                        "topic_research": "topic_research",
+                        "project_archive": "project_knowledge",
+                        "people": "person_tracking",
+                        "custom": None,  # Don't override for custom — let LLM classify
+                    }
+                    mapped = template_to_purpose.get(stored_purpose)
+                    if mapped:
+                        effective_purpose = mapped
+                        print(f"[DISCOVERY] Using stored notebook_purpose: {stored_purpose} → {mapped}")
+            except Exception:
+                pass
+        
         # Step 1: Run source discovery
         result = await source_discovery.discover_sources(
             intent=request.intent,
             focus_areas=request.focus_areas,
             subject=request.subject,
-            override_purpose=request.override_purpose,
+            override_purpose=effective_purpose,
             company_details=request.company_details.model_dump() if request.company_details else None,
             existing_source_urls=existing_urls if existing_urls else None
         )

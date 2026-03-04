@@ -197,14 +197,20 @@ class SourceDiscoveryService:
             print(f"[SOURCE_DISCOVERY] Analyzing intent: {intent[:80]}... subject={subject}")
             result.intent_analysis = await self._analyze_intent(intent, focus_areas, subject=subject)
             
-            # Apply override if user clarified the purpose
+            # Apply override if user clarified the purpose (or wizard set it)
             if override_purpose:
-                print(f"[SOURCE_DISCOVERY] Using user-specified purpose: {override_purpose}")
+                print(f"[SOURCE_DISCOVERY] Using purpose override: {override_purpose}")
                 result.intent_analysis.notebook_purpose = override_purpose
-                result.intent_analysis.purpose_confidence = 1.0  # User confirmed
-                # Set is_company_research flag if applicable
+                result.intent_analysis.purpose_confidence = 1.0  # Authoritative
                 if override_purpose == "company_research":
                     result.intent_analysis.is_company_research = True
+                else:
+                    # NON-COMPANY purpose: forcefully clear any company flags
+                    # the LLM or fallback may have incorrectly set
+                    result.intent_analysis.is_company_research = False
+                    result.intent_analysis.needs_company_clarification = False
+                    result.intent_analysis.company_name = None
+                    result.intent_analysis.company_ticker = None
             
             # Apply user-provided company details if available
             if company_details:
@@ -224,7 +230,9 @@ class SourceDiscoveryService:
             sources = []
             
             # Dynamic discovery based on purpose type
-            if purpose == "company_research" or result.intent_analysis.is_company_research:
+            # Route ONLY on purpose — is_company_research is redundant and was a backdoor
+            # that could override purpose (e.g. LLM says topic_research + is_company=true)
+            if purpose == "company_research":
                 if result.intent_analysis.company_name:
                     print(f"[SOURCE_DISCOVERY] Company research: {result.intent_analysis.company_name}")
                     company_sources = await self._discover_company_sources(result.intent_analysis)
@@ -771,21 +779,20 @@ Examples:
             keywords=fallback_keywords
         )
         
-        # Try web lookup for potential company
+        # Try web lookup for potential company — but ONLY mark as company if lookup succeeds.
+        # A failed lookup means "unknown", NOT "company that needs clarification".
         if potential_company:
             print(f"[SOURCE_DISCOVERY] Fallback: trying web lookup for '{potential_company}'")
             company_info = await self._lookup_company_info(potential_company)
             if company_info.get("lookup_success"):
                 fallback.is_company_research = True
+                fallback.notebook_purpose = "company_research"
                 fallback.company_name = company_info.get("company_name", potential_company)
                 fallback.company_ticker = company_info.get("ticker")
                 fallback.company_is_private = company_info.get("is_private", False)
                 fallback.industry = company_info.get("industry")
-            elif company_info.get("needs_clarification"):
-                # Set flag so frontend can ask user for clarification
-                fallback.is_company_research = True
-                fallback.company_name = potential_company
-                fallback.needs_company_clarification = True
+            # If lookup fails/needs_clarification, do NOT assume company research.
+            # The subject stays as a topic — user can always switch via purpose clarification.
         
         print(f"[SOURCE_DISCOVERY] Using fallback analysis: {fallback.model_dump()}")
         return fallback

@@ -186,7 +186,9 @@ export const SourceReview: React.FC<SourceReviewProps> = ({
       }
       
       // Check if company lookup failed and needs clarification
-      if (data.intent_analysis?.needs_company_clarification && !companyDetails) {
+      // ONLY for company_research purpose — topic/industry/skill notebooks should NEVER see this
+      if (data.intent_analysis?.needs_company_clarification && !companyDetails &&
+          data.intent_analysis?.notebook_purpose === 'company_research') {
         setShowCompanyClarification(true);
         setIsLoading(false);
         return; // Wait for user to provide company details
