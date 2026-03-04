@@ -11,6 +11,7 @@ import { useCanvas } from './canvas/CanvasContext';
 
 interface CollectorConfig {
   name: string;
+  notebook_purpose: string;
   subject: string;
   intent: string;
   focus_areas: string[];
@@ -510,6 +511,7 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
           onClose={() => { setShowSetupWizard(false); setWizardEditMode(false); }}
           existingConfig={wizardEditMode && config ? {
             name: config.name,
+            notebook_purpose: config.notebook_purpose,
             subject: config.subject,
             intent: config.intent,
             focus_areas: config.focus_areas,

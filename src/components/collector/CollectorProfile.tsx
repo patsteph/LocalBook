@@ -96,6 +96,8 @@ interface FeedbackData {
 }
 
 interface ProfileData {
+  notebook_purpose: string;
+  is_company_notebook: boolean;
   subject: SubjectInfo;
   stock?: StockQuote;
   key_dates: KeyDate[];
@@ -256,16 +258,30 @@ export const CollectorProfile: React.FC<CollectorProfileProps> = ({
         {/* Header */}
         <div className="p-4 border-b dark:border-gray-700 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            <span className="text-2xl">📊</span>
+            <span className="text-2xl">
+              {profile?.is_company_notebook ? '📊' :
+               profile?.notebook_purpose === 'topic_research' ? '🔬' :
+               profile?.notebook_purpose === 'people' ? '👤' :
+               profile?.notebook_purpose === 'project_archive' ? '📁' : '📋'}
+            </span>
             <div>
               <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
                 {profile?.subject.name || 'Collector'} Profile
               </h2>
-              {profile?.subject.ticker && (
+              {profile?.is_company_notebook && profile?.subject.ticker ? (
                 <span className="text-sm text-gray-500 dark:text-gray-400">
                   {profile.subject.ticker} · {profile.subject.industry || profile.subject.sector || ''}
                 </span>
-              )}
+              ) : profile?.notebook_purpose ? (
+                <span className="text-sm text-gray-500 dark:text-gray-400">
+                  {profile.notebook_purpose === 'topic_research' ? 'Topic Research' :
+                   profile.notebook_purpose === 'industry_watch' ? 'Industry Watch' :
+                   profile.notebook_purpose === 'project_archive' ? 'Project Archive' :
+                   profile.notebook_purpose === 'people' ? 'People' :
+                   profile.notebook_purpose === 'company_intel' ? 'Company Intel' :
+                   'Research'}
+                </span>
+              ) : null}
             </div>
           </div>
           <button
@@ -290,7 +306,7 @@ export const CollectorProfile: React.FC<CollectorProfileProps> = ({
                   : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
               }`}
             >
-              {tab === 'overview' && '🏢 '}
+              {tab === 'overview' && (profile?.is_company_notebook ? '🏢 ' : '📋 ')}
               {tab === 'sources' && '📡 '}
               {tab === 'history' && '📈 '}
               {tab === 'insights' && '🧠 '}

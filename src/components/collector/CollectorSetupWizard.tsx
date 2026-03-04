@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Button } from '../shared/Button';
 import { Modal } from '../shared/Modal';
 import { curatorService } from '../../services/curatorApi';
-import { collectorService } from '../../services/collector';
+import { collectorService, CollectorConfig } from '../../services/collector';
 import { SourceReview } from './SourceReview';
 import { PeopleSetupWizard } from '../people/PeopleSetupWizard';
 import './CollectorSetupWizard.css';
@@ -126,6 +126,7 @@ interface SuggestedConfig {
 
 interface ExistingCollectorConfig {
   name?: string;
+  notebook_purpose?: string;
   subject?: string;
   intent?: string;
   focus_areas?: string[];
@@ -164,7 +165,11 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
   );
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(() => {
     if (existingConfig) {
-      // In edit mode, try to match the existing intent to a template
+      // In edit mode, match by stored notebook_purpose first, then fall back to intent matching
+      if (existingConfig.notebook_purpose) {
+        const byPurpose = TEMPLATES.find(t => t.id === existingConfig.notebook_purpose);
+        if (byPurpose) return byPurpose;
+      }
       const intent = (existingConfig.intent || '').toLowerCase();
       const matched = TEMPLATES.find(t =>
         t.id !== 'custom' && t.id !== 'people' &&
@@ -265,17 +270,18 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
         ? selectedTemplate.defaults.intent_template.replace('{subject}', subject.trim())
         : `Research on ${subject.trim()}`;
 
-      const config = {
+      const config: Partial<CollectorConfig> = {
         name: notebookName,
+        notebook_purpose: selectedTemplate?.id || 'custom',
         subject: subject.trim(),
         intent,
         focus_areas: focusAreas,
-        collection_mode: collectionMode,
-        approval_mode: approvalMode,
+        collection_mode: collectionMode as CollectorConfig['collection_mode'],
+        approval_mode: approvalMode as CollectorConfig['approval_mode'],
         schedule: { frequency, max_items_per_run: frequency === 'hourly' ? 5 : frequency.includes('hours') || frequency === 'twice_daily' ? 8 : 10 },
       };
 
-      await collectorService.updateConfig(notebookId, config as any);
+      await collectorService.updateConfig(notebookId, config);
 
       // In edit mode, just save and close — no source discovery
       if (isEditMode) {

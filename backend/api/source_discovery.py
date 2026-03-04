@@ -109,6 +109,30 @@ async def discover_sources(request: DiscoverRequest):
         if result.errors and not result.sources:
             raise Exception(f"Discovery failed: {'; '.join(result.errors)}")
         
+        # Step 1b: Persist notebook_purpose from discovery to collector config
+        # This ensures profile endpoint routes correctly (company vs topic)
+        try:
+            collector = get_collector(request.notebook_id)
+            discovered_purpose = result.intent_analysis.notebook_purpose or ""
+            existing_purpose = collector.get_config().notebook_purpose or ""
+            if discovered_purpose and not existing_purpose:
+                # Map discovery purpose to collector template IDs
+                purpose_map = {
+                    "company_research": "company_intel",
+                    "industry_monitoring": "industry_watch",
+                    "topic_research": "topic_research",
+                    "skill_development": "topic_research",
+                    "product_research": "topic_research",
+                    "person_tracking": "people",
+                    "project_knowledge": "project_archive",
+                    "personal_interests": "custom",
+                }
+                mapped = purpose_map.get(discovered_purpose, "custom")
+                collector.update_config({"notebook_purpose": mapped})
+                print(f"[DISCOVERY] Persisted notebook_purpose: {discovered_purpose} → {mapped}")
+        except Exception as purpose_err:
+            print(f"[DISCOVERY] Failed to persist notebook_purpose (non-fatal): {purpose_err}")
+        
         # Step 2: If company research, get detailed company profile
         company_profile = None
         if result.intent_analysis.is_company_research and result.intent_analysis.company_name:

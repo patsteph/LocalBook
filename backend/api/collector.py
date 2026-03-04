@@ -17,6 +17,7 @@ router = APIRouter(prefix="/collector", tags=["collector"])
 
 class CollectorConfigUpdate(BaseModel):
     name: Optional[str] = None
+    notebook_purpose: Optional[str] = None  # Template type: company_intel, topic_research, etc.
     subject: Optional[str] = None
     intent: Optional[str] = None
     focus_areas: Optional[List[str]] = None
@@ -262,68 +263,129 @@ async def get_collector_profile(notebook_id: str):
         if hasattr(val, "value"):
             config_dict[key] = val.value
 
-    # --- Gather async data in parallel ---
+    # --- Determine if this is a company-focused notebook ---
+    # Only run company-specific logic (stock quotes, ticker lookups, key dates)
+    # for company_intel notebooks. Prevents topic research from showing stock data.
+    purpose = config.notebook_purpose or ""
+    COMPANY_PURPOSES = ("company_intel", "industry_watch")
+    NON_COMPANY_PURPOSES = ("topic_research", "project_archive", "people", "custom")
+    
+    if purpose in COMPANY_PURPOSES:
+        is_company_notebook = True
+    elif purpose in NON_COMPANY_PURPOSES:
+        is_company_notebook = False
+        # Clean up any polluted company_profile from the old substring-match bug
+        if config.company_profile.get("ticker"):
+            print(f"[PROFILE] Clearing stale company_profile from non-company notebook (purpose={purpose})")
+            try:
+                collector.update_config({"company_profile": {}})
+            except Exception:
+                pass
+    else:
+        # Legacy notebook with no purpose set — infer from intent text.
+        # Order matters: check specific patterns before generic ones.
+        # "track " alone is too broad — "Archive and track" (project_archive)
+        # and "Profile and track" (people) also contain it.
+        intent_lower = (config.intent or "").lower()
+        if "archive and track" in intent_lower:
+            is_company_notebook = False
+            purpose = "project_archive"
+        elif "coaching" in intent_lower or "profile and track" in intent_lower:
+            is_company_notebook = False
+            purpose = "people"
+        elif any(hint in intent_lower for hint in ["deep research on", "papers", "methodologies"]):
+            is_company_notebook = False
+            purpose = "topic_research"
+        elif "monitor the " in intent_lower and "industry" in intent_lower:
+            is_company_notebook = True  # industry_watch is in COMPANY_PURPOSES
+            purpose = "industry_watch"
+        elif "track " in intent_lower and any(h in intent_lower for h in ["financials", "competitive", "market position"]):
+            is_company_notebook = True
+            purpose = "company_intel"
+        else:
+            # True unknown — fall back to existing company_profile presence
+            is_company_notebook = bool(config.company_profile.get("ticker"))
+        
+        # Persist inferred purpose so this inference only runs once
+        if purpose:
+            updates_to_persist: Dict[str, Any] = {"notebook_purpose": purpose}
+            # For non-company notebooks, also clean up stale company_profile
+            if not is_company_notebook and config.company_profile.get("ticker"):
+                print(f"[PROFILE] Clearing stale company_profile from inferred {purpose} notebook")
+                updates_to_persist["company_profile"] = {}
+            try:
+                collector.update_config(updates_to_persist)
+            except Exception:
+                pass
+    
     company = config.company_profile or {}
-    ticker = company.get("ticker") or None
-    cik = company.get("cik") or None
-    industry = company.get("industry") or None
+    ticker = None
+    cik = None
+    industry = None
+    stock_quote = None
+    key_dates = []
+    
+    if is_company_notebook:
+        ticker = company.get("ticker") or None
+        cik = company.get("cik") or None
+        industry = company.get("industry") or None
 
-    # Ticker fallback: if stored ticker looks wrong, try fast lookup from subject name
-    profile_dirty = False
-    if config.subject:
-        fast_ticker = company_profiler._fast_ticker_lookup(config.subject)
-        if fast_ticker and fast_ticker != ticker:
-            print(f"[PROFILE] Correcting ticker: {ticker} → {fast_ticker} (via fast lookup for '{config.subject}')")
-            ticker = fast_ticker
-            company["ticker"] = ticker
-            profile_dirty = True
-
-    # IR URL healing: validate stored investor_relations URL, fix if bad
-    ir_url = company.get("investor_relations")
-    if ir_url:
-        ir_ok = await company_profiler._validate_url(ir_url)
-        if not ir_ok:
-            print(f"[PROFILE] Stored IR URL failed validation: {ir_url}")
-            real_ir = await company_profiler._find_investor_relations_url(
-                config.subject or company.get("name", ""),
-                company.get("official_website") or company.get("website"),
-            )
-            if real_ir:
-                print(f"[PROFILE] Correcting IR URL: {ir_url} → {real_ir}")
-                company["investor_relations"] = real_ir
+        # Ticker fallback: if stored ticker looks wrong, try fast lookup from subject name
+        profile_dirty = False
+        if config.subject:
+            fast_ticker = company_profiler._fast_ticker_lookup(config.subject)
+            if fast_ticker and fast_ticker != ticker:
+                print(f"[PROFILE] Correcting ticker: {ticker} → {fast_ticker} (via fast lookup for '{config.subject}')")
+                ticker = fast_ticker
+                company["ticker"] = ticker
                 profile_dirty = True
 
-    # Persist corrections so they only run once
-    if profile_dirty:
-        try:
-            collector.update_config({"company_profile": company})
-        except Exception:
-            pass
+        # IR URL healing: validate stored investor_relations URL, fix if bad
+        ir_url = company.get("investor_relations")
+        if ir_url:
+            ir_ok = await company_profiler._validate_url(ir_url)
+            if not ir_ok:
+                print(f"[PROFILE] Stored IR URL failed validation: {ir_url}")
+                real_ir = await company_profiler._find_investor_relations_url(
+                    config.subject or company.get("name", ""),
+                    company.get("official_website") or company.get("website"),
+                )
+                if real_ir:
+                    print(f"[PROFILE] Correcting IR URL: {ir_url} → {real_ir}")
+                    company["investor_relations"] = real_ir
+                    profile_dirty = True
 
-    # Build parallel tasks
-    async def _no_stock():
-        return None
+        # Persist corrections so they only run once
+        if profile_dirty:
+            try:
+                collector.update_config({"company_profile": company})
+            except Exception:
+                pass
 
-    async def _no_dates():
-        return []
+        # Build parallel tasks for company data
+        async def _no_stock():
+            return None
 
-    stock_task = get_stock_quote(ticker) if ticker else _no_stock()
-    dates_task = get_key_dates(
-        company_name=config.subject or company.get("name", ""),
-        ticker=ticker,
-        cik=cik,
-        industry=industry,
-    ) if (config.subject or company.get("name")) else _no_dates()
+        async def _no_dates():
+            return []
 
-    stock_quote, key_dates = await asyncio.gather(
-        stock_task, dates_task, return_exceptions=True
-    )
+        stock_task = get_stock_quote(ticker) if ticker else _no_stock()
+        dates_task = get_key_dates(
+            company_name=config.subject or company.get("name", ""),
+            ticker=ticker,
+            cik=cik,
+            industry=industry,
+        ) if (config.subject or company.get("name")) else _no_dates()
 
-    # Handle exceptions gracefully
-    if isinstance(stock_quote, Exception):
-        stock_quote = None
-    if isinstance(key_dates, Exception):
-        key_dates = []
+        stock_quote, key_dates = await asyncio.gather(
+            stock_task, dates_task, return_exceptions=True
+        )
+
+        # Handle exceptions gracefully
+        if isinstance(stock_quote, Exception):
+            stock_quote = None
+        if isinstance(key_dates, Exception):
+            key_dates = []
 
     # --- Source health ---
     source_health = collector.get_source_health_report()
@@ -379,19 +441,21 @@ async def get_collector_profile(notebook_id: str):
 
     # --- Assemble profile ---
     profile = {
+        "notebook_purpose": purpose or "custom",
+        "is_company_notebook": is_company_notebook,
         "subject": {
             "name": config.subject or company.get("name", ""),
-            "ticker": company.get("ticker"),
-            "industry": company.get("industry"),
-            "sector": company.get("sector"),
-            "website": company.get("official_website"),
-            "investor_relations": company.get("investor_relations"),
-            "news_page": company.get("news_page"),
-            "competitors": company.get("competitors", []),
-            "key_people": company.get("key_people", []),
+            "ticker": company.get("ticker") if is_company_notebook else None,
+            "industry": company.get("industry") if is_company_notebook else None,
+            "sector": company.get("sector") if is_company_notebook else None,
+            "website": company.get("official_website") if is_company_notebook else None,
+            "investor_relations": company.get("investor_relations") if is_company_notebook else None,
+            "news_page": company.get("news_page") if is_company_notebook else None,
+            "competitors": company.get("competitors", []) if is_company_notebook else [],
+            "key_people": company.get("key_people", []) if is_company_notebook else [],
         },
-        "stock": stock_quote.to_dict() if stock_quote and hasattr(stock_quote, "to_dict") else None,
-        "key_dates": key_dates if not isinstance(key_dates, Exception) else [],
+        "stock": (stock_quote.to_dict() if stock_quote and hasattr(stock_quote, "to_dict") else None) if is_company_notebook else None,
+        "key_dates": (key_dates if not isinstance(key_dates, Exception) else []) if is_company_notebook else [],
         "sources": sources_list,
         "focus_areas": config.focus_areas,
         "excluded_topics": config.excluded_topics,

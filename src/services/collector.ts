@@ -5,6 +5,8 @@ import { API_BASE_URL } from './api';
 
 export interface CollectorConfig {
   name: string;
+  notebook_purpose: string;  // Template type: company_intel, topic_research, industry_watch, project_archive, people, custom
+  subject: string;
   intent: string;
   focus_areas: string[];
   excluded_topics: string[];

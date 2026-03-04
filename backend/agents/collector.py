@@ -56,6 +56,7 @@ class SourceHealth(str, Enum):
 class CollectorConfig(BaseModel):
     """Configuration for a notebook's Collector"""
     name: str = "Scout"
+    notebook_purpose: str = ""  # Template type: company_intel, topic_research, industry_watch, project_archive, people, custom
     subject: str = ""  # Key research entity (e.g. "Costco") - combined with focus_areas for searches
     intent: str = ""
     focus_areas: List[str] = Field(default_factory=list)

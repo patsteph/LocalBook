@@ -179,9 +179,11 @@ class CompanyProfiler:
         if stripped and stripped in self.KNOWN_TICKERS:
             return self.KNOWN_TICKERS[stripped]
         
-        # Try substring match — check if any known key is contained in the name
+        # Try whole-word match — check if any known key appears as a complete word
+        # in the name (prevents "intel" matching "artificial intelligence", etc.)
         for key, ticker in self.KNOWN_TICKERS.items():
-            if key in normalized or normalized in key:
+            # Only match if the key appears as a standalone word (not a substring)
+            if re.search(r'\b' + re.escape(key) + r'\b', normalized):
                 return ticker
         
         return None
