@@ -364,7 +364,7 @@ async def corrective_retrieval(
     """
     print("[RAG] Corrective retrieval triggered - generating query variants")
 
-    variants = await rag_query_analyzer.generate_query_variants(question)
+    variants = rag_query_analyzer.generate_query_variants(question)
     print(f"[RAG] Query variants: {variants}")
 
     all_results = list(original_results)  # Start with original
