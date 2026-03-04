@@ -1484,19 +1484,22 @@ Write the weekly wrap up now:"""
                 for kd in nb.upcoming_key_dates[:2]:
                     details.append(f"  - Coming up: {kd}")
             
-            # Research velocity — explicit deltas, never conflate total with added
+            # Research velocity — pre-compute ALL percentages so the LLM
+            # never has to do arithmetic (LLMs are bad at math)
             if nb.total_sources > 0:
                 if nb.sources_this_week > 0:
                     prior_total = nb.total_sources - nb.sources_this_week
-                    velocity_note = f"  - Research library: grew from {prior_total} to {nb.total_sources} sources this week (+{nb.sources_this_week} new)"
+                    lib_growth_pct = int((nb.sources_this_week / prior_total) * 100) if prior_total > 0 else 0
+                    velocity_note = (f"  - Research library: {prior_total} → {nb.total_sources} sources "
+                                     f"(+{nb.sources_this_week} new this week, {lib_growth_pct}% library growth)")
                     if nb.sources_last_week > 0:
                         if nb.sources_this_week > nb.sources_last_week:
-                            pct = int(((nb.sources_this_week - nb.sources_last_week) / nb.sources_last_week) * 100)
-                            velocity_note += f" — up {pct}% vs last week's {nb.sources_last_week}"
+                            pace_pct = int(((nb.sources_this_week - nb.sources_last_week) / nb.sources_last_week) * 100)
+                            velocity_note += f". Pace: {nb.sources_this_week} added vs {nb.sources_last_week} last week (+{pace_pct}% faster)"
                         elif nb.sources_this_week < nb.sources_last_week:
-                            velocity_note += f" — slower than last week's {nb.sources_last_week}"
+                            velocity_note += f". Pace: {nb.sources_this_week} added vs {nb.sources_last_week} last week (slower)"
                         else:
-                            velocity_note += f" — same pace as last week"
+                            velocity_note += f". Pace: same as last week ({nb.sources_last_week})"
                     details.append(velocity_note)
                 else:
                     details.append(f"  - Research library: {nb.total_sources} sources (no new additions this week)")
@@ -1575,9 +1578,11 @@ RAW DATA:
 {raw_data}
 
 CRITICAL ACCURACY RULES — you MUST follow these:
-- "grew from X to Y" means the library went from X sources to Y sources. The DELTA is Y-X. NEVER report Y as the number "added" — the number added is Y minus X.
-- "sources_this_week" is the number of NEW sources added THIS WEEK, not the total count. If data says "+23 new", say "23 new sources" not "73 sources added."
-- NEVER invent or round numbers. Use the exact figures from the data.
+- ALL percentages are PRE-COMPUTED in the data. Use them VERBATIM. Do NOT calculate your own percentages.
+- When data says "X → Y sources (+N new this week, P% library growth)", report: "library grew from X to Y (+N new, P% growth)". The P% is already computed correctly — just copy it.
+- When data says "Pace: N added vs M last week (+Q% faster)", report: "pace is up Q% (N this week vs M last)". The Q% is already computed — just copy it.
+- NEVER do arithmetic yourself. NEVER compute percentages. NEVER say a number that doesn't appear in the raw data.
+- "sources_this_week" is the number of NEW sources added THIS WEEK, not the total count. If data says "+11 new", say "11 new sources" not "90 sources added."
 - If something says "no new additions this week," do NOT claim growth occurred.
 - "tagged/reviewed" means the user has actively organized those sources with tags. "unreviewed" means no tags yet — not that the sources are unread.
 
@@ -1609,7 +1614,7 @@ NEWSLETTER STRUCTURE (use the sections that have data, skip empty ones):
 1. **Lead** — Start with the single most interesting or actionable finding. If there's a specific article title, use it. If the collector found new sources, lead with that.
 2. **Per-notebook updates** — For each notebook with activity, write 1-3 sentences highlighting specifics. Use actual titles, names, and details. Never say "1 new items" — say what the item IS. Include Studio output here if present.
 3. **Collector discoveries** — If the background collector gathered sources, dedicate a short section to these. Name the titles, note that they arrived automatically, and nudge the user to review them.
-4. **Research momentum** — If there's velocity data (sources growing), report the EXACT delta: "Your library grew by N sources, from X to Y." Never conflate total library size with additions.
+4. **Research momentum** — If there's velocity data, copy the pre-computed numbers EXACTLY: "Your library grew from X to Y (+N new, P% growth)." If pace data exists, include it: "pace is up Q% vs last week." NEVER compute your own percentages.
 5. **Coming up** — If there are upcoming events or key dates, make them feel urgent.
 6. **Unfinished threads** — If there are unfinished conversations, gently remind the user: "You were exploring [topic] — want to pick that back up?" Frame it as helpful, not nagging.
 7. **Emerging interests** — If topic drift is detected, mention it: "I'm noticing a growing interest in [topic] — this is new territory for your research." Make the user feel seen.
@@ -1619,7 +1624,7 @@ NEWSLETTER STRUCTURE (use the sections that have data, skip empty ones):
 TONE:
 - Warm, professional, like a trusted advisor who knows your research intimately
 - Confident and specific — never vague or generic
-- Brief — aim for 200-400 words total
+- Brief — aim for 300-600 words total. ALWAYS finish your last sentence completely.
 - Use markdown: **bold** for emphasis, bullet points for lists, but keep it readable
 - The collector callouts, studio output, unfinished threads, emerging interests, and lookback sections are what make this feel MAGICAL — these show the user the system is paying attention. Prioritize them when present.
 
@@ -1635,7 +1640,7 @@ Write the brief now:"""
                 model=settings.ollama_model,
                 temperature=0.7,
                 timeout=90.0,
-                num_predict=800,
+                num_predict=1500,
                 extra_options={"keep_alive": "5m"},
             )
             narrative = response.get("response", "").strip()

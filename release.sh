@@ -282,8 +282,11 @@ source .venv/bin/activate
 
 if [ -f "scripts/local/test_bundle.py" ]; then
     # Run tests once and capture output
+    # Temporarily disable set -e so test failure doesn't silently kill the script
+    set +e
     BUNDLE_OUTPUT=$(python scripts/local/test_bundle.py 2>&1)
     BUNDLE_EXIT=$?
+    set -e
     
     # Display filtered output
     echo "$BUNDLE_OUTPUT" | grep -E "^\[|Passed:|Failed:|Skipped:|BUNDLE|verification"
