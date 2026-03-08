@@ -175,6 +175,18 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
         import trafilatura
         import asyncio
         
+        # Auto-detect YouTube URLs and redirect to YouTube capture pipeline
+        # YouTube pages yield garbage from DOM extraction — transcript is what we need
+        import re
+        if re.search(r'(youtube\.com/watch|youtu\.be/)', request.url or ""):
+            print(f"[BROWSER] YouTube URL detected in page capture, redirecting to YouTube pipeline")
+            yt_request = YouTubeCaptureRequest(
+                video_url=request.url,
+                notebook_id=request.notebook_id,
+                include_transcript=True
+            )
+            return await capture_youtube(yt_request)
+        
         # Try to extract content using trafilatura (same as web research panel)
         # This is MUCH more robust than the extension's document.body.innerText
         content = ""
@@ -511,29 +523,57 @@ async def capture_selection(request: SelectionCaptureRequest):
 
 @router.post("/capture/youtube", response_model=CaptureResponse)
 async def capture_youtube(request: YouTubeCaptureRequest):
-    """Capture a YouTube video with transcript."""
+    """Capture a YouTube video with transcript.
+    
+    Uses web_scraper's existing YouTube support (YouTubeTranscriptApi + oEmbed)
+    to fetch transcript and video metadata, then indexes into the notebook.
+    """
     try:
-        from api.web import fetch_youtube_transcript, get_youtube_video_info
+        from services.web_scraper import web_scraper
         from storage.source_store import source_store
         from services.rag_engine import rag_engine
         
-        # Get video info
-        video_info = await get_youtube_video_info(request.video_url)
+        # Use web_scraper's YouTube extraction (handles ID parsing, transcript, errors)
+        scrape_result = await web_scraper._scrape_youtube(request.video_url)
         
-        # Get transcript if requested
-        transcript = ""
-        if request.include_transcript:
-            transcript = await fetch_youtube_transcript(request.video_url)
+        if not scrape_result.get("success"):
+            error_msg = scrape_result.get("error", "YouTube extraction failed")
+            print(f"[BROWSER] YouTube scrape failed: {error_msg}")
+            return CaptureResponse(
+                success=False,
+                title="YouTube Video",
+                word_count=0,
+                reading_time_minutes=0,
+                error=error_msg
+            )
         
+        title = scrape_result.get("title", "YouTube Video")
+        transcript = scrape_result.get("text", "")
+        
+        # Build content: title + transcript
         source_id = str(uuid.uuid4())
-        content = f"Title: {video_info.get('title', '')}\n\n"
-        content += f"Channel: {video_info.get('channel', '')}\n\n"
+        content = f"Title: {title}\n\n"
         if transcript:
             content += f"Transcript:\n{transcript}"
+        else:
+            content += "(No transcript available)"
         
         word_count = len(content.split())
         char_count = len(content)
         reading_time = max(1, word_count // 200)
+        
+        print(f"[BROWSER] YouTube capture: '{title}' ({word_count} words)")
+        
+        # Score through Curator for learning
+        from agents.curator import curator
+        curator_scoring = await curator.score_user_item(
+            notebook_id=request.notebook_id,
+            title=title,
+            content=content[:3000],
+            url=request.video_url,
+            source_type="youtube",
+            user_weight_bonus=1.5
+        )
         
         # Create source with initial status
         source_data = {
@@ -542,10 +582,9 @@ async def capture_youtube(request: YouTubeCaptureRequest):
             "type": "youtube",
             "format": "youtube",
             "url": request.video_url,
-            "title": video_info.get("title", "YouTube Video"),
-            "filename": video_info.get("title", "YouTube Video"),
+            "title": title,
+            "filename": title,
             "content": content,
-            "video_info": video_info,
             "word_count": word_count,
             "char_count": char_count,
             "characters": char_count,
@@ -553,12 +592,17 @@ async def capture_youtube(request: YouTubeCaptureRequest):
             "capture_type": "youtube",
             "status": "processing",
             "chunks": 0,
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now().isoformat(),
+            "user_provided": True,
+            "curator_scoring": curator_scoring,
+            "topics": curator_scoring.get("topics", []),
+            "entities": curator_scoring.get("entities", []),
+            "importance": curator_scoring.get("importance", "medium")
         }
         
         await source_store.create(
             notebook_id=request.notebook_id,
-            filename=video_info.get("title", "YouTube Video"),
+            filename=title,
             metadata=source_data
         )
         
@@ -567,7 +611,7 @@ async def capture_youtube(request: YouTubeCaptureRequest):
             notebook_id=request.notebook_id,
             source_id=source_id,
             text=content,
-            filename=video_info.get("title", "YouTube Video"),
+            filename=title,
             source_type="youtube"
         )
         
@@ -583,7 +627,7 @@ async def capture_youtube(request: YouTubeCaptureRequest):
             from services.auto_tagger import auto_tagger
             await auto_tagger.tag_source_in_notebook(
                 request.notebook_id, source_id,
-                video_info.get("title", "YouTube Video"), content[:3000]
+                title, content[:3000]
             )
         except Exception as tag_err:
             print(f"[BROWSER] Auto-tagging YouTube failed (non-fatal): {tag_err}")
@@ -597,18 +641,22 @@ async def capture_youtube(request: YouTubeCaptureRequest):
         })
         
         try:
-            log_document_captured(request.notebook_id, request.video_url, video_info.get("title", "YouTube Video"), "youtube")
+            log_document_captured(request.notebook_id, request.video_url, title, "youtube")
         except Exception:
             pass
         return CaptureResponse(
             success=True,
             source_id=source_id,
-            title=video_info.get("title", "YouTube Video"),
+            title=title,
             word_count=word_count,
-            reading_time_minutes=reading_time
+            reading_time_minutes=reading_time,
+            key_concepts=curator_scoring.get("topics", [])
         )
         
     except Exception as e:
+        import traceback
+        print(f"[BROWSER] YouTube capture failed: {e}")
+        traceback.print_exc()
         return CaptureResponse(
             success=False,
             title="YouTube Video",
