@@ -878,49 +878,6 @@ function SidePanel() {
             />
           )}
 
-          {/* YouTube Detection */}
-          {!currentAction && viewMode === "actions" && pageInfo?.domain === "youtube.com" && selectedNotebook && (
-            <div className="bg-red-900/20 border border-red-700/30 rounded p-3 mb-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span>📺</span>
-                  <span className="text-xs text-red-300">YouTube video detected</span>
-                </div>
-                <button
-                  onClick={async () => {
-                    setLoading(true)
-                    try {
-                      const res = await fetch(`${API_BASE}/browser/capture/youtube`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          video_url: pageInfo.url,
-                          notebook_id: selectedNotebook,
-                          include_transcript: true
-                        })
-                      })
-                      const data = await res.json()
-                      if (data.success) {
-                        showMessage(`Captured "${data.title}" with transcript!`, "success")
-                        handleFetchNotebooks()
-                      } else {
-                        showMessage(data.error || "YouTube capture failed", "error")
-                      }
-                    } catch (e: any) {
-                      showMessage(e.message || "YouTube capture failed", "error")
-                    } finally {
-                      setLoading(false)
-                    }
-                  }}
-                  disabled={loading}
-                  className="px-3 py-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-700 rounded text-xs"
-                >
-                  Capture + Transcript
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Collector Pending Badge */}
           {!currentAction && viewMode === "actions" && collectorPending > 0 && (
             <div className="bg-amber-900/20 border border-amber-700/30 rounded p-2 mb-2 text-xs text-amber-300 flex items-center gap-2">

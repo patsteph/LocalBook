@@ -213,6 +213,10 @@ class WebScraper:
                 return parsed.path.split('/')[2]
             elif parsed.path.startswith('/v/'):
                 return parsed.path.split('/')[2]
+            elif parsed.path.startswith('/shorts/'):
+                return parsed.path.split('/')[2]
+            elif parsed.path.startswith('/live/'):
+                return parsed.path.split('/')[2]
 
         return None
 

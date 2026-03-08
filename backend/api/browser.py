@@ -178,7 +178,7 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
         # Auto-detect YouTube URLs and redirect to YouTube capture pipeline
         # YouTube pages yield garbage from DOM extraction — transcript is what we need
         import re
-        if re.search(r'(youtube\.com/watch|youtu\.be/)', request.url or ""):
+        if re.search(r'(youtube\.com/(watch|shorts/|live/|embed/|v/)|youtu\.be/)', request.url or ""):
             print(f"[BROWSER] YouTube URL detected in page capture, redirecting to YouTube pipeline")
             yt_request = YouTubeCaptureRequest(
                 video_url=request.url,
