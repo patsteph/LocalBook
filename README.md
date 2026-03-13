@@ -2,7 +2,7 @@
 
 **Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
-[![Version](https://img.shields.io/badge/version-1.5-blue.svg)](https://github.com/patsteph/LocalBook/releases)
+[![Version](https://img.shields.io/badge/version-1.5.2-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
 [![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -25,14 +25,35 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v1.5
+## 🎉 What's New in v1.5.2
+
+### Audio Processor
+| Feature | Description |
+|---------|-------------|
+| 🎙️ **Main Model Narration** | Video narration now uses the main model (olmo-3) instead of phi4-mini for richer, more natural spoken language |
+| 📏 **Sentence-Count Guidance** | Replaced explicit word count targets with sentence-count guidance — eliminates model fixation on counting |
+
+### Adaptive Collection
+| Feature | Description |
+|---------|-------------|
+| 📊 **Stagnation Detection** | Detects when a notebook's collection hasn't found new content in 5+ days (mild → moderate → plateau tiers) |
+| 🔭 **Auto-Expand Search** | Automatically widens search queries, lowers confidence floor, and seeds from cross-notebook shared entities |
+| 🪦 **Collection Tombstone** | Prominent banner surfaces pending approval items and expansion mode status in the notebook view |
+| 🧠 **Morning Brief Integration** | Stagnation status appears in morning briefs and Curator chat with severity-appropriate messaging |
+| ⏱️ **Plateau Frequency Reduction** | After 15+ days of stagnation, collection frequency is automatically halved to conserve resources |
+| 🔀 **Rejection Reason Tracking** | Collection history now records why items were rejected, informing smarter future query generation |
+| ⚙️ **Auto-Expand Toggle** | Per-notebook toggle in the Collector Profile to enable/disable adaptive expansion |
+
+---
+
+## v1.5
 
 ### Video Explainers
 | Feature | Description |
 |---------|-------------|
 | 🎬 **Video Generation** | Generate narrated explainer videos from notebooks with auto-storyboarding |
 | 🎨 **Visual Styles** | Multiple slide styles: classic, dark, whiteboard, and more |
-| 🎤 **TTS Narration** | Natural voice narration via LFM2.5-Audio with per-chunk progress tracking |
+| 🎤 **TTS Narration** | Natural voice narration via Kokoro-82M TTS (50+ voices, 9 languages) with per-chunk progress tracking |
 
 ### Feynman Learning Suite
 | Feature | Description |
@@ -122,7 +143,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full release history.
 | Requirement | Details |
 |-------------|---------|
 | **macOS** | 12.0+ (Apple Silicon recommended, Intel supported) |
-| **Python** | 3.12+ required (liquid-audio TTS dependency) |
+| **Python** | 3.12+ required |
 | **RAM** | 16GB+ recommended (8GB minimum) |
 | **Storage** | ~15GB for models and app |
 | **Ollama** | Local LLM runtime ([ollama.ai](https://ollama.ai)) |
@@ -147,7 +168,7 @@ brew install ollama ffmpeg tesseract python@3.12 node
 
 ### Option 2: Build from Source
 
-**⚠️ Requires Python 3.12+** for liquid-audio TTS support.
+**⚠️ Requires Python 3.12+**
 
 ```bash
 # Ensure Python 3.12+ is installed

@@ -243,6 +243,7 @@ async def apply_decisions_node(state: CollectionState) -> Dict:
     try:
         from services.collection_history import record_collection_run
         config = collector.get_config()
+        task = state.get("task") or {}
         record_collection_run(
             notebook_id=notebook_id,
             items_found=len(raw),
@@ -251,7 +252,9 @@ async def apply_decisions_node(state: CollectionState) -> Dict:
             items_rejected=rejected,
             sources_checked=len(config.sources.get("rss_feeds", [])) + len(config.sources.get("web_pages", [])),
             trigger="langgraph",
-            keywords_used=(state.get("task") or {}).get("focus_areas", [])[:5],
+            keywords_used=task.get("focus_areas", [])[:5],
+            queries_used=task.get("smart_queries", []),
+            exploration_queries=task.get("exploration_queries", []),
         )
     except Exception:
         pass

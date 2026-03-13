@@ -995,7 +995,7 @@ Answer with [N] citations:"""
             # Detect references section — stop streaming there
             if not references_started:
                 lower_buf = full_answer.lower()
-                for marker in ["\nreferences:", "\nreferences\n", "\nsources:\n", "\ncitations:\n", "\n\n[1] "]:
+                for marker in ["\nreferences:", "\nreferences\n", "\n**references", "\nsources:\n", "\n**sources", "\ncitations:\n", "\n\n[1] "]:
                     if marker in lower_buf:
                         references_started = True
                         idx = lower_buf.find(marker)

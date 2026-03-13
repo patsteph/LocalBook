@@ -1434,7 +1434,7 @@ async def _stream_studio(chat_query: ChatQuery):
                 if duration < 1: duration = 1
                 if duration > 10: duration = 10
                 visual_style = (params.get("visual_style") or "classic").strip()
-                voice = (params.get("voice") or "us_female").strip()
+                voice = (params.get("voice") or "af_heart").strip()
 
                 result = await video_generator.generate(
                     notebook_id=notebook_id,

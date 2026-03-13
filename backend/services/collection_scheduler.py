@@ -249,7 +249,11 @@ class CollectionScheduler:
     }
 
     def _is_collection_due(self, notebook_id: str, config) -> bool:
-        """Check if a notebook's collection is due based on its frequency."""
+        """Check if a notebook's collection is due based on its frequency.
+        
+        If stagnation has reached 'plateau' severity (15+ days with no growth),
+        the effective interval is doubled to conserve resources on saturated topics.
+        """
         last_run = self._last_runs.get(notebook_id)
 
         if last_run is None:
@@ -257,6 +261,17 @@ class CollectionScheduler:
 
         frequency = config.schedule.get("frequency", "daily")
         interval = self.INTERVALS.get(frequency, timedelta(days=1))
+        
+        # Plateau auto-frequency reduction: stretch interval 2x when saturated
+        try:
+            from services.collection_history import detect_stagnation
+            stag = detect_stagnation(notebook_id)
+            if stag.get("severity") == "plateau" and getattr(config, 'auto_expand', True):
+                interval = interval * 2
+                logger.info(f"[Scheduler] Plateau detected for {notebook_id} — stretching interval to {interval}")
+        except Exception:
+            pass
+        
         return datetime.utcnow() - last_run >= interval
 
     # ------------------------------------------------------------------

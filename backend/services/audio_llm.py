@@ -1,216 +1,300 @@
-"""LFM2.5-Audio Integration Service
+"""Kokoro-82M TTS + mlx-whisper ASR Integration Service
 
-Provides speech-to-speech, TTS, and ASR capabilities using Liquid AI's LFM2.5-Audio model.
-This enables Jarvis mode, podcast audio generation, and voice Q&A.
+Provides TTS, ASR, and speech-to-speech capabilities:
+- TTS: Kokoro-82M (82M params, ~350 MB, Apache 2.0)
+- ASR: mlx-whisper (Apple Silicon accelerated Whisper)
+- S2S: Decomposed ASR → Ollama LLM → Kokoro TTS pipeline
+
+Replaces LFM2.5-Audio-1.5B (1.5B params, ~3.4 GB, restrictive license).
 """
 
 import asyncio
+import os
+import re
+import wave
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List
+import numpy as np
 import uuid
 
 from config import settings
 
-# Lazy imports for optional audio dependencies
-torch = None
-torchaudio = None
 
-def _ensure_audio_deps():
-    """Lazily import audio dependencies."""
-    global torch, torchaudio
-    if torch is None:
-        import torch as _torch
-        import torchaudio as _torchaudio
-        torch = _torch
-        torchaudio = _torchaudio
+# ─── Kokoro Voice Catalog ─────────────────────────────────────────────────────
+# Naming: {lang_code}{gender}_{name}
+#   lang_code: a=American, b=British, e=Spanish, f=French, h=Hindi,
+#              i=Italian, j=Japanese, p=Portuguese, z=Chinese
+#   gender: f=female, m=male
 
-
-# Voice options for TTS
-VOICE_PROMPTS = {
-    "us_male": "Perform TTS. Use the US male voice.",
-    "us_female": "Perform TTS. Use the US female voice.",
-    "uk_male": "Perform TTS. Use the UK male voice.",
-    "uk_female": "Perform TTS. Use the UK female voice."
+KOKORO_VOICES: Dict[str, Dict] = {
+    # ── American English ──────────────────────────────────────────────────
+    "af_heart":   {"lang": "a", "gender": "female", "accent": "us", "name": "Heart",   "default": True},
+    "af_bella":   {"lang": "a", "gender": "female", "accent": "us", "name": "Bella"},
+    "af_nicole":  {"lang": "a", "gender": "female", "accent": "us", "name": "Nicole"},
+    "af_sarah":   {"lang": "a", "gender": "female", "accent": "us", "name": "Sarah"},
+    "af_sky":     {"lang": "a", "gender": "female", "accent": "us", "name": "Sky"},
+    "af_nova":    {"lang": "a", "gender": "female", "accent": "us", "name": "Nova"},
+    "am_adam":    {"lang": "a", "gender": "male",   "accent": "us", "name": "Adam",    "default": True},
+    "am_michael": {"lang": "a", "gender": "male",   "accent": "us", "name": "Michael"},
+    "am_fenrir":  {"lang": "a", "gender": "male",   "accent": "us", "name": "Fenrir"},
+    # ── British English ───────────────────────────────────────────────────
+    "bf_emma":      {"lang": "b", "gender": "female", "accent": "uk", "name": "Emma",   "default": True},
+    "bf_isabella":  {"lang": "b", "gender": "female", "accent": "uk", "name": "Isabella"},
+    "bm_george":    {"lang": "b", "gender": "male",   "accent": "uk", "name": "George", "default": True},
+    "bm_lewis":     {"lang": "b", "gender": "male",   "accent": "uk", "name": "Lewis"},
+    "bm_daniel":    {"lang": "b", "gender": "male",   "accent": "uk", "name": "Daniel"},
+    # ── Spanish ───────────────────────────────────────────────────────────
+    "ef_dora":      {"lang": "e", "gender": "female", "accent": "es", "name": "Dora",   "default": True},
+    "em_alex":      {"lang": "e", "gender": "male",   "accent": "es", "name": "Alex",   "default": True},
+    "em_santa":     {"lang": "e", "gender": "male",   "accent": "es", "name": "Santa"},
+    # ── French ────────────────────────────────────────────────────────────
+    "ff_siwis":     {"lang": "f", "gender": "female", "accent": "fr", "name": "Siwis",  "default": True},
+    # ── Hindi ─────────────────────────────────────────────────────────────
+    "hf_alpha":     {"lang": "h", "gender": "female", "accent": "hi", "name": "Alpha",  "default": True},
+    "hm_omega":     {"lang": "h", "gender": "male",   "accent": "hi", "name": "Omega",  "default": True},
+    "hm_psi":       {"lang": "h", "gender": "male",   "accent": "hi", "name": "Psi"},
+    "hf_beta":      {"lang": "h", "gender": "female", "accent": "hi", "name": "Beta"},
+    # ── Italian ───────────────────────────────────────────────────────────
+    "if_sara":      {"lang": "i", "gender": "female", "accent": "it", "name": "Sara",   "default": True},
+    "im_nicola":    {"lang": "i", "gender": "male",   "accent": "it", "name": "Nicola", "default": True},
+    # ── Japanese ──────────────────────────────────────────────────────────
+    "jf_alpha":     {"lang": "j", "gender": "female", "accent": "ja", "name": "Alpha",  "default": True},
+    "jm_beta":      {"lang": "j", "gender": "male",   "accent": "ja", "name": "Beta"},
+    "jf_gongitsune":{"lang": "j", "gender": "female", "accent": "ja", "name": "Gongitsune"},
+    # ── Brazilian Portuguese ──────────────────────────────────────────────
+    "pf_dora":      {"lang": "p", "gender": "female", "accent": "pt", "name": "Dora",   "default": True},
+    "pm_alex":      {"lang": "p", "gender": "male",   "accent": "pt", "name": "Alex",   "default": True},
+    "pm_santa":     {"lang": "p", "gender": "male",   "accent": "pt", "name": "Santa"},
+    # ── Mandarin Chinese ──────────────────────────────────────────────────
+    "zf_xiaobei":   {"lang": "z", "gender": "female", "accent": "zh", "name": "Xiaobei","default": True},
+    "zf_xiaoni":    {"lang": "z", "gender": "female", "accent": "zh", "name": "Xiaoni"},
+    "zf_xiaoxiao":  {"lang": "z", "gender": "female", "accent": "zh", "name": "Xiaoxiao"},
+    "zm_yunjian":   {"lang": "z", "gender": "male",   "accent": "zh", "name": "Yunjian","default": True},
+    "zm_yunxi":     {"lang": "z", "gender": "male",   "accent": "zh", "name": "Yunxi"},
 }
 
-DEFAULT_VOICE = "us_male"
+# Backward-compatible aliases — map old LFM2.5 voice names to Kokoro defaults
+VOICE_ALIASES: Dict[str, str] = {
+    "us_male":   "am_adam",
+    "us_female": "af_heart",
+    "uk_male":   "bm_george",
+    "uk_female": "bf_emma",
+}
+
+# Language code → display info
+SUPPORTED_LANGUAGES: Dict[str, Dict] = {
+    "a": {"name": "American English", "code": "en-us"},
+    "b": {"name": "British English",  "code": "en-gb"},
+    "e": {"name": "Spanish",          "code": "es"},
+    "f": {"name": "French",           "code": "fr"},
+    "h": {"name": "Hindi",            "code": "hi"},
+    "i": {"name": "Italian",          "code": "it"},
+    "j": {"name": "Japanese",         "code": "ja"},
+    "p": {"name": "Portuguese (BR)",   "code": "pt-br"},
+    "z": {"name": "Mandarin Chinese", "code": "zh"},
+}
+
+DEFAULT_VOICE = "af_heart"
+SAMPLE_RATE = 24_000
+
+
+def resolve_voice(voice: str) -> str:
+    """Resolve a voice name to a Kokoro voice ID.
+    
+    Accepts Kokoro IDs (e.g. 'af_heart') or legacy aliases ('us_male').
+    """
+    if voice in KOKORO_VOICES:
+        return voice
+    if voice in VOICE_ALIASES:
+        return VOICE_ALIASES[voice]
+    return DEFAULT_VOICE
+
+
+def get_voices_for_language(lang_code: str) -> Dict[str, Dict]:
+    """Return available voices for a language code."""
+    return {k: v for k, v in KOKORO_VOICES.items() if v["lang"] == lang_code}
 
 
 class AudioLLMService:
-    """Service for LFM2.5-Audio model operations."""
+    """TTS + ASR service backed by Kokoro-82M and mlx-whisper."""
     
     def __init__(self):
-        self._model = None
-        self._processor = None
-        self._detokenizer = None  # Our own detokenizer — bypasses processor.decode()
-        self._device = None
+        self._pipeline = None       # Kokoro KPipeline
+        self._pipeline_lang = None  # Current pipeline lang_code
         self._initialized = False
         self._initializing = False
         self._init_error = None
         
-    async def initialize(self):
-        """Lazy initialization of the audio model."""
-        if self._initialized or self._initializing:
+    async def initialize(self, lang_code: str = "a"):
+        """Lazy initialization of Kokoro TTS pipeline."""
+        if self._initialized and self._pipeline_lang == lang_code:
+            return
+        if self._initializing:
             return
             
         self._initializing = True
         
         try:
-            # Run model loading in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._load_model)
+            await loop.run_in_executor(None, self._load_model, lang_code)
             self._initialized = True
-            print("[AudioLLM] ✓ LFM2.5-Audio model loaded")
+            print(f"[AudioLLM] ✓ Kokoro-82M loaded (lang={lang_code})")
         except ImportError as e:
             import traceback
             tb = traceback.format_exc()
-            print(f"[AudioLLM] ⚠ liquid-audio not installed: {e}")
-            print(f"[AudioLLM] Full traceback:\n{tb}")
+            print(f"[AudioLLM] ⚠ kokoro not installed: {e}")
             self._init_error = tb
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
-            print(f"[AudioLLM] ⚠ Failed to load model: {e}")
-            print(f"[AudioLLM] Full traceback:\n{tb}")
+            print(f"[AudioLLM] ⚠ Failed to load Kokoro: {e}")
             self._init_error = tb
         finally:
             self._initializing = False
     
-    def _load_model(self):
-        """Load the LFM2.5-Audio model (runs in thread).
+    @staticmethod
+    def _find_kokoro_cache() -> Optional[Path]:
+        """Find the Kokoro-82M model in HuggingFace cache.
         
-        Downloads ~3 GB from HuggingFace on first use via snapshot_download.
-        Once cached (~/.cache/huggingface/hub/), loads locally with no network.
+        Returns the snapshot directory path, or None if not cached.
         """
-        print("[AudioLLM] Step 1/5: importing audio deps...")
-        _ensure_audio_deps()
+        hf_cache = Path(os.path.expanduser("~/.cache/huggingface/hub"))
+        model_dir = hf_cache / "models--hexgrad--Kokoro-82M"
+        if not model_dir.exists():
+            return None
+        refs_main = model_dir / "refs" / "main"
+        if refs_main.exists():
+            commit = refs_main.read_text().strip()
+            snap = model_dir / "snapshots" / commit
+            if snap.exists():
+                return snap
+        # Fallback: pick first snapshot
+        snaps = model_dir / "snapshots"
+        if snaps.exists():
+            for d in sorted(snaps.iterdir()):
+                if d.is_dir():
+                    return d
+        return None
+    
+    def _load_model(self, lang_code: str = "a"):
+        """Load Kokoro-82M pipeline (runs in thread).
         
-        print("[AudioLLM] Step 2/5: importing liquid_audio...")
-        from liquid_audio import LFM2AudioModel, LFM2AudioProcessor
+        Downloads ~350 MB from HuggingFace on first use.
+        Once cached (~/.cache/huggingface/hub/), loads locally.
         
-        HF_REPO = "LiquidAI/LFM2.5-Audio-1.5B"
+        On macOS Python 3.13, SSL cert verification often fails for
+        HuggingFace downloads. We bypass Kokoro's internal hf_hub_download
+        by loading config + weights from the local cache directly.
+        """
+        # Ensure macOS system certs are available for HuggingFace downloads
+        if not os.environ.get("SSL_CERT_FILE") and os.path.exists("/etc/ssl/cert.pem"):
+            os.environ["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
         
-        # Detect device FIRST — liquid_audio defaults to 'cuda' which crashes on macOS
-        if torch.backends.mps.is_available():
-            self._device = torch.device("mps")
-        elif torch.cuda.is_available():
-            self._device = torch.device("cuda")
+        print(f"[AudioLLM] Loading Kokoro-82M (lang={lang_code})...")
+        from kokoro import KPipeline
+        from kokoro.model import KModel
+        import torch
+        
+        # Try loading from local cache first (bypasses SSL issues on macOS Python 3.13)
+        cache_dir = self._find_kokoro_cache()
+        if cache_dir and (cache_dir / "config.json").exists() and (cache_dir / "kokoro-v1_0.pth").exists():
+            print(f"[AudioLLM]   Loading from cache: {cache_dir}")
+            config_path = str(cache_dir / "config.json")
+            model_path = str(cache_dir / "kokoro-v1_0.pth")
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = "cpu"
+            print(f"[AudioLLM]   Device: {device}")
+            kmodel = KModel(config=config_path, model=model_path).to(device).eval()
+            self._pipeline = KPipeline(lang_code=lang_code, model=kmodel)
+            # Pre-load cached voice .pt files so KPipeline.load_single_voice
+            # doesn't call hf_hub_download (which fails with SSL errors)
+            voices_dir = cache_dir / "voices"
+            if voices_dir.exists():
+                loaded = 0
+                for vf in voices_dir.glob("*.pt"):
+                    voice_name = vf.stem  # e.g. "af_heart"
+                    try:
+                        pack = torch.load(str(vf), weights_only=True)
+                        self._pipeline.voices[voice_name] = pack
+                        loaded += 1
+                    except Exception:
+                        # PyTorch 2.6+ defaults weights_only=True which fails
+                        # on some voice packs. Fall back to weights_only=False
+                        # (safe — these are official HuggingFace model files).
+                        try:
+                            pack = torch.load(str(vf), weights_only=False)
+                            self._pipeline.voices[voice_name] = pack
+                            loaded += 1
+                        except Exception as e2:
+                            print(f"[AudioLLM]   Warning: failed to load voice {voice_name}: {e2}")
+                print(f"[AudioLLM]   Pre-loaded {loaded} voice(s) from cache")
+            # Monkey-patch load_single_voice to use local cache with fallback.
+            # Without this, any voice not pre-loaded triggers hf_hub_download
+            # which crashes on macOS Python 3.13 due to SSL cert issues.
+            _orig_load = self._pipeline.load_single_voice
+            _voices_dir = voices_dir
+            _pipe = self._pipeline
+            def _safe_load_single_voice(voice: str):
+                # Already loaded
+                if voice in _pipe.voices:
+                    return _pipe.voices[voice]
+                # Try local cache file first
+                if voice.endswith('.pt'):
+                    local_path = Path(voice)
+                else:
+                    local_path = _voices_dir / f"{voice}.pt" if _voices_dir else None
+                if local_path and local_path.exists():
+                    try:
+                        pack = torch.load(str(local_path), weights_only=True)
+                    except Exception:
+                        pack = torch.load(str(local_path), weights_only=False)
+                    _pipe.voices[voice] = pack
+                    print(f"[AudioLLM]   Loaded voice from cache: {voice}")
+                    return pack
+                # Try original method (works if SSL is functional)
+                try:
+                    return _orig_load(voice)
+                except Exception as e:
+                    # Fallback: use first available cached voice
+                    if _pipe.voices:
+                        fallback = next(iter(_pipe.voices))
+                        print(f"[AudioLLM]   ⚠ Voice '{voice}' unavailable ({e}), falling back to '{fallback}'")
+                        return _pipe.voices[fallback]
+                    raise
+            self._pipeline.load_single_voice = _safe_load_single_voice
         else:
-            self._device = torch.device("cpu")
+            # Fallback: let Kokoro download via hf_hub_download
+            print(f"[AudioLLM]   No local cache, downloading from HuggingFace...")
+            self._pipeline = KPipeline(lang_code=lang_code)
         
-        # snapshot_download (inside liquid_audio) handles caching automatically:
-        # - If model is cached: returns cached path instantly (no network needed)
-        # - If not cached: downloads ~3 GB from HuggingFace (needs internet)
-        # NOTE: liquid_audio's from_pretrained does NOT support local_files_only —
-        #       passing it causes TypeError. The device param IS supported and required
-        #       (defaults to "cuda" which crashes on macOS).
-        try:
-            print(f"[AudioLLM] Step 3/5: loading processor on {self._device}...")
-            processor = LFM2AudioProcessor.from_pretrained(
-                HF_REPO, device=self._device
-            ).eval()
-            print(f"[AudioLLM] Step 4/5: loading model on {self._device}...")
-            model = LFM2AudioModel.from_pretrained(
-                HF_REPO, device=self._device
-            ).eval()
-        except Exception as e:
-            raise RuntimeError(
-                f"LFM2.5-Audio model failed to load. The model (~3 GB) downloads "
-                f"from HuggingFace on first use and requires internet. If this is "
-                f"a fresh machine, ensure you have internet access and ~4 GB free "
-                f"disk space, then try again via Health Portal → Repair. "
-                f"Error: {e}"
-            ) from e
-        
-        self._processor = processor
-        self._model = model
-        
-        print("[AudioLLM] Step 5/5: loading detokenizer (our own, bypasses processor.decode())...")
-        self._load_detokenizer()
+        self._pipeline_lang = lang_code
+        self._cache_dir = cache_dir
+        print(f"[AudioLLM] ✓ Kokoro pipeline ready")
     
-    def _load_detokenizer(self):
-        """Load the audio detokenizer directly, bypassing processor.decode().
-        
-        The liquid_audio processor.decode() method accesses a lazy property that
-        calls Lfm2Config.from_pretrained(), which triggers transformers' internal
-        import of torchcodec (a video library needing FFmpeg dylibs). This fails
-        in PyInstaller bundles because FFmpeg dylibs aren't bundled.
-        
-        Solution: load the detokenizer ourselves using json.load + direct
-        constructor, store it on our class, and call it directly in _tts_sync()
-        and _s2s_sync(). processor.decode() is never called.
-        """
-        import json
-        from pathlib import Path
-        from liquid_audio.detokenizer import LFM2AudioDetokenizer
-        from transformers import Lfm2Config
-        from safetensors.torch import load_file
-        
-        detok_path = self._processor.detokenizer_path
-        if detok_path is None:
-            raise RuntimeError("[AudioLLM] No detokenizer path found — model repo may be incomplete")
-        
-        # Load config via json.load — NOT from_pretrained — to avoid torchcodec
-        detok_config_path = Path(detok_path) / "config.json"
-        with open(detok_config_path) as f:
-            config_dict = json.load(f)
-        detok_config = Lfm2Config(**config_dict)
-        
-        # Same layer renaming the library does internally
-        if isinstance(detok_config.layer_types, list):
-            def rename_layer(layer):
-                if layer in ("conv", "full_attention"):
-                    return layer
-                elif layer == "sliding_attention":
-                    return "full_attention"
-                return layer
-            detok_config.layer_types = [rename_layer(l) for l in detok_config.layer_types]
-        
-        # Create on correct device (MPS/CPU) instead of hardcoded .cuda()
-        detok = LFM2AudioDetokenizer(detok_config).eval().to(self._device)
-        
-        detok_weights_path = Path(detok_path) / "model.safetensors"
-        detok_weights = load_file(str(detok_weights_path), device=str(self._device))
-        detok.load_state_dict(detok_weights)
-        detok.eval()
-        
-        # Validate: test-decode a dummy tensor to prove it works
-        dummy = torch.randint(0, 2048, (1, 8, 10), device=self._device)
-        test_out = detok(dummy)
-        assert test_out.shape[0] == 1, f"Detokenizer test failed: unexpected shape {test_out.shape}"
-        
-        self._detokenizer = detok
-        print(f"[AudioLLM] ✓ Detokenizer loaded on {self._device} (test decode OK)")
-    
-    def _decode_audio(self, audio_codes):
-        """Decode audio codes to waveform using our own detokenizer.
-        
-        Replaces processor.decode() which triggers torchcodec import chain.
-        """
-        if self._detokenizer is None:
-            raise RuntimeError("Detokenizer not loaded — initialize() must be called first")
-        if torch.any(audio_codes >= 2048) or torch.any(audio_codes < 0):
-            raise RuntimeError("expected audio codes in range [0, 2048)")
-        with torch.no_grad():
-            return self._detokenizer(audio_codes)
+    def _ensure_lang(self, voice: str):
+        """Switch pipeline language if voice requires it."""
+        voice_id = resolve_voice(voice)
+        voice_info = KOKORO_VOICES.get(voice_id)
+        if voice_info and voice_info["lang"] != self._pipeline_lang:
+            new_lang = voice_info["lang"]
+            print(f"[AudioLLM] Switching pipeline: {self._pipeline_lang} → {new_lang}")
+            self._load_model(new_lang)
     
     @staticmethod
-    def _save_wav(path: str, waveform, sample_rate: int = 24_000):
-        """Save waveform tensor as WAV using stdlib wave module.
-        
-        Replaces torchaudio.save() which triggers torchcodec import.
-        """
-        import wave
-        import struct
-        
-        # Handle tensor shapes: (1, N) or (N,)
-        if hasattr(waveform, 'numpy'):
-            audio = waveform.squeeze().cpu().float().numpy()
-        else:
-            audio = waveform
-        
+    def _save_wav(path: str, audio_data, sample_rate: int = SAMPLE_RATE):
+        """Save audio array as WAV. Accepts numpy arrays or PyTorch tensors."""
+        # Convert torch tensor to numpy if needed
+        if hasattr(audio_data, 'numpy'):
+            audio_data = audio_data.squeeze().cpu().float().numpy()
         # Convert float [-1, 1] to 16-bit PCM
-        pcm = (audio * 32767).clip(-32768, 32767).astype('int16')
+        if audio_data.dtype != np.int16:
+            pcm = (audio_data * 32767).clip(-32768, 32767).astype(np.int16)
+        else:
+            pcm = audio_data
         
         with wave.open(str(path), 'wb') as wf:
             wf.setnchannels(1)
@@ -220,11 +304,11 @@ class AudioLLMService:
     
     @property
     def is_available(self) -> bool:
-        """Check if the audio model is available."""
-        return self._initialized and self._model is not None and self._detokenizer is not None
+        """Check if the TTS model is available."""
+        return self._initialized and self._pipeline is not None
     
     async def transcribe(self, audio_path: str) -> str:
-        """Transcribe audio to text (ASR).
+        """Transcribe audio to text using mlx-whisper (ASR).
         
         Args:
             audio_path: Path to audio file
@@ -232,54 +316,32 @@ class AudioLLMService:
         Returns:
             Transcribed text
         """
-        if not self.is_available:
-            await self.initialize()
-            if not self.is_available:
-                raise RuntimeError("Audio model not available")
-        
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._transcribe_sync, audio_path)
     
     def _transcribe_sync(self, audio_path: str) -> str:
-        """Synchronous transcription."""
-        _ensure_audio_deps()
-        from liquid_audio import ChatState
-        
-        # Load audio
-        wav, sampling_rate = torchaudio.load(audio_path)
-        
-        # Set up chat for ASR
-        chat = ChatState(self._processor)
-        chat.new_turn("system")
-        chat.add_text("Perform ASR.")
-        chat.end_turn()
-        
-        chat.new_turn("user")
-        chat.add_audio(wav, sampling_rate)
-        chat.end_turn()
-        
-        chat.new_turn("assistant")
-        
-        # Generate text
-        text_parts = []
-        for t in self._model.generate_sequential(**chat, max_new_tokens=512):
-            if t.numel() == 1:
-                text_parts.append(self._processor.text.decode(t))
-        
-        return "".join(text_parts)
+        """Synchronous transcription via mlx-whisper."""
+        import mlx_whisper
+        result = mlx_whisper.transcribe(
+            audio_path, 
+            path_or_hf_repo="mlx-community/whisper-base-mlx"
+        )
+        return result.get("text", "").strip()
     
     async def text_to_speech(
         self, 
         text: str, 
         voice: str = DEFAULT_VOICE,
-        output_path: Optional[str] = None
+        output_path: Optional[str] = None,
+        speed: float = 1.0,
     ) -> str:
-        """Convert text to speech (TTS).
+        """Convert text to speech using Kokoro-82M.
         
         Args:
             text: Text to convert to speech
-            voice: Voice to use (us_male, us_female, uk_male, uk_female)
+            voice: Kokoro voice ID or legacy alias (us_male, etc.)
             output_path: Optional path to save audio file
+            speed: Speech speed multiplier (default 1.0)
             
         Returns:
             Path to generated audio file
@@ -287,7 +349,7 @@ class AudioLLMService:
         if not self.is_available:
             await self.initialize()
             if not self.is_available:
-                raise RuntimeError("Audio model not available")
+                raise RuntimeError("Kokoro TTS not available")
         
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
@@ -295,108 +357,65 @@ class AudioLLMService:
             self._tts_sync, 
             text, 
             voice, 
-            output_path
+            output_path,
+            speed,
         )
     
     def _tts_sync(
         self, 
         text: str, 
         voice: str, 
-        output_path: Optional[str]
+        output_path: Optional[str],
+        speed: float = 1.0,
     ) -> str:
-        """Synchronous TTS generation with sentence chunking."""
-        _ensure_audio_deps()
-        from liquid_audio import ChatState
+        """Synchronous TTS generation via Kokoro pipeline.
         
-        # Get voice prompt
-        voice_prompt = VOICE_PROMPTS.get(voice, VOICE_PROMPTS[DEFAULT_VOICE])
+        Kokoro's KPipeline handles phonemization, chunking, and synthesis.
+        It yields (graphemes, phonemes, audio_numpy) per sentence.
+        We concatenate with small pauses and crossfade for seamless output.
+        """
+        voice_id = resolve_voice(voice)
         
-        # Chunk text into sentences for reliable generation
+        # Switch language pipeline if needed
+        self._ensure_lang(voice_id)
+        
+        # Chunk text for better prosody on long inputs
         chunks = self._chunk_text_for_tts(text)
-        print(f"[AudioLLM] TTS: {len(chunks)} chunks from {len(text)} chars")
+        print(f"[AudioLLM] TTS: {len(chunks)} chunks, voice={voice_id}")
         
-        all_waveforms = []
+        all_segments: List[np.ndarray] = []
         
         for i, chunk in enumerate(chunks):
-            # Fresh chat state per chunk
-            chat = ChatState(self._processor)
-            chat.new_turn("system")
-            chat.add_text(voice_prompt)
-            chat.end_turn()
-            
-            chat.new_turn("user")
-            chat.add_text(chunk)
-            chat.end_turn()
-            
-            chat.new_turn("assistant")
-            
-            # Generate audio for this chunk
-            # Scale max_new_tokens: ~2.5 tokens per char gives headroom for shorter chunks
-            import time
-            chunk_max_tokens = min(1500, max(400, int(len(chunk) * 2.5)))
-            audio_out = []
-            gen_start = time.time()
-            token_count = 0
-            for t in self._model.generate_sequential(
-                **chat, 
-                max_new_tokens=chunk_max_tokens,
-                audio_temperature=0.8,
-                audio_top_k=64
-            ):
-                token_count += 1
-                if t.numel() > 1:
-                    audio_out.append(t)
-                if token_count % 50 == 0:
-                    elapsed = time.time() - gen_start
-                    print(f"[AudioLLM]   chunk {i+1}: {token_count} tokens, {len(audio_out)} audio frames, {elapsed:.1f}s")
-            
-            if not audio_out:
-                print(f"[AudioLLM] Warning: chunk {i+1}/{len(chunks)} produced no audio, skipping")
+            chunk_audio_parts = []
+            try:
+                generator = self._pipeline(chunk, voice=voice_id, speed=speed)
+                for gs, ps, audio in generator:
+                    if audio is not None and len(audio) > 0:
+                        # Kokoro returns torch tensors — convert to numpy
+                        if hasattr(audio, 'numpy'):
+                            audio = audio.squeeze().cpu().float().numpy()
+                        chunk_audio_parts.append(audio)
+            except Exception as e:
+                print(f"[AudioLLM] Warning: chunk {i+1}/{len(chunks)} failed: {e}")
                 continue
             
-            # Filter out end-of-audio markers before stacking
-            valid_frames = [f for f in audio_out if not (f == 2048).any()]
-            if not valid_frames:
-                print(f"[AudioLLM] Warning: chunk {i+1} had only end markers")
-                continue
-                
-            audio_codes = torch.stack(valid_frames, 1).unsqueeze(0)
-            waveform = self._decode_audio(audio_codes)
-            all_waveforms.append(waveform.cpu())
-            print(f"[AudioLLM] Chunk {i+1}/{len(chunks)}: {len(valid_frames)} frames, {waveform.shape[-1]/24000:.1f}s")
+            if chunk_audio_parts:
+                # Kokoro yields per-sentence — join with tiny pause (60ms)
+                pause = np.zeros(int(SAMPLE_RATE * 0.06), dtype=np.float32)
+                joined = chunk_audio_parts[0]
+                for part in chunk_audio_parts[1:]:
+                    joined = np.concatenate([joined, pause, part])
+                all_segments.append(joined)
+                dur = len(joined) / SAMPLE_RATE
+                print(f"[AudioLLM]   chunk {i+1}: {dur:.1f}s")
         
-        if not all_waveforms:
+        if not all_segments:
             raise RuntimeError("No audio generated from any text chunk")
         
-        # Trim leading/trailing near-silence from each waveform to reduce dead air
-        trimmed = []
-        for w in all_waveforms:
-            trimmed.append(self._trim_silence(w))
-        all_waveforms = trimmed
-        
-        # Crossfade between adjacent waveforms for seamless joins
-        if len(all_waveforms) > 1:
-            crossfade_samples = int(24000 * 0.03)  # 30ms crossfade at 24kHz
-            merged = all_waveforms[0]
-            for j in range(1, len(all_waveforms)):
-                nxt = all_waveforms[j]
-                # Add a small natural pause (80ms silence) then crossfade
-                pause = torch.zeros(1, int(24000 * 0.08))
-                merged = torch.cat([merged, pause], dim=-1)
-                # Apply crossfade if both segments are long enough
-                if merged.shape[-1] > crossfade_samples and nxt.shape[-1] > crossfade_samples:
-                    tail = merged[..., -crossfade_samples:]
-                    head = nxt[..., :crossfade_samples]
-                    fade_out = torch.linspace(1.0, 0.0, crossfade_samples)
-                    fade_in = torch.linspace(0.0, 1.0, crossfade_samples)
-                    blended = tail * fade_out + head * fade_in
-                    merged = torch.cat([merged[..., :-crossfade_samples], blended, nxt[..., crossfade_samples:]], dim=-1)
-                else:
-                    merged = torch.cat([merged, nxt], dim=-1)
-            final_waveform = merged
-        else:
-            final_waveform = all_waveforms[0]
-        print(f"[AudioLLM] TTS complete: {final_waveform.shape[-1]/24000:.1f}s total")
+        # Crossfade segments for seamless output
+        final_audio = self._crossfade_segments(all_segments)
+        total_dur = len(final_audio) / SAMPLE_RATE
+        print(f"[AudioLLM] TTS complete: {total_dur:.1f}s total")
         
         # Save to file
         if output_path is None:
@@ -404,36 +423,42 @@ class AudioLLMService:
             output_dir.mkdir(exist_ok=True)
             output_path = str(output_dir / f"tts_{uuid.uuid4().hex[:8]}.wav")
         
-        self._save_wav(output_path, final_waveform, 24_000)
-        
+        self._save_wav(output_path, final_audio, SAMPLE_RATE)
         return output_path
     
-    def _trim_silence(self, waveform, threshold: float = 0.01, min_samples: int = 480) -> 'torch.Tensor':
-        """Trim leading/trailing near-silence from a waveform tensor.
+    @staticmethod
+    def _crossfade_segments(segments: List[np.ndarray], pause_ms: int = 80, crossfade_ms: int = 30) -> np.ndarray:
+        """Crossfade audio segments with natural pauses."""
+        if len(segments) == 1:
+            return segments[0]
         
-        Preserves at least min_samples (20ms at 24kHz) at each end to avoid
-        cutting into actual speech. Only trims truly silent padding.
-        """
-        audio = waveform.squeeze()
-        abs_audio = audio.abs()
-        # Find first and last sample above threshold
-        above = (abs_audio > threshold).nonzero(as_tuple=True)[0]
-        if len(above) == 0:
-            return waveform  # All silence, return as-is
-        start = max(0, above[0].item() - min_samples)
-        end = min(len(audio), above[-1].item() + min_samples + 1)
-        return audio[start:end].unsqueeze(0)
+        crossfade_samples = int(SAMPLE_RATE * crossfade_ms / 1000)
+        pause_samples = int(SAMPLE_RATE * pause_ms / 1000)
+        pause = np.zeros(pause_samples, dtype=np.float32)
+        
+        merged = segments[0]
+        for nxt in segments[1:]:
+            merged = np.concatenate([merged, pause])
+            # Apply crossfade if both segments are long enough
+            if len(merged) > crossfade_samples and len(nxt) > crossfade_samples:
+                tail = merged[-crossfade_samples:]
+                head = nxt[:crossfade_samples]
+                fade_out = np.linspace(1.0, 0.0, crossfade_samples, dtype=np.float32)
+                fade_in = np.linspace(0.0, 1.0, crossfade_samples, dtype=np.float32)
+                blended = tail * fade_out + head * fade_in
+                merged = np.concatenate([merged[:-crossfade_samples], blended, nxt[crossfade_samples:]])
+            else:
+                merged = np.concatenate([merged, nxt])
+        
+        return merged
     
-    def _chunk_text_for_tts(self, text: str, max_chunk_chars: int = 350) -> list:
+    def _chunk_text_for_tts(self, text: str, max_chunk_chars: int = 500) -> list:
         """Split text into sentence-level chunks for TTS generation.
         
-        Shorter chunks (2-3 sentences) produce dramatically better prosody
-        and natural speech from the LFM2.5-Audio model. The official Liquid
-        examples use single sentences. We use ~350 chars (~50 words, ~15s)
-        as the sweet spot between quality and efficiency.
+        Kokoro handles per-sentence splitting internally, but feeding very
+        long text in one shot can degrade quality. We chunk at ~500 chars
+        (Kokoro is more robust than LFM2.5 at longer inputs).
         """
-        import re
-        
         # First try paragraph boundaries (double newline)
         paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text.strip()) if p.strip()]
         
@@ -441,7 +466,6 @@ class AudioLLMService:
         current = ""
         
         for para in paragraphs:
-            # If a single paragraph fits, add it
             if len(para) <= max_chunk_chars:
                 if current and len(current) + len(para) + 2 > max_chunk_chars:
                     chunks.append(current.strip())
@@ -449,7 +473,6 @@ class AudioLLMService:
                 else:
                     current = f"{current}\n\n{para}".strip() if current else para
             else:
-                # Paragraph too long — split on sentences
                 if current:
                     chunks.append(current.strip())
                     current = ""
@@ -467,11 +490,46 @@ class AudioLLMService:
         if current.strip():
             chunks.append(current.strip())
         
-        # Fallback: if no boundaries found, take the whole text
         if not chunks and text.strip():
             chunks = [text.strip()[:max_chunk_chars]]
         
-        return chunks
+        # Safety net: force-split any chunk still over 2x limit
+        # This prevents mega-chunks that crash Kokoro or consume excessive memory
+        hard_limit = max_chunk_chars * 2
+        final = []
+        for chunk in chunks:
+            if len(chunk) <= hard_limit:
+                final.append(chunk)
+            else:
+                # Split at clause boundaries, then word boundaries as last resort
+                parts = re.split(r'(?:\n|;\s*|,\s+)', chunk)
+                buf = ""
+                for p in parts:
+                    p = p.strip()
+                    if not p:
+                        continue
+                    if buf and len(buf) + len(p) + 1 > max_chunk_chars:
+                        final.append(buf)
+                        buf = p
+                    else:
+                        buf = f"{buf} {p}".strip() if buf else p
+                if buf:
+                    # Word-boundary split if still too large
+                    if len(buf) > hard_limit:
+                        words = buf.split()
+                        wbuf = ""
+                        for w in words:
+                            if wbuf and len(wbuf) + len(w) + 1 > max_chunk_chars:
+                                final.append(wbuf)
+                                wbuf = w
+                            else:
+                                wbuf = f"{wbuf} {w}".strip() if wbuf else w
+                        if wbuf:
+                            final.append(wbuf)
+                    else:
+                        final.append(buf)
+        
+        return final
     
     async def speech_to_speech(
         self,
@@ -480,12 +538,12 @@ class AudioLLMService:
         voice: str = DEFAULT_VOICE,
         output_path: Optional[str] = None
     ) -> tuple[str, str]:
-        """Full speech-to-speech conversation.
+        """Speech-to-speech via decomposed pipeline: ASR → Ollama → TTS.
         
         Args:
             audio_path: Path to input audio file
-            system_prompt: System prompt for the conversation
-            voice: Voice for output
+            system_prompt: System prompt for the LLM
+            voice: Voice for TTS output
             output_path: Optional path to save output audio
             
         Returns:
@@ -494,94 +552,51 @@ class AudioLLMService:
         if not self.is_available:
             await self.initialize()
             if not self.is_available:
-                raise RuntimeError("Audio model not available")
+                raise RuntimeError("Kokoro TTS not available")
         
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
-            self._s2s_sync,
-            audio_path,
+        # Step 1: ASR — transcribe input audio
+        user_text = await self.transcribe(audio_path)
+        if not user_text.strip():
+            raise RuntimeError("Could not transcribe any speech from audio")
+        print(f"[AudioLLM] S2S ASR: '{user_text[:80]}...'")
+        
+        # Step 2: LLM — generate response via Ollama
+        from services.rag_engine import rag_engine
+        response_text = await rag_engine._call_ollama(
             system_prompt,
-            voice,
-            output_path
+            user_text,
+            num_predict=512,
+            temperature=0.7,
         )
-    
-    def _s2s_sync(
-        self,
-        audio_path: str,
-        system_prompt: str,
-        voice: str,
-        output_path: Optional[str]
-    ) -> tuple[str, str]:
-        """Synchronous speech-to-speech."""
-        _ensure_audio_deps()
-        from liquid_audio import ChatState
+        if not response_text.strip():
+            response_text = "I'm sorry, I couldn't generate a response."
+        print(f"[AudioLLM] S2S LLM: '{response_text[:80]}...'")
         
-        # Load input audio
-        wav, sampling_rate = torchaudio.load(audio_path)
+        # Step 3: TTS — synthesize response audio
+        audio_path_out = await self.text_to_speech(
+            text=response_text,
+            voice=voice,
+            output_path=output_path,
+        )
         
-        # Set up chat for interleaved generation
-        chat = ChatState(self._processor)
-        chat.new_turn("system")
-        chat.add_text(system_prompt)
-        chat.end_turn()
-        
-        chat.new_turn("user")
-        chat.add_audio(wav, sampling_rate)
-        chat.end_turn()
-        
-        chat.new_turn("assistant")
-        
-        # Generate interleaved text and audio
-        text_parts = []
-        audio_out = []
-        
-        for t in self._model.generate_interleaved(
-            **chat,
-            max_new_tokens=1024,
-            audio_temperature=0.8,
-            audio_top_k=64
-        ):
-            if t.numel() == 1:
-                text_parts.append(self._processor.text.decode(t))
-            else:
-                audio_out.append(t)
-        
-        response_text = "".join(text_parts)
-        
-        # Detokenize audio
-        if output_path is None:
-            output_dir = Path(settings.data_dir) / "audio_output"
-            output_dir.mkdir(exist_ok=True)
-            output_path = str(output_dir / f"s2s_{uuid.uuid4().hex[:8]}.wav")
-        
-        if audio_out:
-            audio_codes = torch.stack(audio_out[:-1], 1).unsqueeze(0)
-            waveform = self._decode_audio(audio_codes)
-            self._save_wav(output_path, waveform.cpu(), 24_000)
-        
-        return response_text, output_path
+        return response_text, audio_path_out
     
     async def generate_podcast_audio(
         self,
         script: str,
-        voice: str = "uk_male",
+        voice: str = "bm_george",
         output_path: Optional[str] = None
     ) -> str:
         """Generate audio for a podcast script.
         
-        For longer scripts, this splits into segments and generates each.
-        
         Args:
             script: Full podcast script text
-            voice: Voice to use
+            voice: Kokoro voice ID or legacy alias
             output_path: Optional path for output
             
         Returns:
             Path to generated audio file
         """
-        # For now, use TTS for the full script
-        # Future: Split into speaker segments and use different voices
         return await self.text_to_speech(script, voice, output_path)
 
 
@@ -590,48 +605,54 @@ audio_llm = AudioLLMService()
 
 
 async def check_audio_llm_available() -> dict:
-    """Check if audio LLM is available and return status."""
-    # Step-by-step import diagnostics
+    """Check if Kokoro TTS + mlx-whisper ASR are available."""
     diag = {}
-    try:
-        import torch
-        diag["torch"] = f"ok (v{torch.__version__})"
-    except Exception as e:
-        diag["torch"] = f"FAIL: {e}"
     
+    # Check kokoro
     try:
-        import torchaudio
-        diag["torchaudio"] = f"ok (v{torchaudio.__version__})"
+        import kokoro
+        diag["kokoro"] = f"ok (v{kokoro.__version__})"
     except Exception as e:
-        diag["torchaudio"] = f"FAIL: {e}"
+        diag["kokoro"] = f"FAIL: {e}"
     
+    # Check misaki (G2P)
     try:
-        import transformers
-        diag["transformers"] = f"ok (v{transformers.__version__})"
+        import misaki
+        diag["misaki"] = "ok"
     except Exception as e:
-        diag["transformers"] = f"FAIL: {e}"
+        diag["misaki"] = f"FAIL: {e}"
     
+    # Check espeak-ng (optional — misaki handles G2P for English without it)
+    import shutil
+    espeak_path = shutil.which("espeak-ng")
+    diag["espeak_ng"] = f"ok ({espeak_path})" if espeak_path else "not installed (optional, English works via misaki)"
+    
+    # Check mlx-whisper (ASR)
     try:
-        from liquid_audio import LFM2AudioModel, LFM2AudioProcessor
-        diag["liquid_audio"] = "ok"
-        
-        return {
-            "available": True,
-            "initialized": audio_llm.is_available,
-            "message": "LFM2.5-Audio is available",
-            "init_error": audio_llm._init_error,
-            "diagnostics": diag
-        }
+        import mlx_whisper
+        diag["mlx_whisper"] = "ok"
     except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        print(f"[AudioLLM] Status check import failed:\n{tb}")
-        diag["liquid_audio"] = f"FAIL: {e}"
-        return {
-            "available": False,
-            "initialized": False,
-            "message": f"liquid-audio import failed: {e}",
-            "traceback": tb,
-            "init_error": audio_llm._init_error,
-            "diagnostics": diag
-        }
+        diag["mlx_whisper"] = f"FAIL: {e}"
+    
+    # Check soundfile
+    try:
+        import soundfile
+        diag["soundfile"] = "ok"
+    except Exception as e:
+        diag["soundfile"] = f"FAIL: {e}"
+    
+    # Check HuggingFace model cache
+    import os
+    hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
+    kokoro_cache = os.path.join(hf_cache, "models--hexgrad--Kokoro-82M")
+    diag["model_cached"] = "yes" if os.path.exists(kokoro_cache) else "no (will download ~350 MB on first use)"
+    
+    all_ok = all("FAIL" not in str(v) for v in diag.values() if v != diag.get("model_cached"))
+    
+    return {
+        "available": all_ok,
+        "initialized": audio_llm.is_available,
+        "message": "Kokoro-82M TTS ready" if all_ok else "Some audio dependencies missing",
+        "init_error": audio_llm._init_error,
+        "diagnostics": diag
+    }

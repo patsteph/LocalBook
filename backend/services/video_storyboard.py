@@ -505,6 +505,7 @@ Output a JSON array of exactly {target_scenes} scenes. First scene must be title
         All scenes are generated concurrently via asyncio.gather for speed.
         """
         from services.rag_engine import rag_engine
+        from config import settings
 
         total_scenes = len(scenes)
 
@@ -530,11 +531,11 @@ in a {duration_minutes}-minute educational video about "{topic}".
 Your narration will be converted to speech via TTS. Write natural, engaging spoken language.
 
 RULES:
-1. Write exactly {target_words}-{target_words + 15} words. Count carefully.
+1. Write 2-4 sentences of substantial narration. Be thorough, not brief.
 2. Be specific and substantive — reference the actual data shown on the slide.
 3. Speak directly to the viewer. Vary your tone: use questions, insights, transitions.
 4. Do NOT describe the slide itself ("As you can see..."). Instead, EXPLAIN the content.
-5. Output ONLY the narration text — no labels, no quotes, no formatting."""
+5. Output ONLY the narration text — no labels, no quotes, no formatting, no word counts."""
 
             prompt = f"""Scene {scene_idx + 1} of {total_scenes}.
 
@@ -545,12 +546,12 @@ NARRATION GUIDE: {guide}
 RESEARCH CONTEXT (use for specific details):
 {context_excerpt[:2000]}
 
-Write {target_words}-{target_words + 15} words of spoken narration for this slide. Output ONLY the narration text."""
+Write 2-4 sentences of spoken narration for this slide. Output ONLY the narration text."""
 
             try:
                 narration = await rag_engine._call_ollama(
                     system_prompt, prompt,
-                    # model=None uses the default fast model (phi4-mini)
+                    model=settings.ollama_model,
                     num_predict=max(200, target_words * 3),
                     num_ctx=4096,
                     temperature=0.7,

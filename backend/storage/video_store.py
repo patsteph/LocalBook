@@ -59,7 +59,7 @@ class VideoStore:
         topic: str = "",
         duration_minutes: int = 5,
         visual_style: str = "classic",
-        voice: str = "us_female",
+        voice: str = "af_heart",
         format_type: str = "explainer",
     ) -> Dict:
         """Create a new video generation record"""

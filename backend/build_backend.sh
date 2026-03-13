@@ -31,6 +31,21 @@ if ! python -c "import pyinstaller" 2>/dev/null; then
     pip install -q -r requirements.txt
 fi
 
+# Kokoro TTS: all deps (misaki, spacy, soundfile, etc.) are in requirements.txt.
+# Only kokoro itself needs --no-deps because it declares misaki>=0.7.16 but
+# the latest PyPI misaki is 0.7.4 (works fine at runtime, pip just can't resolve it).
+if ! python -c "import kokoro" 2>/dev/null; then
+    echo -e "${YELLOW}Installing Kokoro TTS (--no-deps)...${NC}"
+    pip install -q --no-deps kokoro 2>/dev/null || echo -e "${YELLOW}  kokoro install warning (non-fatal)${NC}"
+fi
+
+# Verify critical Kokoro imports — warn loudly if missing
+if ! python -c "import kokoro; import misaki; import soundfile" 2>/dev/null; then
+    echo -e "${RED}⚠ WARNING: Kokoro TTS packages not importable after install.${NC}"
+    echo -e "${RED}  Audio generation (podcasts, video narration) will not work.${NC}"
+    echo -e "${RED}  Try: pip install kokoro misaki soundfile spacy${NC}"
+fi
+
 OUTPUT_DIR="../src-tauri/resources/backend"
 
 echo -e "${YELLOW}Output: ${OUTPUT_DIR}${NC}"
@@ -207,9 +222,37 @@ pyinstaller \
     --collect-all=mlx \
     --collect-all=mlx_metal \
     --collect-all=mlx_whisper \
-    --collect-all=liquid_audio \
-    --collect-all=torchaudio \
-    --copy-metadata=torchcodec \
+    --collect-all=kokoro \
+    --collect-all=misaki \
+    --collect-all=spacy \
+    --collect-all=phonemizer \
+    --collect-all=num2words \
+    --collect-all=soundfile \
+    --collect-all=loguru \
+    --collect-all=dlinfo \
+    --collect-all=segments \
+    --collect-all=csvw \
+    --collect-all=rdflib \
+    --collect-all=isodate \
+    --collect-all=language_tags \
+    --collect-all=rfc3986 \
+    --collect-all=uritemplate \
+    --collect-all=termcolor \
+    --collect-all=thinc \
+    --collect-all=blis \
+    --collect-all=cymem \
+    --collect-all=murmurhash \
+    --collect-all=preshed \
+    --collect-all=srsly \
+    --collect-all=catalogue \
+    --collect-all=wasabi \
+    --collect-all=weasel \
+    --collect-all=confection \
+    --collect-all=cloudpathlib \
+    --collect-all=smart_open \
+    --collect-all=spacy_legacy \
+    --collect-all=spacy_loggers \
+    --hidden-import=docopt \
     --collect-all=zstandard \
     --collect-all=bertopic \
     --collect-all=umap \
@@ -294,6 +337,40 @@ if [ -n "$PANDAS_CONFIG" ]; then
 fi
 
 echo -e "${GREEN}✓ Backend built: $OUTPUT_DIR/localbook-backend/${NC}"
+
+# Verify Kokoro TTS bundled correctly — fail fast if any dep is missing
+echo -e "${YELLOW}Verifying Kokoro TTS bundle integrity...${NC}"
+KOKORO_EXIT=0
+"$OUTPUT_DIR/localbook-backend/localbook-backend" --verify-kokoro 2>/dev/null || KOKORO_EXIT=$?
+if [ $KOKORO_EXIT -ne 0 ]; then
+    # Fallback: test imports using the venv Python against the bundle's _internal
+    KOKORO_EXIT=0
+    PYTHONPATH="$OUTPUT_DIR/localbook-backend/_internal" python -c "
+import sys, importlib
+mods = ['kokoro','misaki','phonemizer','segments','csvw','language_tags',
+        'rdflib','soundfile','loguru','num2words','dlinfo','spacy','thinc',
+        'blis','cymem','murmurhash','preshed','srsly','catalogue','isodate']
+failed = []
+for m in mods:
+    try:
+        importlib.import_module(m)
+    except Exception as e:
+        failed.append(f'{m}: {e}')
+if failed:
+    print('KOKORO BUNDLE VERIFICATION FAILED:')
+    for f in failed:
+        print(f'  ✗ {f}')
+    sys.exit(1)
+else:
+    print('All Kokoro imports verified OK')
+" 2>/dev/null || KOKORO_EXIT=$?
+fi
+if [ $KOKORO_EXIT -eq 0 ]; then
+    echo -e "${GREEN}✓ Kokoro TTS bundle verified${NC}"
+else
+    echo -e "${RED}✗ Kokoro TTS bundle verification FAILED — check missing deps above${NC}"
+    echo -e "${YELLOW}  The build will continue but TTS may not work at runtime${NC}"
+fi
 
 # Trim unnecessary bulk from bundle
 echo -e "${YELLOW}Trimming unnecessary files from bundle...${NC}"

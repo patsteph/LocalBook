@@ -33,7 +33,7 @@ if ! command -v brew &> /dev/null; then
     fi
 fi
 
-# Require Python 3.12+ (liquid-audio TTS requires 3.12+)
+# Require Python 3.12+
 PYTHON_CMD=""
 if command -v python3.12 &> /dev/null; then
     PYTHON_CMD="python3.12"
@@ -150,6 +150,8 @@ if [ ! -f "$BACKEND_EXE" ] || [ "$DO_REBUILD" = true ] || [ "$DO_CLEAN" = true ]
     python -c "import ebooklib" 2>/dev/null || MISSING="$MISSING ebooklib"
     python -c "import odf" 2>/dev/null || MISSING="$MISSING odfpy"
     python -c "import nbformat" 2>/dev/null || MISSING="$MISSING nbformat"
+    python -c "import misaki" 2>/dev/null || MISSING="$MISSING misaki"
+    python -c "import soundfile" 2>/dev/null || MISSING="$MISSING soundfile"
     
     if [ -n "$MISSING" ]; then
         echo -e "${YELLOW}Installing missing packages:$MISSING${NC}"

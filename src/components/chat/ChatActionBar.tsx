@@ -136,6 +136,7 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
   const [audioDuration, setAudioDuration] = useState(() => parseInt(localStorage.getItem('lb-bar-audio-dur') || '15'));
   const [audioVoices, setAudioVoices] = useState(() => localStorage.getItem('lb-bar-audio-voices') || 'mf');
   const [audioAccent, setAudioAccent] = useState(() => localStorage.getItem('lb-bar-audio-accent') || 'us');
+  const [showMoreLanguages, setShowMoreLanguages] = useState(false);
 
   // ── Visual config ───────────────────────────────────────────────────────
   const [visualType, setVisualType] = useState<DiagramType>(() => (localStorage.getItem('lb-bar-visual-type') as DiagramType) || 'auto');
@@ -159,7 +160,7 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
   const [videoTopic, setVideoTopic] = useState('');
   const [videoDuration, setVideoDuration] = useState(() => parseInt(localStorage.getItem('lb-bar-video-dur') || '5'));
   const [videoStyle, setVideoStyle] = useState(() => localStorage.getItem('lb-bar-video-style') || 'classic');
-  const [videoVoice, setVideoVoice] = useState(() => localStorage.getItem('lb-bar-video-voice') || 'us_female');
+  const [videoVoice, setVideoVoice] = useState(() => localStorage.getItem('lb-bar-video-voice') || 'af_heart');
   const [videoFormat, setVideoFormat] = useState<'explainer' | 'brief'>(() => (localStorage.getItem('lb-bar-video-format') as any) || 'explainer');
   const [videoStyles, setVideoStyles] = useState<VisualStyle[]>([]);
 
@@ -796,12 +797,20 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
                   </div>
                 </div>
                 <div>
-                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Accent</label>
-                  <div className="flex gap-1">
+                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Language</label>
+                  <div className="grid grid-cols-3 gap-1">
                     {([['us', 'American'], ['uk', 'British']] as const).map(([val, label]) => (
-                      <button key={val} onClick={() => setAudioAccent(val)} className={`flex-1 px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${audioAccent === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
+                      <button key={val} onClick={() => setAudioAccent(val)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${audioAccent === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
                     ))}
+                    <button onClick={() => setShowMoreLanguages(!showMoreLanguages)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${showMoreLanguages || !['us', 'uk'].includes(audioAccent) ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{showMoreLanguages ? '− Languages' : '+ Languages'}</button>
                   </div>
+                  {(showMoreLanguages || !['us', 'uk'].includes(audioAccent)) && (
+                    <div className="grid grid-cols-3 gap-1 mt-1">
+                      {([['es', 'Spanish'], ['fr', 'French'], ['hi', 'Hindi'], ['it', 'Italian'], ['ja', 'Japanese'], ['pt', 'Portuguese'], ['zh', 'Chinese']] as const).map(([val, label]) => (
+                        <button key={val} onClick={() => setAudioAccent(val)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${audioAccent === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </CanvasActionPopover>
@@ -884,7 +893,7 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
                 <div>
                   <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Narrator Voice</label>
                   <div className="grid grid-cols-2 gap-1">
-                    {([['us_female', 'US Female'], ['us_male', 'US Male'], ['uk_female', 'UK Female'], ['uk_male', 'UK Male']] as const).map(([val, label]) => (
+                    {([['af_heart', 'Heart (US F)'], ['af_bella', 'Bella (US F)'], ['am_adam', 'Adam (US M)'], ['am_michael', 'Michael (US M)'], ['bf_emma', 'Emma (UK F)'], ['bm_george', 'George (UK M)']] as const).map(([val, label]) => (
                       <button key={val} onClick={() => setVideoVoice(val)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${videoVoice === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
                     ))}
                   </div>

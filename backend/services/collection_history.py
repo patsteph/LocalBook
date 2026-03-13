@@ -5,7 +5,7 @@ Stores a rolling log of collection runs per notebook for the Profile view.
 """
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -59,6 +59,9 @@ def record_collection_run(
     duration_ms: float = 0,
     trigger: str = "manual",  # manual, scheduled, first_sweep
     keywords_used: Optional[List[str]] = None,
+    queries_used: Optional[List[str]] = None,
+    exploration_queries: Optional[List[str]] = None,
+    rejection_reasons: Optional[Dict[str, int]] = None,
     error: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Record a collection run in the history"""
@@ -72,6 +75,9 @@ def record_collection_run(
         "duration_ms": round(duration_ms, 1),
         "trigger": trigger,
         "keywords_used": keywords_used or [],
+        "queries_used": queries_used or [],
+        "exploration_queries": exploration_queries or [],
+        "rejection_reasons": rejection_reasons or {},
         "error": error,
     }
 
@@ -94,6 +100,126 @@ def get_collection_history(
     history = _load_history(notebook_id)
     # Most recent first
     return list(reversed(history[-limit:]))
+
+
+def get_recent_queries(
+    notebook_id: str,
+    lookback_runs: int = 5,
+) -> List[str]:
+    """Get queries used in recent collection runs for rotation/dedup.
+    
+    Returns a flat list of all queries (smart + exploration) used in the
+    last N runs. The collector uses this to avoid repeating the same
+    searches and ensure each run explores different terrain.
+    """
+    history = _load_history(notebook_id)
+    recent = history[-lookback_runs:] if history else []
+    
+    all_queries = []
+    for h in recent:
+        all_queries.extend(h.get("queries_used", []))
+        all_queries.extend(h.get("exploration_queries", []))
+        all_queries.extend(h.get("keywords_used", []))
+    
+    # Deduplicate while preserving order (most recent first)
+    seen = set()
+    unique = []
+    for q in reversed(all_queries):
+        q_lower = q.lower().strip()
+        if q_lower not in seen:
+            seen.add(q_lower)
+            unique.append(q)
+    return list(reversed(unique))
+
+
+# ── Stagnation Detection ──
+
+STAGNATION_MILD_DAYS = 5       # Widen queries, cross-notebook seeds, lower confidence floor
+STAGNATION_MODERATE_DAYS = 10  # + Morning brief mention, suggest adding sources
+STAGNATION_PLATEAU_DAYS = 15   # + Auto-reduce collection frequency
+
+
+def detect_stagnation(notebook_id: str) -> Dict[str, Any]:
+    """Analyze collection history to detect growth stagnation.
+
+    Returns a stagnation report with:
+        stagnating: bool — whether the notebook is stagnating
+        severity: None | 'mild' | 'moderate' | 'plateau'
+        days_since_growth: int — calendar days since last approved item
+        total_dry_runs: int — consecutive scheduled runs with 0 approved
+        dominant_rejection_reasons: dict — why items are failing
+    """
+    history = _load_history(notebook_id)
+
+    if not history:
+        return {
+            "stagnating": False,
+            "severity": None,
+            "days_since_growth": 0,
+            "total_dry_runs": 0,
+            "dominant_rejection_reasons": {},
+        }
+
+    # Find the last run that approved at least one item
+    last_growth_ts = None
+    consecutive_dry = 0
+    dry_rejection_reasons: Dict[str, int] = {}
+
+    for entry in reversed(history):
+        if entry.get("items_approved", 0) > 0:
+            last_growth_ts = entry.get("timestamp")
+            break
+        # Only count scheduled runs (manual runs are user-triggered experiments)
+        if entry.get("trigger") in ("scheduled", "first_sweep"):
+            consecutive_dry += 1
+            for reason, count in entry.get("rejection_reasons", {}).items():
+                dry_rejection_reasons[reason] = dry_rejection_reasons.get(reason, 0) + count
+
+    # Calculate days since last growth
+    now = datetime.utcnow()
+    if last_growth_ts:
+        try:
+            last_growth_dt = datetime.fromisoformat(last_growth_ts.replace("Z", "+00:00").replace("+00:00", ""))
+            days_since = (now - last_growth_dt).days
+        except (ValueError, TypeError):
+            days_since = 0
+    elif history:
+        # Never had growth — measure from first run
+        try:
+            first_ts = history[0].get("timestamp", "")
+            first_dt = datetime.fromisoformat(first_ts.replace("Z", "+00:00").replace("+00:00", ""))
+            days_since = (now - first_dt).days
+        except (ValueError, TypeError):
+            days_since = 0
+    else:
+        days_since = 0
+
+    # Determine severity tier
+    severity = None
+    stagnating = False
+    if days_since >= STAGNATION_PLATEAU_DAYS:
+        severity = "plateau"
+        stagnating = True
+    elif days_since >= STAGNATION_MODERATE_DAYS:
+        severity = "moderate"
+        stagnating = True
+    elif days_since >= STAGNATION_MILD_DAYS:
+        severity = "mild"
+        stagnating = True
+
+    if stagnating:
+        logger.info(
+            f"[Stagnation] {notebook_id}: severity={severity}, "
+            f"days_since_growth={days_since}, dry_runs={consecutive_dry}"
+        )
+
+    return {
+        "stagnating": stagnating,
+        "severity": severity,
+        "days_since_growth": days_since,
+        "total_dry_runs": consecutive_dry,
+        "dominant_rejection_reasons": dry_rejection_reasons,
+    }
 
 
 def get_collection_stats(notebook_id: str) -> Dict[str, Any]:

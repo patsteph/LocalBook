@@ -54,8 +54,20 @@ youtube-transcript-api>=0.6.0
 # Audio/Video transcription (requires ffmpeg: brew install ffmpeg)
 # v1.20: Moved to Python 3.12+ — dropped openai-whisper
 mlx-whisper; sys_platform == "darwin"  # Apple MLX Whisper — fast transcription on Apple Silicon
-torchaudio>=2.0.0  # Audio I/O for TTS pipeline (matches torch version)
-liquid-audio>=1.0.0  # LFM2.5-Audio TTS — rivals ElevenLabs quality (requires Python 3.12+)
+# Kokoro-82M TTS (Apache 2.0, 82M params, multi-language/multi-voice)
+# NOTE: On Python 3.13, spacy's blis dep may fail to compile when pulled
+# transitively by kokoro→misaki. build_backend.sh has a fallback that installs
+# spacy first (pre-built wheel), then kokoro --no-deps. All deps are also
+# pinned in requirements.txt for normal pip install.
+kokoro>=0.7.0
+misaki>=0.7.0
+soundfile>=0.12.0
+loguru>=0.7.0
+num2words>=0.5.0
+phonemizer>=3.0.0
+dlinfo>=1.2.0
+segments>=2.0.0
+spacy>=3.7.0
 
 # System monitoring
 psutil>=5.9.0  # For health portal system info

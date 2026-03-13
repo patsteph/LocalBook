@@ -107,6 +107,8 @@ if [ ! -d "backend/.venv" ]; then
     python3 -m venv .venv
     source .venv/bin/activate
     pip install -q -r requirements.txt
+    # kokoro needs --no-deps (upstream misaki version mismatch in metadata)
+    pip install -q --no-deps kokoro 2>/dev/null || true
     cd ..
     echo -e "${GREEN}✓ Python environment ready${NC}"
 fi

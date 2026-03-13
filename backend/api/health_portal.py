@@ -507,47 +507,68 @@ async def full_health_check():
             "error": f"Check failed: {str(e)[:30]}"
         })
     
-    # LFM2.5-Audio Model Check (required for video narration & podcast audio)
+    # Kokoro-82M TTS + mlx-whisper ASR Check (required for video narration & podcast audio)
     try:
         from services.audio_llm import audio_llm, check_audio_llm_available
         audio_status = await check_audio_llm_available()
+        diag = audio_status.get("diagnostics", {})
+        model_cached = diag.get("model_cached", "").startswith("yes")
+        deps_ok = audio_status.get("available")
         
         if audio_llm.is_available:
+            # Model loaded and ready
             add_check("ai_models", {
                 "name": "audio_model",
-                "display": "LFM2.5-Audio (TTS)",
+                "display": "Kokoro-82M (TTS)",
                 "status": "pass",
-                "details": {"model": "LiquidAI/LFM2.5-Audio-1.5B", "purpose": "Video narration & podcast audio"}
+                "details": {"model": "hexgrad/Kokoro-82M", "purpose": "Video narration & podcast audio"}
             })
-        elif audio_status.get("available"):
-            # liquid_audio package exists but model not loaded yet
+        elif deps_ok and model_cached:
+            # All deps installed, model cached — will lazy-load on first use
             add_check("ai_models", {
                 "name": "audio_model",
-                "display": "LFM2.5-Audio (TTS)",
+                "display": "Kokoro-82M (TTS)",
+                "status": "pass",
+                "details": {"model": "hexgrad/Kokoro-82M", "note": "Cached, loads on first use"}
+            })
+        elif deps_ok and not model_cached:
+            # Deps installed but model not downloaded yet
+            add_check("ai_models", {
+                "name": "audio_model",
+                "display": "Kokoro-82M (TTS)",
                 "status": "warn",
-                "error": "Model not loaded — will download on first use (~3 GB)",
+                "error": "Model not downloaded yet (~350 MB)",
                 "details": {"init_error": (audio_llm._init_error or "")[:200]}
             })
             results["issues"].append({
                 "severity": "medium",
-                "title": "Audio Model Not Loaded",
-                "message": "LFM2.5-Audio not loaded. Click Repair to download (~3 GB). Required for video narration.",
+                "title": "Audio Model Not Downloaded",
+                "message": "Kokoro-82M not downloaded. Click Repair to download (~350 MB). Required for video narration.",
                 "repair": "download_audio_model"
             })
             if results["overall"] == "healthy":
                 results["overall"] = "degraded"
         else:
+            # Dependencies missing
             add_check("ai_models", {
                 "name": "audio_model",
-                "display": "LFM2.5-Audio (TTS)",
+                "display": "Kokoro-82M (TTS)",
                 "status": "warn",
-                "error": "liquid-audio package not available",
-                "details": audio_status.get("diagnostics", {})
+                "error": "kokoro package not available",
+                "details": diag
             })
+            results["issues"].append({
+                "severity": "medium",
+                "title": "Audio Dependencies Missing",
+                "message": "Kokoro TTS dependencies not installed. Click Repair to install. Required for video narration.",
+                "repair": "download_audio_model"
+            })
+            if results["overall"] == "healthy":
+                results["overall"] = "degraded"
     except Exception as e:
         add_check("ai_models", {
             "name": "audio_model",
-            "display": "LFM2.5-Audio (TTS)",
+            "display": "Kokoro-82M (TTS)",
             "status": "warn",
             "error": str(e)[:80]
         })
@@ -1769,38 +1790,43 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             return {"status": "error", "message": str(e)}
     
     elif action == "download_audio_model":
-        # Download LFM2.5-Audio model from HuggingFace (~3 GB)
+        # Download Kokoro-82M model from HuggingFace (~350 MB)
         try:
-            add_log("INFO", "Starting LFM2.5-Audio model download...", "health_portal")
+            add_log("INFO", "Executing repair: download_audio_model", "health_portal")
             
             from services.audio_llm import audio_llm
             
             import threading
             def download_audio_model_background():
                 try:
-                    add_log("INFO", "Downloading LFM2.5-Audio model (~3 GB)...", "health_portal")
+                    add_log("INFO", "Starting Kokoro-82M model download (~350 MB)...", "health_portal")
+                    # Reset state so _load_model runs fresh
                     audio_llm._initialized = False
                     audio_llm._initializing = False
                     audio_llm._init_error = None
+                    audio_llm._pipeline = None
                     audio_llm._load_model()
                     audio_llm._initialized = True
-                    add_log("INFO", "LFM2.5-Audio model downloaded and loaded successfully", "health_portal")
+                    audio_llm._initializing = False
+                    add_log("INFO", "✓ Kokoro-82M model downloaded and loaded successfully", "health_portal")
                 except Exception as e:
                     import traceback
                     tb = traceback.format_exc()
-                    audio_llm._init_error = tb
+                    audio_llm._init_error = str(e)
+                    audio_llm._initialized = False
                     audio_llm._initializing = False
-                    add_log("ERROR", f"LFM2.5-Audio download failed: {e}", "health_portal")
+                    add_log("ERROR", f"Kokoro-82M download/load failed: {e}", "health_portal")
+                    print(f"[AudioLLM] Repair failed:\n{tb}")
             
             thread = threading.Thread(target=download_audio_model_background, daemon=True)
             thread.start()
             
             return {
                 "status": "started",
-                "message": "LFM2.5-Audio model download started (~3 GB). This may take 5-15 minutes. Refresh Health Portal to check progress."
+                "message": "Kokoro-82M model download started (~350 MB). This should take 1-3 minutes. Refresh Health Portal to check progress."
             }
         except Exception as e:
-            add_log("ERROR", f"Audio model download failed: {e}", "health_portal")
+            add_log("ERROR", f"Audio model repair failed: {e}", "health_portal")
             return {"status": "error", "message": str(e)}
     
     elif action == "install_playwright":

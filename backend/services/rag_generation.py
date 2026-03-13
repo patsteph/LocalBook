@@ -151,11 +151,14 @@ async def generate_answer(
     user_profile = get_user_profile_sync()
     user_context = build_user_context(user_profile)
 
-    # Get memory context to augment the prompt
+    # Get memory context with dynamic budget based on existing context size
+    # Estimate tokens already consumed by RAG context + question
+    estimated_context_tokens = memory_agent.count_tokens(context) + memory_agent.count_tokens(question)
     memory_context = await memory_agent.get_memory_context(
         query=question,
         notebook_id=notebook_id,
-        max_tokens=500
+        max_tokens=500,
+        conversation_token_count=estimated_context_tokens
     )
 
     # Build system prompt with universal guardrails

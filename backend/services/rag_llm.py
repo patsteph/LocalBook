@@ -92,7 +92,7 @@ async def call_ollama(
                 "model": use_model,
                 "prompt": f"{system_prompt}\n\n{prompt}",
                 "stream": False,
-                "keep_alive": -1,  # Keep model loaded (Tier 1 optimization)
+                "keep_alive": "5m",  # Keep model loaded for 5 min (prevents memory exhaustion)
                 "options": options
             }
         )
@@ -143,14 +143,19 @@ async def stream_ollama(
     if num_predict is None:
         stop_sequences = [
             "\n\nReferences",
+            "\nReferences",
             "\n\nSources:",
+            "\nSources:",
             "\n\nSources\n",
             "\n\nCitations:",
+            "\nCitations:",
             "\n\nCitations\n",
             "\n\n---\n[",
             "\n\n[1]:",
             "\n\n**References",
+            "\n**References",
             "\n\n**Sources",
+            "\n**Sources",
         ]
     
     # Determine token limit
@@ -201,7 +206,7 @@ async def stream_ollama(
             "model": model,
             "prompt": f"{system_prompt}\n\n{prompt}",
             "stream": True,
-            "keep_alive": -1,  # Keep model loaded indefinitely (eliminates cold start)
+            "keep_alive": "5m",  # Keep model loaded for 5 min (prevents memory exhaustion)
             "options": stream_options,
         }
         if stop_sequences:

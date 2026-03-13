@@ -43,18 +43,18 @@ class VideoGenerator:
         topic: Optional[str] = None,
         duration_minutes: int = 5,
         visual_style: str = "classic",
-        voice: str = "us_female",
+        voice: str = "af_heart",
         format_type: str = "explainer",
         chat_context: Optional[str] = None,
     ) -> Dict:
-        """Start video generation. Returns immediately with pending record.
+        """Generate a video with narration.
 
         Args:
-            notebook_id: Source notebook
+            notebook_id: Source notebook ID
             topic: Optional focus topic
             duration_minutes: Target length (1-10)
             visual_style: Slide visual style (classic, dark, whiteboard, etc.)
-            voice: TTS voice (us_male, us_female, uk_male, uk_female)
+            voice: Kokoro voice ID or legacy alias (us_male, af_heart, etc.)
             format_type: "explainer" or "brief"
 
         Returns:
@@ -118,8 +118,8 @@ class VideoGenerator:
                 await video_store.update(video_id, {
                     "status": "failed",
                     "error_message": (
-                        "LFM2.5-Audio model not available — required for video narration. "
-                        "Open Health Portal and click Repair to download (~3 GB). "
+                        "Kokoro TTS not available — required for video narration. "
+                        "Check Health Portal for details. "
                         f"Detail: {str(err)[:200]}"
                     ),
                 })
@@ -259,7 +259,7 @@ class VideoGenerator:
     ) -> Path:
         """Generate TTS audio for the narration script.
 
-        Uses the existing LFM2.5-Audio TTS service — same as podcast generation.
+        Uses Kokoro-82M TTS service — same as podcast generation.
         Processes chunks individually with per-chunk timeouts and progress updates
         to prevent indefinite stalls.
         """
@@ -274,7 +274,7 @@ class VideoGenerator:
 
         if not audio_llm.is_available:
             detail = audio_llm._init_error or "unknown error"
-            raise RuntimeError(f"LFM2.5-Audio not available: {detail}")
+            raise RuntimeError(f"Kokoro TTS not available: {detail}")
 
         # Split narration into TTS-friendly chunks (same method the audio model uses)
         chunks = audio_llm._chunk_text_for_tts(narration_text, max_chunk_chars=350)

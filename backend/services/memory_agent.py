@@ -52,8 +52,9 @@ class MemoryAgent:
         # Thresholds
         self.core_memory_max_tokens = 2000
         self.recall_compression_threshold = 100  # Compress after N conversations
-        self.archival_retrieval_count = 5
+        self.archival_retrieval_count = 8  # Increased for hybrid search benefit
         self.recall_retrieval_count = 10
+        self.model_context_window = 32768  # Default context window for budget calc
         
         # LLM settings
         self.ollama_url = settings.ollama_base_url
@@ -266,24 +267,60 @@ Respond ONLY with the JSON, no other text."""
     # Memory Retrieval
     # =========================================================================
     
+    def get_dynamic_budget(
+        self,
+        conversation_token_count: int,
+        context_window: Optional[int] = None
+    ) -> int:
+        """
+        Compute a dynamic memory budget based on how much conversation context
+        is already consuming the model's context window.
+        
+        Inspired by ReMe's compact_ratio approach:
+        - Short conversations (fresh session): ~30% of window for memory → richer context
+        - Long conversations (near limit): ~5% floor → preserve essentials only
+        
+        Returns token budget for memory injection.
+        """
+        window = context_window or self.model_context_window
+        used_ratio = min(1.0, conversation_token_count / window)
+        
+        # Scale from 0.30 (fresh) down to 0.05 (near limit)
+        compact_ratio = max(0.05, 0.30 - (used_ratio * 0.35))
+        budget = int(window * compact_ratio)
+        
+        # Floor 200 (enough for core memory), ceiling 3000
+        return max(200, min(budget, 3000))
+    
     async def get_memory_context(
         self, 
         query: str,
         notebook_id: Optional[str] = None,
-        max_tokens: int = 1500
+        max_tokens: int = 1500,
+        conversation_token_count: Optional[int] = None
     ) -> MemoryContext:
         """
         Get relevant memory context to inject into LLM prompt.
         Combines core memory, relevant archival memories, and recent context.
+        
+        If conversation_token_count is provided, dynamically computes the budget
+        based on how much context is already in use (ReMe-style compaction).
+        Otherwise falls back to the static max_tokens value.
         """
+        # Dynamic budget if conversation length is known
+        if conversation_token_count is not None:
+            effective_budget = self.get_dynamic_budget(conversation_token_count)
+        else:
+            effective_budget = max_tokens
+        
         # 1. Core memory (always included)
         core_memory = memory_store.load_core_memory()
         core_block = core_memory.to_prompt_block()
         core_tokens = self.count_tokens(core_block)
         
-        remaining_tokens = max_tokens - core_tokens
+        remaining_tokens = effective_budget - core_tokens
         
-        # 2. Search archival memory for relevant context
+        # 2. Search archival memory for relevant context (now hybrid vector+BM25)
         retrieved_memories = []
         if remaining_tokens > 200:
             archival_results = memory_store.search_archival_memory(
@@ -315,7 +352,7 @@ Respond ONLY with the JSON, no other text."""
                     recent_context.append(context_text)
                     remaining_tokens -= tokens
         
-        total_tokens = max_tokens - remaining_tokens
+        total_tokens = effective_budget - remaining_tokens
         
         return MemoryContext(
             core_memory_block=core_block,
@@ -437,16 +474,33 @@ Respond ONLY with the JSON, no other text."""
             if len(entries) < 2:
                 continue
             
-            # Summarize conversation
-            summary = await self._summarize_conversation(entries)
-            if summary:
-                # Save summary
+            # Summarize conversation into structured checkpoint
+            summary_result = await self._summarize_conversation(entries)
+            if summary_result:
+                summary, critical_ctx = summary_result
+                # Save summary to conversation_summaries table
                 memory_store.save_conversation_summary(summary)
                 
-                # Archive key points
+                # Build structured checkpoint for archival (Improvement 3)
+                # This format preserves more actionable information per token
+                checkpoint_parts = []
+                if summary.summary:
+                    checkpoint_parts.append(f"Goal: {summary.summary}")
+                if summary.key_points:
+                    checkpoint_parts.append(f"Progress: {'; '.join(summary.key_points)}")
+                if summary.decisions_made:
+                    checkpoint_parts.append(f"Decisions: {'; '.join(summary.decisions_made)}")
+                if summary.action_items:
+                    checkpoint_parts.append(f"Open Items: {'; '.join(summary.action_items)}")
+                # Include critical context (names, paths, values) if available
+                if critical_ctx:
+                    checkpoint_parts.append(f"Context: {'; '.join(critical_ctx)}")
+                
+                structured_content = "\n".join(checkpoint_parts) if checkpoint_parts else summary.summary
+                
                 archival_entry = ArchivalMemoryEntry(
-                    content=summary.summary,
-                    content_type="conversation_summary",
+                    content=structured_content,
+                    content_type="structured_checkpoint",
                     source_type=MemorySourceType.AI_INFERRED,
                     source_id=conv_id,
                     source_notebook_id=entries[0].notebook_id,
@@ -460,24 +514,38 @@ Respond ONLY with the JSON, no other text."""
         
         return compressed_count
     
-    async def _summarize_conversation(self, entries: List[RecallMemoryEntry]) -> Optional[ConversationSummary]:
-        """Use LLM to summarize a conversation"""
+    async def _summarize_conversation(self, entries: List[RecallMemoryEntry]) -> Optional[tuple]:
+        """Produce a structured context checkpoint from a conversation.
+        
+        Returns (ConversationSummary, critical_context_list) tuple, or None on failure.
+        
+        Structured checkpoints preserve more actionable information per token
+        compared to free-form narrative summaries. Format inspired by ReMe's
+        compaction approach: Goal / Progress / Decisions / Open Items / Context.
+        """
         # Build conversation text
         conv_text = "\n".join([
             f"{e.role}: {e.content}" for e in sorted(entries, key=lambda x: x.timestamp)
         ])
         
-        prompt = f"""Summarize this conversation concisely:
+        prompt = f"""Create a structured checkpoint from this conversation.
 
-{conv_text[:3000]}  # Limit length
+{conv_text[:3000]}
 
-Respond in JSON:
+Respond in JSON with these exact fields:
 {{
-    "summary": "2-3 sentence summary",
-    "key_points": ["point 1", "point 2"],
-    "decisions_made": ["decision 1"] or [],
-    "action_items": ["action 1"] or []
-}}"""
+    "summary": "What was the user trying to accomplish (1 sentence)",
+    "key_points": ["What was done or discovered (2-4 bullet points)"],
+    "decisions_made": ["Specific decisions and why (include names, values, paths)"],
+    "action_items": ["Unresolved questions or next steps"],
+    "critical_context": ["Specific names, values, file paths, config settings, or technical details mentioned"]
+}}
+
+Rules:
+- Be specific: include actual names, numbers, file paths, not vague descriptions
+- Each field should be a list of short, factual strings
+- If a field has nothing, use an empty array []
+- critical_context should capture details that would be hard to re-derive"""
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -499,7 +567,7 @@ Respond in JSON:
                     if json_match:
                         data = json.loads(json_match.group())
                         
-                        return ConversationSummary(
+                        summary_obj = ConversationSummary(
                             conversation_id=entries[0].conversation_id,
                             notebook_id=entries[0].notebook_id,
                             summary=data.get("summary", ""),
@@ -510,6 +578,9 @@ Respond in JSON:
                             end_time=max(e.timestamp for e in entries),
                             message_count=len(entries),
                         )
+                        # Return tuple: (summary, critical_context) — avoids Pydantic v2 attribute issues
+                        critical_context = data.get("critical_context", [])
+                        return (summary_obj, critical_context)
         except Exception as e:
             print(f"Conversation summarization error: {e}")
         

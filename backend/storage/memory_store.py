@@ -80,6 +80,9 @@ class MemoryStore:
         self._core_memory_cache: Optional[CoreMemory] = None
         self._core_memory_lock = threading.Lock()
         
+        # Backfill FTS5 from existing archival memories (one-time migration)
+        self._backfill_fts_from_archival()
+        
         self._initialized = True
     
     # =========================================================================
@@ -271,6 +274,17 @@ class MemoryStore:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_recall_timestamp ON recall_entries(timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_recall_notebook ON recall_entries(notebook_id)")
         
+        # FTS5 shadow table for BM25 scoring of archival memories (Improvement 1: Hybrid Search)
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS archival_fts USING fts5(
+                memory_id,
+                content,
+                namespace,
+                notebook_id,
+                tokenize='porter unicode61'
+            )
+        """)
+        
         # Access tracking for archival memories (LanceDB doesn't support updates)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS archival_access (
@@ -299,6 +313,130 @@ class MemoryStore:
         
         conn.commit()
         conn.close()
+    
+    def _sync_to_fts(
+        self,
+        memory_id: str,
+        content: str,
+        namespace: str = "system",
+        notebook_id: str = ""
+    ) -> None:
+        """Sync an archival memory entry to the FTS5 shadow table for BM25 search."""
+        try:
+            conn = self._get_recall_connection()
+            cursor = conn.cursor()
+            # Upsert: delete then insert (FTS5 doesn't support ON CONFLICT)
+            cursor.execute("DELETE FROM archival_fts WHERE memory_id = ?", (memory_id,))
+            cursor.execute(
+                "INSERT INTO archival_fts (memory_id, content, namespace, notebook_id) VALUES (?, ?, ?, ?)",
+                (memory_id, content, namespace, notebook_id)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[MemoryStore] FTS sync error: {e}")
+    
+    @staticmethod
+    def _sanitize_fts_query(query: str) -> str:
+        """Sanitize a query string for FTS5 MATCH to avoid parse errors.
+        Strips FTS5 special syntax characters and boolean operators."""
+        import re
+        # Remove FTS5 special characters: " * ( ) : ^ { } 
+        sanitized = re.sub(r'["\*\(\)\:\^\{\}\[\]]', ' ', query)
+        # Remove standalone boolean operators that FTS5 interprets
+        sanitized = re.sub(r'\b(AND|OR|NOT|NEAR)\b', ' ', sanitized)
+        # Collapse whitespace
+        sanitized = re.sub(r'\s+', ' ', sanitized).strip()
+        return sanitized
+    
+    def _bm25_search(
+        self,
+        query: str,
+        limit: int = 30,
+        namespace: Optional[str] = None,
+        notebook_id: Optional[str] = None
+    ) -> Dict[str, float]:
+        """
+        BM25 keyword search over archival memories via FTS5.
+        Returns {memory_id: bm25_score} dict with scores normalized to 0-1.
+        """
+        try:
+            # Sanitize query for FTS5 safety
+            safe_query = self._sanitize_fts_query(query)
+            if not safe_query or len(safe_query) < 2:
+                return {}
+            
+            conn = self._get_recall_connection()
+            cursor = conn.cursor()
+            
+            # FTS5 bm25() returns negative scores (lower = better match)
+            sql = """
+                SELECT memory_id, bm25(archival_fts) as score
+                FROM archival_fts
+                WHERE archival_fts MATCH ?
+            """
+            params = [safe_query]
+            
+            if namespace:
+                sql += " AND namespace = ?"
+                params.append(namespace)
+            if notebook_id:
+                sql += " AND notebook_id = ?"
+                params.append(notebook_id)
+            
+            sql += " ORDER BY score LIMIT ?"
+            params.append(limit)
+            
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            conn.close()
+            
+            if not rows:
+                return {}
+            
+            # Normalize: FTS5 bm25 scores are negative (closer to 0 = better)
+            # Convert to 0-1 range where 1 = best match
+            raw_scores = {row[0]: abs(row[1]) for row in rows}
+            if not raw_scores:
+                return {}
+            max_score = max(raw_scores.values()) if raw_scores else 1.0
+            if max_score == 0:
+                return {r: 1.0 for r in raw_scores}
+            return {mid: score / max_score for mid, score in raw_scores.items()}
+            
+        except Exception as e:
+            # FTS query can fail on malformed input — graceful degradation
+            print(f"[MemoryStore] BM25 search error: {e}")
+            return {}
+    
+    def _backfill_fts_from_archival(self) -> None:
+        """One-time migration: backfill FTS5 table from existing LanceDB archival memories."""
+        try:
+            conn = self._get_recall_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM archival_fts")
+            fts_count = cursor.fetchone()[0]
+            conn.close()
+            
+            table = self.archival_db.open_table("archival_memories")
+            archival_count = table.count_rows()
+            
+            # Only backfill if FTS is empty but archival has data
+            if fts_count == 0 and archival_count > 0:
+                print(f"[MemoryStore] Backfilling FTS5 from {archival_count} archival memories...")
+                df = table.to_pandas()
+                conn = self._get_recall_connection()
+                cursor = conn.cursor()
+                for _, row in df.iterrows():
+                    cursor.execute(
+                        "INSERT INTO archival_fts (memory_id, content, namespace, notebook_id) VALUES (?, ?, ?, ?)",
+                        (row["id"], row["content"], row.get("namespace", "system"), row.get("source_notebook_id", ""))
+                    )
+                conn.commit()
+                conn.close()
+                print(f"[MemoryStore] FTS5 backfill complete: {archival_count} entries indexed")
+        except Exception as e:
+            print(f"[MemoryStore] FTS backfill error (non-fatal): {e}")
     
     def _get_recall_connection(self) -> sqlite3.Connection:
         """Get SQLite connection (thread-local)"""
@@ -594,6 +732,9 @@ class MemoryStore:
         }
         
         table.add([record])
+        
+        # Sync to FTS5 for hybrid BM25 search
+        self._sync_to_fts(entry.id, entry.content, namespace.value, effective_notebook_id)
     
     def search_archival_memory(
         self, 
@@ -661,13 +802,37 @@ class MemoryStore:
         
         results = filtered_results
         
-        # Score and rank
+        # --- Hybrid Search: BM25 keyword scoring (Improvement 1) ---
+        # Run BM25 search in parallel to find exact keyword matches
+        bm25_namespace = namespace.value if namespace != AgentNamespace.CURATOR or not cross_notebook else None
+        bm25_scores = self._bm25_search(
+            query=query,
+            limit=limit * 3,
+            namespace=bm25_namespace,
+            notebook_id=notebook_id if namespace == AgentNamespace.COLLECTOR else None
+        )
+        
+        # Build lookup of vector results by ID
+        vector_results_by_id = {r["id"]: r for r in results}
+        
+        # Score and rank with hybrid fusion: 0.7 vector + 0.3 BM25
+        VECTOR_WEIGHT = 0.7
+        BM25_WEIGHT = 0.3
+        
         scored_results = []
         now = datetime.utcnow()
+        seen_ids = set()
         
-        for r in results[:limit]:
+        for r in results[:limit * 2]:
+            rid = r["id"]
+            seen_ids.add(rid)
+            
             # Similarity score (from LanceDB, typically 0-1 for cosine)
             similarity = 1.0 - r.get("_distance", 0)  # Convert distance to similarity
+            
+            # BM25 boost: if this result also appeared in BM25 results, blend scores
+            bm25_score = bm25_scores.get(rid, 0.0)
+            blended_similarity = VECTOR_WEIGHT * similarity + BM25_WEIGHT * bm25_score
             
             # Recency score (decay over 30 days)
             created = datetime.fromisoformat(r["created_at"])
@@ -675,7 +840,7 @@ class MemoryStore:
             recency = max(0, 1 - (days_old / 30))
             
             # Combined score
-            combined = (1 - recency_weight) * similarity + recency_weight * recency
+            combined = (1 - recency_weight) * blended_similarity + recency_weight * recency
             
             entry = ArchivalMemoryEntry(
                 id=r["id"],
@@ -694,15 +859,78 @@ class MemoryStore:
             
             scored_results.append(MemorySearchResult(
                 entry=entry,
-                similarity_score=similarity,
+                similarity_score=blended_similarity,
                 recency_score=recency,
                 combined_score=combined
             ))
         
-        # Sort by combined score
+        # Add BM25-only results that vector search missed (exact keyword matches)
+        bm25_only_ids = set(bm25_scores.keys()) - seen_ids
+        if bm25_only_ids:
+            try:
+                table_for_bm25 = self.archival_db.open_table("archival_memories")
+                for mid in list(bm25_only_ids)[:limit]:
+                    try:
+                        rows = table_for_bm25.search().where(f'id = "{mid}"').limit(1).to_list()
+                        if not rows:
+                            continue
+                        r = rows[0]
+                        
+                        # Apply same namespace filtering
+                        r_namespace = r.get("namespace", "system")
+                        r_notebook = r.get("source_notebook_id", "")
+                        allowed = False
+                        if namespace == AgentNamespace.CURATOR and cross_notebook:
+                            allowed = True
+                        elif namespace == AgentNamespace.CURATOR:
+                            allowed = r_namespace in [AgentNamespace.CURATOR.value, AgentNamespace.SYSTEM.value]
+                        elif namespace == AgentNamespace.COLLECTOR:
+                            allowed = (r_namespace == AgentNamespace.SYSTEM.value or 
+                                      (r_namespace == AgentNamespace.COLLECTOR.value and r_notebook == notebook_id))
+                        else:
+                            allowed = r_namespace == AgentNamespace.SYSTEM.value
+                        
+                        if not allowed:
+                            continue
+                        
+                        bm25_score = bm25_scores[mid]
+                        blended_similarity = BM25_WEIGHT * bm25_score  # No vector component
+                        
+                        created = datetime.fromisoformat(r["created_at"])
+                        days_old = (now - created).days
+                        recency = max(0, 1 - (days_old / 30))
+                        combined = (1 - recency_weight) * blended_similarity + recency_weight * recency
+                        
+                        entry = ArchivalMemoryEntry(
+                            id=r["id"],
+                            content=r["content"],
+                            content_type=r["content_type"],
+                            source_type=MemorySourceType(r["source_type"]),
+                            source_id=r["source_id"] if r["source_id"] else None,
+                            source_notebook_id=r["source_notebook_id"] if r["source_notebook_id"] else None,
+                            topics=json.loads(r["topics"]),
+                            entities=json.loads(r["entities"]),
+                            importance=MemoryImportance(r["importance"]),
+                            created_at=datetime.fromisoformat(r["created_at"]),
+                            last_accessed=datetime.fromisoformat(r["last_accessed"]),
+                            access_count=r["access_count"],
+                        )
+                        
+                        scored_results.append(MemorySearchResult(
+                            entry=entry,
+                            similarity_score=blended_similarity,
+                            recency_score=recency,
+                            combined_score=combined
+                        ))
+                    except Exception:
+                        continue
+            except Exception as e:
+                print(f"[MemoryStore] BM25-only lookup error (non-fatal): {e}")
+        
+        # Sort by combined score and return top results
         scored_results.sort(key=lambda x: x.combined_score, reverse=True)
         
-        return scored_results
+        return scored_results[:limit]
     
     def get_archival_memory_count(
         self, 

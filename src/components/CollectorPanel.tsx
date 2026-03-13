@@ -543,6 +543,10 @@ export const CollectorPanel: React.FC<CollectorPanelProps> = ({
           notebookId={notebookId}
           isOpen={showProfile}
           onClose={() => setShowProfile(false)}
+          onViewPending={() => {
+            setShowProfile(false);
+            setExpanded(true);
+          }}
         />
       )}
     </>

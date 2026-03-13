@@ -6,6 +6,27 @@ import sys
 if getattr(sys, 'frozen', False):
     multiprocessing.freeze_support()
 
+# ── Quick-exit CLI flags (must run before any heavy imports) ──
+if "--verify-kokoro" in sys.argv:
+    failed = []
+    for mod in ["kokoro", "misaki", "phonemizer", "segments", "csvw",
+                "language_tags", "rdflib", "soundfile", "loguru",
+                "num2words", "dlinfo", "spacy", "thinc", "blis",
+                "cymem", "murmurhash", "preshed", "srsly", "catalogue",
+                "isodate"]:
+        try:
+            __import__(mod)
+        except Exception as e:
+            failed.append(f"{mod}: {e}")
+    if failed:
+        print("KOKORO BUNDLE VERIFICATION FAILED:")
+        for f in failed:
+            print(f"  ✗ {f}")
+        sys.exit(1)
+    else:
+        print("✓ Kokoro TTS bundle verified — all imports OK")
+        sys.exit(0)
+
 import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -155,23 +176,26 @@ async def _run_startup_tasks():
             print(f"🎤 Whisper pre-download skipped: {e}")
     asyncio.create_task(_predownload_whisper())
 
-    # Pre-download LFM2.5-Audio model in background (no-op if already cached)
-    async def _predownload_audio_llm():
+    # Pre-download Kokoro-82M model in background (no-op if already cached)
+    async def _predownload_kokoro():
         try:
-            from huggingface_hub import snapshot_download
             import os
-            repo_id = "LiquidAI/LFM2.5-Audio-1.5B"
+            # Ensure macOS system certs are available for HuggingFace downloads
+            if not os.environ.get("SSL_CERT_FILE") and os.path.exists("/etc/ssl/cert.pem"):
+                os.environ["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
+            from huggingface_hub import snapshot_download
+            repo_id = "hexgrad/Kokoro-82M"
             cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-            repo_dir = os.path.join(cache_dir, "models--LiquidAI--LFM2.5-Audio-1.5B")
+            repo_dir = os.path.join(cache_dir, "models--hexgrad--Kokoro-82M")
             if os.path.exists(repo_dir):
-                print(f"🔊 LFM2.5-Audio model already cached")
+                print(f"🔊 Kokoro-82M model already cached")
                 return
-            print(f"🔊 Pre-downloading LFM2.5-Audio model ({repo_id})...")
+            print(f"🔊 Pre-downloading Kokoro-82M model ({repo_id}, ~350 MB)...")
             await asyncio.to_thread(snapshot_download, repo_id=repo_id)
-            print(f"🔊 LFM2.5-Audio model ready")
+            print(f"🔊 Kokoro-82M model ready")
         except Exception as e:
-            print(f"🔊 LFM2.5-Audio pre-download skipped: {e}")
-    asyncio.create_task(_predownload_audio_llm())
+            print(f"🔊 Kokoro-82M pre-download skipped: {e}")
+    asyncio.create_task(_predownload_kokoro())
 
 
 # Background task reference for cleanup

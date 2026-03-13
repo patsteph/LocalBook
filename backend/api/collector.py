@@ -156,6 +156,23 @@ async def get_pending_approvals(notebook_id: str):
     }
 
 
+@router.get("/{notebook_id}/stagnation")
+async def get_stagnation_status(notebook_id: str):
+    """Get stagnation status for a notebook — used by the frontend tombstone banner."""
+    from services.collection_history import detect_stagnation
+    
+    collector = get_collector(notebook_id)
+    config = collector.get_config()
+    pending = collector.get_pending_approvals()
+    report = detect_stagnation(notebook_id)
+    
+    return {
+        "stagnation": report,
+        "auto_expand": getattr(config, 'auto_expand', True),
+        "pending_count": len(pending),
+    }
+
+
 @router.post("/{notebook_id}/approve/{item_id}")
 async def approve_item(notebook_id: str, item_id: str):
     """Approve a pending item"""
@@ -466,6 +483,7 @@ async def get_collector_profile(notebook_id: str):
             "approval_mode": config_dict["approval_mode"],
             "name": config.name,
         },
+        "auto_expand": getattr(config, 'auto_expand', True),
         "stats": stats,
         "feedback": feedback,
         "created_at": config.created_at.isoformat() if hasattr(config.created_at, "isoformat") else str(config.created_at),

@@ -22,7 +22,7 @@ class VideoGenerateRequest(BaseModel):
     topic: Optional[str] = None
     duration_minutes: int = 5
     visual_style: str = "classic"
-    voice: Literal["us_male", "us_female", "uk_male", "uk_female"] = "us_female"
+    voice: str = "af_heart"
     format_type: Literal["explainer", "brief"] = "explainer"
     chat_context: Optional[str] = None  # Recent chat conversation for "From Chat" mode
 

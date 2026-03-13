@@ -6,6 +6,7 @@ import { NotebookManager } from '../NotebookManager';
 import { SourceUpload } from '../SourceUpload';
 import { SourcesList } from '../SourcesList';
 import { CollectorPanel } from '../CollectorPanel';
+import { CollectionTombstone } from '../collector/CollectionTombstone';
 import { Studio } from '../Studio';
 import { Modal } from '../shared/Modal';
 import { WebSearchResults } from '../WebSearchResults';
@@ -148,6 +149,16 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
           onCollectorConfigured={onCollectorConfigured}
         />
       </DrawerSection>
+
+      {/* Collection tombstone — surfaces pending items and stagnation status */}
+      {selectedNotebookId && (
+        <CollectionTombstone
+          notebookId={selectedNotebookId}
+          onOpenCollector={() => {
+            if (!drawers.collector) toggleDrawer('collector');
+          }}
+        />
+      )}
 
       {/* Web Research drawer */}
       <DrawerSection

@@ -75,7 +75,10 @@ class NotebookSummary(BaseModel):
     person_changes: List[str] = []
     upcoming_key_dates: List[str] = []
     collection_runs: int = 0
-    collection_items_found: int = 0
+    collection_items_found: int = 0  # items EXAMINED by collector (not stored)
+    collection_items_approved: int = 0  # items actually STORED by collector
+    collection_items_rejected: int = 0
+    collection_items_pending: int = 0
     # Source origin breakdown — collector vs user
     collector_added: int = 0  # sources auto-gathered by background collector
     user_added: int = 0       # sources manually added by the user
@@ -105,6 +108,9 @@ class NotebookSummary(BaseModel):
     emerging_topics: List[str] = []
     # Temporal lookback — "this day in your research"
     one_week_ago_items: List[str] = []
+    # Stagnation status — adaptive collection awareness
+    stagnation_severity: Optional[str] = None  # None, 'mild', 'moderate', 'plateau'
+    stagnation_days: int = 0
 
 
 class MorningBrief(BaseModel):
@@ -775,6 +781,9 @@ Be concise and cite which notebook each insight comes from."""
                     upcoming_key_dates=stats.get("upcoming_key_dates", []),
                     collection_runs=stats.get("collection_runs", 0),
                     collection_items_found=stats.get("collection_items_found", 0),
+                    collection_items_approved=stats.get("collection_items_approved", 0),
+                    collection_items_rejected=stats.get("collection_items_rejected", 0),
+                    collection_items_pending=stats.get("collection_items_pending", 0),
                     collector_added=stats.get("collector_added", 0),
                     user_added=stats.get("user_added", 0),
                     total_sources=stats.get("total_sources", 0),
@@ -797,6 +806,8 @@ Be concise and cite which notebook each insight comes from."""
                     unfinished_threads=stats.get("unfinished_threads", []),
                     emerging_topics=stats.get("emerging_topics", []),
                     one_week_ago_items=stats.get("one_week_ago_items", []),
+                    stagnation_severity=stats.get("stagnation_severity"),
+                    stagnation_days=stats.get("stagnation_days", 0),
                 ))
         
         # Get any pending cross-notebook insight
@@ -892,6 +903,9 @@ Be concise and cite which notebook each insight comes from."""
                 upcoming_key_dates=stats.get("upcoming_key_dates", []),
                 collection_runs=stats.get("collection_runs", 0),
                 collection_items_found=stats.get("collection_items_found", 0),
+                collection_items_approved=stats.get("collection_items_approved", 0),
+                collection_items_rejected=stats.get("collection_items_rejected", 0),
+                collection_items_pending=stats.get("collection_items_pending", 0),
                 collector_added=stats.get("collector_added", 0),
                 user_added=stats.get("user_added", 0),
                 total_sources=stats.get("total_sources", 0),
@@ -965,6 +979,37 @@ Be concise and cite which notebook each insight comes from."""
         if not summaries:
             return ""
         
+        # Pull memory context for weekly narrative (same pattern as morning brief)
+        import asyncio
+        memory_context_by_nb = {}
+        try:
+            from storage.memory_store import memory_store
+            from models.memory import AgentNamespace
+            
+            async def _fetch_memory(nb_id, nb_name):
+                results = await asyncio.to_thread(
+                    memory_store.search_archival_memory,
+                    query=f"weekly progress decisions key findings {nb_name}",
+                    namespace=AgentNamespace.CURATOR,
+                    notebook_id=nb_id,
+                    cross_notebook=True,
+                    limit=3
+                )
+                return nb_id, results
+            
+            mem_tasks = [_fetch_memory(nb.notebook_id, nb.name) for nb in summaries]
+            mem_results = await asyncio.gather(*mem_tasks, return_exceptions=True)
+            for item in mem_results:
+                if isinstance(item, Exception):
+                    continue
+                nb_id, results = item
+                if results:
+                    snippets = [r.entry.content[:250] for r in results if r.combined_score > 0.2]
+                    if snippets:
+                        memory_context_by_nb[nb_id] = snippets
+        except Exception as e:
+            logger.debug(f"Memory context for weekly wrap failed (non-fatal): {e}")
+        
         # Build structured data (reuse the same format as morning brief)
         notebook_sections = []
         for nb in summaries:
@@ -991,7 +1036,9 @@ Be concise and cite which notebook each insight comes from."""
                 details.append(f"  - Sources this week: {'; '.join(origin_parts)}")
             
             if nb.collection_runs > 0:
-                details.append(f"  - Collector ran {nb.collection_runs}x, found {nb.collection_items_found} items")
+                details.append(f"  - Collector ran {nb.collection_runs}x: examined {nb.collection_items_found} items, stored {nb.collection_items_approved}, rejected {nb.collection_items_rejected}")
+                if nb.collection_items_found > 0 and nb.collection_items_approved == 0:
+                    details.append(f"    NOTE: collector found items but NONE passed quality filters — zero new sources added by collector")
             
             if nb.total_sources > 0:
                 details.append(f"  - Library: {nb.total_sources} total sources")
@@ -1031,6 +1078,13 @@ Be concise and cite which notebook each insight comes from."""
             
             if nb.emerging_topics:
                 details.append(f"  - Emerging topics: {', '.join(nb.emerging_topics)}")
+            
+            # Memory context — what the user was discussing/deciding this week
+            nb_memories = memory_context_by_nb.get(nb.notebook_id, [])
+            if nb_memories:
+                details.append(f"  - Research context from memory:")
+                for mem in nb_memories[:2]:
+                    details.append(f"    📝 {mem}")
             
             if details:
                 section += "\n" + "\n".join(details)
@@ -1163,8 +1217,12 @@ Write the weekly wrap up now:"""
             runs_since = [h for h in history if h.get("timestamp", "") > since.isoformat()]
             stats["collection_runs"] = len(runs_since)
             stats["collection_items_found"] = sum(h.get("items_found", 0) for h in runs_since)
+            stats["collection_items_approved"] = sum(h.get("items_approved", 0) for h in runs_since)
+            stats["collection_items_rejected"] = sum(h.get("items_rejected", 0) for h in runs_since)
+            stats["collection_items_pending"] = sum(h.get("items_pending", 0) for h in runs_since)
             if runs_since and not stats["top_item"]:
-                stats["top_item"] = f"Collector ran {len(runs_since)} time{'s' if len(runs_since) != 1 else ''}, found {stats['collection_items_found']} items"
+                approved = stats["collection_items_approved"]
+                stats["top_item"] = f"Collector ran {len(runs_since)} time{'s' if len(runs_since) != 1 else ''}, approved {approved} of {stats['collection_items_found']} items examined"
         except Exception:
             pass
         
@@ -1426,6 +1484,16 @@ Write the weekly wrap up now:"""
         except Exception:
             pass
         
+        # Stagnation status — adaptive collection awareness
+        try:
+            from services.collection_history import detect_stagnation
+            stag = detect_stagnation(notebook_id)
+            if stag.get("stagnating"):
+                stats["stagnation_severity"] = stag["severity"]
+                stats["stagnation_days"] = stag["days_since_growth"]
+        except Exception:
+            pass
+        
         return stats
     
     async def _synthesize_brief_narrative(
@@ -1440,6 +1508,39 @@ Write the weekly wrap up now:"""
         """
         if not summaries:
             return ""
+        
+        # Pull recent memory context per notebook for richer narrative (ReMe integration)
+        # Structured checkpoints from archival memory give the Curator awareness of
+        # what the user has been discussing, deciding, and working on
+        import asyncio
+        memory_context_by_nb = {}
+        try:
+            from storage.memory_store import memory_store
+            from models.memory import AgentNamespace
+            
+            async def _fetch_memory(nb_id, nb_name):
+                results = await asyncio.to_thread(
+                    memory_store.search_archival_memory,
+                    query=f"recent work progress decisions {nb_name}",
+                    namespace=AgentNamespace.CURATOR,
+                    notebook_id=nb_id,
+                    cross_notebook=True,
+                    limit=3
+                )
+                return nb_id, results
+            
+            mem_tasks = [_fetch_memory(nb.notebook_id, nb.name) for nb in summaries]
+            mem_results = await asyncio.gather(*mem_tasks, return_exceptions=True)
+            for item in mem_results:
+                if isinstance(item, Exception):
+                    continue
+                nb_id, results = item
+                if results:
+                    snippets = [r.entry.content[:250] for r in results if r.combined_score > 0.2]
+                    if snippets:
+                        memory_context_by_nb[nb_id] = snippets
+        except Exception as e:
+            logger.debug(f"Memory context for brief failed (non-fatal): {e}")
         
         # Build structured data for the LLM
         notebook_sections = []
@@ -1468,11 +1569,13 @@ Write the weekly wrap up now:"""
                     origin_parts.append(f"{nb.user_added} added by you")
                 details.append(f"  - Source breakdown: {'; '.join(origin_parts)}")
             
-            # Collection activity
+            # Collection activity — IMPORTANT: "found" means examined, NOT stored
             if nb.collection_runs > 0:
-                details.append(f"  - Background collector ran {nb.collection_runs}x overnight, discovered {nb.collection_items_found} potential items")
+                details.append(f"  - Background collector ran {nb.collection_runs}x overnight: examined {nb.collection_items_found} potential items, stored {nb.collection_items_approved} into notebook, rejected {nb.collection_items_rejected} (low quality/duplicate)")
+                if nb.collection_items_found > 0 and nb.collection_items_approved == 0:
+                    details.append(f"    NOTE: The collector found items but NONE passed quality filters — zero new sources were actually added by the collector")
             if nb.pending_approval > 0:
-                details.append(f"  - {nb.pending_approval} collector items awaiting your review")
+                details.append(f"  - {nb.pending_approval} collector items awaiting your review in the approval queue")
             
             # People updates
             if nb.person_changes:
@@ -1554,6 +1657,15 @@ Write the weekly wrap up now:"""
             if nb.emerging_topics:
                 details.append(f"  - Emerging topics (new this week): {', '.join(nb.emerging_topics)}")
             
+            # Stagnation status — adaptive collection awareness
+            if nb.stagnation_severity:
+                if nb.stagnation_severity == "plateau":
+                    details.append(f"  - ⚠️ COLLECTION PLATEAU: No new content discovered in {nb.stagnation_days} days. The topic space may be saturated — consider expanding scope or adding new sources.")
+                elif nb.stagnation_severity == "moderate":
+                    details.append(f"  - 📊 Collection has stagnated ({nb.stagnation_days} days without growth). Search criteria have been expanded to explore adjacent topics and cross-notebook connections.")
+                elif nb.stagnation_severity == "mild":
+                    details.append(f"  - 🔭 Collection is exploring wider — no new content in {nb.stagnation_days} days, so search scope has been expanded to find fresh material.")
+            
             # Temporal lookback — "one week ago"
             if nb.one_week_ago_items:
                 details.append(f"  - One week ago you were reading:")
@@ -1562,6 +1674,13 @@ Write the weekly wrap up now:"""
             
             if nb.top_finding and not nb.recent_stories:
                 details.append(f"  - Top finding: {nb.top_finding}")
+            
+            # Memory context — what the user was discussing/deciding in this notebook
+            nb_memories = memory_context_by_nb.get(nb.notebook_id, [])
+            if nb_memories:
+                details.append(f"  - Recent research context from memory:")
+                for mem in nb_memories[:2]:
+                    details.append(f"    📝 {mem}")
             
             if details:
                 section += "\n" + "\n".join(details)
@@ -1595,11 +1714,15 @@ TEMPORAL FRAMING — match the user's actual rhythm:
 - The user works in these notebooks every day. Acknowledge that continuity — "your research is building momentum" not "here's what happened this week."
 
 COLLECTOR vs USER SOURCES — this distinction is CRITICAL:
-- If the data shows "auto-gathered by background collector (REVIEW RECOMMENDED)", call this out prominently
+- "examined N potential items" means the collector LOOKED AT N items from RSS feeds and web pages. This is NOT the same as adding them.
+- "stored M into notebook" means M items actually passed quality filters and were ADDED as sources. Only these count as new collector sources.
+- If stored = 0, the collector ran but found NOTHING worth adding. Do NOT say it "gathered" or "collected" or "found new" sources. Say it "ran but didn't find anything that passed quality filters" or simply omit the collector section.
+- NEVER claim the collector added sources unless "collector_added" or "stored" is > 0 in the data.
+- If the data shows "auto-gathered by background collector (REVIEW RECOMMENDED)", ONLY THEN call this out prominently
 - Collector-gathered sources arrived WITHOUT the user's involvement — the user needs to know these exist and should examine them
-- Say things like: "While you were away, your collector pulled in N new sources — worth a look since you didn't add these yourself"
 - User-added sources need no special callout — the user already knows about those
-- If there are collector sources pending review, make this the most actionable item in the brief
+- If there are collector sources pending review in the approval queue, make this the most actionable item in the brief
+- If there are NO collector sources and NO pending approvals, do NOT write a "Collector Discoveries" section at all
 
 STUDIO CONTENT CREATION — acknowledge what the user is BUILDING, not just reading:
 - If "Studio output" data is present, the user actively generated materials (documents, podcasts, visuals, quizzes, videos)
@@ -1613,13 +1736,14 @@ STUDIO CONTENT CREATION — acknowledge what the user is BUILDING, not just read
 NEWSLETTER STRUCTURE (use the sections that have data, skip empty ones):
 1. **Lead** — Start with the single most interesting or actionable finding. If there's a specific article title, use it. If the collector found new sources, lead with that.
 2. **Per-notebook updates** — For each notebook with activity, write 1-3 sentences highlighting specifics. Use actual titles, names, and details. Never say "1 new items" — say what the item IS. Include Studio output here if present.
-3. **Collector discoveries** — If the background collector gathered sources, dedicate a short section to these. Name the titles, note that they arrived automatically, and nudge the user to review them.
+3. **Collector discoveries** — ONLY if collector_added > 0 or pending_approval > 0. If the collector stored new sources, name the titles and nudge the user to review. If it only examined items but stored 0, do NOT write this section.
 4. **Research momentum** — If there's velocity data, copy the pre-computed numbers EXACTLY: "Your library grew from X to Y (+N new, P% growth)." If pace data exists, include it: "pace is up Q% vs last week." NEVER compute your own percentages.
 5. **Coming up** — If there are upcoming events or key dates, make them feel urgent.
 6. **Unfinished threads** — If there are unfinished conversations, gently remind the user: "You were exploring [topic] — want to pick that back up?" Frame it as helpful, not nagging.
 7. **Emerging interests** — If topic drift is detected, mention it: "I'm noticing a growing interest in [topic] — this is new territory for your research." Make the user feel seen.
 8. **One week ago** — If there are temporal lookback items, create a "This time last week" moment. Connect past to present.
-9. **Suggested action** — End with ONE specific, actionable next step. If collector sources need review, that should be the action.
+9. **Collection health** — ONLY if stagnation data is present. If a notebook's collection has stagnated or plateaued, mention it concisely: "Your [notebook] collector hasn't found new content in N days — I've expanded the search to adjacent topics." If plateau severity, suggest the user add new sources or expand scope. Keep it to 1-2 sentences max.
+10. **Suggested action** — End with ONE specific, actionable next step. If collector sources need review, that should be the action. If a notebook is stagnating, suggest reviewing the collector profile or adding new sources.
 
 TONE:
 - Warm, professional, like a trusted advisor who knows your research intimately
@@ -2046,6 +2170,20 @@ Respond with JSON only:
         result["items_collected"] = len(collected_items)
         
         if not collected_items:
+            # Still record history so query rotation works (avoids repeating same queries next run)
+            try:
+                from services.collection_history import record_collection_run
+                record_collection_run(
+                    notebook_id=notebook_id,
+                    items_found=0, items_approved=0, items_pending=0, items_rejected=0,
+                    sources_checked=len(config.sources.get("rss_feeds", [])) + len(config.sources.get("web_pages", [])),
+                    trigger="orchestrated",
+                    keywords_used=collection_task.get("focus_areas", [])[:5],
+                    queries_used=collection_task.get("smart_queries", []),
+                    exploration_queries=collection_task.get("exploration_queries", []),
+                )
+            except Exception:
+                pass
             return result
         
         # Step 3: Curator judges ALL collected items
@@ -2089,7 +2227,253 @@ Respond with JSON only:
                 else:
                     result["items_rejected"] += 1
         
+        # Record in collection history (mirrors assign_immediate_collection)
+        try:
+            from services.collection_history import record_collection_run
+            record_collection_run(
+                notebook_id=notebook_id,
+                items_found=len(collected_items),
+                items_approved=result["items_approved"],
+                items_pending=result["items_pending"],
+                items_rejected=result["items_rejected"],
+                sources_checked=len(config.sources.get("rss_feeds", [])) + len(config.sources.get("web_pages", [])),
+                trigger="orchestrated",
+                keywords_used=collection_task.get("focus_areas", [])[:5],
+                queries_used=collection_task.get("smart_queries", []),
+                exploration_queries=collection_task.get("exploration_queries", []),
+            )
+        except Exception as hist_err:
+            logger.warning(f"Failed to record collection history (non-fatal): {hist_err}")
+        
         return result
+    
+    async def _build_exploration_context(
+        self,
+        notebook_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Build a rich context of the user's recent activity for exploration.
+        
+        Pulls signals from multiple sources to understand what the user
+        is currently thinking about, curious about, and engaged with.
+        This feeds into adjacent/tangential query generation so the
+        collector explores non-linearly — like a research librarian
+        who reads adjacent shelves.
+        
+        Returns dict with:
+            recent_questions: Questions the user asked in chat
+            recent_highlights: Passages the user highlighted
+            recent_searches: Searches the user performed
+            recent_additions: Titles of sources the user recently added
+            recent_topics: Topics from archival memory
+        """
+        from datetime import timedelta
+        context = {
+            "recent_questions": [],
+            "recent_highlights": [],
+            "recent_searches": [],
+            "recent_additions": [],
+            "recent_topics": [],
+        }
+        
+        lookback = datetime.utcnow() - timedelta(days=7)
+        
+        # Pull recent events from the event logger
+        try:
+            from services.event_logger import event_logger, EventType
+            events = event_logger.get_events_since(lookback, notebook_id=notebook_id)
+            
+            for evt in events:
+                if evt.event_type == EventType.CHAT_QA.value:
+                    question = evt.data.get("question", "")
+                    if question and len(question) > 10:
+                        context["recent_questions"].append(question[:200])
+                
+                elif evt.event_type == EventType.HIGHLIGHT_CREATED.value:
+                    text = evt.data.get("text", "")
+                    if text and len(text) > 15:
+                        context["recent_highlights"].append(text[:300])
+                
+                elif evt.event_type == EventType.SEARCH_PERFORMED.value:
+                    query = evt.data.get("query", "")
+                    if query and len(query) > 3:
+                        context["recent_searches"].append(query[:150])
+                
+                elif evt.event_type == EventType.DOCUMENT_CAPTURED.value:
+                    title = evt.data.get("title", "")
+                    if title:
+                        context["recent_additions"].append(title[:150])
+                
+                elif evt.event_type == EventType.SOURCE_APPROVED.value:
+                    src = evt.data.get("source", {})
+                    title = src.get("title", src.get("filename", ""))
+                    if title:
+                        context["recent_additions"].append(title[:150])
+        except Exception as e:
+            logger.debug(f"Exploration context: event fetch failed (non-fatal): {e}")
+        
+        # Pull recent source titles (last 7 days by created_at)
+        try:
+            from storage.source_store import source_store
+            all_sources = await source_store.list(notebook_id)
+            for s in all_sources:
+                created = s.get("created_at", "")
+                if created and created > lookback.isoformat():
+                    title = s.get("filename", s.get("title", ""))
+                    if title and title not in context["recent_additions"]:
+                        context["recent_additions"].append(title[:150])
+        except Exception as e:
+            logger.debug(f"Exploration context: source fetch failed (non-fatal): {e}")
+        
+        # Pull topic threads from archival memory (cross-notebook for richer signal)
+        try:
+            from storage.memory_store import memory_store
+            from models.memory import AgentNamespace
+            results = memory_store.search_archival_memory(
+                query="recent research interests topics discussions",
+                namespace=AgentNamespace.CURATOR,
+                notebook_id=notebook_id,
+                cross_notebook=True,
+                limit=5
+            )
+            if results:
+                for r in results:
+                    if r.combined_score > 0.2:
+                        context["recent_topics"].append(r.entry.content[:200])
+        except Exception as e:
+            logger.debug(f"Exploration context: memory fetch failed (non-fatal): {e}")
+        
+        # Cap everything to avoid prompt bloat
+        context["recent_questions"] = context["recent_questions"][-8:]
+        context["recent_highlights"] = context["recent_highlights"][-5:]
+        context["recent_searches"] = context["recent_searches"][-6:]
+        context["recent_additions"] = context["recent_additions"][-10:]
+        context["recent_topics"] = context["recent_topics"][-5:]
+        
+        return context
+    
+    async def _generate_exploration_queries(
+        self,
+        notebook_id: str,
+        config,
+        exploration_context: Dict[str, Any],
+        recently_used_queries: List[str],
+    ) -> List[str]:
+        """
+        Generate ADJACENT/TANGENTIAL search queries for non-linear discovery.
+        
+        Unlike smart queries (which target the notebook's direct focus areas),
+        exploration queries deliberately push into related but unexplored territory.
+        Think: a research librarian who says "based on what you've been reading,
+        you might also find this interesting..."
+        
+        The key insight: the user's research path is linear and intentional.
+        The collector's discovery should be non-linear and serendipitous.
+        This opens up possibilities the user wouldn't find on their own.
+        
+        Args:
+            config: Notebook collector config (intent, focus_areas, subject)
+            exploration_context: Recent user activity from _build_exploration_context
+            recently_used_queries: Queries from recent runs to avoid repeating
+        
+        Returns:
+            List of 3-5 adjacent/tangential search queries
+        """
+        from services.ollama_client import ollama_client
+        from config import settings
+        
+        subject = config.subject.strip() if hasattr(config, 'subject') else ""
+        focus_areas_str = ", ".join(config.focus_areas[:8]) if config.focus_areas else "general"
+        
+        # Build activity signal for the LLM
+        activity_lines = []
+        
+        if exploration_context.get("recent_questions"):
+            activity_lines.append("QUESTIONS THE USER ASKED IN CHAT RECENTLY:")
+            for q in exploration_context["recent_questions"][-5:]:
+                activity_lines.append(f"  ? {q}")
+        
+        if exploration_context.get("recent_highlights"):
+            activity_lines.append("PASSAGES THE USER HIGHLIGHTED (they found these important):")
+            for h in exploration_context["recent_highlights"][-4:]:
+                activity_lines.append(f"  > {h}")
+        
+        if exploration_context.get("recent_searches"):
+            activity_lines.append("SEARCHES THE USER PERFORMED:")
+            for s in exploration_context["recent_searches"][-4:]:
+                activity_lines.append(f"  🔍 {s}")
+        
+        if exploration_context.get("recent_additions"):
+            activity_lines.append("SOURCES THE USER RECENTLY ADDED:")
+            for a in exploration_context["recent_additions"][-6:]:
+                activity_lines.append(f"  + {a}")
+        
+        if exploration_context.get("recent_topics"):
+            activity_lines.append("TOPICS FROM RECENT RESEARCH MEMORY:")
+            for t in exploration_context["recent_topics"][-3:]:
+                activity_lines.append(f"  📝 {t}")
+        
+        activity_text = "\n".join(activity_lines) if activity_lines else "(No recent activity signals available)"
+        
+        # Build recently-used queries block
+        avoid_text = ""
+        if recently_used_queries:
+            avoid_text = f"""
+QUERIES ALREADY USED IN RECENT COLLECTION RUNS (do NOT repeat these or close variants):
+{chr(10).join(f'  ✗ {q}' for q in recently_used_queries[-15:])}"""
+        
+        prompt = f"""You are a creative research librarian. Your job is to suggest ADJACENT, TANGENTIAL research directions that the user hasn't thought of yet — based on what they've been reading, asking about, and exploring.
+
+NOTEBOOK SUBJECT: {subject or '(general)'}
+FOCUS AREAS: {focus_areas_str}
+NOTEBOOK PURPOSE: {config.intent}
+
+{activity_text}
+{avoid_text}
+
+Generate 3-5 EXPLORATION queries that are ADJACENT to the user's interests — not the same topics, but related concepts, counterarguments, historical parallels, cross-disciplinary connections, or emerging intersections.
+
+EXPLORATION PRINCIPLES:
+- If they're researching "leadership styles" → explore "organizational psychology", "decision fatigue in executives", "military leadership lessons for business"
+- If they're studying "machine learning" → explore "cognitive science of pattern recognition", "statistical mechanics and neural networks", "ethics of automated decision making"
+- If they highlighted passages about X → find the intellectual NEIGHBORS of X — what scholars in adjacent fields would say about it
+- Connect dots across their different interests — if they read about A and asked about B, find where A and B intersect
+- Include at least 1 query that a smart colleague would suggest: "have you considered looking at it from THIS angle?"
+- Include at least 1 contrarian or counterpoint query: find content that challenges what the user has been reading
+- Each query should be 3-8 words, suitable for Google News or web search
+- DO NOT repeat recent queries or generate close variants of them
+
+Respond with ONLY a JSON array of strings, no other text:
+["query 1", "query 2", ...]"""
+
+        try:
+            import asyncio as _asyncio
+            response = await _asyncio.wait_for(
+                ollama_client.generate(
+                    prompt=prompt,
+                    system="You are a creative research librarian specializing in cross-disciplinary discovery. Respond only with a valid JSON array of search query strings.",
+                    model=settings.ollama_model,
+                    temperature=0.9  # Higher creativity for exploration
+                ),
+                timeout=45
+            )
+            
+            text = response.get("response", "")
+            bracket_start = text.find("[")
+            bracket_end = text.rfind("]") + 1
+            if bracket_start >= 0 and bracket_end > bracket_start:
+                parsed = json.loads(text[bracket_start:bracket_end])
+                if isinstance(parsed, list):
+                    queries = [q.strip() for q in parsed if isinstance(q, str) and len(q.strip()) > 3][:5]
+                    if queries:
+                        print(f"[CURATOR] 🔭 Generated {len(queries)} exploration queries: {queries}")
+                        logger.info(f"Exploration queries for {notebook_id}: {queries}")
+                        return queries
+        except Exception as e:
+            logger.warning(f"Exploration query generation failed (non-fatal): {e}")
+            print(f"[CURATOR] Exploration query generation failed: {e}")
+        
+        return []
     
     async def _create_collection_task(
         self,
@@ -2105,6 +2489,8 @@ Respond with JSON only:
         2. Uses LLM to generate specific, targeted search queries
         3. Auto-populates news_keywords so Google News gets searched
         4. Identifies knowledge gaps and emerging subtopics to pursue
+        5. Generates EXPLORATION queries for adjacent/tangential discovery
+        6. Rotates queries to avoid searching the same things every run
         """
         from storage.source_store import source_store
         
@@ -2118,6 +2504,46 @@ Respond with JSON only:
             "created_at": datetime.utcnow().isoformat()
         }
         
+        # ── Get recently used queries for rotation/dedup ──
+        recently_used_queries = []
+        try:
+            from services.collection_history import get_recent_queries
+            recently_used_queries = get_recent_queries(notebook_id, lookback_runs=5)
+            if recently_used_queries:
+                print(f"[CURATOR] 🔄 Loaded {len(recently_used_queries)} recently used queries for rotation")
+        except Exception:
+            pass
+        
+        # ── Stagnation detection ──
+        stagnation_report = None
+        cross_notebook_seeds = []
+        try:
+            from services.collection_history import detect_stagnation
+            stagnation_report = detect_stagnation(notebook_id)
+            auto_expand = getattr(config, 'auto_expand', True)
+
+            if stagnation_report.get("stagnating") and auto_expand:
+                severity = stagnation_report["severity"]
+                days = stagnation_report["days_since_growth"]
+                task["_stagnation"] = stagnation_report
+                print(f"[CURATOR] 📊 Stagnation detected: severity={severity}, {days} days without growth")
+
+                # Pull cross-notebook seeds from shared entities (shared-entity only)
+                try:
+                    shared_insights = await self.discover_cross_notebook_patterns()
+                    for insight in shared_insights:
+                        if notebook_id in insight.notebooks and insight.entity:
+                            cross_notebook_seeds.append(insight.entity)
+                    cross_notebook_seeds = cross_notebook_seeds[:5]
+                    if cross_notebook_seeds:
+                        print(f"[CURATOR] 🔗 Cross-notebook seeds for expansion: {cross_notebook_seeds}")
+                except Exception as xnb_err:
+                    logger.debug(f"Cross-notebook seed fetch failed (non-fatal): {xnb_err}")
+            elif stagnation_report.get("stagnating") and not auto_expand:
+                print(f"[CURATOR] 📊 Stagnation detected but auto_expand disabled — skipping expansion")
+        except Exception as stag_err:
+            logger.debug(f"Stagnation detection failed (non-fatal): {stag_err}")
+
         # ── Build a knowledge snapshot of what we already have ──
         source_titles = []
         source_domains = set()
@@ -2177,12 +2603,41 @@ Known domains already collected from: {', '.join(list(source_domains)[:15])}"""
 Recent content summaries already in the notebook:
 {recent_topics_text}"""
             
+            # Build recently-used queries block for rotation
+            avoid_queries_text = ""
+            if recently_used_queries:
+                avoid_queries_text = f"""
+QUERIES USED IN RECENT RUNS (do NOT repeat these or close variants — generate FRESH queries):
+{chr(10).join(f'  ✗ {q}' for q in recently_used_queries[-12:])}"""
+            
+            # Build stagnation context for the prompt if applicable
+            stagnation_prompt_block = ""
+            if stagnation_report and stagnation_report.get("stagnating") and getattr(config, 'auto_expand', True):
+                days = stagnation_report["days_since_growth"]
+                severity = stagnation_report["severity"]
+                reasons = stagnation_report.get("dominant_rejection_reasons", {})
+                reasons_text = ", ".join(f"{k}: {v}" for k, v in reasons.items()) if reasons else "unknown"
+                
+                stagnation_prompt_block = f"""
+IMPORTANT — EXPANSION MODE: This notebook has NOT found any new content in {days} days.
+Recent items were rejected because: {reasons_text}
+You MUST generate queries that explore ADJACENT and TANGENTIAL topics — not more of the same.
+Think: what would a smart colleague suggest looking at from a different angle?"""
+                
+                if cross_notebook_seeds:
+                    stagnation_prompt_block += f"""
+CROSS-NOTEBOOK CONNECTIONS (topics from the user's OTHER notebooks that may link here):
+{chr(10).join(f'  → {seed}' for seed in cross_notebook_seeds)}
+Include at least 1-2 queries that bridge these cross-notebook topics with this notebook's subject."""
+            
             prompt = f"""You are a research librarian planning the next collection run for a research notebook.
 
 NOTEBOOK PURPOSE: {config.intent}
 SUBJECT: {subject or '(general)'}
 FOCUS AREAS: {focus_areas_str}
 {existing_context}
+{avoid_queries_text}
+{stagnation_prompt_block}
 
 Generate 6-8 SPECIFIC search queries that would find NEW, valuable content not already covered.
 
@@ -2193,6 +2648,7 @@ Rules:
 - Include at least 1 query targeting a specific person/lab in this field
 - Include at least 1 query about a recent development or trend
 - Avoid queries that would return content already in the notebook
+- DO NOT repeat or closely paraphrase any recently used queries listed above
 - Each query should be 3-8 words, suitable for Google News or web search
 
 Respond with ONLY a JSON array of strings, no other text:
@@ -2226,7 +2682,26 @@ Respond with ONLY a JSON array of strings, no other text:
             logger.warning(f"Smart query generation failed (will use defaults): {e}")
             print(f"[CURATOR] Smart query generation failed: {e}")
         
-        # ── Enrich the task with smart directives ──
+        # ── Generate EXPLORATION queries for adjacent/tangential discovery ──
+        exploration_queries = []
+        try:
+            exploration_context = await self._build_exploration_context(notebook_id)
+            has_activity = any(
+                exploration_context.get(k)
+                for k in ["recent_questions", "recent_highlights", "recent_searches", "recent_additions", "recent_topics"]
+            )
+            if has_activity:
+                exploration_queries = await self._generate_exploration_queries(
+                    notebook_id, config, exploration_context,
+                    recently_used_queries + smart_queries  # Avoid overlap with smart queries too
+                )
+            else:
+                print(f"[CURATOR] No recent user activity for {notebook_id} — skipping exploration queries")
+        except Exception as e:
+            logger.warning(f"Exploration query generation failed (non-fatal): {e}")
+            print(f"[CURATOR] Exploration queries failed: {e}")
+        
+        # ── Enrich the task with smart directives + exploration queries ──
         if smart_queries:
             task["smart_queries"] = smart_queries
             task["curator_directive"] = (
@@ -2235,6 +2710,13 @@ Respond with ONLY a JSON array of strings, no other text:
             )
         else:
             task["curator_directive"] = "Find NEW information not covered by existing content"
+        
+        if exploration_queries:
+            task["exploration_queries"] = exploration_queries
+            # Blend exploration queries into smart_queries so they get used by the collector
+            all_queries = list(smart_queries) + list(exploration_queries)
+            task["smart_queries"] = all_queries
+            print(f"[CURATOR] 🧭 Task has {len(smart_queries)} targeted + {len(exploration_queries)} exploration queries")
         
         # ── Auto-populate news_keywords if empty ──
         # This ensures Google News actually gets searched
@@ -2248,6 +2730,10 @@ Respond with ONLY a JSON array of strings, no other text:
             # Use smart queries as news keywords (they're already specific)
             if smart_queries:
                 auto_news_keywords.extend(smart_queries[:4])
+            
+            # Include exploration queries in news search for adjacent discovery
+            if exploration_queries:
+                auto_news_keywords.extend(exploration_queries[:3])
             
             # Also add subject + top focus areas as fallback
             if subject:
@@ -2352,6 +2838,20 @@ Respond with ONLY a JSON array of strings, no other text:
         print(f"[CURATOR] Collection returned {len(collected_items) if collected_items else 0} items")
         
         if not collected_items:
+            # Still record history so query rotation works (avoids repeating same queries next run)
+            try:
+                from services.collection_history import record_collection_run
+                record_collection_run(
+                    notebook_id=notebook_id,
+                    items_found=0, items_approved=0, items_pending=0, items_rejected=0,
+                    sources_checked=len(config.sources.get("rss_feeds", [])) + len(config.sources.get("web_pages", [])),
+                    trigger=trigger,
+                    keywords_used=task.get("focus_areas", [])[:5],
+                    queries_used=task.get("smart_queries", []),
+                    exploration_queries=task.get("exploration_queries", []),
+                )
+            except Exception:
+                pass
             return {"items_collected": 0, "message": "No new items found"}
         
         # Judge results (pass deadline so judgment can auto-defer if time is tight)
@@ -2373,8 +2873,15 @@ Respond with ONLY a JSON array of strings, no other text:
         filtered = 0
         approved_titles = []
         filtered_titles = []
+        rejection_reasons: Dict[str, int] = {}  # Track why items fail for stagnation analysis
         
-        CONFIDENCE_FLOOR = 0.50  # Hard minimum — nothing below 50% is ever added
+        # Adaptive confidence floor: lower when stagnating to surface borderline items for user review
+        stagnation = task.get("_stagnation")
+        if stagnation and stagnation.get("stagnating"):
+            CONFIDENCE_FLOOR = 0.40  # Expansion mode — let borderline items through to queue
+            print(f"[CURATOR] 📊 Using lowered confidence floor (0.40) for expansion mode")
+        else:
+            CONFIDENCE_FLOOR = 0.50  # Normal — nothing below 50% is ever added
         
         # Pre-fetch existing URLs once for dedup (avoids N × source_store.list() calls)
         from storage.source_store import source_store
@@ -2385,11 +2892,22 @@ Respond with ONLY a JSON array of strings, no other text:
             # Hard confidence floor: items below threshold are always filtered
             if item.overall_confidence < CONFIDENCE_FLOOR:
                 filtered += 1
+                reason = f"below_{int(CONFIDENCE_FLOOR*100)}pct_threshold"
                 filtered_titles.append({
                     "title": item.title, "source": item.source_name, 
                     "confidence": item.overall_confidence, 
-                    "reason": f"below_{int(CONFIDENCE_FLOOR*100)}%_threshold"
+                    "reason": reason
                 })
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                continue
+            
+            # In expansion mode, items between 0.40-0.50 always go to queue (never auto-approve)
+            if stagnation and stagnation.get("stagnating") and item.overall_confidence < 0.50:
+                queue_result = await collector._add_to_approval_queue(item)
+                if queue_result == 'queued':
+                    pending += 1
+                else:
+                    filtered += 1
                 continue
             
             if judgment.decision == JudgmentDecision.APPROVE:
@@ -2408,6 +2926,8 @@ Respond with ONLY a JSON array of strings, no other text:
                     filtered += 1
             elif judgment.decision == JudgmentDecision.REJECT:
                 rejected += 1
+                reason = getattr(judgment, 'reason', 'curator_rejected') or 'curator_rejected'
+                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
             else:
                 # Queue for user review (may auto-approve if high confidence in mixed mode)
                 queue_result = await collector._add_to_approval_queue(item)
@@ -2434,6 +2954,9 @@ Respond with ONLY a JSON array of strings, no other text:
                 sources_checked=len(config.sources.get("rss_feeds", [])) + len(config.sources.get("web_pages", [])) + len(config.sources.get("news_keywords", [])),
                 trigger="specific" if specific_query else trigger,
                 keywords_used=task.get("focus_areas", [])[:5],
+                queries_used=task.get("smart_queries", []),
+                exploration_queries=task.get("exploration_queries", []),
+                rejection_reasons=rejection_reasons if rejection_reasons else None,
             )
         except Exception as hist_err:
             logger.warning(f"Failed to record collection history (non-fatal): {hist_err}")
@@ -2557,6 +3080,24 @@ Respond with ONLY a JSON array of strings, no other text:
             except Exception:
                 pass
         
+        # Stagnation awareness for current notebook
+        stagnation_context = ""
+        if notebook_id:
+            try:
+                from services.collection_history import detect_stagnation
+                stag = detect_stagnation(notebook_id)
+                if stag.get("stagnating"):
+                    sev = stag["severity"]
+                    days = stag["days_since_growth"]
+                    if sev == "plateau":
+                        stagnation_context = f"\n⚠️ This notebook's collection has PLATEAUED — no new content in {days} days. The topic space may be saturated. Suggest expanding scope or adding new sources."
+                    elif sev == "moderate":
+                        stagnation_context = f"\n📊 This notebook's collection has stagnated ({days} days without growth). Search criteria have been automatically expanded to adjacent topics."
+                    elif sev == "mild":
+                        stagnation_context = f"\n🔭 This notebook's collection is in expansion mode — no new content in {days} days, exploring wider search criteria."
+            except Exception:
+                pass
+        
         # Search across ALL notebooks for cross-references (PARALLEL)
         cross_context = ""
         if notebooks and len(notebooks) > 1:
@@ -2608,6 +3149,14 @@ Respond with ONLY a JSON array of strings, no other text:
         except Exception:
             user_context = ""
         
+        # Pull core memory for deeper user awareness (ReMe integration)
+        core_memory_block = ""
+        try:
+            core_memory = memory_store.load_core_memory()
+            core_memory_block = core_memory.to_prompt_block()
+        except Exception:
+            pass
+        
         system_prompt = f"""You are {self.name}, the Curator of a research system called LocalBook.
 Your personality: {self.personality}
 
@@ -2620,9 +3169,12 @@ Your role:
 
 {user_context}
 
+{core_memory_block}
+
 {notebook_context}
 {search_context}
 {cross_context}
+{stagnation_context}
 
 Rules:
 - Be conversational and concise (2-4 sentences typical)

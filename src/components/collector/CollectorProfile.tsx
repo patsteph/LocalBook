@@ -107,6 +107,7 @@ interface ProfileData {
   schedule: { frequency: string; max_items_per_run: number };
   filters: { max_age_days: number; min_relevance: number; language: string };
   settings: { collection_mode: string; approval_mode: string; name: string };
+  auto_expand: boolean;
   stats: CollectionStats;
   feedback: FeedbackData;
   created_at: string;
@@ -117,6 +118,7 @@ interface CollectorProfileProps {
   notebookId: string;
   isOpen: boolean;
   onClose: () => void;
+  onViewPending?: () => void;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -197,6 +199,7 @@ export const CollectorProfile: React.FC<CollectorProfileProps> = ({
   notebookId,
   isOpen,
   onClose,
+  onViewPending,
 }) => {
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -328,7 +331,12 @@ export const CollectorProfile: React.FC<CollectorProfileProps> = ({
             <div className="text-center py-8 text-red-500 dark:text-red-400">{error}</div>
           ) : profile ? (
             <>
-              {activeTab === 'overview' && <OverviewTab profile={profile} />}
+              {activeTab === 'overview' && <OverviewTab profile={profile} notebookId={notebookId} onToggleAutoExpand={async (val) => {
+                try {
+                  await collectorService.updateConfig(notebookId, { auto_expand: val });
+                  setProfile({ ...profile, auto_expand: val });
+                } catch {}
+              }} />}
               {activeTab === 'sources' && (
                 <SourcesTab
                   sources={profile.sources}
@@ -336,7 +344,7 @@ export const CollectorProfile: React.FC<CollectorProfileProps> = ({
                   togglingSource={togglingSource}
                 />
               )}
-              {activeTab === 'history' && <HistoryTab history={history} stats={profile.stats} />}
+              {activeTab === 'history' && <HistoryTab history={history} stats={profile.stats} onViewPending={onViewPending} />}
               {activeTab === 'insights' && <InsightsTab feedback={profile.feedback} />}
             </>
           ) : null}
@@ -348,7 +356,7 @@ export const CollectorProfile: React.FC<CollectorProfileProps> = ({
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-const OverviewTab: React.FC<{ profile: ProfileData }> = ({ profile }) => {
+const OverviewTab: React.FC<{ profile: ProfileData; notebookId: string; onToggleAutoExpand: (val: boolean) => void }> = ({ profile, onToggleAutoExpand }) => {
   const { subject, stock, key_dates, focus_areas, schedule, filters, settings, stats } = profile;
 
   return (
@@ -469,6 +477,22 @@ const OverviewTab: React.FC<{ profile: ProfileData }> = ({ profile }) => {
           <div className="text-sm font-semibold text-gray-900 dark:text-gray-100 mt-1">
             {filters.max_age_days}d max · {(filters.min_relevance * 100).toFixed(0)}% relevance
           </div>
+        </div>
+        <div className="col-span-2 bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 border border-gray-200 dark:border-gray-700 flex items-center justify-between">
+          <div>
+            <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Auto-Expand on Stagnation</div>
+            <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">Widen search after 5+ days with no new content</div>
+          </div>
+          <button
+            onClick={() => onToggleAutoExpand(!profile.auto_expand)}
+            className={`relative w-9 h-5 rounded-full transition-colors ${
+              profile.auto_expand ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'
+            }`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+              profile.auto_expand ? 'translate-x-4' : ''
+            }`} />
+          </button>
         </div>
       </div>
 
@@ -640,7 +664,7 @@ const SourcesTab: React.FC<{
 
 // ─── History Tab ─────────────────────────────────────────────────────────────
 
-const HistoryTab: React.FC<{ history: HistoryEntry[]; stats: CollectionStats }> = ({ history, stats }) => {
+const HistoryTab: React.FC<{ history: HistoryEntry[]; stats: CollectionStats; onViewPending?: () => void }> = ({ history, stats, onViewPending }) => {
   return (
     <div className="space-y-5">
       {/* Stats Summary */}
@@ -650,7 +674,7 @@ const HistoryTab: React.FC<{ history: HistoryEntry[]; stats: CollectionStats }> 
           <StatBox label="Items Found" value={stats.total_items_found} />
           <StatBox label="Success Rate" value={`${stats.success_rate}%`} color={stats.success_rate > 80 ? 'green' : 'yellow'} />
           <StatBox label="Approved" value={stats.total_items_approved} color="green" />
-          <StatBox label="Pending" value={stats.total_items_pending} color="blue" />
+          <StatBox label="Pending" value={stats.total_items_pending} color="blue" onClick={stats.total_items_pending > 0 ? onViewPending : undefined} />
           <StatBox label="Avg Duration" value={`${(stats.avg_duration_ms / 1000).toFixed(1)}s`} />
         </div>
       )}
@@ -805,7 +829,8 @@ const StatBox: React.FC<{
   label: string;
   value: string | number;
   color?: 'green' | 'blue' | 'yellow' | 'gray';
-}> = ({ label, value, color }) => {
+  onClick?: () => void;
+}> = ({ label, value, color, onClick }) => {
   const colorClasses = {
     green: 'text-green-600 dark:text-green-400',
     blue: 'text-blue-600 dark:text-blue-400',
@@ -814,11 +839,20 @@ const StatBox: React.FC<{
   };
 
   return (
-    <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 border border-gray-200 dark:border-gray-700 text-center">
+    <div
+      className={`bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 border border-gray-200 dark:border-gray-700 text-center ${
+        onClick ? 'cursor-pointer hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors' : ''
+      }`}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      title={onClick ? `View ${label.toLowerCase()}` : undefined}
+    >
       <div className={`text-xl font-bold ${color ? colorClasses[color] : 'text-gray-900 dark:text-gray-100'}`}>
         {value}
       </div>
-      <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{label}</div>
+      <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+        {label}{onClick ? ' →' : ''}
+      </div>
     </div>
   );
 };

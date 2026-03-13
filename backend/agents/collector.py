@@ -65,6 +65,7 @@ class CollectorConfig(BaseModel):
     company_profile: Dict[str, Any] = Field(default_factory=dict)  # Cached company profile from discovery
     collection_mode: CollectionMode = CollectionMode.HYBRID
     approval_mode: ApprovalMode = ApprovalMode.MIXED
+    auto_expand: bool = True  # Auto-widen search when collection stagnates (5+ days no growth)
     
     sources: Dict[str, Any] = Field(default_factory=lambda: {
         "rss_feeds": [],
