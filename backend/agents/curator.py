@@ -111,6 +111,10 @@ class NotebookSummary(BaseModel):
     # Stagnation status — adaptive collection awareness
     stagnation_severity: Optional[str] = None  # None, 'mild', 'moderate', 'plateau'
     stagnation_days: int = 0
+    # Notes — user's own thinking and ideas
+    notes_created: int = 0  # notes created since last seen
+    note_titles: List[str] = []  # titles of recent notes
+    total_notes: int = 0  # total notes in notebook
 
 
 class MorningBrief(BaseModel):
@@ -808,6 +812,9 @@ Be concise and cite which notebook each insight comes from."""
                     one_week_ago_items=stats.get("one_week_ago_items", []),
                     stagnation_severity=stats.get("stagnation_severity"),
                     stagnation_days=stats.get("stagnation_days", 0),
+                    notes_created=stats.get("notes_created", 0),
+                    note_titles=stats.get("note_titles", []),
+                    total_notes=stats.get("total_notes", 0),
                 ))
         
         # Get any pending cross-notebook insight
@@ -1342,6 +1349,15 @@ Write the weekly wrap up now:"""
             stats["collector_added"] = len([s for s in recent if _is_collector_source(s)])
             stats["user_added"] = len(recent) - stats["collector_added"]
             
+            # Notes — track separately for "what you've been thinking about"
+            recent_notes = [s for s in recent if s.get("type") == "note"]
+            stats["notes_created"] = len(recent_notes)
+            stats["note_titles"] = [s.get("filename", "Untitled Note") for s in recent_notes[:5]]
+            
+            # Also count total notes in notebook for context
+            all_notes = [s for s in all_sources if s.get("type") == "note"]
+            stats["total_notes"] = len(all_notes)
+            
             # Research velocity — compare this week vs last week (deltas, not totals)
             from datetime import timedelta
             now = datetime.utcnow()
@@ -1647,6 +1663,15 @@ Write the weekly wrap up now:"""
                 for ht in nb.recent_highlight_texts[:2]:
                     details.append(f"    > \"{ht}\"")
             
+            # Notes — the user's own thinking and ideas
+            if nb.notes_created > 0:
+                note_label = f"  - You wrote {nb.notes_created} note{'s' if nb.notes_created != 1 else ''}"
+                if nb.note_titles:
+                    note_label += f": {', '.join(nb.note_titles[:3])}"
+                details.append(note_label)
+            if nb.total_notes > 0 and nb.notes_created == 0:
+                details.append(f"  - You have {nb.total_notes} note{'s' if nb.total_notes != 1 else ''} in this notebook")
+            
             # Unfinished threads — conversations the user might want to continue
             if nb.unfinished_threads:
                 details.append(f"  - Unfinished conversations ({len(nb.unfinished_threads)}):")
@@ -1733,9 +1758,16 @@ STUDIO CONTENT CREATION — acknowledge what the user is BUILDING, not just read
 - If studio topics overlap with unfinished threads or emerging topics, connect the dots — "You're generating content on the same topics you were exploring in chat — your research is maturing"
 - Keep it brief — 1-2 sentences integrated naturally into the per-notebook section, not a separate block
 
+USER NOTES — the user's own thinking, captured in their own words:
+- Notes are first-class content — they represent what the user is ACTIVELY THINKING ABOUT
+- If a user wrote notes recently, lead with that or weave it in prominently: "You've been capturing your thoughts on [note titles] — this is building your personal knowledge base"
+- If a notebook has notes but none were created recently, you can reference them as context: "Your [N] notes in this notebook form a foundation for..."
+- Connect notes to other activity when possible: "The notes you wrote about [topic] align with what the collector is finding" or "Your note on [topic] could inform the collector's search direction"
+- Notes signal what the user cares about MORE than sources — sources are inputs, notes are the user's own synthesis
+
 NEWSLETTER STRUCTURE (use the sections that have data, skip empty ones):
-1. **Lead** — Start with the single most interesting or actionable finding. If there's a specific article title, use it. If the collector found new sources, lead with that.
-2. **Per-notebook updates** — For each notebook with activity, write 1-3 sentences highlighting specifics. Use actual titles, names, and details. Never say "1 new items" — say what the item IS. Include Studio output here if present.
+1. **Lead** — Start with the single most interesting or actionable finding. If there's a specific article title, use it. If the collector found new sources, lead with that. If the user wrote notes, that's also a strong lead.
+2. **Per-notebook updates** — For each notebook with activity, write 1-3 sentences highlighting specifics. Use actual titles, names, and details. Never say "1 new items" — say what the item IS. Include Studio output and notes here if present.
 3. **Collector discoveries** — ONLY if collector_added > 0 or pending_approval > 0. If the collector stored new sources, name the titles and nudge the user to review. If it only examined items but stored 0, do NOT write this section.
 4. **Research momentum** — If there's velocity data, copy the pre-computed numbers EXACTLY: "Your library grew from X to Y (+N new, P% growth)." If pace data exists, include it: "pace is up Q% vs last week." NEVER compute your own percentages.
 5. **Coming up** — If there are upcoming events or key dates, make them feel urgent.
@@ -1800,6 +1832,115 @@ Write the brief now:"""
             lines.append(line)
         return "\n".join(lines)
     
+    # =========================================================================
+    # Note → Collector Bridge — extract themes from notes, suggest keywords
+    # =========================================================================
+
+    async def suggest_collector_keywords_from_notes(self, notebook_id: str) -> Dict[str, Any]:
+        """Extract themes from a notebook's notes and suggest new collector focus areas.
+
+        Returns dict with:
+          - note_themes: list of extracted themes
+          - current_focus: existing collector focus_areas
+          - suggestions: new keywords/focus_areas not already covered
+        """
+        from storage.source_store import source_store
+        from agents.collector import get_collector
+
+        all_sources = await source_store.list(notebook_id)
+        notes = [s for s in all_sources if s.get("type") == "note"]
+        if not notes:
+            return {"note_themes": [], "current_focus": [], "suggestions": [], "message": "No notes in this notebook"}
+
+        # Build a digest of note titles and content snippets
+        note_digest_parts = []
+        for n in notes[:15]:
+            title = n.get("filename", "Untitled")
+            content = (n.get("content") or "")[:500]
+            note_digest_parts.append(f"- {title}: {content}")
+        note_digest = "\n".join(note_digest_parts)
+
+        # Get current collector config
+        try:
+            collector = get_collector(notebook_id)
+            config = collector.get_config()
+            current_focus = config.focus_areas or []
+            subject = config.subject or ""
+        except Exception:
+            current_focus = []
+            subject = ""
+
+        # Use LLM to extract themes and suggest keywords
+        prompt = f"""Analyze these user notes from a research notebook and extract the key themes and topics the user is thinking about.
+
+NOTES:
+{note_digest}
+
+CURRENT COLLECTOR FOCUS AREAS: {', '.join(current_focus) if current_focus else 'None set'}
+NOTEBOOK SUBJECT: {subject or 'Not specified'}
+
+Return a JSON object with:
+1. "note_themes" — list of 3-7 key themes/topics extracted from the notes (short phrases)
+2. "suggestions" — list of 2-5 NEW search keywords or focus areas that the collector should add, based on the note themes but NOT already in the current focus areas. Each should be specific enough to yield good search results.
+
+Return ONLY valid JSON, no explanation."""
+
+        try:
+            from services.ollama_client import ollama_client
+            from config import settings
+            import json
+
+            response = await ollama_client.generate(
+                prompt=prompt,
+                system="You extract research themes from notes and suggest collector search keywords. Return only valid JSON.",
+                model=settings.ollama_fast_model,
+                temperature=0.3,
+                timeout=30.0,
+                num_predict=500,
+                extra_options={"keep_alive": -1},
+            )
+            text = response.get("response", "").strip()
+            # Parse JSON from response
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                data = json.loads(text[start:end])
+                return {
+                    "note_themes": data.get("note_themes", []),
+                    "current_focus": current_focus,
+                    "suggestions": data.get("suggestions", []),
+                    "note_count": len(notes),
+                    "subject": subject,
+                }
+        except Exception as e:
+            logger.error(f"[Curator] Note theme extraction failed: {e}")
+
+        return {"note_themes": [], "current_focus": current_focus, "suggestions": [], "note_count": len(notes)}
+
+    async def apply_note_suggestions_to_collector(self, notebook_id: str, keywords: List[str]) -> Dict[str, Any]:
+        """Apply suggested keywords from note analysis to a notebook's collector config.
+
+        Only adds keywords that aren't already in focus_areas.
+        """
+        from agents.collector import get_collector
+
+        collector = get_collector(notebook_id)
+        config = collector.get_config()
+        existing = set(a.lower() for a in (config.focus_areas or []))
+        new_keywords = [k for k in keywords if k.lower() not in existing]
+
+        if not new_keywords:
+            return {"added": [], "message": "All suggested keywords already in focus areas"}
+
+        updated_focus = list(config.focus_areas or []) + new_keywords
+        collector.update_config({"focus_areas": updated_focus})
+
+        return {
+            "added": new_keywords,
+            "total_focus_areas": len(updated_focus),
+            "message": f"Added {len(new_keywords)} new focus area(s) to collector",
+        }
+
     # =========================================================================
     # Proactive Cross-Notebook Discovery (Enhancement #7)
     # =========================================================================

@@ -71,7 +71,8 @@ async def extract_timeline(notebook_id: str):
     }
     
     # Start extraction in background
-    asyncio.create_task(_extract_timeline_async(notebook_id))
+    from utils.tasks import safe_create_task
+    safe_create_task(_extract_timeline_async(notebook_id), name=f"timeline-extract-{notebook_id}")
     
     return {"message": "Timeline extraction started"}
 

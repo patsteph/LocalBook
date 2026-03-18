@@ -1115,13 +1115,14 @@ Write only the table and prompts. Nothing else."""
     # Fire-and-forget: quizzes generate while user reads the document.
     # By the time they reach a quiz button, it's already cached.
     if notebook_id:
-        asyncio.create_task(_pre_generate_feynman_quizzes(
+        from utils.tasks import safe_create_task
+        safe_create_task(_pre_generate_feynman_quizzes(
             notebook_id=notebook_id,
             topic=topic,
             parts=parts,
             level_concepts=level_concepts,
             level_goals=level_goals,
-        ))
+        ), name="feynman-quiz-pregen")
         logger.info("[FEYNMAN-V2] Phase 7: Background quiz generation started")
 
     return document

@@ -641,12 +641,9 @@ Respond ONLY with JSON:"""
         try:
             from sklearn.cluster import HDBSCAN
         except ImportError:
-            try:
-                from hdbscan import HDBSCAN
-            except ImportError:
-                print("HDBSCAN not available, skipping clustering")
-                await notify_cluster_complete({"clusters": 0, "error": "HDBSCAN not available"})
-                return []
+            print("HDBSCAN not available (sklearn.cluster), skipping clustering")
+            await notify_cluster_complete({"clusters": 0, "error": "HDBSCAN not available"})
+            return []
         
         # Phase 1: Load concepts (old clusters still visible in UI)
         await notify_cluster_progress({"phase": "loading", "progress": 5})

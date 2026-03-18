@@ -108,8 +108,8 @@ class TopicModelingService:
             # Import BERTopic components
             from bertopic import BERTopic
             from bertopic.vectorizers import OnlineCountVectorizer
-            from umap import UMAP
-            from hdbscan import HDBSCAN
+            from sklearn.decomposition import PCA
+            from sklearn.cluster import HDBSCAN
             
             # Check if we have a saved model
             if self.model_path.exists():
@@ -119,19 +119,13 @@ class TopicModelingService:
             else:
                 print("[TopicModel] Creating new model...")
                 # Configure for incremental learning
-                umap_model = UMAP(
-                    n_neighbors=15,
-                    n_components=5,
-                    min_dist=0.0,
-                    metric='cosine',
-                    random_state=42
-                )
+                # PCA replaces UMAP — much lighter (no numba/llvmlite deps)
+                umap_model = PCA(n_components=5)
                 
                 hdbscan_model = HDBSCAN(
                     min_cluster_size=3,
                     min_samples=2,
-                    metric='euclidean',
-                    prediction_data=True
+                    metric='euclidean'
                 )
                 
                 # Online vectorizer for incremental updates
@@ -755,28 +749,21 @@ Theme name:"""
                 # Create fresh BERTopic model for this fit
                 from bertopic import BERTopic
                 from bertopic.representation import MaximalMarginalRelevance
-                from umap import UMAP
-                from hdbscan import HDBSCAN
+                from sklearn.decomposition import PCA
+                from sklearn.cluster import HDBSCAN
                 from sklearn.feature_extraction.text import CountVectorizer
                 
-                # Configure UMAP - use precomputed embeddings
-                umap_model = UMAP(
-                    n_neighbors=15,
-                    n_components=5,
-                    min_dist=0.0,
-                    metric='cosine',
-                    random_state=42
-                )
+                # PCA replaces UMAP — much lighter (no numba/llvmlite deps)
+                umap_model = PCA(n_components=5)
                 
-                # Configure HDBSCAN for clustering
+                # Configure HDBSCAN for clustering (sklearn built-in)
                 # Balance: not too few themes (was 4), not too many (was 83)
                 # Target: 35-45 meaningful themes for rich exploration
                 hdbscan_model = HDBSCAN(
                     min_cluster_size=5,   # Smaller clusters for more themes (target 35-45)
                     min_samples=2,        # Moderate strictness
                     metric='euclidean',
-                    cluster_selection_method='eom',  # Default method, less granular than 'leaf'
-                    prediction_data=True
+                    cluster_selection_method='eom'  # Default method, less granular than 'leaf'
                 )
                 
                 # Configure CountVectorizer to remove stopwords and use n-grams
@@ -1012,11 +999,11 @@ Return ONLY the label, nothing else."""
                 # Reset model
                 from bertopic import BERTopic
                 from bertopic.vectorizers import OnlineCountVectorizer
-                from umap import UMAP
-                from hdbscan import HDBSCAN
+                from sklearn.decomposition import PCA
+                from sklearn.cluster import HDBSCAN
                 
-                umap_model = UMAP(n_neighbors=15, n_components=5, min_dist=0.0, metric='cosine')
-                hdbscan_model = HDBSCAN(min_cluster_size=3, min_samples=2, metric='euclidean', prediction_data=True)
+                umap_model = PCA(n_components=5)
+                hdbscan_model = HDBSCAN(min_cluster_size=3, min_samples=2, metric='euclidean')
                 vectorizer_model = OnlineCountVectorizer(stop_words="english", ngram_range=(1, 2))
                 
                 self._model = BERTopic(

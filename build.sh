@@ -83,6 +83,21 @@ if ! command -v tesseract &> /dev/null; then
     brew install tesseract
 fi
 
+# Install espeak-ng if not found (required by phonemizer for Kokoro TTS)
+if ! command -v espeak-ng &> /dev/null; then
+    echo -e "${YELLOW}espeak-ng not found. Installing (required for TTS)...${NC}"
+    brew install espeak-ng
+fi
+
+# Check for Xcode Command Line Tools (required for Rust/Tauri compilation)
+if ! xcode-select -p &> /dev/null; then
+    echo -e "${YELLOW}Xcode Command Line Tools not found. Installing...${NC}"
+    echo -e "${YELLOW}A dialog may appear — click 'Install' and wait for completion.${NC}"
+    xcode-select --install
+    echo -e "${YELLOW}Press Enter after Xcode Command Line Tools installation completes...${NC}"
+    read -r
+fi
+
 # Install Rust if not found
 if ! command -v cargo &> /dev/null; then
     echo -e "${YELLOW}Rust not found. Installing automatically...${NC}"
@@ -130,17 +145,19 @@ if [ ! -f "$BACKEND_EXE" ] || [ "$DO_REBUILD" = true ] || [ "$DO_CLEAN" = true ]
     
     source .venv/bin/activate
     
-    # Install/upgrade dependencies using pip-sync for exact reproducibility
+    # Install/upgrade dependencies
     echo -e "${YELLOW}Installing dependencies...${NC}"
-    pip install --upgrade pip pip-tools
+    pip install --upgrade pip
     
-    # Use pip-sync for exact version matching (removes extra packages too)
-    # Falls back to pip install if pip-sync fails (e.g., hash mismatch on new platform)
-    if pip-sync requirements.txt 2>/dev/null; then
-        echo -e "${GREEN}✓ Dependencies synced exactly${NC}"
-    else
-        echo -e "${YELLOW}pip-sync failed, falling back to pip install...${NC}"
+    # Use pip install (not pip-sync) to avoid uninstall/reinstall churn
+    # pip-sync removes packages not in requirements.txt (kokoro-mlx, en_core_web_sm)
+    # which build_backend.sh then reinstalls — wasteful and noisy
+    # Show progress on first install (fresh venv), quiet on subsequent
+    if [ $(pip list 2>/dev/null | wc -l) -lt 20 ]; then
+        echo -e "${YELLOW}First install — this takes ~10 minutes...${NC}"
         pip install -r requirements.txt
+    else
+        pip install -q -r requirements.txt
     fi
     
     # Verify critical packages are installed

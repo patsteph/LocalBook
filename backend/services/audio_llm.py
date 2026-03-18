@@ -1,11 +1,11 @@
-"""Kokoro-82M TTS + mlx-whisper ASR Integration Service
+"""Kokoro-82M TTS (MLX) + mlx-whisper ASR Integration Service
 
 Provides TTS, ASR, and speech-to-speech capabilities:
-- TTS: Kokoro-82M (82M params, ~350 MB, Apache 2.0)
+- TTS: Kokoro-82M via kokoro-mlx (Apple Silicon Metal, no PyTorch)
 - ASR: mlx-whisper (Apple Silicon accelerated Whisper)
 - S2S: Decomposed ASR → Ollama LLM → Kokoro TTS pipeline
 
-Replaces LFM2.5-Audio-1.5B (1.5B params, ~3.4 GB, restrictive license).
+Uses kokoro-mlx for native Apple Silicon acceleration.
 """
 
 import asyncio
@@ -119,177 +119,200 @@ class AudioLLMService:
     """TTS + ASR service backed by Kokoro-82M and mlx-whisper."""
     
     def __init__(self):
-        self._pipeline = None       # Kokoro KPipeline
-        self._pipeline_lang = None  # Current pipeline lang_code
+        self._model = None          # kokoro-mlx KokoroTTS instance
         self._initialized = False
-        self._initializing = False
+        self._init_lock = asyncio.Lock()
         self._init_error = None
         
-    async def initialize(self, lang_code: str = "a"):
-        """Lazy initialization of Kokoro TTS pipeline."""
-        if self._initialized and self._pipeline_lang == lang_code:
-            return
-        if self._initializing:
-            return
-            
-        self._initializing = True
+    async def initialize(self):
+        """Lazy initialization of Kokoro TTS pipeline.
         
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._load_model, lang_code)
-            self._initialized = True
-            print(f"[AudioLLM] ✓ Kokoro-82M loaded (lang={lang_code})")
-        except ImportError as e:
-            import traceback
-            tb = traceback.format_exc()
-            print(f"[AudioLLM] ⚠ kokoro not installed: {e}")
-            self._init_error = tb
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            print(f"[AudioLLM] ⚠ Failed to load Kokoro: {e}")
-            self._init_error = tb
-        finally:
-            self._initializing = False
+        Uses asyncio.Lock so concurrent callers wait for init to complete
+        rather than silently returning with the model unavailable.
+        """
+        if self._initialized:
+            return
+        
+        async with self._init_lock:
+            # Double-check after acquiring lock (another caller may have finished init)
+            if self._initialized:
+                return
+            
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self._load_model)
+                self._initialized = True
+                print(f"[AudioLLM] ✓ Kokoro-82M (MLX) loaded")
+            except ImportError as e:
+                import traceback
+                tb = traceback.format_exc()
+                print(f"[AudioLLM] ⚠ kokoro-mlx not installed: {e}")
+                self._init_error = tb
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                print(f"[AudioLLM] ⚠ Failed to load Kokoro: {e}")
+                self._init_error = tb
+    
+    # HuggingFace model ID for MLX Kokoro
+    MLX_KOKORO_REPO = "mlx-community/Kokoro-82M-bf16"
+    
+    def _load_model(self):
+        """Load Kokoro-82M via kokoro-mlx (runs in thread).
+        
+        Downloads ~330 MB from HuggingFace on first use.
+        Once cached (~/.cache/huggingface/hub/), loads locally.
+        MLX auto-uses Metal on Apple Silicon — no manual device selection.
+        """
+        # ── 1. Prevent spacy.cli.download() from crashing in PyInstaller ──
+        # misaki's G2P.__init__ calls spacy.cli.download('en_core_web_sm')
+        # if the model isn't found as an installed package. In a frozen binary,
+        # this runs `sys.executable -m pip install ...` which crashes because
+        # sys.executable is the PyInstaller binary, not Python.
+        # Fix: patch spacy.cli.download to no-op BEFORE importing kokoro_mlx.
+        # The model data is bundled via --collect-all=en_core_web_sm.
+        self._patch_spacy_download()
+        
+        # ── 2. SSL fixes for any HuggingFace downloads needed ──
+        self._fix_ssl_for_hf_download()
+        
+        if not self._ssl_probe():
+            print(f"[AudioLLM] SSL cert verification broken — disabling for HuggingFace downloads")
+            self._disable_hf_ssl_verify()
+        
+        # ── 3. Load model ──
+        print(f"[AudioLLM] Loading Kokoro-82M via kokoro-mlx...")
+        from kokoro_mlx import KokoroTTS
+        
+        # Targeted download: only fetch model files, skip large WAV samples
+        # and markdown docs that snapshot_download would pull by default.
+        local_dir = self._download_model_files()
+        self._model = KokoroTTS.from_pretrained(local_dir)
+        print(f"[AudioLLM] ✓ Kokoro-82M (MLX) pipeline ready")
     
     @staticmethod
-    def _find_kokoro_cache() -> Optional[Path]:
-        """Find the Kokoro-82M model in HuggingFace cache.
+    def _patch_spacy_download():
+        """Prevent spacy.cli.download() from running pip in frozen binaries.
         
-        Returns the snapshot directory path, or None if not cached.
+        In PyInstaller bundles, sys.executable points to the frozen binary.
+        spacy.cli.download() calls subprocess with sys.executable -m pip,
+        which crashes fatally. We replace it with a no-op that logs a warning.
+        The en_core_web_sm model data is bundled with the app.
         """
-        hf_cache = Path(os.path.expanduser("~/.cache/huggingface/hub"))
-        model_dir = hf_cache / "models--hexgrad--Kokoro-82M"
-        if not model_dir.exists():
-            return None
-        refs_main = model_dir / "refs" / "main"
-        if refs_main.exists():
-            commit = refs_main.read_text().strip()
-            snap = model_dir / "snapshots" / commit
-            if snap.exists():
-                return snap
-        # Fallback: pick first snapshot
-        snaps = model_dir / "snapshots"
-        if snaps.exists():
-            for d in sorted(snaps.iterdir()):
-                if d.is_dir():
-                    return d
-        return None
+        import sys
+        try:
+            import spacy.cli
+            original_download = spacy.cli.download
+            
+            def _safe_download(model, *args, **kwargs):
+                if getattr(sys, 'frozen', False):
+                    print(f"[AudioLLM] Skipping spacy.cli.download('{model}') in frozen binary — model should be bundled")
+                    return
+                return original_download(model, *args, **kwargs)
+            
+            spacy.cli.download = _safe_download
+        except ImportError:
+            pass
     
-    def _load_model(self, lang_code: str = "a"):
-        """Load Kokoro-82M pipeline (runs in thread).
+    @classmethod
+    def _download_model_files(cls) -> str:
+        """Locate or download only the model files needed for inference.
         
-        Downloads ~350 MB from HuggingFace on first use.
-        Once cached (~/.cache/huggingface/hub/), loads locally.
+        Check order:
+        1. Local curl-based cache (~/.cache/kokoro-mlx-model)
+        2. HuggingFace Hub cache (via snapshot_download)
         
-        On macOS Python 3.13, SSL cert verification often fails for
-        HuggingFace downloads. We bypass Kokoro's internal hf_hub_download
-        by loading config + weights from the local cache directly.
+        The HF repo contains ~2GB of WAV samples we don't need.
+        allow_patterns limits to config.json and *.safetensors only.
         """
-        # Ensure macOS system certs are available for HuggingFace downloads
-        if not os.environ.get("SSL_CERT_FILE") and os.path.exists("/etc/ssl/cert.pem"):
-            os.environ["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
+        # Prefer local cache (populated by _download_model.sh or manual download)
+        local_cache = os.path.expanduser("~/.cache/kokoro-mlx-model")
+        if (os.path.isdir(local_cache)
+                and os.path.isfile(os.path.join(local_cache, "config.json"))
+                and os.path.isdir(os.path.join(local_cache, "voices"))):
+            print(f"[AudioLLM] Using local model cache: {local_cache}")
+            return local_cache
         
-        print(f"[AudioLLM] Loading Kokoro-82M (lang={lang_code})...")
-        from kokoro import KPipeline
-        from kokoro.model import KModel
-        import torch
+        # Fall back to HuggingFace Hub download
+        from huggingface_hub import snapshot_download
         
-        # Try loading from local cache first (bypasses SSL issues on macOS Python 3.13)
-        cache_dir = self._find_kokoro_cache()
-        if cache_dir and (cache_dir / "config.json").exists() and (cache_dir / "kokoro-v1_0.pth").exists():
-            print(f"[AudioLLM]   Loading from cache: {cache_dir}")
-            config_path = str(cache_dir / "config.json")
-            model_path = str(cache_dir / "kokoro-v1_0.pth")
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                device = "mps"
-            else:
-                device = "cpu"
-            print(f"[AudioLLM]   Device: {device}")
-            kmodel = KModel(config=config_path, model=model_path).to(device).eval()
-            self._pipeline = KPipeline(lang_code=lang_code, model=kmodel)
-            # Pre-load cached voice .pt files so KPipeline.load_single_voice
-            # doesn't call hf_hub_download (which fails with SSL errors)
-            voices_dir = cache_dir / "voices"
-            if voices_dir.exists():
-                loaded = 0
-                for vf in voices_dir.glob("*.pt"):
-                    voice_name = vf.stem  # e.g. "af_heart"
-                    try:
-                        pack = torch.load(str(vf), weights_only=True)
-                        self._pipeline.voices[voice_name] = pack
-                        loaded += 1
-                    except Exception:
-                        # PyTorch 2.6+ defaults weights_only=True which fails
-                        # on some voice packs. Fall back to weights_only=False
-                        # (safe — these are official HuggingFace model files).
-                        try:
-                            pack = torch.load(str(vf), weights_only=False)
-                            self._pipeline.voices[voice_name] = pack
-                            loaded += 1
-                        except Exception as e2:
-                            print(f"[AudioLLM]   Warning: failed to load voice {voice_name}: {e2}")
-                print(f"[AudioLLM]   Pre-loaded {loaded} voice(s) from cache")
-            # Monkey-patch load_single_voice to use local cache with fallback.
-            # Without this, any voice not pre-loaded triggers hf_hub_download
-            # which crashes on macOS Python 3.13 due to SSL cert issues.
-            _orig_load = self._pipeline.load_single_voice
-            _voices_dir = voices_dir
-            _pipe = self._pipeline
-            def _safe_load_single_voice(voice: str):
-                # Already loaded
-                if voice in _pipe.voices:
-                    return _pipe.voices[voice]
-                # Try local cache file first
-                if voice.endswith('.pt'):
-                    local_path = Path(voice)
-                else:
-                    local_path = _voices_dir / f"{voice}.pt" if _voices_dir else None
-                if local_path and local_path.exists():
-                    try:
-                        pack = torch.load(str(local_path), weights_only=True)
-                    except Exception:
-                        pack = torch.load(str(local_path), weights_only=False)
-                    _pipe.voices[voice] = pack
-                    print(f"[AudioLLM]   Loaded voice from cache: {voice}")
-                    return pack
-                # Try original method (works if SSL is functional)
-                try:
-                    return _orig_load(voice)
-                except Exception as e:
-                    # Fallback: use first available cached voice
-                    if _pipe.voices:
-                        fallback = next(iter(_pipe.voices))
-                        print(f"[AudioLLM]   ⚠ Voice '{voice}' unavailable ({e}), falling back to '{fallback}'")
-                        return _pipe.voices[fallback]
-                    raise
-            self._pipeline.load_single_voice = _safe_load_single_voice
-        else:
-            # Fallback: let Kokoro download via hf_hub_download
-            print(f"[AudioLLM]   No local cache, downloading from HuggingFace...")
-            self._pipeline = KPipeline(lang_code=lang_code)
-        
-        self._pipeline_lang = lang_code
-        self._cache_dir = cache_dir
-        print(f"[AudioLLM] ✓ Kokoro pipeline ready")
+        return snapshot_download(
+            repo_id=cls.MLX_KOKORO_REPO,
+            allow_patterns=["config.json", "*.safetensors", "voices/*.safetensors"],
+            max_workers=1,
+        )
     
-    def _ensure_lang(self, voice: str):
-        """Switch pipeline language if voice requires it."""
-        voice_id = resolve_voice(voice)
-        voice_info = KOKORO_VOICES.get(voice_id)
-        if voice_info and voice_info["lang"] != self._pipeline_lang:
-            new_lang = voice_info["lang"]
-            print(f"[AudioLLM] Switching pipeline: {self._pipeline_lang} → {new_lang}")
-            self._load_model(new_lang)
+    @staticmethod
+    def _fix_ssl_for_hf_download():
+        """Apply SSL certificate fixes for HuggingFace Hub downloads.
+        
+        macOS Python 3.13 from python.org often has broken SSL certs.
+        We try certifi's CA bundle first, then /etc/ssl/cert.pem.
+        """
+        try:
+            import certifi
+            ca_bundle = certifi.where()
+            os.environ.setdefault("SSL_CERT_FILE", ca_bundle)
+            os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_bundle)
+            os.environ.setdefault("CURL_CA_BUNDLE", ca_bundle)
+        except ImportError:
+            if os.path.exists("/etc/ssl/cert.pem"):
+                os.environ.setdefault("SSL_CERT_FILE", "/etc/ssl/cert.pem")
+    
+    @staticmethod
+    def _ssl_probe() -> bool:
+        """Quick probe: can we reach huggingface.co with SSL verification?
+        
+        Returns True if SSL works, False if verification fails.
+        """
+        import urllib.request
+        import ssl
+        try:
+            ctx = ssl.create_default_context()
+            urllib.request.urlopen("https://huggingface.co", timeout=5, context=ctx)
+            return True
+        except Exception:
+            return False
+    
+    @staticmethod
+    def _disable_hf_ssl_verify():
+        """Disable SSL verification for HuggingFace Hub downloads.
+        
+        Uses configure_http_backend to create requests Sessions with
+        verify=False, then clears the session cache so the new factory
+        takes effect. This is a last-resort fallback for environments
+        where all CA bundles fail (common on macOS Python 3.13 with
+        network proxies, corporate firewalls, or stale root certs).
+        
+        The model weights have their own checksums verified by HuggingFace Hub,
+        so disabling SSL verification for the download is acceptable.
+        """
+        import requests
+        from huggingface_hub import configure_http_backend
+        from huggingface_hub.utils._http import reset_sessions
+        
+        def no_ssl_factory() -> requests.Session:
+            session = requests.Session()
+            session.verify = False
+            return session
+        
+        # Clear cert env vars that override session.verify in requests
+        for key in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE"):
+            os.environ.pop(key, None)
+        
+        configure_http_backend(backend_factory=no_ssl_factory)
+        reset_sessions()
+        
+        # Suppress urllib3 InsecureRequestWarning
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     
     @staticmethod
     def _save_wav(path: str, audio_data, sample_rate: int = SAMPLE_RATE):
-        """Save audio array as WAV. Accepts numpy arrays or PyTorch tensors."""
-        # Convert torch tensor to numpy if needed
-        if hasattr(audio_data, 'numpy'):
-            audio_data = audio_data.squeeze().cpu().float().numpy()
+        """Save audio array as WAV. Accepts numpy arrays."""
+        # Convert mlx array to numpy if needed
+        if not isinstance(audio_data, np.ndarray):
+            audio_data = np.array(audio_data, dtype=np.float32).flatten()
         # Convert float [-1, 1] to 16-bit PCM
         if audio_data.dtype != np.int16:
             pcm = (audio_data * 32767).clip(-32768, 32767).astype(np.int16)
@@ -305,7 +328,7 @@ class AudioLLMService:
     @property
     def is_available(self) -> bool:
         """Check if the TTS model is available."""
-        return self._initialized and self._pipeline is not None
+        return self._initialized and self._model is not None
     
     async def transcribe(self, audio_path: str) -> str:
         """Transcribe audio to text using mlx-whisper (ASR).
@@ -361,6 +384,66 @@ class AudioLLMService:
             speed,
         )
     
+    @staticmethod
+    def _preprocess_text_for_tts(text: str) -> str:
+        """Clean text for TTS — remove non-spoken artifacts that degrade pronunciation.
+        
+        Strips markdown formatting, citation markers, URLs, and other artifacts
+        that Kokoro would try to pronounce literally (e.g., "hashtag hashtag" for ##,
+        "bracket one bracket" for [1]).
+        """
+        # Strip citation markers: [1], [2], [1,2], [1][2]
+        text = re.sub(r'\[\d+(?:,\s*\d+)*\]', '', text)
+        
+        # Strip markdown headings (## Header → Header)
+        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+        
+        # Strip bold/italic markers
+        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+        text = re.sub(r'\*(.+?)\*', r'\1', text)
+        text = re.sub(r'__(.+?)__', r'\1', text)
+        text = re.sub(r'_(.+?)_', r'\1', text)
+        
+        # Strip inline code backticks
+        text = re.sub(r'`([^`]+)`', r'\1', text)
+        
+        # Strip fenced code blocks entirely (not speakable)
+        text = re.sub(r'```[\s\S]*?```', '', text)
+        
+        # Strip URLs (replace with "link" or just remove)
+        text = re.sub(r'https?://\S+', '', text)
+        
+        # Strip markdown links: [text](url) → text
+        text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+        
+        # Strip bullet/list markers
+        text = re.sub(r'^\s*[-*•]\s+', '', text, flags=re.MULTILINE)
+        text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+        
+        # Strip horizontal rules
+        text = re.sub(r'^[\s]*[-=_]{3,}[\s]*$', '', text, flags=re.MULTILINE)
+        
+        # Strip remaining markdown artifacts
+        text = re.sub(r'\*+', '', text)
+        text = re.sub(r'\[\s*\]', '', text)
+        
+        # Expand common abbreviations for better pronunciation
+        text = re.sub(r'\be\.g\.\s*', 'for example, ', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bi\.e\.\s*', 'that is, ', text, flags=re.IGNORECASE)
+        text = re.sub(r'\betc\.', 'etcetera', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bvs\.\s*', 'versus ', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bDr\.\s', 'Doctor ', text)
+        text = re.sub(r'\bMr\.\s', 'Mister ', text)
+        text = re.sub(r'\bMrs\.\s', 'Missus ', text)
+        text = re.sub(r'\bMs\.\s', 'Ms ', text)
+        
+        # Clean up whitespace
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r'  +', ' ', text)
+        text = text.strip()
+        
+        return text
+
     def _tts_sync(
         self, 
         text: str, 
@@ -368,16 +451,16 @@ class AudioLLMService:
         output_path: Optional[str],
         speed: float = 1.0,
     ) -> str:
-        """Synchronous TTS generation via Kokoro pipeline.
+        """Synchronous TTS generation via kokoro-mlx.
         
-        Kokoro's KPipeline handles phonemization, chunking, and synthesis.
-        It yields (graphemes, phonemes, audio_numpy) per sentence.
-        We concatenate with small pauses and crossfade for seamless output.
+        For short text: model.generate() returns TTSResult with audio as np.ndarray.
+        For long text: chunks processed individually and crossfaded.
+        kokoro-mlx handles language detection internally from voice prefix.
         """
         voice_id = resolve_voice(voice)
         
-        # Switch language pipeline if needed
-        self._ensure_lang(voice_id)
+        # Preprocess text: clean markdown, citations, URLs, abbreviations
+        text = self._preprocess_text_for_tts(text)
         
         # Chunk text for better prosody on long inputs
         chunks = self._chunk_text_for_tts(text)
@@ -386,28 +469,21 @@ class AudioLLMService:
         all_segments: List[np.ndarray] = []
         
         for i, chunk in enumerate(chunks):
-            chunk_audio_parts = []
             try:
-                generator = self._pipeline(chunk, voice=voice_id, speed=speed)
-                for gs, ps, audio in generator:
-                    if audio is not None and len(audio) > 0:
-                        # Kokoro returns torch tensors — convert to numpy
-                        if hasattr(audio, 'numpy'):
-                            audio = audio.squeeze().cpu().float().numpy()
-                        chunk_audio_parts.append(audio)
+                # kokoro-mlx generate() returns TTSResult with audio: np.ndarray
+                result = self._model.generate(
+                    chunk,
+                    voice=voice_id,
+                    speed=speed,
+                )
+                if result.audio is not None and len(result.audio) > 0:
+                    audio_np = result.audio.flatten().astype(np.float32)
+                    all_segments.append(audio_np)
+                    dur = len(audio_np) / SAMPLE_RATE
+                    print(f"[AudioLLM]   chunk {i+1}: {dur:.1f}s")
             except Exception as e:
                 print(f"[AudioLLM] Warning: chunk {i+1}/{len(chunks)} failed: {e}")
                 continue
-            
-            if chunk_audio_parts:
-                # Kokoro yields per-sentence — join with tiny pause (60ms)
-                pause = np.zeros(int(SAMPLE_RATE * 0.06), dtype=np.float32)
-                joined = chunk_audio_parts[0]
-                for part in chunk_audio_parts[1:]:
-                    joined = np.concatenate([joined, pause, part])
-                all_segments.append(joined)
-                dur = len(joined) / SAMPLE_RATE
-                print(f"[AudioLLM]   chunk {i+1}: {dur:.1f}s")
         
         if not all_segments:
             raise RuntimeError("No audio generated from any text chunk")
@@ -452,12 +528,12 @@ class AudioLLMService:
         
         return merged
     
-    def _chunk_text_for_tts(self, text: str, max_chunk_chars: int = 500) -> list:
+    def _chunk_text_for_tts(self, text: str, max_chunk_chars: int = 350) -> list:
         """Split text into sentence-level chunks for TTS generation.
         
-        Kokoro handles per-sentence splitting internally, but feeding very
-        long text in one shot can degrade quality. We chunk at ~500 chars
-        (Kokoro is more robust than LFM2.5 at longer inputs).
+        Kokoro produces better prosody with shorter chunks (~350 chars).
+        Longer chunks (500+) can cause pronunciation degradation and
+        monotone output, especially mid-chunk.
         """
         # First try paragraph boundaries (double newline)
         paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text.strip()) if p.strip()]
@@ -608,12 +684,19 @@ async def check_audio_llm_available() -> dict:
     """Check if Kokoro TTS + mlx-whisper ASR are available."""
     diag = {}
     
-    # Check kokoro
+    # Check kokoro-mlx (Kokoro TTS)
     try:
-        import kokoro
-        diag["kokoro"] = f"ok (v{kokoro.__version__})"
+        import kokoro_mlx
+        diag["kokoro_mlx"] = "ok"
     except Exception as e:
-        diag["kokoro"] = f"FAIL: {e}"
+        diag["kokoro_mlx"] = f"FAIL: {e}"
+    
+    # Check mlx (Apple Silicon framework)
+    try:
+        import mlx.core as mx
+        diag["mlx"] = "ok"
+    except Exception as e:
+        diag["mlx"] = f"FAIL: {e}"
     
     # Check misaki (G2P)
     try:
@@ -641,18 +724,18 @@ async def check_audio_llm_available() -> dict:
     except Exception as e:
         diag["soundfile"] = f"FAIL: {e}"
     
-    # Check HuggingFace model cache
+    # Check HuggingFace model cache (MLX version)
     import os
     hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
-    kokoro_cache = os.path.join(hf_cache, "models--hexgrad--Kokoro-82M")
-    diag["model_cached"] = "yes" if os.path.exists(kokoro_cache) else "no (will download ~350 MB on first use)"
+    kokoro_cache = os.path.join(hf_cache, "models--mlx-community--Kokoro-82M-bf16")
+    diag["model_cached"] = "yes" if os.path.exists(kokoro_cache) else "no (will download ~330 MB on first use)"
     
     all_ok = all("FAIL" not in str(v) for v in diag.values() if v != diag.get("model_cached"))
     
     return {
         "available": all_ok,
         "initialized": audio_llm.is_available,
-        "message": "Kokoro-82M TTS ready" if all_ok else "Some audio dependencies missing",
+        "message": "Kokoro-82M TTS (MLX) ready" if all_ok else "Some audio dependencies missing",
         "init_error": audio_llm._init_error,
         "diagnostics": diag
     }

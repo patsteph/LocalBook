@@ -8,9 +8,54 @@ and numbered context building.
 External callers continue to use rag_engine._build_citations_and_context() —
 RAGEngine delegates here.
 """
+import re
 from typing import Dict, List, Set, Tuple
 
 from storage.source_store import source_store
+
+# Pattern matching the "YouTube Video {id}" fallback title
+_YT_FALLBACK_RE = re.compile(r'^YouTube Video ([A-Za-z0-9_-]{8,15})$')
+# Cache so we only attempt oEmbed once per video_id per process lifetime
+_yt_title_cache: Dict[str, str] = {}
+
+
+async def _try_fix_youtube_title(filename: str, source_id: str, source_data: Dict) -> str:
+    """If filename matches the YouTube Video fallback pattern, try oEmbed to get the real title.
+    
+    Updates source_store on success so the fix is permanent.
+    Returns the best available title.
+    """
+    m = _YT_FALLBACK_RE.match(filename)
+    if not m:
+        return filename
+    
+    video_id = m.group(1)
+    
+    # Check process-level cache first
+    if video_id in _yt_title_cache:
+        return _yt_title_cache[video_id]
+    
+    try:
+        import httpx
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(oembed_url)
+            if response.status_code == 200:
+                real_title = response.json().get("title")
+                if real_title and real_title != filename:
+                    # Persist the fix
+                    notebook_id = source_data.get("notebook_id", "")
+                    if notebook_id:
+                        await source_store.update(notebook_id, source_id, {"filename": real_title})
+                        print(f"[RAG] Fixed YouTube title: '{filename}' → '{real_title}'")
+                    _yt_title_cache[video_id] = real_title
+                    return real_title
+    except Exception:
+        pass
+    
+    # Cache the failure so we don't retry every query
+    _yt_title_cache[video_id] = filename
+    return filename
 
 
 async def build_citations_and_context(
@@ -27,7 +72,10 @@ async def build_citations_and_context(
         sid = result["source_id"]
         if sid not in source_filenames:
             source_data = await source_store.get(sid)
-            source_filenames[sid] = source_data.get("filename", "Unknown") if source_data else "Unknown"
+            filename = source_data.get("filename", "Unknown") if source_data else "Unknown"
+            # Lazy-fix YouTube fallback titles
+            filename = await _try_fix_youtube_title(filename, sid, source_data or {})
+            source_filenames[sid] = filename
 
     # Build citations from search results
     all_citations = []

@@ -92,11 +92,17 @@ async def call_ollama(
                 "model": use_model,
                 "prompt": f"{system_prompt}\n\n{prompt}",
                 "stream": False,
-                "keep_alive": "5m",  # Keep model loaded for 5 min (prevents memory exhaustion)
+                "keep_alive": -1,  # Keep model loaded indefinitely (Tier 1 optimization)
                 "options": options
             }
         )
         result = response.json()
+        # Track model usage for warmup service
+        from services.model_warmup import mark_fast_model_used, mark_main_model_used
+        if use_model == settings.ollama_fast_model:
+            mark_fast_model_used()
+        else:
+            mark_main_model_used()
         print(f"Ollama response received, length: {len(result.get('response', ''))}")
         return result.get("response", "No response from LLM")
 
@@ -139,23 +145,42 @@ async def stream_ollama(
     
     # Stop sequences to prevent LLM from generating citation/reference lists
     # Only apply for chat Q&A, not document generation (which needs References sections)
+    # Comprehensive list covers all observed LLM bibliography header variants
     stop_sequences = []
     if num_predict is None:
         stop_sequences = [
+            # References variants
             "\n\nReferences",
             "\nReferences",
+            "\n\n**References",
+            "\n**References",
+            # Sources variants
             "\n\nSources:",
             "\nSources:",
             "\n\nSources\n",
+            "\n\n**Sources",
+            "\n**Sources",
+            # Citations variants (including "Supporting Citations" — confirmed leak)
             "\n\nCitations:",
             "\nCitations:",
             "\n\nCitations\n",
+            "\nSupporting Citations",
+            "\n\nSupporting Citations",
+            "\nSupporting citations",
+            # Other bibliography headers LLMs generate
+            "\n\nBibliography",
+            "\nBibliography",
+            "\n\nCited Sources",
+            "\nCited Sources",
+            "\n\nKey References",
+            "\nKey References",
+            "\n\nFootnotes",
+            "\nFootnotes",
+            # Separator + citation list patterns
             "\n\n---\n[",
             "\n\n[1]:",
-            "\n\n**References",
-            "\n**References",
-            "\n\n**Sources",
-            "\n**Sources",
+            "\n\n*Note",
+            "\n*Note:",
         ]
     
     # Determine token limit
@@ -206,12 +231,19 @@ async def stream_ollama(
             "model": model,
             "prompt": f"{system_prompt}\n\n{prompt}",
             "stream": True,
-            "keep_alive": "5m",  # Keep model loaded for 5 min (prevents memory exhaustion)
+            "keep_alive": -1,  # Keep model loaded indefinitely (Tier 1 optimization)
             "options": stream_options,
         }
         if stop_sequences:
             request_json["stop"] = stop_sequences
         
+        # Track model usage for warmup service
+        from services.model_warmup import mark_fast_model_used, mark_main_model_used
+        if use_fast_model:
+            mark_fast_model_used()
+        else:
+            mark_main_model_used()
+
         async with client.stream(
             "POST",
             f"{settings.ollama_base_url}/api/generate",

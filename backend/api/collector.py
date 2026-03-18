@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from agents.collector import get_collector, CollectionMode, ApprovalMode
 from services.collection_scheduler import collection_scheduler
-from services.collection_history import get_collection_history, get_collection_stats
+from services.collection_history import get_collection_history, get_collection_stats, record_engagement
 from services.stock_price import get_stock_quote
 from services.key_dates import get_key_dates
 from services.event_logger import log_source_approved, log_source_rejected
@@ -60,6 +60,7 @@ async def update_collector_config(notebook_id: str, request: CollectorConfigUpda
         updates["approval_mode"] = ApprovalMode(updates["approval_mode"])
     
     config = collector.update_config(updates)
+    record_engagement(notebook_id, "config_update")
     return {"success": True, "config": config.model_dump()}
 
 
@@ -82,6 +83,7 @@ async def collect_now(notebook_id: str, specific_query: Optional[str] = None):
     
     try:
         print(f"[COLLECT-NOW] Starting collection for notebook {notebook_id}")
+        record_engagement(notebook_id, "manual_collect")
         from agents.curator import curator
         print("[COLLECT-NOW] Curator imported, calling assign_immediate_collection")
         
@@ -452,6 +454,12 @@ async def get_collector_profile(notebook_id: str):
 
     # --- Collection stats ---
     stats = get_collection_stats(notebook_id)
+    
+    # Override historical pending sum with ACTUAL live pending count.
+    # get_collection_stats sums items_pending across all runs (cumulative),
+    # but the user needs to see how many items are currently awaiting review.
+    live_pending = collector.get_pending_approvals()
+    stats["total_items_pending"] = len(live_pending)
 
     # --- Feedback insights ---
     feedback = await _get_feedback_insights(notebook_id)

@@ -22,7 +22,9 @@ class VideoGenerateRequest(BaseModel):
     topic: Optional[str] = None
     duration_minutes: int = 5
     visual_style: str = "classic"
-    voice: str = "af_heart"
+    narrator_gender: str = "female"  # "male" or "female"
+    accent: str = "us"               # "us", "uk", "es", "fr", etc.
+    voice: Optional[str] = None       # Legacy: direct Kokoro voice ID override
     format_type: Literal["explainer", "brief"] = "explainer"
     chat_context: Optional[str] = None  # Recent chat conversation for "From Chat" mode
 
@@ -127,7 +129,9 @@ async def generate_video(request: VideoGenerateRequest):
             topic=request.topic,
             duration_minutes=request.duration_minutes,
             visual_style=request.visual_style,
-            voice=request.voice,
+            narrator_gender=request.narrator_gender,
+            accent=request.accent,
+            voice=request.voice,  # Legacy override — None unless explicitly set
             format_type=request.format_type,
             chat_context=request.chat_context,
         )

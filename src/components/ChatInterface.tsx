@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Compass, Radio, Search, BookOpen, Upload, MessageCircle, Sparkles, Wand2 } from 'lucide-react';
+import { Compass, Radio, Search, BookOpen, Upload, MessageCircle, Sparkles, Wand2, X } from 'lucide-react';
 import { chatService } from '../services/chat';
 import { explorationService } from '../services/exploration';
 import { voiceService } from '../services/voice';
@@ -13,8 +13,10 @@ import { useVisualActions } from './chat/useVisualActions';
 import { WritingAssistBar } from './WritingAssistBar';
 import { ChatActionBar } from './chat/ChatActionBar';
 import { CanvasItemCard } from './chat/CanvasItemCard';
+import { RichNoteEditor } from './RichNoteEditor';
 import { useCanvasItems, useAppShell } from './canvas/CanvasContext';
 import { CanvasItem } from './canvas/types';
+import { CollectionTombstone } from './collector/CollectionTombstone';
 
 interface ChatInterfaceProps {
   notebookId: string | null;
@@ -24,6 +26,7 @@ interface ChatInterfaceProps {
 }
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmProvider, onOpenWebSearch, prefillQuery }) => {
+  const { openCollector } = useAppShell();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [deepThink, setDeepThink] = useState(false);  // Deep Think mode toggle
@@ -643,13 +646,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     if (notebookCanvasItems.length > 0) scrollToBottom();
   }, [notebookCanvasItems.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Active note — takes over the content area when present
+  const activeNote = useMemo(() =>
+    notebookCanvasItems.find(item => item.type === 'note'),
+    [notebookCanvasItems]
+  );
+
   // Unified chronological timeline — interleave messages and canvas items by timestamp
+  // Filter out the active note since it renders as a full-height takeover
   const timeline = useMemo(() => {
     const items: Array<{ type: 'message'; index: number; ts: number } | { type: 'canvas'; item: CanvasItem; ts: number }> = [];
     messages.forEach((msg, index) => {
       items.push({ type: 'message', index, ts: msg.timestamp ? msg.timestamp.getTime() : 0 });
     });
     notebookCanvasItems.forEach((item) => {
+      if (item.type === 'note') return; // rendered separately as full-height takeover
       items.push({ type: 'canvas', item, ts: item.timestamp || 0 });
     });
     items.sort((a, b) => a.ts - b.ts);
@@ -674,8 +685,28 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
         </div>
       )}
 
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
+      {/* Note takeover — full-height editor when a note is active */}
+      {activeNote && (
+        <div className="flex-1 flex flex-col min-h-0 relative">
+          <button
+            onClick={() => {
+              const hasContent = activeNote.content?.trim().length > 0;
+              if (hasContent && !window.confirm('This note has unsaved content. Close it?')) return;
+              canvasCtx.removeCanvasItem(activeNote.id);
+            }}
+            className="absolute top-3 right-3 z-20 p-1.5 rounded-lg bg-white/80 dark:bg-gray-800/80 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors shadow-sm"
+            title="Close note"
+          >
+            <X className="w-4 h-4" />
+          </button>
+          <RichNoteEditor item={activeNote} />
+        </div>
+      )}
+
+      {/* Messages area — hidden when note is active */}
+      <div className={`flex-1 overflow-y-auto px-4 py-6 space-y-4 ${activeNote ? 'hidden' : ''}`}>
+        {/* Collection tombstone — pending items & stagnation status */}
+        <CollectionTombstone notebookId={notebookId} onOpenCollector={openCollector} />
         {messages.length === 0 && notebookCanvasItems.length === 0 && (
           <div className="flex flex-col items-center justify-center text-center px-6 py-12 max-w-md mx-auto animate-fade-in">
             {!notebookId && showWelcome ? (

@@ -94,4 +94,9 @@ export const sourceService = {
     const response = await api.get(`/source-viewer/content/${notebookId}/${sourceId}`);
     return response.data?.content || '';
   },
+
+  async moveSource(notebookId: string, sourceId: string, targetNotebookId: string): Promise<{ message: string; source_id: string; target_notebook_id: string }> {
+    const response = await api.post(`/sources/${notebookId}/${sourceId}/move`, { target_notebook_id: targetNotebookId });
+    return response.data;
+  },
 };

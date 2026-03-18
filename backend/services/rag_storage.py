@@ -172,7 +172,8 @@ async def ingest_document(
     table.add(data)
 
     # Fire-and-forget topic modeling in background
-    asyncio.create_task(_add_to_topic_model(
+    from utils.tasks import safe_create_task
+    safe_create_task(_add_to_topic_model(
         notebook_id=notebook_id,
         source_id=source_id,
         chunks=chunks,
@@ -206,7 +207,7 @@ async def ingest_document(
         except Exception as e:
             print(f"[RAG] Entity/relationship extraction failed (non-fatal): {e}")
 
-    asyncio.create_task(_extract_entities_and_relationships_background())
+    safe_create_task(_extract_entities_and_relationships_background(), name="entity-extraction")
 
     # Auto-refresh people coaching insights when new sources are added
     if source_type not in ("people_profile", "coaching_notes", "summary"):

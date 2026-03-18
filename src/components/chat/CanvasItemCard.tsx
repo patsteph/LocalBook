@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React from 'react';
 import DOMPurify from 'dompurify';
 import {
   FileText, Palette, Target, Mic, MessageSquare, PenLine,
@@ -10,12 +10,9 @@ import ReactMarkdown from 'react-markdown';
 import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { SVGRenderer } from '../shared/SVGRenderer';
 import { FeynmanQuizBlock, FeynmanAudioBlock, isFeynmanBlock } from '../shared/FeynmanBlocks';
-import { WritingAssistBar } from '../WritingAssistBar';
-import { sourceService } from '../../services/sources';
-import { voiceService } from '../../services/voice';
-import { settingsService } from '../../services/settings';
 import { AudioCanvasPlayer } from './AudioCanvasPlayer';
 import { API_BASE_URL } from '../../services/api';
+import { RichNoteEditor } from '../RichNoteEditor';
 
 // ─── Type icons ────────────────────────────────────────────────────────────
 const iconSm = 'w-3.5 h-3.5';
@@ -30,193 +27,8 @@ const TYPE_ICONS: Record<CanvasItem['type'], React.ReactNode> = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Note Editor — inline editable note (adapted from NoteCanvasEditor)
+// Note Editor — now uses RichNoteEditor (imported above)
 // ═══════════════════════════════════════════════════════════════════════════
-const NoteEditor: React.FC<{ item: CanvasItem }> = ({ item }) => {
-  const ctx = useCanvas();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [saving, setSaving] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [selectedText, setSelectedText] = useState('');
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-
-  const undoStackRef = useRef<string[]>([]);
-  const redoStackRef = useRef<string[]>([]);
-  const snapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const scheduleSnapshot = useCallback((currentContent: string) => {
-    if (snapshotTimerRef.current) clearTimeout(snapshotTimerRef.current);
-    snapshotTimerRef.current = setTimeout(() => {
-      const stack = undoStackRef.current;
-      if (stack.length === 0 || stack[stack.length - 1] !== currentContent) {
-        stack.push(currentContent);
-        if (stack.length > 50) stack.shift();
-        redoStackRef.current = [];
-      }
-    }, 1000);
-  }, []);
-
-  useEffect(() => {
-    if (item.content) undoStackRef.current = [item.content];
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    return () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-        mediaRecorderRef.current.stop();
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!item.content && !item.title) {
-      const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      settingsService.getUserProfile()
-        .then(profile => {
-          const name = profile.name?.trim();
-          ctx.updateCanvasItem(item.id, { title: name ? `${name}'s Note — ${dateStr}` : `Note — ${dateStr}` });
-        })
-        .catch(() => ctx.updateCanvasItem(item.id, { title: `Note — ${dateStr}` }));
-      setTimeout(() => textareaRef.current?.focus(), 200);
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleTextSelect = useCallback(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    setSelectedText(ta.value.substring(ta.selectionStart, ta.selectionEnd));
-  }, []);
-
-  const handleWritingReplace = useCallback((newText: string, replaceSelection: boolean) => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    if (replaceSelection && selectedText) {
-      const start = ta.selectionStart;
-      const end = ta.selectionEnd;
-      const updated = item.content.substring(0, start) + newText + item.content.substring(end);
-      ctx.updateCanvasItem(item.id, { content: updated });
-      setSelectedText('');
-    } else {
-      ctx.updateCanvasItem(item.id, { content: newText });
-    }
-  }, [item.id, item.content, selectedText, ctx]);
-
-  const handleWritingContinue = useCallback((continuation: string) => {
-    const separator = item.content.endsWith('\n') ? '' : '\n\n';
-    ctx.updateCanvasItem(item.id, { content: item.content + separator + continuation });
-  }, [item.id, item.content, ctx]);
-
-  const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    scheduleSnapshot(item.content);
-    ctx.updateCanvasItem(item.id, { content: e.target.value });
-    const target = e.target;
-    target.style.height = 'auto';
-    target.style.height = Math.max(target.scrollHeight, 200) + 'px';
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
-      e.preventDefault();
-      if (e.shiftKey) {
-        const stack = redoStackRef.current;
-        if (stack.length === 0) return;
-        undoStackRef.current.push(item.content);
-        ctx.updateCanvasItem(item.id, { content: stack.pop()! });
-      } else {
-        const stack = undoStackRef.current;
-        if (stack.length === 0) return;
-        redoStackRef.current.push(item.content);
-        ctx.updateCanvasItem(item.id, { content: stack.pop()! });
-      }
-    }
-  };
-
-  const handleSaveAsSource = async () => {
-    if (!ctx.selectedNotebookId || !item.content.trim()) return;
-    setSaving(true);
-    try {
-      await sourceService.createNote(ctx.selectedNotebookId, item.title.trim() || 'Untitled Note', item.content.trim());
-      ctx.addToast({ type: 'success', title: 'Note saved as source', message: item.title || 'Untitled Note' });
-      ctx.triggerSourcesRefresh();
-    } catch (err: any) {
-      ctx.addToast({ type: 'error', title: 'Failed to save note', message: err.message || 'Unknown error' });
-    }
-    setSaving(false);
-  };
-
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-      mediaRecorder.ondataavailable = (event) => { if (event.data.size > 0) audioChunksRef.current.push(event.data); };
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        stream.getTracks().forEach(track => track.stop());
-        setIsTranscribing(true);
-        try {
-          const result = await voiceService.transcribe(new File([audioBlob], 'recording.webm', { type: 'audio/webm' }), ctx.selectedNotebookId || '', undefined, false);
-          ctx.updateCanvasItem(item.id, { content: item.content + (item.content ? '\n\n' : '') + result.text });
-        } catch { ctx.addToast({ type: 'error', title: 'Transcription failed', message: 'Is Whisper running?' }); }
-        finally { setIsTranscribing(false); }
-      };
-      mediaRecorder.start();
-      setIsRecording(true);
-    } catch { ctx.addToast({ type: 'error', title: 'Microphone access denied' }); }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) { mediaRecorderRef.current.stop(); setIsRecording(false); }
-  };
-
-  const wordCount = item.content.trim().split(/\s+/).filter(Boolean).length;
-
-  return (
-    <div className="px-4 py-3 space-y-2.5">
-      <input
-        type="text"
-        value={item.title}
-        onChange={e => ctx.updateCanvasItem(item.id, { title: e.target.value })}
-        placeholder="Note title..."
-        className="w-full text-sm font-semibold bg-transparent border-none outline-none text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
-      />
-      <textarea
-        ref={textareaRef}
-        value={item.content}
-        onChange={handleContentChange}
-        onKeyDown={handleKeyDown}
-        onSelect={handleTextSelect}
-        onMouseUp={handleTextSelect}
-        placeholder="Start writing your note... Speak or type."
-        className="w-full min-h-[160px] resize-none bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2.5 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 font-mono leading-relaxed outline-none focus:border-blue-400 dark:focus:border-blue-600 transition-colors"
-      />
-      <WritingAssistBar text={item.content} selectedText={selectedText} onReplace={handleWritingReplace} onContinue={handleWritingContinue} />
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={isRecording ? stopRecording : startRecording}
-            disabled={isTranscribing}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${isRecording ? 'bg-red-100 dark:bg-red-900/30 text-red-600 animate-pulse' : isTranscribing ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 animate-pulse' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}`}
-          >
-            {isRecording ? 'Stop' : isTranscribing ? 'Transcribing...' : 'Dictate'}
-          </button>
-          <span className="text-[10px] text-gray-400">{wordCount} words</span>
-        </div>
-        <button
-          onClick={handleSaveAsSource}
-          disabled={saving || !item.content.trim() || !ctx.selectedNotebookId}
-          className="flex items-center gap-1 px-3 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {saving ? 'Saving...' : 'Save as Source'}
-        </button>
-      </div>
-    </div>
-  );
-};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CanvasItemCard — inline artifact card with tombstone/unfurl pattern
@@ -382,7 +194,7 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
           >
             <X className="w-3.5 h-3.5" />
           </button>
-          <NoteEditor item={item} />
+          <RichNoteEditor item={item} compact />
         </div>
       ) : (
         <div className="px-4 py-3">

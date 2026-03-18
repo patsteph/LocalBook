@@ -142,7 +142,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full release history.
 
 | Requirement | Details |
 |-------------|---------|
-| **macOS** | 12.0+ (Apple Silicon recommended, Intel supported) |
+| **macOS** | 12.0+ (Apple Silicon required — M1/M2/M3/M4) |
 | **Python** | 3.12+ required |
 | **RAM** | 16GB+ recommended (8GB minimum) |
 | **Storage** | ~15GB for models and app |
@@ -153,7 +153,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full release history.
 The build script installs these automatically, or install manually:
 
 ```bash
-brew install ollama ffmpeg tesseract python@3.12 node
+brew install ollama ffmpeg tesseract espeak-ng python@3.12 node
 ```
 
 ---
@@ -192,6 +192,12 @@ Pre-download AI models before launching:
 ollama pull olmo-3:7b-instruct      # Main reasoning model (64K context)
 ollama pull phi4-mini               # Fast model for quick responses
 ollama pull snowflake-arctic-embed2 # Embeddings (1024 dims)
+```
+
+The Kokoro-82M TTS model (~348MB) downloads automatically on first use. If the automatic download fails (e.g. SSL certificate issues on macOS), you can download it manually:
+
+```bash
+bash backend/scripts/download_kokoro_model.sh
 ```
 
 ---

@@ -160,7 +160,9 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
   const [videoTopic, setVideoTopic] = useState('');
   const [videoDuration, setVideoDuration] = useState(() => parseInt(localStorage.getItem('lb-bar-video-dur') || '5'));
   const [videoStyle, setVideoStyle] = useState(() => localStorage.getItem('lb-bar-video-style') || 'classic');
-  const [videoVoice, setVideoVoice] = useState(() => localStorage.getItem('lb-bar-video-voice') || 'af_heart');
+  const [videoNarratorGender, setVideoNarratorGender] = useState(() => localStorage.getItem('lb-bar-video-narrator') || 'female');
+  const [videoAccent, setVideoAccent] = useState(() => localStorage.getItem('lb-bar-video-accent') || 'us');
+  const [showMoreVideoLanguages, setShowMoreVideoLanguages] = useState(false);
   const [videoFormat, setVideoFormat] = useState<'explainer' | 'brief'>(() => (localStorage.getItem('lb-bar-video-format') as any) || 'explainer');
   const [videoStyles, setVideoStyles] = useState<VisualStyle[]>([]);
 
@@ -197,7 +199,8 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
   useEffect(() => { localStorage.setItem('lb-bar-pdf-layout', pdfLayout); }, [pdfLayout]);
   useEffect(() => { localStorage.setItem('lb-bar-video-dur', String(videoDuration)); }, [videoDuration]);
   useEffect(() => { localStorage.setItem('lb-bar-video-style', videoStyle); }, [videoStyle]);
-  useEffect(() => { localStorage.setItem('lb-bar-video-voice', videoVoice); }, [videoVoice]);
+  useEffect(() => { localStorage.setItem('lb-bar-video-narrator', videoNarratorGender); }, [videoNarratorGender]);
+  useEffect(() => { localStorage.setItem('lb-bar-video-accent', videoAccent); }, [videoAccent]);
   useEffect(() => { localStorage.setItem('lb-bar-video-format', videoFormat); }, [videoFormat]);
 
   // ── Load shared data ────────────────────────────────────────────────────
@@ -339,19 +342,21 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
     };
     const effectiveSkill = skillOverride || audioSkill;
     const formatLabel = audioFormatLabels[effectiveSkill] || 'Audio';
+    // Compute topic early so we can use it in the title
+    const content = getPrimaryContent();
+    const topic = stripAtChat(audioTopic) || content.substring(0, 200).replace(/[#*_\n]/g, ' ').trim() || 'the research content';
+    const shortTopic = topic.length > 50 ? topic.substring(0, 47).trim() + '…' : topic;
     // Add placeholder immediately so user sees instant feedback
     ctx.addCanvasItem({
       id: itemId,
       type: 'audio',
-      title: `Podcast: ${formatLabel}`,
+      title: shortTopic !== 'the research content' ? `${formatLabel}: ${shortTopic}` : `Podcast: ${formatLabel}`,
       content: '',
       collapsed: true,
       status: 'generating',
       metadata: { notebookId: notebookId },
     });
     try {
-      const content = getPrimaryContent();
-      const topic = stripAtChat(audioTopic) || content.substring(0, 200).replace(/[#*_\n]/g, ' ').trim() || 'the research content';
       const voiceMap: Record<string, [string, string]> = { mf: ['male', 'female'], fm: ['female', 'male'], mm: ['male', 'male'], ff: ['female', 'female'] };
       const [h1, h2] = voiceMap[audioVoices] || ['male', 'female'];
       const result = await audioService.generate({
@@ -488,7 +493,8 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
         topic,
         duration_minutes: videoDuration,
         visual_style: videoStyle,
-        voice: videoVoice,
+        narrator_gender: videoNarratorGender,
+        accent: videoAccent,
         format_type: videoFormat,
         ...(ctx.chatContext ? { chat_context: ctx.chatContext } : {}),
       });
@@ -892,11 +898,27 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
                 </div>
                 <div>
                   <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Narrator Voice</label>
-                  <div className="grid grid-cols-2 gap-1">
-                    {([['af_heart', 'Heart (US F)'], ['af_bella', 'Bella (US F)'], ['am_adam', 'Adam (US M)'], ['am_michael', 'Michael (US M)'], ['bf_emma', 'Emma (UK F)'], ['bm_george', 'George (UK M)']] as const).map(([val, label]) => (
-                      <button key={val} onClick={() => setVideoVoice(val)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${videoVoice === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
+                  <div className="flex gap-1">
+                    {([['female', 'Female'], ['male', 'Male']] as const).map(([val, label]) => (
+                      <button key={val} onClick={() => setVideoNarratorGender(val)} className={`flex-1 px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${videoNarratorGender === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
                     ))}
                   </div>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Language</label>
+                  <div className="grid grid-cols-3 gap-1">
+                    {([['us', 'American'], ['uk', 'British']] as const).map(([val, label]) => (
+                      <button key={val} onClick={() => setVideoAccent(val)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${videoAccent === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
+                    ))}
+                    <button onClick={() => setShowMoreVideoLanguages(!showMoreVideoLanguages)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${showMoreVideoLanguages || !['us', 'uk'].includes(videoAccent) ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{showMoreVideoLanguages ? '− Languages' : '+ Languages'}</button>
+                  </div>
+                  {(showMoreVideoLanguages || !['us', 'uk'].includes(videoAccent)) && (
+                    <div className="grid grid-cols-3 gap-1 mt-1">
+                      {([['es', 'Spanish'], ['fr', 'French'], ['hi', 'Hindi'], ['it', 'Italian'], ['ja', 'Japanese'], ['pt', 'Portuguese'], ['zh', 'Chinese']] as const).map(([val, label]) => (
+                        <button key={val} onClick={() => setVideoAccent(val)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors text-center ${videoAccent === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </CanvasActionPopover>
@@ -1038,12 +1060,22 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
               const enabled = action.enabled(ctx.canvasItems, notebookId);
               const loading = actionLoading === action.id;
               const isActive = activePopover === action.id;
-              // Check if a canvas item from this action is still processing in the background
               const CANVAS_TYPE_MAP: Record<string, string> = { docs: 'document', audio: 'audio', video: 'video', visual: 'visual', quiz: 'quiz' };
               const canvasType = CANVAS_TYPE_MAP[action.id];
               const working = loading || (canvasType && ctx.canvasItems.some(
                 item => item.type === canvasType && (item.status === 'generating' || item.status === 'processing')
               ));
+              const ACTION_COLORS: Record<string, { working: string; active: string }> = {
+                docs:    { working: 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400',    active: 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 ring-1 ring-blue-400' },
+                audio:   { working: 'bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400', active: 'bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 ring-1 ring-violet-400' },
+                video:   { working: 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400',    active: 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 ring-1 ring-rose-400' },
+                visual:  { working: 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400', active: 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 ring-1 ring-amber-400' },
+                quiz:    { working: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400', active: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-400' },
+                pptx:    { working: 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400', active: 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 ring-1 ring-indigo-400' },
+                pdf:     { working: 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300',       active: 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 ring-1 ring-gray-400' },
+                crossnb: { working: 'bg-teal-100 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400',    active: 'bg-teal-100 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 ring-1 ring-teal-400' },
+              };
+              const colors = ACTION_COLORS[action.id] || ACTION_COLORS.docs;
               return (
                 <button
                   key={action.id}
@@ -1054,9 +1086,9 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
                   disabled={!enabled || (!!actionLoading && !isActive)}
                   className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
                     working
-                      ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 animate-pulse'
+                      ? `${colors.working} animate-pulse`
                       : isActive
-                        ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 ring-1 ring-blue-400'
+                        ? colors.active
                         : enabled && !actionLoading
                           ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 hover:shadow-sm'
                           : 'bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed'

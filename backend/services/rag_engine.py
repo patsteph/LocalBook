@@ -12,6 +12,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Optional, AsyncGenerator, Tuple, Union
 
+from utils.tasks import safe_create_task
+
 import httpx
 import lancedb
 import numpy as np
@@ -224,7 +226,7 @@ class RAGEngine:
         if cached_analysis:
             query_analysis = cached_analysis
         else:
-            analysis_task = asyncio.create_task(self._analyze_query_with_llm(question))
+            analysis_task = safe_create_task(self._analyze_query_with_llm(question), name="query-analysis")
         
         # Generate embedding with cache
         rag_metrics.start_stage(RAGStage.EMBEDDING)
@@ -543,7 +545,7 @@ class RAGEngine:
             except Exception as e:
                 print(f"[RAG] Memory extraction failed (non-fatal): {e}")
         
-        asyncio.create_task(_extract_memories_background())
+        safe_create_task(_extract_memories_background(), name="memory-extraction")
 
         # v1.0.3: Cache this answer for future similar queries
         await answer_cache.put(question, notebook_id, query_embedding, answer, citations)
@@ -766,7 +768,7 @@ JSON:"""
             print("[RAG STREAM] Step 1a - Query Analysis (CACHED): 0.00s")
         else:
             # Start LLM analysis as background task
-            analysis_task = asyncio.create_task(self._analyze_query_with_llm(question))
+            analysis_task = safe_create_task(self._analyze_query_with_llm(question), name="stream-query-analysis")
         
         # Generate embedding with basic expansion (runs in parallel with LLM analysis)
         basic_expanded = self._expand_query(question)
@@ -850,8 +852,9 @@ JSON:"""
 
         # P1: Start follow-up generation EARLY — uses raw search text, runs parallel with rerank+LLM
         early_context = "\n\n".join([r.get("text", "")[:300] for r in results[:5]])
-        followup_task = asyncio.create_task(
-            self._generate_follow_up_questions_fast(question, early_context)
+        followup_task = safe_create_task(
+            self._generate_follow_up_questions_fast(question, early_context),
+            name="followup-questions"
         )
 
         # Step 2c: Rerank
@@ -924,7 +927,9 @@ JSON:"""
         
         # Get optimized prompt for this query type (with confidence guidance)
         base_prompt = self._get_prompt_for_query_type(query_type, num_citations, avg_confidence)
-        format_hint = self._detect_response_format(question)
+        # Only add format_hint for factual queries — synthesis/complex already have
+        # FORMAT REQUIREMENTS in their prompts, and dual FORMAT instructions confuse the LLM
+        format_hint = self._detect_response_format(question) if query_type == 'factual' else ""
         system_prompt = f"User context: {user_context}\n\n{base_prompt}{format_hint}" if user_context else f"{base_prompt}{format_hint}"
 
         # Build user prompt with temporal context if detected
@@ -961,7 +966,7 @@ JSON:"""
 
 Question: {question}{temporal_note}
 
-Answer with [N] citations:"""
+Answer the question, citing sources inline as [N]. Do not list references at the end."""
 
         # Two-tier model routing:
         # - System 1 (phi4-mini): Factual queries - fast, reliable
@@ -992,16 +997,18 @@ Answer with [N] citations:"""
         async for token in self._stream_ollama(system_prompt, prompt, deep_think=deep_think, use_fast_model=use_fast_model):
             full_answer += token
             
-            # Detect references section — stop streaming there
+            # Detect references/bibliography section — stop streaming there
+            # Uses regex to catch all variants: "Supporting Citations", "Bibliography", etc.
             if not references_started:
-                lower_buf = full_answer.lower()
-                for marker in ["\nreferences:", "\nreferences\n", "\n**references", "\nsources:\n", "\n**sources", "\ncitations:\n", "\n\n[1] "]:
-                    if marker in lower_buf:
-                        references_started = True
-                        idx = lower_buf.find(marker)
-                        full_answer = full_answer[:idx]
-                        print("[RAG STREAM] Detected references section, truncating")
-                        break
+                import re as _re_detect
+                bib_match = _re_detect.search(
+                    r'\n\s*(?:\*\*)?(?:supporting\s+)?(?:references|sources|citations?|bibliography|cited\s+sources|key\s+references|footnotes)(?:\*\*)?[\s:]*(?:\n|$)',
+                    full_answer, _re_detect.IGNORECASE
+                )
+                if bib_match:
+                    references_started = True
+                    full_answer = full_answer[:bib_match.start()]
+                    print(f"[RAG STREAM] Detected bibliography section '{bib_match.group().strip()}', truncating")
             
             # Stream token to frontend immediately (skip if in references)
             if not references_started:
@@ -1014,6 +1021,15 @@ Answer with [N] citations:"""
         full_answer = _re.sub(r'\n\n---+\s*\n[\s\S]{0,40}$', '', full_answer)
         full_answer = _re.sub(r'\n\n---+\s*$', '', full_answer)
         full_answer = _re.sub(r'\n\n[A-Z0-9]\.\s*$', '', full_answer)
+        
+        # Run comprehensive cleanup (strips bibliography sections the stream missed)
+        streamed_answer = full_answer
+        full_answer = rag_generation.clean_llm_output(full_answer)
+        # If cleanup changed the answer, send replace_answer to fix what the user already saw
+        if full_answer != streamed_answer:
+            print(f"[RAG STREAM] Post-stream cleanup removed {len(streamed_answer) - len(full_answer)} chars of bibliography leakage")
+            yield {"type": "replace_answer", "content": full_answer}
+        
         print(f"[RAG STREAM] Step 6a - LLM generation (streamed): {gen_time:.2f}s ({len(full_answer)} chars)")
 
         # Phase 2: VERIFY — silent citation check after streaming completes
@@ -1096,7 +1112,7 @@ Answer with [N] citations:"""
             except Exception as e:
                 print(f"[RAG STREAM] Memory extraction failed (non-fatal): {e}")
         
-        asyncio.create_task(_extract_memories_background())
+        safe_create_task(_extract_memories_background(), name="stream-memory-extraction")
         
         # v1.0.7: FAST pre-classify content INLINE for guaranteed instant visual generation
         # Uses regex extraction (~2ms) instead of slow LLM analysis

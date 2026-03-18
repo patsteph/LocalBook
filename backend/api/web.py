@@ -287,7 +287,11 @@ async def _scrape_and_ingest_background(notebook_id: str, source_id: str, url: s
             
             scraped = results[0]
             text = scraped.get("text", "")
-            actual_title = scraped.get("title", title)
+            scraped_title = scraped.get("title", title)
+            # Don't overwrite a good title with the "YouTube Video {id}" fallback
+            import re as _re
+            is_fallback_title = bool(_re.match(r'^YouTube Video [A-Za-z0-9_-]{8,15}$', scraped_title))
+            actual_title = title if (is_fallback_title and title and not _re.match(r'^YouTube Video [A-Za-z0-9_-]{8,15}$', title)) else scraped_title
             
             # Step 2: Ingest into RAG
             print(f"[Web] Background ingesting: {actual_title}")
@@ -406,6 +410,13 @@ async def quick_add(request: QuickAddRequest, background_tasks: BackgroundTasks)
             request.url,
             request.title
         )
+        
+        # Record engagement to suppress stale-research tombstone
+        try:
+            from services.collection_history import record_engagement
+            record_engagement(request.notebook_id, "source_add")
+        except Exception:
+            pass
         
         return {
             "message": "Added (processing in background)",

@@ -6,7 +6,6 @@ import { NotebookManager } from '../NotebookManager';
 import { SourceUpload } from '../SourceUpload';
 import { SourcesList } from '../SourcesList';
 import { CollectorPanel } from '../CollectorPanel';
-import { CollectionTombstone } from '../collector/CollectionTombstone';
 import { Studio } from '../Studio';
 import { Modal } from '../shared/Modal';
 import { WebSearchResults } from '../WebSearchResults';
@@ -147,18 +146,20 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
           selectedNotebookId={selectedNotebookId}
           refreshTrigger={refreshNotebooks}
           onCollectorConfigured={onCollectorConfigured}
-        />
-      </DrawerSection>
-
-      {/* Collection tombstone — surfaces pending items and stagnation status */}
-      {selectedNotebookId && (
-        <CollectionTombstone
-          notebookId={selectedNotebookId}
-          onOpenCollector={() => {
-            if (!drawers.collector) toggleDrawer('collector');
+          onNewNote={() => {
+            if (!selectedNotebookId) return;
+            ctx.clearCanvas();
+            ctx.addCanvasItem({
+              type: 'note',
+              title: '',
+              content: '',
+              collapsed: false,
+              metadata: { notebookId: selectedNotebookId },
+            });
+            ctx.navigateToChat();
           }}
         />
-      )}
+      </DrawerSection>
 
       {/* Web Research drawer */}
       <DrawerSection
@@ -182,30 +183,6 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
           notebookId={selectedNotebookId || ''}
           onUploadComplete={onUploadComplete}
         />
-        <div className="border-t border-gray-100 dark:border-gray-700/50" />
-        {selectedNotebookId && (
-          <button
-            onClick={() => {
-              // Open a fresh note in the universal canvas
-              ctx.clearCanvas();
-              ctx.addCanvasItem({
-                type: 'note',
-                title: '',
-                content: '',
-                collapsed: false,
-                metadata: { notebookId: selectedNotebookId },
-              });
-              ctx.navigateToChat();
-            }}
-            className="w-full flex items-center gap-2.5 px-3 py-2 text-sm font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-            </svg>
-            New Note
-          </button>
-        )}
-        <div className="border-t border-gray-100 dark:border-gray-700/50" />
         <div>
           <SourcesList
             key={`${selectedNotebookId}-${refreshSources}`}

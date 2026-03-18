@@ -7,6 +7,7 @@ import { findingsService } from '../services/findings';
 import { Highlight } from '../types';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 interface SourceNotesViewerProps {
   notebookId: string;
@@ -375,19 +376,30 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
               )}
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            {saving && <span className="text-sm text-gray-500 dark:text-gray-400">Saving...</span>}
-            {lastSaved && !saving && (
-              <span className="text-sm text-gray-500 dark:text-gray-400">
-                Saved {lastSaved.toLocaleTimeString()}
-              </span>
+          <div className="flex flex-col items-end gap-1">
+            {content?.url && (
+              <button
+                onClick={() => openUrl(content.url!).catch(() => window.open(content.url, '_blank'))}
+                className="text-xs text-blue-600 dark:text-blue-400 hover:underline cursor-pointer bg-transparent border-none p-0 flex items-center gap-1"
+                title={content.url}
+              >
+                View Original ↗
+              </button>
             )}
-            <button
-              onClick={onClose}
-              className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-2xl leading-none"
-            >
-              ×
-            </button>
+            <div className="flex items-center gap-4">
+              {saving && <span className="text-sm text-gray-500 dark:text-gray-400">Saving...</span>}
+              {lastSaved && !saving && (
+                <span className="text-sm text-gray-500 dark:text-gray-400">
+                  Saved {lastSaved.toLocaleTimeString()}
+                </span>
+              )}
+              <button
+                onClick={onClose}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-2xl leading-none"
+              >
+                ×
+              </button>
+            </div>
           </div>
         </div>
 

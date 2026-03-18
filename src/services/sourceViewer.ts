@@ -6,6 +6,7 @@ export interface SourceContent {
   filename: string;
   content: string;
   format: string;
+  url?: string;
 }
 
 export const sourceViewerService = {

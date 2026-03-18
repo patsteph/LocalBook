@@ -65,6 +65,18 @@ def mark_startup_complete():
     _startup_state["progress"] = 100
     store_current_version()
 
+# Track whether LLM models are warm and ready for quality generation
+_models_ready = False
+
+def mark_models_ready():
+    """Mark that initial LLM warmup is complete — safe to run LLM-dependent features."""
+    global _models_ready
+    _models_ready = True
+
+def are_models_ready() -> bool:
+    """Check if LLM models have completed initial warmup."""
+    return _models_ready
+
 # GitHub repo info
 GITHUB_OWNER = "patsteph"  # Update with your GitHub username
 GITHUB_REPO = "LocalBook"

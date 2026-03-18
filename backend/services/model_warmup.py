@@ -118,39 +118,64 @@ async def warm_reranker_model() -> bool:
         return False
 
 
+# Minimum available RAM (bytes) to attempt in-process model loading
+# Embedding + reranker load sentence_transformers INTO our process (~400MB spike).
+# Only skip at catastrophic levels — let macOS handle normal memory pressure.
+_MIN_RAM_FOR_HEAVY_MODELS = 500 * 1024 * 1024  # 500 MB — catastrophic only
+
+
+def _get_available_memory() -> int:
+    """Return available system memory in bytes. Returns MAX_INT if psutil unavailable."""
+    try:
+        import psutil
+        return psutil.virtual_memory().available
+    except Exception:
+        return 2**63  # Assume plenty if we can't check
+
+
 async def warmup_cycle(force_all: bool = False):
     """Run one warmup cycle for models that have been recently used.
     
-    When force_all=True (startup), all models are warmed in PARALLEL
-    to minimize total startup time.
+    When force_all=True (startup), models are warmed SEQUENTIALLY to avoid
+    memory spikes that trigger macOS OOM kills. Ollama models are safe (loaded
+    in Ollama's process) but embedding/reranker load into OUR process.
     """
     now = time.time()
-    tasks = {}
+    result_map = {}
     
-    # Only warm main model if recently used (or forced on startup)
+    # ── 1. Ollama models (safe — loaded in Ollama's process, not ours) ──
     if force_all or (now - _last_main_model_use < MODEL_IDLE_TIMEOUT):
-        tasks["main"] = warm_ollama_model(settings.ollama_model)
+        try:
+            result_map["main"] = await warm_ollama_model(settings.ollama_model)
+        except Exception:
+            result_map["main"] = False
     
-    # Only warm fast model if recently used (or forced on startup)
-    # Skip if same model as main (already being warmed)
     if force_all or (now - _last_fast_model_use < MODEL_IDLE_TIMEOUT):
-        if settings.ollama_fast_model != settings.ollama_model or "main" not in tasks:
-            tasks["fast"] = warm_ollama_model(settings.ollama_fast_model)
+        if settings.ollama_fast_model != settings.ollama_model or "main" not in result_map:
+            try:
+                result_map["fast"] = await warm_ollama_model(settings.ollama_fast_model)
+            except Exception:
+                result_map["fast"] = False
     
-    # Only warm embedding model if recently used (or forced on startup)
-    if force_all or (now - _last_embedding_use < MODEL_IDLE_TIMEOUT):
-        tasks["embed"] = warm_embedding_model()
-    
-    # Only warm reranker if recently used (or forced on startup)
-    if force_all or (now - _last_reranker_use < MODEL_IDLE_TIMEOUT):
-        tasks["rerank"] = warm_reranker_model()
-    
-    # Run all warmup tasks in parallel
-    if tasks:
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-        result_map = dict(zip(tasks.keys(), results))
+    # ── 2. In-process models (heavy — check memory first) ──
+    avail = _get_available_memory()
+    if avail < _MIN_RAM_FOR_HEAVY_MODELS:
+        print(f"⚠️ Low memory ({avail / 1024**3:.1f} GB free) — deferring embedding/reranker warmup")
+        result_map["embed"] = False
+        result_map["rerank"] = False
     else:
-        result_map = {}
+        # Load sequentially to avoid concurrent memory spike
+        if force_all or (now - _last_embedding_use < MODEL_IDLE_TIMEOUT):
+            try:
+                result_map["embed"] = await warm_embedding_model()
+            except Exception:
+                result_map["embed"] = False
+        
+        if force_all or (now - _last_reranker_use < MODEL_IDLE_TIMEOUT):
+            try:
+                result_map["rerank"] = await warm_reranker_model()
+            except Exception:
+                result_map["rerank"] = False
     
     main_ok = result_map.get("main", True) is True
     fast_ok = result_map.get("fast", main_ok if settings.ollama_fast_model == settings.ollama_model else True) is True
@@ -199,7 +224,8 @@ async def start_warmup_task():
     """Start the background warmup task (for periodic keep-alive, not initial warmup)"""
     global _warmup_task, _should_run
     _should_run = True
-    _warmup_task = asyncio.create_task(_warmup_loop_periodic())
+    from utils.tasks import safe_create_task
+    _warmup_task = safe_create_task(_warmup_loop_periodic(), name="model-warmup-loop")
 
 
 async def stop_warmup_task():

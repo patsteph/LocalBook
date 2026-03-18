@@ -7,9 +7,9 @@ if getattr(sys, 'frozen', False):
     multiprocessing.freeze_support()
 
 # ── Quick-exit CLI flags (must run before any heavy imports) ──
-if "--verify-kokoro" in sys.argv:
+if "--verify-kokoro" in sys.argv or "--verify-tts" in sys.argv:
     failed = []
-    for mod in ["kokoro", "misaki", "phonemizer", "segments", "csvw",
+    for mod in ["kokoro_mlx", "mlx", "misaki", "phonemizer", "segments", "csvw",
                 "language_tags", "rdflib", "soundfile", "loguru",
                 "num2words", "dlinfo", "spacy", "thinc", "blis",
                 "cymem", "murmurhash", "preshed", "srsly", "catalogue",
@@ -19,12 +19,12 @@ if "--verify-kokoro" in sys.argv:
         except Exception as e:
             failed.append(f"{mod}: {e}")
     if failed:
-        print("KOKORO BUNDLE VERIFICATION FAILED:")
+        print("TTS BUNDLE VERIFICATION FAILED:")
         for f in failed:
             print(f"  ✗ {f}")
         sys.exit(1)
     else:
-        print("✓ Kokoro TTS bundle verified — all imports OK")
+        print("✓ mlx-audio TTS bundle verified — all imports OK")
         sys.exit(0)
 
 import asyncio
@@ -33,6 +33,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from config import settings
+
+
+from utils.tasks import safe_create_task
+from utils.diagnostics import install_signal_handlers, start_heartbeat, stop_heartbeat, record_endpoint
+
+# Layer 1: Install crash signal handlers before anything else
+install_signal_handlers()
 
 # ── SQLite migration: MUST run before store singletons are created ──────────
 # Stores read settings.use_sqlite at import time and cache it. If we delay
@@ -128,13 +135,13 @@ async def _run_startup_tasks():
         from services.stuck_source_recovery import stuck_source_recovery
         stuck_source_recovery.start_background_task()
         from services.memory_manager import memory_manager
-        asyncio.create_task(memory_manager.start_scheduler())
+        safe_create_task(memory_manager.start_scheduler(), name="memory-scheduler")
         print("📝 Memory consolidation manager started")
         from services.collection_scheduler import collection_scheduler
-        asyncio.create_task(collection_scheduler.start())
+        safe_create_task(collection_scheduler.start(), name="collection-scheduler")
         print("📅 Collection scheduler started (first check in 2 min)")
         from services.coaching_insights import check_stale_insights_on_startup
-        asyncio.create_task(check_stale_insights_on_startup())
+        safe_create_task(check_stale_insights_on_startup(), name="coaching-insights-check")
         print("🧠 Coaching insights staleness check queued")
 
     await _step("starting", "Starting background services...", 75, _start_services())
@@ -148,54 +155,23 @@ async def _run_startup_tasks():
 
     # ── Deferred: warm models in background (first query may be ~3s slower) ─
     async def _deferred_warmup():
+        from api.updates import mark_models_ready
         try:
             print("🔥 Warming AI models in background...")
             await initial_warmup()
+            mark_models_ready()
             await start_warmup_task()
             print("🔥 All models warm and ready")
         except Exception as e:
             print(f"⚠️ Background warmup error: {e}")
+            mark_models_ready()  # Mark ready even on error so features aren't gated forever
             await start_warmup_task()
-    asyncio.create_task(_deferred_warmup())
 
-    # Pre-download MLX Whisper model in background (no-op if already cached)
-    async def _predownload_whisper():
-        try:
-            from huggingface_hub import snapshot_download
-            import os
-            repo_id = "mlx-community/whisper-base-mlx"
-            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-            repo_dir = os.path.join(cache_dir, "models--mlx-community--whisper-base-mlx")
-            if os.path.exists(repo_dir):
-                print(f"🎤 Whisper model already cached")
-                return
-            print(f"🎤 Pre-downloading Whisper model ({repo_id})...")
-            await asyncio.to_thread(snapshot_download, repo_id=repo_id)
-            print(f"🎤 Whisper model ready")
-        except Exception as e:
-            print(f"🎤 Whisper pre-download skipped: {e}")
-    asyncio.create_task(_predownload_whisper())
-
-    # Pre-download Kokoro-82M model in background (no-op if already cached)
-    async def _predownload_kokoro():
-        try:
-            import os
-            # Ensure macOS system certs are available for HuggingFace downloads
-            if not os.environ.get("SSL_CERT_FILE") and os.path.exists("/etc/ssl/cert.pem"):
-                os.environ["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
-            from huggingface_hub import snapshot_download
-            repo_id = "hexgrad/Kokoro-82M"
-            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-            repo_dir = os.path.join(cache_dir, "models--hexgrad--Kokoro-82M")
-            if os.path.exists(repo_dir):
-                print(f"🔊 Kokoro-82M model already cached")
-                return
-            print(f"🔊 Pre-downloading Kokoro-82M model ({repo_id}, ~350 MB)...")
-            await asyncio.to_thread(snapshot_download, repo_id=repo_id)
-            print(f"🔊 Kokoro-82M model ready")
-        except Exception as e:
-            print(f"🔊 Kokoro-82M pre-download skipped: {e}")
-    asyncio.create_task(_predownload_kokoro())
+    # Warm models in background — Ollama (external) + embed/reranker (memory-gated).
+    # Whisper and Kokoro TTS models lazy-download on first use via their services
+    # (mlx_whisper.transcribe and audio_llm._load_model respectively).
+    # Pre-downloading them here caused concurrent memory spikes + SSL stalls.
+    safe_create_task(_deferred_warmup(), name="model-warmup")
 
 
 # Background task reference for cleanup
@@ -212,7 +188,10 @@ async def lifespan(app: FastAPI):
     global _startup_task
     
     # Start startup tasks in background - HTTP server will be ready immediately
-    _startup_task = asyncio.create_task(_run_startup_tasks())
+    _startup_task = safe_create_task(_run_startup_tasks(), name="startup-tasks")
+    
+    # Layer 2: Start heartbeat logger (30s interval)
+    start_heartbeat()
     
     yield
     
@@ -223,6 +202,9 @@ async def lifespan(app: FastAPI):
             await _startup_task
         except asyncio.CancelledError:
             pass
+    
+    # ── Graceful shutdown: flush stores, cancel tasks, close connections ──
+    print("👋 LocalBook API shutting down — flushing stores...")
     
     # Stop warmup task on shutdown
     await stop_warmup_task()
@@ -239,7 +221,21 @@ async def lifespan(app: FastAPI):
     from services.rag_metrics import rag_metrics
     rag_metrics.force_save()
     
-    print("👋 LocalBook API shutting down")
+    # Flush SQLite WAL to prevent corruption from SIGTERM/SIGKILL
+    if settings.use_sqlite:
+        try:
+            from storage.database import get_db
+            db = get_db()
+            conn = db.get_connection()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            print("💾 SQLite WAL flushed")
+        except Exception as e:
+            print(f"⚠️ SQLite flush failed: {e}")
+    
+    # Stop diagnostics heartbeat
+    stop_heartbeat()
+    
+    print("👋 LocalBook API shutdown complete")
 
 app = FastAPI(
     title="LocalBook API",
@@ -257,6 +253,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+class DiagnosticsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        record_endpoint(f"{request.method} {request.url.path}")
+        return await call_next(request)
+
+app.add_middleware(DiagnosticsMiddleware)
 
 # Include routers
 app.include_router(notebooks.router, prefix="/notebooks", tags=["notebooks"])

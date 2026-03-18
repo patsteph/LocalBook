@@ -89,7 +89,8 @@ class CollectionScheduler:
             return
 
         self._running = True
-        self._task = asyncio.create_task(self._run_loop())
+        from utils.tasks import safe_create_task
+        self._task = safe_create_task(self._run_loop(), name="collection-scheduler-loop")
         logger.info("Collection scheduler started")
 
     def stop(self) -> None:

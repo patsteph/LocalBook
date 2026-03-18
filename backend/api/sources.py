@@ -21,6 +21,10 @@ class NoteUpdateRequest(BaseModel):
     content: str
 
 
+class MoveSourceRequest(BaseModel):
+    target_notebook_id: str
+
+
 class TagsRequest(BaseModel):
     tags: List[str]
 
@@ -100,6 +104,13 @@ async def upload_source(
         # Log document capture event
         try:
             log_document_captured(notebook_id, file.filename, file.filename, "upload")
+        except Exception:
+            pass
+        
+        # Record engagement to suppress stale-research tombstone
+        try:
+            from services.collection_history import record_engagement
+            record_engagement(notebook_id, "source_upload")
         except Exception:
             pass
         
@@ -244,6 +255,81 @@ async def update_note(notebook_id: str, source_id: str, request: NoteUpdateReque
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update note: {e}")
+
+
+@router.post("/{notebook_id}/{source_id}/move")
+async def move_source(notebook_id: str, source_id: str, request: MoveSourceRequest):
+    """Move a source (note or document) to a different notebook.
+
+    1. Delete vectors from old notebook's LanceDB table
+    2. Update notebook_id in source_store
+    3. Re-ingest into new notebook's LanceDB table
+    """
+    source = await source_store.get(source_id)
+    if not source or source.get("notebook_id") != notebook_id:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    target_id = request.target_notebook_id
+    if target_id == notebook_id:
+        raise HTTPException(status_code=400, detail="Source is already in this notebook")
+
+    content = source.get("content", "")
+    if not content:
+        raise HTTPException(status_code=400, detail="Source has no content to re-index")
+
+    title = source.get("filename", "Untitled")
+    source_type = source.get("type", "document")
+
+    # 1. Delete vectors from old notebook
+    try:
+        await rag_engine.delete_source(notebook_id, source_id)
+    except Exception as e:
+        print(f"[MOVE] LanceDB cleanup from old notebook: {e}")
+
+    # 2. Delete from old notebook in source_store
+    await source_store.delete(notebook_id, source_id)
+
+    # 3. Re-create in target notebook with same ID
+    new_source = await source_store.create(
+        notebook_id=target_id,
+        filename=title,
+        metadata={
+            "id": source_id,
+            "type": source_type,
+            "format": source.get("format", "markdown"),
+            "status": "processing",
+            "chunks": 0,
+            "characters": 0,
+            "content": content,
+        }
+    )
+
+    # 4. Re-ingest into new notebook's RAG
+    try:
+        result = await rag_engine.ingest_document(
+            notebook_id=target_id,
+            source_id=source_id,
+            text=content,
+            filename=title,
+            source_type=source_type,
+        )
+        await source_store.update(target_id, source_id, {
+            "chunks": result.get("chunks", 0),
+            "characters": result.get("characters", len(content)),
+            "status": "completed",
+        })
+    except Exception as e:
+        await source_store.update(target_id, source_id, {
+            "status": "failed",
+            "error": str(e)[:200],
+        })
+        raise HTTPException(status_code=500, detail=f"Failed to re-index in target notebook: {e}")
+
+    return {
+        "message": f"Moved '{title}' to target notebook",
+        "source_id": source_id,
+        "target_notebook_id": target_id,
+    }
 
 
 @router.delete("/{notebook_id}/{source_id}")

@@ -17,6 +17,7 @@ This module is completely independent — it does NOT modify any existing servic
 import asyncio
 import json
 import logging
+import random
 import shutil
 import time
 import traceback
@@ -32,10 +33,62 @@ logger = logging.getLogger(__name__)
 class VideoGenerator:
     """Generate explainer videos from notebooks."""
 
+    # Voice pools per accent × gender — same as audio_generator for consistency
+    VOICE_POOLS = {
+        "us": {
+            "male":   ["am_adam", "am_michael", "am_fenrir"],
+            "female": ["af_heart", "af_bella", "af_nicole", "af_sarah", "af_sky", "af_nova"],
+        },
+        "uk": {
+            "male":   ["bm_george", "bm_lewis", "bm_daniel"],
+            "female": ["bf_emma", "bf_isabella"],
+        },
+        "es": {
+            "male":   ["em_alex", "em_santa"],
+            "female": ["ef_dora"],
+        },
+        "fr": {
+            "male":   ["ff_siwis"],
+            "female": ["ff_siwis"],
+        },
+        "hi": {
+            "male":   ["hm_omega", "hm_psi"],
+            "female": ["hf_alpha", "hf_beta"],
+        },
+        "it": {
+            "male":   ["im_nicola"],
+            "female": ["if_sara"],
+        },
+        "ja": {
+            "male":   ["jf_alpha"],
+            "female": ["jf_alpha", "jf_gongitsune"],
+        },
+        "pt": {
+            "male":   ["pm_alex", "pm_santa"],
+            "female": ["pf_dora"],
+        },
+        "zh": {
+            "male":   ["zm_yunjian", "zm_yunxi"],
+            "female": ["zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao"],
+        },
+    }
+
     def __init__(self):
         self.video_dir = settings.data_dir / "video"
         self.video_dir.mkdir(parents=True, exist_ok=True)
         self._background_tasks = set()
+
+    def _resolve_narrator_voice(self, narrator_gender: str, accent: str, voice_override: Optional[str] = None) -> str:
+        """Resolve narrator_gender + accent to a random Kokoro voice ID.
+
+        If voice_override is provided (legacy direct Kokoro ID), use that instead.
+        """
+        if voice_override:
+            from services.audio_llm import resolve_voice
+            return resolve_voice(voice_override)
+        accent_pool = self.VOICE_POOLS.get(accent, self.VOICE_POOLS["us"])
+        gender_pool = accent_pool.get(narrator_gender, accent_pool.get("female", ["af_heart"]))
+        return random.choice(gender_pool)
 
     async def generate(
         self,
@@ -43,7 +96,9 @@ class VideoGenerator:
         topic: Optional[str] = None,
         duration_minutes: int = 5,
         visual_style: str = "classic",
-        voice: str = "af_heart",
+        narrator_gender: str = "female",
+        accent: str = "us",
+        voice: Optional[str] = None,
         format_type: str = "explainer",
         chat_context: Optional[str] = None,
     ) -> Dict:
@@ -54,7 +109,9 @@ class VideoGenerator:
             topic: Optional focus topic
             duration_minutes: Target length (1-10)
             visual_style: Slide visual style (classic, dark, whiteboard, etc.)
-            voice: Kokoro voice ID or legacy alias (us_male, af_heart, etc.)
+            narrator_gender: "male" or "female"
+            accent: "us", "uk", "es", "fr", etc.
+            voice: Legacy override — direct Kokoro voice ID. None = resolve from gender+accent.
             format_type: "explainer" or "brief"
 
         Returns:
@@ -63,13 +120,17 @@ class VideoGenerator:
         # Clamp duration
         duration_minutes = max(1, min(10, duration_minutes))
 
+        # Resolve narrator voice from gender + accent (or legacy override)
+        resolved_voice = self._resolve_narrator_voice(narrator_gender, accent, voice)
+        logger.info(f"[VideoGen] Narrator: gender={narrator_gender}, accent={accent} → voice={resolved_voice}")
+
         # Create record FIRST — return instantly to frontend
         generation = await video_store.create(
             notebook_id=notebook_id,
             topic=topic or "the research content",
             duration_minutes=duration_minutes,
             visual_style=visual_style,
-            voice=voice,
+            voice=resolved_voice,
             format_type=format_type,
         )
 
@@ -77,17 +138,19 @@ class VideoGenerator:
         print(f"🎬 Starting background video pipeline for {video_id}")
 
         # Start full pipeline in background
-        task = asyncio.create_task(
+        from utils.tasks import safe_create_task
+        task = safe_create_task(
             self._full_pipeline(
                 video_id=video_id,
                 notebook_id=notebook_id,
                 topic=topic,
                 duration_minutes=duration_minutes,
                 visual_style=visual_style,
-                voice=voice,
+                voice=resolved_voice,
                 format_type=format_type,
                 chat_context=chat_context,
-            )
+            ),
+            name=f"video-pipeline-{video_id}"
         )
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -338,11 +401,8 @@ class VideoGenerator:
             # Resource cleanup between chunks — prevent thermal throttling
             gc.collect()
             try:
-                import torch as _torch
-                if hasattr(_torch, 'mps') and _torch.backends.mps.is_available():
-                    _torch.mps.empty_cache()
-                elif _torch.cuda.is_available():
-                    _torch.cuda.empty_cache()
+                import mlx.core as mx
+                mx.clear_cache()
             except Exception:
                 pass
             await asyncio.sleep(0.3)

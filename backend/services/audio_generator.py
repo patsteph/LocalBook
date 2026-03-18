@@ -81,7 +81,7 @@ class AudioGenerator:
                 {'name': 'opening', 'pct': 0.12, 'instruction': 'Both hosts introduce themselves by name. Hook the listener with a surprising fact or provocative question from the research.'},
                 {'name': 'deep_dive', 'pct': 0.60, 'instruction': 'Substantive discussion of the research. Natural back-and-forth with reactions, questions, and challenges. Cover key findings and implications.'},
                 {'name': 'synthesis', 'pct': 0.15, 'instruction': 'Connect the dots — what does this all mean? Draw broader conclusions from the research.'},
-                {'name': 'closing', 'pct': 0.13, 'instruction': 'Natural wind-down. Each host shares a final takeaway. End with a thought-provoking question for the listener.'},
+                {'name': 'closing', 'pct': 0.13, 'instruction': 'Natural wind-down. Each host shares ONE specific personal takeaway — not a summary. Sign off by name. End with one forward-looking question for the listener. Do NOT rehash earlier points.'},
             ],
             'words_per_turn': (12, 80),
             'speaker_balance': (0.35, 0.65),
@@ -91,7 +91,7 @@ class AudioGenerator:
                 {'name': 'opening_positions', 'pct': 0.15, 'instruction': 'Both debaters introduce themselves and state their positions clearly and forcefully.'},
                 {'name': 'clash', 'pct': 0.50, 'instruction': 'Direct engagement — rebuttals, counter-arguments, evidence from the research. They respond to each other, not just monologue.'},
                 {'name': 'escalation', 'pct': 0.20, 'instruction': 'The debate intensifies. Strongest arguments, hypotheticals, real-world implications.'},
-                {'name': 'closing_statements', 'pct': 0.15, 'instruction': 'Each debater gives a concise closing statement. Neither side wins cleanly — leave the listener thinking.'},
+                {'name': 'closing_statements', 'pct': 0.15, 'instruction': 'Each debater gives ONE concise closing statement with their strongest remaining argument. Neither side wins cleanly. Sign off by name. Do NOT repeat earlier arguments.'},
             ],
             'words_per_turn': (15, 100),
             'speaker_balance': (0.40, 0.60),
@@ -101,7 +101,7 @@ class AudioGenerator:
                 {'name': 'introduction', 'pct': 0.10, 'instruction': 'Interviewer introduces themselves and the expert by name. Sets up the topic with a hook.'},
                 {'name': 'exploration', 'pct': 0.55, 'instruction': 'Probing questions and detailed expert answers. Follow the thread — dig deeper on interesting points.'},
                 {'name': 'implications', 'pct': 0.20, 'instruction': 'Big-picture questions. What does this mean for the field? For everyday people?'},
-                {'name': 'lightning_round', 'pct': 0.15, 'instruction': 'Quick-fire questions and concise answers. End with "one thing you want listeners to take away."'},
+                {'name': 'lightning_round', 'pct': 0.15, 'instruction': 'Quick-fire questions and concise answers. Final question: "one thing you want listeners to take away?" Sign off by name. Do NOT rehash earlier answers.'},
             ],
             'words_per_turn': (10, 120),
             'speaker_balance': (0.25, 0.75),  # Expert talks more
@@ -111,7 +111,7 @@ class AudioGenerator:
                 {'name': 'hook', 'pct': 0.10, 'instruction': 'Brief intro, then a compelling hook: "Picture this..." or "It all started when..."'},
                 {'name': 'rising_action', 'pct': 0.40, 'instruction': 'Build the narrative. Introduce key findings as story beats. Build suspense and curiosity.'},
                 {'name': 'climax', 'pct': 0.30, 'instruction': 'The big reveal — the most surprising or important finding. Dramatic payoff.'},
-                {'name': 'resolution', 'pct': 0.20, 'instruction': 'Tie it all together. Connect back to the opening hook. End with lasting impact.'},
+                {'name': 'resolution', 'pct': 0.20, 'instruction': 'Tie it all together. Connect back to the opening hook. Each speaker shares one lasting insight. Sign off by name. Do NOT retell the story.'},
             ],
             'words_per_turn': (10, 90),
             'speaker_balance': (0.55, 0.75),  # Storyteller talks more
@@ -121,12 +121,16 @@ class AudioGenerator:
                 {'name': 'foundation', 'pct': 0.25, 'instruction': 'Explain core concepts simply — like to a 12-year-old. Everyday analogies.'},
                 {'name': 'building', 'pct': 0.25, 'instruction': 'Deeper connections, real-world examples, address misconceptions.'},
                 {'name': 'first_principles', 'pct': 0.25, 'instruction': 'Go beyond what to WHY. Root mechanisms and underlying principles.'},
-                {'name': 'mastery', 'pct': 0.25, 'instruction': 'Learner teaches back. Teacher asks tough questions. Synthesize everything.'},
+                {'name': 'mastery', 'pct': 0.25, 'instruction': 'Learner teaches back. Teacher asks tough questions. Synthesize everything. End with teacher confirming understanding and both signing off by name. Do NOT re-explain concepts already covered.'},
             ],
             'words_per_turn': (10, 70),
             'speaker_balance': (0.40, 0.60),
         },
     }
+
+    # TTS speech rate — Kokoro-82M speaks at ~180 wpm empirically;
+    # 170 gives slight headroom for jingles, speaker pauses, crossfade
+    TTS_WORDS_PER_MINUTE = 170
 
     # Validation thresholds
     SECTION_WORD_TOLERANCE = 0.40       # Section can be ±40% of budget before retry
@@ -194,7 +198,8 @@ class AudioGenerator:
 
         # Start EVERYTHING in background — script gen + audio gen
         print(f"🎬 Starting background audio pipeline for {generation['audio_id']}")
-        task = asyncio.create_task(
+        from utils.tasks import safe_create_task
+        task = safe_create_task(
             self._full_pipeline_async(
                 audio_id=generation["audio_id"],
                 notebook_id=notebook_id,
@@ -206,7 +211,8 @@ class AudioGenerator:
                 accent=accent,
                 is_two_host=is_two_host,
                 chat_context=chat_context,
-            )
+            ),
+            name=f"audio-pipeline-{generation['audio_id']}"
         )
         # Keep reference to prevent garbage collection
         self._background_tasks.add(task)
@@ -262,9 +268,10 @@ class AudioGenerator:
 - Write ONLY spoken words. One speaker per line: {name_a}: [words] or {name_b}: [words]
 - Each turn: 1-3 sentences (15-50 words). Alternate speakers every turn.
 - NEVER write stage directions, markdown, headers, bullet points, or meta-text.
-- NEVER use "Assistant:" or "User:" — ONLY {name_a}: and {name_b}:"""
+- NEVER use "Assistant:" or "User:" — ONLY {name_a}: and {name_b}:
+- {name_a} and {name_b} are ONLY character names. NEVER use a host name as a technical term, method, tool, or concept."""
 
-        target_words = duration_minutes * 130  # TTS speaks at ~130 wpm
+        target_words = duration_minutes * self.TTS_WORDS_PER_MINUTE
         target_exchanges = max(8, target_words // 35)  # ~35 words per exchange pair
         _GROUNDING = f"""LENGTH: Write a LONG conversation — {duration_minutes} minutes of audio.
 Do NOT wrap up early. Do NOT summarize. Keep exploring new angles and reactions.
@@ -562,7 +569,7 @@ Write at least {target_exchanges} back-and-forth exchanges. Keep going — do NO
         blueprint_key = skill_id or 'podcast_script'
         blueprint = self.SCRIPT_BLUEPRINTS.get(blueprint_key, self.SCRIPT_BLUEPRINTS['podcast_script'])
         phases = blueprint['phases']
-        total_target = duration_minutes * 130
+        total_target = duration_minutes * self.TTS_WORDS_PER_MINUTE
         
         name_a = host_names[0] if host_names else "Host A"
         name_b = host_names[1] if host_names else "Host B"
@@ -585,7 +592,7 @@ Write at least {target_exchanges} back-and-forth exchanges. Keep going — do NO
             # Dynamic budget: phase percentage of total, adjusted by what's left
             remaining_words = total_target - total_words_so_far
             remaining_pct = sum(p['pct'] for p in phases[i:])
-            phase_budget = max(130, int(remaining_words * (phase['pct'] / remaining_pct))) if remaining_pct > 0 else 130
+            phase_budget = max(self.TTS_WORDS_PER_MINUTE, int(remaining_words * (phase['pct'] / remaining_pct))) if remaining_pct > 0 else self.TTS_WORDS_PER_MINUTE
             phase_exchanges = max(8, int(phase_budget / 30))
             
             # Continuity: last few lines + simple topic list (no LLM summary)
@@ -653,7 +660,7 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         """
         name_a = host_names[0] if host_names else "Host A"
         name_b = host_names[1] if host_names else "Host B"
-        total_target = duration_minutes * 130
+        total_target = duration_minutes * self.TTS_WORDS_PER_MINUTE
         
         # Feynman-specific detailed instructions per part
         feynman_details = [
@@ -700,7 +707,7 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
             # Dynamic budget
             remaining_words = total_target - total_words_so_far
             remaining_pct = sum(p['pct'] for p in phases[i:])
-            phase_budget = max(130, int(remaining_words * (phase['pct'] / remaining_pct))) if remaining_pct > 0 else 130
+            phase_budget = max(self.TTS_WORDS_PER_MINUTE, int(remaining_words * (phase['pct'] / remaining_pct))) if remaining_pct > 0 else self.TTS_WORDS_PER_MINUTE
             detail = feynman_details[i] if i < len(feynman_details) else phase['instruction']
             phase_exchanges = max(8, int(phase_budget / 30))
             
@@ -1034,7 +1041,7 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         
         Returns cleaned script. Raises RuntimeError if unsalvageable.
         """
-        target_words = duration_minutes * 130
+        target_words = duration_minutes * self.TTS_WORDS_PER_MINUTE
         blueprint = self.SCRIPT_BLUEPRINTS.get(skill_id or 'podcast_script',
                                                 self.SCRIPT_BLUEPRINTS['podcast_script'])
         name_a = host_names[0] if host_names else "Host A"
@@ -1394,7 +1401,7 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         
         # ── Phase 8: Report and reject ──
         final_count = len(script.split())
-        final_est = final_count / 130
+        final_est = final_count / self.TTS_WORDS_PER_MINUTE
         
         # Speaker balance (informational)
         words_by_speaker = {'A': 0, 'B': 0}
@@ -1423,7 +1430,7 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
             raise RuntimeError(f"Script too short after cleanup ({final_count} words, need {int(target_words*0.25)}+ for {duration_minutes}-min target). Generation failed.")
         elif ratio < 0.6:
             # Short but usable — warn but don't fail
-            actual_minutes = final_count / 130
+            actual_minutes = final_count / self.TTS_WORDS_PER_MINUTE
             print(f"[AudioGen] ⚠ Script shorter than target: {final_count} words ({actual_minutes:.1f} min vs {duration_minutes} min target). Proceeding with shorter podcast.")
         
         return script
@@ -1888,11 +1895,8 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
                     import gc
                     gc.collect()
                     try:
-                        import torch as _torch
-                        if hasattr(_torch, 'mps') and _torch.backends.mps.is_available():
-                            _torch.mps.empty_cache()
-                        elif _torch.cuda.is_available():
-                            _torch.cuda.empty_cache()
+                        import mlx.core as mx
+                        mx.clear_cache()
                     except Exception:
                         pass
                     # Brief pause to let GPU cool and OS reclaim resources
@@ -2447,7 +2451,8 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         return chunks
 
     def _get_audio_duration(self, audio_file: Path) -> int:
-        """Get audio duration in seconds"""
+        """Get audio duration in seconds via ffprobe, with wave fallback."""
+        # Try ffprobe first
         try:
             result = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -2455,9 +2460,24 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
                 capture_output=True,
                 text=True
             )
-            return int(float(result.stdout.strip()))
-        except:
-            return 0
+            if result.returncode == 0 and result.stdout.strip():
+                duration = int(float(result.stdout.strip()))
+                if duration > 0:
+                    return duration
+            print(f"[AudioGen] ffprobe returned no duration (rc={result.returncode}, stderr={result.stderr.strip()})")
+        except Exception as e:
+            print(f"[AudioGen] ffprobe failed: {e}")
+        
+        # Fallback: read WAV header directly
+        try:
+            with wave.open(str(audio_file), 'r') as wf:
+                duration = int(wf.getnframes() / wf.getframerate())
+                print(f"[AudioGen] WAV fallback duration: {duration}s")
+                return duration
+        except Exception as e:
+            print(f"[AudioGen] WAV fallback also failed: {e}")
+        
+        return 0
 
     async def list(self, notebook_id: str) -> List[Dict]:
         """List audio files for a notebook"""

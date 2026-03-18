@@ -1583,8 +1583,8 @@ class CollectorAgent:
             except Exception as tag_err:
                 logger.debug(f"Auto-tagging failed (non-fatal): {tag_err}")
         
-        import asyncio
-        asyncio.create_task(_tag_in_background())
+        from utils.tasks import safe_create_task
+        safe_create_task(_tag_in_background(), name="collector-auto-tag")
         
         # 4. Also store in Collector memory for pattern tracking (non-fatal)
         try:

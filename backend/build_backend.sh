@@ -31,19 +31,34 @@ if ! python -c "import pyinstaller" 2>/dev/null; then
     pip install -q -r requirements.txt
 fi
 
-# Kokoro TTS: all deps (misaki, spacy, soundfile, etc.) are in requirements.txt.
-# Only kokoro itself needs --no-deps because it declares misaki>=0.7.16 but
-# the latest PyPI misaki is 0.7.4 (works fine at runtime, pip just can't resolve it).
-if ! python -c "import kokoro" 2>/dev/null; then
-    echo -e "${YELLOW}Installing Kokoro TTS (--no-deps)...${NC}"
-    pip install -q --no-deps kokoro 2>/dev/null || echo -e "${YELLOW}  kokoro install warning (non-fatal)${NC}"
+# kokoro-mlx: Kokoro-82M TTS on Apple Silicon via MLX.
+# Install --no-deps because it declares misaki>=0.9.4 but PyPI only has 0.7.4
+# (works fine at runtime). Also avoids pulling unnecessary transitive deps.
+if ! python -c "import kokoro_mlx" 2>/dev/null; then
+    echo -e "${YELLOW}Installing kokoro-mlx (--no-deps)...${NC}"
+    pip install -q --no-deps kokoro-mlx 2>/dev/null || echo -e "${YELLOW}  kokoro-mlx install warning (non-fatal)${NC}"
 fi
 
-# Verify critical Kokoro imports — warn loudly if missing
-if ! python -c "import kokoro; import misaki; import soundfile" 2>/dev/null; then
-    echo -e "${RED}⚠ WARNING: Kokoro TTS packages not importable after install.${NC}"
+# Verify critical TTS imports — warn loudly if missing
+if ! python -c "import kokoro_mlx; import misaki; import soundfile" 2>/dev/null; then
+    echo -e "${RED}⚠ WARNING: kokoro-mlx TTS packages not importable after install.${NC}"
     echo -e "${RED}  Audio generation (podcasts, video narration) will not work.${NC}"
-    echo -e "${RED}  Try: pip install kokoro misaki soundfile spacy${NC}"
+    echo -e "${RED}  Try: pip install --no-deps kokoro-mlx && pip install misaki soundfile${NC}"
+fi
+
+# Ensure Playwright Chromium browser is installed — required by People Profiler social auth.
+# Without this, playwright.chromium.launch() fails with "Executable doesn't exist" error.
+if ! python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); p.chromium.executable_path; p.stop()" 2>/dev/null; then
+    echo -e "${YELLOW}Installing Playwright Chromium browser...${NC}"
+    python -m playwright install chromium 2>/dev/null || echo -e "${YELLOW}  Playwright browser install warning (non-fatal)${NC}"
+fi
+
+# Ensure spacy en_core_web_sm model is installed — required by misaki (kokoro-mlx phonemizer).
+# Without this, misaki's G2P.__init__ calls spacy.cli.download() at runtime which crashes
+# in a PyInstaller bundle (sys.executable is the frozen binary, not Python).
+if ! python -c "import en_core_web_sm" 2>/dev/null; then
+    echo -e "${YELLOW}Installing spacy en_core_web_sm model (required by kokoro-mlx)...${NC}"
+    python -m spacy download en_core_web_sm 2>/dev/null || echo -e "${YELLOW}  spacy model install warning (non-fatal)${NC}"
 fi
 
 OUTPUT_DIR="../src-tauri/resources/backend"
@@ -56,7 +71,13 @@ mkdir -p "$OUTPUT_DIR"
 
 # Run PyInstaller in onedir mode (more reliable for complex apps)
 echo -e "${YELLOW}Running PyInstaller (onedir mode)...${NC}"
-pyinstaller \
+# Suppress noisy third-party warnings:
+# PYTHONWARNINGS: catches FutureWarning (torch ddp_comm_hooks), SyntaxWarning (hdbscan/docopt/misaki)
+# python -W: catches DeprecationWarning from PyInstaller's __import__ hooks (torch.distributed)
+# --log-level ERROR: hides PyInstaller's own WARNINGs (pandas.plotting, tensorboard, scipy, ctypes libs)
+# 2>&1 | grep -v: catches the 3 stubborn torch.distributed DeprecationWarnings that bypass all filters
+export PYTHONWARNINGS="ignore::FutureWarning,ignore::DeprecationWarning,ignore::SyntaxWarning"
+python -W ignore -m PyInstaller \
     --onedir \
     --name "localbook-backend" \
     --distpath "$OUTPUT_DIR" \
@@ -64,7 +85,7 @@ pyinstaller \
     --specpath "./build" \
     --clean \
     --noconfirm \
-    --log-level WARN \
+    --log-level ERROR \
     --paths="$SCRIPT_DIR" \
     --add-data="$SCRIPT_DIR/api:api" \
     --add-data="$SCRIPT_DIR/services:services" \
@@ -185,7 +206,7 @@ pyinstaller \
     --hidden-import=playwright \
     --hidden-import=playwright.async_api \
     --hidden-import=playwright._impl \
-    --hidden-import=playwright._impl._api_types \
+    --hidden-import=playwright._impl._api_structures \
     --hidden-import=playwright._impl._connection \
     --hidden-import=playwright._impl._driver \
     --hidden-import=greenlet \
@@ -208,6 +229,8 @@ pyinstaller \
     --hidden-import=models.knowledge_graph \
     --hidden-import=config \
     --hidden-import=utils \
+    --hidden-import=utils.tasks \
+    --hidden-import=utils.diagnostics \
     --hidden-import=agents \
     --hidden-import=agents.collector \
     --hidden-import=agents.curator \
@@ -215,19 +238,17 @@ pyinstaller \
     --hidden-import=agents.state \
     --hidden-import=agents.supervisor \
     --collect-all=sentence_transformers \
-    --collect-all=torch \
-    --collect-all=transformers \
+    --collect-all=kokoro_mlx \
     --collect-all=trafilatura \
     --collect-all=justext \
     --collect-all=mlx \
-    --collect-all=mlx_metal \
     --collect-all=mlx_whisper \
-    --collect-all=kokoro \
     --collect-all=misaki \
     --collect-all=spacy \
+    --collect-all=en_core_web_sm \
     --collect-all=phonemizer \
     --collect-all=num2words \
-    --collect-all=soundfile \
+    --hidden-import=soundfile \
     --collect-all=loguru \
     --collect-all=dlinfo \
     --collect-all=segments \
@@ -255,8 +276,7 @@ pyinstaller \
     --hidden-import=docopt \
     --collect-all=zstandard \
     --collect-all=bertopic \
-    --collect-all=umap \
-    --collect-all=hdbscan \
+    --collect-all=joblib \
     --collect-submodules=pandas.core \
     --collect-submodules=pandas.io \
     --collect-submodules=pandas.tslibs \
@@ -274,14 +294,13 @@ pyinstaller \
     --hidden-import=keyring \
     --hidden-import=dateparser \
     --hidden-import=fitz \
-    --hidden-import=pdfplumber \
     --hidden-import=docx \
     --hidden-import=pptx \
     --collect-all=pptx \
     --collect-all=playwright \
     --hidden-import=lxml \
     --collect-all=lxml \
-    --hidden-import=XlsxWriter \
+    --hidden-import=xlsxwriter \
     --hidden-import=openpyxl \
     --hidden-import=xlrd \
     --hidden-import=pandas._config \
@@ -310,11 +329,12 @@ pyinstaller \
     --exclude-module=botocore \
     --exclude-module=s3transfer \
     --exclude-module=pandas.tests \
+    --exclude-module=plotly \
     --exclude-module=torch.distributed \
     --exclude-module=torch.testing \
-    --exclude-module=torch.utils.tensorboard \
     --exclude-module=torch._inductor \
-    --exclude-module=torch._dynamo \
+    --exclude-module=tensorboard \
+    --exclude-module=matplotlib \
     main.py
 
 # Make the main executable... executable
@@ -338,18 +358,14 @@ fi
 
 echo -e "${GREEN}✓ Backend built: $OUTPUT_DIR/localbook-backend/${NC}"
 
-# Verify Kokoro TTS bundled correctly — fail fast if any dep is missing
-echo -e "${YELLOW}Verifying Kokoro TTS bundle integrity...${NC}"
-KOKORO_EXIT=0
-"$OUTPUT_DIR/localbook-backend/localbook-backend" --verify-kokoro 2>/dev/null || KOKORO_EXIT=$?
-if [ $KOKORO_EXIT -ne 0 ]; then
-    # Fallback: test imports using the venv Python against the bundle's _internal
-    KOKORO_EXIT=0
-    PYTHONPATH="$OUTPUT_DIR/localbook-backend/_internal" python -c "
+# Verify kokoro-mlx TTS bundled correctly — fail fast if any dep is missing
+echo -e "${YELLOW}Verifying kokoro-mlx TTS bundle integrity...${NC}"
+TTS_EXIT=0
+PYTHONPATH="$OUTPUT_DIR/localbook-backend/_internal" python -c "
 import sys, importlib
-mods = ['kokoro','misaki','phonemizer','segments','csvw','language_tags',
-        'rdflib','soundfile','loguru','num2words','dlinfo','spacy','thinc',
-        'blis','cymem','murmurhash','preshed','srsly','catalogue','isodate']
+mods = ['kokoro_mlx','mlx','misaki','phonemizer','segments','csvw','language_tags',
+        'rdflib','soundfile','loguru','num2words','dlinfo','spacy','en_core_web_sm',
+        'thinc','blis','cymem','murmurhash','preshed','srsly','catalogue','isodate']
 failed = []
 for m in mods:
     try:
@@ -357,27 +373,24 @@ for m in mods:
     except Exception as e:
         failed.append(f'{m}: {e}')
 if failed:
-    print('KOKORO BUNDLE VERIFICATION FAILED:')
+    print('TTS BUNDLE VERIFICATION FAILED:')
     for f in failed:
         print(f'  ✗ {f}')
     sys.exit(1)
 else:
-    print('All Kokoro imports verified OK')
-" 2>/dev/null || KOKORO_EXIT=$?
-fi
-if [ $KOKORO_EXIT -eq 0 ]; then
-    echo -e "${GREEN}✓ Kokoro TTS bundle verified${NC}"
+    print('All TTS imports verified OK')
+" 2>/dev/null || TTS_EXIT=$?
+if [ $TTS_EXIT -eq 0 ]; then
+    echo -e "${GREEN}✓ kokoro-mlx TTS bundle verified${NC}"
 else
-    echo -e "${RED}✗ Kokoro TTS bundle verification FAILED — check missing deps above${NC}"
+    echo -e "${RED}✗ kokoro-mlx TTS bundle verification FAILED — check missing deps above${NC}"
     echo -e "${YELLOW}  The build will continue but TTS may not work at runtime${NC}"
 fi
 
 # Trim unnecessary bulk from bundle
 echo -e "${YELLOW}Trimming unnecessary files from bundle...${NC}"
-# torch C++ headers (59MB) - never needed at runtime
-rm -rf "$OUTPUT_DIR/localbook-backend/_internal/torch/include" 2>/dev/null
-# plotly (13MB) - pulled in by BERTopic but never rendered in our app
-rm -rf "$OUTPUT_DIR/localbook-backend/_internal/plotly" 2>/dev/null
+# plotly: excluded at build time via --exclude-module=plotly
+# BERTopic's find_spec("plotly") returns None → uses MockPlotlyModule (no plotting needed)
 # babel locale data (32MB) - only dateparser uses it, keep just en
 BABEL_LOCALE="$OUTPUT_DIR/localbook-backend/_internal/babel/locale-data"
 if [ -d "$BABEL_LOCALE" ]; then

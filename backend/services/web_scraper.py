@@ -221,16 +221,20 @@ class WebScraper:
         return None
 
     async def _get_youtube_title(self, video_id: str) -> str:
-        """Fetch YouTube video title using oEmbed API (no API key required)"""
-        try:
-            oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(oembed_url)
-                if response.status_code == 200:
-                    data = response.json()
-                    return data.get("title", f"YouTube Video {video_id}")
-        except Exception:
-            pass
+        """Fetch YouTube video title using oEmbed API (no API key required).
+        
+        Retries once with a longer timeout if the first attempt fails.
+        """
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        for timeout in (5.0, 10.0):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.get(oembed_url)
+                    if response.status_code == 200:
+                        data = response.json()
+                        return data.get("title", f"YouTube Video {video_id}")
+            except Exception:
+                continue
         return f"YouTube Video {video_id}"
 
     async def _scrape_youtube(self, url: str) -> Dict:

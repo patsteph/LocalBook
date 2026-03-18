@@ -106,7 +106,7 @@ export const AudioCanvasPlayer: React.FC<AudioCanvasPlayerProps> = ({
           <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{title}</p>
           <p className={`text-xs ${status === 'failed' ? 'text-red-500' : 'text-gray-500 dark:text-gray-400'}`}>
             {error || audio?.error_message || STATUS_LABELS[status] || status}
-            {audio?.duration_seconds && isReady && (
+            {audio?.duration_seconds != null && audio.duration_seconds > 0 && isReady && (
               <span className="ml-2 text-gray-400">· {formatDuration(audio.duration_seconds)}</span>
             )}
           </p>

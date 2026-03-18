@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { ArrowUpCircle } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { LeftNavColumn } from './components/layout/LeftNavColumn';
 import { CanvasWorkspace } from './components/canvas/CanvasWorkspace';
@@ -55,6 +56,8 @@ function App() {
   const viewMenuRef = useRef<HTMLDivElement>(null);
   const utilMenuRef = useRef<HTMLDivElement>(null);
   const health = useSystemHealth();
+  const [backendHealthStatus, setBackendHealthStatus] = useState<'ok' | 'crashed' | 'restarting' | 'recovered' | 'failed'>('ok');
+  const [backendHealthMessage, setBackendHealthMessage] = useState<string>('');
 
   // Auto-reset generation status back to idle after transient states
   const setGenerationStatus = useCallback((status: 'idle' | 'generating' | 'complete' | 'error') => {
@@ -196,6 +199,10 @@ function App() {
     });
   }, [setLayout, findFirstLeafId]);
 
+  const openCollector = useCallback(() => {
+    if (!drawers.collector) toggleDrawer('collector');
+  }, [drawers.collector, toggleDrawer]);
+
   const openWebResearch = useCallback((query?: string) => {
     openPanel('web-research', query ? { initialQuery: query } : undefined);
   }, [openPanel]);
@@ -248,6 +255,7 @@ function App() {
     splitPanel,
     changePanelView,
     layout,
+    openCollector,
     openWebResearch,
     openSettings,
     openLLMSelector,
@@ -269,7 +277,7 @@ function App() {
     selectedNotebookId, selectedNotebookName, selectedSourceId, selectedLLMProvider,
     refreshSources, refreshNotebooks, collectorRefreshKey, addToast,
     openPanel, closePanel, splitPanel, changePanelView, layout,
-    openWebResearch, openSettings, openLLMSelector, openEmbeddingSelector,
+    openCollector, openWebResearch, openSettings, openLLMSelector, openEmbeddingSelector,
     chatPrefillQuery, navigateToChat, darkMode, toggleDarkMode,
     morningBrief, curatorBriefData, generationStatus, setGenerationStatus,
     chatContext, setChatContext,
@@ -408,6 +416,23 @@ function App() {
     };
   }, [selectedNotebookId]);
 
+  // Listen for backend health events from the Rust watchdog
+  useEffect(() => {
+    const unlisten = listen<{ status: string; message: string; restart_attempt?: number; max_restarts?: number }>('backend-health', (event) => {
+      const { status, message } = event.payload;
+      setBackendHealthStatus(status as typeof backendHealthStatus);
+      setBackendHealthMessage(message);
+      if (status === 'recovered') {
+        // Auto-dismiss the banner after 5 seconds on recovery
+        setTimeout(() => {
+          setBackendHealthStatus('ok');
+          setBackendHealthMessage('');
+        }, 5000);
+      }
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
+
   useEffect(() => {
     // Check if backend is ready
     const checkBackend = async () => {
@@ -458,41 +483,50 @@ function App() {
           // Prewarm mermaid renderer in background
           prewarmMermaid();
           // Fetch morning brief or weekly wrap — check should-show first
-          const localHour = new Date().getHours();
-          fetch(`${API_BASE_URL}/curator/morning-brief/should-show?local_hour=${localHour}`)
-            .then(r => r.ok ? r.json() : null)
-            .then(check => {
-              if (check?.should_show_weekly) {
-                // Monday — fetch weekly wrap up
-                fetch(`${API_BASE_URL}/curator/weekly-wrap`)
-                  .then(r => r.ok ? r.json() : null)
-                  .then(wrap => {
-                    if (wrap?.narrative) {
-                      setWeeklyWrap(wrap);
-                      fetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
-                      fetch(`${API_BASE_URL}/curator/weekly-wrap/save`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(wrap)
-                      }).catch(() => {});
-                    }
-                  }).catch(() => {});
-              } else if (check?.should_show) {
-                const hoursAway = check.hours_away || 12;
-                fetch(`${API_BASE_URL}/curator/morning-brief?hours_away=${hoursAway}`)
-                  .then(r => r.ok ? r.json() : null)
-                  .then(brief => {
-                    if (brief && (brief.notebooks?.length > 0 || brief.cross_notebook_insight || brief.narrative)) {
-                      setMorningBrief(brief);
-                      fetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
-                      fetch(`${API_BASE_URL}/curator/morning-brief/save`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(brief)
-                      }).catch(() => {});
-                    }
-                  }).catch(() => {});
-              }
-            })
-            .catch(() => {});
+          // Retries if models are still loading (backend returns reason: "models_loading")
+          const fetchBriefWhenReady = (retries = 0) => {
+            const localHour = new Date().getHours();
+            fetch(`${API_BASE_URL}/curator/morning-brief/should-show?local_hour=${localHour}`)
+              .then(r => r.ok ? r.json() : null)
+              .then(check => {
+                if (check?.reason === 'models_loading' && retries < 6) {
+                  // Models still warming up — retry in 10s (up to ~60s total)
+                  setTimeout(() => fetchBriefWhenReady(retries + 1), 10000);
+                  return;
+                }
+                if (check?.should_show_weekly) {
+                  // Monday — fetch weekly wrap up
+                  fetch(`${API_BASE_URL}/curator/weekly-wrap`)
+                    .then(r => r.ok ? r.json() : null)
+                    .then(wrap => {
+                      if (wrap?.narrative) {
+                        setWeeklyWrap(wrap);
+                        fetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
+                        fetch(`${API_BASE_URL}/curator/weekly-wrap/save`, {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify(wrap)
+                        }).catch(() => {});
+                      }
+                    }).catch(() => {});
+                } else if (check?.should_show) {
+                  const hoursAway = check.hours_away || 12;
+                  fetch(`${API_BASE_URL}/curator/morning-brief?hours_away=${hoursAway}`)
+                    .then(r => r.ok ? r.json() : null)
+                    .then(brief => {
+                      if (brief && (brief.notebooks?.length > 0 || brief.cross_notebook_insight || brief.narrative)) {
+                        setMorningBrief(brief);
+                        fetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
+                        fetch(`${API_BASE_URL}/curator/morning-brief/save`, {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify(brief)
+                        }).catch(() => {});
+                      }
+                    }).catch(() => {});
+                }
+              })
+              .catch(() => {});
+          };
+          fetchBriefWhenReady();
         } else {
           // Keep checking every second
           setTimeout(checkBackend, 1000);
@@ -615,6 +649,34 @@ function App() {
     <AppShellProvider value={appShellCtx}>
     <CanvasItemsProvider value={canvasItemsCtx}>
       <div className="h-screen flex flex-col bg-gray-50 dark:bg-gray-900">
+        {/* Backend health banner — crash / restart / recovery */}
+        {backendHealthStatus !== 'ok' && (
+          <div className={`mx-4 mt-2 mb-1 px-4 py-2.5 rounded-lg flex items-center justify-between text-xs font-medium flex-shrink-0 transition-colors ${
+            backendHealthStatus === 'failed'
+              ? 'bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-800 text-red-800 dark:text-red-200'
+              : backendHealthStatus === 'recovered'
+              ? 'bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-800 text-green-800 dark:text-green-200'
+              : 'bg-amber-50 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200'
+          }`}>
+            <div className="flex items-center gap-2">
+              {backendHealthStatus === 'failed' ? (
+                <span>&#x26D4;</span>
+              ) : backendHealthStatus === 'recovered' ? (
+                <span>&#x2705;</span>
+              ) : (
+                <div className="w-3 h-3 flex-shrink-0 relative">
+                  <div className="absolute inset-0 rounded-full border-2 border-amber-300 dark:border-amber-600" />
+                  <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-amber-600 dark:border-t-amber-400 animate-spin" />
+                </div>
+              )}
+              <span>{backendHealthMessage}</span>
+            </div>
+            {backendHealthStatus === 'recovered' && (
+              <button onClick={() => { setBackendHealthStatus('ok'); setBackendHealthMessage(''); }} className="opacity-60 hover:opacity-100">&#x2715;</button>
+            )}
+          </div>
+        )}
+
         {/* Morning Brief — floats above canvas */}
         {morningBrief && (
           <button

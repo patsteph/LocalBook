@@ -410,9 +410,9 @@ async def add_coaching_note(notebook_id: str, member_id: str, request: AddNoteRe
     _save_config(notebook_id, config)
 
     # Re-index coaching notes into RAG (background)
-    import asyncio
+    from utils.tasks import safe_create_task
     from services.profile_indexer import profile_indexer
-    asyncio.create_task(profile_indexer.index_coaching_notes(notebook_id, member))
+    safe_create_task(profile_indexer.index_coaching_notes(notebook_id, member), name="reindex-coaching-notes")
 
     return {"success": True, "note_id": note.id, "total_notes": len(member.coaching_notes)}
 

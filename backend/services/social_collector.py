@@ -121,8 +121,10 @@ class SocialCollectorService:
 
         # Phase 4: Post-collection intelligence pipeline (fire-and-forget)
         if results["platforms_collected"]:
-            asyncio.create_task(
-                self._run_intelligence_pipeline(person, notebook_id, previous_snapshot)
+            from utils.tasks import safe_create_task
+            safe_create_task(
+                self._run_intelligence_pipeline(person, notebook_id, previous_snapshot),
+                name=f"social-intelligence-{person.name[:20]}"
             )
 
         return results

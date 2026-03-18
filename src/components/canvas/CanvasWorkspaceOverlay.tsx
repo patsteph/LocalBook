@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import DOMPurify from 'dompurify';
 import {
   FileText, Palette, Target, Mic, Video, MessageSquare, PenLine,
@@ -18,15 +18,13 @@ import { quizService } from '../../services/quiz';
 import { audioService } from '../../services/audio';
 import { chatService } from '../../services/chat';
 import { curatorService } from '../../services/curatorApi';
-import { sourceService } from '../../services/sources';
-import { voiceService } from '../../services/voice';
-import { settingsService } from '../../services/settings';
 import { skillsService } from '../../services/skills';
 import { writingService, FormatOption } from '../../services/writing';
 import { exportService } from '../../services/export';
 import { Skill } from '../../types';
 import { WritingAssistBar } from '../WritingAssistBar';
 import { AudioCanvasPlayer } from '../chat/AudioCanvasPlayer';
+import { RichNoteEditor } from '../RichNoteEditor';
 
 // Icons for canvas item types
 const iconSm = 'w-3.5 h-3.5';
@@ -40,282 +38,7 @@ const TYPE_ICONS: Record<CanvasItem['type'], React.ReactNode> = {
   'note': <PenLine className={iconSm} />,
 };
 
-// === Note Editor Component ===
-interface NoteEditorProps {
-  item: CanvasItem;
-}
-
-const NoteCanvasEditor: React.FC<NoteEditorProps> = ({ item }) => {
-  const ctx = useCanvas();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [saving, setSaving] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [selectedText, setSelectedText] = useState('');
-
-  const handleTextSelect = useCallback(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);
-    setSelectedText(sel);
-  }, []);
-
-  const handleWritingReplace = useCallback((newText: string, replaceSelection: boolean) => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    if (replaceSelection && selectedText) {
-      const start = ta.selectionStart;
-      const end = ta.selectionEnd;
-      const updated = item.content.substring(0, start) + newText + item.content.substring(end);
-      ctx.updateCanvasItem(item.id, { content: updated });
-      setSelectedText('');
-    } else {
-      ctx.updateCanvasItem(item.id, { content: newText });
-    }
-  }, [item.id, item.content, selectedText, ctx]);
-
-  const handleWritingContinue = useCallback((continuation: string) => {
-    const separator = item.content.endsWith('\n') ? '' : '\n\n';
-    ctx.updateCanvasItem(item.id, { content: item.content + separator + continuation });
-  }, [item.id, item.content, ctx]);
-
-  // Undo/redo history
-  const undoStackRef = useRef<string[]>([]);
-  const redoStackRef = useRef<string[]>([]);
-  const snapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const MAX_UNDO = 50;
-
-  // Take a snapshot for undo (debounced — called on content change)
-  const scheduleSnapshot = useCallback((currentContent: string) => {
-    if (snapshotTimerRef.current) clearTimeout(snapshotTimerRef.current);
-    snapshotTimerRef.current = setTimeout(() => {
-      const stack = undoStackRef.current;
-      if (stack.length === 0 || stack[stack.length - 1] !== currentContent) {
-        stack.push(currentContent);
-        if (stack.length > MAX_UNDO) stack.shift();
-        redoStackRef.current = []; // new edit clears redo
-      }
-    }, 1000);
-  }, []);
-
-  // Seed initial snapshot
-  useEffect(() => {
-    if (item.content) {
-      undoStackRef.current = [item.content];
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-
-  // Cleanup: stop MediaRecorder and release mic on unmount
-  useEffect(() => {
-    return () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-        mediaRecorderRef.current.stop();
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    // For new notes: fetch user name and set default title, then focus
-    if (!item.content && !item.title) {
-      settingsService.getUserProfile()
-        .then(profile => {
-          const name = profile.name?.trim();
-          ctx.updateCanvasItem(item.id, {
-            title: name ? `${name}'s Notes` : "User's Notes",
-          });
-        })
-        .catch(() => {
-          ctx.updateCanvasItem(item.id, { title: "User's Notes" });
-        });
-      setTimeout(() => textareaRef.current?.focus(), 200);
-    }
-  }, []);
-
-  const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    ctx.updateCanvasItem(item.id, { title: e.target.value });
-  };
-
-  const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const newContent = e.target.value;
-    scheduleSnapshot(item.content); // snapshot the PREVIOUS content before updating
-    ctx.updateCanvasItem(item.id, { content: newContent });
-    // Auto-resize textarea
-    const target = e.target;
-    target.style.height = 'auto';
-    target.style.height = Math.max(target.scrollHeight, 200) + 'px';
-  };
-
-  const handleUndo = () => {
-    const stack = undoStackRef.current;
-    if (stack.length === 0) return;
-    const prev = stack.pop()!;
-    redoStackRef.current.push(item.content);
-    ctx.updateCanvasItem(item.id, { content: prev });
-  };
-
-  const handleRedo = () => {
-    const stack = redoStackRef.current;
-    if (stack.length === 0) return;
-    const next = stack.pop()!;
-    undoStackRef.current.push(item.content);
-    ctx.updateCanvasItem(item.id, { content: next });
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
-      e.preventDefault();
-      if (e.shiftKey) {
-        handleRedo();
-      } else {
-        handleUndo();
-      }
-    }
-  };
-
-  const handleSaveAsSource = async () => {
-    if (!ctx.selectedNotebookId || !item.content.trim()) return;
-    setSaving(true);
-    try {
-      await sourceService.createNote(
-        ctx.selectedNotebookId,
-        item.title.trim() || 'Untitled Note',
-        item.content.trim()
-      );
-      ctx.addToast({ type: 'success', title: 'Note saved as source', message: item.title || 'Untitled Note' });
-      ctx.triggerSourcesRefresh();
-    } catch (err: any) {
-      console.error('Save note failed:', err);
-      ctx.addToast({ type: 'error', title: 'Failed to save note', message: err.message || 'Unknown error' });
-    }
-    setSaving(false);
-  };
-
-  // Dictation — same pattern as ChatInterface
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) audioChunksRef.current.push(event.data);
-      };
-
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        stream.getTracks().forEach(track => track.stop());
-        setIsTranscribing(true);
-        try {
-          const result = await voiceService.transcribe(
-            new File([audioBlob], 'recording.webm', { type: 'audio/webm' }),
-            ctx.selectedNotebookId || '',
-            undefined,
-            false
-          );
-          const newContent = item.content + (item.content ? '\n\n' : '') + result.text;
-          ctx.updateCanvasItem(item.id, { content: newContent });
-        } catch (err) {
-          console.error('Transcription failed:', err);
-          ctx.addToast({ type: 'error', title: 'Transcription failed', message: 'Is Whisper running?' });
-        } finally {
-          setIsTranscribing(false);
-        }
-      };
-
-      mediaRecorder.start();
-      setIsRecording(true);
-    } catch (err) {
-      console.error('Mic access denied:', err);
-      ctx.addToast({ type: 'error', title: 'Microphone access denied' });
-    }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-    }
-  };
-
-  const wordCount = item.content.trim().split(/\s+/).filter(Boolean).length;
-
-  return (
-    <div className="px-5 py-4 space-y-3">
-      {/* Title */}
-      <input
-        type="text"
-        value={item.title}
-        onChange={handleTitleChange}
-        placeholder="Note title..."
-        className="w-full text-lg font-semibold bg-transparent border-none outline-none text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500"
-      />
-
-      {/* Textarea editor */}
-      <textarea
-        ref={textareaRef}
-        value={item.content}
-        onChange={handleContentChange}
-        onKeyDown={handleKeyDown}
-        placeholder="Start writing your note... Speak or type. Use AI actions below to expand, refine, or generate from your notes."
-        className="w-full min-h-[200px] resize-none bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 font-mono leading-relaxed outline-none focus:border-blue-400 dark:focus:border-blue-600 transition-colors"
-        onSelect={handleTextSelect}
-        onMouseUp={handleTextSelect}
-      />
-
-      {/* Writing assist */}
-      <WritingAssistBar
-        text={item.content}
-        selectedText={selectedText}
-        onReplace={handleWritingReplace}
-        onContinue={handleWritingContinue}
-      />
-
-      {/* Note toolbar */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {/* Mic / dictation button */}
-          <button
-            onClick={isRecording ? stopRecording : startRecording}
-            disabled={isTranscribing}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              isRecording
-                ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 animate-pulse'
-                : isTranscribing
-                  ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400 animate-pulse'
-                  : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-            }`}
-          >
-            {isRecording ? (
-              <><svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" /></svg> Stop</>
-            ) : isTranscribing ? (
-              <>⏳ Transcribing...</>
-            ) : (
-              <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4M12 15a3 3 0 003-3V5a3 3 0 00-6 0v7a3 3 0 003 3z" /></svg> Dictate</>
-            )}
-          </button>
-
-          {/* Word count */}
-          <span className="text-xs text-gray-400 dark:text-gray-500">
-            {wordCount.toLocaleString()} words · {item.content.length.toLocaleString()} chars
-          </span>
-        </div>
-
-        {/* Save as Source */}
-        <button
-          onClick={handleSaveAsSource}
-          disabled={saving || !item.content.trim() || !ctx.selectedNotebookId}
-          className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {saving ? '💾 Saving...' : '💾 Save as Source'}
-        </button>
-      </div>
-    </div>
-  );
-};
+// Note Editor — uses RichNoteEditor (imported above)
 
 interface CanvasItemRendererProps {
   item: CanvasItem;
@@ -359,7 +82,7 @@ const CanvasItemRenderer: React.FC<CanvasItemRendererProps> = ({ item, onToggleC
       {/* Item content */}
       {!item.collapsed && (
         item.type === 'note' ? (
-          <NoteCanvasEditor item={item} />
+          <RichNoteEditor item={item} />
         ) : (
         <div className="px-6 py-4">
           {/* Generating placeholder */}
@@ -742,19 +465,21 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
       storytelling: 'Story Format', feynman_curriculum: 'Feynman Lesson',
     };
     const formatLabel = audioFormatLabels[audioSkill] || 'Audio';
+    // Compute topic early so we can use it in the title
+    const content = getPrimaryContent();
+    const topic = content.substring(0, 200).replace(/[#*_\n]/g, ' ').trim();
+    const shortTopic = topic.length > 50 ? topic.substring(0, 47).trim() + '…' : topic;
     // Add placeholder immediately
     ctx.addCanvasItem({
       id: itemId,
       type: 'audio',
-      title: `Podcast: ${formatLabel}`,
+      title: shortTopic ? `${formatLabel}: ${shortTopic}` : `Podcast: ${formatLabel}`,
       content: '',
       collapsed: true,
       status: 'generating',
       metadata: { notebookId: ctx.selectedNotebookId },
     });
     try {
-      const content = getPrimaryContent();
-      const topic = content.substring(0, 200).replace(/[#*_\n]/g, ' ').trim();
       const voiceMap: Record<string, [string, string]> = { mf: ['male', 'female'], fm: ['female', 'male'], mm: ['male', 'male'], ff: ['female', 'female'] };
       const [h1, h2] = voiceMap[audioVoices] || ['male', 'female'];
       const result = await audioService.generate({
@@ -1369,6 +1094,11 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
             const enabled = action.enabled(ctx.canvasItems, ctx.selectedNotebookId);
             const loading = actionLoading === action.id;
             const isActive = activePopover === action.id;
+            const CANVAS_TYPE_MAP: Record<string, string> = { docs: 'document', audio: 'audio', video: 'video', visual: 'visual', quiz: 'quiz' };
+            const canvasType = CANVAS_TYPE_MAP[action.id];
+            const working = loading || (canvasType && ctx.canvasItems.some(
+              item => item.type === canvasType && (item.status === 'generating' || item.status === 'processing')
+            ));
             // Actions that need a popover vs direct-fire
             const hasPopover = ['docs', 'visual', 'audio', 'quiz', 'pptx', 'pdf', 'crossnb'].includes(action.id);
             return (
@@ -1385,13 +1115,23 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
                 }}
                 disabled={!enabled || (!!actionLoading && !isActive)}
                 className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
-                  loading
-                    ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 animate-pulse'
-                    : isActive
-                      ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 ring-1 ring-blue-400'
-                      : enabled && !actionLoading
-                        ? 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 hover:shadow-sm'
-                        : 'bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed'
+                  (() => {
+                    const ACTION_COLORS: Record<string, { working: string; active: string }> = {
+                      docs:    { working: 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400',    active: 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 ring-1 ring-blue-400' },
+                      audio:   { working: 'bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400', active: 'bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 ring-1 ring-violet-400' },
+                      video:   { working: 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400',    active: 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 ring-1 ring-rose-400' },
+                      visual:  { working: 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400', active: 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 ring-1 ring-amber-400' },
+                      quiz:    { working: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400', active: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-400' },
+                      pptx:    { working: 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400', active: 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 ring-1 ring-indigo-400' },
+                      pdf:     { working: 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300',       active: 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 ring-1 ring-gray-400' },
+                      crossnb: { working: 'bg-teal-100 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400',    active: 'bg-teal-100 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 ring-1 ring-teal-400' },
+                    };
+                    const c = ACTION_COLORS[action.id] || ACTION_COLORS.docs;
+                    if (working) return `${c.working} animate-pulse`;
+                    if (isActive) return c.active;
+                    if (enabled && !actionLoading) return 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 hover:shadow-sm';
+                    return 'bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-600 cursor-not-allowed';
+                  })()
                 }`}
                 title={action.label}
               >

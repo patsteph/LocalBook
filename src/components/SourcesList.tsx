@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { BookOpen, Trash2, PenLine, Archive } from 'lucide-react';
+import { BookOpen, Trash2, PenLine, Archive, ArrowRightLeft } from 'lucide-react';
 import { sourceService } from '../services/sources';
-import { Source } from '../types';
+import { notebookService } from '../services/notebooks';
+import { Source, Notebook } from '../types';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
 import { SourceNotesViewer } from './SourceNotesViewer';
@@ -25,6 +26,9 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
   const [autoTagging, setAutoTagging] = useState(false);
   const [showTagCloud, setShowTagCloud] = useState(false);
+  const [moveTarget, setMoveTarget] = useState<string | null>(null);
+  const [moveNotebooks, setMoveNotebooks] = useState<Notebook[]>([]);
+  const [moving, setMoving] = useState(false);
 
   // WebSocket connection for real-time source updates (auto-reconnecting)
   const wsUrl = useMemo(() => API_BASE_URL.replace('http', 'ws') + '/constellation/ws', []);
@@ -305,6 +309,20 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                       </button>
                     )}
                     <button
+                      onClick={async () => {
+                        if (moveTarget === source.id) { setMoveTarget(null); return; }
+                        try {
+                          const nbs = await notebookService.list();
+                          setMoveNotebooks(nbs.filter(nb => nb.id !== notebookId));
+                          setMoveTarget(source.id);
+                        } catch { setError('Failed to load notebooks'); }
+                      }}
+                      className="p-1 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition-colors"
+                      title="Move to another notebook"
+                    >
+                      <ArrowRightLeft size={14} />
+                    </button>
+                    <button
                       onClick={() => handleDeleteSource(source.id)}
                       className="p-1 text-gray-300 hover:text-red-600 dark:text-gray-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
                       title="Delete source"
@@ -313,6 +331,40 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                     </button>
                   </div>
                 </div>
+                {moveTarget === source.id && (
+                  <div className="mt-1 p-1.5 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg border border-indigo-200 dark:border-indigo-700" onClick={(e) => e.stopPropagation()}>
+                    <p className="text-[10px] font-medium text-indigo-600 dark:text-indigo-400 mb-1">Move to:</p>
+                    {moveNotebooks.length === 0 ? (
+                      <p className="text-[10px] text-gray-500">No other notebooks</p>
+                    ) : (
+                      <div className="flex flex-col gap-0.5 max-h-32 overflow-y-auto">
+                        {moveNotebooks.map(nb => (
+                          <button
+                            key={nb.id}
+                            disabled={moving}
+                            onClick={async () => {
+                              if (!notebookId) return;
+                              setMoving(true);
+                              try {
+                                await sourceService.moveSource(notebookId, source.id, nb.id);
+                                ctx.addToast({ type: 'success', title: `Moved to ${nb.title}` });
+                                setMoveTarget(null);
+                                loadSources();
+                                onSourcesChange?.();
+                              } catch (err) {
+                                console.error('Move failed:', err);
+                                ctx.addToast({ type: 'error', title: 'Failed to move source' });
+                              } finally { setMoving(false); }
+                            }}
+                            className="text-left px-2 py-1 text-[11px] rounded hover:bg-indigo-100 dark:hover:bg-indigo-800/40 text-gray-700 dark:text-gray-300 transition-colors disabled:opacity-50 truncate"
+                          >
+                            {nb.title}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-center gap-1.5 mt-0.5 text-xs text-gray-500 dark:text-gray-400 overflow-hidden min-w-0">
                   <span className="shrink-0">{source.type === 'note' ? '📝 NOTE' : isCollectorSource ? 'COLLECTED' : (source.format?.toUpperCase() || 'FILE')}</span>
                   <span className="shrink-0 opacity-30">·</span>

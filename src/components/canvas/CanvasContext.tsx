@@ -55,6 +55,7 @@ export interface AppShellContextValue {
   layout: LayoutNode;
 
   // Navigation helpers
+  openCollector: () => void;
   openWebResearch: (query?: string) => void;
   openSettings: () => void;
   openLLMSelector: () => void;

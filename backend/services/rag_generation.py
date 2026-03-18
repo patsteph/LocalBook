@@ -23,9 +23,14 @@ def get_prompt_for_query_type(query_type: str, num_citations: int, avg_confidenc
     - Synthesis: Multi-source integration
     """
     output_rules = """OUTPUT RULES:
-1. Write ONLY your answer - no preamble, no "References:" section
-2. Cite sources inline as [1], [2] after facts
+1. Write ONLY your answer - no preamble, no "References:", "Citations:", or "Sources:" section
+2. Cite sources inline as [1], [2] after facts - NEVER list citations/references separately at the end
 3. If info not in sources, say "I couldn't find this in the documents."
+
+PRESENTATION QUALITY:
+- Every answer must be informative AND aesthetically pleasing
+- Use markdown formatting: ## headers, **bold** key terms, bullet/numbered lists
+- Structure long answers with clear visual hierarchy
 """
 
     if query_type == 'factual':
@@ -59,7 +64,12 @@ APPROACH:
 4. Draw a clear conclusion
 
 {output_rules}
-FORMAT: Use markdown for structure — bold key terms, use headers (##) to separate major sections, and bullet points for lists of items. Provide a thorough analysis (3-5 paragraphs or equivalent structured content). Show your reasoning."""
+FORMAT REQUIREMENTS (mandatory):
+- Start with a brief overview sentence
+- Use ## headers to separate each major section
+- Use **bold** for key terms and findings
+- Use bullet points or numbered lists for multiple items
+- Provide a thorough analysis (3-5 sections). Show your reasoning."""
 
     else:  # synthesis
         return f"""You are synthesizing information from multiple sources into a comprehensive answer.
@@ -72,7 +82,12 @@ APPROACH:
 - Use specific examples and concrete details from the sources
 
 {output_rules}
-FORMAT: Use markdown for readability — bold key terms, use headers (##) to separate major topics, and bullet points or numbered lists when covering multiple items. Aim for a thorough answer (2-4 paragraphs or equivalent structured content). Do NOT be brief — give the user a complete picture."""
+FORMAT REQUIREMENTS (mandatory):
+- Start with a direct answer to the question in 1-2 sentences
+- Use ## headers to organize each major topic or aspect
+- Use **bold** for key terms, names, and important findings
+- Use bullet points or numbered lists when covering multiple items
+- Aim for 2-4 well-structured sections. Do NOT be brief — give the user a complete picture."""
 
 
 # ─── Output Cleaning ─────────────────────────────────────────────────────────────
@@ -90,11 +105,18 @@ def clean_llm_output(text: str) -> str:
     text = re.sub(r'\\textit\{([^}]*)\}', r'\1', text)
     text = re.sub(r'\\(boxed|text|textbf|textit)\b', '', text)
     
-    # Remove unwanted sections that LLM sometimes adds
-    text = re.sub(r'\n*\[?References\]?:?.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r'\n*Sources?:.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
+    # Remove unwanted bibliography/reference sections that LLM sometimes adds
+    # Single comprehensive regex covers all observed variants:
+    # "References:", "Sources:", "Citations:", "Supporting Citations",
+    # "Bibliography", "Cited Sources", "Key References", "Footnotes", "*Note"
+    text = re.sub(
+        r'\n\s*(?:\*\*)?(?:supporting\s+)?(?:references|sources?|citations?|bibliography|cited\s+sources|key\s+references|footnotes)(?:\*\*)?[:\s]*(?:\n|$).*',
+        '', text, flags=re.DOTALL | re.IGNORECASE
+    )
     text = re.sub(r'\n*User context:.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'\n*Citation.*should not be included.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
+    # Strip trailing "*Note" or "*Note:" sections
+    text = re.sub(r'\n\s*\*Note[:\s].*$', '', text, flags=re.DOTALL | re.IGNORECASE)
     
     # Clean incomplete citation brackets at end
     text = re.sub(r'\s*\[\d+\]\s*\[\d+\.?\s*$', '', text)
@@ -161,26 +183,14 @@ async def generate_answer(
         conversation_token_count=estimated_context_tokens
     )
 
-    # Build system prompt with universal guardrails
-    universal_rules = """STRICT RULES:
-- State facts confidently - NEVER use hedging phrases like "however", "it should be noted"
-- Put citations inline like [1] or [2] - NEVER write [N] or [Summary]
-- NEVER create a "Citation Numbers:" section or list citations separately
-- NEVER add a References section at the end"""
-
-    base_prompt = f"""Answer directly in 1-2 paragraphs with inline citations.
-
-{universal_rules}
-
-Highlight key insights from the sources."""
-
-    # Add Deep Think chain-of-thought instructions
+    # Build system prompt — use the same query-type-specific prompt as streaming
+    from services import rag_query_analyzer
+    query_type = rag_query_analyzer.classify_query(question)
     if deep_think:
-        base_prompt = f"""Analyze step by step, then give a clear conclusion.
-
-{universal_rules}
-
-Be thorough but concise (2-3 paragraphs). Inline citations only."""
+        query_type = 'complex'
+    
+    avg_confidence = 0.5  # Default for non-streaming
+    base_prompt = get_prompt_for_query_type(query_type, num_citations, avg_confidence)
 
     # Combine user context + memory + base prompt
     system_parts = []
@@ -193,8 +203,8 @@ Be thorough but concise (2-3 paragraphs). Inline citations only."""
             memory_used.append("core_context")
     system_parts.append(base_prompt)
 
-    # Zero-latency format hint (list, code, table, steps, or empty)
-    if detect_response_format_fn:
+    # Only add format hint for factual queries (synthesis/complex already have FORMAT REQUIREMENTS)
+    if detect_response_format_fn and query_type == 'factual':
         format_hint = detect_response_format_fn(question)
         if format_hint:
             system_parts.append(format_hint)
@@ -212,7 +222,7 @@ Be thorough but concise (2-3 paragraphs). Inline citations only."""
 {memory_section}
 Q: {question}
 
-Answer concisely with inline [N] citations:"""
+Answer the question, citing sources inline as [N]. Do not list references at the end."""
 
     # Determine which provider to use
     provider = llm_provider or settings.llm_provider

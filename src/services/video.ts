@@ -27,9 +27,11 @@ export interface VideoGenerateRequest {
   topic?: string;
   duration_minutes?: number;
   visual_style?: string;
-  voice?: string;
+  narrator_gender?: string;  // "male" or "female"
+  accent?: string;           // "us", "uk", "es", "fr", etc.
+  voice?: string;            // Legacy: direct Kokoro voice ID override
   format_type?: 'explainer' | 'brief';
-  chat_context?: string;  // Recent chat conversation for "From Chat" mode
+  chat_context?: string;     // Recent chat conversation for "From Chat" mode
 }
 
 export interface VisualStyle {

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { collectorService } from '../../services/collector';
+import { useAppShell } from '../canvas/CanvasContext';
 
 interface CollectionTombstoneProps {
   notebookId: string | null;
@@ -18,24 +19,55 @@ interface StagnationData {
   pending_count: number;
 }
 
+const DISMISS_KEY_PREFIX = 'lb-tombstone-dismiss-';
+const DISMISS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function isDismissed(notebookId: string): boolean {
+  try {
+    const raw = localStorage.getItem(`${DISMISS_KEY_PREFIX}${notebookId}`);
+    if (!raw) return false;
+    return Date.now() - parseInt(raw, 10) < DISMISS_TTL_MS;
+  } catch { return false; }
+}
+
+function dismissFor(notebookId: string): void {
+  try {
+    localStorage.setItem(`${DISMISS_KEY_PREFIX}${notebookId}`, String(Date.now()));
+  } catch {}
+}
+
 export const CollectionTombstone: React.FC<CollectionTombstoneProps> = ({
   notebookId,
   onOpenCollector,
 }) => {
+  const { collectorRefreshKey } = useAppShell();
   const [data, setData] = useState<StagnationData | null>(null);
   const [dismissed, setDismissed] = useState(false);
+  const prevRefreshKey = useRef(collectorRefreshKey);
+
+  // When collector activity happens (new sources, approvals, collect-now),
+  // clear the dismissal so the tombstone can re-evaluate with fresh data.
+  useEffect(() => {
+    if (collectorRefreshKey !== prevRefreshKey.current) {
+      prevRefreshKey.current = collectorRefreshKey;
+      if (notebookId) {
+        try { localStorage.removeItem(`${DISMISS_KEY_PREFIX}${notebookId}`); } catch {}
+        setDismissed(false);
+      }
+    }
+  }, [collectorRefreshKey, notebookId]);
 
   useEffect(() => {
     setData(null);
-    setDismissed(false);
-    if (!notebookId) return;
+    if (!notebookId) { setDismissed(false); return; }
+    setDismissed(isDismissed(notebookId));
 
     let cancelled = false;
     collectorService.getStagnationStatus(notebookId).then((result) => {
       if (!cancelled) setData(result);
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [notebookId]);
+  }, [notebookId, collectorRefreshKey]);
 
   if (!data || dismissed) return null;
 
@@ -108,7 +140,7 @@ export const CollectionTombstone: React.FC<CollectionTombstoneProps> = ({
             </button>
           )}
           <button
-            onClick={() => setDismissed(true)}
+            onClick={() => { if (notebookId) dismissFor(notebookId); setDismissed(true); }}
             className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-[10px] px-1"
             title="Dismiss"
           >

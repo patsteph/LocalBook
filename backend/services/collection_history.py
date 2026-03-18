@@ -132,6 +132,54 @@ def get_recent_queries(
     return list(reversed(unique))
 
 
+# ── User Engagement Tracking ──
+# When the user actively engages with a notebook (adds sources, updates
+# collector config, runs manual collection), we record a timestamp.
+# detect_stagnation() uses this to suppress stale-research warnings
+# while the user is actively working on diversifying their collection.
+
+ENGAGEMENT_GRACE_DAYS = 3  # Suppress stagnation for N days after user engagement
+
+
+def _get_engagement_path(notebook_id: str) -> Path:
+    notebooks_dir = Path(settings.data_dir) / "notebooks" / notebook_id
+    notebooks_dir.mkdir(parents=True, exist_ok=True)
+    return notebooks_dir / "last_engagement.json"
+
+
+def record_engagement(notebook_id: str, action: str = "unknown") -> None:
+    """Record that the user actively engaged with this notebook's collection.
+
+    Actions: 'config_update', 'source_upload', 'source_add', 'manual_collect'
+    This resets the stagnation grace period.
+    """
+    path = _get_engagement_path(notebook_id)
+    data = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "action": action,
+    }
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f)
+        logger.info(f"[Engagement] Recorded '{action}' for {notebook_id}")
+    except Exception as e:
+        logger.error(f"Failed to record engagement for {notebook_id}: {e}")
+
+
+def _get_last_engagement(notebook_id: str) -> Optional[datetime]:
+    """Get the timestamp of the user's last engagement, or None."""
+    path = _get_engagement_path(notebook_id)
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        ts = data.get("timestamp", "")
+        return datetime.fromisoformat(ts.replace("Z", "+00:00").replace("+00:00", ""))
+    except Exception:
+        return None
+
+
 # ── Stagnation Detection ──
 
 STAGNATION_MILD_DAYS = 5       # Widen queries, cross-notebook seeds, lower confidence floor
@@ -193,6 +241,26 @@ def detect_stagnation(notebook_id: str) -> Dict[str, Any]:
             days_since = 0
     else:
         days_since = 0
+
+    # ── Check user engagement grace period ──
+    # If the user recently added sources, updated config, or ran a manual
+    # collection, suppress stagnation to avoid nagging while they're
+    # actively working on improving their collection.
+    last_engagement = _get_last_engagement(notebook_id)
+    if last_engagement:
+        engagement_age_days = (now - last_engagement).days
+        if engagement_age_days < ENGAGEMENT_GRACE_DAYS:
+            logger.info(
+                f"[Stagnation] {notebook_id}: suppressed — user engaged "
+                f"{engagement_age_days}d ago (grace={ENGAGEMENT_GRACE_DAYS}d)"
+            )
+            return {
+                "stagnating": False,
+                "severity": None,
+                "days_since_growth": days_since,
+                "total_dry_runs": consecutive_dry,
+                "dominant_rejection_reasons": dry_rejection_reasons,
+            }
 
     # Determine severity tier
     severity = None

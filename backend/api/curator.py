@@ -256,9 +256,15 @@ async def should_show_morning_brief(local_hour: int = -1):
     """
     from services.event_logger import event_logger
     from pathlib import Path
+    from api.updates import are_models_ready
     import logging
     
     log = logging.getLogger("curator.brief")
+    
+    # Gate on model readiness — don't generate briefs before LLM is warm
+    if not are_models_ready():
+        log.debug("Brief suppressed: models still loading")
+        return {"should_show": False, "should_show_weekly": False, "reason": "models_loading"}
     now = datetime.utcnow()
     today_str = now.strftime("%Y-%m-%d")
     yesterday = now - timedelta(days=1)
@@ -446,6 +452,26 @@ async def save_weekly_wrap(wrap: dict):
             cleaned += 1
     
     return {"success": True, "date": today_str, "cleaned": cleaned}
+
+
+@router.get("/note-themes/{notebook_id}")
+async def get_note_themes(notebook_id: str):
+    """Extract themes from a notebook's notes and suggest new collector focus areas."""
+    result = await curator.suggest_collector_keywords_from_notes(notebook_id)
+    return result
+
+
+class ApplyNoteSuggestionsRequest(BaseModel):
+    keywords: List[str]
+
+
+@router.post("/note-themes/{notebook_id}/apply")
+async def apply_note_suggestions(notebook_id: str, request: ApplyNoteSuggestionsRequest):
+    """Apply suggested keywords from note themes to the notebook's collector config."""
+    if not request.keywords:
+        raise HTTPException(status_code=400, detail="No keywords provided")
+    result = await curator.apply_note_suggestions_to_collector(notebook_id, request.keywords)
+    return result
 
 
 @router.get("/weekly-wrap/recall")

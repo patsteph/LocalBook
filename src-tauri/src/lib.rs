@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use std::time::Duration;
 use std::path::PathBuf;
 use serde::Serialize;
@@ -229,12 +229,50 @@ async fn ensure_ollama_running() {
 
 // Function to kill any existing backend process
 fn kill_existing_backend() {
-    // Kill any existing localbook-backend processes to avoid port conflicts
+    // Kill anything on port 8000 AND any localbook-backend processes.
+    // Port-based kill catches dev-mode (python -m uvicorn) AND bundled processes.
     #[cfg(unix)]
     {
+        // 1. Kill by process name (bundled backend)
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "localbook-backend"])
+            .output();
+
+        // 2. Kill by port (catches dev-mode python, orphaned processes, etc.)
+        //    lsof -t -i:8000 returns PIDs; kill sends SIGTERM to each
+        if let Ok(output) = std::process::Command::new("lsof")
+            .args(["-t", "-i:8000"])
+            .output()
+        {
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for pid in pids.split_whitespace() {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid)
+                    .output();
+            }
+        }
+
+        // Wait for graceful shutdown (3s is enough for DB flush + model save)
+        std::thread::sleep(Duration::from_secs(3));
+
+        // 3. Force-kill stragglers on port 8000
+        if let Ok(output) = std::process::Command::new("lsof")
+            .args(["-t", "-i:8000"])
+            .output()
+        {
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for pid in pids.split_whitespace() {
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", pid])
+                    .output();
+            }
+        }
+
+        // SIGKILL any localbook-backend stragglers too
         let _ = std::process::Command::new("pkill")
             .args(["-9", "-f", "localbook-backend"])
             .output();
+
         // Give it a moment to release the port
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -335,6 +373,265 @@ async fn wait_for_backend_ready(max_attempts: u32) -> Result<(), Box<dyn std::er
     Err("Backend failed to start within timeout".into())
 }
 
+// ── Backend Watchdog ──────────────────────────────────────────────────────────
+// Monitors backend health after initial startup. On crash:
+//   1. Logs to backend_crashes.log
+//   2. Emits "backend-health" Tauri event to the frontend (for user alert)
+//   3. Attempts silent restart (up to MAX_RESTARTS)
+
+async fn backend_watchdog(
+    app_handle: AppHandle,
+    process_ref: Arc<Mutex<Option<std::process::Child>>>,
+    ready_ref: Arc<Mutex<bool>>,
+    status_ref: Arc<Mutex<BackendStatus>>,
+) {
+    const CHECK_INTERVAL: Duration = Duration::from_secs(10);
+    const FAIL_THRESHOLD: u32 = 3;
+    const MAX_RESTARTS: u32 = 5;
+
+    let mut consecutive_failures: u32 = 0;
+    let mut restart_count: u32 = 0;
+
+    // Wait for initial startup to complete before monitoring
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        if let Ok(ready) = ready_ref.lock() {
+            if *ready {
+                break;
+            }
+        }
+    }
+
+    println!("[Watchdog] Backend health monitoring active");
+
+    loop {
+        tokio::time::sleep(CHECK_INTERVAL).await;
+
+        let healthy = check_health().await.unwrap_or(false);
+
+        if healthy {
+            if consecutive_failures > 0 {
+                println!(
+                    "[Watchdog] Backend healthy after {} failed check(s)",
+                    consecutive_failures
+                );
+            }
+            consecutive_failures = 0;
+            continue;
+        }
+
+        consecutive_failures += 1;
+        println!(
+            "[Watchdog] Health check failed ({}/{})",
+            consecutive_failures, FAIL_THRESHOLD
+        );
+
+        if consecutive_failures < FAIL_THRESHOLD {
+            continue;
+        }
+
+        // ── Backend is confirmed down ──
+        println!("[Watchdog] ⚠ Backend crash detected!");
+        log_crash_to_file(&app_handle, restart_count);
+
+        // Update state
+        if let Ok(mut ready) = ready_ref.lock() {
+            *ready = false;
+        }
+        if let Ok(mut status) = status_ref.lock() {
+            status.stage = "crashed".to_string();
+            status.message = "Backend stopped unexpectedly. Restarting...".to_string();
+            status.last_error =
+                Some("Backend process stopped unexpectedly".to_string());
+        }
+
+        // Notify frontend
+        let _ = app_handle.emit(
+            "backend-health",
+            serde_json::json!({
+                "status": "crashed",
+                "restart_attempt": restart_count + 1,
+                "max_restarts": MAX_RESTARTS,
+                "message": "Backend stopped unexpectedly. Restarting..."
+            }),
+        );
+
+        if restart_count >= MAX_RESTARTS {
+            println!(
+                "[Watchdog] Max restarts ({}) reached — stopping watchdog",
+                MAX_RESTARTS
+            );
+            if let Ok(mut status) = status_ref.lock() {
+                status.stage = "error".to_string();
+                status.message = format!(
+                    "Backend crashed {} times. Please restart the application.",
+                    MAX_RESTARTS
+                );
+            }
+            let _ = app_handle.emit(
+                "backend-health",
+                serde_json::json!({
+                    "status": "failed",
+                    "message": format!("Backend has crashed {} times. Please restart LocalBook.", MAX_RESTARTS)
+                }),
+            );
+            break;
+        }
+
+        // ── Attempt restart ──
+        restart_count += 1;
+        println!(
+            "[Watchdog] Restart attempt {}/{}",
+            restart_count, MAX_RESTARTS
+        );
+
+        if let Ok(mut status) = status_ref.lock() {
+            status.stage = "restarting".to_string();
+            status.message = format!(
+                "Restarting backend (attempt {}/{})...",
+                restart_count, MAX_RESTARTS
+            );
+        }
+        let _ = app_handle.emit(
+            "backend-health",
+            serde_json::json!({
+                "status": "restarting",
+                "restart_attempt": restart_count,
+                "max_restarts": MAX_RESTARTS,
+                "message": format!("Restarting backend (attempt {}/{})...", restart_count, MAX_RESTARTS)
+            }),
+        );
+
+        // Exponential backoff: 5s, 10s, 20s, 40s, 80s
+        // Gives macOS time to free memory between restart attempts
+        let backoff_secs = 5u64 * 2u64.pow(restart_count.saturating_sub(1));
+        println!(
+            "[Watchdog] Waiting {}s before restart (backoff)...",
+            backoff_secs
+        );
+        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+
+        match start_backend(&app_handle).await {
+            Ok(child_opt) => {
+                if let Some(child) = child_opt {
+                    if let Ok(mut process) = process_ref.lock() {
+                        *process = Some(child);
+                    }
+                }
+
+                match wait_for_backend_ready(30).await {
+                    Ok(_) => {
+                        println!(
+                            "[Watchdog] ✓ Backend recovered (restart #{})",
+                            restart_count
+                        );
+                        if let Ok(mut ready) = ready_ref.lock() {
+                            *ready = true;
+                        }
+                        if let Ok(mut status) = status_ref.lock() {
+                            status.stage = "ready".to_string();
+                            status.message = "Backend ready".to_string();
+                            status.last_error = None;
+                        }
+                        let _ = app_handle.emit(
+                            "backend-health",
+                            serde_json::json!({
+                                "status": "recovered",
+                                "restart_count": restart_count,
+                                "message": "Backend recovered successfully"
+                            }),
+                        );
+                        consecutive_failures = 0;
+                    }
+                    Err(e) => {
+                        println!("[Watchdog] Backend failed to recover: {}", e);
+                        // Will loop and try again
+                        consecutive_failures = FAIL_THRESHOLD;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("[Watchdog] Failed to restart backend: {}", e);
+                consecutive_failures = FAIL_THRESHOLD;
+            }
+        }
+    }
+}
+
+fn log_crash_to_file(app_handle: &AppHandle, restart_count: u32) {
+    if let Ok(data_dir) = app_handle.path().app_data_dir() {
+        let log_path = data_dir.join("backend_crashes.log");
+        // Use Unix timestamp — keeps it simple without chrono dependency
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut entry = format!(
+            "[ts={}] Backend crash detected (restart attempt #{})\n",
+            ts,
+            restart_count + 1
+        );
+
+        // Layer 3: Check macOS DiagnosticReports for native crash info
+        // macOS writes crash reports here for SIGKILL/SIGSEGV/SIGABRT
+        if let Some(home) = std::env::var_os("HOME") {
+            let diag_dir = std::path::Path::new(&home)
+                .join("Library/Logs/DiagnosticReports");
+            if diag_dir.exists() {
+                // Look for recent localbook-backend crash reports (last 120 seconds)
+                if let Ok(entries) = std::fs::read_dir(&diag_dir) {
+                    let cutoff = std::time::SystemTime::now()
+                        - Duration::from_secs(120);
+                    for e in entries.flatten() {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        if !name.contains("localbook-backend") {
+                            continue;
+                        }
+                        if let Ok(meta) = e.metadata() {
+                            if let Ok(modified) = meta.modified() {
+                                if modified > cutoff {
+                                    // Found a recent crash report — extract key lines
+                                    entry.push_str(&format!(
+                                        "  macOS crash report: {}\n", name
+                                    ));
+                                    if let Ok(content) = std::fs::read_to_string(e.path()) {
+                                        // Extract Exception Type and Termination Reason
+                                        for line in content.lines().take(80) {
+                                            let l = line.trim();
+                                            if l.starts_with("Exception Type:")
+                                                || l.starts_with("Termination Reason:")
+                                                || l.starts_with("Termination Signal:")
+                                                || l.starts_with("VM Region Info:")
+                                            {
+                                                entry.push_str(&format!(
+                                                    "  {}\n", l
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    println!(
+                                        "[Watchdog] Found macOS crash report: {}", name
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let _ = std::io::Write::write_all(&mut f, entry.as_bytes());
+            println!("[Watchdog] Crash logged to {:?}", log_path);
+        }
+    }
+}
+
 // Setup function to initialize backend on app startup
 fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
     let state = BackendState {
@@ -351,6 +648,12 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
     let process_ref = state.process.clone();
     let ready_ref = state.ready.clone();
     let status_ref = state.status.clone();
+
+    // Clone refs for the watchdog task
+    let wd_app = app.clone();
+    let wd_process = state.process.clone();
+    let wd_ready = state.ready.clone();
+    let wd_status = state.status.clone();
 
     // Spawn backend startup in background
     tauri::async_runtime::spawn(async move {
@@ -423,6 +726,11 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
         }
     });
 
+    // Spawn watchdog — waits for ready=true, then monitors continuously
+    tauri::async_runtime::spawn(async move {
+        backend_watchdog(wd_app, wd_process, wd_ready, wd_status).await;
+    });
+
     Ok(state)
 }
 
@@ -444,6 +752,13 @@ pub fn run() {
             check_backend_health,
             get_backend_status
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                println!("[Shutdown] Cleaning up backend process...");
+                kill_existing_backend();
+                println!("[Shutdown] Backend cleanup complete");
+            }
+        });
 }

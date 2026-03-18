@@ -666,4 +666,5 @@ def schedule_insight_refresh(notebook_id: str):
         finally:
             _pending_refreshes.pop(notebook_id, None)
 
-    _pending_refreshes[notebook_id] = asyncio.create_task(_delayed_refresh())
+    from utils.tasks import safe_create_task
+    _pending_refreshes[notebook_id] = safe_create_task(_delayed_refresh(), name=f"coaching-refresh-{notebook_id}")

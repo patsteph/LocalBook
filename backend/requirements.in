@@ -6,10 +6,8 @@ pydantic>=2.10.0
 pydantic-settings>=2.6.0
 
 # Vector database and embeddings
-# Note: Install torch FIRST if you have issues (pip install torch)
 lancedb>=0.18.0
-sentence-transformers>=3.3.0
-torch>=2.0.0  # 2.0+ works, earlier versions may work too
+sentence-transformers>=3.3.0  # Fallback embeddings (only used if Ollama unavailable)
 
 # LLM integrations
 anthropic>=0.40.0
@@ -54,12 +52,10 @@ youtube-transcript-api>=0.6.0
 # Audio/Video transcription (requires ffmpeg: brew install ffmpeg)
 # v1.20: Moved to Python 3.12+ — dropped openai-whisper
 mlx-whisper; sys_platform == "darwin"  # Apple MLX Whisper — fast transcription on Apple Silicon
-# Kokoro-82M TTS (Apache 2.0, 82M params, multi-language/multi-voice)
-# NOTE: On Python 3.13, spacy's blis dep may fail to compile when pulled
-# transitively by kokoro→misaki. build_backend.sh has a fallback that installs
-# spacy first (pre-built wheel), then kokoro --no-deps. All deps are also
-# pinned in requirements.txt for normal pip install.
-kokoro>=0.7.0
+# Kokoro-82M TTS via kokoro-mlx (Apple Silicon, no PyTorch required)
+# Install with: pip install --no-deps kokoro-mlx
+# Only needs mlx, numpy, misaki, huggingface_hub (all already present)
+# kokoro-mlx>=0.1.0  # Installed via --no-deps in build_backend.sh
 misaki>=0.7.0
 soundfile>=0.12.0
 loguru>=0.7.0
@@ -81,7 +77,7 @@ rank-bm25>=0.2.2  # BM25 keyword search for hybrid retrieval
 flashrank; platform_machine != "aarch64"  # Skip on ARM Linux where onnxruntime unavailable
 
 # Topic modeling (BERTopic - state-of-the-art topic discovery)
-bertopic>=0.16.0  # Includes HDBSCAN, UMAP, c-TF-IDF for automatic topic naming
+bertopic>=0.16.0  # Topic modeling with PCA + sklearn HDBSCAN (lightweight, no umap/numba)
 
 # People Profiler / Social Auth
 playwright>=1.40.0  # Browser automation for social platform auth

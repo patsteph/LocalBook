@@ -507,7 +507,7 @@ async def full_health_check():
             "error": f"Check failed: {str(e)[:30]}"
         })
     
-    # Kokoro-82M TTS + mlx-whisper ASR Check (required for video narration & podcast audio)
+    # Kokoro-82M TTS (MLX) + mlx-whisper ASR Check (required for video narration & podcast audio)
     try:
         from services.audio_llm import audio_llm, check_audio_llm_available
         audio_status = await check_audio_llm_available()
@@ -521,7 +521,7 @@ async def full_health_check():
                 "name": "audio_model",
                 "display": "Kokoro-82M (TTS)",
                 "status": "pass",
-                "details": {"model": "hexgrad/Kokoro-82M", "purpose": "Video narration & podcast audio"}
+                "details": {"model": "mlx-community/Kokoro-82M-bf16", "purpose": "Video narration & podcast audio"}
             })
         elif deps_ok and model_cached:
             # All deps installed, model cached — will lazy-load on first use
@@ -529,7 +529,7 @@ async def full_health_check():
                 "name": "audio_model",
                 "display": "Kokoro-82M (TTS)",
                 "status": "pass",
-                "details": {"model": "hexgrad/Kokoro-82M", "note": "Cached, loads on first use"}
+                "details": {"model": "mlx-community/Kokoro-82M-bf16", "note": "Cached, loads on first use"}
             })
         elif deps_ok and not model_cached:
             # Deps installed but model not downloaded yet
@@ -537,13 +537,13 @@ async def full_health_check():
                 "name": "audio_model",
                 "display": "Kokoro-82M (TTS)",
                 "status": "warn",
-                "error": "Model not downloaded yet (~350 MB)",
+                "error": "Model not downloaded yet (~330 MB)",
                 "details": {"init_error": (audio_llm._init_error or "")[:200]}
             })
             results["issues"].append({
                 "severity": "medium",
                 "title": "Audio Model Not Downloaded",
-                "message": "Kokoro-82M not downloaded. Click Repair to download (~350 MB). Required for video narration.",
+                "message": "Kokoro-82M (MLX) not downloaded. Click Repair to download (~330 MB). Required for video narration.",
                 "repair": "download_audio_model"
             })
             if results["overall"] == "healthy":
@@ -554,13 +554,13 @@ async def full_health_check():
                 "name": "audio_model",
                 "display": "Kokoro-82M (TTS)",
                 "status": "warn",
-                "error": "kokoro package not available",
+                "error": "kokoro-mlx package not available",
                 "details": diag
             })
             results["issues"].append({
                 "severity": "medium",
                 "title": "Audio Dependencies Missing",
-                "message": "Kokoro TTS dependencies not installed. Click Repair to install. Required for video narration.",
+                "message": "kokoro-mlx TTS dependencies not installed. Click Repair to install. Required for video narration.",
                 "repair": "download_audio_model"
             })
             if results["overall"] == "healthy":
@@ -1097,17 +1097,18 @@ async def full_health_check():
             "status": "pass",
             "details": {"library": "BERTopic", "model_exists": has_model}
         })
-    except ImportError:
+    except ImportError as e:
+        actual_error = str(e)
         add_check("functional_tests", {
             "name": "topic_modeling",
             "display": "Topic Modeling",
             "status": "fail",
-            "error": "BERTopic not installed"
+            "error": f"Import failed: {actual_error}"
         })
         results["issues"].append({
             "severity": "medium",
             "title": "Topic Modeling Not Available",
-            "message": "BERTopic not installed. Themes panel won't work.",
+            "message": f"BERTopic import failed: {actual_error}",
             "repair": "reinstall_bertopic"
         })
         if results["overall"] == "healthy":
@@ -1638,6 +1639,18 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
     
     elif action == "reinstall_bertopic":
         # Reinstall BERTopic for topic modeling
+        # In a PyInstaller bundle, sys.executable points to the frozen binary —
+        # pip install cannot work. Inform the user to reinstall the app instead.
+        if getattr(sys, 'frozen', False):
+            add_log("WARN", "Cannot pip-install in frozen bundle", "health_portal")
+            return {
+                "status": "error",
+                "message": (
+                    "Cannot reinstall packages in the bundled app. "
+                    "Please rebuild or reinstall LocalBook to fix BERTopic. "
+                    "Try 'Reset Topic Model' below as a quick workaround."
+                )
+            }
         try:
             add_log("INFO", "Reinstalling BERTopic...", "health_portal")
             result = subprocess.run(
@@ -1790,7 +1803,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             return {"status": "error", "message": str(e)}
     
     elif action == "download_audio_model":
-        # Download Kokoro-82M model from HuggingFace (~350 MB)
+        # Download Kokoro-82M (MLX) model from HuggingFace (~330 MB)
         try:
             add_log("INFO", "Executing repair: download_audio_model", "health_portal")
             
@@ -1799,23 +1812,23 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             import threading
             def download_audio_model_background():
                 try:
-                    add_log("INFO", "Starting Kokoro-82M model download (~350 MB)...", "health_portal")
+                    add_log("INFO", "Starting Kokoro-82M (MLX) model download (~330 MB)...", "health_portal")
                     # Reset state so _load_model runs fresh
                     audio_llm._initialized = False
                     audio_llm._initializing = False
                     audio_llm._init_error = None
-                    audio_llm._pipeline = None
+                    audio_llm._model = None
                     audio_llm._load_model()
                     audio_llm._initialized = True
                     audio_llm._initializing = False
-                    add_log("INFO", "✓ Kokoro-82M model downloaded and loaded successfully", "health_portal")
+                    add_log("INFO", "✓ Kokoro-82M (MLX) model downloaded and loaded successfully", "health_portal")
                 except Exception as e:
                     import traceback
                     tb = traceback.format_exc()
                     audio_llm._init_error = str(e)
                     audio_llm._initialized = False
                     audio_llm._initializing = False
-                    add_log("ERROR", f"Kokoro-82M download/load failed: {e}", "health_portal")
+                    add_log("ERROR", f"Kokoro-82M (MLX) download/load failed: {e}", "health_portal")
                     print(f"[AudioLLM] Repair failed:\n{tb}")
             
             thread = threading.Thread(target=download_audio_model_background, daemon=True)
@@ -1823,7 +1836,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             
             return {
                 "status": "started",
-                "message": "Kokoro-82M model download started (~350 MB). This should take 1-3 minutes. Refresh Health Portal to check progress."
+                "message": "Kokoro-82M (MLX) model download started (~330 MB). This should take 1-3 minutes. Refresh Health Portal to check progress."
             }
         except Exception as e:
             add_log("ERROR", f"Audio model repair failed: {e}", "health_portal")
@@ -1909,6 +1922,21 @@ async def export_diagnostics():
     }
     
     return export_data
+
+
+@router.get("/diagnostics")
+async def get_diagnostics(tail: int = 100):
+    """Get backend diagnostics log (heartbeat + crash snapshots)."""
+    from utils.diagnostics import read_diagnostics_log, read_crash_snapshots, _memory_info, _active_tasks_summary
+    return {
+        "log": read_diagnostics_log(tail_lines=tail),
+        "crash_snapshots": read_crash_snapshots(),
+        "current": {
+            "memory": _memory_info(),
+            "active_tasks": _active_tasks_summary(),
+            "timestamp": datetime.now().isoformat(),
+        }
+    }
 
 
 @router.websocket("/logs/stream")

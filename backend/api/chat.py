@@ -525,6 +525,41 @@ async def _stream_curator(chat_query: ChatQuery):
             handled = True
 
         # -----------------------------------------------------------------
+        # NOTE THEMES → COLLECTOR BRIDGE
+        # -----------------------------------------------------------------
+        elif intent == "note_themes":
+            yield f"data: {json.dumps({'type': 'status', 'message': f'{curator_name} analyzing your notes...', 'query_type': 'curator'})}\n\n"
+            try:
+                result = await curator.suggest_collector_keywords_from_notes(notebook_id)
+                themes = result.get("note_themes", [])
+                suggestions = result.get("suggestions", [])
+                current = result.get("current_focus", [])
+                note_count = result.get("note_count", 0)
+
+                lines = [f"**Note Analysis** ({note_count} note{'s' if note_count != 1 else ''} scanned)\n"]
+                if themes:
+                    lines.append("**Themes I found in your notes:**")
+                    for t in themes:
+                        lines.append(f"- {t}")
+                if current:
+                    lines.append(f"\n**Current collector focus areas:** {', '.join(current)}")
+                if suggestions:
+                    lines.append("\n**Suggested new collector keywords** (based on your notes):")
+                    for s in suggestions:
+                        lines.append(f"- {s}")
+                    lines.append("\nSay **\"apply these suggestions\"** or tell me which ones to add.")
+                elif themes:
+                    lines.append("\nYour collector's focus areas already cover these themes well.")
+                else:
+                    lines.append("No strong themes found — try adding more notes first.")
+                reply = "\n".join(lines)
+                follow_ups = ['Apply these suggestions', 'Show collector profile', 'Discover patterns']
+            except Exception as e:
+                reply = f"Failed to analyze notes: {e}"
+                follow_ups = []
+            handled = True
+
+        # -----------------------------------------------------------------
         # FALLBACK: CROSS-NOTEBOOK RAG SEARCH (default behavior)
         # -----------------------------------------------------------------
         if not handled:
@@ -1434,14 +1469,16 @@ async def _stream_studio(chat_query: ChatQuery):
                 if duration < 1: duration = 1
                 if duration > 10: duration = 10
                 visual_style = (params.get("visual_style") or "classic").strip()
-                voice = (params.get("voice") or "af_heart").strip()
+                narrator_gender = (params.get("narrator_gender") or "female").strip()
+                accent = (params.get("accent") or "us").strip()
 
                 result = await video_generator.generate(
                     notebook_id=notebook_id,
                     topic=topic or "the current discussion",
                     duration_minutes=duration,
                     visual_style=visual_style,
-                    voice=voice,
+                    narrator_gender=narrator_gender,
+                    accent=accent,
                     format_type="explainer",
                     chat_context=chat_context,
                 )

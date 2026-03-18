@@ -236,7 +236,8 @@ class StuckSourceRecovery:
             return
         
         self._running = True
-        self._task = asyncio.create_task(self._background_loop())
+        from utils.tasks import safe_create_task
+        self._task = safe_create_task(self._background_loop(), name="stuck-source-recovery")
         print(f"[StuckRecovery] Started background task (check every {CHECK_INTERVAL_MINUTES} min, threshold {STUCK_THRESHOLD_MINUTES} min)")
     
     def stop_background_task(self):
