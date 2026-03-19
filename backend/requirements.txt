@@ -122,10 +122,6 @@ cryptography==46.0.3
     #   pyjwt
 csvw==3.7.0
     # via segments
-curated-tokenizers==0.0.9
-    # via spacy-curated-transformers
-curated-transformers==0.1.1
-    # via spacy-curated-transformers
 cyclopts==4.4.6
     # via fastmcp
 cymem==2.0.13
@@ -256,7 +252,6 @@ httpx-sse==0.4.3
     # via mcp
 huggingface-hub[inference]==0.36.0
     # via
-    #   kokoro
     #   mlx-whisper
     #   pydantic-ai-slim
     #   sentence-transformers
@@ -322,8 +317,6 @@ keyring==25.7.0
     # via
     #   -r requirements.in
     #   py-key-value-aio
-kokoro==0.7.4
-    # via -r requirements.in
 lance-namespace==0.4.5
     # via lancedb
 lance-namespace-urllib3-client==0.4.5
@@ -362,9 +355,7 @@ logfire-api==4.18.0
     #   pydantic-evals
     #   pydantic-graph
 loguru==0.7.3
-    # via
-    #   -r requirements.in
-    #   kokoro
+    # via -r requirements.in
 lupa==2.6
     # via fakeredis
 lxml[html-clean]==6.0.2
@@ -390,10 +381,8 @@ mcp==1.25.0
     #   pydantic-ai-slim
 mdurl==0.1.2
     # via markdown-it-py
-misaki[en]==0.7.4
-    # via
-    #   -r requirements.in
-    #   kokoro
+misaki==0.7.4
+    # via -r requirements.in
 mistralai==1.12.2
     # via
     #   -r requirements.in
@@ -429,9 +418,7 @@ networkx==3.6.1
 nexus-rpc==1.2.0
     # via temporalio
 num2words==0.5.14
-    # via
-    #   -r requirements.in
-    #   misaki
+    # via -r requirements.in
 numba==0.63.1
     # via
     #   mlx-whisper
@@ -444,7 +431,6 @@ numpy==1.26.4
     #   blis
     #   flashrank
     #   hdbscan
-    #   kokoro
     #   lancedb
     #   mlx-whisper
     #   numba
@@ -547,9 +533,7 @@ pathable==0.4.4
 pathvalidate==3.3.1
     # via py-key-value-aio
 phonemizer==3.3.0
-    # via
-    #   -r requirements.in
-    #   misaki
+    # via -r requirements.in
 pillow==12.1.0
     # via
     #   -r requirements.in
@@ -736,7 +720,6 @@ referencing==0.36.2
     #   jsonschema-specifications
 regex==2026.1.15
     # via
-    #   curated-tokenizers
     #   dateparser
     #   misaki
     #   segments
@@ -797,7 +780,6 @@ scikit-learn==1.8.0
 scipy==1.17.0
     # via
     #   hdbscan
-    #   kokoro
     #   mlx-whisper
     #   pynndescent
     #   scikit-learn
@@ -834,11 +816,7 @@ soundfile==0.13.1
 soupsieve==2.8.1
     # via beautifulsoup4
 spacy==3.8.11
-    # via
-    #   -r requirements.in
-    #   misaki
-spacy-curated-transformers==0.3.1
-    # via misaki
+    # via -r requirements.in
 spacy-legacy==3.0.12
     # via spacy
 spacy-loggers==1.0.5
@@ -892,12 +870,8 @@ tokenizers==0.22.2
     #   transformers
 torch==2.9.1
     # via
-    #   -r requirements.in
-    #   curated-transformers
-    #   kokoro
     #   mlx-whisper
     #   sentence-transformers
-    #   spacy-curated-transformers
 tqdm==4.67.1
     # via
     #   bertopic
@@ -917,9 +891,7 @@ traitlets==5.14.3
     #   jupyter-core
     #   nbformat
 transformers==4.57.5
-    # via
-    #   kokoro
-    #   sentence-transformers
+    # via sentence-transformers
 typer==0.21.1
     # via pydocket
 typer-slim==0.21.2
