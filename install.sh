@@ -502,7 +502,7 @@ main() {
 
     download_models() {
         step 6 "Downloading AI models"
-        info "This downloads ~7GB of language models via Ollama"
+        info "This downloads ~9GB of language models via Ollama"
         info "Download speed depends on your internet connection"
 
         # Start Ollama if not running
@@ -551,8 +551,113 @@ main() {
             success "snowflake-arctic-embed2 downloaded"
         fi
 
+        # Vision model (PDF image/chart extraction)
+        if echo "$models" | grep -q "granite3.2-vision"; then
+            success "granite3.2-vision:2b (already downloaded)"
+        else
+            info "Downloading granite3.2-vision:2b (~1.5GB) — PDF image extraction..."
+            ollama pull granite3.2-vision:2b
+            success "granite3.2-vision:2b downloaded"
+        fi
+
         echo ""
-        success "All AI models ready"
+
+        # ── Python-based models (need venv) ──────────────────────────────
+        info "Checking additional AI models..."
+
+        # shellcheck disable=SC1091
+        source "$INSTALL_DIR/backend/.venv/bin/activate"
+
+        # FlashRank reranker (~34MB) — improves search result quality
+        mkdir -p "$DATA_DIR/models/flashrank" 2>/dev/null || true
+        local reranker_cache="$DATA_DIR/models/flashrank/ms-marco-MiniLM-L-12-v2"
+        if [ -d "$reranker_cache" ] && [ "$(ls -A "$reranker_cache" 2>/dev/null)" ]; then
+            success "FlashRank reranker (already cached)"
+        else
+            info "Downloading FlashRank reranker (~34MB) — search quality booster..."
+            python -c "
+import os
+from flashrank import Ranker
+cache_dir = os.path.expanduser('~/Library/Application Support/LocalBook/models/flashrank')
+os.makedirs(cache_dir, exist_ok=True)
+ranker = Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir=cache_dir)
+print('Reranker model cached successfully')
+" || warn "FlashRank download failed (non-fatal — app will retry on launch)"
+            if [ -d "$reranker_cache" ]; then
+                success "FlashRank reranker downloaded"
+            fi
+        fi
+
+        # Kokoro TTS model (~330MB) — text-to-speech via MLX
+        local kokoro_hf_cache="$HOME/.cache/huggingface/hub/models--mlx-community--Kokoro-82M-bf16"
+        local kokoro_local_cache="$HOME/.cache/kokoro-mlx-model"
+        if [ -d "$kokoro_hf_cache" ] || { [ -d "$kokoro_local_cache" ] && [ -f "$kokoro_local_cache/config.json" ]; }; then
+            success "Kokoro TTS model (already cached)"
+        else
+            info "Downloading Kokoro TTS model (~330MB) — text-to-speech engine..."
+            python -c "
+import os
+try:
+    import certifi
+    os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+    os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
+except ImportError:
+    pass
+from huggingface_hub import snapshot_download
+local_dir = snapshot_download(
+    repo_id='mlx-community/Kokoro-82M-bf16',
+    allow_patterns=['config.json', '*.safetensors', 'voices/*.safetensors'],
+    max_workers=1,
+)
+print(f'Kokoro model cached at: {local_dir}')
+" || warn "Kokoro TTS download failed (non-fatal — app will retry on launch)"
+            if [ -d "$kokoro_hf_cache" ]; then
+                success "Kokoro TTS model downloaded"
+            fi
+        fi
+
+        # Whisper model (~150MB) — audio/video transcription via MLX
+        local whisper_hf_cache="$HOME/.cache/huggingface/hub/models--mlx-community--whisper-base-mlx"
+        if [ -d "$whisper_hf_cache" ]; then
+            success "Whisper transcription model (already cached)"
+        else
+            info "Downloading Whisper transcription model (~150MB) — audio/video transcription..."
+            python -c "
+import os
+try:
+    import certifi
+    os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+    os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
+except ImportError:
+    pass
+from huggingface_hub import snapshot_download
+local_dir = snapshot_download(
+    repo_id='mlx-community/whisper-base-mlx',
+    max_workers=1,
+)
+print(f'Whisper model cached at: {local_dir}')
+" || warn "Whisper download failed (non-fatal — app will retry on first use)"
+            if [ -d "$whisper_hf_cache" ]; then
+                success "Whisper transcription model downloaded"
+            fi
+        fi
+
+        # Playwright Chromium browser — video slides, Mermaid diagrams, social features
+        local pw_cache="$HOME/Library/Caches/ms-playwright"
+        if [ -d "$pw_cache" ] && ls "$pw_cache"/chromium-* >/dev/null 2>&1; then
+            success "Playwright Chromium (already installed)"
+        else
+            info "Installing Playwright Chromium browser — video & diagram rendering..."
+            python -m playwright install chromium 2>&1 | tail -3 || warn "Playwright install failed (non-fatal — app will retry on launch)"
+            if [ -d "$pw_cache" ] && ls "$pw_cache"/chromium-* >/dev/null 2>&1; then
+                success "Playwright Chromium installed"
+            fi
+        fi
+
+        deactivate
+
+        echo ""
+        success "All AI models and tools ready"
     }
 
     setup_storage() {
@@ -746,7 +851,7 @@ main() {
             info "Auto-confirmed upgrade (--yes)"
         fi
 
-        TOTAL_STEPS=6
+        TOTAL_STEPS=7
         START_TIME=$(date +%s)
 
         echo ""
@@ -783,10 +888,20 @@ main() {
         # Step 3: Rebuild backend
         step 3 "Rebuilding backend"
         cd "$INSTALL_DIR/backend"
+
+        # Recreate venv if missing or corrupted
+        if [ ! -f ".venv/bin/activate" ]; then
+            warn "Virtual environment missing — recreating..."
+            rm -rf .venv
+            $PYTHON_CMD -m venv .venv
+        fi
+
         # shellcheck disable=SC1091
         source .venv/bin/activate
         info "Updating Python dependencies..."
-        pip install -q -r requirements.txt 2>&1 | tail -3 || true
+        if ! pip install -q -r requirements.txt; then
+            warn "Some Python dependencies failed to install — build may still succeed"
+        fi
         info "Building backend binary..."
         ./build_backend.sh
         deactivate
@@ -815,8 +930,103 @@ main() {
         cd "$INSTALL_DIR"
         success "Extension rebuilt"
 
-        # Step 6: Install to Applications
-        step 6 "Installing to Applications"
+        # Step 6: Verify AI models
+        step 6 "Verifying AI models"
+
+        # Check Ollama models
+        if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+            info "Starting Ollama service..."
+            ollama serve >/dev/null 2>&1 &
+            sleep 3
+        fi
+        local models
+        models=$(ollama list 2>/dev/null || echo "")
+        echo "$models" | grep -q "olmo-3:7b-instruct" && success "olmo-3:7b-instruct" || { info "Pulling olmo-3:7b-instruct..."; ollama pull olmo-3:7b-instruct; }
+        echo "$models" | grep -q "phi4-mini" && success "phi4-mini" || { info "Pulling phi4-mini..."; ollama pull phi4-mini; }
+        echo "$models" | grep -q "snowflake-arctic-embed2" && success "snowflake-arctic-embed2" || { info "Pulling snowflake-arctic-embed2..."; ollama pull snowflake-arctic-embed2; }
+        echo "$models" | grep -q "granite3.2-vision" && success "granite3.2-vision:2b" || { info "Pulling granite3.2-vision:2b..."; ollama pull granite3.2-vision:2b; }
+
+        # Check Python-based models (reranker + TTS)
+        # shellcheck disable=SC1091
+        source "$INSTALL_DIR/backend/.venv/bin/activate"
+
+        local reranker_cache="$DATA_DIR/models/flashrank/ms-marco-MiniLM-L-12-v2"
+        if [ -d "$reranker_cache" ] && [ "$(ls -A "$reranker_cache" 2>/dev/null)" ]; then
+            success "FlashRank reranker"
+        else
+            info "Downloading FlashRank reranker (~34MB)..."
+            mkdir -p "$DATA_DIR/models/flashrank" 2>/dev/null || true
+            python -c "
+import os
+from flashrank import Ranker
+cache_dir = os.path.expanduser('~/Library/Application Support/LocalBook/models/flashrank')
+os.makedirs(cache_dir, exist_ok=True)
+ranker = Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir=cache_dir)
+print('Reranker cached')
+" || warn "FlashRank download failed (non-fatal)"
+        fi
+
+        local kokoro_hf_cache="$HOME/.cache/huggingface/hub/models--mlx-community--Kokoro-82M-bf16"
+        local kokoro_local_cache="$HOME/.cache/kokoro-mlx-model"
+        if [ -d "$kokoro_hf_cache" ] || { [ -d "$kokoro_local_cache" ] && [ -f "$kokoro_local_cache/config.json" ]; }; then
+            success "Kokoro TTS model"
+        else
+            info "Downloading Kokoro TTS model (~330MB)..."
+            python -c "
+import os
+try:
+    import certifi
+    os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+    os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
+except ImportError:
+    pass
+from huggingface_hub import snapshot_download
+local_dir = snapshot_download(
+    repo_id='mlx-community/Kokoro-82M-bf16',
+    allow_patterns=['config.json', '*.safetensors', 'voices/*.safetensors'],
+    max_workers=1,
+)
+print(f'Kokoro cached at: {local_dir}')
+" || warn "Kokoro TTS download failed (non-fatal)"
+        fi
+
+        # Whisper transcription model
+        local whisper_hf_cache="$HOME/.cache/huggingface/hub/models--mlx-community--whisper-base-mlx"
+        if [ -d "$whisper_hf_cache" ]; then
+            success "Whisper transcription model"
+        else
+            info "Downloading Whisper transcription model (~150MB)..."
+            python -c "
+import os
+try:
+    import certifi
+    os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+    os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
+except ImportError:
+    pass
+from huggingface_hub import snapshot_download
+local_dir = snapshot_download(
+    repo_id='mlx-community/whisper-base-mlx',
+    max_workers=1,
+)
+print(f'Whisper cached at: {local_dir}')
+" || warn "Whisper download failed (non-fatal)"
+        fi
+
+        # Playwright Chromium browser
+        local pw_cache="$HOME/Library/Caches/ms-playwright"
+        if [ -d "$pw_cache" ] && ls "$pw_cache"/chromium-* >/dev/null 2>&1; then
+            success "Playwright Chromium"
+        else
+            info "Installing Playwright Chromium browser..."
+            python -m playwright install chromium 2>&1 | tail -3 || warn "Playwright install failed (non-fatal)"
+        fi
+
+        deactivate
+        success "All AI models verified"
+
+        # Step 7: Install to Applications
+        step 7 "Installing to Applications"
 
         # Close the app if it's running
         if pgrep -f "LocalBook" >/dev/null 2>&1; then
