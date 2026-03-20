@@ -495,3 +495,85 @@ async def install_and_restart():
         
     except Exception as e:
         return UpdateResult(success=False, message=f"Failed to start installation: {str(e)}")
+
+
+# ─── Source-based upgrade (install.sh) ───────────────────────────────────────
+
+class SourceInfo(BaseModel):
+    has_source: bool
+    install_dir: Optional[str] = None
+    upgrade_command: Optional[str] = None
+
+
+@router.get("/source-info", response_model=SourceInfo)
+async def get_source_info():
+    """Check if this is a source-based install with install.sh available"""
+    config_file = Path.home() / ".localbook"
+    
+    if not config_file.exists():
+        return SourceInfo(has_source=False)
+    
+    try:
+        install_dir = config_file.read_text().strip()
+        install_script = Path(install_dir) / "install.sh"
+        
+        if not install_script.exists():
+            return SourceInfo(has_source=False)
+        
+        return SourceInfo(
+            has_source=True,
+            install_dir=install_dir,
+            upgrade_command=f"bash {install_script} --upgrade --yes"
+        )
+    except Exception:
+        return SourceInfo(has_source=False)
+
+
+@router.post("/launch-upgrade", response_model=UpdateResult)
+async def launch_upgrade():
+    """Launch the install.sh upgrade in Terminal and signal the app to quit.
+    
+    This opens a new Terminal window that runs the full upgrade flow:
+    git pull → rebuild backend → rebuild app → rebuild extension → reinstall.
+    The --yes flag skips interactive prompts since the user already confirmed in-app.
+    The app will auto-relaunch after the upgrade completes.
+    """
+    config_file = Path.home() / ".localbook"
+    
+    if not config_file.exists():
+        return UpdateResult(
+            success=False,
+            message="No source installation found. Use the download method instead."
+        )
+    
+    try:
+        install_dir = config_file.read_text().strip()
+        install_script = Path(install_dir) / "install.sh"
+        
+        if not install_script.exists():
+            return UpdateResult(
+                success=False,
+                message=f"install.sh not found at {install_script}. Re-clone the repository or use the download method."
+            )
+        
+        # Use osascript to open Terminal with the upgrade command.
+        # The script runs with --upgrade --yes to skip all prompts and auto-relaunch.
+        upgrade_cmd = f"bash {install_script} --upgrade --yes"
+        
+        subprocess.Popen(
+            [
+                "osascript", "-e",
+                f'tell application "Terminal" to do script "{upgrade_cmd}"'
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        
+        return UpdateResult(
+            success=True,
+            message="Upgrade started in Terminal. LocalBook will close and relaunch when the upgrade is complete."
+        )
+        
+    except Exception as e:
+        return UpdateResult(success=False, message=f"Failed to launch upgrade: {str(e)}")

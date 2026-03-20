@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { updatesService } from '../../services/updates';
+import type { SourceInfo } from '../../services/updates';
 
 export const UpdatesSection: React.FC = () => {
     const [updateInfo, setUpdateInfo] = useState<{
@@ -11,19 +12,25 @@ export const UpdatesSection: React.FC = () => {
         asset_download_url?: string;
         error?: string;
     } | null>(null);
+    const [sourceInfo, setSourceInfo] = useState<SourceInfo | null>(null);
     const [checkingUpdates, setCheckingUpdates] = useState(false);
     const [updateMessage, setUpdateMessage] = useState<string | null>(null);
-    const [downloadProgress, setDownloadProgress] = useState<{
-        downloading: boolean;
-        progress: number;
-        message: string;
-        error?: string;
-    } | null>(null);
-    const [readyToInstall, setReadyToInstall] = useState(false);
+    const [upgrading, setUpgrading] = useState(false);
+    const [showConfirm, setShowConfirm] = useState(false);
 
     useEffect(() => {
         checkForUpdates();
+        loadSourceInfo();
     }, []);
+
+    const loadSourceInfo = async () => {
+        try {
+            const info = await updatesService.getSourceInfo();
+            setSourceInfo(info);
+        } catch {
+            setSourceInfo({ has_source: false });
+        }
+    };
 
     const checkForUpdates = async () => {
         setCheckingUpdates(true);
@@ -42,74 +49,33 @@ export const UpdatesSection: React.FC = () => {
         }
     };
 
-    const downloadAndInstall = async () => {
+    const handleUpgrade = async () => {
+        setUpgrading(true);
         setUpdateMessage(null);
-        setDownloadProgress({ downloading: true, progress: 0, message: 'Starting download...' });
-        setReadyToInstall(false);
-        
-        try {
-            const response = await updatesService.downloadAndInstall();
-            
-            const pollProgress = async () => {
-                try {
-                    const progress = await updatesService.getDownloadProgress();
-                    setDownloadProgress(progress);
-                    
-                    if (progress.error) {
-                        setUpdateMessage(`Error: ${progress.error}`);
-                        return false;
-                    }
-                    
-                    if (progress.progress >= 100) {
-                        setReadyToInstall(true);
-                        return false;
-                    }
-                    
-                    return progress.downloading;
-                } catch {
-                    return false;
-                }
-            };
-            
-            while (await pollProgress()) {
-                await new Promise(resolve => setTimeout(resolve, 500));
-            }
-            
-            if (response.success) {
-                setUpdateMessage(response.message);
-                setReadyToInstall(true);
-            } else {
-                setUpdateMessage(response.message);
-                setDownloadProgress(null);
-            }
-            
-        } catch (err) {
-            setUpdateMessage(err instanceof Error ? err.message : 'Download failed');
-            setDownloadProgress(null);
-        }
-    };
+        setShowConfirm(false);
 
-    const installAndRestart = async () => {
-        setUpdateMessage('Installing update...');
         try {
-            const result = await updatesService.installAndRestart();
+            const result = await updatesService.launchUpgrade();
             setUpdateMessage(result.message);
-            
+
             if (result.success) {
+                // Give Terminal a moment to open, then quit the app
                 setTimeout(async () => {
                     try {
                         const { exit } = await import('@tauri-apps/plugin-process');
                         await exit(0);
                     } catch (e) {
                         console.error('Failed to exit app:', e);
-                        setUpdateMessage('Please manually quit and reopen the app to complete the update.');
+                        setUpdateMessage('Upgrade is running in Terminal. Please quit LocalBook manually.');
+                        setUpgrading(false);
                     }
-                }, 1000);
+                }, 2000);
             } else {
-                setUpdateMessage('Failed to install update');
+                setUpgrading(false);
             }
         } catch (err) {
-            setUpdateMessage(err instanceof Error ? err.message : 'Installation failed');
+            setUpdateMessage(err instanceof Error ? err.message : 'Failed to launch upgrade');
+            setUpgrading(false);
         }
     };
 
@@ -128,7 +94,7 @@ export const UpdatesSection: React.FC = () => {
                     <div>
                         <h4 className="text-sm font-medium text-gray-900 dark:text-white">Current Version</h4>
                         <p className="text-lg font-bold text-blue-600 dark:text-blue-400 mt-1">
-                            v{updateInfo?.current_version || '0.1.0'}
+                            v{updateInfo?.current_version || '...'}
                         </p>
                     </div>
                     <button
@@ -167,50 +133,89 @@ export const UpdatesSection: React.FC = () => {
                                     <p className="whitespace-pre-wrap">{updateInfo.release_notes}</p>
                                 </div>
                             )}
-                            {/* Download Progress */}
-                            {downloadProgress && downloadProgress.downloading && (
-                                <div className="mb-4">
-                                    <div className="flex items-center justify-between mb-2">
-                                        <span className="text-sm text-gray-600 dark:text-gray-400">{downloadProgress.message}</span>
-                                        <span className="text-sm font-medium text-gray-900 dark:text-white">{downloadProgress.progress}%</span>
+
+                            {/* Upgrade Actions */}
+                            {sourceInfo?.has_source ? (
+                                // Source-based upgrade via install.sh
+                                <div className="space-y-3">
+                                    {!showConfirm && !upgrading && (
+                                        <div className="flex gap-3">
+                                            <button
+                                                onClick={() => setShowConfirm(true)}
+                                                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                                            >
+                                                <span>🚀</span> Upgrade Now
+                                            </button>
+                                            {updateInfo.download_url && (
+                                                <a
+                                                    href={updateInfo.download_url}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                                                >
+                                                    View on GitHub →
+                                                </a>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {/* Confirmation */}
+                                    {showConfirm && !upgrading && (
+                                        <div className="p-3 border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 rounded-lg">
+                                            <p className="text-sm font-medium text-amber-800 dark:text-amber-200 mb-2">
+                                                This will close LocalBook and open Terminal to run the upgrade.
+                                            </p>
+                                            <p className="text-sm text-amber-700 dark:text-amber-300 mb-3">
+                                                The upgrade pulls the latest code, rebuilds the app, and relaunches automatically. Your data is safe.
+                                            </p>
+                                            <div className="flex gap-2">
+                                                <button
+                                                    onClick={handleUpgrade}
+                                                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-colors"
+                                                >
+                                                    Yes, Upgrade
+                                                </button>
+                                                <button
+                                                    onClick={() => setShowConfirm(false)}
+                                                    className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                                                >
+                                                    Cancel
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Upgrading state */}
+                                    {upgrading && (
+                                        <div className="flex items-center gap-3 p-3 border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                                            <div className="animate-spin h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full" />
+                                            <p className="text-sm text-blue-700 dark:text-blue-300">
+                                                Opening Terminal... LocalBook will close in a moment.
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                // No source install — show GitHub link
+                                <div className="space-y-3">
+                                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                                        To update, re-run the installer command in Terminal:
+                                    </p>
+                                    <div className="p-2 bg-gray-900 dark:bg-gray-950 rounded-lg font-mono text-xs text-green-400 overflow-x-auto">
+                                        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/{`patsteph`}/LocalBook/master/install.sh)"
                                     </div>
-                                    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                                        <div 
-                                            className="bg-green-600 h-2 rounded-full transition-all duration-300"
-                                            style={{ width: `${downloadProgress.progress}%` }}
-                                        />
-                                    </div>
+                                    {updateInfo.download_url && (
+                                        <a
+                                            href={updateInfo.download_url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-block px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                                        >
+                                            View on GitHub →
+                                        </a>
+                                    )}
                                 </div>
                             )}
-                            
-                            <div className="flex gap-3">
-                                {readyToInstall ? (
-                                    <button
-                                        onClick={installAndRestart}
-                                        className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-                                    >
-                                        <span>🚀</span> Install & Restart
-                                    </button>
-                                ) : (
-                                    <button
-                                        onClick={downloadAndInstall}
-                                        disabled={downloadProgress?.downloading}
-                                        className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white rounded-lg text-sm font-medium transition-colors"
-                                    >
-                                        {downloadProgress?.downloading ? 'Downloading...' : 'Download & Install'}
-                                    </button>
-                                )}
-                                {updateInfo.download_url && !downloadProgress?.downloading && !readyToInstall && (
-                                    <a
-                                        href={updateInfo.download_url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-                                    >
-                                        View on GitHub →
-                                    </a>
-                                )}
-                            </div>
                         </div>
                     ) : (
                         <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
@@ -225,6 +230,16 @@ export const UpdatesSection: React.FC = () => {
             {updateMessage && (
                 <div className="p-4 border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
                     <p className="text-blue-700 dark:text-blue-300">{updateMessage}</p>
+                </div>
+            )}
+
+            {/* Install Info */}
+            {sourceInfo?.has_source && (
+                <div className="p-3 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+                    <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-1">📁 Source Install</h4>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                        Installed from source at <span className="font-mono text-xs">{sourceInfo.install_dir}</span>
+                    </p>
                 </div>
             )}
 

@@ -44,11 +44,28 @@ main() {
 
     # ── Parse Arguments ──────────────────────────────────────────────────────
     UPGRADE_MODE=false
+    AUTO_YES=false
     for arg in "$@"; do
         case "$arg" in
             --upgrade|-u) UPGRADE_MODE=true ;;
+            --yes|-y) AUTO_YES=true ;;
         esac
     done
+
+    # ── Lock File (prevent simultaneous runs) ────────────────────────────────
+    readonly LOCK_FILE="/tmp/localbook_install.lock"
+    if [ -f "$LOCK_FILE" ]; then
+        local lock_pid
+        lock_pid=$(cat "$LOCK_FILE" 2>/dev/null)
+        if kill -0 "$lock_pid" 2>/dev/null; then
+            echo -e "${RED}Another LocalBook installer is already running (PID $lock_pid).${NC}"
+            echo -e "${YELLOW}If this is stale, remove $LOCK_FILE and try again.${NC}"
+            exit 1
+        fi
+    fi
+    echo $$ > "$LOCK_FILE"
+    cleanup_lock() { rm -f "$LOCK_FILE"; }
+    trap cleanup_lock EXIT
 
     # ── Error Handler ────────────────────────────────────────────────────────
     on_error() {
@@ -173,6 +190,56 @@ main() {
         else
             success "Intel Mac detected"
         fi
+    }
+
+    check_internet() {
+        if ! curl -s --max-time 5 https://github.com >/dev/null 2>&1; then
+            fail "No internet connection detected"
+            info "The installer requires internet to download source code, dependencies, and AI models."
+            exit 1
+        fi
+        success "Internet connectivity"
+    }
+
+    check_ram() {
+        local ram_gb
+        ram_gb=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
+        if [ -n "$ram_gb" ]; then
+            if [ "$ram_gb" -le 8 ]; then
+                warn "${ram_gb}GB RAM detected — builds may be slow. Close other apps to free memory."
+            else
+                success "RAM: ${ram_gb}GB"
+            fi
+        fi
+    }
+
+    check_applications_writable() {
+        if ! touch /Applications/.localbook_write_test 2>/dev/null; then
+            fail "Cannot write to /Applications/ — you may need admin permissions."
+            info "Try running: sudo bash install.sh"
+            exit 1
+        fi
+        rm -f /Applications/.localbook_write_test
+    }
+
+    # Retry wrapper for network operations
+    retry() {
+        local max_attempts="$1"
+        local label="$2"
+        shift 2
+        local attempt=1
+        while [ $attempt -le $max_attempts ]; do
+            if "$@" 2>&1; then
+                return 0
+            fi
+            if [ $attempt -lt $max_attempts ]; then
+                warn "$label failed (attempt $attempt/$max_attempts), retrying in 5s..."
+                sleep 5
+            fi
+            attempt=$((attempt + 1))
+        done
+        fail "$label failed after $max_attempts attempts"
+        return 1
     }
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -596,7 +663,12 @@ main() {
 
     offer_launch() {
         echo ""
-        if ask_yn "Launch LocalBook now? (y/n)"; then
+        if [ "$AUTO_YES" = true ]; then
+            info "Relaunching LocalBook..."
+            open "/Applications/$APP_BUNDLE"
+            echo ""
+            info "LocalBook is starting. It may take a moment on first launch."
+        elif ask_yn "Launch LocalBook now? (y/n)"; then
             info "Launching LocalBook..."
             open "/Applications/$APP_BUNDLE"
             echo ""
@@ -665,9 +737,13 @@ main() {
         git --no-pager diff --stat HEAD "origin/$REPO_BRANCH" 2>/dev/null | sed 's/^/    /'
         echo ""
 
-        if ! ask_yn "Upgrade to v${remote_ver:-latest}? (y/n)"; then
-            info "Upgrade cancelled."
-            return
+        if [ "$AUTO_YES" = false ]; then
+            if ! ask_yn "Upgrade to v${remote_ver:-latest}? (y/n)"; then
+                info "Upgrade cancelled."
+                return
+            fi
+        else
+            info "Auto-confirmed upgrade (--yes)"
         fi
 
         TOTAL_STEPS=6
@@ -814,6 +890,9 @@ main() {
         check_macos_version
         check_disk_space
         check_architecture
+        check_internet
+        check_ram
+        check_applications_writable
         echo ""
         ensure_xcode_clt
 
@@ -879,7 +958,10 @@ main() {
         if [ -n "$existing_dir" ] && [ -d "$existing_dir/.git" ]; then
             info "Existing installation found: ${BOLD}${existing_dir}${NC}"
             echo ""
-            if ask_yn "Would you like to upgrade? (y/n)"; then
+            if [ "$AUTO_YES" = true ]; then
+                UPGRADE_MODE=true
+                INSTALL_DIR="$existing_dir"
+            elif ask_yn "Would you like to upgrade? (y/n)"; then
                 UPGRADE_MODE=true
                 INSTALL_DIR="$existing_dir"
             fi
