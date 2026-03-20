@@ -393,7 +393,14 @@ main() {
         if [ -d "$INSTALL_DIR/.git" ]; then
             info "Source directory exists, pulling latest..."
             cd "$INSTALL_DIR"
+            # Stash local changes (e.g. package-lock.json from npm install) to prevent merge conflicts
+            local stash_result
+            stash_result=$(git stash --include-untracked 2>&1 || true)
             git pull origin "$REPO_BRANCH"
+            # Restore stashed changes (best-effort — build will regenerate these files anyway)
+            if [[ "$stash_result" != *"No local changes"* ]]; then
+                git stash pop 2>/dev/null || git stash drop 2>/dev/null || true
+            fi
         else
             info "Cloning repository..."
             git clone --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR"
