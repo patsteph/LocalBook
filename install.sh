@@ -870,15 +870,17 @@ print(f'Whisper model cached at: {local_dir}')
         local stash_result
         stash_result=$(git stash 2>&1)
         if [[ "$stash_result" != *"No local changes"* ]]; then
-            info "Stashed local modifications (will restore after upgrade)"
+            info "Stashed local modifications (will be discarded — upgrade rebuilds everything)"
         fi
 
         git pull origin "$REPO_BRANCH"
         success "Source updated"
 
-        # Restore stashed changes if any
+        # Drop stashed changes — upgrade rebuilds everything from scratch
         if [[ "$stash_result" != *"No local changes"* ]]; then
-            git stash pop 2>/dev/null || warn "Could not restore local modifications (may need manual merge)"
+            git stash drop 2>/dev/null || true
+            # Ensure clean working tree (no leftover merge conflicts)
+            git checkout -- . 2>/dev/null || true
         fi
 
         # Step 2: Check prerequisites
