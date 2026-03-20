@@ -471,9 +471,9 @@ main() {
 
         cd "$INSTALL_DIR"
 
-        # Install frontend dependencies
+        # Install frontend dependencies (npm ci = exact versions from lock file)
         info "Installing frontend dependencies..."
-        npm install --silent
+        npm ci --silent
 
         # Build Tauri app (includes Vite frontend build)
         info "Building Tauri application..."
@@ -496,7 +496,7 @@ main() {
         step 5 "Building browser extension"
 
         cd "$INSTALL_DIR/extension"
-        npm install --silent 2>&1 | tail -1 || true
+        npm ci --silent 2>&1 | tail -1 || true
         npm run build 2>&1 | tail -3 || true
         cd "$INSTALL_DIR"
 
@@ -918,7 +918,7 @@ print(f'Whisper model cached at: {local_dir}')
         # Step 4: Rebuild app
         step 4 "Rebuilding application"
         cd "$INSTALL_DIR"
-        npm install --silent 2>&1 | tail -1 || true
+        npm ci --silent 2>&1 | tail -1 || true
         rm -rf dist/
         info "Building Tauri application (this may take several minutes)..."
         npm run tauri build
@@ -932,7 +932,7 @@ print(f'Whisper model cached at: {local_dir}')
         # Step 5: Rebuild extension
         step 5 "Rebuilding browser extension"
         cd "$INSTALL_DIR/extension"
-        npm install --silent 2>&1 | tail -1 || true
+        npm ci --silent 2>&1 | tail -1 || true
         npm run build 2>&1 | tail -3 || true
         cd "$INSTALL_DIR"
         success "Extension rebuilt"
