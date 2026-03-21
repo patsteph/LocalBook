@@ -1,10 +1,24 @@
 """FastAPI main application"""
 import multiprocessing
+import os
 import sys
 
 # PyInstaller multiprocessing freeze support - must be at very top
 if getattr(sys, 'frozen', False):
     multiprocessing.freeze_support()
+
+# ── Fix SSL certificates for fresh macOS Python installs ──
+# Python 3.12+ from Homebrew may lack CA bundle; certifi provides it.
+# Must run before any HTTPS downloads (HuggingFace, FlashRank, etc.)
+try:
+    import certifi
+    _ca = certifi.where()
+    os.environ.setdefault("SSL_CERT_FILE", _ca)
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca)
+    os.environ.setdefault("CURL_CA_BUNDLE", _ca)
+except ImportError:
+    if os.path.exists("/etc/ssl/cert.pem"):
+        os.environ.setdefault("SSL_CERT_FILE", "/etc/ssl/cert.pem")
 
 # ── Quick-exit CLI flags (must run before any heavy imports) ──
 if "--verify-kokoro" in sys.argv or "--verify-tts" in sys.argv:

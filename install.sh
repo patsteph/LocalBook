@@ -575,6 +575,15 @@ main() {
         # shellcheck disable=SC1091
         source "$INSTALL_DIR/backend/.venv/bin/activate"
 
+        # Fix SSL certificates for fresh macOS Python installs
+        # (Python 3.12+ from Homebrew may lack CA bundle; certifi provides it)
+        local ssl_cert_file
+        ssl_cert_file=$(python -c "import certifi; print(certifi.where())" 2>/dev/null || echo "")
+        if [ -n "$ssl_cert_file" ]; then
+            export SSL_CERT_FILE="$ssl_cert_file"
+            export REQUESTS_CA_BUNDLE="$ssl_cert_file"
+        fi
+
         # FlashRank reranker (~34MB) — improves search result quality
         mkdir -p "$DATA_DIR/models/flashrank" 2>/dev/null || true
         local reranker_cache="$DATA_DIR/models/flashrank/ms-marco-MiniLM-L-12-v2"
@@ -958,6 +967,14 @@ print(f'Whisper model cached at: {local_dir}')
         # Check Python-based models (reranker + TTS)
         # shellcheck disable=SC1091
         source "$INSTALL_DIR/backend/.venv/bin/activate"
+
+        # Fix SSL certificates for fresh macOS Python installs
+        local ssl_cert_file_upgrade
+        ssl_cert_file_upgrade=$(python -c "import certifi; print(certifi.where())" 2>/dev/null || echo "")
+        if [ -n "$ssl_cert_file_upgrade" ]; then
+            export SSL_CERT_FILE="$ssl_cert_file_upgrade"
+            export REQUESTS_CA_BUNDLE="$ssl_cert_file_upgrade"
+        fi
 
         local reranker_cache="$DATA_DIR/models/flashrank/ms-marco-MiniLM-L-12-v2"
         if [ -d "$reranker_cache" ] && [ "$(ls -A "$reranker_cache" 2>/dev/null)" ]; then

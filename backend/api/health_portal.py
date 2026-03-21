@@ -1586,7 +1586,22 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
     elif action == "init_reranker":
         # Initialize FlashRank reranker (downloads model if needed)
         try:
+            add_log("INFO", "Executing repair: init_reranker", "health_portal")
             add_log("INFO", "Initializing FlashRank reranker...", "health_portal")
+            
+            # Fix SSL certificates for fresh macOS Python installs
+            import os
+            try:
+                import certifi
+                ca_bundle = certifi.where()
+                os.environ.setdefault("SSL_CERT_FILE", ca_bundle)
+                os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_bundle)
+                os.environ.setdefault("CURL_CA_BUNDLE", ca_bundle)
+                add_log("INFO", f"SSL cert bundle: {ca_bundle}", "health_portal")
+            except ImportError:
+                if os.path.exists("/etc/ssl/cert.pem"):
+                    os.environ.setdefault("SSL_CERT_FILE", "/etc/ssl/cert.pem")
+            
             from flashrank import Ranker, RerankRequest
             
             # Use persistent cache dir (not /tmp which gets cleared on reboot)
