@@ -877,12 +877,16 @@ print(f'Whisper model cached at: {local_dir}')
 
         # Stash any local modifications to prevent merge conflicts
         local stash_result
-        stash_result=$(git stash 2>&1)
+        stash_result=$(git stash 2>&1 || true)
         if [[ "$stash_result" != *"No local changes"* ]]; then
             info "Stashed local modifications (will be discarded — upgrade rebuilds everything)"
         fi
 
-        git pull origin "$REPO_BRANCH"
+        if ! git pull origin "$REPO_BRANCH"; then
+            warn "git pull failed — attempting hard reset to remote..."
+            git fetch origin "$REPO_BRANCH"
+            git reset --hard "origin/$REPO_BRANCH"
+        fi
         success "Source updated"
 
         # Drop stashed changes — upgrade rebuilds everything from scratch
