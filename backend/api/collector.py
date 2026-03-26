@@ -574,6 +574,27 @@ async def get_history(notebook_id: str, limit: int = 20):
     return {"history": history, "stats": stats}
 
 
+@router.get("/{notebook_id}/quality-metrics")
+async def get_quality_metrics(notebook_id: str):
+    """Phase 4: Get collection quality metrics (health score, trends, actions)."""
+    from services.collection_history import get_collection_quality_metrics
+    return get_collection_quality_metrics(notebook_id)
+
+
+@router.get("/{notebook_id}/recent-syntheses")
+async def get_syntheses(notebook_id: str, limit: int = 3):
+    """Phase 4: Get recent post-collection run syntheses for the dashboard."""
+    from services.collection_history import get_recent_syntheses
+    return {"syntheses": get_recent_syntheses(notebook_id, limit=limit)}
+
+
+@router.get("/{notebook_id}/best-patterns")
+async def get_patterns(notebook_id: str, limit: int = 5):
+    """Phase 4: Get most successful collection patterns (CBR)."""
+    from services.collection_history import get_best_patterns
+    return {"patterns": get_best_patterns(notebook_id, limit=limit)}
+
+
 @router.post("/{notebook_id}/source-toggle")
 async def toggle_source(notebook_id: str, request: SourceToggleRequest):
     """Enable or disable a specific source"""

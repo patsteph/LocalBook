@@ -407,12 +407,63 @@ class CollectorAgent:
         return results
     
     async def _quick_collect(self, keywords: List[str]) -> List[CollectedItem]:
-        """Quick collection using fast sources only"""
+        """Quick collection: web search + RSS feeds for each keyword."""
         items = []
         
-        # For now, this is a placeholder - will integrate with actual sources
-        # In production, this would check RSS feeds, cached news, etc.
+        # 1. Web search via Brave API
+        try:
+            from services.web_scraper import web_scraper
+            for kw in keywords[:5]:  # Cap keywords to limit API calls
+                try:
+                    results = await web_scraper.search_web(kw, max_results=5)
+                    for r in results:
+                        url = r.get("url", "")
+                        if not url or url in self._known_urls:
+                            continue
+                        snippet = r.get("snippet", "")
+                        title = r.get("title", "Untitled")
+                        items.append(CollectedItem(
+                            title=title,
+                            url=url,
+                            content=snippet,
+                            preview=snippet[:300],
+                            source_name=r.get("source", "web"),
+                            source_type="web",
+                            collected_at=datetime.utcnow(),
+                        ))
+                except Exception as e:
+                    logger.debug(f"Quick collect search failed for '{kw}': {e}")
+        except ImportError:
+            pass
         
+        # 2. RSS feeds
+        for feed_url in self.config.sources.get("rss_feeds", [])[:5]:
+            try:
+                rss_items = await self._collect_from_rss(feed_url, keywords)
+                items.extend(rss_items[:3])  # Top 3 per feed
+            except Exception as e:
+                logger.debug(f"Quick collect RSS failed for {feed_url}: {e}")
+        
+        # 3. Deep-fetch: scrape full article text for items with thin content
+        # This turns search snippets into real content for quality scoring
+        try:
+            from services.web_scraper import web_scraper
+            urls_to_scrape = [it.url for it in items if it.url and len(it.content) < 500][:8]
+            if urls_to_scrape:
+                scraped = await web_scraper.scrape_urls(urls_to_scrape)
+                url_to_text = {s["url"]: s for s in scraped if s.get("success") and s.get("text")}
+                for it in items:
+                    if it.url in url_to_text:
+                        full = url_to_text[it.url]
+                        if len(full["text"]) > len(it.content):
+                            it.content = full["text"]
+                            it.preview = full["text"][:300]
+                            if full.get("title") and len(full["title"]) > len(it.title):
+                                it.title = full["title"]
+        except Exception as e:
+            logger.debug(f"Quick collect scrape enrichment failed: {e}")
+        
+        logger.info(f"Quick collect found {len(items)} items from {len(keywords)} keywords")
         return items
     
     # =========================================================================
@@ -558,6 +609,138 @@ class CollectorAgent:
 
         return gap_keywords[:5]
 
+    async def auto_discover_sources(self, stagnation_report: Optional[Dict] = None) -> Dict[str, Any]:
+        """Phase 3: Smart source auto-discovery from approved content patterns.
+        
+        Analyzes recently approved items to find:
+        1. New domains that consistently produce approved content
+        2. RSS feed URLs discovered in approved article content
+        3. Outbound links from high-quality approved sources
+        
+        When stagnation is detected, automatically expands the source config
+        with discovered sources. Otherwise, returns suggestions.
+        """
+        from storage.source_store import source_store
+        from urllib.parse import urlparse
+        
+        sources = await source_store.list(self.notebook_id)
+        if len(sources) < 5:
+            return {"discovered": 0, "reason": "too_few_sources"}
+        
+        # Analyze domains of approved sources
+        domain_counts: Dict[str, int] = {}
+        existing_domains: set = set()
+        rss_candidates: List[str] = []
+        
+        for src in sources:
+            url = src.get("url", "")
+            if not url:
+                continue
+            try:
+                parsed = urlparse(url)
+                domain = parsed.netloc.lower().replace("www.", "")
+                domain_counts[domain] = domain_counts.get(domain, 0) + 1
+                existing_domains.add(domain)
+            except Exception:
+                continue
+            
+            # Check content for RSS/feed links (outbound references)
+            content = src.get("content", "")[:3000]
+            if content:
+                import re
+                feed_patterns = re.findall(
+                    r'https?://[^\s"\'<>]+(?:/rss|/feed|/atom|\.xml)[^\s"\'<>]*',
+                    content, re.IGNORECASE
+                )
+                for feed_url in feed_patterns[:3]:
+                    if feed_url not in [f for f in self.config.sources.get("rss_feeds", [])]:
+                        rss_candidates.append(feed_url)
+        
+        # Find domains that appear 3+ times but aren't in configured sources
+        configured_domains = set()
+        for page_url in self.config.sources.get("web_pages", []):
+            try:
+                configured_domains.add(urlparse(page_url).netloc.lower().replace("www.", ""))
+            except Exception:
+                pass
+        
+        new_domains = []
+        for domain, count in sorted(domain_counts.items(), key=lambda x: -x[1]):
+            if count >= 3 and domain not in configured_domains:
+                skip = {"twitter.com", "x.com", "facebook.com", "linkedin.com",
+                        "reddit.com", "google.com", "t.co", "bit.ly", "youtube.com"}
+                if domain not in skip:
+                    new_domains.append({"domain": domain, "count": count})
+        
+        unique_rss = list(set(rss_candidates))[:5]
+        
+        discovered = {
+            "new_domains": new_domains[:8],
+            "rss_candidates": unique_rss,
+            "discovered": len(new_domains) + len(unique_rss),
+        }
+        
+        # Auto-expand on stagnation: add discovered sources to config
+        is_stagnating = stagnation_report and stagnation_report.get("stagnating")
+        if is_stagnating and (new_domains or unique_rss):
+            expanded = False
+            config_sources = dict(self.config.sources)
+            
+            # Add top 3 new domains as site-scoped news keywords
+            if new_domains:
+                news_kw = list(config_sources.get("news_keywords", []))
+                for nd in new_domains[:3]:
+                    site_kw = f"site:{nd['domain']} {self.config.subject}"
+                    if site_kw not in news_kw:
+                        news_kw.append(site_kw)
+                        expanded = True
+                config_sources["news_keywords"] = news_kw
+            
+            # Add discovered RSS feeds
+            if unique_rss:
+                rss_list = list(config_sources.get("rss_feeds", []))
+                for feed in unique_rss[:3]:
+                    if feed not in rss_list:
+                        rss_list.append(feed)
+                        expanded = True
+                config_sources["rss_feeds"] = rss_list
+            
+            if expanded:
+                self.update_config({"sources": config_sources})
+                discovered["auto_expanded"] = True
+                print(f"[COLLECTOR] 🔍 Auto-expanded sources: +{len(new_domains[:3])} domains, +{len(unique_rss[:3])} RSS feeds")
+                logger.info(f"[SourceDiscovery] Auto-expanded sources for {self.notebook_id[:8]} (stagnation recovery)")
+        
+        return discovered
+
+    async def cross_reference_validate(self, items: List['CollectedItem']) -> List['CollectedItem']:
+        """Phase 3: Cross-reference validation — boost confidence for claims found in multiple sources."""
+        if len(items) < 2:
+            return items
+        
+        # Group items by approximate topic (title word overlap)
+        for i, item_a in enumerate(items):
+            corroborating = 0
+            a_words = set(item_a.title.lower().split())
+            for j, item_b in enumerate(items):
+                if i == j:
+                    continue
+                b_words = set(item_b.title.lower().split())
+                # Significant overlap = corroborating source
+                overlap = len(a_words & b_words) / max(len(a_words), 1)
+                if overlap > 0.4:
+                    corroborating += 1
+            
+            if corroborating >= 2:
+                # Boost confidence for well-corroborated items
+                boost = min(0.15, corroborating * 0.05)
+                item_a.overall_confidence = min(1.0, item_a.overall_confidence + boost)
+                if not hasattr(item_a, 'confidence_reasons') or item_a.confidence_reasons is None:
+                    item_a.confidence_reasons = []
+                item_a.confidence_reasons.append(f"Corroborated by {corroborating} other sources")
+        
+        return items
+
     def _enforce_diversity(
         self,
         items: List['CollectedItem'],
@@ -656,6 +839,202 @@ class CollectorAgent:
         return selected
 
     # =========================================================================
+    # Deep Dive Collection Strategy (Phase 1)
+    # =========================================================================
+
+    async def deep_dive_collect(
+        self,
+        queries: List[str],
+        max_per_query: int = 5,
+    ) -> List['CollectedItem']:
+        """Use ResearchEngine deep_dive to find high-quality, fully-read articles.
+        
+        This is a premium strategy: search → scrape full text → quality score.
+        More expensive but produces much better content than snippet-only collection.
+        """
+        from services.research_engine import research_engine, DeepDiveFilters
+        
+        items: List[CollectedItem] = []
+        filters = DeepDiveFilters(
+            recency_days=self.config.filters.get("max_age_days", 30),
+            min_word_count=300,
+            min_outbound_links=1,
+            min_quality_score=0.3,
+            max_results=max_per_query,
+        )
+        
+        for query in queries[:4]:  # Cap to limit API + LLM cost
+            try:
+                results = await research_engine.deep_dive(
+                    query=query,
+                    notebook_id=self.notebook_id,
+                    filters=filters,
+                )
+                for r in results:
+                    if r.url in self._known_urls:
+                        continue
+                    content = r.full_text or r.snippet
+                    if len(content) < 200:
+                        continue
+                    items.append(CollectedItem(
+                        title=r.title,
+                        url=r.url,
+                        content=content,
+                        preview=r.snippet[:300] or content[:300],
+                        source_name=r.domain or "web",
+                        source_type="web",
+                        collected_at=datetime.utcnow(),
+                        content_hash=self._generate_content_hash(content),
+                    ))
+            except Exception as e:
+                logger.warning(f"Deep dive failed for '{query}': {e}")
+        
+        logger.info(f"Deep dive collected {len(items)} items from {len(queries)} queries")
+        return items
+
+    # =========================================================================
+    # Iterative Search-Reflect Loop (Phase 2)
+    # =========================================================================
+
+    async def iterative_search_reflect(
+        self,
+        initial_queries: List[str],
+        task: Dict[str, Any],
+        max_iterations: int = 3,
+    ) -> List['CollectedItem']:
+        """IterDRAG-style loop: search → summarize → reflect on gaps → re-search.
+        
+        Each iteration:
+        1. Search + scrape using current queries
+        2. Summarize what we found so far (fast model, ~50 tokens)
+        3. Reflect: identify knowledge gaps (fast model, ~50 tokens)
+        4. If gaps found → generate new queries → loop
+        
+        Token budget: ~3 fast-model calls per iteration × max_iterations.
+        Prompts are kept SHORT to minimize token usage.
+        """
+        import time as _time
+        
+        deadline = task.get("_deadline")
+        all_items: List[CollectedItem] = []
+        findings_so_far: List[str] = []  # Short title summaries, not full text
+        queries_used: set = set()
+        current_queries = list(initial_queries)
+        
+        for iteration in range(max_iterations):
+            # Budget check
+            if deadline and _time.time() > deadline - 90:
+                logger.info(f"[IterSearch] Stopping at iteration {iteration} — deadline approaching")
+                break
+            
+            # Skip queries we already used
+            fresh_queries = [q for q in current_queries if q.lower() not in queries_used]
+            if not fresh_queries:
+                logger.info(f"[IterSearch] No fresh queries at iteration {iteration} — stopping")
+                break
+            
+            print(f"[COLLECTOR] 🔄 Iteration {iteration+1}/{max_iterations}: {len(fresh_queries)} queries")
+            
+            # 1. Search + scrape
+            iteration_items = await self.deep_dive_collect(fresh_queries[:4])
+            for q in fresh_queries[:4]:
+                queries_used.add(q.lower())
+            
+            if not iteration_items:
+                # Try standard web search as fallback
+                iteration_items = await self._quick_collect(fresh_queries[:3])
+                for q in fresh_queries[:3]:
+                    queries_used.add(q.lower())
+            
+            # Dedup against items already found in previous iterations
+            existing_urls = {it.url for it in all_items if it.url}
+            new_items = [it for it in iteration_items if not it.url or it.url not in existing_urls]
+            all_items.extend(new_items)
+            
+            # Track what we found (titles only — keep token budget low)
+            for it in new_items:
+                findings_so_far.append(it.title)
+            
+            print(f"[COLLECTOR]   Found {len(new_items)} new items (total: {len(all_items)})")
+            
+            # 2+3. Reflect on gaps and generate new queries (single LLM call)
+            if iteration < max_iterations - 1 and len(all_items) < 15:
+                new_queries = await self._reflect_and_generate_queries(
+                    findings_so_far, list(queries_used), task
+                )
+                if new_queries:
+                    current_queries = new_queries
+                    print(f"[COLLECTOR]   🎯 Gap-filling queries: {new_queries}")
+                else:
+                    logger.info(f"[IterSearch] Reflection found no gaps — stopping")
+                    break
+            else:
+                break
+        
+        # Store iteration metadata in the task for history recording
+        task["_iteration_count"] = min(iteration + 1, max_iterations)
+        task["_total_queries_used"] = len(queries_used)
+        
+        logger.info(
+            f"[IterSearch] Complete: {len(all_items)} items from "
+            f"{len(queries_used)} queries across {min(iteration+1, max_iterations)} iterations"
+        )
+        return all_items
+
+    async def _reflect_and_generate_queries(
+        self,
+        findings_titles: List[str],
+        queries_used: List[str],
+        task: Dict[str, Any],
+    ) -> List[str]:
+        """Single fast-model LLM call: assess gaps and generate new queries.
+        
+        Prompt is intentionally SHORT (~200 tokens input) to minimize cost.
+        """
+        subject = self.config.subject.strip()
+        intent = self.config.intent or ""
+        focus = ", ".join(self.config.focus_areas[:5]) if self.config.focus_areas else ""
+        
+        # Keep findings list short
+        findings_text = "\n".join(f"- {t}" for t in findings_titles[-10:])
+        used_text = ", ".join(queries_used[-8:])
+        
+        prompt = f"""Research: {subject or intent}
+Focus: {focus}
+
+Found so far:
+{findings_text}
+
+Queries already used: {used_text}
+
+What important aspects are MISSING? Generate 3-4 NEW search queries to fill gaps.
+Rules: each query 3-8 words, don't repeat used queries, be specific.
+Respond ONLY with a JSON array: ["query1", "query2", ...]"""
+
+        try:
+            import asyncio as _asyncio
+            response = await _asyncio.wait_for(
+                ollama_client.generate(
+                    prompt=prompt,
+                    system="You are a research assistant. Respond only with a JSON array.",
+                    model=settings.ollama_fast_model,
+                    temperature=0.6,
+                ),
+                timeout=20,
+            )
+            text = response.get("response", "")
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            if start >= 0 and end > start:
+                parsed = json.loads(text[start:end])
+                if isinstance(parsed, list):
+                    return [q.strip() for q in parsed if isinstance(q, str) and len(q.strip()) > 3][:4]
+        except Exception as e:
+            logger.debug(f"Reflect+generate failed: {e}")
+        
+        return []
+
+    # =========================================================================
     # Curator-Assigned Task Execution (Worker Mode)
     # =========================================================================
     
@@ -687,6 +1066,17 @@ class CollectorAgent:
         
         print(f"[COLLECTOR] execute_collection_task starting for {self.notebook_id}")
         logger.info(f"Executing Curator-assigned task for notebook {self.notebook_id}")
+        
+        # Auto-bootstrap sources on first run if intent exists but sources are empty
+        try:
+            from agents._bootstrap_sources import auto_bootstrap_sources
+            boot = await auto_bootstrap_sources(self)
+            if boot.get("bootstrapped") and boot.get("added", 0) > 0:
+                # Reload config so the rest of this method sees the new sources
+                self.config = self.get_config()
+                task["sources"] = self.config.sources
+        except Exception as _boot_err:
+            logger.debug(f"Bootstrap check failed (non-fatal): {_boot_err}")
         
         collected_items: List[CollectedItem] = []
         
@@ -733,6 +1123,72 @@ class CollectorAgent:
         # Always include subject as a catch-all if we have one and it's not already there
         if subject and subject not in keywords:
             keywords.append(subject)
+        
+        # ── Strategy selection (CBR-informed) ──
+        # Check if CBR has a recommendation based on historical success
+        strategy = task.get("strategy", "auto")
+        if strategy == "auto":
+            try:
+                from services.collection_history import get_recommended_strategy
+                cbr_rec = get_recommended_strategy(self.notebook_id)
+                if cbr_rec:
+                    strategy = cbr_rec
+                    print(f"[COLLECTOR] 📊 CBR recommends '{cbr_rec}' strategy based on past success")
+                else:
+                    # Always prefer iterative — it uses Brave Search + trafilatura
+                    # (the "standard" path uses a weak regex scraper).
+                    # With deadline: fewer iterations. Without: full exploration.
+                    strategy = "iterative"
+            except Exception:
+                strategy = "iterative"
+        
+        if strategy == "iterative" and keywords:
+            # Fewer iterations when deadline is tight (manual collect-now)
+            max_iter = 2 if deadline else 3
+            print(f"[COLLECTOR] 🧪 Using ITERATIVE search-reflect strategy ({len(keywords)} seed queries, {max_iter} iterations)")
+            iterative_items = await self.iterative_search_reflect(
+                initial_queries=keywords,
+                task=task,
+                max_iterations=max_iter,
+            )
+            if iterative_items:
+                collected_items.extend(iterative_items)
+                print(f"[COLLECTOR] Iterative strategy yielded {len(iterative_items)} items — skipping standard fetch")
+                # Skip standard fetcher — go straight to processing
+                # But still fetch from RSS/configured sources for breadth
+                try:
+                    from services.content_fetcher import unified_fetcher as _uf
+                    sources = task.get("sources", self.config.sources)
+                    rss_sources = {"rss_feeds": sources.get("rss_feeds", [])}
+                    if rss_sources["rss_feeds"]:
+                        rss_items = await _uf.fetch_all(rss_sources, keywords[:3])
+                        for fetched in rss_items:
+                            item = CollectedItem(
+                                title=fetched.title,
+                                url=fetched.url,
+                                content=fetched.content,
+                                preview=fetched.summary or fetched.content[:300],
+                                source_name=fetched.source_name,
+                                source_type=fetched.source_type,
+                                collected_at=fetched.published_date or datetime.utcnow(),
+                                content_hash=fetched.content_hash,
+                            )
+                            collected_items.append(item)
+                        print(f"[COLLECTOR] RSS supplement: +{len(rss_items)} items")
+                except Exception as rss_err:
+                    logger.debug(f"RSS supplement failed (non-fatal): {rss_err}")
+                
+                # Jump to processing (skip the standard fetch block below)
+                return await self._process_and_diversify(collected_items, task, deadline)
+        
+        elif strategy == "deep_dive" and keywords:
+            print(f"[COLLECTOR] 🔬 Using DEEP DIVE strategy ({len(keywords)} queries)")
+            deep_items = await self.deep_dive_collect(keywords[:4])
+            if deep_items:
+                collected_items.extend(deep_items)
+                return await self._process_and_diversify(collected_items, task, deadline)
+        
+        # ── Standard strategy (default for manual/deadline runs) ──
         
         # Get sources from task or fall back to config
         sources = task.get("sources", self.config.sources)
@@ -879,9 +1335,23 @@ class CollectorAgent:
             collected_items = [item for idx, item in enumerate(collected_items) if idx not in items_to_remove]
             collected_items.extend(expanded_items)
         
-        # Process all items (scoring, duplicate detection)
-        # Run in PARALLEL with semaphore to limit concurrent LLM calls
+        # Delegate to shared processing pipeline
+        return await self._process_and_diversify(collected_items, task, deadline)
+
+    async def _process_and_diversify(
+        self,
+        collected_items: List['CollectedItem'],
+        task: Dict[str, Any],
+        deadline: Optional[float] = None,
+    ) -> List['CollectedItem']:
+        """Shared pipeline: score, dedup, contextualize, enforce diversity.
+        
+        Used by all collection strategies (standard, deep_dive, iterative).
+        """
         import asyncio
+        import time as _time
+        
+        # Process all items (scoring, duplicate detection)
         print(f"[COLLECTOR] Processing {len(collected_items)} raw items...")
         
         process_semaphore = asyncio.Semaphore(4)
@@ -926,6 +1396,10 @@ class CollectorAgent:
                         logger.debug(f"Contextualization failed for '{item.title}' (non-fatal): {ctx_err}")
             
             await asyncio.gather(*[_contextualize_bounded(item) for item in processed_items])
+        
+        # Cross-reference validation — boost confidence for corroborated items
+        if len(processed_items) >= 3:
+            processed_items = await self.cross_reference_validate(processed_items)
         
         # Enforce diversity — cap per-domain, prefer new topics and low-overlap items
         diverse_items = self._enforce_diversity(
@@ -1085,10 +1559,50 @@ class CollectorAgent:
         page_url: str, 
         search_terms: List[str]
     ) -> List[CollectedItem]:
-        """Collect items from a webpage (placeholder for web scraping)"""
-        # This would integrate with your existing web scraping infrastructure
-        # For now, return empty - actual implementation depends on your scraping setup
-        return []
+        """Collect items from a webpage via trafilatura scraping."""
+        items = []
+        start_time = datetime.utcnow()
+        
+        try:
+            from services.web_scraper import web_scraper
+            scraped = await web_scraper._scrape_single(page_url)
+            
+            if not scraped.get("success") or not scraped.get("text"):
+                self.update_source_health(page_url, page_url, success=False)
+                return items
+            
+            text = scraped["text"]
+            title = scraped.get("title", page_url)
+            
+            # Filter by search terms if provided
+            if search_terms:
+                text_lower = f"{title} {text}".lower()
+                if not any(term.lower() in text_lower for term in search_terms):
+                    return items
+            
+            # Skip very thin pages
+            if len(text) < 200:
+                return items
+            
+            item = CollectedItem(
+                title=title,
+                url=page_url,
+                content=text,
+                preview=text[:300],
+                source_name=scraped.get("domain", page_url),
+                source_type="web",
+                collected_at=datetime.utcnow(),
+            )
+            items.append(item)
+            
+            response_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+            self.update_source_health(page_url, page_url, success=True,
+                                      response_time_ms=response_time, items_found=1)
+        except Exception as e:
+            logger.error(f"Webpage scrape error for {page_url}: {e}")
+            self.update_source_health(page_url, page_url, success=False)
+        
+        return items
     
     # =========================================================================
     # Content Processing & Confidence Scoring
@@ -1463,7 +1977,10 @@ class CollectorAgent:
         
         # Enrich thin content by scraping full article (RSS feeds only have summaries)
         # Minimum content threshold — anything below this is a headline, not a source
-        MIN_CONTENT_CHARS = 500
+        # NOTE: RSS summaries are typically 150-400 chars, search snippets 100-300.
+        # Setting this too high (e.g. 500) silently kills items when scraping fails
+        # on paywalled/anti-bot sites like Yahoo Finance.
+        MIN_CONTENT_CHARS = 150
         
         content = item.content
         if item.url and len(content) < 1000:

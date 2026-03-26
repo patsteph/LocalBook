@@ -170,6 +170,12 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.rag_generation \
     --hidden-import=services.rag_metrics \
     --hidden-import=services.rag_query_analyzer \
+    --hidden-import=services.rag_context \
+    --hidden-import=services.rag_embeddings \
+    --hidden-import=services.rag_llm \
+    --hidden-import=services.rag_search \
+    --hidden-import=services.rag_storage \
+    --hidden-import=services.rag_verification \
     --hidden-import=services.rlm_executor \
     --hidden-import=services.site_search \
     --hidden-import=services.source_discovery \

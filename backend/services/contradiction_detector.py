@@ -94,29 +94,22 @@ If no clear claims, return: []"""
                 
                 result = response.json().get("response", "")
                 
-                # Parse JSON from response
-                try:
-                    # Find JSON array in response
-                    start = result.find("[")
-                    end = result.rfind("]") + 1
-                    if start >= 0 and end > start:
-                        claims_data = json.loads(result[start:end])
-                        claims = []
-                        for i, c in enumerate(claims_data[:10]):  # Limit to 10 claims per chunk
-                            claim_id = hashlib.md5(f"{source_id}:{c.get('text', '')}".encode()).hexdigest()[:12]
-                            claims.append(Claim(
-                                id=claim_id,
-                                text=c.get("text", ""),
-                                source_id=source_id,
-                                source_name=source_name,
-                                chunk_text=chunk[:500],
-                                claim_type=c.get("type", "factual")
-                            ))
-                        return claims
-                except json.JSONDecodeError:
-                    pass
-                
-                return []
+                from utils.json_repair import robust_json_parse
+                claims_data = robust_json_parse(result, expect="array", fallback=[], label="ContradictionDetector")
+                claims = []
+                for i, c in enumerate(claims_data[:10]):  # Limit to 10 claims per chunk
+                    if not isinstance(c, dict):
+                        continue
+                    claim_id = hashlib.md5(f"{source_id}:{c.get('text', '')}".encode()).hexdigest()[:12]
+                    claims.append(Claim(
+                        id=claim_id,
+                        text=c.get("text", ""),
+                        source_id=source_id,
+                        source_name=source_name,
+                        chunk_text=chunk[:500],
+                        claim_type=c.get("type", "factual")
+                    ))
+                return claims
         except Exception as e:
             print(f"[CONTRADICTION] Claim extraction error: {e}")
             return []
@@ -163,27 +156,21 @@ If they do NOT contradict (they agree, are unrelated, or compatible), respond:
                 
                 result = response.json().get("response", "")
                 
-                # Parse JSON
-                try:
-                    start = result.find("{")
-                    end = result.rfind("}") + 1
-                    if start >= 0 and end > start:
-                        data = json.loads(result[start:end])
-                        
-                        if data.get("contradicts"):
-                            contra_id = hashlib.md5(f"{claim_a.id}:{claim_b.id}".encode()).hexdigest()[:12]
-                            return Contradiction(
-                                id=contra_id,
-                                claim_a=claim_a,
-                                claim_b=claim_b,
-                                contradiction_type=data.get("type", "factual"),
-                                severity=data.get("severity", "medium"),
-                                explanation=data.get("explanation", ""),
-                                resolution_hint=data.get("resolution_hint"),
-                                detected_at=datetime.utcnow().isoformat()
-                            )
-                except json.JSONDecodeError:
-                    pass
+                from utils.json_repair import robust_json_parse
+                data = robust_json_parse(result, label="ContradictionCheck", fallback={})
+                
+                if data.get("contradicts"):
+                    contra_id = hashlib.md5(f"{claim_a.id}:{claim_b.id}".encode()).hexdigest()[:12]
+                    return Contradiction(
+                        id=contra_id,
+                        claim_a=claim_a,
+                        claim_b=claim_b,
+                        contradiction_type=data.get("type", "factual"),
+                        severity=data.get("severity", "medium"),
+                        explanation=data.get("explanation", ""),
+                        resolution_hint=data.get("resolution_hint"),
+                        detected_at=datetime.utcnow().isoformat()
+                    )
                 
                 return None
         except Exception as e:

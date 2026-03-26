@@ -445,6 +445,13 @@ Write at least {target_exchanges} back-and-forth exchanges. Keep going — do NO
                     script, duration_minutes, skill_id, host_names=(name_a, name_b)
                 )
                 
+                # Diagnostic: track newline count through the pipeline
+                nl_count = script.count('\n')
+                line_count = len([l for l in script.split('\n') if l.strip()])
+                print(f"[AudioGen] Post-validation: {nl_count} newlines, {line_count} non-empty lines")
+                if nl_count == 0 and len(script.split()) > 50:
+                    print(f"[AudioGen] ⚠⚠⚠ WARNING: Script has NO newlines after validation! ({len(script.split())} words on 1 line)")
+                
                 # Track best attempt
                 wc = len(script.split())
                 if wc > best_word_count:
@@ -1725,12 +1732,18 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
             if not script or len(script.strip()) < 20:
                 raise RuntimeError("Script generation produced no usable content")
             
+            # Diagnostic: confirm script integrity before storage
+            nl_at_store = script.count('\n')
+            lines_at_store = len([l for l in script.split('\n') if l.strip()])
+            print(f"📝 Script generated for {audio_id}: {len(script)} chars, {len(script.split())} words, {nl_at_store} newlines, {lines_at_store} lines")
+            if nl_at_store == 0 and len(script.split()) > 50:
+                print(f"[AudioGen] ⚠⚠⚠ CRITICAL: Script about to be stored with NO newlines! This will break TTS parsing.")
+            
             # Save script to the record
             await audio_store.update(audio_id, {
                 "script": script,
                 "error_message": "Script ready. Starting audio generation..."
             })
-            print(f"📝 Script generated for {audio_id}: {len(script)} chars")
             
             # Stage 2: Generate audio
             await self._generate_audio_async(
@@ -1837,6 +1850,7 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
             gen_start_time = time.time()
             last_error = None
             real_done = 0
+            segments_failed = 0
             for i, (speaker, text) in enumerate(segments):
                 part_path = temp_dir / f"part_{i:04d}.wav"
                 
@@ -1904,15 +1918,26 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
                 except asyncio.TimeoutError:
                     last_error = f"Segment {real_done} timed out after {seg_timeout}s"
                     print(f"   ⚠ {last_error}, skipping")
-                    continue
+                    segments_failed += 1
                 except Exception as seg_err:
                     last_error = f"Segment {real_done}: {seg_err}"
                     print(f"   ⚠ Segment {real_done}/{total_real} failed: {seg_err}, skipping")
-                    continue
+                    segments_failed += 1
+                
+                # Early abort: if >70% of attempted segments have failed,
+                # something is fundamentally wrong — stop wasting time
+                if real_done >= 4 and segments_failed / real_done > 0.7:
+                    print(f"   ❌ ABORTING: {segments_failed}/{real_done} segments failed (>70%). TTS engine may be broken.")
+                    break
+            
+            # Log summary
+            segments_succeeded = len(part_paths)
+            if segments_failed > 0:
+                print(f"   📊 TTS segment summary: {segments_succeeded} succeeded, {segments_failed} failed out of {total_real} total")
             
             if not part_paths:
                 detail = f" Last error: {last_error}" if last_error else ""
-                raise RuntimeError(f"No audio segments were generated successfully.{detail}")
+                raise RuntimeError(f"No audio segments were generated successfully ({segments_failed}/{total_real} failed).{detail}")
             
             # Concatenate all parts into one speech file
             self._concatenate_wav_parts(part_paths, speech_path)
@@ -1976,6 +2001,23 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         and clean_text has stage directions, markdown, and labels stripped.
         Long turns are further chunked at sentence boundaries for reliable generation.
         """
+        # ── Safety net: ensure script has proper line breaks before parsing ──
+        # Defense-in-depth: if the script is a single mega-line despite all
+        # upstream fixes, split it at speaker-label boundaries here too.
+        if host_names and '\n' not in script.strip():
+            names = [re.escape(host_names[0]), re.escape(host_names[1]),
+                     r'Host\s*[AB]', r'Speaker\s*[12]', 'Assistant', 'User']
+            pattern = '|'.join(names)
+            script = re.sub(
+                rf'(?<=\S)\s+({pattern})\s*:',
+                lambda m: '\n' + m.group(1) + ':',
+                script,
+                flags=re.IGNORECASE
+            )
+            split_count = len([l for l in script.split('\n') if l.strip()])
+            if split_count > 1:
+                print(f"[AudioGen] ⚠ _parse_script_for_tts: Split single-line script into {split_count} lines (defense-in-depth)")
+        
         # First parse into raw speaker segments
         raw_segments = self._parse_script(script, host_names=host_names)
         
@@ -2353,6 +2395,28 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
             r'|^(?:part|section|segment|act)\s+\d+\b',
             re.IGNORECASE
         )
+        
+        # ── Mega-line safety net ──
+        # If the script has very few newlines relative to its length, the LLM
+        # likely crammed all dialogue onto one line.  Split at speaker-label
+        # boundaries so the parser can identify individual turns.
+        raw_lines = [l for l in script.split('\n') if l.strip()]
+        script_words = len(script.split())
+        if len(raw_lines) <= 2 and script_words > 100:
+            split_names = []
+            if host_names:
+                split_names.extend([re.escape(n) for n in host_names])
+            split_names.extend([r'Host\s*[AB]', r'Speaker\s*[12]', 'Assistant', 'User'])
+            split_pat = '|'.join(split_names)
+            script = re.sub(
+                rf'(?<=\S)\s+({split_pat})\s*:',
+                lambda m: '\n' + m.group(1) + ':',
+                script,
+                flags=re.IGNORECASE
+            )
+            new_line_count = len([l for l in script.split('\n') if l.strip()])
+            if new_line_count > len(raw_lines):
+                print(f"[AudioGen] ⚠ _parse_script: Split mega-line into {new_line_count} speaker turns (was {len(raw_lines)} lines, {script_words} words)")
         
         segments = []
         current_speaker = "A"

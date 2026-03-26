@@ -290,6 +290,362 @@ def detect_stagnation(notebook_id: str) -> Dict[str, Any]:
     }
 
 
+def record_query_outcomes(
+    notebook_id: str,
+    query_outcomes: Dict[str, Dict[str, int]],
+) -> None:
+    """Record per-query approval outcomes for adaptive learning.
+    
+    Args:
+        query_outcomes: {query_string: {"approved": N, "rejected": M, "total": T}}
+    """
+    if not query_outcomes:
+        return
+    
+    path = _get_query_outcomes_path(notebook_id)
+    existing = _load_query_outcomes(notebook_id)
+    
+    # Merge new outcomes into existing
+    for query, counts in query_outcomes.items():
+        key = query.lower().strip()
+        if key in existing:
+            existing[key]["approved"] += counts.get("approved", 0)
+            existing[key]["rejected"] += counts.get("rejected", 0)
+            existing[key]["total"] += counts.get("total", 0)
+            existing[key]["last_used"] = datetime.utcnow().isoformat()
+        else:
+            existing[key] = {
+                "query": query,
+                "approved": counts.get("approved", 0),
+                "rejected": counts.get("rejected", 0),
+                "total": counts.get("total", 0),
+                "first_used": datetime.utcnow().isoformat(),
+                "last_used": datetime.utcnow().isoformat(),
+            }
+    
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(existing, f, indent=2, default=str)
+    except Exception as e:
+        logger.error(f"Failed to save query outcomes for {notebook_id}: {e}")
+
+
+def get_successful_query_patterns(
+    notebook_id: str,
+    min_approval_rate: float = 0.3,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    """Get queries that historically produced approved items.
+    
+    Returns queries sorted by approval rate, filtered to those with
+    at least one approved item and above min_approval_rate.
+    Used to bias future query generation toward patterns that work.
+    """
+    outcomes = _load_query_outcomes(notebook_id)
+    if not outcomes:
+        return []
+    
+    successful = []
+    for key, data in outcomes.items():
+        total = data.get("total", 0)
+        approved = data.get("approved", 0)
+        if total == 0 or approved == 0:
+            continue
+        rate = approved / total
+        if rate >= min_approval_rate:
+            successful.append({
+                "query": data.get("query", key),
+                "approved": approved,
+                "rejected": data.get("rejected", 0),
+                "total": total,
+                "approval_rate": round(rate, 2),
+                "last_used": data.get("last_used"),
+            })
+    
+    successful.sort(key=lambda x: x["approval_rate"], reverse=True)
+    return successful[:limit]
+
+
+def get_failed_query_patterns(
+    notebook_id: str,
+    limit: int = 8,
+) -> List[str]:
+    """Get queries that consistently failed (0 approved items).
+    Used to tell the LLM what NOT to search for.
+    """
+    outcomes = _load_query_outcomes(notebook_id)
+    if not outcomes:
+        return []
+    
+    failed = []
+    for key, data in outcomes.items():
+        total = data.get("total", 0)
+        approved = data.get("approved", 0)
+        if total >= 2 and approved == 0:
+            failed.append(data.get("query", key))
+    
+    return failed[:limit]
+
+
+def _get_query_outcomes_path(notebook_id: str) -> Path:
+    notebooks_dir = Path(settings.data_dir) / "notebooks" / notebook_id
+    notebooks_dir.mkdir(parents=True, exist_ok=True)
+    return notebooks_dir / "query_outcomes.json"
+
+
+def _load_query_outcomes(notebook_id: str) -> Dict[str, Any]:
+    path = _get_query_outcomes_path(notebook_id)
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+# =========================================================================
+# Phase 4: Case-Based Reasoning — Store/Reuse Successful Collection Patterns
+# =========================================================================
+
+def record_collection_pattern(
+    notebook_id: str,
+    pattern: Dict[str, Any],
+) -> None:
+    """Store a successful collection pattern for future reuse.
+    
+    A pattern captures: strategy used, queries that worked, source types,
+    approval rate, and item characteristics — everything needed to replicate
+    a successful run.
+    """
+    path = _get_patterns_path(notebook_id)
+    patterns = _load_patterns(notebook_id)
+    
+    pattern["recorded_at"] = datetime.utcnow().isoformat()
+    patterns.append(pattern)
+    
+    # Keep only last 30 patterns
+    if len(patterns) > 30:
+        patterns = patterns[-30:]
+    
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(patterns, f, indent=2, default=str)
+    except Exception as e:
+        logger.error(f"Failed to save collection pattern for {notebook_id}: {e}")
+
+
+def get_best_patterns(
+    notebook_id: str,
+    min_approval_rate: float = 0.4,
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
+    """Retrieve the most successful collection patterns for a notebook.
+    
+    Used by Curator/Collector to inform strategy selection and query generation.
+    Returns patterns sorted by approval rate descending.
+    """
+    patterns = _load_patterns(notebook_id)
+    if not patterns:
+        return []
+    
+    good = [
+        p for p in patterns
+        if p.get("approval_rate", 0) >= min_approval_rate
+        and p.get("items_found", 0) >= 2
+    ]
+    good.sort(key=lambda p: p.get("approval_rate", 0), reverse=True)
+    return good[:limit]
+
+
+def get_recommended_strategy(notebook_id: str) -> Optional[str]:
+    """Recommend a collection strategy based on historical pattern success.
+    
+    Returns: 'iterative', 'deep_dive', 'standard', or None (no data).
+    """
+    patterns = _load_patterns(notebook_id)
+    if len(patterns) < 3:
+        return None  # Not enough data to recommend
+    
+    strategy_scores: Dict[str, List[float]] = {}
+    for p in patterns[-15:]:  # Last 15 runs
+        strategy = p.get("strategy", "standard")
+        rate = p.get("approval_rate", 0)
+        strategy_scores.setdefault(strategy, []).append(rate)
+    
+    if not strategy_scores:
+        return None
+    
+    # Pick strategy with highest average approval rate
+    best = max(
+        strategy_scores.items(),
+        key=lambda kv: sum(kv[1]) / len(kv[1]) if kv[1] else 0,
+    )
+    avg = sum(best[1]) / len(best[1])
+    if avg >= 0.3:
+        return best[0]
+    return None
+
+
+def _get_patterns_path(notebook_id: str) -> Path:
+    notebooks_dir = Path(settings.data_dir) / "notebooks" / notebook_id
+    notebooks_dir.mkdir(parents=True, exist_ok=True)
+    return notebooks_dir / "collection_patterns.json"
+
+
+def _load_patterns(notebook_id: str) -> List[Dict[str, Any]]:
+    path = _get_patterns_path(notebook_id)
+    if not path.exists():
+        return []
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+# =========================================================================
+# Phase 4: Post-Run Synthesis — Brief summary of what was collected
+# =========================================================================
+
+def record_run_synthesis(
+    notebook_id: str,
+    synthesis: Dict[str, Any],
+) -> None:
+    """Store a post-collection run synthesis for the Curator/morning brief.
+    
+    Synthesis includes: what was found, key themes, gaps identified,
+    and quality assessment. Stored separately from raw history for
+    fast morning brief generation.
+    """
+    path = _get_synthesis_path(notebook_id)
+    syntheses = _load_syntheses(notebook_id)
+    
+    synthesis["recorded_at"] = datetime.utcnow().isoformat()
+    syntheses.append(synthesis)
+    
+    # Keep last 10 syntheses
+    if len(syntheses) > 10:
+        syntheses = syntheses[-10:]
+    
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(syntheses, f, indent=2, default=str)
+    except Exception as e:
+        logger.error(f"Failed to save run synthesis for {notebook_id}: {e}")
+
+
+def get_recent_syntheses(
+    notebook_id: str,
+    limit: int = 3,
+) -> List[Dict[str, Any]]:
+    """Get recent collection run syntheses for the morning brief."""
+    syntheses = _load_syntheses(notebook_id)
+    return syntheses[-limit:] if syntheses else []
+
+
+def _get_synthesis_path(notebook_id: str) -> Path:
+    notebooks_dir = Path(settings.data_dir) / "notebooks" / notebook_id
+    notebooks_dir.mkdir(parents=True, exist_ok=True)
+    return notebooks_dir / "collection_syntheses.json"
+
+
+def _load_syntheses(notebook_id: str) -> List[Dict[str, Any]]:
+    path = _get_synthesis_path(notebook_id)
+    if not path.exists():
+        return []
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+# =========================================================================
+# Phase 4: Collection Quality Metrics
+# =========================================================================
+
+def get_collection_quality_metrics(notebook_id: str) -> Dict[str, Any]:
+    """Comprehensive quality metrics for a notebook's collection pipeline.
+    
+    Returns metrics useful for the morning brief and Profile dashboard:
+    - Overall health score (0-100)
+    - Source diversity rating
+    - Query effectiveness trend
+    - Stagnation risk level
+    - Recommended actions
+    """
+    history = _load_history(notebook_id)
+    patterns = _load_patterns(notebook_id)
+    query_outcomes = _load_query_outcomes(notebook_id)
+    
+    if not history:
+        return {"health_score": 0, "status": "no_data"}
+    
+    # Approval rate trend (last 5 runs vs previous 5)
+    recent_runs = history[-5:]
+    older_runs = history[-10:-5] if len(history) > 5 else []
+    
+    recent_approval = _calc_approval_rate(recent_runs)
+    older_approval = _calc_approval_rate(older_runs) if older_runs else recent_approval
+    trend = "improving" if recent_approval > older_approval + 0.05 else (
+        "declining" if recent_approval < older_approval - 0.05 else "stable"
+    )
+    
+    # Source diversity: count unique domains in recent approved items
+    unique_domains = set()
+    for run in recent_runs:
+        for q in run.get("queries_used", []):
+            if "site:" in q:
+                unique_domains.add(q.split("site:")[-1].split()[0])
+    
+    # Query effectiveness
+    total_queries = sum(len(r.get("queries_used", [])) for r in recent_runs)
+    effective_queries = 0
+    for key, data in query_outcomes.items():
+        if data.get("approved", 0) > 0:
+            effective_queries += 1
+    query_effectiveness = effective_queries / max(total_queries, 1)
+    
+    # Health score (0-100)
+    health = 0
+    health += min(40, recent_approval * 40)  # Up to 40 points from approval rate
+    health += min(20, len(unique_domains) * 5)  # Up to 20 from source diversity
+    health += min(20, query_effectiveness * 20)  # Up to 20 from query effectiveness
+    health += min(20, len(recent_runs) * 4)  # Up to 20 from activity level
+    
+    # Recommended actions
+    actions = []
+    if recent_approval < 0.2:
+        actions.append("Low approval rate — consider refining focus areas or subject")
+    if len(unique_domains) < 2:
+        actions.append("Low source diversity — try adding more RSS feeds or web pages")
+    if query_effectiveness < 0.2:
+        actions.append("Queries not producing results — subject may need refinement")
+    if trend == "declining":
+        actions.append("Collection quality declining — review recent rejections")
+    
+    return {
+        "health_score": round(health),
+        "approval_rate": round(recent_approval, 2),
+        "approval_trend": trend,
+        "source_diversity": len(unique_domains),
+        "query_effectiveness": round(query_effectiveness, 2),
+        "total_patterns_stored": len(patterns),
+        "recommended_actions": actions,
+        "status": "healthy" if health >= 60 else ("warning" if health >= 30 else "needs_attention"),
+    }
+
+
+def _calc_approval_rate(runs: List[Dict]) -> float:
+    total_found = sum(r.get("items_found", 0) for r in runs)
+    total_approved = sum(r.get("items_approved", 0) for r in runs)
+    return total_approved / max(total_found, 1)
+
+
 def get_collection_stats(notebook_id: str) -> Dict[str, Any]:
     """Get aggregate collection statistics for a notebook"""
     history = _load_history(notebook_id)

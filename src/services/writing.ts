@@ -76,7 +76,8 @@ export const writingService = {
     text: string,
     task: string = 'improve',
     formatStyle: string = 'professional',
-    maxWords: number = 500
+    maxWords: number = 500,
+    notebookId?: string
   ): Promise<WritingResult> {
     const response = await fetch(`${API_BASE}/writing/transform`, {
       method: 'POST',
@@ -86,6 +87,7 @@ export const writingService = {
         task,
         format_style: formatStyle,
         max_words: maxWords,
+        ...(notebookId && { notebook_id: notebookId }),
       }),
     });
     if (!response.ok) throw new Error('Failed to transform text');

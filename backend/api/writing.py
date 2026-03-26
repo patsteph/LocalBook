@@ -190,16 +190,30 @@ class TransformTextRequest(BaseModel):
     task: str = Field(default="improve")
     format_style: str = Field(default="professional")
     max_words: Optional[int] = Field(default=500, ge=50, le=2000)
+    notebook_id: Optional[str] = Field(default=None, description="If provided, use semantic context from this notebook")
 
 
 @router.post("/transform", response_model=WritingResponse)
 async def transform_text(request: TransformTextRequest):
-    """Transform user-provided text directly (no sources needed)."""
+    """Transform user-provided text. If notebook_id is given, use source context."""
     
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text is required")
     
     content = request.text
+    
+    # Optional logic: retrieve source context if requested
+    if request.notebook_id:
+        log_content_generated(request.notebook_id, "writing_panel", f"transform_{request.task}", "sourcelinked")
+        built = await context_builder.build_context(
+            notebook_id=request.notebook_id,
+            skill_id="writing",
+            topic=request.text[:200]  # Use the user's base string as the search semantic topic
+        )
+        if built.sources_used > 0:
+            content = f"Original text to transform:\n{request.text}\n\n" \
+                      f"Reference Context (Use these facts to enrich the transformation):\n{built.context}"
+            
     if request.max_words:
         content = f"Target length: approximately {request.max_words} words\n\n{content}"
     

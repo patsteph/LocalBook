@@ -617,32 +617,12 @@ Write 2-4 sentences of spoken narration for this slide. Output ONLY the narratio
         """Parse LLM output into Scene objects with quality validation."""
         text = raw_json.strip()
 
-        # Strip markdown code fences if present
-        text = re.sub(r'^```(?:json)?\s*', '', text)
-        text = re.sub(r'\s*```\s*$', '', text)
-        text = text.strip()
-
-        # Find the JSON array
-        start = text.find('[')
-        end = text.rfind(']')
-
-        scenes_data = None
-
-        if start != -1 and end != -1 and end > start:
-            json_str = text[start:end + 1]
-            try:
-                scenes_data = json.loads(json_str)
-            except json.JSONDecodeError as e:
-                logger.warning(f"[VideoStoryboard] JSON parse failed: {e}\nRaw excerpt: {json_str[:400]}")
-                # Try to fix common issues: trailing commas
-                fixed = re.sub(r',\s*([}\]])', r'\1', json_str)
-                try:
-                    scenes_data = json.loads(fixed)
-                except json.JSONDecodeError:
-                    pass  # Fall through to per-object recovery
+        from utils.json_repair import robust_json_parse
+        scenes_data = robust_json_parse(text, expect="array", fallback=None, label="VideoStoryboard")
 
         # Per-object recovery: extract individual scene objects from truncated/malformed output
         if scenes_data is None:
+            start = text.find('[')  # needed for recovery search below
             search_text = text[start:] if start != -1 else text
             logger.warning(f"[VideoStoryboard] Attempting per-object recovery from output ({len(search_text)} chars)")
             scenes_data = []

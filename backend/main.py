@@ -20,6 +20,10 @@ except ImportError:
     if os.path.exists("/etc/ssl/cert.pem"):
         os.environ.setdefault("SSL_CERT_FILE", "/etc/ssl/cert.pem")
 
+# ── Rich logging: colored output + better tracebacks ──
+from utils.logging_config import setup_logging
+setup_logging()
+
 # ── Quick-exit CLI flags (must run before any heavy imports) ──
 if "--verify-kokoro" in sys.argv or "--verify-tts" in sys.argv:
     failed = []
@@ -143,6 +147,27 @@ async def _run_startup_tasks():
 
     # ── Step 5: Checking embeddings ───────────────────────────────────────
     await _step("checking", "Checking embedding compatibility...", 55)
+
+    # ── Step 5b: Warm the macOS Keychain ──────────────────────────────────
+    # Proactively read API keys so macOS prompts for the login password NOW
+    # (while the user is watching startup) instead of later when the
+    # background scheduler tries to use Brave Search with a locked keychain.
+    async def _warm_keychain():
+        try:
+            from api.settings import get_api_key
+            keys_found = []
+            for key_name in ("brave_api_key", "youtube_api_key"):
+                val = get_api_key(key_name)
+                if val:
+                    keys_found.append(key_name)
+            if keys_found:
+                print(f"🔑 Keychain unlocked — {len(keys_found)} API key(s) ready for background collection")
+            else:
+                print("🔑 Keychain checked — no API keys configured (collection will use RSS/news feeds only)")
+        except Exception as e:
+            print(f"🔑 Keychain warm-up skipped: {e}")
+
+    await _step("checking", "Checking API keys...", 60, _warm_keychain())
 
     # ── Step 6: Starting background services ──────────────────────────────
     async def _start_services():

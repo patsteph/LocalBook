@@ -604,13 +604,9 @@ JSON:"""
                     }
                 )
                 result = response.json().get("response", "{}")
-                # Extract JSON from response
-                import json
-                # Find JSON in response
-                start = result.find("{")
-                end = result.rfind("}") + 1
-                if start >= 0 and end > start:
-                    analysis = json.loads(result[start:end])
+                from utils.json_repair import robust_json_parse
+                analysis = robust_json_parse(result, label="RAG-QueryAnalysis", fallback=None)
+                if analysis and isinstance(analysis, dict):
                     # Sanitize: LLM can return null for any field — guard all expected keys
                     analysis["search_terms"] = analysis.get("search_terms") or []
                     analysis["entities"] = analysis.get("entities") or []
@@ -823,28 +819,69 @@ JSON:"""
         # Step 2b: Adaptive search with multiple strategies and verification
         step_start = time.time()
         overcollect_k = settings.retrieval_overcollect if self._use_reranker else top_k
+        
+        results = []
+        strategies_used = []
+        used_graphrag = False
+        
+        # v1.1.0: GraphRAG Phase 2 - Holistic queries bypass chunk search if global summaries exist
         try:
-            # Use adaptive search that tries multiple strategies
-            results, strategies_used = await self._adaptive_search_progressive(
-                table, question, query_embedding, query_analysis, overcollect_k
-            )
-            search_time = time.time() - step_start
-            print(f"[RAG STREAM] Step 2 - Adaptive Search ({len(results)} results): {search_time:.2f}s")
-            
-            # v1.1.0: Send retrieval progress with preliminary results
-            yield {
-                "type": "retrieval_progress",
-                "chunks_found": len(results),
-                "strategies_tried": strategies_used,
-                "search_time_ms": int(search_time * 1000)
-            }
+            from services.community_detection import community_detector
+            if community_detector.is_holistic_query(question):
+                communities = community_detector.get_all_communities(notebook_id)
+                summary_communities = [c for c in communities if c.summary]
+                if summary_communities:
+                    summary_communities.sort(key=lambda c: c.size, reverse=True)
+                    top_communities = summary_communities[:top_k]
+                    
+                    for c in top_communities:
+                        results.append({
+                            "text": f"TOPIC OVERVIEW: {c.name}\n{c.summary}\nKey Entities: {', '.join(c.entities[:10])}",
+                            "source_id": "community_graph",
+                            "chunk_index": -1,
+                            "filename": f"System Summary: {c.name}",
+                            "source_type": "summary",
+                            "confidence": 0.95
+                        })
+                    
+                    strategies_used = ["GraphRAG_Global_Summary"]
+                    used_graphrag = True
+                    search_time = time.time() - step_start
+                    print(f"[RAG STREAM] Step 2 - GraphRAG bypass ({len(results)} results): {search_time:.2f}s")
+                    
+                    yield {
+                        "type": "retrieval_progress",
+                        "chunks_found": len(results),
+                        "strategies_tried": strategies_used,
+                        "search_time_ms": int(search_time * 1000)
+                    }
         except Exception as e:
-            print(f"[RAG STREAM] Search exception: {e}")
-            traceback.print_exc()
-            rag_metrics.record_error(str(e), RAGStage.VECTOR_SEARCH)
-            await rag_metrics.end_query((time.time() - total_start) * 1000)
-            yield {"type": "error", "content": f"Search error: {e}"}
-            return
+            print(f"[RAG STREAM] GraphRAG holistic check failed: {e}")
+            
+        if not used_graphrag:
+            try:
+                # Use adaptive search that tries multiple strategies
+                results, strategies_used = await self._adaptive_search_progressive(
+                    table, question, query_embedding, query_analysis, overcollect_k
+                )
+                search_time = time.time() - step_start
+                print(f"[RAG STREAM] Step 2 - Adaptive Search ({len(results)} results): {search_time:.2f}s")
+                
+                # v1.1.0: Send retrieval progress with preliminary results
+                yield {
+                    "type": "retrieval_progress",
+                    "chunks_found": len(results),
+                    "strategies_tried": strategies_used,
+                    "search_time_ms": int(search_time * 1000)
+                }
+            except Exception as e:
+                print(f"[RAG STREAM] Search exception: {e}")
+                import traceback
+                traceback.print_exc()
+                rag_metrics.record_error(str(e), RAGStage.VECTOR_SEARCH)
+                await rag_metrics.end_query((time.time() - total_start) * 1000)
+                yield {"type": "error", "content": f"Search error: {e}"}
+                return
 
         # Filter by source_ids if specified
         if source_ids:

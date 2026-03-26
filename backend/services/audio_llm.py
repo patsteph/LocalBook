@@ -467,26 +467,41 @@ class AudioLLMService:
         print(f"[AudioLLM] TTS: {len(chunks)} chunks, voice={voice_id}")
         
         all_segments: List[np.ndarray] = []
+        failed_chunks = 0
         
         for i, chunk in enumerate(chunks):
-            try:
-                # kokoro-mlx generate() returns TTSResult with audio: np.ndarray
-                result = self._model.generate(
-                    chunk,
-                    voice=voice_id,
-                    speed=speed,
-                )
-                if result.audio is not None and len(result.audio) > 0:
-                    audio_np = result.audio.flatten().astype(np.float32)
-                    all_segments.append(audio_np)
-                    dur = len(audio_np) / SAMPLE_RATE
-                    print(f"[AudioLLM]   chunk {i+1}: {dur:.1f}s")
-            except Exception as e:
-                print(f"[AudioLLM] Warning: chunk {i+1}/{len(chunks)} failed: {e}")
-                continue
+            success = False
+            for attempt in range(2):  # Try each chunk up to 2 times
+                try:
+                    result = self._model.generate(
+                        chunk,
+                        voice=voice_id,
+                        speed=speed,
+                    )
+                    if result.audio is not None and len(result.audio) > 0:
+                        audio_np = result.audio.flatten().astype(np.float32)
+                        all_segments.append(audio_np)
+                        dur = len(audio_np) / SAMPLE_RATE
+                        retry_note = " (retry)" if attempt > 0 else ""
+                        print(f"[AudioLLM]   chunk {i+1}/{len(chunks)}: {dur:.1f}s{retry_note}")
+                        success = True
+                        break
+                    else:
+                        print(f"[AudioLLM] Warning: chunk {i+1}/{len(chunks)} returned empty audio (attempt {attempt+1})")
+                except Exception as e:
+                    if attempt == 0:
+                        print(f"[AudioLLM] Warning: chunk {i+1}/{len(chunks)} failed (attempt 1): {e} — retrying")
+                    else:
+                        print(f"[AudioLLM] ERROR: chunk {i+1}/{len(chunks)} failed after retry: {e}")
+                        print(f"[AudioLLM]   chunk text ({len(chunk)} chars): {chunk[:80]}...")
+            if not success:
+                failed_chunks += 1
+        
+        if failed_chunks > 0:
+            print(f"[AudioLLM] ⚠ TTS summary: {len(all_segments)}/{len(chunks)} chunks succeeded, {failed_chunks} failed")
         
         if not all_segments:
-            raise RuntimeError("No audio generated from any text chunk")
+            raise RuntimeError(f"No audio generated from any text chunk ({len(chunks)} chunks all failed)")
         
         # Crossfade segments for seamless output
         final_audio = self._crossfade_segments(all_segments)

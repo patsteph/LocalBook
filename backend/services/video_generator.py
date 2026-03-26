@@ -350,12 +350,15 @@ class VideoGenerator:
 
         part_paths: list[Path] = []
         last_error = None
+        chunks_failed = 0
+        chunks_attempted = 0
         gen_start = time.time()
 
         for idx, chunk_text in enumerate(chunks):
             if not chunk_text.strip():
                 continue
 
+            chunks_attempted += 1
             part_path = temp_dir / f"part_{idx:04d}.wav"
 
             # Progress update with ETA
@@ -389,14 +392,20 @@ class VideoGenerator:
                     logger.info(f"[VideoGen] ✓ Chunk {idx + 1}/{total_chunks}: {len(chunk_text)} chars → {part_path.name}")
                 else:
                     logger.warning(f"[VideoGen] Chunk {idx + 1} produced no usable file, skipping")
+                    chunks_failed += 1
             except asyncio.TimeoutError:
                 last_error = f"Chunk {idx + 1} timed out after {chunk_timeout}s"
                 logger.warning(f"[VideoGen] ⚠ {last_error}, skipping")
-                continue
+                chunks_failed += 1
             except Exception as seg_err:
                 last_error = f"Chunk {idx + 1}: {seg_err}"
                 logger.warning(f"[VideoGen] ⚠ Chunk {idx + 1} failed: {seg_err}, skipping")
-                continue
+                chunks_failed += 1
+
+            # Early abort: if >70% of attempted chunks have failed, stop
+            if chunks_attempted >= 4 and chunks_failed / chunks_attempted > 0.7:
+                logger.error(f"[VideoGen] ❌ ABORTING: {chunks_failed}/{chunks_attempted} chunks failed (>70%). TTS engine may be broken.")
+                break
 
             # Resource cleanup between chunks — prevent thermal throttling
             gc.collect()
@@ -407,9 +416,12 @@ class VideoGenerator:
                 pass
             await asyncio.sleep(0.3)
 
+        if chunks_failed > 0:
+            logger.warning(f"[VideoGen] 📊 TTS summary: {len(part_paths)} succeeded, {chunks_failed} failed out of {total_chunks} total")
+
         if not part_paths:
             detail = f" Last error: {last_error}" if last_error else ""
-            raise RuntimeError(f"No narration audio chunks generated successfully.{detail}")
+            raise RuntimeError(f"No narration audio chunks generated successfully ({chunks_failed}/{total_chunks} failed).{detail}")
 
         # Concatenate WAV parts into final narration file
         await video_store.update(video_id, {

@@ -471,6 +471,16 @@ export const CollectorSetupWizard: React.FC<CollectorSetupWizardProps> = ({
             autoFocus
           />
 
+          {/* Intent preview — show what the collector will look for */}
+          {subject.trim() && selectedTemplate && (
+            <p className="intent-preview">
+              <span className="intent-preview__icon">🔍</span>
+              {selectedTemplate.defaults.intent_template
+                ? selectedTemplate.defaults.intent_template.replace('{subject}', subject.trim())
+                : `Research on ${subject.trim()}`}
+            </p>
+          )}
+
           {/* Focus areas (chips) */}
           <label className="refine-label refine-label--mt">Focus areas</label>
           <div className="wizard-chips-container">

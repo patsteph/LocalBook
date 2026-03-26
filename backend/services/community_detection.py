@@ -340,6 +340,35 @@ SUMMARY: [2-3 sentence summary]"""
             print(f"[CommunityDetector] Summary generation failed: {e}")
             return ""
     
+    async def build_missing_summaries(
+        self,
+        notebook_id: str,
+        entity_graph
+    ) -> int:
+        """Find all communities in a notebook missing a summary and generate them.
+        
+        Returns the number of summaries generated.
+        """
+        if notebook_id not in self._communities:
+            return 0
+        
+        generated_count = 0
+        communities_to_build = []
+        
+        for comm_id, comm in self._communities[notebook_id].items():
+            if not comm.summary:
+                communities_to_build.append(comm_id)
+                
+        for comm_id in communities_to_build:
+            summary = await self.generate_community_summary(notebook_id, comm_id, entity_graph)
+            if summary:
+                generated_count += 1
+                
+        if generated_count > 0:
+            print(f"[CommunityDetector] Built {generated_count} missing community summaries for {notebook_id}")
+            
+        return generated_count
+    
     def get_community_for_entity(
         self,
         notebook_id: str,

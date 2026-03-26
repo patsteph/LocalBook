@@ -162,14 +162,10 @@ Respond ONLY with the JSON, no other text."""
                 result = response.json()
                 text = result.get("response", "")
                 
-                # Parse JSON from response
-                try:
-                    # Find JSON in response
-                    json_match = re.search(r'\{[\s\S]*\}', text)
-                    if json_match:
-                        return json.loads(json_match.group())
-                except json.JSONDecodeError:
-                    pass
+                from utils.json_repair import robust_json_parse
+                parsed = robust_json_parse(text, label="MemoryAgent", fallback=None)
+                if parsed is not None:
+                    return parsed
         
         return None
     
@@ -563,9 +559,9 @@ Rules:
                     result = response.json()
                     text = result.get("response", "")
                     
-                    json_match = re.search(r'\{[\s\S]*\}', text)
-                    if json_match:
-                        data = json.loads(json_match.group())
+                    from utils.json_repair import robust_json_parse
+                    data = robust_json_parse(text, label="MemoryAgent-Summary", fallback=None)
+                    if data is not None:
                         
                         summary_obj = ConversationSummary(
                             conversation_id=entries[0].conversation_id,

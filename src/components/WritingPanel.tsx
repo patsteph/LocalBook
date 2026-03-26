@@ -21,6 +21,7 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
   const [selectedTask, setSelectedTask] = useState('improve');
   const [selectedFormat, setSelectedFormat] = useState('professional');
   const [maxWords, setMaxWords] = useState(500);
+  const [useSources, setUseSources] = useState(false);
   const [result, setResult] = useState<WritingResult | null>(null);
 
   useEffect(() => {
@@ -53,7 +54,8 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
         directInput,
         selectedTask,
         selectedFormat,
-        maxWords
+        maxWords,
+        useSources ? notebookId : undefined
       );
       setResult(data);
     } catch (err: any) {
@@ -153,9 +155,33 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
           className="w-full"
         />
       </div>
+      
+      {/* Source Context Toggle */}
+      <div className="flex items-center space-x-2 py-1">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={useSources}
+          onClick={() => setUseSources(!useSources)}
+          className={`${
+            useSources ? 'bg-blue-600' : 'bg-gray-200 dark:bg-gray-700'
+          } relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out`}
+        >
+          <span
+            aria-hidden="true"
+            className={`${
+              useSources ? 'translate-x-4' : 'translate-x-0'
+            } pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out`}
+          />
+        </button>
+        <div className="flex flex-col">
+          <span className="text-sm font-medium text-gray-900 dark:text-white">Use Notebook Sources</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">Enrich the text with facts from your documents</span>
+        </div>
+      </div>
 
       <Button onClick={handleGenerate} disabled={loading || !directInput.trim()} className="w-full">
-        {loading ? <LoadingSpinner size="sm" /> : '✨ Transform'}
+        {loading ? <LoadingSpinner size="sm" /> : (useSources ? '📚 Transform with Sources' : '✨ Transform')}
       </Button>
 
       {error && (

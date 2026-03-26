@@ -866,36 +866,50 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
                   <input type="range" min="1" max="10" value={videoDuration} onChange={e => setVideoDuration(parseInt(e.target.value))} className="w-full h-1.5 accent-blue-600" />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Visual Style</label>
-                  <div className="grid grid-cols-3 gap-1">
+                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1.5">Visual Style</label>
+                  <div className="flex gap-1 overflow-x-auto scrollbar-hide">
                     {(videoStyles.length > 0 ? videoStyles.filter(s => !s.is_custom) : [
-                      { id: 'classic', name: 'Classic', accent_color: '#4361ee', bg_color: '#FFFFFF' },
-                      { id: 'dark', name: 'Dark', accent_color: '#818cf8', bg_color: '#0f0f1a' },
-                      { id: 'whiteboard', name: 'Whiteboard', accent_color: '#e74c3c', bg_color: '#faf8f5' },
-                      { id: 'midnight', name: 'Midnight', accent_color: '#06d6a0', bg_color: '#0a0a1a' },
-                      { id: 'warm', name: 'Warm', accent_color: '#d4763c', bg_color: '#fdf6ee' },
-                      { id: 'ocean', name: 'Ocean', accent_color: '#0077b6', bg_color: '#f0f7ff' },
-                    ]).map(s => (
-                      <button key={s.id} onClick={() => setVideoStyle(s.id)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors text-center flex items-center justify-center gap-1 ${videoStyle === s.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
-                        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: s.accent_color }} />
-                        {s.name}
+                      { id: 'classic',    name: 'Classic',    accent_color: '#4361ee', bg_color: '#FFFFFF',  text_color: '#1a1a2e' },
+                      { id: 'dark',       name: 'Dark',       accent_color: '#818cf8', bg_color: '#0f0f1a',  text_color: '#e2e8f0' },
+                      { id: 'whiteboard', name: 'Whiteboard', accent_color: '#e74c3c', bg_color: '#faf8f5',  text_color: '#2d2d2d' },
+                      { id: 'midnight',   name: 'Midnight',   accent_color: '#06d6a0', bg_color: '#0a0a1a',  text_color: '#e2e8f0' },
+                      { id: 'warm',       name: 'Warm',       accent_color: '#d4763c', bg_color: '#fdf6ee',  text_color: '#3d2b1f' },
+                      { id: 'ocean',      name: 'Ocean',      accent_color: '#0077b6', bg_color: '#f0f7ff',  text_color: '#023e8a' },
+                    ] as Array<{ id: string; name: string; accent_color: string; bg_color: string; text_color?: string }>).map(s => (
+                      <button
+                        key={s.id}
+                        onClick={() => setVideoStyle(s.id)}
+                        className={`flex flex-col items-center gap-0.5 px-2 py-1 rounded-lg border transition-colors flex-shrink-0 ${videoStyle === s.id ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
+                      >
+                        {/* Mini bg/accent swatch */}
+                        <div className="w-8 h-5 rounded flex items-center justify-center overflow-hidden flex-shrink-0" style={{ backgroundColor: s.bg_color, border: '1px solid rgba(0,0,0,0.1)' }}>
+                          <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: s.accent_color }} />
+                        </div>
+                        <span className="text-[10px] text-gray-600 dark:text-gray-400 leading-none">{s.name}</span>
                       </button>
                     ))}
                   </div>
                   {videoStyles.some(s => s.is_custom) && (
                     <div className="mt-1.5">
                       <label className="block text-[10px] font-medium text-purple-500 dark:text-purple-400 mb-1">Your Templates</label>
-                      <div className="grid grid-cols-2 gap-1">
+                      <div className="flex gap-1 overflow-x-auto scrollbar-hide">
                         {videoStyles.filter(s => s.is_custom).map(s => (
-                          <button key={s.id} onClick={() => setVideoStyle(s.id)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors text-center flex items-center justify-center gap-1 ${videoStyle === s.id ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 ring-1 ring-purple-400' : 'border-purple-200 dark:border-purple-700 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/10'}`}>
-                            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: s.accent_color }} />
-                            {s.name}
+                          <button
+                            key={s.id}
+                            onClick={() => setVideoStyle(s.id)}
+                            className={`flex flex-col items-center gap-0.5 px-2 py-1 rounded-lg border transition-colors flex-shrink-0 ${videoStyle === s.id ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20' : 'border-purple-200 dark:border-purple-700 hover:bg-purple-50 dark:hover:bg-purple-900/10'}`}
+                          >
+                            <div className="w-8 h-5 rounded flex items-center justify-center overflow-hidden flex-shrink-0" style={{ backgroundColor: s.bg_color || '#fff', border: '1px solid rgba(0,0,0,0.1)' }}>
+                              <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: s.accent_color }} />
+                            </div>
+                            <span className="text-[10px] text-purple-600 dark:text-purple-400 leading-none">{s.name}</span>
                           </button>
                         ))}
                       </div>
                     </div>
                   )}
                 </div>
+
                 <div>
                   <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Narrator Voice</label>
                   <div className="flex gap-1">

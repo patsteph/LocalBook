@@ -1114,24 +1114,12 @@ What theme or topic connects them? Respond with just a 2-4 word name (no punctua
                         text = result.get("response", "")
                         print(f"[KG-LLM] Response length: {len(text)} chars")
                         
-                        # Parse JSON from response - try multiple strategies
-                        json_match = re.search(r'\{[\s\S]*\}', text)
-                        if json_match:
-                            json_str = json_match.group()
-                            try:
-                                parsed = json.loads(json_str)
-                                print(f"[KG-LLM] Parsed JSON: {len(parsed.get('concepts', []))} concepts")
-                                return parsed
-                            except json.JSONDecodeError as e:
-                                print(f"[KG-LLM] JSON parse error: {e}")
-                                # Try to fix common issues: trailing commas
-                                fixed = re.sub(r',(\s*[}\]])', r'\1', json_str)
-                                try:
-                                    parsed = json.loads(fixed)
-                                    print(f"[KG-LLM] Fixed JSON: {len(parsed.get('concepts', []))} concepts")
-                                    return parsed
-                                except json.JSONDecodeError as e2:
-                                    print(f"[KG-LLM] Fixed JSON also failed: {e2}")
+                        # Parse JSON from response
+                        from utils.json_repair import robust_json_parse
+                        parsed = robust_json_parse(text, label="KG-LLM", fallback=None)
+                        if parsed is not None:
+                            print(f"[KG-LLM] Parsed JSON: {len(parsed.get('concepts', []))} concepts")
+                            return parsed
                         else:
                             print(f"[KG-LLM] No JSON found in response: {text[:200]}...")
                         # Got response but couldn't parse - don't retry

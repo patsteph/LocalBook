@@ -9,6 +9,7 @@ The Curator acts as judge/parent/teacher/cop for the multi-agent system:
 - Proactive cross-notebook discovery
 - Devil's Advocate mode
 """
+import asyncio
 import json
 import logging
 import yaml
@@ -185,6 +186,10 @@ class CuratorAgent:
         self.name = self.config.get("name", "Curator")
         self.personality = self.config.get("personality", "helpful and thorough")
         self._pending_insights: List[ProactiveInsight] = self._load_insights()
+        # Master scheduler lock — ensures only ONE notebook collection runs at a time.
+        # Prevents Ollama contention when multiple notebooks are due simultaneously.
+        self._collection_lock = asyncio.Lock()
+        self._active_collection: Optional[str] = None  # notebook_id currently collecting
     
     def _get_config_path(self) -> Path:
         """Get path to curator config file"""
@@ -1144,9 +1149,16 @@ RULES:
 - Use exact numbers from the data. Never invent or round.
 - This is a WEEKLY summary — use "this week", "over the past week", "this week's research" framing.
 - Distinguish collector-gathered sources from user-added ones.
-- Tone: warm, reflective, slightly celebratory of progress. Like a trusted advisor reviewing the week together.
 - Length: 300-500 words. More substantial than the daily brief.
-- Use markdown for structure.
+
+NEWSLETTER FORMATTING (CRITICAL):
+- Use markdown extensively for a modern newsletter layout.
+- Use `###` headers for each notebook or major section to break up text visually.
+- Use **bold** liberally for source titles, key metrics, and important entities.
+- Use bullet points (`-`) for lists of items (like newly discovered sources or threads).
+- Keep paragraphs very short (1-2 sentences). Absolutely NO dense walls of text. Be highly scannable.
+- Insert blank lines between sections to give the text room to breathe.
+- Tone: warm, reflective, slightly celebratory of progress. Like a trusted advisor reviewing the week together.
 
 Write the weekly wrap up now:"""
         
@@ -1230,6 +1242,29 @@ Write the weekly wrap up now:"""
             if runs_since and not stats["top_item"]:
                 approved = stats["collection_items_approved"]
                 stats["top_item"] = f"Collector ran {len(runs_since)} time{'s' if len(runs_since) != 1 else ''}, approved {approved} of {stats['collection_items_found']} items examined"
+        except Exception:
+            pass
+        
+        # Phase 4: Collection quality metrics + recent syntheses for enriched brief
+        try:
+            from services.collection_history import get_collection_quality_metrics, get_recent_syntheses
+            quality = get_collection_quality_metrics(notebook_id)
+            stats["collection_health_score"] = quality.get("health_score", 0)
+            stats["collection_health_status"] = quality.get("status", "no_data")
+            stats["collection_approval_trend"] = quality.get("approval_trend", "stable")
+            stats["collection_recommended_actions"] = quality.get("recommended_actions", [])
+            
+            syntheses = get_recent_syntheses(notebook_id, limit=2)
+            if syntheses:
+                # Extract approved titles from recent syntheses for the brief
+                recent_titles = []
+                for s in syntheses:
+                    recent_titles.extend(s.get("approved_titles", []))
+                stats["recent_approved_titles"] = recent_titles[:5]
+                # Extract gap reasons if any runs had zero approvals
+                gaps = [s.get("gap_reasons", {}) for s in syntheses if s.get("gap_reasons")]
+                if gaps:
+                    stats["collection_gap_reasons"] = gaps[0]
         except Exception:
             pass
         
@@ -1765,23 +1800,18 @@ USER NOTES — the user's own thinking, captured in their own words:
 - Connect notes to other activity when possible: "The notes you wrote about [topic] align with what the collector is finding" or "Your note on [topic] could inform the collector's search direction"
 - Notes signal what the user cares about MORE than sources — sources are inputs, notes are the user's own synthesis
 
-NEWSLETTER STRUCTURE (use the sections that have data, skip empty ones):
-1. **Lead** — Start with the single most interesting or actionable finding. If there's a specific article title, use it. If the collector found new sources, lead with that. If the user wrote notes, that's also a strong lead.
-2. **Per-notebook updates** — For each notebook with activity, write 1-3 sentences highlighting specifics. Use actual titles, names, and details. Never say "1 new items" — say what the item IS. Include Studio output and notes here if present.
-3. **Collector discoveries** — ONLY if collector_added > 0 or pending_approval > 0. If the collector stored new sources, name the titles and nudge the user to review. If it only examined items but stored 0, do NOT write this section.
-4. **Research momentum** — If there's velocity data, copy the pre-computed numbers EXACTLY: "Your library grew from X to Y (+N new, P% growth)." If pace data exists, include it: "pace is up Q% vs last week." NEVER compute your own percentages.
-5. **Coming up** — If there are upcoming events or key dates, make them feel urgent.
-6. **Unfinished threads** — If there are unfinished conversations, gently remind the user: "You were exploring [topic] — want to pick that back up?" Frame it as helpful, not nagging.
-7. **Emerging interests** — If topic drift is detected, mention it: "I'm noticing a growing interest in [topic] — this is new territory for your research." Make the user feel seen.
-8. **One week ago** — If there are temporal lookback items, create a "This time last week" moment. Connect past to present.
-9. **Collection health** — ONLY if stagnation data is present. If a notebook's collection has stagnated or plateaued, mention it concisely: "Your [notebook] collector hasn't found new content in N days — I've expanded the search to adjacent topics." If plateau severity, suggest the user add new sources or expand scope. Keep it to 1-2 sentences max.
-10. **Suggested action** — End with ONE specific, actionable next step. If collector sources need review, that should be the action. If a notebook is stagnating, suggest reviewing the collector profile or adding new sources.
+NEWSLETTER FORMATTING (CRITICAL):
+- Use markdown extensively for a modern newsletter layout.
+- Use `###` headers for each notebook or major section to break up text visually.
+- Use **bold** liberally for source titles, key metrics, and important entities.
+- Use bullet points (`-`) for lists of items (like newly discovered sources or threads).
+- Keep paragraphs very short (1-2 sentences). Absolutely NO dense walls of text. Be highly scannable.
+- Insert blank lines between sections to give the text room to breathe.
 
 TONE:
 - Warm, professional, like a trusted advisor who knows your research intimately
 - Confident and specific — never vague or generic
 - Brief — aim for 300-600 words total. ALWAYS finish your last sentence completely.
-- Use markdown: **bold** for emphasis, bullet points for lists, but keep it readable
 - The collector callouts, studio output, unfinished threads, emerging interests, and lookback sections are what make this feel MAGICAL — these show the user the system is paying attention. Prioritize them when present.
 
 Write the brief now:"""
@@ -2281,7 +2311,24 @@ Respond with JSON only:
         self,
         notebook_id: str
     ) -> Dict[str, Any]:
-        """Orchestrate collection for a single notebook"""
+        """Orchestrate collection for a single notebook (under master lock)."""
+        # Acquire collection lock — only one notebook collects at a time
+        if self._collection_lock.locked():
+            active = self._active_collection or "unknown"
+            logger.info(f"[CURATOR] Batch collection queued for {notebook_id[:8]} — waiting on {active[:8]}")
+        
+        async with self._collection_lock:
+            self._active_collection = notebook_id
+            try:
+                return await self._orchestrate_notebook_collection_inner(notebook_id)
+            finally:
+                self._active_collection = None
+
+    async def _orchestrate_notebook_collection_inner(
+        self,
+        notebook_id: str
+    ) -> Dict[str, Any]:
+        """Inner batch collection logic — always called under _collection_lock."""
         from agents.collector import get_collector
         
         collector = get_collector(notebook_id)
@@ -2385,6 +2432,41 @@ Respond with JSON only:
             )
         except Exception as hist_err:
             logger.warning(f"Failed to record collection history (non-fatal): {hist_err}")
+        
+        # Phase 3: Source auto-discovery on stagnation
+        if result["items_approved"] == 0:
+            try:
+                from services.collection_history import detect_stagnation
+                stagnation = detect_stagnation(notebook_id)
+                if stagnation.get("stagnating"):
+                    discovery = await collector.auto_discover_sources(stagnation)
+                    if discovery.get("auto_expanded"):
+                        logger.info(f"[Phase3] Auto-expanded sources for {notebook_id[:8]} after stagnation")
+            except Exception as disc_err:
+                logger.debug(f"Source discovery failed (non-fatal): {disc_err}")
+        
+        # Phase 4: Record CBR pattern + post-run synthesis (batch path)
+        try:
+            from services.collection_history import record_collection_pattern, record_run_synthesis
+            total = result["items_approved"] + result["items_pending"] + result["items_rejected"]
+            rate = result["items_approved"] / max(total, 1)
+            record_collection_pattern(notebook_id, {
+                "strategy": collection_task.get("strategy", "standard"),
+                "queries": collection_task.get("smart_queries", [])[:6],
+                "items_found": result["items_collected"],
+                "items_approved": result["items_approved"],
+                "approval_rate": round(rate, 2),
+                "trigger": "orchestrated",
+            })
+            record_run_synthesis(notebook_id, {
+                "items_found": result["items_collected"],
+                "items_approved": result["items_approved"],
+                "items_pending": result["items_pending"],
+                "strategy": collection_task.get("strategy", "standard"),
+                "trigger": "orchestrated",
+            })
+        except Exception:
+            pass
         
         return result
     
@@ -2750,6 +2832,30 @@ Recent content summaries already in the notebook:
                 avoid_queries_text = f"""
 QUERIES USED IN RECENT RUNS (do NOT repeat these or close variants — generate FRESH queries):
 {chr(10).join(f'  ✗ {q}' for q in recently_used_queries[-12:])}"""
+
+            # ── Adaptive query learning: inject successful/failed patterns ──
+            adaptive_block = ""
+            try:
+                from services.collection_history import get_successful_query_patterns, get_failed_query_patterns
+                successful = get_successful_query_patterns(notebook_id, min_approval_rate=0.3, limit=5)
+                failed = get_failed_query_patterns(notebook_id, limit=5)
+                
+                if successful:
+                    good_examples = [f'  ✓ "{p["query"]}" ({p["approval_rate"]*100:.0f}% approved)' for p in successful]
+                    adaptive_block += f"""
+QUERY PATTERNS THAT WORKED WELL (generate similar styles):
+{chr(10).join(good_examples)}"""
+                
+                if failed:
+                    bad_examples = [f'  ✗ "{q}"' for q in failed]
+                    adaptive_block += f"""
+QUERY PATTERNS THAT ALWAYS FAILED (avoid these styles):
+{chr(10).join(bad_examples)}"""
+                
+                if adaptive_block:
+                    print(f"[CURATOR] 📈 Adaptive learning: {len(successful)} good patterns, {len(failed)} bad patterns")
+            except Exception:
+                pass
             
             # Build stagnation context for the prompt if applicable
             stagnation_prompt_block = ""
@@ -2778,6 +2884,7 @@ SUBJECT: {subject or '(general)'}
 FOCUS AREAS: {focus_areas_str}
 {existing_context}
 {avoid_queries_text}
+{adaptive_block}
 {stagnation_prompt_block}
 
 Generate 6-8 SPECIFIC search queries that would find NEW, valuable content not already covered.
@@ -2940,11 +3047,37 @@ Respond with ONLY a JSON array of strings, no other text:
         Curator assigns an immediate collection task for a specific notebook.
         Called when user clicks "Collect Now" - but Curator still orchestrates.
         
+        Master scheduler lock ensures only one notebook collects at a time,
+        preventing Ollama contention from parallel collection runs.
+        
         Args:
             deadline_seconds: Max seconds for the pipeline. None = no deadline
                               (used by background scheduler for thorough runs).
             trigger: 'manual', 'scheduled', or 'specific' — recorded in history.
         """
+        # Acquire collection lock — only one notebook collects at a time
+        if self._collection_lock.locked():
+            active = self._active_collection or "unknown"
+            logger.info(f"[CURATOR] Collection queued for {notebook_id[:8]} — waiting on {active[:8]}")
+            print(f"[CURATOR] ⏳ Waiting for {active[:8]}... to finish before collecting {notebook_id[:8]}")
+        
+        async with self._collection_lock:
+            self._active_collection = notebook_id
+            try:
+                return await self._execute_collection(
+                    notebook_id, specific_query, deadline_seconds, trigger
+                )
+            finally:
+                self._active_collection = None
+    
+    async def _execute_collection(
+        self,
+        notebook_id: str,
+        specific_query: Optional[str] = None,
+        deadline_seconds: Optional[int] = 120,
+        trigger: str = "manual",
+    ) -> Dict[str, Any]:
+        """Inner collection logic — always called under _collection_lock."""
         import time as _time
         deadline = (_time.time() + deadline_seconds) if deadline_seconds else None
         
@@ -3059,9 +3192,15 @@ Respond with ONLY a JSON array of strings, no other text:
                         approved += 1
                         approved_titles.append({"id": item.id, "title": item.title, "source": item.source_name, "confidence": item.overall_confidence})
                     else:
-                        # Item was approved but filtered (shallow content, duplicate, etc.)
-                        filtered += 1
-                        filtered_titles.append({"title": item.title, "source": item.source_name, "confidence": item.overall_confidence, "reason": "shallow_or_duplicate"})
+                        # Item was approved but couldn't be stored (duplicate URL or shallow).
+                        # Route to approval queue so the user can still see it, rather
+                        # than silently dropping potentially relevant content.
+                        queue_result = await collector._add_to_approval_queue(item)
+                        if queue_result == 'queued':
+                            pending += 1
+                        else:
+                            filtered += 1
+                            filtered_titles.append({"title": item.title, "source": item.source_name, "confidence": item.overall_confidence, "reason": "shallow_or_duplicate"})
                 except Exception as e:
                     logger.error(f"Failed to store approved item '{item.title}': {e}")
                     filtered += 1
@@ -3101,6 +3240,82 @@ Respond with ONLY a JSON array of strings, no other text:
             )
         except Exception as hist_err:
             logger.warning(f"Failed to record collection history (non-fatal): {hist_err}")
+        
+        # ── Adaptive query learning: record per-query outcomes ──
+        try:
+            from services.collection_history import record_query_outcomes
+            # Build query→outcome map: attribute each item's result to its likely source query
+            # Simple heuristic: match item title words to query words
+            all_queries = list(task.get("smart_queries", [])) + list(task.get("exploration_queries", []))
+            if all_queries:
+                query_outcomes: Dict[str, Dict[str, int]] = {}
+                for q in all_queries:
+                    query_outcomes[q] = {"approved": 0, "rejected": 0, "total": 0}
+                
+                # Attribute each item to the best-matching query
+                for item, judgment in zip(collected_items, judgments):
+                    best_query = None
+                    best_overlap = 0
+                    title_words = set(item.title.lower().split())
+                    for q in all_queries:
+                        q_words = set(q.lower().split())
+                        overlap = len(title_words & q_words)
+                        if overlap > best_overlap:
+                            best_overlap = overlap
+                            best_query = q
+                    if not best_query:
+                        best_query = all_queries[0]  # Default to first query
+                    
+                    query_outcomes[best_query]["total"] += 1
+                    if judgment.decision == JudgmentDecision.APPROVE:
+                        query_outcomes[best_query]["approved"] += 1
+                    elif judgment.decision == JudgmentDecision.REJECT:
+                        query_outcomes[best_query]["rejected"] += 1
+                
+                record_query_outcomes(notebook_id, query_outcomes)
+                logger.info(f"[Adaptive] Recorded outcomes for {len(query_outcomes)} queries")
+        except Exception as aq_err:
+            logger.debug(f"Adaptive query recording failed (non-fatal): {aq_err}")
+        
+        # ── Phase 4: Record collection pattern (CBR) + post-run synthesis ──
+        try:
+            from services.collection_history import record_collection_pattern, record_run_synthesis
+            
+            total_judged = approved + pending + rejected + filtered
+            approval_rate = approved / max(total_judged, 1)
+            strategy_used = task.get("strategy", "auto")
+            if strategy_used == "auto":
+                strategy_used = "iterative" if not deadline else "standard"
+            
+            # Record pattern for CBR
+            record_collection_pattern(notebook_id, {
+                "strategy": strategy_used,
+                "queries": task.get("smart_queries", [])[:6],
+                "items_found": len(collected_items),
+                "items_approved": approved,
+                "approval_rate": round(approval_rate, 2),
+                "trigger": "specific" if specific_query else trigger,
+                "iteration_count": task.get("_iteration_count"),
+                "total_queries_used": task.get("_total_queries_used"),
+            })
+            
+            # Record post-run synthesis
+            synthesis = {
+                "approved_titles": [t["title"] for t in approved_titles[:5]],
+                "items_found": len(collected_items),
+                "items_approved": approved,
+                "items_pending": pending,
+                "strategy": strategy_used,
+                "trigger": "specific" if specific_query else trigger,
+                "top_sources": list(set(t.get("source", "") for t in approved_titles))[:4],
+            }
+            # Add gap info if nothing was approved
+            if approved == 0 and rejection_reasons:
+                synthesis["gap_reasons"] = dict(list(rejection_reasons.items())[:3])
+            record_run_synthesis(notebook_id, synthesis)
+            
+        except Exception as p4_err:
+            logger.debug(f"Phase 4 recording failed (non-fatal): {p4_err}")
         
         return {
             "items_collected": len(collected_items),

@@ -721,6 +721,9 @@ Richard Feynman believed that if you can't explain something simply, you don't t
 3. Identify gaps — what you can't explain simply reveals what you don't actually understand
 4. Simplify further — break everything to first principles, then rebuild at progressive difficulty levels
 
+STEP-BACK PROMPTING (CRITICAL PRE-STEP):
+Before explaining anything, you MUST explicitly identify the deep underlying principle or law of physics/logic that governs the concept you are about to explain. First state "The Underlying Principle:", then explain the concept based purely on that foundation.
+
 HEADING FORMAT — USE EXACTLY THESE HEADINGS (do NOT use Roman numerals):
 - # Curriculum Overview
 - ## Part 1: Foundation

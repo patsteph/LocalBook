@@ -25,6 +25,7 @@ CURATOR_INTENTS: List[Dict[str, str]] = [
     {"id": "devils_advocate", "desc": "User wants counterarguments, challenges, or a devil's advocate perspective", "params": "thesis: the claim or topic to challenge (if specified)"},
     {"id": "show_profile", "desc": "User wants to see the curator's current configuration or settings", "params": "none"},
     {"id": "note_themes", "desc": "User wants to extract themes from their notes, suggest keywords for the collector based on notes, or connect their notes to collector searches", "params": "none"},
+    {"id": "collection_schedule", "desc": "User wants to see the collection schedule, when collectors last ran, what they found, or overall collection status across all notebooks", "params": "none"},
     {"id": "cross_notebook_search", "desc": "User is asking a question that requires searching across notebooks (default for general questions)", "params": "query: the search question"},
 ]
 

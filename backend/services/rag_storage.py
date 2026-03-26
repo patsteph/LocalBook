@@ -66,6 +66,7 @@ def get_table(notebook_id: str):
                 "vector": placeholder_embedding,
                 "text": "placeholder",
                 "parent_text": "",  # v0.60: Parent document context
+                "synthetic_questions": "",  # v1.1.0: HyDE metadata enrichment
                 "source_id": "placeholder",
                 "chunk_index": 0,
                 "filename": "placeholder",
@@ -108,6 +109,18 @@ def table_has_parent_text(table) -> bool:
     return False
 
 
+def table_has_synthetic_questions(table) -> bool:
+    """Check if table schema includes synthetic_questions column."""
+    try:
+        schema = table.schema
+        for field in schema:
+            if field.name == "synthetic_questions":
+                return True
+    except Exception:
+        pass
+    return False
+
+
 # ─── Document Ingestion ──────────────────────────────────────────────────────────
 
 async def ingest_document(
@@ -130,14 +143,19 @@ async def ingest_document(
         if summary:
             print(f"[RAG] Generated summary for {filename}: {len(summary)} chars")
 
+    # Generate synthetic questions for HyDE
+    questions = await generate_chunk_questions(chunks)
+    texts_to_embed = [f"{c}\n\nQuestions this answers:\n{q}" if q else c for c, q in zip(chunks, questions)]
+
     # Generate embeddings
-    embeddings = rag_embeddings.encode(chunks)
+    embeddings = await rag_embeddings.encode_async(texts_to_embed)
 
     # Insert into LanceDB
     table = get_table(notebook_id)
 
-    # Check if table supports parent_text (v0.60 feature)
+    # Check schema evolution flags
     has_parent_text = table_has_parent_text(table)
+    has_synthetic_questions = table_has_synthetic_questions(table)
 
     # Prepare data for insertion with metadata
     data = []
@@ -152,6 +170,8 @@ async def ingest_document(
         }
         if has_parent_text:
             row["parent_text"] = rag_chunking.get_parent_context(chunks, i, max_parent_chars=2000)
+        if has_synthetic_questions:
+            row["synthetic_questions"] = questions[i] if i < len(questions) else ""
         data.append(row)
 
     # Add summary as a special chunk (chunk_index = -1) for quick retrieval
@@ -167,6 +187,8 @@ async def ingest_document(
         }
         if has_parent_text:
             summary_row["parent_text"] = ""
+        if has_synthetic_questions:
+            summary_row["synthetic_questions"] = ""
         data.append(summary_row)
 
     table.add(data)
@@ -204,6 +226,18 @@ async def ingest_document(
                     )
                     if relationships:
                         print(f"[RAG] Extracted {len(relationships)} relationships from {filename}")
+                        
+                        # GraphRAG Phase 2: Detect communities and build missing summaries
+                        try:
+                            from services.community_detection import community_detector
+                            await community_detector.detect_communities(notebook_id, entity_graph)
+                            # Run summary building as a separate nested task to not block
+                            safe_create_task(
+                                community_detector.build_missing_summaries(notebook_id, entity_graph),
+                                name="community-summary-builder"
+                            )
+                        except Exception as comm_err:
+                            print(f"[RAG] Community detection failed: {comm_err}")
         except Exception as e:
             print(f"[RAG] Entity/relationship extraction failed (non-fatal): {e}")
 
@@ -251,8 +285,12 @@ async def append_to_document(
     if chunk_prefix:
         chunks = [f"{chunk_prefix}{chunk}" for chunk in chunks]
 
+    # Generate synthetic questions
+    questions = await generate_chunk_questions(chunks)
+    texts_to_embed = [f"{c}\n\nQuestions this answers:\n{q}" if q else c for c, q in zip(chunks, questions)]
+
     # Generate embeddings
-    embeddings = rag_embeddings.encode(chunks)
+    embeddings = await rag_embeddings.encode_async(texts_to_embed)
 
     # Get existing table
     table = get_table(notebook_id)
@@ -266,8 +304,9 @@ async def append_to_document(
     except Exception:
         max_chunk_index = 0
 
-    # Check if table supports parent_text
+    # Check if table supports legacy columns
     has_parent_text = table_has_parent_text(table)
+    has_synthetic_questions = table_has_synthetic_questions(table)
 
     # Prepare data for insertion
     data = []
@@ -282,6 +321,8 @@ async def append_to_document(
         }
         if has_parent_text:
             row["parent_text"] = ""
+        if has_synthetic_questions:
+            row["synthetic_questions"] = questions[i] if i < len(questions) else ""
         data.append(row)
 
     table.add(data)
@@ -338,6 +379,47 @@ def search_chunks(notebook_id: str, query_text: str, top_k: int = 5) -> List[Dic
     except Exception as e:
         print(f"[RAG] search_chunks failed for {notebook_id}: {e}")
         return []
+
+
+# ─── LLM Question & Summary Generation ──────────────────────────────────────────
+
+async def generate_chunk_questions(chunks: List[str]) -> List[str]:
+    """Generate synthetic questions for each chunk using phi4-mini (HyDE)."""
+    if not chunks:
+        return []
+    
+    semaphore = asyncio.Semaphore(5)  # Limit concurrency
+    timeout = httpx.Timeout(45.0)
+    
+    async def get_questions(chunk: str) -> str:
+        prompt = (
+            "Read the following text and write exactly 3 short, specific questions "
+            "that this text directly answers. Do not include any intro/outro.\n\n"
+            f"Text:\n{chunk[:2000]}\n\nQuestions:"
+        )
+        async with semaphore:
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(
+                        f"{settings.ollama_base_url}/api/generate",
+                        json={
+                            "model": settings.ollama_fast_model,
+                            "prompt": prompt,
+                            "stream": False,
+                            "options": {
+                                "temperature": 0.3,
+                                "num_predict": 100,
+                            }
+                        }
+                    )
+                    if response.status_code == 200:
+                        return response.json().get("response", "").strip()
+            except Exception as e:
+                print(f"[RAG] Question generation failed: {e}")
+        return ""
+
+    tasks = [get_questions(c) for c in chunks]
+    return await asyncio.gather(*tasks)
 
 
 # ─── Document Summary ────────────────────────────────────────────────────────────

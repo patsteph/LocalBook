@@ -120,8 +120,9 @@ echo -e "${GREEN}✓ Pre-flight checks passed${NC}"
 # =============================================================================
 # Step 2: Lock Dependencies
 # =============================================================================
-echo -e "\n${YELLOW}Step 2/9: Locking Python dependencies...${NC}"
+echo -e "\n${YELLOW}Step 2/9: Locking dependencies...${NC}"
 
+# --- Python ---
 cd backend
 source .venv/bin/activate
 
@@ -149,6 +150,16 @@ fi
 
 deactivate
 cd ..
+
+# --- Rust (Cargo) ---
+echo -e "  Updating Cargo dependencies..."
+cargo update --manifest-path src-tauri/Cargo.toml 2>&1 | tail -5
+echo -e "${GREEN}  ✓ Cargo.lock updated${NC}"
+
+# --- Node (npm) ---
+echo -e "  Updating npm dependencies..."
+npm update --silent
+echo -e "${GREEN}  ✓ package-lock.json updated${NC}"
 
 # =============================================================================
 # Step 3: Run Workload Tests
@@ -343,11 +354,17 @@ echo -e "${GREEN}✓ Created ${EXTENSION_ARCHIVE} (${EXT_SIZE})${NC}"
 echo -e "\n${YELLOW}Step 8/9: Git operations...${NC}"
 
 # Commit version changes if any
-if [ -n "$(git status --porcelain package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json extension/package.json backend/version.py 2>/dev/null)" ]; then
-    echo -e "  Committing version bump..."
-    git add package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json extension/package.json backend/version.py
-    git commit -m "chore: bump version to ${NEW_VERSION}"
-    echo -e "${GREEN}  ✓ Version bump committed${NC}"
+# Stage version files + lock files updated during the release pipeline
+git add package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json extension/package.json backend/version.py \
+       Cargo.lock package-lock.json backend/requirements.txt 2>/dev/null || true
+
+if [ -n "$(git diff --cached --name-only)" ]; then
+    echo -e "  Committing release changes..."
+    git diff --cached --name-only | sed 's/^/    /' 
+    git commit -m "chore: release v${NEW_VERSION}"
+    echo -e "${GREEN}  ✓ Release changes committed${NC}"
+else
+    echo -e "  No changes to commit"
 fi
 
 echo -e "\n${YELLOW}Create git tag v${NEW_VERSION}? (y/n)${NC}"
@@ -371,8 +388,11 @@ echo -e "  📦 ${ARCHIVE_NAME} (main app)"
 echo -e "  🧩 ${EXTENSION_ARCHIVE} (browser extension)"
 echo -e ""
 echo -e "${BLUE}Next steps:${NC}"
-echo -e "  1. Push to GitHub:  ${YELLOW}git push origin main --tags${NC}"
+echo -e "  1. Push to GitHub:  ${YELLOW}git push localbook master --tags${NC}"
 echo -e "  2. Create GitHub Release at: ${YELLOW}https://github.com/patsteph/LocalBook/releases/new${NC}"
 echo -e "  3. Upload both archives to the release"
+echo -e ""
+echo -e "${BLUE}Curl-install users will auto-upgrade via:${NC}"
+echo -e "  ${YELLOW}/bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/patsteph/LocalBook/master/install.sh)\"${NC}"
 echo -e ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

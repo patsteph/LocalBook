@@ -361,17 +361,11 @@ RULES:
             result = response.json().get("response", "{}")
             logger.info(f"[Theme Extractor] LLM response: {result[:300]}...")
             
-            # Parse JSON
-            json_match = re.search(r'\{[\s\S]*\}', result)
-            if not json_match:
+            # Parse JSON (robust handling of trailing commas, markdown fences, etc.)
+            from utils.json_repair import robust_json_parse
+            data = robust_json_parse(result, label="ThemeExtractor", fallback=None)
+            if data is None:
                 raise ValueError("No JSON found in LLM response")
-            
-            json_str = json_match.group()
-            # Fix common JSON errors
-            json_str = re.sub(r',\s*}', '}', json_str)
-            json_str = re.sub(r',\s*]', ']', json_str)
-            
-            data = json.loads(json_str)
             
             # Clean and validate themes
             themes = [clean_theme_name(t) for t in data.get("themes", [])]

@@ -560,6 +560,61 @@ async def _stream_curator(chat_query: ChatQuery):
             handled = True
 
         # -----------------------------------------------------------------
+        # COLLECTION SCHEDULE STATUS
+        # -----------------------------------------------------------------
+        elif intent == "collection_schedule":
+            yield f"data: {json.dumps({'type': 'status', 'message': f'{curator_name} checking collection schedule...', 'query_type': 'curator'})}\n\n"
+            try:
+                from services.collection_scheduler import collection_scheduler
+                from services.collection_history import get_collection_history
+                from agents.collector import get_collector
+                from storage.notebook_store import notebook_store
+
+                sched = collection_scheduler.get_status()
+                notebooks = await notebook_store.list()
+                nb_names = {nb["id"]: nb.get("title", nb.get("name", nb["id"][:8])) for nb in notebooks}
+
+                lines = [f"**Collection Schedule Dashboard**\n"]
+                lines.append(f"- **Scheduler:** {'🟢 Running' if sched.get('running') else '🔴 Stopped'}")
+                lines.append(f"- **Notebooks tracked:** {sched.get('notebooks_tracked', 0)}\n")
+
+                details = sched.get("schedule_details", {})
+                if details:
+                    lines.append("| Notebook | Frequency | Last Run | Next Due | Status |")
+                    lines.append("|----------|-----------|----------|----------|--------|")
+                    for nb_id, info in details.items():
+                        name = nb_names.get(nb_id, nb_id[:12])
+                        freq = info.get("frequency", "?")
+                        last = info.get("last_run", "never")[:16].replace("T", " ")
+                        next_due = info.get("next_due", "?")[:16].replace("T", " ")
+                        overdue = info.get("overdue", False)
+                        status = "⏰ Overdue" if overdue else "✅ On track"
+                        lines.append(f"| {name} | {freq} | {last} | {next_due} | {status} |")
+
+                lines.append("\n**Recent Collection Results:**\n")
+                for nb_id in details:
+                    name = nb_names.get(nb_id, nb_id[:12])
+                    try:
+                        runs = get_collection_history(nb_id, limit=3)
+                        if runs:
+                            for run in runs[:2]:
+                                ts = str(run.get("timestamp", "?"))[:16]
+                                approved = run.get("items_approved", 0)
+                                rejected = run.get("items_rejected", 0)
+                                found = run.get("items_found", run.get("items_collected", "?"))
+                                lines.append(f"- **{name}** ({ts}): found {found}, approved {approved}, rejected {rejected}")
+                        else:
+                            lines.append(f"- **{name}**: No recent runs recorded")
+                    except Exception:
+                        lines.append(f"- **{name}**: History unavailable")
+
+                reply = "\n".join(lines)
+                follow_ups = ['Collect now for all notebooks', 'Show source health', 'What patterns exist?']
+            except Exception as se:
+                reply = f"Could not retrieve schedule status: {se}"
+            handled = True
+
+        # -----------------------------------------------------------------
         # FALLBACK: CROSS-NOTEBOOK RAG SEARCH (default behavior)
         # -----------------------------------------------------------------
         if not handled:

@@ -378,20 +378,11 @@ RULES:
                 print(f"[Visual Extraction] Raw LLM response ({len(result)} chars): {result[:500]}...")
                 
                 # Parse the structure extraction with robust JSON handling
-                json_match = re.search(r'\{[\s\S]*\}', result)
-                if not json_match:
-                    raise ValueError("No JSON found in extraction response")
-                
-                json_str = json_match.group()
-                # Fix common LLM JSON errors: trailing commas, single quotes
-                json_str = re.sub(r',\s*}', '}', json_str)
-                json_str = re.sub(r',\s*]', ']', json_str)
-                
-                try:
-                    structure = json.loads(json_str)
-                except json.JSONDecodeError:
-                    # Try to extract at least themes from malformed JSON
-                    themes_match = re.findall(r'"themes"\s*:\s*\[(.*?)\]', json_str, re.DOTALL)
+                from utils.json_repair import robust_json_parse
+                structure = robust_json_parse(result, label="VisualAnalyzer", fallback=None)
+                if structure is None:
+                    # Last-resort: regex extract themes from malformed JSON
+                    themes_match = re.findall(r'"themes"\s*:\s*\[(.*?)\]', result, re.DOTALL)
                     if themes_match:
                         theme_items = re.findall(r'"([^"]+)"', themes_match[0])
                         structure = {"themes": theme_items}

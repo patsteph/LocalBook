@@ -46,7 +46,7 @@ async fn check_backend_health() -> Result<bool, String> {
 // Function to check backend health
 async fn check_health() -> Result<bool, Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
         .build()?;
 
     let response = client
@@ -350,7 +350,7 @@ async fn start_backend(app_handle: &AppHandle) -> Result<Option<std::process::Ch
 }
 
 // Function to wait for backend to be ready
-async fn wait_for_backend_ready(max_attempts: u32) -> Result<(), Box<dyn std::error::Error>> {
+async fn wait_for_backend_ready(max_attempts: u32) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Waiting for backend to be ready...");
 
     for attempt in 1..=max_attempts {
@@ -374,10 +374,44 @@ async fn wait_for_backend_ready(max_attempts: u32) -> Result<(), Box<dyn std::er
 }
 
 // ── Backend Watchdog ──────────────────────────────────────────────────────────
-// Monitors backend health after initial startup. On crash:
-//   1. Logs to backend_crashes.log
-//   2. Emits "backend-health" Tauri event to the frontend (for user alert)
-//   3. Attempts silent restart (up to MAX_RESTARTS)
+// Two-tier health monitoring (industry best practice, adapted from K8s probes):
+//
+//   Tier 1 — PID check: Is the managed process still alive?
+//            If NO  → process crashed → restart immediately (fast recovery)
+//            If YES → proceed to Tier 2
+//
+//   Tier 2 — HTTP liveness: Can it respond to /health?
+//            If YES → healthy, reset counters
+//            If NO  → process alive but slow (memory pressure) → be patient
+//                     Only restart after HTTP_FAIL_THRESHOLD consecutive failures
+//
+// This prevents the death spiral where a slow-but-alive backend under memory
+// pressure gets killed, restarted, and killed again in a tight loop.
+//
+// On confirmed crash:
+//   1. Logs to backend_crashes.log (+ checks macOS DiagnosticReports)
+//   2. Emits "backend-health" Tauri event to the frontend
+//   3. Attempts silent restart with exponential backoff (up to MAX_RESTARTS)
+
+/// Check whether the managed backend process is still running.
+/// Returns true if the process is alive, false if it has exited or we don't
+/// have a tracked process (dev mode).
+fn is_process_alive(process_ref: &Arc<Mutex<Option<std::process::Child>>>) -> Option<bool> {
+    if let Ok(mut guard) = process_ref.lock() {
+        if let Some(ref mut child) = *guard {
+            // try_wait: Ok(Some(_)) = exited, Ok(None) = still running, Err = unknown
+            match child.try_wait() {
+                Ok(Some(_status)) => Some(false), // Process exited
+                Ok(None) => Some(true),            // Still running
+                Err(_) => Some(true),              // Assume alive on error (safe default)
+            }
+        } else {
+            None // No tracked process (dev mode) — skip PID checks
+        }
+    } else {
+        None // Mutex poisoned — skip PID checks
+    }
+}
 
 async fn backend_watchdog(
     app_handle: AppHandle,
@@ -385,11 +419,27 @@ async fn backend_watchdog(
     ready_ref: Arc<Mutex<bool>>,
     status_ref: Arc<Mutex<BackendStatus>>,
 ) {
-    const CHECK_INTERVAL: Duration = Duration::from_secs(10);
-    const FAIL_THRESHOLD: u32 = 3;
+    // ── Tuning constants (K8s best practices for memory-pressure-prone apps) ──
+    //
+    // LIVENESS_INTERVAL: 15s — K8s recommends 15-30s for liveness probes
+    // LIVENESS_TIMEOUT:   5s — K8s recommends 3-5s; generous for memory pressure
+    // HTTP_FAIL_THRESHOLD: 8 — 8 × 15s = 120s of unresponsiveness before restart
+    //                          (K8s default is 3; we're generous because our app
+    //                          legitimately goes slow under Ollama memory pressure)
+    // PROCESS_DEAD_CONFIRMS: 2 — confirm PID gone twice to avoid race conditions
+    // STARTUP_GRACE_SECS:  90 — model warmup + background tasks need time
+    // RESTART_GRACE_SECS:  90 — same grace period after a restart recovery
+    // MAX_RESTARTS:         5 — with exponential backoff between attempts
+
+    const LIVENESS_INTERVAL: Duration = Duration::from_secs(15);
+    const HTTP_FAIL_THRESHOLD: u32 = 8;
+    const PROCESS_DEAD_CONFIRMS: u32 = 2;
+    const STARTUP_GRACE_SECS: u64 = 90;
+    const RESTART_GRACE_SECS: u64 = 90;
     const MAX_RESTARTS: u32 = 5;
 
-    let mut consecutive_failures: u32 = 0;
+    let mut http_failures: u32 = 0;
+    let mut pid_dead_count: u32 = 0;
     let mut restart_count: u32 = 0;
 
     // Wait for initial startup to complete before monitoring
@@ -404,37 +454,74 @@ async fn backend_watchdog(
 
     println!("[Watchdog] Backend health monitoring active");
 
+    // Startup grace period — backend startup is resource-intensive
+    // (model warmup, KG extraction, memory scheduler, etc.)
+    tokio::time::sleep(Duration::from_secs(STARTUP_GRACE_SECS)).await;
+    println!("[Watchdog] Startup grace period ({}s) complete — monitoring started", STARTUP_GRACE_SECS);
+
     loop {
-        tokio::time::sleep(CHECK_INTERVAL).await;
+        tokio::time::sleep(LIVENESS_INTERVAL).await;
 
-        let healthy = check_health().await.unwrap_or(false);
+        // ── Tier 1: PID check — is the process still alive? ──
+        let pid_status = is_process_alive(&process_ref);
 
-        if healthy {
-            if consecutive_failures > 0 {
-                println!(
-                    "[Watchdog] Backend healthy after {} failed check(s)",
-                    consecutive_failures
-                );
+        if pid_status == Some(false) {
+            // Process has exited — this is a real crash
+            pid_dead_count += 1;
+            println!(
+                "[Watchdog] Process exited! (confirm {}/{})",
+                pid_dead_count, PROCESS_DEAD_CONFIRMS
+            );
+
+            if pid_dead_count >= PROCESS_DEAD_CONFIRMS {
+                // Confirmed dead — skip HTTP checks, go straight to restart
+                println!("[Watchdog] Process confirmed dead — initiating restart");
+                http_failures = 0;
+                pid_dead_count = 0;
+                // Fall through to restart logic below
+            } else {
+                continue; // Wait for confirmation
             }
-            consecutive_failures = 0;
-            continue;
+        } else {
+            // Process is alive (or dev mode) — reset PID counter
+            pid_dead_count = 0;
+
+            // ── Tier 2: HTTP liveness — can it respond? ──
+            let healthy = check_health().await.unwrap_or(false);
+
+            if healthy {
+                if http_failures > 0 {
+                    println!(
+                        "[Watchdog] Backend responsive after {} slow check(s) — healthy",
+                        http_failures
+                    );
+                }
+                http_failures = 0;
+                continue; // All good
+            }
+
+            // Process alive but HTTP failed — likely slow under memory pressure
+            http_failures += 1;
+            println!(
+                "[Watchdog] HTTP liveness failed ({}/{}) — process alive, likely under pressure",
+                http_failures, HTTP_FAIL_THRESHOLD
+            );
+
+            if http_failures < HTTP_FAIL_THRESHOLD {
+                continue; // Be patient — process is alive, just slow
+            }
+
+            // Exhausted patience — process alive but unresponsive for 2+ minutes
+            println!(
+                "[Watchdog] Backend unresponsive for {}s — initiating restart",
+                http_failures as u64 * LIVENESS_INTERVAL.as_secs()
+            );
+            http_failures = 0;
         }
 
-        consecutive_failures += 1;
-        println!(
-            "[Watchdog] Health check failed ({}/{})",
-            consecutive_failures, FAIL_THRESHOLD
-        );
-
-        if consecutive_failures < FAIL_THRESHOLD {
-            continue;
-        }
-
-        // ── Backend is confirmed down ──
-        println!("[Watchdog] ⚠ Backend crash detected!");
+        // ── Backend needs restart ──
         log_crash_to_file(&app_handle, restart_count);
 
-        // Update state
         if let Ok(mut ready) = ready_ref.lock() {
             *ready = false;
         }
@@ -445,7 +532,6 @@ async fn backend_watchdog(
                 Some("Backend process stopped unexpectedly".to_string());
         }
 
-        // Notify frontend
         let _ = app_handle.emit(
             "backend-health",
             serde_json::json!({
@@ -478,7 +564,7 @@ async fn backend_watchdog(
             break;
         }
 
-        // ── Attempt restart ──
+        // ── Attempt restart with exponential backoff ──
         restart_count += 1;
         println!(
             "[Watchdog] Restart attempt {}/{}",
@@ -522,7 +608,7 @@ async fn backend_watchdog(
                 match wait_for_backend_ready(30).await {
                     Ok(_) => {
                         println!(
-                            "[Watchdog] ✓ Backend recovered (restart #{})",
+                            "[Watchdog] Backend recovered (restart #{})",
                             restart_count
                         );
                         if let Ok(mut ready) = ready_ref.lock() {
@@ -541,18 +627,23 @@ async fn backend_watchdog(
                                 "message": "Backend recovered successfully"
                             }),
                         );
-                        consecutive_failures = 0;
+
+                        // Post-restart grace period — startup tasks are
+                        // resource-intensive (model warmup, KG extraction)
+                        println!(
+                            "[Watchdog] Post-restart grace period ({}s)...",
+                            RESTART_GRACE_SECS
+                        );
+                        tokio::time::sleep(Duration::from_secs(RESTART_GRACE_SECS)).await;
                     }
                     Err(e) => {
                         println!("[Watchdog] Backend failed to recover: {}", e);
-                        // Will loop and try again
-                        consecutive_failures = FAIL_THRESHOLD;
+                        // Will loop and try again on next iteration
                     }
                 }
             }
             Err(e) => {
                 println!("[Watchdog] Failed to restart backend: {}", e);
-                consecutive_failures = FAIL_THRESHOLD;
             }
         }
     }

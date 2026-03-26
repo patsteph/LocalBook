@@ -867,7 +867,7 @@ print(f'Whisper model cached at: {local_dir}')
             info "Auto-confirmed upgrade (--yes)"
         fi
 
-        TOTAL_STEPS=7
+        TOTAL_STEPS=8
         START_TIME=$(date +%s)
 
         echo ""
@@ -1051,8 +1051,61 @@ print(f'Whisper cached at: {local_dir}')
         deactivate
         success "All AI models verified"
 
-        # Step 7: Install to Applications
-        step 7 "Installing to Applications"
+        # Step 7: Upgrade RAG engine (only for existing vectordb)
+        step 7 "Upgrading RAG engine"
+
+        local lance_tables_upgrade
+        lance_tables_upgrade=$(ls -d "$DATA_DIR/lancedb/notebook_"* 2>/dev/null | wc -l | tr -d ' ')
+
+        local rag_v3_marker="$DATA_DIR/.rag_v3_upgraded"
+
+        if [ -f "$rag_v3_marker" ]; then
+            success "RAG V3 upgrade already completed (skipping)"
+        elif [ "$lance_tables_upgrade" -gt 0 ]; then
+            info "Existing vector data found (${lance_tables_upgrade} notebook(s)) — running RAG V3 upgrade..."
+            info "This enriches your search index with HyDE metadata and GraphRAG summaries."
+            info "(May take several minutes depending on data size and local LLM speed)"
+
+            # Ensure Ollama is running (should be from Step 6, but verify)
+            if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+                info "Starting Ollama service for RAG upgrade..."
+                ollama serve >/dev/null 2>&1 &
+                local ollama_retries=0
+                while ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; do
+                    sleep 2
+                    ollama_retries=$((ollama_retries + 1))
+                    if [ $ollama_retries -gt 15 ]; then
+                        warn "Ollama failed to start — skipping RAG upgrade (will run on next upgrade)"
+                        break
+                    fi
+                done
+            fi
+
+            if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+                # shellcheck disable=SC1091
+                source "$INSTALL_DIR/backend/.venv/bin/activate"
+
+                # Set LOCALBOOK_DATA_DIR so the upgrade script finds the right database
+                export LOCALBOOK_DATA_DIR="$DATA_DIR"
+
+                if python "$INSTALL_DIR/backend/scripts/upgrade_rag_v3.py" 2>&1; then
+                    # Write sentinel so subsequent upgrades skip this step
+                    date -u "+%Y-%m-%dT%H:%M:%SZ" > "$rag_v3_marker"
+                    success "RAG V3 upgrade complete"
+                else
+                    warn "RAG upgrade encountered issues (non-fatal — app will still work)"
+                    info "You can re-run the upgrade later: cd $INSTALL_DIR/backend && python scripts/upgrade_rag_v3.py"
+                fi
+
+                deactivate
+            fi
+        else
+            info "No existing vector data found — skipping RAG upgrade (not needed for fresh data)"
+            success "RAG engine up to date"
+        fi
+
+        # Step 8: Install to Applications
+        step 8 "Installing to Applications"
 
         # Close the app if it's running
         if pgrep -f "LocalBook" >/dev/null 2>&1; then
