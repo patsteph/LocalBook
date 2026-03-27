@@ -587,20 +587,58 @@ main() {
         # FlashRank reranker (~34MB) — improves search result quality
         mkdir -p "$DATA_DIR/models/flashrank" 2>/dev/null || true
         local reranker_cache="$DATA_DIR/models/flashrank/ms-marco-MiniLM-L-12-v2"
-        if [ -d "$reranker_cache" ] && [ "$(ls -A "$reranker_cache" 2>/dev/null)" ]; then
+        local reranker_onnx="$reranker_cache/flashrank-MiniLM-L-12-v2_Q.onnx"
+        if [ -f "$reranker_onnx" ]; then
             success "FlashRank reranker (already cached)"
         else
-            info "Downloading FlashRank reranker (~34MB) — search quality booster..."
-            python -c "
-import os
-from flashrank import Ranker
-cache_dir = os.path.expanduser('~/Library/Application Support/LocalBook/models/flashrank')
-os.makedirs(cache_dir, exist_ok=True)
-ranker = Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir=cache_dir)
-print('Reranker model cached successfully')
-" || warn "FlashRank download failed (non-fatal — app will retry on launch)"
+            # Clean up partial/empty downloads from previous failed attempts
             if [ -d "$reranker_cache" ]; then
+                rm -rf "$reranker_cache"
+            fi
+            info "Downloading FlashRank reranker (~34MB) — search quality booster..."
+            local reranker_ok=false
+            local reranker_attempt=1
+            while [ $reranker_attempt -le 3 ]; do
+                if python -c "
+import os, shutil
+# Apply SSL fix inside Python — critical for fresh macOS installs
+try:
+    import certifi
+    os.environ['SSL_CERT_FILE'] = certifi.where()
+    os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+    os.environ['CURL_CA_BUNDLE'] = certifi.where()
+except ImportError:
+    pass
+cache_dir = os.path.expanduser('~/Library/Application Support/LocalBook/models/flashrank')
+model_dir = os.path.join(cache_dir, 'ms-marco-MiniLM-L-12-v2')
+os.makedirs(cache_dir, exist_ok=True)
+from flashrank import Ranker
+ranker = Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir=cache_dir)
+# Validate the ONNX model file actually exists
+onnx_path = os.path.join(model_dir, 'flashrank-MiniLM-L-12-v2_Q.onnx')
+if not os.path.exists(onnx_path):
+    # Clean up partial download so next attempt starts fresh
+    shutil.rmtree(model_dir, ignore_errors=True)
+    raise RuntimeError(f'ONNX model file not found at {onnx_path}')
+print('Reranker model cached and validated successfully')
+" 2>&1; then
+                    reranker_ok=true
+                    break
+                fi
+                if [ $reranker_attempt -lt 3 ]; then
+                    warn "Reranker download failed (attempt $reranker_attempt/3), retrying in 5s..."
+                    # Clean up partial download before retry
+                    rm -rf "$reranker_cache" 2>/dev/null || true
+                    sleep 5
+                fi
+                reranker_attempt=$((reranker_attempt + 1))
+            done
+            if [ "$reranker_ok" = true ] && [ -f "$reranker_onnx" ]; then
                 success "FlashRank reranker downloaded"
+            else
+                # Clean up any partial state
+                rm -rf "$reranker_cache" 2>/dev/null || true
+                warn "FlashRank download failed after 3 attempts (non-fatal — app will retry on launch)"
             fi
         fi
 
@@ -981,19 +1019,57 @@ print(f'Whisper model cached at: {local_dir}')
         fi
 
         local reranker_cache="$DATA_DIR/models/flashrank/ms-marco-MiniLM-L-12-v2"
-        if [ -d "$reranker_cache" ] && [ "$(ls -A "$reranker_cache" 2>/dev/null)" ]; then
+        local reranker_onnx="$reranker_cache/flashrank-MiniLM-L-12-v2_Q.onnx"
+        if [ -f "$reranker_onnx" ]; then
             success "FlashRank reranker"
         else
+            # Clean up partial/empty downloads from previous failed attempts
+            if [ -d "$reranker_cache" ]; then
+                rm -rf "$reranker_cache"
+            fi
             info "Downloading FlashRank reranker (~34MB)..."
             mkdir -p "$DATA_DIR/models/flashrank" 2>/dev/null || true
-            python -c "
-import os
-from flashrank import Ranker
+            local reranker_ok_upg=false
+            local reranker_attempt_upg=1
+            while [ $reranker_attempt_upg -le 3 ]; do
+                if python -c "
+import os, shutil
+# Apply SSL fix inside Python — critical for fresh macOS installs
+try:
+    import certifi
+    os.environ['SSL_CERT_FILE'] = certifi.where()
+    os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+    os.environ['CURL_CA_BUNDLE'] = certifi.where()
+except ImportError:
+    pass
 cache_dir = os.path.expanduser('~/Library/Application Support/LocalBook/models/flashrank')
+model_dir = os.path.join(cache_dir, 'ms-marco-MiniLM-L-12-v2')
 os.makedirs(cache_dir, exist_ok=True)
+from flashrank import Ranker
 ranker = Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir=cache_dir)
-print('Reranker cached')
-" || warn "FlashRank download failed (non-fatal)"
+# Validate the ONNX model file actually exists
+onnx_path = os.path.join(model_dir, 'flashrank-MiniLM-L-12-v2_Q.onnx')
+if not os.path.exists(onnx_path):
+    shutil.rmtree(model_dir, ignore_errors=True)
+    raise RuntimeError(f'ONNX model file not found at {onnx_path}')
+print('Reranker cached and validated')
+" 2>&1; then
+                    reranker_ok_upg=true
+                    break
+                fi
+                if [ $reranker_attempt_upg -lt 3 ]; then
+                    warn "Reranker download failed (attempt $reranker_attempt_upg/3), retrying in 5s..."
+                    rm -rf "$reranker_cache" 2>/dev/null || true
+                    sleep 5
+                fi
+                reranker_attempt_upg=$((reranker_attempt_upg + 1))
+            done
+            if [ "$reranker_ok_upg" = true ] && [ -f "$reranker_onnx" ]; then
+                success "FlashRank reranker downloaded"
+            else
+                rm -rf "$reranker_cache" 2>/dev/null || true
+                warn "FlashRank download failed after 3 attempts (non-fatal)"
+            fi
         fi
 
         local kokoro_hf_cache="$HOME/.cache/huggingface/hub/models--mlx-community--Kokoro-82M-bf16"
