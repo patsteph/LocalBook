@@ -478,7 +478,7 @@ main() {
         # Build Tauri app (includes Vite frontend build)
         info "Building Tauri application..."
         rm -rf dist/
-        npm run tauri build
+        npm run tauri build 2>&1 || warn "Tauri build reported errors (checking for app bundle...)"
 
         # Verify build succeeded
         local app_path="src-tauri/target/release/bundle/macos/$APP_BUNDLE"
@@ -974,13 +974,16 @@ print(f'Whisper model cached at: {local_dir}')
         npm ci --silent 2>&1 | tail -1 || true
         rm -rf dist/
         info "Building Tauri application (this may take several minutes)..."
-        npm run tauri build
+        npm run tauri build 2>&1 || warn "Tauri build reported errors (checking for app bundle...)"
         local app_path="src-tauri/target/release/bundle/macos/$APP_BUNDLE"
         if [ -d "$app_path" ]; then
             rm -rf "./$APP_BUNDLE"
             cp -r "$app_path" "./$APP_BUNDLE"
+            success "Application rebuilt"
+        else
+            error "Application build failed — no app bundle found at $app_path"
+            exit 1
         fi
-        success "Application rebuilt"
 
         # Step 5: Rebuild extension
         step 5 "Rebuilding browser extension"
