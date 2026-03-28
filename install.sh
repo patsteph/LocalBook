@@ -576,12 +576,63 @@ main() {
         source "$INSTALL_DIR/backend/.venv/bin/activate"
 
         # Fix SSL certificates for fresh macOS Python installs
-        # (Python 3.12+ from Homebrew may lack CA bundle; certifi provides it)
+        # Homebrew Python 3.12+ ships without root CA certificates configured.
+        # Setting env vars alone is insufficient — urllib3 creates its own SSLContext
+        # that bypasses SSL_CERT_FILE. The permanent fix is to symlink OpenSSL's
+        # expected CA file to certifi's bundle (same as macOS Install Certificates.command).
         local ssl_cert_file
         ssl_cert_file=$(python -c "import certifi; print(certifi.where())" 2>/dev/null || echo "")
         if [ -n "$ssl_cert_file" ]; then
             export SSL_CERT_FILE="$ssl_cert_file"
             export REQUESTS_CA_BUNDLE="$ssl_cert_file"
+            export CURL_CA_BUNDLE="$ssl_cert_file"
+
+            # Test if SSL actually works — if not, create the OpenSSL symlink
+            if ! python -c "
+import ssl, socket
+ctx = ssl.create_default_context()
+with ctx.wrap_socket(socket.socket(), server_hostname='huggingface.co') as s:
+    s.settimeout(10)
+    s.connect(('huggingface.co', 443))
+" 2>/dev/null; then
+                info "Fixing Python SSL certificates (common on fresh macOS installs)..."
+                python -c "
+import ssl, os, certifi
+paths = ssl.get_default_verify_paths()
+openssl_cafile = paths.openssl_cafile
+if openssl_cafile:
+    openssl_dir = os.path.dirname(openssl_cafile)
+    os.makedirs(openssl_dir, exist_ok=True)
+    try:
+        if os.path.exists(openssl_cafile):
+            os.rename(openssl_cafile, openssl_cafile + '.bak')
+    except (PermissionError, OSError):
+        pass
+    try:
+        os.symlink(certifi.where(), openssl_cafile)
+        print(f'  Linked {openssl_cafile} -> {certifi.where()}')
+    except (PermissionError, OSError) as e:
+        print(f'  Symlink failed ({e}), falling back to copy...')
+        import shutil
+        try:
+            shutil.copy2(certifi.where(), openssl_cafile)
+            print(f'  Copied certifi bundle to {openssl_cafile}')
+        except (PermissionError, OSError) as e2:
+            print(f'  Could not fix SSL certs: {e2}')
+" 2>/dev/null || true
+                # Verify the fix worked
+                if python -c "
+import ssl, socket
+ctx = ssl.create_default_context()
+with ctx.wrap_socket(socket.socket(), server_hostname='huggingface.co') as s:
+    s.settimeout(10)
+    s.connect(('huggingface.co', 443))
+" 2>/dev/null; then
+                    success "SSL certificates fixed"
+                else
+                    warn "SSL fix may not have worked — model downloads might fail (non-fatal)"
+                fi
+            fi
         fi
 
         # FlashRank reranker (~34MB) — improves search result quality
@@ -1014,11 +1065,55 @@ print(f'Whisper model cached at: {local_dir}')
         source "$INSTALL_DIR/backend/.venv/bin/activate"
 
         # Fix SSL certificates for fresh macOS Python installs
+        # (same robust fix as fresh install — symlink OpenSSL CA to certifi)
         local ssl_cert_file_upgrade
         ssl_cert_file_upgrade=$(python -c "import certifi; print(certifi.where())" 2>/dev/null || echo "")
         if [ -n "$ssl_cert_file_upgrade" ]; then
             export SSL_CERT_FILE="$ssl_cert_file_upgrade"
             export REQUESTS_CA_BUNDLE="$ssl_cert_file_upgrade"
+            export CURL_CA_BUNDLE="$ssl_cert_file_upgrade"
+
+            if ! python -c "
+import ssl, socket
+ctx = ssl.create_default_context()
+with ctx.wrap_socket(socket.socket(), server_hostname='huggingface.co') as s:
+    s.settimeout(10)
+    s.connect(('huggingface.co', 443))
+" 2>/dev/null; then
+                info "Fixing Python SSL certificates..."
+                python -c "
+import ssl, os, certifi
+paths = ssl.get_default_verify_paths()
+openssl_cafile = paths.openssl_cafile
+if openssl_cafile:
+    openssl_dir = os.path.dirname(openssl_cafile)
+    os.makedirs(openssl_dir, exist_ok=True)
+    try:
+        if os.path.exists(openssl_cafile):
+            os.rename(openssl_cafile, openssl_cafile + '.bak')
+    except (PermissionError, OSError):
+        pass
+    try:
+        os.symlink(certifi.where(), openssl_cafile)
+    except (PermissionError, OSError):
+        import shutil
+        try:
+            shutil.copy2(certifi.where(), openssl_cafile)
+        except (PermissionError, OSError):
+            pass
+" 2>/dev/null || true
+                if python -c "
+import ssl, socket
+ctx = ssl.create_default_context()
+with ctx.wrap_socket(socket.socket(), server_hostname='huggingface.co') as s:
+    s.settimeout(10)
+    s.connect(('huggingface.co', 443))
+" 2>/dev/null; then
+                    success "SSL certificates fixed"
+                else
+                    warn "SSL fix may not have worked — model downloads might fail (non-fatal)"
+                fi
+            fi
         fi
 
         local reranker_cache="$DATA_DIR/models/flashrank/ms-marco-MiniLM-L-12-v2"
@@ -1324,24 +1419,63 @@ print(f'Whisper cached at: {local_dir}')
     print_banner
 
     # Check for existing install (auto-detect)
-    if [ "$UPGRADE_MODE" = false ] && [ -f "$INSTALL_CONFIG" ]; then
-        local existing_dir
-        existing_dir=$(cat "$INSTALL_CONFIG" 2>/dev/null)
-        if [ -n "$existing_dir" ] && [ -d "$existing_dir/.git" ]; then
-            info "Existing installation found: ${BOLD}${existing_dir}${NC}"
-            echo ""
-            if [ "$AUTO_YES" = true ]; then
-                UPGRADE_MODE=true
-                INSTALL_DIR="$existing_dir"
-            elif ask_yn "Would you like to upgrade? (y/n)"; then
-                UPGRADE_MODE=true
-                INSTALL_DIR="$existing_dir"
+    # Priority: 1) config file + git clone → upgrade
+    #           2) app in /Applications or data dir → migrate (fresh install that preserves data)
+    #           3) nothing found → fresh install
+    if [ "$UPGRADE_MODE" = false ]; then
+        if [ -f "$INSTALL_CONFIG" ]; then
+            local existing_dir
+            existing_dir=$(cat "$INSTALL_CONFIG" 2>/dev/null)
+            if [ -n "$existing_dir" ] && [ -d "$existing_dir/.git" ]; then
+                # Full managed install exists — offer upgrade
+                info "Existing installation found: ${BOLD}${existing_dir}${NC}"
+                echo ""
+                if [ "$AUTO_YES" = true ]; then
+                    UPGRADE_MODE=true
+                    INSTALL_DIR="$existing_dir"
+                elif ask_yn "Would you like to upgrade? (y/n)"; then
+                    UPGRADE_MODE=true
+                    INSTALL_DIR="$existing_dir"
+                fi
+            else
+                # Stale config — source directory was deleted
+                warn "Previous install path (${existing_dir:-unknown}) no longer exists."
+                info "Will proceed with a fresh install."
+                rm -f "$INSTALL_CONFIG"
             fi
-        else
-            # Stale config — source directory was deleted
-            warn "Previous install path (${existing_dir:-unknown}) no longer exists."
-            info "Will proceed with a fresh install."
-            rm -f "$INSTALL_CONFIG"
+        fi
+
+        # If no managed install found, check for zip-installed app or existing data
+        if [ "$UPGRADE_MODE" = false ]; then
+            local has_existing_app=false
+            local has_existing_data=false
+
+            if [ -d "/Applications/$APP_BUNDLE" ]; then
+                has_existing_app=true
+            fi
+            if [ -d "$DATA_DIR" ] && [ -f "$DATA_DIR/localbook.db" ]; then
+                has_existing_data=true
+            fi
+
+            if [ "$has_existing_app" = true ] || [ "$has_existing_data" = true ]; then
+                echo ""
+                info "Existing LocalBook detected:"
+                [ "$has_existing_app" = true ] && info "  App: /Applications/$APP_BUNDLE"
+                [ "$has_existing_data" = true ] && info "  Data: $DATA_DIR"
+                echo ""
+                info "Migrating to managed install (your data will be preserved)."
+                info "This sets up the source-based install so future upgrades are automatic."
+                echo ""
+                if [ "$AUTO_YES" = false ]; then
+                    if ! ask_yn "Continue with migration? (y/n)"; then
+                        info "Installation cancelled."
+                        exit 0
+                    fi
+                fi
+                # Route to fresh_install — it clones the repo, builds everything,
+                # and already preserves existing data & skips downloaded models.
+                # After this, future runs will detect the git clone and use upgrade_flow.
+            fi
         fi
     fi
 
