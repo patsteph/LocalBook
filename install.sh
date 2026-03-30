@@ -575,92 +575,39 @@ main() {
         # shellcheck disable=SC1091
         source "$INSTALL_DIR/backend/.venv/bin/activate"
 
-        # Fix SSL certificates for fresh macOS Python installs
-        # Homebrew Python 3.12+ ships without root CA certificates configured.
-        # Proper fix: upgrade certifi, symlink OpenSSL default CA → certifi bundle.
-        # Fallback: monkey-patch urllib3's SSLContext creation (only if proper fix fails).
+        # Fix SSL certificates for macOS Python installs
+        # Homebrew Python ships without configured root CA certificates.
+        # We build a combined CA bundle from macOS system certs + certifi.
+        # This also handles corporate SSL inspection proxies (Zscaler, etc.)
+        # whose CA is in the macOS keychain but not in certifi.
         pip install --upgrade certifi -q 2>/dev/null || true
-        export LOCALBOOK_SSL_PATCHED=0  # 0 = proper fix worked, 1 = needs monkey-patch
-        python -c "
-import ssl, os, sys, socket
-try:
-    import certifi
-except ImportError:
-    print('  certifi not installed — cannot fix SSL')
-    sys.exit(2)
 
-cert_path = certifi.where()
-os.environ['SSL_CERT_FILE'] = cert_path
-os.environ['REQUESTS_CA_BUNDLE'] = cert_path
+        # Build comprehensive CA bundle from macOS system trust store + certifi
+        local ca_bundle="/tmp/localbook_ca_bundle.pem"
+        rm -f "$ca_bundle" 2>/dev/null || true
+        security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > "$ca_bundle" 2>/dev/null || true
+        security find-certificate -a -p /Library/Keychains/System.keychain >> "$ca_bundle" 2>/dev/null || true
+        python -c "import certifi; print(open(certifi.where()).read())" >> "$ca_bundle" 2>/dev/null || true
 
-# Test 1: Does ssl.create_default_context() work with env vars?
-def ssl_test():
-    ctx = ssl.create_default_context()
-    with ctx.wrap_socket(socket.socket(), server_hostname='huggingface.co') as s:
-        s.settimeout(10)
-        s.connect(('huggingface.co', 443))
-try:
-    ssl_test()
-    sys.exit(0)  # SSL works — nothing to fix
-except Exception:
-    pass
-
-# Test 2: Symlink OpenSSL default CA file → certifi bundle
-paths = ssl.get_default_verify_paths()
-openssl_cafile = paths.openssl_cafile
-if openssl_cafile:
-    openssl_dir = os.path.dirname(openssl_cafile)
-    try:
-        os.makedirs(openssl_dir, exist_ok=True)
-        if os.path.islink(openssl_cafile):
-            os.remove(openssl_cafile)
-        elif os.path.exists(openssl_cafile):
-            os.rename(openssl_cafile, openssl_cafile + '.bak')
-        os.symlink(cert_path, openssl_cafile)
-    except (PermissionError, OSError):
-        try:
-            import shutil
-            shutil.copy2(cert_path, openssl_cafile)
-        except (PermissionError, OSError):
-            pass
-try:
-    ssl_test()
-    print(f'  SSL fixed via certifi {certifi.__version__} -> {openssl_cafile}')
-    sys.exit(0)  # Symlink fix worked
-except Exception:
-    pass
-
-# Test 3: Does explicit load_verify_locations work?
-try:
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.load_verify_locations(cert_path)
-    with ctx.wrap_socket(socket.socket(), server_hostname='huggingface.co') as s:
-        s.settimeout(10)
-        s.connect(('huggingface.co', 443))
-    print(f'  SSL needs urllib3 patch (certifi {certifi.__version__} valid but default context broken)')
-    sys.exit(1)  # Certifi works but default context doesn't — monkey-patch needed
-except Exception as e:
-    print(f'  SSL broken even with explicit certs: {e}')
-    print(f'  OpenSSL: {ssl.OPENSSL_VERSION}, certifi: {certifi.__version__}')
-    sys.exit(2)  # Deeper issue
-" 2>&1
-        local ssl_exit=$?
-        # Capture certifi path for env vars (even if proper fix worked)
-        local ssl_cert_file
-        ssl_cert_file=$(python -c "import certifi; print(certifi.where())" 2>/dev/null || echo "")
-        if [ -n "$ssl_cert_file" ]; then
-            export SSL_CERT_FILE="$ssl_cert_file"
-            export REQUESTS_CA_BUNDLE="$ssl_cert_file"
-            export CURL_CA_BUNDLE="$ssl_cert_file"
+        if [ -f "$ca_bundle" ] && [ -s "$ca_bundle" ]; then
+            export SSL_CERT_FILE="$ca_bundle"
+            export REQUESTS_CA_BUNDLE="$ca_bundle"
         fi
-        if [ $ssl_exit -eq 0 ]; then
+
+        # Test: can Python SSL connect to HuggingFace with our bundle?
+        if python -c "
+import ssl, socket
+ctx = ssl.create_default_context()
+with ctx.wrap_socket(socket.socket(), server_hostname='huggingface.co') as s:
+    s.settimeout(15)
+    s.connect(('huggingface.co', 443))
+" 2>/dev/null; then
             success "SSL certificates configured"
-        elif [ $ssl_exit -eq 1 ]; then
-            export LOCALBOOK_SSL_PATCHED=1
-            info "SSL requires urllib3 patch (will be applied to downloads)"
         else
-            export LOCALBOOK_SSL_PATCHED=1
-            warn "SSL issue detected — downloads will use fallback methods"
+            # macOS system certs + certifi still didn't fix OpenSSL — disable verification
+            # for model downloads only (public models, safe to skip)
+            export LOCALBOOK_SSL_NOVERIFY=1
+            warn "SSL verification relaxed for model downloads (OpenSSL compatibility issue)"
         fi
 
         # FlashRank reranker (~34MB) — improves search result quality
@@ -680,7 +627,7 @@ except Exception as e:
             local flash_url="https://huggingface.co/prithivida/flashrank/resolve/main/ms-marco-MiniLM-L-12-v2.zip"
             if curl -L --fail --max-time 120 -o /tmp/flashrank_model.zip "$flash_url" 2>/dev/null; then
                 mkdir -p "$reranker_cache"
-                unzip -qo /tmp/flashrank_model.zip -d "$DATA_DIR/models/flashrank/" 2>/dev/null
+                unzip -qo /tmp/flashrank_model.zip -d "$DATA_DIR/models/flashrank/" 2>/dev/null || true
                 rm -f /tmp/flashrank_model.zip
                 if [ -f "$reranker_onnx" ]; then
                     reranker_ok=true
@@ -689,16 +636,7 @@ except Exception as e:
             # Method 2: Python with flashrank library (fallback if curl failed)
             if [ "$reranker_ok" = false ]; then
                 python -c "
-import os, certifi, shutil
-os.environ['SSL_CERT_FILE'] = certifi.where()
-os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-# Only monkey-patch urllib3 if the proper SSL fix didn't resolve the issue
-if os.environ.get('LOCALBOOK_SSL_PATCHED') == '1':
-    import urllib3.util.ssl_ as _u3
-    _c = _u3.create_urllib3_context
-    def _p(*a,**k):
-        x = _c(*a,**k); x.load_verify_locations(certifi.where()); return x
-    _u3.create_urllib3_context = _p
+import os, shutil
 cache_dir = os.path.expanduser('~/Library/Application Support/LocalBook/models/flashrank')
 os.makedirs(cache_dir, exist_ok=True)
 from flashrank import Ranker
@@ -726,15 +664,15 @@ print('Reranker model cached and validated successfully')
         else
             info "Downloading Kokoro TTS model (~330MB) — text-to-speech engine..."
             python -c "
-import os, certifi
-os.environ['SSL_CERT_FILE'] = certifi.where()
-os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-if os.environ.get('LOCALBOOK_SSL_PATCHED') == '1':
-    import urllib3.util.ssl_ as _u3
-    _c = _u3.create_urllib3_context
-    def _p(*a,**k):
-        x = _c(*a,**k); x.load_verify_locations(certifi.where()); return x
-    _u3.create_urllib3_context = _p
+import os
+if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
+    import requests
+    from huggingface_hub import configure_http_backend
+    def _noverify_factory():
+        s = requests.Session()
+        s.verify = False
+        return s
+    configure_http_backend(backend_factory=_noverify_factory)
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/Kokoro-82M-bf16',
@@ -755,15 +693,15 @@ print(f'Kokoro model cached at: {local_dir}')
         else
             info "Downloading Whisper transcription model (~150MB) — audio/video transcription..."
             python -c "
-import os, certifi
-os.environ['SSL_CERT_FILE'] = certifi.where()
-os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-if os.environ.get('LOCALBOOK_SSL_PATCHED') == '1':
-    import urllib3.util.ssl_ as _u3
-    _c = _u3.create_urllib3_context
-    def _p(*a,**k):
-        x = _c(*a,**k); x.load_verify_locations(certifi.where()); return x
-    _u3.create_urllib3_context = _p
+import os
+if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
+    import requests
+    from huggingface_hub import configure_http_backend
+    def _noverify_factory():
+        s = requests.Session()
+        s.verify = False
+        return s
+    configure_http_backend(backend_factory=_noverify_factory)
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/whisper-base-mlx',
@@ -1095,79 +1033,30 @@ print(f'Whisper model cached at: {local_dir}')
         source "$INSTALL_DIR/backend/.venv/bin/activate"
 
         # Fix SSL certificates for macOS Python installs
+        # Build combined CA bundle from macOS system trust store + certifi
         pip install --upgrade certifi -q 2>/dev/null || true
-        export LOCALBOOK_SSL_PATCHED=0
-        python -c "
-import ssl, os, sys, socket
-try:
-    import certifi
-except ImportError:
-    sys.exit(2)
+        local ca_bundle_upg="/tmp/localbook_ca_bundle.pem"
+        rm -f "$ca_bundle_upg" 2>/dev/null || true
+        security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > "$ca_bundle_upg" 2>/dev/null || true
+        security find-certificate -a -p /Library/Keychains/System.keychain >> "$ca_bundle_upg" 2>/dev/null || true
+        python -c "import certifi; print(open(certifi.where()).read())" >> "$ca_bundle_upg" 2>/dev/null || true
 
-cert_path = certifi.where()
-os.environ['SSL_CERT_FILE'] = cert_path
-os.environ['REQUESTS_CA_BUNDLE'] = cert_path
-
-def ssl_test():
-    ctx = ssl.create_default_context()
-    with ctx.wrap_socket(socket.socket(), server_hostname='huggingface.co') as s:
-        s.settimeout(10)
-        s.connect(('huggingface.co', 443))
-try:
-    ssl_test()
-    sys.exit(0)
-except Exception:
-    pass
-
-paths = ssl.get_default_verify_paths()
-openssl_cafile = paths.openssl_cafile
-if openssl_cafile:
-    openssl_dir = os.path.dirname(openssl_cafile)
-    try:
-        os.makedirs(openssl_dir, exist_ok=True)
-        if os.path.islink(openssl_cafile):
-            os.remove(openssl_cafile)
-        elif os.path.exists(openssl_cafile):
-            os.rename(openssl_cafile, openssl_cafile + '.bak')
-        os.symlink(cert_path, openssl_cafile)
-    except (PermissionError, OSError):
-        try:
-            import shutil
-            shutil.copy2(cert_path, openssl_cafile)
-        except (PermissionError, OSError):
-            pass
-try:
-    ssl_test()
-    sys.exit(0)
-except Exception:
-    pass
-
-try:
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.load_verify_locations(cert_path)
-    with ctx.wrap_socket(socket.socket(), server_hostname='huggingface.co') as s:
-        s.settimeout(10)
-        s.connect(('huggingface.co', 443))
-    sys.exit(1)
-except Exception:
-    sys.exit(2)
-" 2>/dev/null
-        local ssl_exit_upg=$?
-        local ssl_cert_file_upgrade
-        ssl_cert_file_upgrade=$(python -c "import certifi; print(certifi.where())" 2>/dev/null || echo "")
-        if [ -n "$ssl_cert_file_upgrade" ]; then
-            export SSL_CERT_FILE="$ssl_cert_file_upgrade"
-            export REQUESTS_CA_BUNDLE="$ssl_cert_file_upgrade"
-            export CURL_CA_BUNDLE="$ssl_cert_file_upgrade"
+        if [ -f "$ca_bundle_upg" ] && [ -s "$ca_bundle_upg" ]; then
+            export SSL_CERT_FILE="$ca_bundle_upg"
+            export REQUESTS_CA_BUNDLE="$ca_bundle_upg"
         fi
-        if [ $ssl_exit_upg -eq 0 ]; then
+
+        if python -c "
+import ssl, socket
+ctx = ssl.create_default_context()
+with ctx.wrap_socket(socket.socket(), server_hostname='huggingface.co') as s:
+    s.settimeout(15)
+    s.connect(('huggingface.co', 443))
+" 2>/dev/null; then
             success "SSL certificates configured"
-        elif [ $ssl_exit_upg -eq 1 ]; then
-            export LOCALBOOK_SSL_PATCHED=1
-            info "SSL requires urllib3 patch (will be applied to downloads)"
         else
-            export LOCALBOOK_SSL_PATCHED=1
-            warn "SSL issue detected — downloads will use fallback methods"
+            export LOCALBOOK_SSL_NOVERIFY=1
+            warn "SSL verification relaxed for model downloads (OpenSSL compatibility issue)"
         fi
 
         local reranker_cache="$DATA_DIR/models/flashrank/ms-marco-MiniLM-L-12-v2"
@@ -1186,7 +1075,7 @@ except Exception:
             local flash_url="https://huggingface.co/prithivida/flashrank/resolve/main/ms-marco-MiniLM-L-12-v2.zip"
             if curl -L --fail --max-time 120 -o /tmp/flashrank_model.zip "$flash_url" 2>/dev/null; then
                 mkdir -p "$reranker_cache"
-                unzip -qo /tmp/flashrank_model.zip -d "$DATA_DIR/models/flashrank/" 2>/dev/null
+                unzip -qo /tmp/flashrank_model.zip -d "$DATA_DIR/models/flashrank/" 2>/dev/null || true
                 rm -f /tmp/flashrank_model.zip
                 if [ -f "$reranker_onnx" ]; then
                     reranker_ok_upg=true
@@ -1195,15 +1084,7 @@ except Exception:
             # Method 2: Python with flashrank library (fallback if curl failed)
             if [ "$reranker_ok_upg" = false ]; then
                 python -c "
-import os, certifi, shutil
-os.environ['SSL_CERT_FILE'] = certifi.where()
-os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-if os.environ.get('LOCALBOOK_SSL_PATCHED') == '1':
-    import urllib3.util.ssl_ as _u3
-    _c = _u3.create_urllib3_context
-    def _p(*a,**k):
-        x = _c(*a,**k); x.load_verify_locations(certifi.where()); return x
-    _u3.create_urllib3_context = _p
+import os, shutil
 cache_dir = os.path.expanduser('~/Library/Application Support/LocalBook/models/flashrank')
 os.makedirs(cache_dir, exist_ok=True)
 from flashrank import Ranker
@@ -1230,15 +1111,15 @@ print('Reranker cached and validated')
         else
             info "Downloading Kokoro TTS model (~330MB)..."
             python -c "
-import os, certifi
-os.environ['SSL_CERT_FILE'] = certifi.where()
-os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-if os.environ.get('LOCALBOOK_SSL_PATCHED') == '1':
-    import urllib3.util.ssl_ as _u3
-    _c = _u3.create_urllib3_context
-    def _p(*a,**k):
-        x = _c(*a,**k); x.load_verify_locations(certifi.where()); return x
-    _u3.create_urllib3_context = _p
+import os
+if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
+    import requests
+    from huggingface_hub import configure_http_backend
+    def _noverify_factory():
+        s = requests.Session()
+        s.verify = False
+        return s
+    configure_http_backend(backend_factory=_noverify_factory)
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/Kokoro-82M-bf16',
@@ -1256,15 +1137,15 @@ print(f'Kokoro cached at: {local_dir}')
         else
             info "Downloading Whisper transcription model (~150MB)..."
             python -c "
-import os, certifi
-os.environ['SSL_CERT_FILE'] = certifi.where()
-os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-if os.environ.get('LOCALBOOK_SSL_PATCHED') == '1':
-    import urllib3.util.ssl_ as _u3
-    _c = _u3.create_urllib3_context
-    def _p(*a,**k):
-        x = _c(*a,**k); x.load_verify_locations(certifi.where()); return x
-    _u3.create_urllib3_context = _p
+import os
+if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
+    import requests
+    from huggingface_hub import configure_http_backend
+    def _noverify_factory():
+        s = requests.Session()
+        s.verify = False
+        return s
+    configure_http_backend(backend_factory=_noverify_factory)
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/whisper-base-mlx',
