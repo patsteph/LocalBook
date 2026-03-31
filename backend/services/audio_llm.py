@@ -372,10 +372,40 @@ class AudioLLMService:
                     print(f"[AudioLLM] HF cache corrupt ({err}), clearing...")
                     shutil.rmtree(kokoro_hf_cache, ignore_errors=True)
         
-        # Download via HuggingFace Hub
+        # Download via HuggingFace Hub — configure robust HTTP backend first
+        # Matches install.sh: retries + timeouts + SSL handling for PyInstaller
         print(f"[AudioLLM] Downloading Kokoro-82M model (~330 MB)...")
-        from huggingface_hub import snapshot_download
-        
+        import sys
+        import requests as _requests
+        from requests.adapters import HTTPAdapter
+        from huggingface_hub import configure_http_backend, snapshot_download
+        try:
+            from huggingface_hub.utils._http import reset_sessions
+        except ImportError:
+            reset_sessions = lambda: None
+
+        _frozen = getattr(sys, 'frozen', False)
+
+        class _TimeoutAdapter(HTTPAdapter):
+            def send(self, *a, **kw):
+                kw.setdefault('timeout', (30, 120))
+                return super().send(*a, **kw)
+
+        def _robust_factory() -> _requests.Session:
+            s = _requests.Session()
+            s.mount('http://', _TimeoutAdapter(max_retries=3))
+            s.mount('https://', _TimeoutAdapter(max_retries=3))
+            if _frozen or os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
+                s.verify = False
+            return s
+
+        configure_http_backend(backend_factory=_robust_factory)
+        reset_sessions()
+        if _frozen:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            print(f"[AudioLLM] Using robust HTTP backend (retries=3, SSL verify=off for frozen build)")
+
         result = snapshot_download(
             repo_id=cls.MLX_KOKORO_REPO,
             allow_patterns=["config.json", "*.safetensors", "voices/*.safetensors"],
