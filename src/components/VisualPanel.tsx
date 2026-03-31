@@ -268,7 +268,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
         // onPrimary - show immediately, then start loading alternatives
         async (diagram) => {
           // SVG and Chart diagrams don't need Mermaid validation
-          if (diagram.svg || diagram.render_type === 'svg' || diagram.render_type === 'chart') {
+          if (diagram.svg || diagram.render_type === 'svg' || diagram.render_type === 'chart' || (diagram.code && diagram.code.includes('<svg'))) {
             setDiagrams([diagram]);
             setSelectedDiagram(diagram);
             setLoading(false);
@@ -298,7 +298,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
         // onAlternative - add to list
         async (diagram) => {
           // SVG and Chart diagrams don't need validation
-          if (diagram.svg || diagram.render_type === 'svg' || diagram.render_type === 'chart') {
+          if (diagram.svg || diagram.render_type === 'svg' || diagram.render_type === 'chart' || (diagram.code && diagram.code.includes('<svg'))) {
             setDiagrams(prev => [...prev, diagram]);
             return;
           }
@@ -625,8 +625,8 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
               <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-900">
                 <ChartRenderer config={selectedDiagram.chart_config} height={350} />
               </div>
-            ) : selectedDiagram.svg ? (
-              <SVGRenderer svg={selectedDiagram.svg} className="border border-gray-200 dark:border-gray-700 rounded-lg" />
+            ) : (selectedDiagram.svg || selectedDiagram.render_type === 'svg' || (selectedDiagram.code && selectedDiagram.code.includes('<svg'))) ? (
+              <SVGRenderer svg={selectedDiagram.svg || selectedDiagram.code || ''} className="border border-gray-200 dark:border-gray-700 rounded-lg" />
             ) : (
               <MermaidRenderer code={selectedDiagram.code || ''} className="border border-gray-200 dark:border-gray-700" />
             )}
@@ -638,7 +638,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
           </div>
           
           {/* Phase 4: Refinement Chat - only for Mermaid diagrams (not charts or SVG) */}
-          {selectedDiagram.code && !selectedDiagram.svg && selectedDiagram.render_type !== 'chart' && (
+          {selectedDiagram.code && !selectedDiagram.svg && selectedDiagram.render_type !== 'chart' && selectedDiagram.render_type !== 'svg' && !selectedDiagram.code.includes('<svg') && (
             <RefinementChat 
               notebookId={notebookId}
               currentCode={selectedDiagram.code}
@@ -652,7 +652,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
           {/* Code Block (collapsible) - shows Mermaid code or SVG code */}
           <details className="mt-2">
             <summary className="text-xs text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-300">
-              📝 View {selectedDiagram.render_type === 'chart' ? 'Chart Config' : selectedDiagram.svg ? 'SVG' : 'Mermaid'} code
+              📝 View {selectedDiagram.render_type === 'chart' ? 'Chart Config' : (selectedDiagram.svg || selectedDiagram.render_type === 'svg' || (selectedDiagram.code && selectedDiagram.code.includes('<svg'))) ? 'SVG' : 'Mermaid'} code
             </summary>
             <div className="bg-gray-900 rounded-lg p-3 overflow-x-auto mt-2">
               <pre className="text-xs text-green-400 font-mono whitespace-pre-wrap max-h-60 overflow-y-auto">
@@ -750,8 +750,8 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
                 <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-6 bg-gray-900">
                   <ChartRenderer config={selectedDiagram.chart_config} height={500} />
                 </div>
-              ) : selectedDiagram.svg ? (
-                <SVGRenderer svg={selectedDiagram.svg} className="border border-gray-200 dark:border-gray-700 rounded-lg" />
+              ) : (selectedDiagram.svg || selectedDiagram.render_type === 'svg' || (selectedDiagram.code && selectedDiagram.code.includes('<svg'))) ? (
+                <SVGRenderer svg={selectedDiagram.svg || selectedDiagram.code || ''} className="border border-gray-200 dark:border-gray-700 rounded-lg" />
               ) : (
                 <MermaidRenderer code={selectedDiagram.code || ''} className="border border-gray-200 dark:border-gray-700" />
               )}
