@@ -664,21 +664,31 @@ print('Reranker model cached and validated successfully')
         else
             info "Downloading Kokoro TTS model (~330MB) — text-to-speech engine..."
             python -c "
-import os
-if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-    import requests
-    from huggingface_hub import configure_http_backend
-    def _noverify_factory():
-        s = requests.Session()
+import os, signal, requests
+from requests.adapters import HTTPAdapter
+def _alarm(*_): raise SystemExit('Download timed out')
+signal.signal(signal.SIGALRM, _alarm)
+signal.alarm(900)  # 15-minute hard timeout
+class _T(HTTPAdapter):
+    def send(self, *a, **kw):
+        kw.setdefault('timeout', (30, 120))
+        return super().send(*a, **kw)
+from huggingface_hub import configure_http_backend
+def _f():
+    s = requests.Session()
+    s.mount('http://', _T(max_retries=3))
+    s.mount('https://', _T(max_retries=3))
+    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
         s.verify = False
-        return s
-    configure_http_backend(backend_factory=_noverify_factory)
+    return s
+configure_http_backend(backend_factory=_f)
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/Kokoro-82M-bf16',
     allow_patterns=['config.json', '*.safetensors', 'voices/*.safetensors'],
     max_workers=1,
 )
+signal.alarm(0)
 print(f'Kokoro model cached at: {local_dir}')
 " || warn "Kokoro TTS download failed (non-fatal — app will retry on launch)"
             if [ -d "$kokoro_hf_cache" ]; then
@@ -693,20 +703,30 @@ print(f'Kokoro model cached at: {local_dir}')
         else
             info "Downloading Whisper transcription model (~150MB) — audio/video transcription..."
             python -c "
-import os
-if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-    import requests
-    from huggingface_hub import configure_http_backend
-    def _noverify_factory():
-        s = requests.Session()
+import os, signal, requests
+from requests.adapters import HTTPAdapter
+def _alarm(*_): raise SystemExit('Download timed out')
+signal.signal(signal.SIGALRM, _alarm)
+signal.alarm(600)  # 10-minute hard timeout
+class _T(HTTPAdapter):
+    def send(self, *a, **kw):
+        kw.setdefault('timeout', (30, 120))
+        return super().send(*a, **kw)
+from huggingface_hub import configure_http_backend
+def _f():
+    s = requests.Session()
+    s.mount('http://', _T(max_retries=3))
+    s.mount('https://', _T(max_retries=3))
+    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
         s.verify = False
-        return s
-    configure_http_backend(backend_factory=_noverify_factory)
+    return s
+configure_http_backend(backend_factory=_f)
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/whisper-base-mlx',
     max_workers=1,
 )
+signal.alarm(0)
 print(f'Whisper model cached at: {local_dir}')
 " || warn "Whisper download failed (non-fatal — app will retry on first use)"
             if [ -d "$whisper_hf_cache" ]; then
@@ -1111,21 +1131,31 @@ print('Reranker cached and validated')
         else
             info "Downloading Kokoro TTS model (~330MB)..."
             python -c "
-import os
-if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-    import requests
-    from huggingface_hub import configure_http_backend
-    def _noverify_factory():
-        s = requests.Session()
+import os, signal, requests
+from requests.adapters import HTTPAdapter
+def _alarm(*_): raise SystemExit('Download timed out')
+signal.signal(signal.SIGALRM, _alarm)
+signal.alarm(900)
+class _T(HTTPAdapter):
+    def send(self, *a, **kw):
+        kw.setdefault('timeout', (30, 120))
+        return super().send(*a, **kw)
+from huggingface_hub import configure_http_backend
+def _f():
+    s = requests.Session()
+    s.mount('http://', _T(max_retries=3))
+    s.mount('https://', _T(max_retries=3))
+    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
         s.verify = False
-        return s
-    configure_http_backend(backend_factory=_noverify_factory)
+    return s
+configure_http_backend(backend_factory=_f)
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/Kokoro-82M-bf16',
     allow_patterns=['config.json', '*.safetensors', 'voices/*.safetensors'],
     max_workers=1,
 )
+signal.alarm(0)
 print(f'Kokoro cached at: {local_dir}')
 " || warn "Kokoro TTS download failed (non-fatal)"
         fi
@@ -1137,20 +1167,30 @@ print(f'Kokoro cached at: {local_dir}')
         else
             info "Downloading Whisper transcription model (~150MB)..."
             python -c "
-import os
-if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-    import requests
-    from huggingface_hub import configure_http_backend
-    def _noverify_factory():
-        s = requests.Session()
+import os, signal, requests
+from requests.adapters import HTTPAdapter
+def _alarm(*_): raise SystemExit('Download timed out')
+signal.signal(signal.SIGALRM, _alarm)
+signal.alarm(600)
+class _T(HTTPAdapter):
+    def send(self, *a, **kw):
+        kw.setdefault('timeout', (30, 120))
+        return super().send(*a, **kw)
+from huggingface_hub import configure_http_backend
+def _f():
+    s = requests.Session()
+    s.mount('http://', _T(max_retries=3))
+    s.mount('https://', _T(max_retries=3))
+    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
         s.verify = False
-        return s
-    configure_http_backend(backend_factory=_noverify_factory)
+    return s
+configure_http_backend(backend_factory=_f)
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/whisper-base-mlx',
     max_workers=1,
 )
+signal.alarm(0)
 print(f'Whisper cached at: {local_dir}')
 " || warn "Whisper download failed (non-fatal)"
         fi
