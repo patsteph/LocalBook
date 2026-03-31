@@ -13,7 +13,7 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 main() {
-    set -euo pipefail
+    set -u  # Catch unset variables, but do NOT use -e/-o pipefail (silent kills)
 
     # ── Constants ────────────────────────────────────────────────────────────
     readonly REPO_URL="https://github.com/patsteph/LocalBook.git"
@@ -64,25 +64,27 @@ main() {
         fi
     fi
     echo $$ > "$LOCK_FILE"
-    cleanup_lock() { rm -f "$LOCK_FILE"; }
-    trap cleanup_lock EXIT
+    SCRIPT_COMPLETED=false
 
-    # ── Error Handler ────────────────────────────────────────────────────────
-    on_error() {
+    on_exit() {
         local exit_code=$?
+        rm -f "$LOCK_FILE"
+        if [ "$SCRIPT_COMPLETED" = true ] || [ $exit_code -eq 0 ]; then
+            return
+        fi
         echo ""
         echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${RED}  Installation failed (exit code: $exit_code)${NC}"
+        echo -e "${RED}  Installation failed at Step ${CURRENT_STEP}/${TOTAL_STEPS}${NC}"
         echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo ""
         echo -e "  ${YELLOW}You can safely re-run this script to resume.${NC}"
-        if [ -n "$INSTALL_DIR" ]; then
+        echo -e "  ${YELLOW}Most steps detect previous progress and skip completed work.${NC}"
+        if [ -n "${INSTALL_DIR:-}" ]; then
             echo -e "  ${YELLOW}Source directory: ${INSTALL_DIR}${NC}"
         fi
         echo ""
-        exit 1
     }
-    trap 'on_error' ERR
+    trap on_exit EXIT
 
     # ═══════════════════════════════════════════════════════════════════════
     # UI HELPERS
@@ -333,6 +335,10 @@ main() {
         fi
         info "Installing Node.js..."
         brew install node
+        if ! command -v node &>/dev/null; then
+            fail "Node.js installation failed"
+            exit 1
+        fi
         success "Node.js installed"
     }
 
@@ -379,7 +385,10 @@ main() {
             return
         fi
         info "Installing $label..."
-        brew install "$pkg"
+        if ! brew install "$pkg"; then
+            warn "$label installation failed (non-fatal)"
+            return
+        fi
         success "$label installed"
     }
 
@@ -396,14 +405,14 @@ main() {
             # Stash local changes (e.g. package-lock.json from npm install) to prevent merge conflicts
             local stash_result
             stash_result=$(git stash --include-untracked 2>&1 || true)
-            git pull origin "$REPO_BRANCH"
+            git pull origin "$REPO_BRANCH" || { fail "Failed to pull latest source"; exit 1; }
             # Restore stashed changes (best-effort — build will regenerate these files anyway)
             if [[ "$stash_result" != *"No local changes"* ]]; then
                 git stash pop 2>/dev/null || git stash drop 2>/dev/null || true
             fi
         else
             info "Cloning repository..."
-            git clone --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR"
+            git clone --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR" || { fail "Failed to clone repository"; exit 1; }
             cd "$INSTALL_DIR"
         fi
 
@@ -423,7 +432,7 @@ main() {
         # Create virtual environment
         if [ ! -d ".venv" ]; then
             info "Creating Python virtual environment..."
-            $PYTHON_CMD -m venv .venv
+            $PYTHON_CMD -m venv .venv || { fail "Failed to create Python virtual environment"; exit 1; }
         fi
 
         # shellcheck disable=SC1091
@@ -456,7 +465,7 @@ main() {
 
         # Build the backend binary (PyInstaller)
         info "Building backend binary (PyInstaller)..."
-        ./build_backend.sh
+        ./build_backend.sh || { fail "Backend build failed"; deactivate; exit 1; }
 
         deactivate
         cd "$INSTALL_DIR"
@@ -473,7 +482,7 @@ main() {
 
         # Install frontend dependencies (npm ci = exact versions from lock file)
         info "Installing frontend dependencies..."
-        npm ci --silent
+        npm ci --silent || { fail "Failed to install frontend dependencies"; exit 1; }
 
         # Build Tauri app (includes Vite frontend build)
         info "Building Tauri application..."
@@ -769,7 +778,7 @@ print(f'Whisper model cached at: {local_dir}')
             # Check for LanceDB vectors
             if [ -d "$DATA_DIR/lancedb" ]; then
                 local lance_tables
-                lance_tables=$(ls -d "$DATA_DIR/lancedb/notebook_"* 2>/dev/null | wc -l | tr -d ' ')
+                lance_tables=$(ls -d "$DATA_DIR/lancedb/notebook_"* 2>/dev/null | wc -l | tr -d ' ') || true
                 if [ "$lance_tables" -gt 0 ]; then
                     success "Existing vector data found (${lance_tables} notebook(s))"
                 fi
@@ -992,7 +1001,7 @@ print(f'Whisper model cached at: {local_dir}')
         if [ ! -f ".venv/bin/activate" ]; then
             warn "Virtual environment missing — recreating..."
             rm -rf .venv
-            $PYTHON_CMD -m venv .venv
+            $PYTHON_CMD -m venv .venv || { fail "Failed to create Python virtual environment"; exit 1; }
         fi
 
         # shellcheck disable=SC1091
@@ -1002,7 +1011,7 @@ print(f'Whisper model cached at: {local_dir}')
             warn "Some Python dependencies failed to install — build may still succeed"
         fi
         info "Building backend binary..."
-        ./build_backend.sh
+        ./build_backend.sh || { fail "Backend build failed"; deactivate; exit 1; }
         deactivate
         cd "$INSTALL_DIR"
         success "Backend rebuilt"
@@ -1211,7 +1220,7 @@ print(f'Whisper cached at: {local_dir}')
         step 7 "Upgrading RAG engine"
 
         local lance_tables_upgrade
-        lance_tables_upgrade=$(ls -d "$DATA_DIR/lancedb/notebook_"* 2>/dev/null | wc -l | tr -d ' ')
+        lance_tables_upgrade=$(ls -d "$DATA_DIR/lancedb/notebook_"* 2>/dev/null | wc -l | tr -d ' ') || true
 
         local rag_v3_marker="$DATA_DIR/.rag_v3_upgraded"
 
@@ -1298,6 +1307,7 @@ print(f'Whisper cached at: {local_dir}')
         echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
         offer_launch
+        SCRIPT_COMPLETED=true
     }
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -1320,7 +1330,7 @@ print(f'Whisper cached at: {local_dir}')
         # Validate the chosen path won't clobber something unexpected
         if [ -d "$INSTALL_DIR" ] && [ ! -d "$INSTALL_DIR/.git" ]; then
             local item_count
-            item_count=$(ls -A "$INSTALL_DIR" 2>/dev/null | wc -l | tr -d ' ')
+            item_count=$(ls -A "$INSTALL_DIR" 2>/dev/null | wc -l | tr -d ' ') || true
             if [ "$item_count" -gt 0 ]; then
                 warn "$INSTALL_DIR exists and is not empty."
                 if ! ask_yn "Continue anyway? Files may be overwritten. (y/n)"; then
@@ -1393,6 +1403,7 @@ print(f'Whisper cached at: {local_dir}')
         # ── Summary ──────────────────────────────────────────────────────
         print_summary
         offer_launch
+        SCRIPT_COMPLETED=true
     }
 
     # ═══════════════════════════════════════════════════════════════════════
