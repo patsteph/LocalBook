@@ -38,26 +38,192 @@ async def list_sources(notebook_id: str):
     sources = await source_store.list(notebook_id)
     return sources
 
+LARGE_FILE_THRESHOLD = 5 * 1024 * 1024  # 5 MB — files above this use background processing
+
+
+async def _process_upload_background(
+    content: bytes, filename: str, notebook_id: str, source_id: str
+):
+    """Background task: extract text, ingest into RAG, update source, notify frontend.
+    
+    Used for large files that would otherwise cause upload timeouts.
+    """
+    from api.constellation_ws import notify_source_updated
+    from api.timeline import extract_timeline_for_source
+
+    try:
+        # 1. Extract text
+        text = await document_processor._extract_text(content, filename)
+        if not text or not text.strip():
+            raise ValueError(f"No text content could be extracted from {filename}")
+
+        print(f"[UPLOAD-BG] Extracted {len(text)} chars from {filename}")
+
+        # 2. Ingest into RAG
+        rag_result = await rag_engine.ingest_document(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            text=text,
+            filename=filename,
+            source_type=document_processor._get_file_type(filename, content),
+        )
+        chunks = rag_result.get("chunks", 0)
+        characters = rag_result.get("characters", len(text))
+
+        # 3. Update source to completed
+        await source_store.update(notebook_id, source_id, {
+            "chunks": chunks,
+            "characters": characters,
+            "status": "completed",
+            "content": text,
+        })
+        print(f"[UPLOAD-BG] Ingested {filename}: {chunks} chunks, {characters} chars")
+
+        # 4. Notify frontend via WebSocket
+        await notify_source_updated({
+            "notebook_id": notebook_id,
+            "source_id": source_id,
+            "status": "completed",
+            "title": filename,
+            "chunks": chunks,
+            "characters": characters,
+        })
+
+        # 5. Background extras (all non-fatal)
+        # Timeline extraction
+        try:
+            await extract_timeline_for_source(notebook_id, source_id, text, filename)
+        except Exception:
+            pass
+
+        # Image processing for PDFs/PPTs
+        file_ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
+        if file_ext in ['pdf', 'pptx']:
+            try:
+                await document_processor.process_images_background(
+                    content, notebook_id, source_id, filename
+                )
+            except Exception:
+                pass
+
+        # Auto-tag
+        try:
+            from services.auto_tagger import auto_tagger
+            await auto_tagger.tag_source_in_notebook(
+                notebook_id, source_id, filename, text[:3000]
+            )
+        except Exception:
+            pass
+
+    except Exception as e:
+        import traceback
+        print(f"[UPLOAD-BG] Failed for {filename}: {e}")
+        traceback.print_exc()
+        await source_store.update(notebook_id, source_id, {
+            "status": "failed",
+            "error": str(e)[:200],
+        })
+        try:
+            await notify_source_updated({
+                "notebook_id": notebook_id,
+                "source_id": source_id,
+                "status": "failed",
+                "title": filename,
+                "error": str(e)[:100],
+            })
+        except Exception:
+            pass
+
+
 @router.post("/upload")
 async def upload_source(
     file: UploadFile = File(...),
     notebook_id: str = Form(...),
     background_tasks: BackgroundTasks = None
 ):
-    """Upload and process a document"""
-    import traceback
-    from api.timeline import extract_timeline_for_source
-
-    # Save file temporarily
-    content = await file.read()
+    """Upload and process a document.
     
-    print(f"[UPLOAD] Received file: {file.filename}, size: {len(content)} bytes, notebook: {notebook_id}")
+    Large files (>5 MB) are processed in background to avoid timeout.
+    The endpoint returns immediately with 'processing' status, and the
+    frontend is notified via WebSocket when ingestion completes.
+    """
+    import traceback
+    import uuid
+    from api.timeline import extract_timeline_for_source
+    from services.content_date_extractor import extract_content_date
 
-    # Process document
+    # Read file bytes
+    content = await file.read()
+    filename = file.filename
+    file_size = len(content)
+    
+    print(f"[UPLOAD] Received file: {filename}, size: {file_size} bytes, notebook: {notebook_id}")
+
+    # ── Large file → background processing (prevents timeout) ──────────
+    if file_size > LARGE_FILE_THRESHOLD:
+        print(f"[UPLOAD] Large file detected ({file_size / 1024 / 1024:.1f} MB), using background processing")
+        try:
+            file_format = document_processor._get_file_type(filename, content)
+            source_id = str(uuid.uuid4())
+
+            # Create source record immediately with "processing" status
+            source_meta = {
+                "type": file_format,
+                "format": file_format,
+                "size": file_size,
+                "chunks": 0,
+                "characters": 0,
+                "status": "processing",
+            }
+            # Try to extract content date from filename
+            try:
+                cd = extract_content_date(filename, "")
+                if cd:
+                    source_meta["content_date"] = cd
+            except Exception:
+                pass
+
+            source = await source_store.create(
+                notebook_id=notebook_id,
+                filename=filename,
+                metadata={**source_meta, "id": source_id},
+            )
+
+            # Queue all heavy work as background task
+            background_tasks.add_task(
+                _process_upload_background,
+                content, filename, notebook_id, source_id,
+            )
+
+            # Record engagement
+            try:
+                from services.collection_history import record_engagement
+                record_engagement(notebook_id, "source_upload")
+            except Exception:
+                pass
+            try:
+                log_document_captured(notebook_id, filename, filename, "upload")
+            except Exception:
+                pass
+
+            return {
+                "source_id": source_id,
+                "filename": filename,
+                "format": file_format,
+                "chunks": 0,
+                "characters": 0,
+                "status": "processing",
+            }
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[UPLOAD] Error creating source for large file {filename}: {error_msg}")
+            raise HTTPException(status_code=500, detail=f"Failed to process file: {error_msg}")
+
+    # ── Normal-size file → synchronous processing (fast) ───────────────
     try:
         result = await document_processor.process(
             content=content,
-            filename=file.filename,
+            filename=filename,
             notebook_id=notebook_id
         )
         
@@ -74,36 +240,35 @@ async def upload_source(
                     notebook_id,
                     result["source_id"],
                     source["content"],
-                    file.filename
+                    filename
                 )
-                print(f"[UPLOAD] Queued timeline extraction for {file.filename}")
+                print(f"[UPLOAD] Queued timeline extraction for {filename}")
             
             # v1.0.5: Background image processing for PDFs/PPTs
-            # Text is indexed immediately, images processed in parallel in background
-            file_ext = file.filename.lower().split('.')[-1] if '.' in file.filename else ''
+            file_ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
             if file_ext in ['pdf', 'pptx']:
                 background_tasks.add_task(
                     document_processor.process_images_background,
                     content,
                     notebook_id,
                     result["source_id"],
-                    file.filename
+                    filename
                 )
-                print(f"[UPLOAD] Queued background image processing for {file.filename}")
+                print(f"[UPLOAD] Queued background image processing for {filename}")
         
         # Auto-tag the uploaded document (non-fatal)
         try:
             from services.auto_tagger import auto_tagger
             tag_text = (source.get("content", "") if source else "")[:3000]
             await auto_tagger.tag_source_in_notebook(
-                notebook_id, result["source_id"], file.filename, tag_text
+                notebook_id, result["source_id"], filename, tag_text
             )
         except Exception as tag_err:
             print(f"[UPLOAD] Auto-tagging failed (non-fatal): {tag_err}")
 
         # Log document capture event
         try:
-            log_document_captured(notebook_id, file.filename, file.filename, "upload")
+            log_document_captured(notebook_id, filename, filename, "upload")
         except Exception:
             pass
         
@@ -118,7 +283,7 @@ async def upload_source(
     except Exception as e:
         error_msg = str(e)
         tb = traceback.format_exc()
-        print(f"[UPLOAD] Error processing {file.filename}: {error_msg}")
+        print(f"[UPLOAD] Error processing {filename}: {error_msg}")
         print(f"[UPLOAD] Traceback:\n{tb}")
         raise HTTPException(status_code=500, detail=f"Failed to process file: {error_msg}")
 

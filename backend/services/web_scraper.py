@@ -10,7 +10,7 @@ from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFoun
 from api.settings import get_api_key
 
 # Timeouts
-SCRAPE_TIMEOUT = 30.0   # total timeout per URL
+SCRAPE_TIMEOUT = 120.0  # total timeout per URL (documents can be large)
 MAX_CONCURRENT = 5      # max parallel scrapes
 
 
@@ -125,8 +125,101 @@ class WebScraper:
             return await self._scrape_youtube(url)
         elif self._is_arxiv_url(url):
             return await self._scrape_arxiv_pdf(url)
+        elif self._is_document_url(url):
+            return await self._scrape_remote_document(url)
+        elif self._get_google_export_url(url):
+            return await self._scrape_remote_document(self._get_google_export_url(url), original_url=url)
         else:
             return await self._scrape_web_page(url)
+
+    def _is_document_url(self, url: str) -> bool:
+        """Check if URL points to a downloadable document (PDF, PPTX, DOCX, etc.)"""
+        url_lower = url.lower().split('?')[0].split('#')[0]
+        return any(url_lower.endswith(ext) for ext in (
+            '.pdf', '.pptx', '.docx', '.xlsx', '.doc', '.ppt', '.xls',
+        ))
+
+    def _get_google_export_url(self, url: str) -> str:
+        """Convert Google Docs/Slides/Sheets URL to export URL. Returns '' if not a Google doc."""
+        m = re.search(r'docs\.google\.com/document/d/([a-zA-Z0-9_-]+)', url)
+        if m:
+            return f"https://docs.google.com/document/d/{m.group(1)}/export?format=txt"
+        m = re.search(r'docs\.google\.com/presentation/d/([a-zA-Z0-9_-]+)', url)
+        if m:
+            return f"https://docs.google.com/presentation/d/{m.group(1)}/export/pptx"
+        m = re.search(r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)', url)
+        if m:
+            return f"https://docs.google.com/spreadsheets/d/{m.group(1)}/export?format=csv"
+        return ""
+
+    async def _scrape_remote_document(self, url: str, original_url: str = None) -> Dict:
+        """Download and extract text from a remote document (PDF, PPTX, DOCX, etc.)"""
+        display_url = original_url or url
+        try:
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                response = await client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) LocalBook/1.0"
+                })
+                if response.status_code != 200:
+                    return {"success": False, "url": display_url,
+                            "error": f"Failed to download file (HTTP {response.status_code})"}
+                content_bytes = response.content
+
+            if len(content_bytes) < 100:
+                return {"success": False, "url": display_url, "error": "Downloaded file is empty"}
+
+            # Determine filename for type detection
+            url_lower = url.lower().split('?')[0].split('#')[0]
+            if url_lower.endswith('.pptx') or '/export/pptx' in url_lower:
+                filename = "document.pptx"
+            elif url_lower.endswith('.docx'):
+                filename = "document.docx"
+            elif url_lower.endswith('.xlsx') or 'format=csv' in url.lower():
+                filename = "document.csv" if 'format=csv' in url.lower() else "document.xlsx"
+            elif url_lower.endswith('.pdf') or b'%PDF' in content_bytes[:10]:
+                filename = "document.pdf"
+            else:
+                # Try to detect from content
+                if b'%PDF' in content_bytes[:10]:
+                    filename = "document.pdf"
+                elif b'PK' in content_bytes[:4]:
+                    filename = "document.pptx"  # ZIP-based (could be docx/pptx/xlsx)
+                else:
+                    # Treat as plain text
+                    filename = "document.txt"
+
+            from services.document_processor import document_processor
+            text = await document_processor._extract_text(content_bytes, filename)
+
+            if not text or len(text.strip()) < 50:
+                return {"success": False, "url": display_url,
+                        "error": "Could not extract text from downloaded file"}
+
+            # Try to extract title from first lines
+            title = display_url
+            first_lines = text[:500].split('\n')
+            for line in first_lines:
+                clean = line.strip().strip('#').strip()
+                if 15 < len(clean) < 200 and not clean.startswith('==='):
+                    title = clean
+                    break
+
+            word_count = len(text.split())
+            print(f"[WebScraper] Remote doc extracted: {word_count} words from {display_url}")
+
+            return {
+                "success": True,
+                "url": display_url,
+                "title": title,
+                "author": None,
+                "date": None,
+                "text": text,
+                "word_count": word_count,
+                "char_count": len(text),
+            }
+        except Exception as e:
+            print(f"[WebScraper] Remote document extraction failed: {e}")
+            return {"success": False, "url": display_url, "error": str(e)}
 
     def _is_arxiv_url(self, url: str) -> bool:
         """Check if URL is an arxiv.org paper link"""
@@ -384,6 +477,17 @@ class WebScraper:
 
         if self._is_arxiv_url(url):
             result = await self._scrape_arxiv_pdf(url)
+            result["html"] = None
+            return result
+
+        if self._is_document_url(url):
+            result = await self._scrape_remote_document(url)
+            result["html"] = None
+            return result
+
+        google_export = self._get_google_export_url(url)
+        if google_export:
+            result = await self._scrape_remote_document(google_export, original_url=url)
             result["html"] = None
             return result
 

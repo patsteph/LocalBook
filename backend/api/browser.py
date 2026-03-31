@@ -159,14 +159,229 @@ async def process_web_images_background(
         traceback.print_exc()
 
 
+async def _capture_remote_document(url: str, notebook_id: str, title: str, background_tasks: BackgroundTasks) -> CaptureResponse:
+    """Download a remote document (PDF, PPTX, etc.) and process it.
+    
+    Used when the browser extension encounters a URL pointing to a file
+    that can't be meaningfully extracted from DOM content.
+    """
+    import httpx
+    from storage.source_store import source_store
+    from services.rag_engine import rag_engine
+    from services.document_processor import document_processor
+    from agents.curator import curator
+
+    try:
+        # Download the file
+        print(f"[BROWSER] Downloading remote document: {url}")
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            response = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) LocalBook/1.0"
+            })
+            if response.status_code != 200:
+                return CaptureResponse(
+                    success=False, title=title, word_count=0, reading_time_minutes=0,
+                    error=f"Failed to download file (HTTP {response.status_code})"
+                )
+            content_bytes = response.content
+
+        if len(content_bytes) < 100:
+            return CaptureResponse(
+                success=False, title=title, word_count=0, reading_time_minutes=0,
+                error="Downloaded file is empty or too small"
+            )
+
+        # Detect file type from URL or content
+        filename = title
+        url_lower = url.lower().split('?')[0].split('#')[0]
+        if url_lower.endswith('.pdf') or b'%PDF' in content_bytes[:10]:
+            filename = title if title else "document.pdf"
+            if not filename.lower().endswith('.pdf'):
+                filename += ".pdf"
+        elif url_lower.endswith('.pptx'):
+            filename = title if title else "presentation.pptx"
+            if not filename.lower().endswith('.pptx'):
+                filename += ".pptx"
+        elif url_lower.endswith('.docx'):
+            filename = title if title else "document.docx"
+            if not filename.lower().endswith('.docx'):
+                filename += ".docx"
+        elif url_lower.endswith('.xlsx'):
+            filename = title if title else "spreadsheet.xlsx"
+            if not filename.lower().endswith('.xlsx'):
+                filename += ".xlsx"
+
+        # Extract text using document_processor
+        text = await document_processor._extract_text(content_bytes, filename)
+        if not text or len(text.strip()) < 50:
+            return CaptureResponse(
+                success=False, title=title, word_count=0, reading_time_minutes=0,
+                error="Could not extract text from downloaded file"
+            )
+
+        word_count = len(text.split())
+        char_count = len(text)
+        reading_time = max(1, word_count // 200)
+        file_format = document_processor._get_file_type(filename, content_bytes)
+
+        print(f"[BROWSER] Extracted {word_count} words from remote {file_format}: {url}")
+
+        # Score through Curator
+        curator_scoring = await curator.score_user_item(
+            notebook_id=notebook_id,
+            title=title,
+            content=text[:3000],
+            url=url,
+            source_type=file_format,
+            user_weight_bonus=1.5
+        )
+
+        source_id = str(uuid.uuid4())
+        source_data = {
+            "id": source_id,
+            "notebook_id": notebook_id,
+            "type": file_format,
+            "format": file_format,
+            "url": url,
+            "title": title,
+            "filename": title,
+            "content": text,
+            "word_count": word_count,
+            "char_count": char_count,
+            "characters": char_count,
+            "reading_time_minutes": reading_time,
+            "capture_type": f"remote_{file_format}",
+            "status": "processing",
+            "chunks": 0,
+            "created_at": datetime.now().isoformat(),
+            "user_provided": True,
+            "curator_scoring": curator_scoring,
+            "topics": curator_scoring.get("topics", []),
+            "entities": curator_scoring.get("entities", []),
+            "importance": curator_scoring.get("importance", "medium"),
+        }
+
+        await source_store.create(
+            notebook_id=notebook_id,
+            filename=title,
+            metadata=source_data,
+        )
+
+        # Index in RAG
+        rag_result = await rag_engine.ingest_document(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            text=text,
+            filename=title,
+            source_type=file_format,
+        )
+        chunks = rag_result.get("chunks", 0) if rag_result else 0
+        await source_store.update(notebook_id, source_id, {
+            "chunks": chunks,
+            "status": "completed",
+        })
+
+        # Auto-tag (non-fatal)
+        try:
+            from services.auto_tagger import auto_tagger
+            await auto_tagger.tag_source_in_notebook(notebook_id, source_id, title, text[:3000])
+        except Exception:
+            pass
+
+        # Notify frontend
+        await notify_source_updated({
+            "notebook_id": notebook_id,
+            "source_id": source_id,
+            "status": "completed",
+            "chunks": chunks,
+        })
+
+        # Background image processing for PDFs/PPTs
+        if file_format in ['pdf', 'pptx']:
+            background_tasks.add_task(
+                document_processor.process_images_background,
+                content_bytes, notebook_id, source_id, filename,
+            )
+
+        try:
+            log_document_captured(notebook_id, url, title, f"remote_{file_format}")
+        except Exception:
+            pass
+
+        return CaptureResponse(
+            success=True,
+            source_id=source_id,
+            title=title,
+            word_count=word_count,
+            reading_time_minutes=reading_time,
+            key_concepts=curator_scoring.get("topics", []),
+        )
+
+    except Exception as e:
+        import traceback
+        print(f"[BROWSER] Remote document capture failed: {e}")
+        traceback.print_exc()
+        return CaptureResponse(
+            success=False, title=title, word_count=0, reading_time_minutes=0,
+            error=str(e),
+        )
+
+
+def _is_document_url(url: str) -> Optional[str]:
+    """Detect if a URL points to a downloadable document.
+    
+    Returns the file type string if detected, None otherwise.
+    """
+    if not url:
+        return None
+    url_lower = url.lower().split('?')[0].split('#')[0]
+    
+    # Direct file extensions
+    for ext, ftype in [('.pdf', 'pdf'), ('.pptx', 'pptx'), ('.docx', 'docx'),
+                       ('.xlsx', 'xlsx'), ('.doc', 'doc'), ('.ppt', 'ppt')]:
+        if url_lower.endswith(ext):
+            return ftype
+    
+    return None
+
+
+def _is_google_doc_url(url: str) -> Optional[str]:
+    """Detect Google Docs/Slides/Sheets URLs.
+    
+    Returns export URL if detected, None otherwise.
+    """
+    import re
+    # Google Docs: docs.google.com/document/d/{id}/...
+    m = re.search(r'docs\.google\.com/document/d/([a-zA-Z0-9_-]+)', url)
+    if m:
+        return f"https://docs.google.com/document/d/{m.group(1)}/export?format=txt"
+    
+    # Google Slides: docs.google.com/presentation/d/{id}/...
+    m = re.search(r'docs\.google\.com/presentation/d/([a-zA-Z0-9_-]+)', url)
+    if m:
+        return f"https://docs.google.com/presentation/d/{m.group(1)}/export/pptx"
+    
+    # Google Sheets: docs.google.com/spreadsheets/d/{id}/...
+    m = re.search(r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)', url)
+    if m:
+        return f"https://docs.google.com/spreadsheets/d/{m.group(1)}/export?format=csv"
+    
+    return None
+
+
 @router.post("/capture", response_model=CaptureResponse)
 async def capture_page(request: PageCaptureRequest, background_tasks: BackgroundTasks):
     """Capture a web page to a notebook with summarization.
     
-    Uses trafilatura for robust content extraction from HTML when available,
-    matching the quality of the web research panel scraping.
+    Routes to specialized handlers for:
+    - YouTube URLs → transcript extraction
+    - ArXiv URLs → auto-download PDF and extract full paper
+    - PDF/PPTX/DOCX URLs → download and extract with document_processor
+    - Google Docs/Slides/Sheets → export and extract
+    - Regular web pages → trafilatura extraction
     
     v1.0.5: Now triggers background image extraction for multimodal content.
+    v1.1.1: Added document URL detection for PDFs, PPTX, Google Docs, ArXiv.
     """
     try:
         from storage.source_store import source_store
@@ -186,6 +401,90 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
                 include_transcript=True
             )
             return await capture_youtube(yt_request)
+        
+        # Auto-detect ArXiv URLs → download and extract the actual PDF
+        if re.search(r'arxiv\.org/(abs|html|pdf)/', request.url or ""):
+            print(f"[BROWSER] ArXiv URL detected, downloading PDF: {request.url}")
+            from services.web_scraper import web_scraper
+            scrape_result = await web_scraper._scrape_arxiv_pdf(request.url)
+            if scrape_result.get("success") and scrape_result.get("text"):
+                text = scrape_result["text"]
+                arxiv_title = scrape_result.get("title", request.title)
+                word_count = len(text.split())
+                char_count = len(text)
+                reading_time = max(1, word_count // 200)
+                
+                # Score + ingest
+                from agents.curator import curator
+                curator_scoring = await curator.score_user_item(
+                    notebook_id=request.notebook_id,
+                    title=arxiv_title, content=text[:3000],
+                    url=request.url, source_type="pdf", user_weight_bonus=1.5,
+                )
+                source_id = str(uuid.uuid4())
+                await source_store.create(
+                    notebook_id=request.notebook_id, filename=arxiv_title,
+                    metadata={
+                        "id": source_id, "notebook_id": request.notebook_id,
+                        "type": "pdf", "format": "pdf", "url": request.url,
+                        "title": arxiv_title, "filename": arxiv_title,
+                        "content": text, "word_count": word_count,
+                        "char_count": char_count, "characters": char_count,
+                        "reading_time_minutes": reading_time,
+                        "capture_type": "arxiv_pdf", "status": "processing",
+                        "chunks": 0, "created_at": datetime.now().isoformat(),
+                        "user_provided": True, "curator_scoring": curator_scoring,
+                        "topics": curator_scoring.get("topics", []),
+                        "importance": curator_scoring.get("importance", "medium"),
+                    },
+                )
+                rag_result = await rag_engine.ingest_document(
+                    notebook_id=request.notebook_id, source_id=source_id,
+                    text=text, filename=arxiv_title, source_type="pdf",
+                )
+                chunks = rag_result.get("chunks", 0) if rag_result else 0
+                await source_store.update(request.notebook_id, source_id, {
+                    "chunks": chunks, "status": "completed",
+                })
+                await notify_source_updated({
+                    "notebook_id": request.notebook_id,
+                    "source_id": source_id, "status": "completed", "chunks": chunks,
+                })
+                try:
+                    from services.auto_tagger import auto_tagger
+                    await auto_tagger.tag_source_in_notebook(
+                        request.notebook_id, source_id, arxiv_title, text[:3000],
+                    )
+                except Exception:
+                    pass
+                try:
+                    log_document_captured(request.notebook_id, request.url, arxiv_title, "arxiv_pdf")
+                except Exception:
+                    pass
+                print(f"[BROWSER] ArXiv PDF captured: {arxiv_title} ({word_count} words, {chunks} chunks)")
+                return CaptureResponse(
+                    success=True, source_id=source_id, title=arxiv_title,
+                    word_count=word_count, reading_time_minutes=reading_time,
+                    key_concepts=curator_scoring.get("topics", []),
+                )
+            else:
+                print(f"[BROWSER] ArXiv PDF extraction failed, falling back to page capture")
+        
+        # Auto-detect document URLs (PDF, PPTX, DOCX, etc.)
+        doc_type = _is_document_url(request.url)
+        if doc_type:
+            print(f"[BROWSER] Document URL detected ({doc_type}): {request.url}")
+            return await _capture_remote_document(
+                request.url, request.notebook_id, request.title, background_tasks,
+            )
+        
+        # Auto-detect Google Docs/Slides/Sheets
+        google_export_url = _is_google_doc_url(request.url)
+        if google_export_url:
+            print(f"[BROWSER] Google Doc detected: {request.url} → export: {google_export_url}")
+            return await _capture_remote_document(
+                google_export_url, request.notebook_id, request.title, background_tasks,
+            )
         
         # Try to extract content using trafilatura (same as web research panel)
         # This is MUCH more robust than the extension's document.body.innerText

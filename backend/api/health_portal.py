@@ -1837,42 +1837,67 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
     
     elif action == "download_audio_model":
         # Download Kokoro-82M (MLX) model from HuggingFace (~330 MB)
+        # Guard: prevent multiple simultaneous download attempts
+        if getattr(repair, '_audio_download_in_progress', False):
+            add_log("INFO", "Audio model download already in progress, ignoring duplicate request", "health_portal")
+            return {
+                "status": "started",
+                "message": "Download already in progress (~330 MB). Please wait 1-3 minutes and refresh."
+            }
+        
         try:
             add_log("INFO", "Executing repair: download_audio_model", "health_portal")
             
-            from services.audio_llm import audio_llm
+            from services.audio_llm import audio_llm, AudioLLMService
             
             import threading
+            import shutil
+            
+            repair._audio_download_in_progress = True
+            
             def download_audio_model_background():
                 try:
                     add_log("INFO", "Starting Kokoro-82M (MLX) model download (~330 MB)...", "health_portal")
                     # Reset state so _load_model runs fresh
                     audio_llm._initialized = False
-                    audio_llm._initializing = False
                     audio_llm._init_error = None
                     audio_llm._model = None
                     
-                    # Check if existing cache is corrupt — force clean download if so
-                    from services.audio_llm import AudioLLMService
-                    cached = AudioLLMService._find_cached_model_dir()
-                    if cached:
-                        valid, err = AudioLLMService._validate_model_dir(cached)
-                        if not valid:
-                            add_log("INFO", f"Corrupt model cache detected ({err}), will force re-download", "health_portal")
-                            # _load_model's self-healing will handle the rest
+                    # Force-clear ALL caches before downloading
+                    # This prevents the loop where corrupt cache is re-detected
+                    import os
+                    local_cache = os.path.expanduser("~/.cache/kokoro-mlx-model")
+                    hf_kokoro_cache = os.path.expanduser(
+                        "~/.cache/huggingface/hub/models--mlx-community--Kokoro-82M-bf16"
+                    )
+                    for cache_path in (local_cache, hf_kokoro_cache):
+                        if os.path.isdir(cache_path):
+                            add_log("INFO", f"Clearing cache: {cache_path}", "health_portal")
+                            shutil.rmtree(cache_path, ignore_errors=True)
                     
+                    # Now load model — will do a fresh download since caches are cleared
+                    add_log("INFO", "Downloading from HuggingFace (this may take a few minutes)...", "health_portal")
                     audio_llm._load_model()
                     audio_llm._initialized = True
-                    audio_llm._initializing = False
                     add_log("INFO", "✓ Kokoro-82M (MLX) model downloaded and loaded successfully", "health_portal")
                 except Exception as e:
                     import traceback
                     tb = traceback.format_exc()
                     audio_llm._init_error = str(e)
                     audio_llm._initialized = False
-                    audio_llm._initializing = False
-                    add_log("ERROR", f"Kokoro-82M (MLX) download/load failed: {e}", "health_portal")
+                    error_msg = str(e)
+                    # Surface actionable info to the user
+                    if "SSL" in error_msg or "CERTIFICATE" in error_msg.upper():
+                        add_log("ERROR", f"Download failed — SSL certificate error. Try: Run 'Install Certificates.command' from your Python installation folder. Detail: {error_msg[:150]}", "health_portal")
+                    elif "ConnectionError" in error_msg or "timeout" in error_msg.lower():
+                        add_log("ERROR", f"Download failed — network error. Check internet connection. Detail: {error_msg[:150]}", "health_portal")
+                    elif "MemoryError" in error_msg or "memory" in error_msg.lower():
+                        add_log("ERROR", f"Download failed — not enough memory. Close other apps and try again. Detail: {error_msg[:150]}", "health_portal")
+                    else:
+                        add_log("ERROR", f"Kokoro-82M download/load failed: {error_msg[:200]}", "health_portal")
                     print(f"[AudioLLM] Repair failed:\n{tb}")
+                finally:
+                    repair._audio_download_in_progress = False
             
             thread = threading.Thread(target=download_audio_model_background, daemon=True)
             thread.start()
@@ -1882,6 +1907,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                 "message": "Kokoro-82M (MLX) model download started (~330 MB). This should take 1-3 minutes. Refresh Health Portal to check progress."
             }
         except Exception as e:
+            repair._audio_download_in_progress = False
             add_log("ERROR", f"Audio model repair failed: {e}", "health_portal")
             return {"status": "error", "message": str(e)}
     
