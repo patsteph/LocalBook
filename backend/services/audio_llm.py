@@ -180,14 +180,25 @@ class AudioLLMService:
             print(f"[AudioLLM] SSL cert verification broken — disabling for HuggingFace downloads")
             self._disable_hf_ssl_verify()
         
-        # ── 3. Load model ──
+        # ── 3. Load model (with self-healing for corrupt files) ──
         print(f"[AudioLLM] Loading Kokoro-82M via kokoro-mlx...")
         from kokoro_mlx import KokoroTTS
         
         # Targeted download: only fetch model files, skip large WAV samples
         # and markdown docs that snapshot_download would pull by default.
         local_dir = self._download_model_files()
-        self._model = KokoroTTS.from_pretrained(local_dir)
+        
+        try:
+            self._model = KokoroTTS.from_pretrained(local_dir)
+        except Exception as e:
+            err_msg = str(e).lower()
+            if any(k in err_msg for k in ("incomplete", "deserializ", "safetensor", "truncat", "corrupt")):
+                print(f"[AudioLLM] Model files corrupt ({e}), forcing re-download...")
+                local_dir = self._download_model_files(force_redownload=True)
+                self._model = KokoroTTS.from_pretrained(local_dir)
+            else:
+                raise
+        
         print(f"[AudioLLM] ✓ Kokoro-82M (MLX) pipeline ready")
     
     @staticmethod
@@ -214,33 +225,172 @@ class AudioLLMService:
         except ImportError:
             pass
     
+    @staticmethod
+    def _validate_safetensors_file(path: str) -> bool:
+        """Validate a safetensors file is complete (not truncated).
+        
+        Reads the binary header to determine expected file size, then verifies
+        the actual file size matches. Catches truncated downloads without
+        loading any tensor data. Fast (~1ms per file).
+        """
+        import struct
+        import json as _json
+        try:
+            file_size = os.path.getsize(path)
+            if file_size < 8:
+                return False
+            with open(path, 'rb') as f:
+                header_size = struct.unpack('<Q', f.read(8))[0]
+                if file_size < 8 + header_size:
+                    return False
+                header_json = f.read(header_size)
+                metadata = _json.loads(header_json)
+                max_end = 0
+                for key, info in metadata.items():
+                    if key == "__metadata__":
+                        continue
+                    offsets = info.get("data_offsets", [0, 0])
+                    if len(offsets) == 2:
+                        max_end = max(max_end, offsets[1])
+                expected_size = 8 + header_size + max_end
+                return file_size >= expected_size
+        except Exception:
+            return False
+    
     @classmethod
-    def _download_model_files(cls) -> str:
+    def _validate_model_dir(cls, model_dir: str) -> tuple:
+        """Validate all model files in a directory are complete.
+        
+        Returns (is_valid: bool, error_message: str).
+        """
+        import glob
+        
+        config_path = os.path.join(model_dir, "config.json")
+        if not os.path.isfile(config_path):
+            return False, "config.json missing"
+        
+        try:
+            import json
+            with open(config_path) as f:
+                json.load(f)
+        except Exception:
+            return False, "config.json corrupted"
+        
+        # Validate model safetensors
+        st_files = glob.glob(os.path.join(model_dir, "*.safetensors"))
+        if not st_files:
+            return False, "No .safetensors model files found"
+        
+        for st_file in st_files:
+            if not cls._validate_safetensors_file(st_file):
+                return False, f"Corrupt/truncated: {os.path.basename(st_file)}"
+        
+        # Validate voice files (if voices/ exists)
+        voices_dir = os.path.join(model_dir, "voices")
+        if os.path.isdir(voices_dir):
+            voice_files = glob.glob(os.path.join(voices_dir, "*.safetensors"))
+            for vf in voice_files:
+                if not cls._validate_safetensors_file(vf):
+                    return False, f"Corrupt/truncated voice: {os.path.basename(vf)}"
+        
+        return True, "ok"
+    
+    @classmethod
+    def _find_cached_model_dir(cls) -> Optional[str]:
+        """Find the cached model directory (local or HF cache).
+        
+        Returns the path if found, None otherwise.
+        Does NOT validate file integrity — use _validate_model_dir for that.
+        """
+        # Check local cache first
+        local_cache = os.path.expanduser("~/.cache/kokoro-mlx-model")
+        if (os.path.isdir(local_cache)
+                and os.path.isfile(os.path.join(local_cache, "config.json"))):
+            return local_cache
+        
+        # Check HF cache
+        import glob
+        hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
+        kokoro_cache = os.path.join(hf_cache, "models--mlx-community--Kokoro-82M-bf16")
+        if os.path.isdir(kokoro_cache):
+            snapshots = sorted(glob.glob(os.path.join(kokoro_cache, "snapshots", "*")))
+            for snap in snapshots:
+                if os.path.isfile(os.path.join(snap, "config.json")):
+                    return snap
+        
+        return None
+    
+    @classmethod
+    def _download_model_files(cls, force_redownload: bool = False) -> str:
         """Locate or download only the model files needed for inference.
         
         Check order:
         1. Local curl-based cache (~/.cache/kokoro-mlx-model)
         2. HuggingFace Hub cache (via snapshot_download)
         
+        Validates file integrity before returning cached paths.
+        If files are corrupt/truncated, clears cache and re-downloads.
+        
         The HF repo contains ~2GB of WAV samples we don't need.
         allow_patterns limits to config.json and *.safetensors only.
         """
-        # Prefer local cache (populated by _download_model.sh or manual download)
-        local_cache = os.path.expanduser("~/.cache/kokoro-mlx-model")
-        if (os.path.isdir(local_cache)
-                and os.path.isfile(os.path.join(local_cache, "config.json"))
-                and os.path.isdir(os.path.join(local_cache, "voices"))):
-            print(f"[AudioLLM] Using local model cache: {local_cache}")
-            return local_cache
+        import shutil
         
-        # Fall back to HuggingFace Hub download
+        local_cache = os.path.expanduser("~/.cache/kokoro-mlx-model")
+        hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
+        kokoro_hf_cache = os.path.join(hf_cache, "models--mlx-community--Kokoro-82M-bf16")
+        
+        if force_redownload:
+            # Clear all caches to force a fresh download
+            if os.path.isdir(local_cache):
+                print(f"[AudioLLM] Clearing local cache for re-download...")
+                shutil.rmtree(local_cache, ignore_errors=True)
+            if os.path.isdir(kokoro_hf_cache):
+                print(f"[AudioLLM] Clearing HF cache for re-download...")
+                shutil.rmtree(kokoro_hf_cache, ignore_errors=True)
+        else:
+            # Check local cache first — validate before trusting
+            if (os.path.isdir(local_cache)
+                    and os.path.isfile(os.path.join(local_cache, "config.json"))
+                    and os.path.isdir(os.path.join(local_cache, "voices"))):
+                valid, err = cls._validate_model_dir(local_cache)
+                if valid:
+                    print(f"[AudioLLM] Using local model cache: {local_cache}")
+                    return local_cache
+                else:
+                    print(f"[AudioLLM] Local cache corrupt ({err}), removing...")
+                    shutil.rmtree(local_cache, ignore_errors=True)
+            
+            # Check HF cache — validate before trusting
+            cached = cls._find_cached_model_dir()
+            if cached and cached != local_cache:
+                valid, err = cls._validate_model_dir(cached)
+                if valid:
+                    print(f"[AudioLLM] Using HF model cache: {cached}")
+                    return cached
+                else:
+                    print(f"[AudioLLM] HF cache corrupt ({err}), clearing...")
+                    shutil.rmtree(kokoro_hf_cache, ignore_errors=True)
+        
+        # Download via HuggingFace Hub
+        print(f"[AudioLLM] Downloading Kokoro-82M model (~330 MB)...")
         from huggingface_hub import snapshot_download
         
-        return snapshot_download(
+        result = snapshot_download(
             repo_id=cls.MLX_KOKORO_REPO,
             allow_patterns=["config.json", "*.safetensors", "voices/*.safetensors"],
             max_workers=1,
         )
+        
+        # Validate the fresh download
+        valid, err = cls._validate_model_dir(result)
+        if not valid:
+            raise RuntimeError(
+                f"Downloaded model files are corrupt: {err}. "
+                f"This may indicate a network issue. Try running Repair again."
+            )
+        
+        return result
     
     @staticmethod
     def _fix_ssl_for_hf_download():
@@ -739,11 +889,17 @@ async def check_audio_llm_available() -> dict:
     except Exception as e:
         diag["soundfile"] = f"FAIL: {e}"
     
-    # Check HuggingFace model cache (MLX version)
+    # Check HuggingFace model cache (MLX version) — validate file integrity
     import os
-    hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
-    kokoro_cache = os.path.join(hf_cache, "models--mlx-community--Kokoro-82M-bf16")
-    diag["model_cached"] = "yes" if os.path.exists(kokoro_cache) else "no (will download ~330 MB on first use)"
+    cached_dir = AudioLLMService._find_cached_model_dir()
+    if cached_dir:
+        valid, err = AudioLLMService._validate_model_dir(cached_dir)
+        if valid:
+            diag["model_cached"] = "yes (validated)"
+        else:
+            diag["model_cached"] = f"CORRUPT: {err} — click Repair to re-download"
+    else:
+        diag["model_cached"] = "no (will download ~330 MB on first use)"
     
     all_ok = all("FAIL" not in str(v) for v in diag.values() if v != diag.get("model_cached"))
     

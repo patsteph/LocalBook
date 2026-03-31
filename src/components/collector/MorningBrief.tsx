@@ -130,7 +130,7 @@ export const MorningBrief: React.FC<MorningBriefProps> = ({
               <p className="text-red-500 mb-2">{error}</p>
               <button 
                 onClick={fetchBrief}
-                className="text-blue-600 hover:text-blue-700 flex items-center gap-1 mx-auto"
+                className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 flex items-center gap-1 mx-auto"
               >
                 <RefreshCw className="w-4 h-4" />
                 Try again

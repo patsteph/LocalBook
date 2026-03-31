@@ -210,7 +210,7 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
               />
               <button
                 onClick={copyToClipboard}
-                className="text-xs text-blue-600 hover:text-blue-700"
+                className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
               >
                 Copy
               </button>

@@ -224,7 +224,7 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                     <button
                         onClick={handleRefresh}
                         disabled={loading || status !== 'idle'}
-                        className="text-xs text-blue-600 hover:text-blue-700 disabled:opacity-50"
+                        className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 disabled:opacity-50"
                         title="Refresh themes"
                     >
                         {loading ? '...' : '↻ Refresh'}

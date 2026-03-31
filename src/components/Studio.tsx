@@ -316,7 +316,7 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
             </label>
             <button
               onClick={() => setShowCustomSkillForm(!showCustomSkillForm)}
-              className="text-sm text-blue-600 hover:text-blue-700"
+              className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
             >
               {showCustomSkillForm ? 'Cancel' : '+ Custom Skill'}
             </button>

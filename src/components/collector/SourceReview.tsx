@@ -575,14 +575,14 @@ if (showCompanyClarification) {
                 <div className="flex gap-2">
                   <button
                     onClick={selectAll}
-                    className="text-sm text-blue-600 hover:text-blue-700"
+                    className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
                   >
                     Select all
                   </button>
                   <span className="text-gray-300">|</span>
                   <button
                     onClick={deselectAll}
-                    className="text-sm text-gray-500 hover:text-gray-700"
+                    className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                   >
                     Clear
                   </button>

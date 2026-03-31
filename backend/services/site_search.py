@@ -1010,18 +1010,21 @@ class BraveFallbackHandler(SiteSearchHandler):
             
             for item in data.get("web", {}).get("results", []):
                 snippet = item.get("description", "")
-                read_time = estimate_read_time(snippet, "article")
+                url = item.get("url", "")
+                
+                # Don't show read_time for video URLs — it's meaningless
+                is_video = any(d in url for d in ("youtube.com/watch", "youtu.be/", "vimeo.com/"))
+                meta: Dict[str, Any] = {"source": "brave_search"}
+                if not is_video:
+                    meta["read_time"] = estimate_read_time(snippet, "article")
                 
                 results.append(SearchResult(
                     title=item.get("title", ""),
-                    url=item.get("url", ""),
+                    url=url,
                     snippet=snippet,
                     source_site=self.site_name,
                     published_date=item.get("age"),
-                    metadata={
-                        "source": "brave_search",
-                        "read_time": read_time,
-                    }
+                    metadata=meta,
                 ))
             
             return results

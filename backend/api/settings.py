@@ -46,8 +46,9 @@ async def get_api_keys_status():
     """Get the status of all API keys (configured or not)"""
     key_names = [
         "brave_api_key",
-        "openai_api_key",
+        "youtube_api_key",
         "anthropic_api_key",
+        "openai_api_key",
         "gemini_api_key",
         "custom_llm",
     ]

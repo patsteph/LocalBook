@@ -57,17 +57,23 @@ class WebScraper:
 
                 for result in data.get("web", {}).get("results", []):
                     snippet = result.get("description", "")
-                    # Estimate read time from snippet (snippets are ~10% of content)
-                    words = len(snippet.split()) * 8
-                    minutes = max(1, round(words / 238))
-                    if minutes > 30:
-                        minutes = 30
-                    read_time = f"{minutes} min read" if minutes < 5 else f"~{5 * round(minutes / 5)} min read"
+                    url = result.get("url", "")
+                    
+                    # Don't show read_time for video URLs — it's meaningless
+                    is_video = any(d in url for d in ("youtube.com/watch", "youtu.be/", "vimeo.com/"))
+                    read_time = ""
+                    if not is_video:
+                        # Estimate read time from snippet (snippets are ~10% of content)
+                        words = len(snippet.split()) * 8
+                        minutes = max(1, round(words / 238))
+                        if minutes > 30:
+                            minutes = 30
+                        read_time = f"{minutes} min read" if minutes < 5 else f"~{5 * round(minutes / 5)} min read"
                     
                     results.append({
                         "title": result.get("title", ""),
                         "snippet": snippet,
-                        "url": result.get("url", ""),
+                        "url": url,
                         "read_time": read_time,
                     })
 

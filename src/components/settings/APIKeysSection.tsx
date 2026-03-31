@@ -20,12 +20,12 @@ const API_KEY_CONFIGS: APIKeyConfig[] = [
         getKeyUrl: 'https://brave.com/search/api/',
     },
     {
-        name: 'OpenAI',
-        key: 'openai_api_key',
-        label: 'OpenAI API Key',
-        description: 'For GPT-4, GPT-3.5, and other OpenAI models',
-        placeholder: 'sk-...',
-        getKeyUrl: 'https://platform.openai.com/api-keys',
+        name: 'YouTube',
+        key: 'youtube_api_key',
+        label: 'YouTube Data API Key',
+        description: 'For YouTube site-specific search (free tier available)',
+        placeholder: 'AIza...',
+        getKeyUrl: 'https://console.cloud.google.com/apis/credentials',
     },
     {
         name: 'Anthropic',
@@ -36,20 +36,20 @@ const API_KEY_CONFIGS: APIKeyConfig[] = [
         getKeyUrl: 'https://console.anthropic.com/settings/keys',
     },
     {
+        name: 'OpenAI',
+        key: 'openai_api_key',
+        label: 'OpenAI API Key',
+        description: 'For GPT-4, GPT-3.5, and other OpenAI models',
+        placeholder: 'sk-...',
+        getKeyUrl: 'https://platform.openai.com/api-keys',
+    },
+    {
         name: 'Google AI',
         key: 'gemini_api_key',
         label: 'Google AI API Key',
         description: 'For Gemini models',
         placeholder: 'AI...',
         getKeyUrl: 'https://aistudio.google.com/app/apikey',
-    },
-    {
-        name: 'YouTube',
-        key: 'youtube_api_key',
-        label: 'YouTube Data API Key',
-        description: 'For YouTube site-specific search (free tier available)',
-        placeholder: 'AIza...',
-        getKeyUrl: 'https://console.cloud.google.com/apis/credentials',
     },
 ];
 
@@ -199,14 +199,19 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                         </p>
                     </div>
                     {config.getKeyUrl && (
-                        <a
-                            href={config.getKeyUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                        <button
+                            onClick={async () => {
+                                try {
+                                    const { openUrl } = await import('@tauri-apps/plugin-opener');
+                                    await openUrl(config.getKeyUrl!);
+                                } catch {
+                                    window.open(config.getKeyUrl, '_blank', 'noopener,noreferrer');
+                                }
+                            }}
                             className="text-sm text-blue-600 dark:text-blue-400 hover:underline ml-4"
                         >
                             Get Key →
-                        </a>
+                        </button>
                     )}
                 </div>
 
@@ -249,10 +254,10 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                 </p>
 
                 <div className="space-y-4">
-                    {/* Brave Search - First Item */}
-                    {renderKeyCard(API_KEY_CONFIGS[0])}
+                    {/* Brave Search, YouTube, Anthropic, OpenAI */}
+                    {API_KEY_CONFIGS.slice(0, 4).map(renderKeyCard)}
 
-                    {/* Custom LLM - Second Item */}
+                    {/* Custom LLM */}
                     <div className="p-3 border-2 border-blue-200 dark:border-blue-700 rounded-lg bg-blue-50 dark:bg-blue-900/10">
                         <div className="flex items-start justify-between mb-3">
                             <div className="flex-1">
@@ -336,8 +341,8 @@ export const APIKeysSection: React.FC<APIKeysSectionProps> = ({ setError, setSuc
                         </div>
                     </div>
 
-                    {/* Other LLM Providers */}
-                    {API_KEY_CONFIGS.slice(1).map(renderKeyCard)}
+                    {/* Google AI */}
+                    {API_KEY_CONFIGS.slice(4).map(renderKeyCard)}
                 </div>
             </div>
         </div>

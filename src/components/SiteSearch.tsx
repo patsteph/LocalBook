@@ -354,13 +354,13 @@ export const SiteSearch: React.FC<SiteSearchProps> = ({
                       <span className="text-xs text-yellow-600">⭐ {result.metadata.stars}</span>
                     )}
                     {result.metadata.citations && (
-                      <span className="text-xs text-purple-600">📚 {result.metadata.citations} citations</span>
+                      <span className="text-xs text-purple-600 dark:text-purple-400">📚 {result.metadata.citations} citations</span>
                     )}
                     {result.metadata.score && (
-                      <span className="text-xs text-orange-600">▲ {result.metadata.score}</span>
+                      <span className="text-xs text-orange-600 dark:text-orange-400">▲ {result.metadata.score}</span>
                     )}
                     {result.metadata.num_comments && (
-                      <span className="text-xs text-blue-600">💬 {result.metadata.num_comments}</span>
+                      <span className="text-xs text-blue-600 dark:text-blue-400">💬 {result.metadata.num_comments}</span>
                     )}
                   </div>
                 )}

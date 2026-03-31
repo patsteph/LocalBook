@@ -532,20 +532,38 @@ async def full_health_check():
                 "details": {"model": "mlx-community/Kokoro-82M-bf16", "note": "Cached, loads on first use"}
             })
         elif deps_ok and not model_cached:
-            # Deps installed but model not downloaded yet
-            add_check("ai_models", {
-                "name": "audio_model",
-                "display": "Kokoro-82M (TTS)",
-                "status": "warn",
-                "error": "Model not downloaded yet (~330 MB)",
-                "details": {"init_error": (audio_llm._init_error or "")[:200]}
-            })
-            results["issues"].append({
-                "severity": "medium",
-                "title": "Audio Model Not Downloaded",
-                "message": "Kokoro-82M (MLX) not downloaded. Click Repair to download (~330 MB). Required for video narration.",
-                "repair": "download_audio_model"
-            })
+            # Deps installed but model not downloaded or corrupt
+            model_cached_raw = diag.get("model_cached", "")
+            is_corrupt = "CORRUPT" in model_cached_raw
+            
+            if is_corrupt:
+                add_check("ai_models", {
+                    "name": "audio_model",
+                    "display": "Kokoro-82M (TTS)",
+                    "status": "warn",
+                    "error": f"Model files corrupted ({model_cached_raw})",
+                    "details": {"init_error": (audio_llm._init_error or "")[:200]}
+                })
+                results["issues"].append({
+                    "severity": "medium",
+                    "title": "Audio Model Corrupted",
+                    "message": "Kokoro-82M model files are corrupted (incomplete download). Click Repair to re-download (~330 MB).",
+                    "repair": "download_audio_model"
+                })
+            else:
+                add_check("ai_models", {
+                    "name": "audio_model",
+                    "display": "Kokoro-82M (TTS)",
+                    "status": "warn",
+                    "error": "Model not downloaded yet (~330 MB)",
+                    "details": {"init_error": (audio_llm._init_error or "")[:200]}
+                })
+                results["issues"].append({
+                    "severity": "medium",
+                    "title": "Audio Model Not Downloaded",
+                    "message": "Kokoro-82M (MLX) not downloaded. Click Repair to download (~330 MB). Required for video narration.",
+                    "repair": "download_audio_model"
+                })
             if results["overall"] == "healthy":
                 results["overall"] = "degraded"
         else:
@@ -1833,6 +1851,16 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                     audio_llm._initializing = False
                     audio_llm._init_error = None
                     audio_llm._model = None
+                    
+                    # Check if existing cache is corrupt — force clean download if so
+                    from services.audio_llm import AudioLLMService
+                    cached = AudioLLMService._find_cached_model_dir()
+                    if cached:
+                        valid, err = AudioLLMService._validate_model_dir(cached)
+                        if not valid:
+                            add_log("INFO", f"Corrupt model cache detected ({err}), will force re-download", "health_portal")
+                            # _load_model's self-healing will handle the rest
+                    
                     audio_llm._load_model()
                     audio_llm._initialized = True
                     audio_llm._initializing = False
