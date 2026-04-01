@@ -1837,12 +1837,15 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
     
     elif action == "download_audio_model":
         # Download Kokoro-82M (MLX) model from HuggingFace (~330 MB)
-        # Guard: prevent multiple simultaneous download attempts
-        if getattr(execute_repair, '_audio_download_in_progress', False):
-            add_log("INFO", "Audio model download already in progress, ignoring duplicate request", "health_portal")
+        # Guard: prevent multiple simultaneous download attempts (with 10-min stale expiry)
+        import time as _time
+        _download_started = getattr(execute_repair, '_audio_download_started_at', 0)
+        _elapsed = _time.time() - _download_started if _download_started else 999
+        if getattr(execute_repair, '_audio_download_in_progress', False) and _elapsed < 600:
+            add_log("INFO", f"Audio model download already in progress ({int(_elapsed)}s elapsed), ignoring duplicate request", "health_portal")
             return {
                 "status": "started",
-                "message": "Download already in progress (~330 MB). Please wait 1-3 minutes and refresh."
+                "message": f"Download already in progress ({int(_elapsed)}s elapsed). Please wait up to 10 minutes and refresh."
             }
         
         try:
@@ -1854,6 +1857,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             import shutil
             
             execute_repair._audio_download_in_progress = True
+            execute_repair._audio_download_started_at = _time.time()
             
             def download_audio_model_background():
                 try:
@@ -1864,7 +1868,6 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                     audio_llm._model = None
                     
                     # Force-clear ALL caches before downloading
-                    # This prevents the loop where corrupt cache is re-detected
                     import os
                     local_cache = os.path.expanduser("~/.cache/kokoro-mlx-model")
                     hf_kokoro_cache = os.path.expanduser(
@@ -1875,11 +1878,24 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                             add_log("INFO", f"Clearing cache: {cache_path}", "health_portal")
                             shutil.rmtree(cache_path, ignore_errors=True)
                     
-                    # Now load model — will do a fresh download since caches are cleared
-                    add_log("INFO", "Downloading from HuggingFace (this may take a few minutes)...", "health_portal")
-                    audio_llm._load_model()
-                    audio_llm._initialized = True
-                    add_log("INFO", "✓ Kokoro-82M (MLX) model downloaded and loaded successfully", "health_portal")
+                    # Monkey-patch print to also surface step logs to Health Portal console
+                    import builtins
+                    _original_print = builtins.print
+                    def _logging_print(*args, **kwargs):
+                        msg = " ".join(str(a) for a in args)
+                        if "[AudioLLM]" in msg and ("Step" in msg or "SSL" in msg or "robust" in msg or "Downloading" in msg):
+                            add_log("INFO", msg.replace("[AudioLLM] ", ""), "health_portal")
+                        _original_print(*args, **kwargs)
+                    builtins.print = _logging_print
+                    
+                    try:
+                        add_log("INFO", "Downloading from HuggingFace (this may take a few minutes)...", "health_portal")
+                        audio_llm._load_model()
+                        audio_llm._initialized = True
+                        add_log("INFO", "✓ Kokoro-82M (MLX) model downloaded and loaded successfully", "health_portal")
+                    finally:
+                        builtins.print = _original_print
+                        
                 except Exception as e:
                     import traceback
                     tb = traceback.format_exc()
@@ -1888,13 +1904,13 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                     error_msg = str(e)
                     # Surface actionable info to the user
                     if "SSL" in error_msg or "CERTIFICATE" in error_msg.upper():
-                        add_log("ERROR", f"Download failed — SSL certificate error. Try: Run 'Install Certificates.command' from your Python installation folder. Detail: {error_msg[:150]}", "health_portal")
+                        add_log("ERROR", f"Download failed — SSL error. Detail: {error_msg[:200]}", "health_portal")
                     elif "ConnectionError" in error_msg or "timeout" in error_msg.lower():
-                        add_log("ERROR", f"Download failed — network error. Check internet connection. Detail: {error_msg[:150]}", "health_portal")
+                        add_log("ERROR", f"Download failed — network error. Check internet connection. Detail: {error_msg[:200]}", "health_portal")
                     elif "MemoryError" in error_msg or "memory" in error_msg.lower():
-                        add_log("ERROR", f"Download failed — not enough memory. Close other apps and try again. Detail: {error_msg[:150]}", "health_portal")
+                        add_log("ERROR", f"Download failed — not enough memory. Close other apps and try again. Detail: {error_msg[:200]}", "health_portal")
                     else:
-                        add_log("ERROR", f"Kokoro-82M download/load failed: {error_msg[:200]}", "health_portal")
+                        add_log("ERROR", f"Kokoro-82M download/load failed: {error_msg[:300]}", "health_portal")
                     print(f"[AudioLLM] Repair failed:\n{tb}")
                 finally:
                     execute_repair._audio_download_in_progress = False
@@ -1904,7 +1920,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             
             return {
                 "status": "started",
-                "message": "Kokoro-82M (MLX) model download started (~330 MB). This should take 1-3 minutes. Refresh Health Portal to check progress."
+                "message": "Kokoro-82M (MLX) model download started (~330 MB). This should take 1-5 minutes. Refresh Health Portal to check progress."
             }
         except Exception as e:
             execute_repair._audio_download_in_progress = False

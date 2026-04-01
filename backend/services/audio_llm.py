@@ -171,23 +171,31 @@ class AudioLLMService:
         # sys.executable is the PyInstaller binary, not Python.
         # Fix: patch spacy.cli.download to no-op BEFORE importing kokoro_mlx.
         # The model data is bundled via --collect-all=en_core_web_sm.
+        print(f"[AudioLLM] Step 1/5: Patching spacy download...")
         self._patch_spacy_download()
         
         # ── 2. SSL fixes for any HuggingFace downloads needed ──
+        print(f"[AudioLLM] Step 2/5: Configuring SSL...")
         self._fix_ssl_for_hf_download()
         
         if not self._ssl_probe():
             print(f"[AudioLLM] SSL cert verification broken — disabling for HuggingFace downloads")
             self._disable_hf_ssl_verify()
+        else:
+            print(f"[AudioLLM] SSL verification OK")
         
-        # ── 3. Load model (with self-healing for corrupt files) ──
-        print(f"[AudioLLM] Loading Kokoro-82M via kokoro-mlx...")
+        # ── 3. Import kokoro_mlx ──
+        print(f"[AudioLLM] Step 3/5: Importing kokoro_mlx...")
         from kokoro_mlx import KokoroTTS
+        print(f"[AudioLLM] Step 3/5: kokoro_mlx imported OK")
         
-        # Targeted download: only fetch model files, skip large WAV samples
-        # and markdown docs that snapshot_download would pull by default.
+        # ── 4. Download model files ──
+        print(f"[AudioLLM] Step 4/5: Downloading model files...")
         local_dir = self._download_model_files()
+        print(f"[AudioLLM] Step 4/5: Model files at {local_dir}")
         
+        # ── 5. Load model (with self-healing for corrupt files) ──
+        print(f"[AudioLLM] Step 5/5: Loading model into memory...")
         try:
             self._model = KokoroTTS.from_pretrained(local_dir)
         except Exception as e:
@@ -459,28 +467,37 @@ class AudioLLMService:
         """Disable SSL verification for HuggingFace Hub downloads.
         
         Uses configure_http_backend to create requests Sessions with
-        verify=False, then clears the session cache so the new factory
-        takes effect. This is a last-resort fallback for environments
-        where all CA bundles fail (common on macOS Python 3.13 with
-        network proxies, corporate firewalls, or stale root certs).
+        verify=False AND retries + timeouts. Without retries and timeouts,
+        downloads hang forever in PyInstaller bundles.
         
         The model weights have their own checksums verified by HuggingFace Hub,
         so disabling SSL verification for the download is acceptable.
         """
         import requests
+        from requests.adapters import HTTPAdapter
         from huggingface_hub import configure_http_backend
-        from huggingface_hub.utils._http import reset_sessions
+        try:
+            from huggingface_hub.utils._http import reset_sessions
+        except ImportError:
+            reset_sessions = lambda: None
         
-        def no_ssl_factory() -> requests.Session:
+        class _TimeoutAdapter(HTTPAdapter):
+            def send(self, *a, **kw):
+                kw.setdefault('timeout', (30, 120))
+                return super().send(*a, **kw)
+        
+        def robust_no_ssl_factory() -> requests.Session:
             session = requests.Session()
             session.verify = False
+            session.mount('http://', _TimeoutAdapter(max_retries=3))
+            session.mount('https://', _TimeoutAdapter(max_retries=3))
             return session
         
         # Clear cert env vars that override session.verify in requests
         for key in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE"):
             os.environ.pop(key, None)
         
-        configure_http_backend(backend_factory=no_ssl_factory)
+        configure_http_backend(backend_factory=robust_no_ssl_factory)
         reset_sessions()
         
         # Suppress urllib3 InsecureRequestWarning
