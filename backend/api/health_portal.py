@@ -1838,7 +1838,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
     elif action == "download_audio_model":
         # Download Kokoro-82M (MLX) model from HuggingFace (~330 MB)
         # Guard: prevent multiple simultaneous download attempts
-        if getattr(repair, '_audio_download_in_progress', False):
+        if getattr(execute_repair, '_audio_download_in_progress', False):
             add_log("INFO", "Audio model download already in progress, ignoring duplicate request", "health_portal")
             return {
                 "status": "started",
@@ -1853,7 +1853,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             import threading
             import shutil
             
-            repair._audio_download_in_progress = True
+            execute_repair._audio_download_in_progress = True
             
             def download_audio_model_background():
                 try:
@@ -1897,7 +1897,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                         add_log("ERROR", f"Kokoro-82M download/load failed: {error_msg[:200]}", "health_portal")
                     print(f"[AudioLLM] Repair failed:\n{tb}")
                 finally:
-                    repair._audio_download_in_progress = False
+                    execute_repair._audio_download_in_progress = False
             
             thread = threading.Thread(target=download_audio_model_background, daemon=True)
             thread.start()
@@ -1907,7 +1907,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                 "message": "Kokoro-82M (MLX) model download started (~330 MB). This should take 1-3 minutes. Refresh Health Portal to check progress."
             }
         except Exception as e:
-            repair._audio_download_in_progress = False
+            execute_repair._audio_download_in_progress = False
             add_log("ERROR", f"Audio model repair failed: {e}", "health_portal")
             return {"status": "error", "message": str(e)}
     
