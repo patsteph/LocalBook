@@ -15,6 +15,7 @@ export interface Theme {
     description: string | null;
     concepts: string[];
     concept_count: number;
+    connection_count?: number;  // Edges to other topics in the constellation
     coherence_score: number;
     topic_id?: number;  // v0.6.5: BERTopic topic ID
     enhanced?: boolean;  // v0.6.5: Whether name has been LLM-enhanced

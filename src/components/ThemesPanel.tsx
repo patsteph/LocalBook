@@ -331,7 +331,7 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, highlighte
                                                 {theme.name || 'Unnamed Theme'}
                                             </h4>
                                             <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
-                                                {theme.concept_count} {theme.concept_count === 1 ? 'source' : 'sources'}
+                                                {theme.connection_count ?? 0} {(theme.connection_count ?? 0) === 1 ? 'connection' : 'connections'} · {theme.concept_count} {theme.concept_count === 1 ? 'source' : 'sources'}
                                             </p>
                                         </div>
                                         <span className="text-gray-400 text-xs">

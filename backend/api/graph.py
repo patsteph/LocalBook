@@ -425,6 +425,14 @@ async def get_notebook_themes(notebook_id: str, limit: int = 50):
     except Exception:
         pass
     
+    # Pre-compute connection counts per topic from graph edges
+    graph_data = await _build_graph_from_topics(notebook_id)
+    topic_connection_counts: Dict[str, int] = {}
+    for edge in graph_data.edges:
+        if edge.label in ("related", ) or edge.id.startswith("tagedge_"):
+            topic_connection_counts[edge.source] = topic_connection_counts.get(edge.source, 0) + 1
+            topic_connection_counts[edge.target] = topic_connection_counts.get(edge.target, 0) + 1
+    
     # Build themes list from topics
     themes = []
     for topic in topics[:limit]:
@@ -454,12 +462,16 @@ async def get_notebook_themes(notebook_id: str, limit: int = 50):
             "description": ", ".join(keywords[:5]),
             "concepts": keywords,  # Keywords serve as "concepts" for click-to-chat
             "concept_count": len(source_chunk_counts),  # Unique sources, not raw chunks
+            "connection_count": topic_connection_counts.get(topic.id, 0),  # Edges to other topics
             "chunk_count": topic.document_count,  # Raw chunk count for transparency
             "coherence_score": 0.8,  # BERTopic doesn't provide this directly
             "topic_id": topic.topic_id,
             "enhanced": topic.enhanced_name is not None,
             "sources": source_attribution
         })
+    
+    # Sort by connections (most connected first), then by source count
+    themes.sort(key=lambda t: (t["connection_count"], t["concept_count"]), reverse=True)
     
     # Get stats
     stats = await topic_modeling_service.get_stats(notebook_id)
