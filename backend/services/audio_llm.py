@@ -384,15 +384,39 @@ class AudioLLMService:
         # Matches install.sh: retries + timeouts + SSL handling for PyInstaller
         print(f"[AudioLLM] Downloading Kokoro-82M model (~330 MB)...")
         import sys
+        import glob as _glob
         import requests as _requests
         from requests.adapters import HTTPAdapter
-        from huggingface_hub import configure_http_backend, snapshot_download
+        from huggingface_hub import configure_http_backend
         try:
             from huggingface_hub.utils._http import reset_sessions
         except ImportError:
             reset_sessions = lambda: None
 
         _frozen = getattr(sys, 'frozen', False)
+
+        # ── Clean up stale lock files that cause snapshot_download to hang ──
+        locks_dir = os.path.join(hf_cache, ".locks")
+        if os.path.isdir(locks_dir):
+            stale_locks = _glob.glob(os.path.join(locks_dir, "**/*.lock"), recursive=True)
+            if stale_locks:
+                print(f"[AudioLLM] Clearing {len(stale_locks)} stale HF lock files...")
+                for lf in stale_locks:
+                    try:
+                        os.remove(lf)
+                    except OSError:
+                        pass
+        # Also clear .incomplete download markers
+        for inc in _glob.glob(os.path.join(hf_cache, "**/*.incomplete"), recursive=True):
+            try:
+                os.remove(inc)
+            except OSError:
+                pass
+
+        # ── Disable tqdm progress bars (hang in PyInstaller without terminal) ──
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+        # Set download timeout env var as a backstop
+        os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
 
         class _TimeoutAdapter(HTTPAdapter):
             def send(self, *a, **kw):
@@ -414,11 +438,50 @@ class AudioLLMService:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             print(f"[AudioLLM] Using robust HTTP backend (retries=3, SSL verify=off for frozen build)")
 
-        result = snapshot_download(
-            repo_id=cls.MLX_KOKORO_REPO,
-            allow_patterns=["config.json", "*.safetensors", "voices/*.safetensors"],
-            max_workers=1,
-        )
+        # ── Download directly to local_dir — bypasses HF blob/symlink/lock system ──
+        # snapshot_download with local_dir puts files directly in our folder
+        # instead of going through the blob cache that requires filelock.
+        os.makedirs(local_cache, exist_ok=True)
+        print(f"[AudioLLM] Downloading to {local_cache} (direct mode, no HF blob cache)...")
+        
+        try:
+            from huggingface_hub import snapshot_download
+            result = snapshot_download(
+                repo_id=cls.MLX_KOKORO_REPO,
+                allow_patterns=["config.json", "*.safetensors", "voices/*.safetensors"],
+                local_dir=local_cache,
+                local_dir_use_symlinks=False,
+                force_download=force_redownload,
+                max_workers=1,
+            )
+            print(f"[AudioLLM] snapshot_download complete: {result}")
+        except Exception as e:
+            print(f"[AudioLLM] snapshot_download failed: {e}, trying individual file downloads...")
+            # Fallback: download files individually with hf_hub_download
+            from huggingface_hub import hf_hub_download, list_repo_tree
+            try:
+                files = list(list_repo_tree(cls.MLX_KOKORO_REPO, recursive=True))
+                target_files = [
+                    f.rfilename for f in files
+                    if f.rfilename == "config.json"
+                    or (f.rfilename.endswith(".safetensors") and "/" not in f.rfilename)
+                    or (f.rfilename.startswith("voices/") and f.rfilename.endswith(".safetensors"))
+                ]
+            except Exception:
+                # Hard-coded fallback if API is also down
+                target_files = ["config.json", "model.safetensors"]
+            
+            for fname in target_files:
+                print(f"[AudioLLM] Downloading {fname}...")
+                hf_hub_download(
+                    repo_id=cls.MLX_KOKORO_REPO,
+                    filename=fname,
+                    local_dir=local_cache,
+                    local_dir_use_symlinks=False,
+                    force_download=True,
+                )
+                print(f"[AudioLLM] ✓ {fname} downloaded")
+            result = local_cache
         
         # Validate the fresh download
         valid, err = cls._validate_model_dir(result)
@@ -428,6 +491,7 @@ class AudioLLMService:
                 f"This may indicate a network issue. Try running Repair again."
             )
         
+        print(f"[AudioLLM] ✓ All model files validated OK")
         return result
     
     @staticmethod

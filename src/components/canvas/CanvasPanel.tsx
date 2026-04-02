@@ -24,6 +24,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
   const ctx = useAppShell();
   const [webSearchTab, setWebSearchTab] = useState<'web' | 'site'>('web');
   const [insightTab, setInsightTab] = useState<'themes' | 'journey'>('themes');
+  const [highlightedTopicId, setHighlightedTopicId] = useState<number | null>(null);
 
   const renderContent = () => {
     switch (view) {
@@ -61,6 +62,8 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
                 {insightTab === 'themes' ? (
                   <ThemesPanel
                     notebookId={ctx.selectedNotebookId}
+                    highlightedTopicId={highlightedTopicId}
+                    onHighlightClear={() => setHighlightedTopicId(null)}
                     onConceptClick={(concept, relatedConcepts) => {
                       const query = relatedConcepts && relatedConcepts.length > 0
                         ? `Tell me about ${concept} and how it relates to ${relatedConcepts.join(', ')}`
@@ -89,6 +92,10 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
                 notebookId={ctx.selectedNotebookId}
                 selectedSourceId={ctx.selectedSourceId}
                 rightSidebarCollapsed={true}
+                onNodeClick={(topicId) => {
+                  setHighlightedTopicId(topicId);
+                  setInsightTab('themes');  // Auto-switch to themes tab
+                }}
               />
             </div>
           </div>

@@ -54,11 +54,12 @@ interface Props {
   notebookId: string | null;
   selectedSourceId?: string | null;  // Filter to show only concepts from this source
   rightSidebarCollapsed?: boolean;  // Whether right sidebar (Studio) is collapsed
+  onNodeClick?: (topicId: number, topicName: string) => void;  // Notify parent when a topic node is clicked
 }
 
 const API_BASE = API_BASE_URL;
 
-export function Constellation3D({ notebookId, selectedSourceId, rightSidebarCollapsed = false }: Props) {
+export function Constellation3D({ notebookId, selectedSourceId, rightSidebarCollapsed = false, onNodeClick }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -751,6 +752,22 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
         const mesh = intersects[0].object as THREE.Mesh;
         const nodeId = mesh.userData.nodeId;
         focusOnNode(nodeId);
+        
+        // Notify parent of the topic this node belongs to
+        if (onNodeClick && graphData) {
+          const clickedNode = graphData.nodes.find(n => n.id === nodeId);
+          if (clickedNode) {
+            if (clickedNode.type === 'topic' && clickedNode.metadata?.topic_id != null) {
+              onNodeClick(clickedNode.metadata.topic_id, clickedNode.label);
+            } else if (clickedNode.metadata?.parent_topic) {
+              // Keyword node — find parent topic
+              const parentNode = graphData.nodes.find(n => n.id === clickedNode.metadata.parent_topic);
+              if (parentNode?.metadata?.topic_id != null) {
+                onNodeClick(parentNode.metadata.topic_id, parentNode.label);
+              }
+            }
+          }
+        }
       }
     };
     
@@ -1436,9 +1453,15 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                           await graphService.resetGraph(notebookId);
                           setGraphData(null);
                           setStats(null);
+                          // Force-clear build state in case WebSocket event doesn't arrive
+                          setBuilding(false);
+                          setBuildProgress(0);
                           loadGraph();
                         } catch (err) {
                           console.error('Failed to reset graph:', err);
+                          // Still clear build state on error
+                          setBuilding(false);
+                          setBuildProgress(0);
                         } finally {
                           setResetting(false);
                           setShowResetConfirm(false);

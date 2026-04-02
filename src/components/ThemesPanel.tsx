@@ -1,25 +1,29 @@
 /**
  * ThemesPanel - Display discovered themes from the knowledge graph
  */
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { themesService, Theme, TopConcept } from '../services/themes';
 import { WS_BASE_URL } from '../services/api';
 
 interface ThemesPanelProps {
     notebookId: string | null;
+    highlightedTopicId?: number | null;  // Topic to highlight (from constellation node click)
+    onHighlightClear?: () => void;  // Clear the highlight
     onConceptClick?: (conceptName: string, relatedConcepts?: string[]) => void;
 }
 
 // Status states for the contextual badge
 type ThemeStatus = 'idle' | 'waiting' | 'discovering';
 
-export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptClick }) => {
+export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, highlightedTopicId, onHighlightClear, onConceptClick }) => {
     const [themes, setThemes] = useState<Theme[]>([]);
     const [topConcepts, setTopConcepts] = useState<TopConcept[]>([]);
     const [totalConcepts, setTotalConcepts] = useState(0);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [expandedTheme, setExpandedTheme] = useState<string | null>(null);
+    const [explorationQuestions, setExplorationQuestions] = useState<Record<string, string[]>>({});
+    const [loadingQuestions, setLoadingQuestions] = useState<string | null>(null);
     
     // Status badge state
     const [status, setStatus] = useState<ThemeStatus>('idle');
@@ -126,6 +130,59 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
         };
     }, [notebookId]);
 
+    const loadExplorationQuestions = useCallback(async (theme: Theme) => {
+        if (!notebookId || !theme.topic_id) return;
+        if (explorationQuestions[theme.id]) return; // Already loaded
+        
+        setLoadingQuestions(theme.id);
+        try {
+            const data = await themesService.getTopicQuestions(theme.topic_id, notebookId);
+            setExplorationQuestions(prev => ({ ...prev, [theme.id]: data.questions }));
+        } catch (err) {
+            console.error('Failed to load exploration questions:', err);
+        } finally {
+            setLoadingQuestions(null);
+        }
+    }, [notebookId, explorationQuestions]);
+
+    // Refs for scrolling to highlighted theme
+    const themeRefsMap = useRef<Map<string, HTMLDivElement>>(new Map());
+
+    const handleThemeExpand = useCallback((theme: Theme) => {
+        const newExpanded = expandedTheme === theme.id ? null : theme.id;
+        setExpandedTheme(newExpanded);
+        if (newExpanded) {
+            loadExplorationQuestions(theme);
+        }
+        // Clear highlight when user manually clicks a different theme
+        if (onHighlightClear) onHighlightClear();
+    }, [expandedTheme, loadExplorationQuestions, onHighlightClear]);
+
+    // When highlightedTopicId changes, find the matching theme, expand it, and scroll to it
+    useEffect(() => {
+        if (highlightedTopicId == null || themes.length === 0) return;
+        const matchingTheme = themes.find(t => t.topic_id === highlightedTopicId);
+        if (!matchingTheme) return;
+
+        // Expand it and load questions
+        setExpandedTheme(matchingTheme.id);
+        loadExplorationQuestions(matchingTheme);
+
+        // Scroll to it after a brief delay (let DOM update)
+        requestAnimationFrame(() => {
+            const el = themeRefsMap.current.get(matchingTheme.id);
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        });
+
+        // Auto-clear highlight after 5s
+        const timer = setTimeout(() => {
+            if (onHighlightClear) onHighlightClear();
+        }, 5000);
+        return () => clearTimeout(timer);
+    }, [highlightedTopicId, themes]);
+
     const loadThemes = async () => {
         if (!notebookId) return;
         
@@ -231,7 +288,7 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                     </button>
                 </div>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {totalConcepts} concepts discovered
+                    {themes.length} themes · {totalConcepts} passages analyzed
                 </p>
             </div>
 
@@ -252,13 +309,20 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                 {/* Themes List */}
                 {themes.length > 0 ? (
                     <div className="space-y-3">
-                        {themes.map((theme) => (
+                        {themes.map((theme) => {
+                            const isHighlighted = highlightedTopicId != null && theme.topic_id === highlightedTopicId;
+                            return (
                             <div
                                 key={theme.id}
-                                className="bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-900/20 dark:to-blue-900/20 border border-purple-200 dark:border-purple-800 rounded-lg overflow-hidden"
+                                ref={(el) => { if (el) themeRefsMap.current.set(theme.id, el); }}
+                                className={`bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-900/20 dark:to-blue-900/20 border rounded-lg overflow-hidden transition-all duration-500 ${
+                                    isHighlighted
+                                        ? 'border-purple-500 dark:border-purple-400 ring-2 ring-purple-400/50 shadow-lg shadow-purple-200/50 dark:shadow-purple-900/30'
+                                        : 'border-purple-200 dark:border-purple-800'
+                                }`}
                             >
                                 <button
-                                    onClick={() => setExpandedTheme(expandedTheme === theme.id ? null : theme.id)}
+                                    onClick={() => handleThemeExpand(theme)}
                                     className="w-full p-3 text-left hover:bg-purple-100/50 dark:hover:bg-purple-900/30 transition-colors"
                                 >
                                     <div className="flex items-start justify-between">
@@ -267,7 +331,7 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                                                 {theme.name || 'Unnamed Theme'}
                                             </h4>
                                             <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
-                                                {theme.concept_count} related concepts
+                                                {theme.concept_count} {theme.concept_count === 1 ? 'source' : 'sources'}
                                             </p>
                                         </div>
                                         <span className="text-gray-400 text-xs">
@@ -285,7 +349,6 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                                         )}
                                         <div className="flex flex-wrap gap-1.5 mt-2">
                                             {theme.concepts.map((concept, idx) => {
-                                                // Get other concepts in this theme for context
                                                 const relatedConcepts = theme.concepts.filter(c => c !== concept).slice(0, 4);
                                                 return (
                                                     <button
@@ -297,16 +360,51 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, onConceptC
                                                     </button>
                                                 );
                                             })}
-                                            {theme.concept_count > theme.concepts.length && (
-                                                <span className="px-2 py-0.5 text-xs text-gray-400">
-                                                    +{theme.concept_count - theme.concepts.length} more
-                                                </span>
-                                            )}
                                         </div>
+                                        
+                                        {/* Exploration Questions */}
+                                        <div className="mt-3 pt-2 border-t border-purple-100 dark:border-purple-800/50">
+                                            <p className="text-xs font-medium text-purple-700 dark:text-purple-300 mb-1.5">Explore this topic</p>
+                                            {loadingQuestions === theme.id ? (
+                                                <div className="text-xs text-gray-400 animate-pulse py-1">Generating questions...</div>
+                                            ) : explorationQuestions[theme.id]?.length ? (
+                                                <div className="space-y-1">
+                                                    {explorationQuestions[theme.id].map((q, qi) => (
+                                                        <button
+                                                            key={qi}
+                                                            onClick={() => onConceptClick?.(q)}
+                                                            className="w-full text-left px-2 py-1.5 text-xs text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/20 rounded-md hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors leading-snug"
+                                                        >
+                                                            {q}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                        
+                                        {/* Source Attribution */}
+                                        {theme.sources && theme.sources.length > 0 && (
+                                            <div className="mt-2 pt-2 border-t border-purple-100 dark:border-purple-800/50">
+                                                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Sources</p>
+                                                <div className="flex flex-wrap gap-1">
+                                                    {theme.sources.map((src, si) => (
+                                                        <span
+                                                            key={si}
+                                                            className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-gray-100 dark:bg-gray-800 text-[10px] text-gray-600 dark:text-gray-400 rounded"
+                                                            title={`${src.chunk_count} chunks from ${src.filename}`}
+                                                        >
+                                                            <span className="truncate max-w-[120px]">{src.filename}</span>
+                                                            <span className="text-gray-400">({src.chunk_count})</span>
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                             </div>
-                        ))}
+                        );
+                        })}
                     </div>
                 ) : !loading && (
                     <div className="text-center py-8">

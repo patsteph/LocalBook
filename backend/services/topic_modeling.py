@@ -89,6 +89,7 @@ class TopicModelingService:
         self._rebuild_doc_counts: Dict[str, int] = {}   # notebook_id -> doc count at last rebuild
         self._rebuild_source_counts: Dict[str, int] = {} # notebook_id -> unique source count at last rebuild
         self._rebuild_in_progress: set = set()           # notebook_ids currently rebuilding
+        self._reset_requested: bool = False               # signal fit_all to abort
         
         # Paths
         self.data_dir = Path(settings.data_dir) / "topic_model"
@@ -754,16 +755,21 @@ Theme name:"""
                 from sklearn.feature_extraction.text import CountVectorizer
                 
                 # PCA replaces UMAP — much lighter (no numba/llvmlite deps)
-                umap_model = PCA(n_components=5)
+                # Need enough components to preserve semantic structure from 1024-dim embeddings.
+                # PCA(5) loses 99.5% of variance → HDBSCAN sees a blob → 1-3 mega-clusters.
+                # PCA(50) preserves ~80-90% of variance → meaningful cluster boundaries.
+                n_pca = min(50, len(texts) - 1)  # Can't exceed n_samples - 1
+                umap_model = PCA(n_components=n_pca)
                 
                 # Configure HDBSCAN for clustering (sklearn built-in)
-                # Balance: not too few themes (was 4), not too many (was 83)
-                # Target: 35-45 meaningful themes for rich exploration
+                # 'leaf' selection produces more granular clusters (8-20 themes)
+                # instead of 'eom' which merges into mega-clusters.
+                # min_cluster_size=15: a theme needs at least 15 chunks to be meaningful.
                 hdbscan_model = HDBSCAN(
-                    min_cluster_size=5,   # Smaller clusters for more themes (target 35-45)
-                    min_samples=2,        # Moderate strictness
+                    min_cluster_size=15,  # Theme needs 15+ chunks
+                    min_samples=5,        # Stricter core point requirement
                     metric='euclidean',
-                    cluster_selection_method='eom'  # Default method, less granular than 'leaf'
+                    cluster_selection_method='leaf'  # Granular: more, smaller themes
                 )
                 
                 # Configure CountVectorizer to remove stopwords and use n-grams
@@ -812,7 +818,8 @@ Theme name:"""
                     # Configure OpenAI client to point to local Ollama
                     client = openai.OpenAI(
                         base_url=f"{settings.ollama_base_url}/v1",
-                        api_key="ollama"  # Required but unused
+                        api_key="ollama",  # Required but unused
+                        timeout=30.0  # Don't hang forever on slow Ollama
                     )
                     
                     # Custom prompt for concise, meaningful topic labels
@@ -852,10 +859,27 @@ Return ONLY the label, nothing else."""
                     verbose=True
                 )
                 
+                # Check if reset was requested before expensive operation
+                if self._reset_requested:
+                    print("[TopicModel] fit_all aborted: reset requested")
+                    self._rebuild_in_progress.discard(notebook_id)
+                    return {"error": "Reset requested", "topics_found": 0}
+                
                 print(f"[TopicModel] Running fit_transform with {len(texts)} docs, embeddings shape: {embeddings.shape}")
                 
                 # FIT on all documents with pre-computed embeddings
-                topics, probs = self._model.fit_transform(texts, embeddings=embeddings)
+                # Run in thread pool to avoid blocking the event loop
+                # (fit_transform includes sync Ollama LLM calls for topic labeling)
+                import asyncio as _aio
+                topics, probs = await _aio.to_thread(
+                    self._model.fit_transform, texts, embeddings=embeddings
+                )
+                
+                # Check again after fit_transform completes
+                if self._reset_requested:
+                    print("[TopicModel] fit_all aborted after fit_transform: reset requested")
+                    self._rebuild_in_progress.discard(notebook_id)
+                    return {"error": "Reset requested", "topics_found": 0}
                 
                 print(f"[TopicModel] fit_transform complete, found {len(set(topics)) - (1 if -1 in topics else 0)} topics")
                 
@@ -923,6 +947,58 @@ Return ONLY the label, nothing else."""
                     
                     self._topics[unique_id] = topic
                 
+                # Notebook-relevance filter: remove topics whose content is
+                # too dissimilar to the notebook's overall embedding centroid.
+                # This suppresses off-topic noise clusters from stray chunks.
+                if len(topic_ids_found) > 3:
+                    try:
+                        notebook_centroid = embeddings.mean(axis=0)
+                        topic_scores = {}
+                        for uid in list(topic_ids_found):
+                            topic_doc_indices = [
+                                i for i, d in enumerate(
+                                    self._documents[-len(texts):]  # only new docs
+                                ) if d.topic_id == uid
+                            ]
+                            if topic_doc_indices:
+                                topic_embs = embeddings[topic_doc_indices]
+                                topic_centroid = topic_embs.mean(axis=0)
+                                # Cosine similarity to notebook centroid
+                                sim = float(np.dot(topic_centroid, notebook_centroid) / (
+                                    np.linalg.norm(topic_centroid) * np.linalg.norm(notebook_centroid) + 1e-8
+                                ))
+                                topic_scores[uid] = sim
+                        
+                        if topic_scores:
+                            scores = list(topic_scores.values())
+                            # Adaptive threshold: 25th percentile of all topic scores
+                            # This removes the bottom quartile of least-relevant topics
+                            threshold = float(np.percentile(scores, 25))
+                            # But never filter if threshold is already high (all topics are relevant)
+                            threshold = min(threshold, 0.5)
+                            
+                            removed = []
+                            for uid, score in topic_scores.items():
+                                if score < threshold:
+                                    # Capture name before deletion
+                                    name = self._topics[uid].display_name if uid in self._topics else f"Topic-{uid}"
+                                    removed.append((name, score))
+                                    # Remove from topics and documents
+                                    if uid in self._topics:
+                                        del self._topics[uid]
+                                    topic_ids_found.discard(uid)
+                                    # Reassign those docs to outlier (-1)
+                                    for d in self._documents:
+                                        if d.topic_id == uid:
+                                            d.topic_id = -1
+                            
+                            if removed:
+                                removed_labels = [f"{name}({s:.2f})" for name, s in removed]
+                                print(f"[TopicModel] Relevance filter removed {len(removed)} off-topic clusters "
+                                      f"(threshold={threshold:.3f}): {removed_labels[:5]}")
+                    except Exception as e:
+                        print(f"[TopicModel] Relevance filter error (non-fatal): {e}")
+                
                 # Queue topics WITHOUT enhanced names for background enhancement
                 topics_needing_enhancement = [
                     tid for tid in topic_ids_found 
@@ -983,7 +1059,11 @@ Return ONLY the label, nothing else."""
             print(f"[TopicModel] Cleared notebook {notebook_id}")
     
     async def rebuild_topics(self, notebook_id: Optional[str] = None) -> Dict:
-        """Rebuild all topics from scratch."""
+        """Rebuild all topics from scratch.
+        
+        Uses the same quality model as fit_all() — matching HDBSCAN params,
+        custom stopwords, MMR diversity, and Ollama labeling.
+        """
         async with self._lock:
             try:
                 # Get all documents
@@ -996,26 +1076,59 @@ Return ONLY the label, nothing else."""
                 
                 texts = [d.text for d in docs]
                 
-                # Reset model
+                # Use same quality model as fit_all()
                 from bertopic import BERTopic
-                from bertopic.vectorizers import OnlineCountVectorizer
+                from bertopic.representation import MaximalMarginalRelevance
                 from sklearn.decomposition import PCA
                 from sklearn.cluster import HDBSCAN
+                from sklearn.feature_extraction.text import CountVectorizer, ENGLISH_STOP_WORDS
                 
-                umap_model = PCA(n_components=5)
-                hdbscan_model = HDBSCAN(min_cluster_size=3, min_samples=2, metric='euclidean')
-                vectorizer_model = OnlineCountVectorizer(stop_words="english", ngram_range=(1, 2))
+                n_pca = min(50, len(texts) - 1)
+                umap_model = PCA(n_components=n_pca)
+                hdbscan_model = HDBSCAN(
+                    min_cluster_size=15, min_samples=5,
+                    metric='euclidean', cluster_selection_method='leaf'
+                )
+                
+                custom_stopwords = list(ENGLISH_STOP_WORDS) + [
+                    'just', 'like', 'dont', 'thats', 'theres', 'youre', 'theyre', 'weve',
+                    'gonna', 'gotta', 'wanna', 'kinda', 'sorta', 'really', 'actually',
+                    'basically', 'literally', 'probably', 'maybe', 'right', 'okay', 'ok',
+                    'yeah', 'yes', 'hey', 'well', 'thing', 'things', 'stuff', 'way',
+                    'lot', 'lots', 'bit', 'kind', 'sort', 'type', 'types',
+                    'time', 'times', 'today', 'now', 'year', 'years', 'day', 'days',
+                    'make', 'makes', 'making', 'made', 'get', 'gets', 'getting', 'got',
+                    'go', 'goes', 'going', 'went', 'come', 'comes', 'coming', 'came',
+                    'see', 'sees', 'seeing', 'saw', 'look', 'looks', 'looking', 'looked',
+                    'know', 'knows', 'knowing', 'knew', 'think', 'thinks', 'thinking',
+                    'want', 'wants', 'wanting', 'wanted', 'need', 'needs', 'needing',
+                    'use', 'uses', 'using', 'used', 'try', 'tries', 'trying', 'tried',
+                    'say', 'says', 'saying', 'said', 'tell', 'tells', 'telling', 'told',
+                    'people', 'person', 'example', 'examples', 'point', 'points',
+                    'question', 'questions', 'answer', 'answers', 'idea', 'ideas',
+                    'part', 'parts', 'place', 'places', 'case', 'cases', 'fact', 'facts',
+                    'click', 'read', 'article', 'post', 'video', 'image', 'link',
+                    'page', 'site', 'website', 'content', 'information', 'details',
+                ]
+                vectorizer_model = CountVectorizer(
+                    stop_words=custom_stopwords, min_df=2, ngram_range=(1, 2)
+                )
+                mmr = MaximalMarginalRelevance(diversity=0.5)
                 
                 self._model = BERTopic(
                     umap_model=umap_model,
                     hdbscan_model=hdbscan_model,
                     vectorizer_model=vectorizer_model,
+                    representation_model=mmr,
                     calculate_probabilities=True,
                     verbose=False
                 )
                 
-                # Fit
-                topics, probs = self._model.fit_transform(texts)
+                # Fit (run in thread to avoid blocking event loop)
+                import asyncio as _aio
+                topics, probs = await _aio.to_thread(
+                    self._model.fit_transform, texts
+                )
                 
                 # Update document assignments
                 self._topics.clear()
@@ -1064,20 +1177,40 @@ Return ONLY the label, nothing else."""
             return True
     
     async def reset(self) -> bool:
-        """Reset all topic data."""
-        async with self._lock:
+        """Reset all topic data.
+        
+        Uses a lock timeout to avoid deadlocking with a running fit_all().
+        If the lock can't be acquired (build in progress), force-clears anyway.
+        """
+        import shutil
+        
+        # Signal any running fit_all to abort
+        self._reset_requested = True
+        
+        # Try to acquire lock with timeout — don't deadlock if fit_all holds it
+        got_lock = False
+        try:
+            got_lock = await asyncio.wait_for(self._lock.acquire(), timeout=2.0)
+        except asyncio.TimeoutError:
+            print("[TopicModel] Reset: lock busy (build running), force-clearing")
+        
+        try:
             self._model = None
             self._topics.clear()
             self._documents.clear()
             self._enhancement_queue.clear()
+            self._rebuild_in_progress.clear()
             self._initialized = False
             
             # Delete persisted data
-            import shutil
             if self.data_dir.exists():
-                shutil.rmtree(self.data_dir)
-            
-            return True
+                shutil.rmtree(self.data_dir, ignore_errors=True)
+        finally:
+            self._reset_requested = False
+            if got_lock:
+                self._lock.release()
+        
+        return True
 
 
 # Singleton instance

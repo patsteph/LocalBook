@@ -1883,7 +1883,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                     _original_print = builtins.print
                     def _logging_print(*args, **kwargs):
                         msg = " ".join(str(a) for a in args)
-                        if "[AudioLLM]" in msg and ("Step" in msg or "SSL" in msg or "robust" in msg or "Downloading" in msg):
+                        if "[AudioLLM]" in msg:
                             add_log("INFO", msg.replace("[AudioLLM] ", ""), "health_portal")
                         _original_print(*args, **kwargs)
                     builtins.print = _logging_print

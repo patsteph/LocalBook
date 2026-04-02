@@ -405,30 +405,60 @@ async def list_clusters(notebook_id: Optional[str] = None):
 
 
 @router.get("/themes/{notebook_id}")
-async def get_notebook_themes(notebook_id: str, limit: int = 10):
+async def get_notebook_themes(notebook_id: str, limit: int = 50):
     """
     Get key themes discovered in a notebook.
     v0.6.5: Now uses BERTopic topics instead of custom concept clusters.
     Returns topics with their keywords for display in ThemesPanel.
+    Includes source attribution per topic.
     """
+    from storage.source_store import source_store
+    
     # Get topics from BERTopic service
     topics = await topic_modeling_service.get_topics(notebook_id)
+    
+    # Build a source lookup for attribution (id -> filename)
+    source_lookup: Dict[str, str] = {}
+    try:
+        all_sources = await source_store.list(notebook_id)
+        source_lookup = {s["id"]: s.get("filename", "Unknown") for s in all_sources}
+    except Exception:
+        pass
     
     # Build themes list from topics
     themes = []
     for topic in topics[:limit]:
-        # Get keyword names for display
-        keywords = [kw for kw, _ in topic.keywords[:10]]
+        # Get keyword names for display (up to 20)
+        keywords = [kw for kw, _ in topic.keywords[:20]]
+        
+        # Source attribution: count chunks per source for this topic
+        source_chunk_counts: Dict[str, int] = {}
+        for doc in topic_modeling_service._documents:
+            if doc.topic_id == topic.topic_id and doc.notebook_id == notebook_id:
+                source_chunk_counts[doc.source_id] = source_chunk_counts.get(doc.source_id, 0) + 1
+        
+        # Top 5 contributing sources, sorted by chunk count
+        top_sources = sorted(source_chunk_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+        source_attribution = [
+            {
+                "source_id": sid,
+                "filename": source_lookup.get(sid, "Unknown"),
+                "chunk_count": count
+            }
+            for sid, count in top_sources
+        ]
         
         themes.append({
             "id": topic.id,
             "name": topic.display_name,
             "description": ", ".join(keywords[:5]),
             "concepts": keywords,  # Keywords serve as "concepts" for click-to-chat
-            "concept_count": topic.document_count,
+            "concept_count": len(source_chunk_counts),  # Unique sources, not raw chunks
+            "chunk_count": topic.document_count,  # Raw chunk count for transparency
             "coherence_score": 0.8,  # BERTopic doesn't provide this directly
             "topic_id": topic.topic_id,
-            "enhanced": topic.enhanced_name is not None
+            "enhanced": topic.enhanced_name is not None,
+            "sources": source_attribution
         })
     
     # Get stats
@@ -440,6 +470,138 @@ async def get_notebook_themes(notebook_id: str, limit: int = 10):
         "theme_count": len(themes),
         "top_concepts": [],  # No longer used - topics contain keywords
         "total_concepts": stats.get("total_documents", 0)
+    }
+
+
+# =============================================================================
+# Topic Exploration
+# =============================================================================
+
+@router.get("/topics/{topic_id}/questions")
+async def get_topic_exploration_questions(topic_id: int, notebook_id: str):
+    """
+    Generate exploration questions for a specific topic.
+    
+    Uses topic keywords, representative docs, and synthetic_questions
+    from the vector DB to produce 3-4 questions that help the user
+    dive deeper into this topic.
+    """
+    import httpx
+    from config import settings
+    
+    topic = await topic_modeling_service.get_topic(topic_id)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    
+    # Gather context from multiple signals
+    keywords_str = ", ".join([kw for kw, _ in topic.keywords[:10]])
+    rep_docs = "\n".join([f"- {d}" for d in topic.representative_docs[:3]])
+    
+    # Pull synthetic_questions from vector DB for this topic's chunks
+    synthetic_context = ""
+    try:
+        from services import rag_storage
+        table = rag_storage.get_table(notebook_id)
+        if table is not None:
+            # Get source_ids that contribute to this topic
+            topic_source_ids = set(
+                d.source_id for d in topic_modeling_service._documents
+                if d.topic_id == topic_id and d.notebook_id == notebook_id
+            )
+            
+            if topic_source_ids:
+                # Search vector DB for chunks from these sources that have synthetic questions
+                has_sq = rag_storage.table_has_synthetic_questions(table)
+                if has_sq:
+                    try:
+                        # Get chunks belonging to this topic's sources
+                        all_rows = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
+                        topic_questions = []
+                        for row in all_rows:
+                            if row.get("source_id") in topic_source_ids and row.get("synthetic_questions"):
+                                sq = row["synthetic_questions"].strip()
+                                if sq and len(sq) > 10:
+                                    topic_questions.append(sq)
+                        
+                        if topic_questions:
+                            # Sample up to 5 synthetic question blocks for context
+                            import random
+                            sampled = random.sample(topic_questions, min(5, len(topic_questions)))
+                            synthetic_context = "\n".join(sampled)
+                    except Exception as e:
+                        print(f"[Graph] Synthetic questions fetch error: {e}")
+    except Exception as e:
+        print(f"[Graph] Vector DB access error for exploration questions: {e}")
+    
+    # Build LLM prompt
+    prompt = f"""Generate exactly 4 exploration questions about the topic "{topic.display_name}".
+
+Topic keywords: {keywords_str}
+
+Sample content from this topic:
+{rep_docs}
+"""
+    if synthetic_context:
+        prompt += f"""
+Existing questions about related content (use these for topical guidance):
+{synthetic_context}
+"""
+    
+    prompt += """
+Rules:
+- Questions should help the user explore this topic deeper
+- Mix different angles: comparison, causation, application, critique
+- Be specific to the actual content, not generic
+- Each question should be self-contained and clear
+- Output ONLY the questions, one per line, no numbering"""
+
+    try:
+        timeout = httpx.Timeout(15.0, read=30.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{settings.ollama_base_url}/api/generate",
+                json={
+                    "model": settings.ollama_fast_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.5,
+                        "num_predict": 200,
+                    }
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json().get("response", "").strip()
+                questions = []
+                for line in result.split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # Strip numbering/bullets
+                    line = line.lstrip('0123456789.-) •')
+                    line = line.strip()
+                    if line.endswith('?') and len(line) > 15:
+                        questions.append(line)
+                
+                return {
+                    "topic_id": topic_id,
+                    "topic_name": topic.display_name,
+                    "questions": questions[:4]
+                }
+    except Exception as e:
+        print(f"[Graph] Exploration question generation failed: {e}")
+    
+    # Fallback: generate basic questions from keywords
+    fallback_questions = [
+        f"What are the key aspects of {topic.display_name}?",
+        f"How does {topic.display_name} relate to other topics in this notebook?",
+        f"What are the most important findings about {topic.display_name}?",
+    ]
+    return {
+        "topic_id": topic_id,
+        "topic_name": topic.display_name,
+        "questions": fallback_questions
     }
 
 
@@ -536,17 +698,39 @@ async def reset_knowledge_graph(notebook_id: str):
     """
     Reset the knowledge graph for a notebook.
     v0.6.5: Clears topic model data for the notebook.
+    Cancels any running build jobs first to avoid deadlock.
     """
+    from services.job_queue import job_queue, JobStatus
+    from api.constellation_ws import notify_build_complete
+    
     try:
-        # Clear topics (BERTopic doesn't support per-notebook reset easily,
-        # so we just rebuild from scratch)
+        # Cancel any running build jobs for this notebook to release the lock
+        for job in list(job_queue._jobs.values()):
+            if (job.notebook_id == notebook_id and 
+                job.status in (JobStatus.PENDING, JobStatus.RUNNING)):
+                await job_queue.cancel(job.id)
+                print(f"[Graph] Cancelled running job {job.id} before reset")
+        
+        # Brief wait for cancellation to propagate
+        import asyncio
+        await asyncio.sleep(0.5)
+        
+        # Clear topics
         await topic_modeling_service.reset()
+        
+        # Notify frontend to clear progress bar
+        await notify_build_complete()
         
         return {
             "success": True,
             "message": f"Topic model reset for notebook {notebook_id}"
         }
     except Exception as e:
+        # Still try to notify build complete so UI isn't stuck
+        try:
+            await notify_build_complete()
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
 
 

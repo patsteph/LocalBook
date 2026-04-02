@@ -3,6 +3,12 @@
  */
 import { API_BASE_URL } from './api';
 
+export interface TopicSource {
+    source_id: string;
+    filename: string;
+    chunk_count: number;
+}
+
 export interface Theme {
     id: string;
     name: string;
@@ -12,6 +18,7 @@ export interface Theme {
     coherence_score: number;
     topic_id?: number;  // v0.6.5: BERTopic topic ID
     enhanced?: boolean;  // v0.6.5: Whether name has been LLM-enhanced
+    sources?: TopicSource[];  // Source attribution
 }
 
 export interface TopConcept {
@@ -28,15 +35,36 @@ export interface ThemesResponse {
     total_concepts: number;
 }
 
+export interface ExplorationQuestionsResponse {
+    topic_id: number;
+    topic_name: string;
+    questions: string[];
+}
+
 export const themesService = {
     /**
      * Get themes for a notebook
      */
-    async getThemes(notebookId: string, limit: number = 10): Promise<ThemesResponse> {
+    async getThemes(notebookId: string, limit: number = 50): Promise<ThemesResponse> {
         const response = await fetch(`${API_BASE_URL}/graph/themes/${notebookId}?limit=${limit}`);
         
         if (!response.ok) {
             throw new Error('Failed to fetch themes');
+        }
+        
+        return response.json();
+    },
+
+    /**
+     * Get exploration questions for a specific topic
+     */
+    async getTopicQuestions(topicId: number, notebookId: string): Promise<ExplorationQuestionsResponse> {
+        const response = await fetch(
+            `${API_BASE_URL}/graph/topics/${topicId}/questions?notebook_id=${notebookId}`
+        );
+        
+        if (!response.ok) {
+            throw new Error('Failed to fetch exploration questions');
         }
         
         return response.json();
