@@ -394,7 +394,9 @@ class AudioLLMService:
         _frozen = getattr(sys, 'frozen', False)
         
         # Build file list: config + model + all voice files
-        download_files = ["config.json", "model.safetensors"]
+        # NOTE: model file is kokoro-v1_0.safetensors (NOT model.safetensors)
+        MODEL_FILE = "kokoro-v1_0.safetensors"
+        download_files = ["config.json", MODEL_FILE]
         for voice_id in KOKORO_VOICES:
             download_files.append(f"voices/{voice_id}.safetensors")
         
@@ -408,16 +410,21 @@ class AudioLLMService:
                 continue
             
             url = f"{BASE_URL}/{fname}"
-            # Longer timeout for model.safetensors (~330MB), shorter for small files
-            max_time = 600 if fname == "model.safetensors" else 60
+            is_large = fname == MODEL_FILE
+            # 10 min for model.safetensors (~330MB), 60s for small files
+            max_time = 600 if is_large else 60
+            retries = 5 if is_large else 3
             
             curl_cmd = [
-                "curl", "-fSL",           # fail on HTTP errors, show errors, follow redirects
-                "--connect-timeout", "15", # 15s to connect
+                "curl", "-SL",                # show errors, follow redirects (no -f: we check status ourselves)
+                "--connect-timeout", "15",     # 15s to connect
                 "--max-time", str(max_time),
-                "--retry", "3",
+                "--retry", str(retries),
                 "--retry-delay", "5",
-                "--retry-max-time", str(max_time + 30),
+                "--retry-max-time", str(max_time + 60),
+                "--retry-all-errors",          # retry on any error including HTTP 5xx
+                "-H", "User-Agent: LocalBook/1.0 (https://github.com)",  # HF blocks requests without User-Agent
+                "-w", "\n%{http_code}",        # append HTTP status code to stdout
                 "-o", dest_path,
                 url,
             ]
@@ -430,20 +437,30 @@ class AudioLLMService:
                 proc = subprocess.run(
                     curl_cmd,
                     capture_output=True, text=True,
-                    timeout=max_time + 60  # Python-level backstop
+                    timeout=max_time + 120  # Python-level backstop
                 )
-                if proc.returncode != 0:
+                # Extract HTTP status code from curl --write-out
+                http_code = "000"
+                if proc.stdout and proc.stdout.strip():
+                    http_code = proc.stdout.strip().split("\n")[-1]
+                
+                if proc.returncode != 0 or not http_code.startswith("2"):
                     error_msg = proc.stderr.strip() or f"curl exit code {proc.returncode}"
-                    print(f"[AudioLLM] ✗ {fname} failed: {error_msg}")
+                    print(f"[AudioLLM] ✗ {fname} failed (HTTP {http_code}): {error_msg[:300]}")
                     failed_files.append(fname)
-                    # Clean up partial download
+                    # Clean up partial/error download
                     if os.path.isfile(dest_path):
                         os.remove(dest_path)
                 else:
                     size = os.path.getsize(dest_path) if os.path.isfile(dest_path) else 0
-                    print(f"[AudioLLM] ✓ {fname} ({size:,} bytes)")
+                    if size == 0:
+                        print(f"[AudioLLM] ✗ {fname} downloaded but file is empty (HTTP {http_code})")
+                        failed_files.append(fname)
+                        os.remove(dest_path)
+                    else:
+                        print(f"[AudioLLM] ✓ {fname} ({size:,} bytes)")
             except subprocess.TimeoutExpired:
-                print(f"[AudioLLM] ✗ {fname} timed out after {max_time + 60}s")
+                print(f"[AudioLLM] ✗ {fname} timed out after {max_time + 120}s")
                 failed_files.append(fname)
                 if os.path.isfile(dest_path):
                     os.remove(dest_path)
@@ -453,7 +470,7 @@ class AudioLLMService:
                 )
         
         # Critical files must succeed — voices are optional
-        critical_missing = [f for f in failed_files if f in ("config.json", "model.safetensors")]
+        critical_missing = [f for f in failed_files if f in ("config.json", MODEL_FILE)]
         if critical_missing:
             raise RuntimeError(
                 f"Failed to download critical model files: {', '.join(critical_missing)}. "
