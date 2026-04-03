@@ -452,14 +452,48 @@ async def _topic_rebuild_handler(
         all_embeddings = []
         chunk_metadata = []
         
+        skipped_no_content = 0
+        skipped_too_short = 0
+        
         for i, source in enumerate(sources):
             if cancel_event.is_set():
                 await notify_build_complete()
                 return {"cancelled": True}
             
-            content = source.get("content", "")
-            if not content or len(content) < 100:
-                print(f"[TopicModel] Skipping source {i+1}: no content or too short")
+            content = source.get("content") or ""
+            if not content:
+                # Fallback: reconstruct content from RAG chunks in LanceDB
+                # This handles sources ingested via browser extension (which didn't store content)
+                source_id_for_rag = source.get("id", "")
+                if source_id_for_rag:
+                    try:
+                        from services.rag_storage import get_table
+                        table = get_table(notebook_id)
+                        if table is not None:
+                            rows = table.search([0.0] * 1024).where(
+                                f"source_id = '{source_id_for_rag}'"
+                            ).limit(500).to_list()
+                            if rows:
+                                # Sort by chunk_index and join
+                                rows.sort(key=lambda r: r.get("chunk_index", 0))
+                                content = "\n\n".join(r.get("text", "") for r in rows if r.get("text"))
+                                if content:
+                                    print(f"[TopicModel] Recovered {len(content)} chars from RAG chunks for source {i+1}")
+                                    # Backfill content into source store
+                                    try:
+                                        await source_store.update(notebook_id, source_id_for_rag, {"content": content})
+                                    except Exception:
+                                        pass
+                    except Exception as e:
+                        print(f"[TopicModel] RAG chunk fallback failed for source {i+1}: {e}")
+                
+                if not content:
+                    skipped_no_content += 1
+                    print(f"[TopicModel] Skipping source {i+1}/{len(sources)}: no content")
+                    continue
+            if len(content) < 100:
+                skipped_too_short += 1
+                print(f"[TopicModel] Skipping source {i+1}/{len(sources)}: too short ({len(content)} chars)")
                 continue
             
             source_id = source.get("id", "")
@@ -498,10 +532,16 @@ async def _topic_rebuild_handler(
             
             await asyncio.sleep(0.01)  # Yield for responsiveness
         
+        sources_used = len(sources) - skipped_no_content - skipped_too_short
+        print(f"[TopicModel] Chunking summary: {len(sources)} sources total, "
+              f"{sources_used} used, {skipped_no_content} skipped (no content), "
+              f"{skipped_too_short} skipped (too short), {len(all_chunks)} total chunks")
+        
         if not all_chunks:
             print("[TopicModel] No chunks collected from any source")
             await notify_build_complete()
-            return {"topics": 0, "message": "No chunks found in sources"}
+            return {"topics": 0, "message": f"No chunks found in {len(sources)} sources "
+                    f"({skipped_no_content} had no content, {skipped_too_short} too short)"}
         
         # Combine embeddings
         combined_embeddings = np.vstack(all_embeddings) if all_embeddings else None

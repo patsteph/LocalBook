@@ -745,10 +745,15 @@ Theme name:"""
                 # Configure HDBSCAN for clustering (sklearn built-in)
                 # 'leaf' selection produces more granular clusters (8-20 themes)
                 # instead of 'eom' which merges into mega-clusters.
-                # min_cluster_size=15: a theme needs at least 15 chunks to be meaningful.
+                # Adaptive params: scale down for smaller notebooks to avoid all-outlier results.
+                n_docs = len(texts)
+                adaptive_min_cluster = max(5, min(15, n_docs // 8))
+                adaptive_min_samples = max(2, min(5, adaptive_min_cluster // 3))
+                print(f"[TopicModel] HDBSCAN params: min_cluster_size={adaptive_min_cluster}, "
+                      f"min_samples={adaptive_min_samples} (for {n_docs} docs)")
                 hdbscan_model = HDBSCAN(
-                    min_cluster_size=15,  # Theme needs 15+ chunks
-                    min_samples=5,        # Stricter core point requirement
+                    min_cluster_size=adaptive_min_cluster,
+                    min_samples=adaptive_min_samples,
                     metric='euclidean',
                     cluster_selection_method='leaf'  # Granular: more, smaller themes
                 )

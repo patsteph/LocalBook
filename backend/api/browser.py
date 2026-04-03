@@ -279,6 +279,7 @@ async def _capture_remote_document(url: str, notebook_id: str, title: str, backg
         await source_store.update(notebook_id, source_id, {
             "chunks": chunks,
             "status": "completed",
+            "content": text,
         })
 
         # Auto-tag (non-fatal)
@@ -444,7 +445,7 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
                 )
                 chunks = rag_result.get("chunks", 0) if rag_result else 0
                 await source_store.update(request.notebook_id, source_id, {
-                    "chunks": chunks, "status": "completed",
+                    "chunks": chunks, "status": "completed", "content": text,
                 })
                 await notify_source_updated({
                     "notebook_id": request.notebook_id,
@@ -642,7 +643,8 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
         chunks = rag_result.get("chunks", 0) if rag_result else 0
         await source_store.update(request.notebook_id, source_id, {
             "chunks": chunks,
-            "status": "completed"
+            "status": "completed",
+            "content": content,
         })
         
         # Auto-tag the source (non-fatal)
@@ -780,7 +782,8 @@ async def capture_selection(request: SelectionCaptureRequest):
         chunks = rag_result.get("chunks", 0) if rag_result else 0
         await source_store.update(request.notebook_id, source_id, {
             "chunks": chunks,
-            "status": "completed"
+            "status": "completed",
+            "content": request.selected_text,
         })
         
         # Auto-tag the source (non-fatal)
@@ -918,7 +921,8 @@ async def capture_youtube(request: YouTubeCaptureRequest):
         chunks = rag_result.get("chunks", 0) if rag_result else 0
         await source_store.update(request.notebook_id, source_id, {
             "chunks": chunks,
-            "status": "completed"
+            "status": "completed",
+            "content": content,
         })
         
         # Auto-tag the source (non-fatal)

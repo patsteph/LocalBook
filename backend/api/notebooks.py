@@ -161,8 +161,10 @@ async def rename_notebook(notebook_id: str, body: NotebookRename):
 async def move_notebook(notebook_id: str, body: NotebookMove):
     """Move a notebook to a section and/or set its sort order"""
     updates = {}
-    if body.section_id is not None:
-        updates["section_id"] = body.section_id if body.section_id else None
+    # Use model_fields_set to detect explicitly provided fields —
+    # section_id=null means "move to unsectioned" (not "field omitted")
+    if "section_id" in body.model_fields_set:
+        updates["section_id"] = body.section_id  # None = unsectioned, str = section
     if body.sort_order is not None:
         updates["sort_order"] = body.sort_order
     if not updates:
