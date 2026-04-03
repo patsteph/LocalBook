@@ -852,9 +852,27 @@ Return ONLY the label, nothing else."""
                 # Run in thread pool to avoid blocking the event loop
                 # (fit_transform includes sync Ollama LLM calls for topic labeling)
                 import asyncio as _aio
-                topics, probs = await _aio.to_thread(
-                    self._model.fit_transform, texts, embeddings=embeddings
-                )
+                try:
+                    topics, probs = await _aio.to_thread(
+                        self._model.fit_transform, texts, embeddings=embeddings
+                    )
+                except Exception as fit_err:
+                    # Most likely cause: Ollama representation model failed during fit
+                    # (connection refused, timeout, model not loaded, etc.)
+                    # Retry with MMR-only representation (no Ollama dependency)
+                    print(f"[TopicModel] fit_transform failed: {fit_err}")
+                    print(f"[TopicModel] Retrying with MMR-only (no Ollama labeling)...")
+                    self._model = BERTopic(
+                        umap_model=umap_model,
+                        hdbscan_model=hdbscan_model,
+                        vectorizer_model=vectorizer_model,
+                        representation_model=mmr,  # MMR only, no Ollama
+                        calculate_probabilities=True,
+                        verbose=True
+                    )
+                    topics, probs = await _aio.to_thread(
+                        self._model.fit_transform, texts, embeddings=embeddings
+                    )
                 
                 # Check again after fit_transform completes
                 if self._reset_requested:
@@ -862,21 +880,26 @@ Return ONLY the label, nothing else."""
                     self._rebuild_in_progress.discard(notebook_id)
                     return {"error": "Reset requested", "topics_found": 0}
                 
-                print(f"[TopicModel] fit_transform complete, found {len(set(topics)) - (1 if -1 in topics else 0)} topics")
+                num_real_topics = len(set(topics)) - (1 if -1 in topics else 0)
+                print(f"[TopicModel] fit_transform complete, found {num_real_topics} topics")
                 
-                # ── NOW safe to clear old data — fit succeeded ──
-                self._documents = [d for d in self._documents if d.notebook_id != notebook_id]
-                for tid in list(self._topics.keys()):
-                    topic = self._topics[tid]
-                    if notebook_id in topic.notebook_ids:
-                        topic.notebook_ids.remove(notebook_id)
-                    topic.document_count = len([d for d in self._documents if d.topic_id == tid])
-                    topic.source_ids = list(set(
-                        d.source_id for d in self._documents if d.topic_id == tid
-                    ))
-                empty_topics = [tid for tid, t in self._topics.items() if not t.notebook_ids]
-                for tid in empty_topics:
-                    del self._topics[tid]
+                # Guard: if HDBSCAN found 0 real topics (all outliers),
+                # preserve existing data — don't wipe a working constellation
+                if num_real_topics == 0:
+                    print(f"[TopicModel] WARNING: 0 topics found (all {len(texts)} docs are outliers). "
+                          f"Preserving existing constellation data.")
+                    self._rebuild_in_progress.discard(notebook_id)
+                    return {
+                        "error": f"Clustering found 0 topics from {len(texts)} chunks. "
+                                 f"Try adding more diverse sources.",
+                        "topics_found": 0,
+                        "documents_processed": len(texts),
+                        "outliers": len(texts)
+                    }
+                
+                # ── Build new data in TEMP collections first ──
+                # This prevents data loss if any step below fails.
+                # Only swap into self._documents / self._topics after everything succeeds.
                 
                 # Build BERTopic-ID → unique-ID mapping to prevent cross-notebook collisions
                 bertopic_ids = set(int(t) for t in topics if t != -1)
@@ -888,7 +911,8 @@ Return ONLY the label, nothing else."""
                 
                 print(f"[TopicModel] Topic ID mapping: offset={topic_id_offset}, {len(bt_to_unique)} topics")
                 
-                # Process results with remapped IDs
+                # Build new documents in temp list
+                new_docs = []
                 topic_ids_found = set()
                 for i, (topic_id, prob) in enumerate(zip(topics, probs if probs is not None else [0.5] * len(topics))):
                     if isinstance(prob, np.ndarray):
@@ -905,13 +929,13 @@ Return ONLY the label, nothing else."""
                         source_id=source_id,
                         notebook_id=notebook_id
                     )
-                    self._documents.append(doc)
+                    new_docs.append(doc)
                     
                     if remapped_id != -1:
                         topic_ids_found.add(remapped_id)
                 
-                # Create topic objects directly with remapped IDs
-                # (Don't use _update_topics_metadata which would merge with existing topics)
+                # Build new topics in temp dict
+                new_topics = {}
                 topic_info = self._model.get_topic_info()
                 for bt_id, unique_id in bt_to_unique.items():
                     topic = Topic(topic_id=unique_id)
@@ -937,10 +961,31 @@ Return ONLY the label, nothing else."""
                     
                     topic.notebook_ids = [notebook_id]
                     topic.source_ids = list(set(
-                        d.source_id for d in self._documents if d.topic_id == unique_id
+                        d.source_id for d in new_docs if d.topic_id == unique_id
                     ))
                     
-                    self._topics[unique_id] = topic
+                    new_topics[unique_id] = topic
+                
+                print(f"[TopicModel] Built {len(new_topics)} topics, {len(new_docs)} docs in temp collections")
+                
+                # ── ATOMIC SWAP: only now clear old data and merge new ──
+                # Remove old documents for this notebook
+                self._documents = [d for d in self._documents if d.notebook_id != notebook_id]
+                # Update remaining topics (other notebooks)
+                for tid in list(self._topics.keys()):
+                    topic = self._topics[tid]
+                    if notebook_id in topic.notebook_ids:
+                        topic.notebook_ids.remove(notebook_id)
+                    topic.document_count = len([d for d in self._documents if d.topic_id == tid])
+                    topic.source_ids = list(set(
+                        d.source_id for d in self._documents if d.topic_id == tid
+                    ))
+                empty_topics = [tid for tid, t in self._topics.items() if not t.notebook_ids]
+                for tid in empty_topics:
+                    del self._topics[tid]
+                # Merge new data
+                self._documents.extend(new_docs)
+                self._topics.update(new_topics)
                 
                 # Notebook-relevance filter: remove topics whose content is
                 # too dissimilar to the notebook's overall embedding centroid.
@@ -951,9 +996,7 @@ Return ONLY the label, nothing else."""
                         topic_scores = {}
                         for uid in list(topic_ids_found):
                             topic_doc_indices = [
-                                i for i, d in enumerate(
-                                    self._documents[-len(texts):]  # only new docs
-                                ) if d.topic_id == uid
+                                i for i, d in enumerate(new_docs) if d.topic_id == uid
                             ]
                             if topic_doc_indices:
                                 topic_embs = embeddings[topic_doc_indices]

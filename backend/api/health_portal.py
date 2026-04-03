@@ -1404,6 +1404,8 @@ async def full_health_check():
             "cache_hit_rate": round(agg.embedding_cache_hit_rate, 2),
             "error_rate": round(agg.error_rate, 3)
         }
+        # Token economy stats (all-time)
+        results["token_stats"] = rag_metrics.get_token_stats()
         
         if agg.error_rate > 0.1:
             results["issues"].append({

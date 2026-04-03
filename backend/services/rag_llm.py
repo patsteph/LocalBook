@@ -16,6 +16,19 @@ import httpx
 from config import settings
 
 
+def _record_ollama_tokens(data: dict):
+    """Extract and record token usage from an Ollama response/final chunk."""
+    try:
+        prompt_tokens = data.get("prompt_eval_count", 0) or 0
+        completion_tokens = data.get("eval_count", 0) or 0
+        eval_duration_ns = data.get("eval_duration", 0) or 0
+        if prompt_tokens > 0 or completion_tokens > 0:
+            from services.rag_metrics import rag_metrics
+            rag_metrics.record_tokens(prompt_tokens, completion_tokens, eval_duration_ns)
+    except Exception:
+        pass  # Never let metrics recording break LLM calls
+
+
 # ─── Ollama Non-Streaming ────────────────────────────────────────────────────────
 
 async def call_ollama(
@@ -103,6 +116,8 @@ async def call_ollama(
             mark_fast_model_used()
         else:
             mark_main_model_used()
+        # Record token usage for Health Portal token economy stats
+        _record_ollama_tokens(result)
         print(f"Ollama response received, length: {len(result.get('response', ''))}")
         return result.get("response", "No response from LLM")
 
@@ -255,6 +270,9 @@ async def stream_ollama(
                     # olmo-3:7b-instruct streams response tokens directly
                     if data.get("response"):
                         yield data["response"]
+                    # Final chunk contains token stats
+                    if data.get("done"):
+                        _record_ollama_tokens(data)
 
 
 # ─── OpenAI ──────────────────────────────────────────────────────────────────────

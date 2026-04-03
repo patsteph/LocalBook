@@ -571,6 +571,25 @@
             </div>
         </div>
         
+        <!-- Token Economy -->
+        <div class="system-info" style="border-left: 3px solid var(--blue);">
+            <h3 class="section-title" style="margin-bottom: 16px;">🪙 Token Economy <span style="font-size: 11px; font-weight: 400; color: var(--text-secondary);">(all-time, processed locally)</span></h3>
+            <div class="system-info-grid">
+                <div class="system-stat">
+                    <div id="tokensInValue" class="system-stat-value" style="color: var(--blue);">--</div>
+                    <div class="system-stat-label">Tokens In (Prompt)</div>
+                </div>
+                <div class="system-stat">
+                    <div id="tokensOutValue" class="system-stat-value" style="color: var(--green);">--</div>
+                    <div class="system-stat-label">Tokens Out (Generated)</div>
+                </div>
+                <div class="system-stat">
+                    <div id="tokensPerSecValue" class="system-stat-value">--</div>
+                    <div class="system-stat-label">Avg Tokens/sec</div>
+                </div>
+            </div>
+        </div>
+        
         <!-- Health Check Sections (Collapsible) -->
         <div id="sectionsContainer">
             <!-- Sections will be populated by JS -->
@@ -719,6 +738,20 @@
                 document.getElementById('queriesValue').textContent = data.metrics.queries_24h || '0';
                 document.getElementById('latencyValue').textContent = data.metrics.avg_latency_ms 
                     ? `${(data.metrics.avg_latency_ms / 1000).toFixed(1)}s` 
+                    : '--';
+            }
+            
+            // Update token economy
+            if (data.token_stats) {
+                const fmt = (n) => {
+                    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+                    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+                    return n.toLocaleString();
+                };
+                document.getElementById('tokensInValue').textContent = fmt(data.token_stats.prompt_tokens || 0);
+                document.getElementById('tokensOutValue').textContent = fmt(data.token_stats.completion_tokens || 0);
+                document.getElementById('tokensPerSecValue').textContent = data.token_stats.avg_tokens_per_sec 
+                    ? `${data.token_stats.avg_tokens_per_sec.toFixed(1)}` 
                     : '--';
             }
             

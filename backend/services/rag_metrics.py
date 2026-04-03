@@ -132,6 +132,11 @@ class RAGMetricsService:
         self._total_errors = 0
         self._cache_hits = {"query": 0, "embedding": 0, "answer": 0}
         
+        # Token economy tracking (all-time)
+        self._total_prompt_tokens = 0
+        self._total_completion_tokens = 0
+        self._total_generation_time_ns = 0  # nanoseconds from Ollama eval_duration
+        
         # Metrics file path
         self._metrics_file = Path(settings.db_path).parent / "rag_metrics.json"
         print(f"[RAGMetrics] Initializing with file: {self._metrics_file}")
@@ -150,7 +155,12 @@ class RAGMetricsService:
                     self._total_queries = data.get("total_queries", len(self._metrics))
                     self._total_errors = data.get("total_errors", 0)
                     self._cache_hits = data.get("cache_hits", {"query": 0, "embedding": 0, "answer": 0})
-                    print(f"[RAGMetrics] Loaded {len(self._metrics)} historical metrics, total_queries={self._total_queries}")
+                    # Token economy
+                    tokens = data.get("token_stats", {})
+                    self._total_prompt_tokens = tokens.get("prompt_tokens", 0)
+                    self._total_completion_tokens = tokens.get("completion_tokens", 0)
+                    self._total_generation_time_ns = tokens.get("generation_time_ns", 0)
+                    print(f"[RAGMetrics] Loaded {len(self._metrics)} historical metrics, total_queries={self._total_queries}, tokens={self._total_prompt_tokens + self._total_completion_tokens:,}")
             else:
                 print(f"[RAGMetrics] No metrics file found at {self._metrics_file}, starting fresh")
                 # Create the file immediately
@@ -171,6 +181,11 @@ class RAGMetricsService:
                 "total_queries": self._total_queries,
                 "total_errors": self._total_errors,
                 "cache_hits": self._cache_hits,
+                "token_stats": {
+                    "prompt_tokens": self._total_prompt_tokens,
+                    "completion_tokens": self._total_completion_tokens,
+                    "generation_time_ns": self._total_generation_time_ns,
+                },
                 "last_updated": datetime.now().isoformat()
             }
             
@@ -260,6 +275,35 @@ class RAGMetricsService:
         """Record if corrective retrieval was triggered."""
         if self._current_query:
             self._current_query.corrective_retrieval_triggered = triggered
+    
+    def record_tokens(self, prompt_tokens: int, completion_tokens: int, eval_duration_ns: int = 0):
+        """Record token usage from an Ollama response.
+        
+        Args:
+            prompt_tokens: Number of tokens in the prompt (prompt_eval_count)
+            completion_tokens: Number of tokens generated (eval_count)
+            eval_duration_ns: Generation time in nanoseconds (eval_duration)
+        """
+        self._total_prompt_tokens += prompt_tokens
+        self._total_completion_tokens += completion_tokens
+        self._total_generation_time_ns += eval_duration_ns
+    
+    def get_token_stats(self) -> Dict:
+        """Get token economy stats."""
+        total_tokens = self._total_prompt_tokens + self._total_completion_tokens
+        # Tokens per second from Ollama eval_duration (completion tokens only)
+        if self._total_generation_time_ns > 0 and self._total_completion_tokens > 0:
+            gen_seconds = self._total_generation_time_ns / 1_000_000_000
+            avg_tokens_per_sec = self._total_completion_tokens / gen_seconds
+        else:
+            avg_tokens_per_sec = 0
+        
+        return {
+            "prompt_tokens": self._total_prompt_tokens,
+            "completion_tokens": self._total_completion_tokens,
+            "total_tokens": total_tokens,
+            "avg_tokens_per_sec": round(avg_tokens_per_sec, 1),
+        }
     
     def record_cache_hit(self, cache_type: str, hit: bool):
         """Record cache hit/miss."""
