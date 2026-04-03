@@ -136,7 +136,7 @@ async def _build_graph_from_topics(notebook_id: Optional[str] = None) -> GraphDa
         for j, topic2 in enumerate(topics[i+1:], i+1):
             kw2 = set(kw for kw, _ in topic2.keywords[:10])
             shared = kw1 & kw2
-            if len(shared) >= 2:
+            if len(shared) >= 3:
                 edge = GraphEdge(
                     id=f"edge_{topic1.id}_{topic2.id}",
                     source=topic1.id,
@@ -180,7 +180,7 @@ async def _build_graph_from_topics(notebook_id: Optional[str] = None) -> GraphDa
                         if (tid1, tid2) in existing_edges or (tid2, tid1) in existing_edges:
                             continue
                         shared_tags = topic_tags[tid1] & topic_tags[tid2]
-                        if shared_tags:
+                        if len(shared_tags) >= 2:
                             edge = GraphEdge(
                                 id=f"tagedge_{tid1}_{tid2}",
                                 source=tid1,
