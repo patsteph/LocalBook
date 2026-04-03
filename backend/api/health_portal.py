@@ -1889,7 +1889,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                     builtins.print = _logging_print
                     
                     try:
-                        add_log("INFO", "Downloading from HuggingFace (this may take a few minutes)...", "health_portal")
+                        add_log("INFO", "Downloading model via curl (this may take a few minutes)...", "health_portal")
                         audio_llm._load_model()
                         audio_llm._initialized = True
                         add_log("INFO", "✓ Kokoro-82M (MLX) model downloaded and loaded successfully", "health_portal")

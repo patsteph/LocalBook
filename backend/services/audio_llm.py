@@ -380,108 +380,90 @@ class AudioLLMService:
                     print(f"[AudioLLM] HF cache corrupt ({err}), clearing...")
                     shutil.rmtree(kokoro_hf_cache, ignore_errors=True)
         
-        # Download via HuggingFace Hub — configure robust HTTP backend first
-        # Matches install.sh: retries + timeouts + SSL handling for PyInstaller
-        print(f"[AudioLLM] Downloading Kokoro-82M model (~330 MB)...")
+        # ── Download via curl — simple, reliable, no HuggingFace Hub library complexity ──
+        # Previous approach used snapshot_download which hung silently on multiple machines.
+        # curl has predictable timeouts, retries, and works identically in PyInstaller builds.
+        import subprocess
         import sys
-        import glob as _glob
-        import requests as _requests
-        from requests.adapters import HTTPAdapter
-        from huggingface_hub import configure_http_backend
-        try:
-            from huggingface_hub.utils._http import reset_sessions
-        except ImportError:
-            reset_sessions = lambda: None
-
-        _frozen = getattr(sys, 'frozen', False)
-
-        # ── Clean up stale lock files that cause snapshot_download to hang ──
-        locks_dir = os.path.join(hf_cache, ".locks")
-        if os.path.isdir(locks_dir):
-            stale_locks = _glob.glob(os.path.join(locks_dir, "**/*.lock"), recursive=True)
-            if stale_locks:
-                print(f"[AudioLLM] Clearing {len(stale_locks)} stale HF lock files...")
-                for lf in stale_locks:
-                    try:
-                        os.remove(lf)
-                    except OSError:
-                        pass
-        # Also clear .incomplete download markers
-        for inc in _glob.glob(os.path.join(hf_cache, "**/*.incomplete"), recursive=True):
-            try:
-                os.remove(inc)
-            except OSError:
-                pass
-
-        # ── Disable tqdm progress bars (hang in PyInstaller without terminal) ──
-        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-        # Set download timeout env var as a backstop
-        os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
-
-        class _TimeoutAdapter(HTTPAdapter):
-            def send(self, *a, **kw):
-                kw.setdefault('timeout', (30, 120))
-                return super().send(*a, **kw)
-
-        def _robust_factory() -> _requests.Session:
-            s = _requests.Session()
-            s.mount('http://', _TimeoutAdapter(max_retries=3))
-            s.mount('https://', _TimeoutAdapter(max_retries=3))
-            if _frozen or os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-                s.verify = False
-            return s
-
-        configure_http_backend(backend_factory=_robust_factory)
-        reset_sessions()
-        if _frozen:
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            print(f"[AudioLLM] Using robust HTTP backend (retries=3, SSL verify=off for frozen build)")
-
-        # ── Download directly to local_dir — bypasses HF blob/symlink/lock system ──
-        # snapshot_download with local_dir puts files directly in our folder
-        # instead of going through the blob cache that requires filelock.
-        os.makedirs(local_cache, exist_ok=True)
-        print(f"[AudioLLM] Downloading to {local_cache} (direct mode, no HF blob cache)...")
         
-        try:
-            from huggingface_hub import snapshot_download
-            result = snapshot_download(
-                repo_id=cls.MLX_KOKORO_REPO,
-                allow_patterns=["config.json", "*.safetensors", "voices/*.safetensors"],
-                local_dir=local_cache,
-                local_dir_use_symlinks=False,
-                force_download=force_redownload,
-                max_workers=1,
-            )
-            print(f"[AudioLLM] snapshot_download complete: {result}")
-        except Exception as e:
-            print(f"[AudioLLM] snapshot_download failed: {e}, trying individual file downloads...")
-            # Fallback: download files individually with hf_hub_download
-            from huggingface_hub import hf_hub_download, list_repo_tree
-            try:
-                files = list(list_repo_tree(cls.MLX_KOKORO_REPO, recursive=True))
-                target_files = [
-                    f.rfilename for f in files
-                    if f.rfilename == "config.json"
-                    or (f.rfilename.endswith(".safetensors") and "/" not in f.rfilename)
-                    or (f.rfilename.startswith("voices/") and f.rfilename.endswith(".safetensors"))
-                ]
-            except Exception:
-                # Hard-coded fallback if API is also down
-                target_files = ["config.json", "model.safetensors"]
+        print(f"[AudioLLM] Downloading Kokoro-82M model (~330 MB) via curl...")
+        os.makedirs(local_cache, exist_ok=True)
+        os.makedirs(os.path.join(local_cache, "voices"), exist_ok=True)
+        
+        BASE_URL = f"https://huggingface.co/{cls.MLX_KOKORO_REPO}/resolve/main"
+        _frozen = getattr(sys, 'frozen', False)
+        
+        # Build file list: config + model + all voice files
+        download_files = ["config.json", "model.safetensors"]
+        for voice_id in KOKORO_VOICES:
+            download_files.append(f"voices/{voice_id}.safetensors")
+        
+        failed_files = []
+        for i, fname in enumerate(download_files, 1):
+            dest_path = os.path.join(local_cache, fname)
             
-            for fname in target_files:
-                print(f"[AudioLLM] Downloading {fname}...")
-                hf_hub_download(
-                    repo_id=cls.MLX_KOKORO_REPO,
-                    filename=fname,
-                    local_dir=local_cache,
-                    local_dir_use_symlinks=False,
-                    force_download=True,
+            # Skip if file exists and we're not forcing re-download
+            if not force_redownload and os.path.isfile(dest_path) and os.path.getsize(dest_path) > 0:
+                print(f"[AudioLLM] [{i}/{len(download_files)}] {fname} (cached)")
+                continue
+            
+            url = f"{BASE_URL}/{fname}"
+            # Longer timeout for model.safetensors (~330MB), shorter for small files
+            max_time = 600 if fname == "model.safetensors" else 60
+            
+            curl_cmd = [
+                "curl", "-fSL",           # fail on HTTP errors, show errors, follow redirects
+                "--connect-timeout", "15", # 15s to connect
+                "--max-time", str(max_time),
+                "--retry", "3",
+                "--retry-delay", "5",
+                "--retry-max-time", str(max_time + 30),
+                "-o", dest_path,
+                url,
+            ]
+            # In frozen builds, skip SSL verification (same as previous approach)
+            if _frozen or os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
+                curl_cmd.insert(1, "-k")
+            
+            print(f"[AudioLLM] [{i}/{len(download_files)}] Downloading {fname}...")
+            try:
+                proc = subprocess.run(
+                    curl_cmd,
+                    capture_output=True, text=True,
+                    timeout=max_time + 60  # Python-level backstop
                 )
-                print(f"[AudioLLM] ✓ {fname} downloaded")
-            result = local_cache
+                if proc.returncode != 0:
+                    error_msg = proc.stderr.strip() or f"curl exit code {proc.returncode}"
+                    print(f"[AudioLLM] ✗ {fname} failed: {error_msg}")
+                    failed_files.append(fname)
+                    # Clean up partial download
+                    if os.path.isfile(dest_path):
+                        os.remove(dest_path)
+                else:
+                    size = os.path.getsize(dest_path) if os.path.isfile(dest_path) else 0
+                    print(f"[AudioLLM] ✓ {fname} ({size:,} bytes)")
+            except subprocess.TimeoutExpired:
+                print(f"[AudioLLM] ✗ {fname} timed out after {max_time + 60}s")
+                failed_files.append(fname)
+                if os.path.isfile(dest_path):
+                    os.remove(dest_path)
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "curl not found. Please install curl (should be pre-installed on macOS)."
+                )
+        
+        # Critical files must succeed — voices are optional
+        critical_missing = [f for f in failed_files if f in ("config.json", "model.safetensors")]
+        if critical_missing:
+            raise RuntimeError(
+                f"Failed to download critical model files: {', '.join(critical_missing)}. "
+                f"Check your network connection and try Repair again."
+            )
+        
+        if failed_files:
+            print(f"[AudioLLM] Warning: {len(failed_files)} voice files failed (non-critical): {failed_files[:5]}")
+        
+        result = local_cache
         
         # Validate the fresh download
         valid, err = cls._validate_model_dir(result)

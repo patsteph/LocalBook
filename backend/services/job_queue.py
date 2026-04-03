@@ -532,6 +532,10 @@ async def _topic_rebuild_handler(
         
         print(f"[TopicModel] BERTopic fit complete: {result}")
         
+        # Check for errors — fit_all returns {"error": ...} on failure
+        if result.get("error"):
+            raise RuntimeError(f"Topic modeling failed: {result['error']}")
+        
         await report_progress(JobProgress(
             percent=90,
             message=f"Found {result.get('topics_found', 0)} topics",

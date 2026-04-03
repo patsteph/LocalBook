@@ -722,28 +722,9 @@ Theme name:"""
             try:
                 print(f"[TopicModel] fit_all: {len(texts)} documents")
                 
-                # Clear existing data for this notebook before rebuild
-                self._documents = [d for d in self._documents if d.notebook_id != notebook_id]
-                
-                # Remove this notebook from ALL topics (not just exclusive ones)
-                # This prevents topic ID collisions: BERTopic always generates IDs 0,1,2...
-                # which would collide with other notebooks' topics if we only cleared exclusive ones.
-                for tid in list(self._topics.keys()):
-                    topic = self._topics[tid]
-                    if notebook_id in topic.notebook_ids:
-                        topic.notebook_ids.remove(notebook_id)
-                    # Recalculate doc count from remaining documents
-                    topic.document_count = len([d for d in self._documents if d.topic_id == tid])
-                    topic.source_ids = list(set(
-                        d.source_id for d in self._documents if d.topic_id == tid
-                    ))
-                # Delete topics with no notebooks left
-                empty_topics = [tid for tid, t in self._topics.items() if not t.notebook_ids]
-                for tid in empty_topics:
-                    del self._topics[tid]
-                
-                # Compute topic ID offset to prevent collisions with other notebooks' topics
-                # BERTopic always generates sequential IDs (0, 1, 2, ...) so we offset them
+                # ── Compute topic ID offset BEFORE clearing anything ──
+                # Data cleanup is deferred until AFTER fit_transform succeeds
+                # to prevent data loss if the fit fails.
                 existing_max_id = max(self._topics.keys(), default=-1)
                 topic_id_offset = existing_max_id + 1 if self._topics else 0
                 
@@ -882,6 +863,20 @@ Return ONLY the label, nothing else."""
                     return {"error": "Reset requested", "topics_found": 0}
                 
                 print(f"[TopicModel] fit_transform complete, found {len(set(topics)) - (1 if -1 in topics else 0)} topics")
+                
+                # ── NOW safe to clear old data — fit succeeded ──
+                self._documents = [d for d in self._documents if d.notebook_id != notebook_id]
+                for tid in list(self._topics.keys()):
+                    topic = self._topics[tid]
+                    if notebook_id in topic.notebook_ids:
+                        topic.notebook_ids.remove(notebook_id)
+                    topic.document_count = len([d for d in self._documents if d.topic_id == tid])
+                    topic.source_ids = list(set(
+                        d.source_id for d in self._documents if d.topic_id == tid
+                    ))
+                empty_topics = [tid for tid, t in self._topics.items() if not t.notebook_ids]
+                for tid in empty_topics:
+                    del self._topics[tid]
                 
                 # Build BERTopic-ID → unique-ID mapping to prevent cross-notebook collisions
                 bertopic_ids = set(int(t) for t in topics if t != -1)
