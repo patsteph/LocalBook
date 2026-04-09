@@ -136,9 +136,9 @@ async def ingest_document(
     chunks = rag_chunking.chunk_text_smart(text, source_type, filename)
 
     # Skip summary for web sources (they have search snippets already)
-    # Only generate summaries for uploaded files (PDFs, docs, etc.)
+    # YouTube gets its own proportional sampling summary
     summary = None
-    if source_type not in ['web', 'youtube']:
+    if source_type not in ['web']:
         summary = await generate_document_summary(text, filename, source_type)
         if summary:
             print(f"[RAG] Generated summary for {filename}: {len(summary)} chars")
@@ -424,14 +424,53 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
 
 # ─── Document Summary ────────────────────────────────────────────────────────────
 
+def _sample_text_proportional(text: str, target_chars: int = 4000) -> str:
+    """Sample text proportionally across the full document.
+
+    Divides the document into N equal windows (scaled to length) and pulls
+    a chunk from the center of each window. Total sample stays near target_chars
+    regardless of document length, but coverage is uniform across the whole text.
+    """
+    total = len(text)
+    if total <= target_chars:
+        return text
+
+    # Scale number of windows with document length, capped at 8
+    if total < 10_000:
+        n_windows = 3
+    elif total < 30_000:
+        n_windows = 4
+    elif total < 80_000:
+        n_windows = 6
+    else:
+        n_windows = 8
+
+    chars_per_window = target_chars // n_windows
+    window_size = total // n_windows
+    samples = []
+
+    for i in range(n_windows):
+        window_start = i * window_size
+        window_mid = window_start + window_size // 2
+        start = max(0, window_mid - chars_per_window // 2)
+        end = min(total, start + chars_per_window)
+        samples.append(text[start:end])
+
+    return "\n\n[...] \n\n".join(samples)
+
+
 async def generate_document_summary(text: str, filename: str, source_type: str) -> Optional[str]:
     """Generate a summary of the document at ingestion time."""
     # For very short documents, don't generate summary
     if len(text) < 500:
         return None
 
-    # Truncate for summary generation
-    text_sample = text[:4000]
+    # YouTube: proportional sampling across full transcript
+    # Everything else: first 4000 chars (usually intro/abstract)
+    if source_type == 'youtube':
+        text_sample = _sample_text_proportional(text, target_chars=4000)
+    else:
+        text_sample = text[:4000]
 
     if source_type in ['xlsx', 'csv', 'tabular']:
         prompt = f"""Summarize this tabular data from '{filename}'. Include:
@@ -444,6 +483,15 @@ Data sample:
 {text_sample}
 
 Summary (2-3 sentences):"""
+    elif source_type == 'youtube':
+        prompt = f"""This is a transcript sampled from a YouTube video titled '{filename}'.
+Summarize what this video covers in 3-4 sentences: the main topic, key points discussed, and any specific conclusions or recommendations made.
+Do not mention that this is a transcript or that the text is sampled.
+
+Transcript samples:
+{text_sample}
+
+Summary:"""
     else:
         prompt = f"""Summarize the key points from '{filename}' in 2-3 sentences. Focus on:
 - Main topic/purpose

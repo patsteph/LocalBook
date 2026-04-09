@@ -32,8 +32,8 @@ class ExtractedImage:
     is_chart: bool = False  # Whether this appears to be a chart/graph
 
 
-# Vision model for image description - granite3.2-vision is optimized for documents/charts
-VISION_MODEL = "granite3.2-vision:2b"
+# Vision model for image description - reads from config so Locker swaps work
+# Defaults to granite3.2-vision:2b but will use main model if it supports vision natively
 
 
 class MultimodalExtractor:
@@ -43,7 +43,7 @@ class MultimodalExtractor:
         self.min_image_size = 100  # Minimum dimension to extract
         self.max_images_per_doc = 100  # Increased for large PDFs
         self.max_parallel_workers = 4  # Concurrent vision model calls
-        self.vision_model = VISION_MODEL
+        self.vision_model = settings.vision_model
         self.image_cache_dir = Path(settings.db_path).parent / "images"
         self.image_cache_dir.mkdir(exist_ok=True)
         self._semaphore = None  # Initialized lazily for parallel processing
@@ -209,31 +209,37 @@ Focus on information that would be useful for answering questions about this doc
             prompt = f"Context: This image is from a document about {context}\n\n{prompt}"
         
         try:
-            # Use granite3.2-vision - optimized for document/chart understanding
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                response = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": self.vision_model,
-                        "prompt": prompt,
-                        "images": [image_b64],
-                        "stream": False,
-                        "options": {"num_predict": 400}
-                    }
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    description = result.get("response", "").strip()
-                    if description:
-                        return description
-                
-                # Fallback: generate basic description without vision
-                return self._generate_basic_description(image)
+            # Use the universal vision dispatcher — handles both /api/generate
+            # (Granite/LLaVA) and /api/chat (Gemma4/Llama3.2) automatically
+            from services.ollama_client import ollama_client
+            api_style = self._get_vision_api_style()
+            description = await ollama_client.vision_describe(
+                image_b64=image_b64,
+                prompt=prompt,
+                model=self.vision_model,
+                api_style=api_style,
+            )
+            
+            if description and not description.startswith("Error:"):
+                return description.strip()
+            
+            # Fallback: generate basic description without vision
+            return self._generate_basic_description(image)
                 
         except Exception as e:
             print(f"[MultimodalExtractor] Vision description failed: {e}")
             return self._generate_basic_description(image)
+    
+    def _get_vision_api_style(self) -> str:
+        """Determine the API style for the current vision model from the registry."""
+        try:
+            from evaluator.model_registry import model_registry
+            info = model_registry.get_model(self.vision_model)
+            if info:
+                return info.vision_api_style
+        except Exception:
+            pass
+        return "generate"  # Safe default for Granite/LLaVA
     
     def _generate_basic_description(self, image: ExtractedImage) -> str:
         """Generate a basic description without vision LLM."""

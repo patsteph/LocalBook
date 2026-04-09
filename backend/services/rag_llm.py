@@ -16,6 +16,23 @@ import httpx
 from config import settings
 
 
+def _get_model_options(model_name: str) -> dict:
+    """Look up per-model optimal Ollama generation parameters from the registry.
+    
+    Returns the model's ollama_options dict (temperature, top_p, top_k, etc.)
+    or an empty dict if the model is unknown. These serve as base defaults
+    that can be overridden by per-call parameters.
+    """
+    try:
+        from evaluator.model_registry import model_registry
+        info = model_registry.get_model(model_name)
+        if info and info.ollama_options:
+            return dict(info.ollama_options)  # Copy to avoid mutating registry
+    except Exception:
+        pass
+    return {}
+
+
 def _record_ollama_tokens(data: dict):
     """Extract and record token usage from an Ollama response/final chunk."""
     try:
@@ -57,7 +74,9 @@ async def call_ollama(
     # Default to fast model for non-streaming calls - faster response times
     # Main model (olmo-3:7b-instruct) used for streaming queries
     use_model = model or settings.ollama_fast_model
-    options = {"num_predict": num_predict}
+    # Start with model-specific defaults from registry (temperature, top_p, top_k)
+    model_defaults = _get_model_options(use_model)
+    options = {**model_defaults, "num_predict": num_predict}
     if num_ctx is not None:
         options["num_ctx"] = num_ctx
     elif num_predict > 500:
@@ -150,13 +169,21 @@ async def stream_ollama(
     # - System 2 (olmo-3:7b-instruct): Synthesis, complex queries, Deep Think
     if use_fast_model and not deep_think:
         model = settings.ollama_fast_model
-        temperature = temperature_override or 0.7
-        top_p = 0.9
     else:
         model = settings.ollama_model
-        # Lower temperature for Deep Think mode (more focused reasoning)
-        temperature = temperature_override or (0.5 if deep_think else 0.7)
-        top_p = 0.9
+    
+    # Load model-specific defaults from registry (temperature, top_p, top_k)
+    model_defaults = _get_model_options(model)
+    base_temp = model_defaults.get("temperature", 0.7)
+    top_p = model_defaults.get("top_p", 0.9)
+    
+    if temperature_override is not None:
+        temperature = temperature_override
+    elif deep_think:
+        # Deep Think: use lower of model default and 0.5 for focused reasoning
+        temperature = min(base_temp, 0.5)
+    else:
+        temperature = base_temp
     
     # Stop sequences to prevent LLM from generating citation/reference lists
     # Only apply for chat Q&A, not document generation (which needs References sections)
@@ -218,12 +245,14 @@ async def stream_ollama(
             effective_num_ctx = 4096
         
         # Repetition / coherence control — same strategy as non-streaming path
-        stream_options = {
+        # Start with model-specific base options, then layer on call-specific params
+        stream_options = {**model_defaults}
+        stream_options.update({
             "temperature": temperature,
             "top_p": top_p,
             "num_predict": effective_num_predict,
             "num_ctx": effective_num_ctx,
-        }
+        })
         if effective_num_predict > 3000:
             # Long-form: Mirostat 2.0 adaptive sampling
             stream_options["mirostat"] = 2

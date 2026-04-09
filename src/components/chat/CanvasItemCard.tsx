@@ -9,7 +9,7 @@ import { CanvasItem } from '../canvas/types';
 import ReactMarkdown from 'react-markdown';
 import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { SVGRenderer } from '../shared/SVGRenderer';
-import { FeynmanQuizBlock, FeynmanAudioBlock, isFeynmanBlock } from '../shared/FeynmanBlocks';
+import { FeynmanQuizBlock, FeynmanAudioBlock, StudioQuizBlock, isFeynmanBlock } from '../shared/FeynmanBlocks';
 import { AudioCanvasPlayer } from './AudioCanvasPlayer';
 import { API_BASE_URL } from '../../services/api';
 import { RichNoteEditor } from '../RichNoteEditor';
@@ -289,7 +289,9 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
             ) : null
           )}
           {item.type === 'quiz' && item.content && (
-            <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(item.content) }} />
+            item.content.trimStart().startsWith('[')
+              ? <StudioQuizBlock json={item.content} />
+              : <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(item.content) }} />
           )}
           {item.type === 'audio' && (
             item.metadata?.audioId && item.metadata?.notebookId ? (

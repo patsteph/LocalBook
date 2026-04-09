@@ -2,6 +2,91 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## v1.6.0
+
+- **YouTube Sources** — YouTube videos now ingest with a full-transcript summary for better retrieval and display as `▶️ YOUTUBE` throughout the app
+- **LLM Locker Improvements** — Smarter RAM estimation eliminates false memory rejections; per-model tuning profiles added to the registry
+- **Labs Toggle** — Experimental features (LLM Evaluator, Locker) now live behind a toggle in the Health Portal
+- **Release Pipeline** — Version badge, download links, and CHANGELOG are all auto-updated on each release
+- **Quiz Enhancements** — Studio quizzes now use RAG chunk retrieval for higher-quality questions drawn from the full document corpus; five question types supported (Multiple Choice, True/False, Fill in the Blank, Short Answer, Spot the Error) selectable before generation; choice questions reveal instantly on click with A/B/C/D prefixes matching the Feynman curriculum experience; open-ended answers graded by LLM with partial credit and feedback
+
+---
+
+## v1.5.2
+
+### Audio Processor
+- **Main Model Narration** — Video narration now uses the main model instead of phi4-mini for richer spoken language
+- **Sentence-Count Guidance** — Replaced explicit word count targets with sentence-count guidance
+
+### Adaptive Collection
+- **Stagnation Detection** — Detects when a notebook's collection hasn't found new content in 5+ days (mild → moderate → plateau tiers)
+- **Auto-Expand Search** — Automatically widens search queries, lowers confidence floor, and seeds from cross-notebook shared entities
+- **Collection Tombstone** — Prominent banner surfaces pending approval items and expansion mode status
+- **Morning Brief Integration** — Stagnation status appears in morning briefs and Curator chat
+- **Plateau Frequency Reduction** — After 15+ days of stagnation, collection frequency is automatically halved
+- **Rejection Reason Tracking** — Collection history now records why items were rejected
+- **Auto-Expand Toggle** — Per-notebook toggle to enable/disable adaptive expansion
+
+---
+
+## v1.5
+
+### Video Explainers
+- **Video Generation** — Generate narrated explainer videos from notebooks with auto-storyboarding
+- **Visual Styles** — Multiple slide styles: classic, dark, whiteboard, and more
+- **TTS Narration** — Natural voice narration via Kokoro-82M TTS (50+ voices, 9 languages)
+
+### Feynman Learning Suite
+- **Feynman Curriculum** — 4-part progressive learning: Foundation → Building → First Principles → Mastery
+- **Teaching Podcasts** — Dedicated teacher/learner audio format (up to 45 min)
+- **Learning Visuals** — Progression flowcharts, knowledge maps, and misconception diagrams
+- **Self-Tests** — Integrated quiz generation at multiple difficulty levels
+
+### Studio & Content Generation
+- **Outline-First Documents** — Multi-step pipeline for deep dives, debates, and curricula
+- **Completion Verification** — Post-generation gate ensures all required sections are present
+- **Chain-of-Density Audio** — Running summaries between podcast sections prevent topic repetition
+
+### Weekly Wrap-Up & Curator
+- **Weekly Wrap-Up** — Monday morning summary of all research activity across notebooks
+- **Feed Page Detection** — Collector auto-detects index/listing pages and extracts article links
+- **RSS & Feed Pages** — Recurring collection from RSS feeds and content index pages
+
+### Chat & Rendering
+- **Markdown Chat** — Chat messages now render full Markdown with inline citations
+- **Consistent Formatting** — Unified Markdown rendering across chat, canvas, curator, and all panels
+- **Adaptive Response Format** — Auto-detects list, table, step-by-step, and code queries
+
+---
+
+## v1.3
+
+- Flexible drawer panels — Sources and Collector fill available space
+- Citation popup portals — tooltips never clipped by sidebar overflow
+- Compact chat input, reliable Studio drawer expand/collapse
+- Collector: expanded frequencies (2h, 8h, twice daily, every 3 days), full Curator pipeline, frequency picker wizard
+
+---
+
+## v1.20
+
+- People Profiler with coaching notes, goals, and social platform integration
+- Curator Agent for cross-notebook intelligence, morning briefs, config inference
+- Knowledge Constellation v2: dynamic zoom, concentric rings, tag-based edges, smart labels
+- Parallel sub-queries, response format detection, content date extraction
+- Memory v2: deep consolidation, user signals, search miss tracking, daily summaries
+
+---
+
+## v1.10
+
+- AI Visual Generator with intelligent type selection and lightbox view
+- Horizontal Steps template, vibrant theming for light/dark modes
+- Mermaid prewarm for instant rendering, metrics persistence across restarts
+- Auto-fix for malformed LLM diagram output
+
+---
+
 ## [1.0.3] - 2025-01-14
 
 ### ✨ New Features

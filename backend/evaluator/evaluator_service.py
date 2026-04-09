@@ -1,0 +1,454 @@
+"""Evaluator Service — Core orchestrator for end-to-end LLM evaluation.
+
+Creates test notebook → ingests content → runs 10 test categories →
+scores everything → persists results → cleans up.
+"""
+
+import json
+import time
+import asyncio
+from datetime import datetime
+from pathlib import Path
+
+from evaluator.models import (
+    EvalResult, CategoryResult, ComboEvalSummary, EvalProgress,
+    ModelCombo, EVAL_PHASES, TOTAL_PHASES, _score_to_grade,
+)
+from evaluator.hardware_profiler import get_hardware_profile
+from evaluator.test_runners import (
+    ingestion,
+    rag_chat,
+    streaming,
+    fast_followup,
+    document_gen,
+    structured_json,
+    intent_classify,
+    embedding_quality,
+    vision,
+    tts_audio,
+    instruction_follow,
+    concurrency,
+    needle_haystack,
+    prompt_safety,
+)
+from evaluator import scoring
+
+# Config path
+_CONFIG_PATH = Path(__file__).parent / "test_fixtures" / "eval_config.json"
+
+# Results storage
+_RESULTS_DIR: Path | None = None
+
+# Singleton progress tracker
+_progress = EvalProgress()
+
+
+def _get_results_dir() -> Path:
+    """Get the results directory (under app data, not repo)."""
+    global _RESULTS_DIR
+    if _RESULTS_DIR is None:
+        from config import settings
+        _RESULTS_DIR = Path(settings.data_dir) / "eval_results"
+        _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        (_RESULTS_DIR / "runs").mkdir(exist_ok=True)
+    return _RESULTS_DIR
+
+
+def get_progress() -> EvalProgress:
+    """Get current evaluation progress."""
+    return _progress
+
+
+def _update_progress(phase: int, test_name: str = "", **kwargs):
+    """Update progress tracker."""
+    _progress.phase = phase
+    _progress.phase_name = EVAL_PHASES[phase][1] if phase < len(EVAL_PHASES) else "Done"
+    _progress.progress_percent = int((phase / TOTAL_PHASES) * 100)
+    _progress.current_test = test_name
+    if "elapsed" in kwargs:
+        _progress.elapsed_seconds = kwargs["elapsed"]
+    if "results" in kwargs:
+        _progress.results_so_far = kwargs["results"]
+
+
+def _load_config() -> dict:
+    """Load the evaluation configuration."""
+    return json.loads(_CONFIG_PATH.read_text())
+
+
+_PHASE_TIMEOUT_SECONDS = 180  # 3 min max per test phase — prevents indefinite hangs
+
+
+async def _run_phase_with_timeout(coro, phase_name: str, timeout: int = _PHASE_TIMEOUT_SECONDS):
+    """Run a test phase with a hard timeout. Returns results or empty list on timeout."""
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        print(f"[EVALUATOR] ⚠️ Phase '{phase_name}' timed out after {timeout}s — skipping")
+        return []
+
+
+def _check_available_memory() -> tuple[bool, str]:
+    """Pre-flight check: is there enough free RAM to safely run the evaluator?"""
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        available_gb = mem.available / (1024 ** 3)
+        total_gb = mem.total / (1024 ** 3)
+        if available_gb < 3.0:
+            return False, (
+                f"Insufficient available memory: {available_gb:.1f}GB free of {total_gb:.0f}GB total. "
+                f"The evaluator needs at least 3GB free RAM to run safely. "
+                f"Close other applications or wait for current Ollama operations to finish."
+            )
+        return True, f"{available_gb:.1f}GB available"
+    except ImportError:
+        # psutil not installed — skip check
+        return True, "psutil not available, skipping memory check"
+
+
+async def run_full_evaluation() -> ComboEvalSummary:
+    """Run the complete evaluation suite.
+    
+    This is the main entry point. It:
+    1. Profiles hardware
+    2. Creates a test notebook  
+    3. Ingests all test content
+    4. Runs all 10 test categories
+    5. Scores, persists, and returns results
+    6. Cleans up the test notebook
+    """
+    from config import settings
+
+    if _progress.running:
+        raise RuntimeError("An evaluation is already running")
+
+    # Pre-flight memory check
+    mem_ok, mem_msg = _check_available_memory()
+    if not mem_ok:
+        raise RuntimeError(f"Pre-flight check failed: {mem_msg}")
+    print(f"[EVALUATOR] Memory pre-flight: {mem_msg}")
+
+    _progress.running = True
+    _progress.error = ""
+    _progress.results_so_far = {}
+    run_start = time.time()
+    notebook_id = None
+
+    try:
+        config = _load_config()
+        combo = ModelCombo.from_config(settings)
+
+        # ── Phase 0: Hardware Profile ────────────────────────────────────
+        _update_progress(0, "Detecting hardware")
+        hw = get_hardware_profile()
+        print(f"[EVALUATOR] Hardware: {hw.chip}, {hw.memory_gb}GB RAM, tier={hw.tier}")
+
+        summary = ComboEvalSummary(
+            combo=combo.to_dict(),
+            hardware=hw.to_dict(),
+        )
+
+        # ── Phase 1: Create Test Notebook ────────────────────────────────
+        _update_progress(1, "Creating test notebook")
+        notebook_id = await ingestion.create_test_notebook(config)
+
+        # ── Phase 2-3: Ingest Content ────────────────────────────────────
+        _update_progress(2, "Ingesting test content")
+        ingest_result = await ingestion.ingest_all_content(notebook_id, config)
+        summary.ingestion = ingest_result.to_dict()
+        _update_progress(3, "Ingestion complete", results={
+            "ingestion": {"score": ingest_result.score, "grade": ingest_result.grade}
+        })
+
+        if ingest_result.sources_completed == 0:
+            raise RuntimeError("No sources ingested successfully — cannot run tests")
+
+        # ── Test Phases 4-13 ─────────────────────────────────────────────
+        category_results = {}
+        all_tps = []
+        all_ttft = []
+
+        # Phase 4: RAG Chat
+        _update_progress(4, "RAG Chat Q&A")
+        rag_results = await _run_phase_with_timeout(
+            rag_chat.run(notebook_id, config, combo.name, hw.fingerprint), "RAG Chat")
+        cat = _build_category("rag_chat", "RAG Chat Q&A", rag_results)
+        category_results["rag_chat"] = cat
+        _progress.results_so_far["rag_chat"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 5: Streaming
+        _update_progress(5, "Streaming Generation")
+        stream_results = await _run_phase_with_timeout(
+            streaming.run(notebook_id, config, combo.name, hw.fingerprint), "Streaming")
+        cat = _build_category("streaming", "Streaming Generation", stream_results)
+        category_results["streaming"] = cat
+        _progress.results_so_far["streaming"] = {"score": cat.score, "grade": cat.grade}
+        for r in stream_results:
+            if r.tokens_per_second > 0:
+                all_tps.append(r.tokens_per_second)
+            if r.time_to_first_token_ms > 0:
+                all_ttft.append(r.time_to_first_token_ms)
+
+        # Phase 6: Fast Follow-Up
+        _update_progress(6, "Fast Follow-Up")
+        followup_results = await _run_phase_with_timeout(
+            fast_followup.run(notebook_id, config, combo.name, hw.fingerprint), "Fast Follow-Up")
+        cat = _build_category("fast_followup", "Fast Follow-Up", followup_results)
+        category_results["fast_followup"] = cat
+        _progress.results_so_far["fast_followup"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 7: Document Generation
+        _update_progress(7, "Document Generation")
+        docgen_results = await _run_phase_with_timeout(
+            document_gen.run(notebook_id, config, combo.name, hw.fingerprint), "Document Gen")
+        cat = _build_category("document_gen", "Document Generation", docgen_results)
+        category_results["document_gen"] = cat
+        _progress.results_so_far["document_gen"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 8: Structured JSON (Quiz)
+        _update_progress(8, "Structured JSON (Quiz)")
+        json_results = await _run_phase_with_timeout(
+            structured_json.run(notebook_id, config, combo.name, hw.fingerprint), "Structured JSON")
+        cat = _build_category("structured_json", "Structured JSON", json_results)
+        category_results["structured_json"] = cat
+        _progress.results_so_far["structured_json"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 9: Intent Classification
+        _update_progress(9, "Intent Classification")
+        intent_results = await _run_phase_with_timeout(
+            intent_classify.run(notebook_id, config, combo.name, hw.fingerprint), "Intent Classify")
+        cat = _build_category("intent_classify", "Intent Classification", intent_results)
+        category_results["intent_classify"] = cat
+        _progress.results_so_far["intent_classify"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 10: Embedding Quality
+        _update_progress(10, "Embedding Quality")
+        embed_results = await _run_phase_with_timeout(
+            embedding_quality.run(notebook_id, config, combo.name, hw.fingerprint), "Embedding Quality")
+        cat = _build_category("embedding_quality", "Embedding Quality", embed_results)
+        category_results["embedding_quality"] = cat
+        _progress.results_so_far["embedding_quality"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 11: Vision
+        _update_progress(11, "Vision / Image")
+        vision_results = await _run_phase_with_timeout(
+            vision.run(notebook_id, config, combo.name, hw.fingerprint), "Vision")
+        cat = _build_category("vision", "Vision / Image", vision_results)
+        category_results["vision"] = cat
+        _progress.results_so_far["vision"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 12: TTS Audio
+        _update_progress(12, "TTS Audio")
+        tts_results = await _run_phase_with_timeout(
+            tts_audio.run(notebook_id, config, combo.name, hw.fingerprint), "TTS Audio")
+        cat = _build_category("tts_audio", "TTS Audio", tts_results)
+        category_results["tts_audio"] = cat
+        _progress.results_so_far["tts_audio"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 13: Instruction Following
+        _update_progress(13, "Instruction Following")
+        instruct_results = await _run_phase_with_timeout(
+            instruction_follow.run(notebook_id, config, combo.name, hw.fingerprint), "Instruction Follow")
+        cat = _build_category("instruction_follow", "Instruction Following", instruct_results)
+        category_results["instruction_follow"] = cat
+        _progress.results_so_far["instruction_follow"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 14: Concurrency & Load
+        _update_progress(14, "Concurrency & Load")
+        concurrency_results = await _run_phase_with_timeout(
+            concurrency.run(notebook_id, config, combo.name, hw.fingerprint), "Concurrency")
+        cat = _build_category("concurrency", "Concurrency & Load", concurrency_results)
+        category_results["concurrency"] = cat
+        _progress.results_so_far["concurrency"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 15: Context Capacity (Needle)
+        _update_progress(15, "Context Capacity (Needle)")
+        needle_results = await _run_phase_with_timeout(
+            needle_haystack.run(notebook_id, config, combo.name, hw.fingerprint), "Needle Haystack")
+        cat = _build_category("needle_haystack", "Context Capacity", needle_results)
+        category_results["needle_haystack"] = cat
+        _progress.results_so_far["needle_haystack"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 16: Prompt Safety (Adversarial)
+        _update_progress(16, "Prompt Safety (Adversarial)")
+        safety_results = await _run_phase_with_timeout(
+            prompt_safety.run(notebook_id, config, combo.name, hw.fingerprint), "Prompt Safety")
+        cat = _build_category("prompt_safety", "Prompt Safety", safety_results)
+        category_results["prompt_safety"] = cat
+        _progress.results_so_far["prompt_safety"] = {"score": cat.score, "grade": cat.grade}
+
+        # ── Phase 17: Score & Persist ────────────────────────────────────
+        _update_progress(17, "Scoring & persisting results")
+
+        # Build summary
+        summary.categories = {k: v.to_dict() for k, v in category_results.items()}
+        summary.category_scores = {k: v.score for k, v in category_results.items()}
+
+        # Get weights from config
+        weights = config.get("scoring", {}).get("category_weights", {})
+        if not weights:
+            weights = {k: 10 for k in category_results}
+
+        overall_score, overall_grade = scoring.compute_overall_score(
+            summary.category_scores, weights
+        )
+        summary.overall_score = overall_score
+        summary.overall_grade = overall_grade
+
+        # Performance profile
+        summary.avg_tokens_per_sec = sum(all_tps) / len(all_tps) if all_tps else 0
+        summary.avg_ttft_ms = sum(all_ttft) / len(all_ttft) if all_ttft else 0
+        summary.total_run_time_seconds = time.time() - run_start
+
+        # Collect warnings
+        for cat_name, cat in category_results.items():
+            if cat.score < 40:
+                summary.warnings.append(f"{cat.display_name} scored F ({cat.score:.0f})")
+            elif cat.score < 60:
+                summary.warnings.append(f"{cat.display_name} scored D ({cat.score:.0f})")
+            summary.warnings.extend(cat.warnings)
+
+        # Persist
+        _persist_results(summary)
+
+        print(f"\n[EVALUATOR] ═══════════════════════════════════════════")
+        print(f"[EVALUATOR] OVERALL: {summary.overall_score:.1f} ({summary.overall_grade})")
+        print(f"[EVALUATOR] Time: {summary.total_run_time_seconds:.0f}s")
+        for k, v in summary.category_scores.items():
+            grade = _score_to_grade(v)
+            print(f"[EVALUATOR]   {k}: {v:.0f} ({grade})")
+        if summary.warnings:
+            print(f"[EVALUATOR] Warnings: {summary.warnings}")
+        print(f"[EVALUATOR] ═══════════════════════════════════════════\n")
+
+        return summary
+
+    except Exception as e:
+        _progress.error = str(e)
+        print(f"[EVALUATOR] FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+    finally:
+        # ── Phase 15: Cleanup ────────────────────────────────────────────
+        _update_progress(15, "Cleaning up test notebook")
+        if notebook_id:
+            try:
+                await ingestion.cleanup_test_notebook(notebook_id)
+            except Exception as ce:
+                print(f"[EVALUATOR] Cleanup error (non-fatal): {ce}")
+
+        _progress.running = False
+        _progress.elapsed_seconds = time.time() - run_start
+
+
+def _build_category(name: str, display_name: str, results: list[EvalResult]) -> CategoryResult:
+    """Build a CategoryResult from individual test results."""
+    score, grade = scoring.compute_category_score(results)
+    cat = CategoryResult(
+        category=name,
+        display_name=display_name,
+        tests=results,
+        score=score,
+        grade=grade,
+        passed=score >= 40,
+        total_time_ms=sum(r.total_time_ms for r in results),
+    )
+    # Add warnings for failed tests
+    for r in results:
+        if not r.passed and not r.skipped:
+            cat.warnings.append(f"{r.test_name}: {r.failure_reason}")
+    return cat
+
+
+def _persist_results(summary: ComboEvalSummary):
+    """Save results to disk."""
+    results_dir = _get_results_dir()
+
+    # Save full run
+    run_filename = (
+        f"{summary.timestamp[:16].replace(':', '-')}_"
+        f"{summary.combo.get('name', 'unknown').lower().replace(' ', '_')}_"
+        f"{summary.hardware.get('fingerprint', 'unknown')}.json"
+    )
+    run_path = results_dir / "runs" / run_filename
+    run_path.write_text(json.dumps(summary.to_dict(), indent=2, default=str))
+    print(f"[EVALUATOR] Results saved: {run_path}")
+
+    # Update summary index
+    summary_path = results_dir / "summary.json"
+    try:
+        existing = json.loads(summary_path.read_text()) if summary_path.exists() else {"runs": []}
+    except Exception:
+        existing = {"runs": []}
+
+    existing["runs"].append({
+        "run_id": summary.run_id,
+        "timestamp": summary.timestamp,
+        "file": run_filename,
+        "combo": summary.combo.get("name", ""),
+        "main_model": summary.combo.get("main_model", ""),
+        "fast_model": summary.combo.get("fast_model", ""),
+        "hardware": summary.hardware.get("fingerprint", ""),
+        "overall_score": summary.overall_score,
+        "overall_grade": summary.overall_grade,
+        "total_time_seconds": summary.total_run_time_seconds,
+    })
+
+    # Keep last 50 runs
+    existing["runs"] = existing["runs"][-50:]
+    summary_path.write_text(json.dumps(existing, indent=2, default=str))
+
+
+def get_results_list() -> list[dict]:
+    """Get list of all historical evaluation runs."""
+    results_dir = _get_results_dir()
+    summary_path = results_dir / "summary.json"
+    if not summary_path.exists():
+        return []
+    try:
+        data = json.loads(summary_path.read_text())
+        return data.get("runs", [])
+    except Exception:
+        return []
+
+
+def get_result_by_id(run_id: str) -> dict | None:
+    """Load a specific run's full results."""
+    results_dir = _get_results_dir()
+    runs = get_results_list()
+    for run in runs:
+        if run.get("run_id") == run_id:
+            run_path = results_dir / "runs" / run["file"]
+            if run_path.exists():
+                return json.loads(run_path.read_text())
+    return None
+
+
+def get_latest_result() -> dict | None:
+    """Get the most recent evaluation run."""
+    runs = get_results_list()
+    if not runs:
+        return None
+    latest = runs[-1]
+    results_dir = _get_results_dir()
+    run_path = results_dir / "runs" / latest["file"]
+    if run_path.exists():
+        return json.loads(run_path.read_text())
+    return None
+
+
+async def cleanup_stale_notebook():
+    """Delete any leftover test notebook from a failed/interrupted run."""
+    from storage.notebook_store import notebook_store
+
+    config = _load_config()
+    test_name = config.get("notebook_name", "🧪 LLM Evaluator Test Notebook")
+
+    notebooks = await notebook_store.list()
+    for nb in notebooks:
+        if nb.get("title") == test_name:
+            print(f"[EVALUATOR] Found stale test notebook: {nb['id']}, cleaning up...")
+            await ingestion.cleanup_test_notebook(nb["id"])

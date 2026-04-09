@@ -473,7 +473,7 @@ async def full_health_check():
             results["overall"] = "degraded"
     
     # NEW: Vision Model Check (for PDF image/chart extraction)
-    vision_model = "granite3.2-vision:2b"
+    vision_model = settings.vision_model
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{settings.ollama_base_url}/api/tags")

@@ -95,6 +95,9 @@ python -W ignore -m PyInstaller \
     --add-data="$SCRIPT_DIR/agents:agents" \
     --add-data="$SCRIPT_DIR/static:static" \
     --add-data="$SCRIPT_DIR/templates:templates" \
+    --add-data="$SCRIPT_DIR/evaluator/test_content:evaluator/test_content" \
+    --add-data="$SCRIPT_DIR/evaluator/test_fixtures:evaluator/test_fixtures" \
+    --add-data="$SCRIPT_DIR/evaluator/registry_data:evaluator/registry_data" \
     --add-data="$SCRIPT_DIR/config.py:." \
     --hidden-import=api \
     --hidden-import=api.agent \
@@ -110,6 +113,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=api.credentials \
     --hidden-import=api.curator \
     --hidden-import=api.embeddings \
+    --hidden-import=api.evaluator \
     --hidden-import=api.exploration \
     --hidden-import=api.export \
     --hidden-import=api.findings \
@@ -244,6 +248,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=agents.state \
     --hidden-import=agents.supervisor \
     --collect-all=sentence_transformers \
+    --collect-all=evaluator \
     --collect-all=kokoro_mlx \
     --collect-all=trafilatura \
     --collect-all=justext \

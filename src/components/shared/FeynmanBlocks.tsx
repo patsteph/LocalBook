@@ -242,6 +242,130 @@ const InlineQuestion: React.FC<{ index: number; question: CachedQuestion }> = ({
   );
 };
 
+// ── Open-ended inline question (fill_in_blank, short_answer, spot_the_error) ──
+
+interface StudioQuestion {
+  id: string;
+  question: string;
+  answer: string;
+  explanation: string;
+  question_type: string;
+  options?: string[] | null;
+  difficulty?: string;
+  source_reference?: string;
+}
+
+const OPEN_ENDED_CANVAS = new Set(['fill_in_the_blank', 'short_answer', 'spot_the_error']);
+
+const _openEndedCache: Record<string, { value: string; revealed: boolean; correct: boolean | null }> = {};
+
+const OpenEndedQuestion: React.FC<{ index: number; q: StudioQuestion }> = ({ index, q }) => {
+  const key = q.id || q.question.slice(0, 60);
+  const prev = _openEndedCache[key];
+  const [value, setValue] = useState(prev?.value ?? '');
+  const [revealed, setRevealed] = useState(prev?.revealed ?? false);
+  const [correct, setCorrect] = useState<boolean | null>(prev?.correct ?? null);
+  const [checking, setChecking] = useState(false);
+
+  const handleCheck = async () => {
+    if (revealed || !value.trim()) return;
+    setChecking(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/quiz/grade`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q.question, correct_answer: q.answer, user_answer: value.trim(), question_type: q.question_type }),
+      });
+      const data = await res.json();
+      setCorrect(data.correct);
+      setRevealed(true);
+      _openEndedCache[key] = { value, revealed: true, correct: data.correct };
+    } catch {
+      const isCorrect = value.trim().toLowerCase() === q.answer.toLowerCase();
+      setCorrect(isCorrect);
+      setRevealed(true);
+      _openEndedCache[key] = { value, revealed: true, correct: isCorrect };
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="bg-white dark:bg-gray-800 border border-purple-100 dark:border-purple-900/50 rounded-lg p-4 shadow-sm">
+      <p className="font-medium text-sm text-gray-900 dark:text-gray-100 mb-3">
+        <span className="text-purple-600 dark:text-purple-400 mr-1.5">{index + 1}.</span>
+        {q.question}
+      </p>
+      {q.question_type === 'short_answer' ? (
+        <textarea
+          value={value}
+          onChange={e => !revealed && setValue(e.target.value)}
+          disabled={revealed}
+          rows={2}
+          placeholder="Type your answer..."
+          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 text-sm resize-none disabled:opacity-60 mb-2"
+        />
+      ) : (
+        <input
+          type="text"
+          value={value}
+          onChange={e => !revealed && setValue(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') handleCheck(); }}
+          disabled={revealed}
+          placeholder={q.question_type === 'fill_in_the_blank' ? 'Fill in the blank...' : 'Identify and correct the error...'}
+          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 text-sm disabled:opacity-60 mb-2"
+        />
+      )}
+      {!revealed && (
+        <button
+          onClick={handleCheck}
+          disabled={!value.trim() || checking}
+          className="px-4 py-1.5 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+        >
+          {checking && <Loader2 className="w-3 h-3 animate-spin" />}
+          {checking ? 'Checking...' : 'Check Answer'}
+        </button>
+      )}
+      {revealed && (
+        <div className={`mt-2 p-3 rounded-md text-sm ${correct ? 'bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300' : 'bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300'}`}>
+          <p className="font-medium mb-1">{correct ? 'Correct!' : `Answer: ${q.answer}`}</p>
+          <p className="text-xs opacity-80">{q.explanation}</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── StudioQuizBlock — renders a quiz from JSON stored in canvas items ──────
+
+export const StudioQuizBlock: React.FC<{ json: string }> = ({ json }) => {
+  let questions: StudioQuestion[] = [];
+  try {
+    questions = JSON.parse(json);
+    if (!Array.isArray(questions)) return null;
+  } catch {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3 py-1">
+      {questions.map((q, i) => {
+        if (OPEN_ENDED_CANVAS.has(q.question_type)) {
+          return <OpenEndedQuestion key={q.id || i} index={i} q={q} />;
+        }
+        // Choice-based: adapt to CachedQuestion shape for InlineQuestion
+        const adapted: CachedQuestion = {
+          q: q.question,
+          a: q.answer,
+          options: q.options ?? (q.question_type === 'true_false' ? ['True', 'False'] : []),
+          explanation: q.explanation,
+        };
+        return <InlineQuestion key={q.id || i} index={i} question={adapted} />;
+      })}
+    </div>
+  );
+};
+
 // ── Audio Block ────────────────────────────────────────────────────────────
 
 interface AudioBlockData {

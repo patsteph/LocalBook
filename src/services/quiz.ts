@@ -64,6 +64,21 @@ export interface MissedQuestion {
   explanation: string;
 }
 
+export interface GradeAnswerRequest {
+  question: string;
+  correct_answer: string;
+  user_answer: string;
+  question_type: string;
+}
+
+export interface GradeAnswerResponse {
+  correct: boolean;
+  score: number;
+  feedback: string;
+}
+
+export const OPEN_ENDED_TYPES = new Set(['short_answer', 'spot_the_error', 'fill_in_the_blank']);
+
 export const quizService = {
   async generate(
     notebookId: string,
@@ -71,6 +86,7 @@ export const quizService = {
     difficulty: string = 'medium',
     topic?: string,
     chatContext?: string,
+    questionTypes?: string[],
   ): Promise<Quiz> {
     const response = await fetch(`${API_BASE}/quiz/generate`, {
       method: 'POST',
@@ -81,6 +97,7 @@ export const quizService = {
         difficulty,
         topic: topic || undefined,
         ...(chatContext ? { chat_context: chatContext } : {}),
+        ...(questionTypes?.length ? { question_types: questionTypes } : {}),
       }),
     });
     if (!response.ok) throw new Error('Failed to generate quiz');
@@ -106,6 +123,16 @@ export const quizService = {
   async getStats(notebookId: string): Promise<QuizStats> {
     const response = await fetch(`${API_BASE}/quiz/stats/${notebookId}`);
     if (!response.ok) throw new Error('Failed to get stats');
+    return response.json();
+  },
+
+  async gradeAnswer(req: GradeAnswerRequest): Promise<GradeAnswerResponse> {
+    const response = await fetch(`${API_BASE}/quiz/grade`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!response.ok) throw new Error('Failed to grade answer');
     return response.json();
   },
 

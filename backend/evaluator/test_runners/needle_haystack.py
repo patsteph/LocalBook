@@ -1,0 +1,94 @@
+"""Context Capacity test runner (Needle in a Haystack)."""
+
+import time
+import math
+from datetime import datetime
+from evaluator.models import EvalResult
+
+async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
+    """Test model's ability to retain and locate specific information inside massive context windows."""
+    from services.ollama_client import ollama_client
+    from config import settings
+    
+    main_model = getattr(settings, 'ollama_model', 'olmo-3:7b-instruct')
+    test_config = config.get("needle_haystack_test", {})
+    
+    needle = test_config.get("needle", "The secret passcode is Omega-99.")
+    question = test_config.get("question", "What is the secret passcode?")
+    expected_answer = test_config.get("expected_answer", "Omega-99")
+    target_tokens = test_config.get("padding_target_tokens", 8000)
+    
+    result = EvalResult(
+        test_id="needle_haystack",
+        category="needle_haystack",
+        test_name=f"Context Stress (~{target_tokens} tokens)",
+        model_combo=combo_name,
+        model_used=main_model,
+        hardware_fingerprint=hw_fingerprint,
+        timestamp=datetime.utcnow().isoformat() + "Z",
+    )
+    
+    # Generate Haystack (approx 4 chars per token)
+    base_text = "The LocalBook RAG framework is designed for privacy-first AI. " * 50
+    base_text += "It uses lanceDB for fast local embeddings and Ollama for inference. " * 50
+    base_text += "Apple Silicon unified memory allows large models to run efficiently. " * 50
+    
+    # How many times to repeat our base_text to achieve target token count
+    # Let's say base_text is ~1400 tokens (1000 * 5.5 = ~5500 chars).
+    base_tokens = len(base_text) / 4.0
+    repeats = max(1, math.ceil(target_tokens / base_tokens))
+    
+    haystack_parts = [base_text] * repeats
+    
+    # Insert Needle at roughly 65% depth (the notorious drop-off zone for LLMs)
+    insert_index = int(len(haystack_parts) * 0.65)
+    haystack_parts.insert(insert_index, f"\n\n{needle}\n\n")
+    
+    context_block = "\n".join(haystack_parts)
+    actual_chars = len(context_block)
+    
+    prompt = f"Given the following context documentation:\n\n{context_block}\n\nAnswer the question concisely based ONLY on the context: {question}"
+
+    start = time.time()
+    try:
+        response = await ollama_client.generate(
+            prompt=prompt,
+            model=main_model,
+            temperature=0.0,
+            num_predict=100,
+            extra_options={"num_ctx": target_tokens + 2000}
+        )
+        elapsed = (time.time() - start) * 1000
+        result.total_time_ms = elapsed
+        
+        answer = response.get("response", "").strip()
+        result.actual_output_preview = answer[:200]
+        result.input_chars = actual_chars
+        result.output_chars = len(answer)
+        result.eval_duration_ns = response.get("eval_duration", 0)
+        
+        # Grading
+        is_correct = expected_answer.lower() in answer.lower()
+        result.accuracy_score = 100 if is_correct else 0
+        
+        # Penalize if it just generated a thousand tokens rambling
+        length_penalty = 0 if len(answer) < 150 else max(0, min(50, int((len(answer) - 150) / 10)))
+        
+        # Evaluate throughput
+        eval_count = response.get("eval_count", 0)
+        if eval_count > 0 and result.eval_duration_ns > 0:
+            result.tokens_per_second = eval_count / (result.eval_duration_ns / 1e9)
+            
+        result.overall_score = max(0, int(result.accuracy_score) - length_penalty)
+        result.passed = result.overall_score >= 80
+
+        if not is_correct:
+            result.failure_reason = f"Model failed to extract the needle from ~{target_tokens} context block."
+            
+    except Exception as e:
+        result.passed = False
+        result.failure_reason = str(e)[:200]
+        result.overall_score = 0
+        
+    print(f"[EVAL-NEEDLE] Score={result.overall_score}, context={actual_chars} chars, time={result.total_time_ms/1000:.1f}s")
+    return [result]

@@ -320,9 +320,9 @@ class MemoryManager:
         """
         pruned = 0
         try:
-            table = self.memory_store._get_archival_table()
-            if table is None:
+            if "archival_memories" not in self.memory_store.archival_db.table_names():
                 return 0
+            table = self.memory_store.archival_db.open_table("archival_memories")
             
             cutoff = (datetime.utcnow() - timedelta(days=90)).isoformat()
             

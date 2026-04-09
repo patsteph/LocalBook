@@ -152,22 +152,24 @@ class StructuredLLMService:
     ) -> QuizOutput:
         """Generate a professional-quality quiz from content with structured output."""
         
-        question_types = question_types or ["multiple_choice", "true_false"]
+        question_types = question_types or ["multiple_choice", "true_false", "fill_in_the_blank"]
+        types_str = ", ".join(question_types)
         
         system_prompt = f"""You are an expert instructional designer creating assessment questions for mastery learning.
 
 Create exactly {num_questions} high-quality questions based on the provided content.
+Use a MIX of these question types: {types_str}
 
 Output a valid JSON object with this structure:
 {{
     "questions": [
         {{
             "question": "clear, unambiguous question text",
-            "answer": "the correct answer (must match one of the options exactly)",
+            "answer": "the correct answer",
             "explanation": "why this is correct, referencing the source material",
             "difficulty": "{difficulty}",
-            "question_type": "multiple_choice or true_false",
-            "options": ["array of 4 options for multiple_choice, or ['True', 'False'] for true_false"],
+            "question_type": "one of: {types_str}",
+            "options": "array of 4 options for multiple_choice, ['True','False'] for true_false, null for others",
             "source_reference": "name of source document this question comes from"
         }}
     ],
@@ -175,20 +177,25 @@ Output a valid JSON object with this structure:
     "source_summary": "brief summary of source material used"
 }}
 
-QUESTION QUALITY REQUIREMENTS:
-1. Test UNDERSTANDING, not just recall of trivial facts
-2. Each question should assess a meaningful concept
-3. For multiple_choice:
-   - All 4 options must be plausible (no obviously wrong answers)
-   - Distractors should represent common misconceptions
-   - Options should be similar in length and structure
-   - Avoid "all of the above" or "none of the above"
-   - CRITICAL: The "answer" field MUST be an EXACT COPY of one of the options strings. Do NOT paraphrase or reword it. Copy-paste the correct option text verbatim into the "answer" field.
-4. For true_false:
-   - Statement must be unambiguously true or false
-   - False statements should be plausibly incorrect
-5. Questions should span different topics from the source material
+QUESTION TYPE RULES:
+- multiple_choice: 4 plausible options; "answer" must be EXACT COPY of one option string
+- true_false: statement unambiguously true or false; options=["True","False"]
+- fill_in_the_blank: sentence with ___ replacing a key term; "answer" is the missing word/phrase; options=null
+  Example: "The process by which plants convert sunlight to energy is called ___." answer: "photosynthesis"
+- short_answer: open-ended question requiring 1-2 sentence response; options=null
+  Example: "Explain why the Fed raised interest rates in 2022."
+- spot_the_error: show a statement containing a deliberate factual mistake; "answer" is the corrected version; options=null
+  Example question: "Marie Curie won the Nobel Prize in Physics and Chemistry, becoming the first person to win two Nobels in the same field."
+  Example answer: "She won in different fields (Physics 1903, Chemistry 1911), not the same field."
+
+QUALITY REQUIREMENTS:
+1. Test UNDERSTANDING, not trivial recall
+2. Distractors for multiple_choice should represent common misconceptions
+3. fill_in_the_blank answers should be specific key terms, not vague phrases
+4. short_answer model answers should be 1-2 concise sentences
+5. spot_the_error mistakes should be subtle and plausible, not obvious
 6. Explanations should teach, not just state the answer
+7. Questions should span different topics from the source material
 
 DIFFICULTY GUIDELINES:
 - easy: Basic recall and comprehension
@@ -291,6 +298,14 @@ Return ONLY a JSON object like this:
                     options = ['True', 'False']
                     # Normalize answer to match option casing
                     answer = 'True' if answer_lower == 'true' else 'False'
+
+                # Normalize fill_in_the_blank — no options needed
+                if q_type == 'fill_in_the_blank':
+                    options = None
+
+                # Normalize short_answer / spot_the_error — no options needed
+                if q_type in ('short_answer', 'spot_the_error'):
+                    options = None
 
                 # Fix MC questions missing options: skip them (can't display without options)
                 if q_type == 'multiple_choice' and (not options or len(options) < 2):

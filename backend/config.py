@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "olmo-3:7b-instruct"  # System 2: Main model - 64K context, chat/synthesis, streams properly
     ollama_fast_model: str = "phi4-mini:latest"  # System 1: Fast model - Microsoft Phi-4 mini, better than llama3.2:3b
+    vision_model: str = "granite3.2-vision:2b"  # Vision model for PDF image/chart extraction
     openai_api_key: str = ""
     anthropic_api_key: str = ""
 

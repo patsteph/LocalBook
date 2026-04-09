@@ -110,6 +110,13 @@ CONTEXT_PROFILES: Dict[str, ContextProfile] = {
         temperature=0.70  # Conversational naturalness
     ),
     
+    # Quiz — chunk retrieval for topic-precise questions, wider source coverage
+    "quiz": ContextProfile(
+        max_sources=20, chars_per_source=4000, total_context_chars=28000,
+        strategy="breadth", use_chunks=True, chunk_top_k=25, use_map_reduce=False,
+        temperature=0.40
+    ),
+
     # Writing assistant — focused
     "writing": ContextProfile(
         max_sources=8, chars_per_source=3000, total_context_chars=12000,

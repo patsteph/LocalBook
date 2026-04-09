@@ -14,11 +14,12 @@ from typing import List, Tuple, Dict, Any
 from config import settings
 
 # Required Ollama models for v0.6.0
+# Vision model is dynamically read from settings so the Locker can swap it
 REQUIRED_MODELS = [
-    ("olmo-3:7b-instruct", "Main model (7B parameters, chat/synthesis)"),
-    ("phi4-mini", "Fast response model for follow-ups"),
+    (settings.ollama_model, "Main model (chat/synthesis)"),
+    (settings.ollama_fast_model, "Fast response model for follow-ups"),
     ("snowflake-arctic-embed2", "Embedding model (1024 dimensions)"),
-    ("granite3.2-vision:2b", "Vision model for PDF image/chart extraction"),
+    (settings.vision_model, "Vision model for PDF image/chart extraction"),
 ]
 
 # Minimum Ollama version required for OLMO model support

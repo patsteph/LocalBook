@@ -1,0 +1,167 @@
+"""Embedding quality test runner — tests throughput, dimensions, and semantic discrimination."""
+
+import time
+import math
+from datetime import datetime
+from evaluator.models import EvalResult
+import httpx
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+async def _embed(text: str, model: str) -> list[float]:
+    """Get embedding from Ollama API."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            "http://localhost:11434/api/embeddings",
+            json={"model": model, "prompt": text}
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("embedding", [])
+    return []
+
+
+async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
+    """Test embedding model quality: dimensions, throughput, semantic discrimination."""
+    from config import settings
+
+    embed_model = settings.embedding_model
+    expected_dim = getattr(settings, 'embedding_dim', 0)
+
+    results = []
+
+    # ── Test 1: Dimension correctness + throughput ───────────────────────
+    result = EvalResult(
+        test_id="embedding_dimensions",
+        category="embedding_quality",
+        test_name="Embedding Dimensions & Throughput",
+        model_combo=combo_name,
+        model_used=embed_model,
+        hardware_fingerprint=hw_fingerprint,
+        timestamp=datetime.utcnow().isoformat(),
+    )
+
+    test_passages = [
+        "Retrieval-augmented generation combines retrieval with generation.",
+        "Vector databases store embeddings for similarity search.",
+        "Language models process text using transformer architectures.",
+        "Apple Silicon provides hardware acceleration for machine learning.",
+        "The chunking strategy uses semantic boundaries for document splitting.",
+    ]
+
+    try:
+        start = time.time()
+        embeddings = []
+        for passage in test_passages:
+            emb = await _embed(passage, embed_model)
+            embeddings.append(emb)
+        elapsed = (time.time() - start) * 1000
+
+        result.total_time_ms = elapsed
+        result.tokens_per_second = len(test_passages) / max(0.001, elapsed / 1000.0)
+
+        # Check dimensions
+        dims = [len(e) for e in embeddings if e]
+        if not dims:
+            raise ValueError("No embeddings returned")
+
+        actual_dim = dims[0]
+        all_same_dim = all(d == actual_dim for d in dims)
+
+        dim_score = 100 if (expected_dim == 0 or actual_dim == expected_dim) and all_same_dim else 0
+        throughput_score = min(100, int(result.tokens_per_second * 20))  # 5/sec = 100
+
+        result.accuracy_score = dim_score
+        result.actual_output_preview = f"Dim={actual_dim}, expected={expected_dim}, throughput={result.tokens_per_second:.1f}/sec"
+        result.overall_score = int(dim_score * 0.50 + throughput_score * 0.50)
+        result.passed = dim_score > 0
+
+        if not result.passed:
+            result.failure_reason = f"Wrong dimension: got {actual_dim}, expected {expected_dim}"
+
+        print(f"[EVAL-EMBED] Dim={actual_dim}, {result.tokens_per_second:.1f} embeds/sec, {elapsed:.0f}ms")
+
+    except Exception as e:
+        result.passed = False
+        result.failure_reason = str(e)[:200]
+        result.overall_score = 0
+        print(f"[EVAL-EMBED] Dimension test FAILED: {e}")
+
+    results.append(result)
+
+    # ── Test 2: Semantic discrimination ──────────────────────────────────
+    result2 = EvalResult(
+        test_id="embedding_discrimination",
+        category="embedding_quality",
+        test_name="Semantic Discrimination",
+        model_combo=combo_name,
+        model_used=embed_model,
+        hardware_fingerprint=hw_fingerprint,
+        timestamp=datetime.utcnow().isoformat(),
+    )
+
+    try:
+        embed_tests = config.get("embedding_test_passages", {})
+        similar = embed_tests.get("similar_pair", [])
+        dissimilar = embed_tests.get("dissimilar_pair", [])
+
+        if len(similar) >= 2 and len(dissimilar) >= 2:
+            start = time.time()
+
+            emb_sim_a = await _embed(similar[0], embed_model)
+            emb_sim_b = await _embed(similar[1], embed_model)
+            emb_dis_a = await _embed(dissimilar[0], embed_model)
+            emb_dis_b = await _embed(dissimilar[1], embed_model)
+
+            elapsed = (time.time() - start) * 1000
+            result2.total_time_ms = elapsed
+
+            sim_score = _cosine_similarity(emb_sim_a, emb_sim_b)
+            dis_score = _cosine_similarity(emb_dis_a, emb_dis_b)
+
+            # Similar texts should have higher similarity than dissimilar
+            discrimination = sim_score > dis_score
+            margin = sim_score - dis_score
+
+            result2.actual_output_preview = (
+                f"Similar pair cosine: {sim_score:.3f}, "
+                f"Dissimilar pair cosine: {dis_score:.3f}, "
+                f"Margin: {margin:.3f}"
+            )
+
+            if discrimination:
+                # Score based on margin (bigger margin = better discrimination)
+                result2.overall_score = min(100, int(50 + margin * 200))
+            else:
+                result2.overall_score = 20  # Failed discrimination
+
+            result2.accuracy_score = result2.overall_score
+            result2.passed = discrimination
+
+            if not discrimination:
+                result2.failure_reason = f"Similar pair ({sim_score:.3f}) <= dissimilar pair ({dis_score:.3f})"
+
+            print(f"[EVAL-EMBED] Discrimination: sim={sim_score:.3f} vs dis={dis_score:.3f} "
+                  f"(margin={margin:.3f}, score={result2.overall_score})")
+        else:
+            result2.skipped = True
+            result2.skip_reason = "Missing embedding test passages in config"
+            result2.overall_score = 50
+
+    except Exception as e:
+        result2.passed = False
+        result2.failure_reason = str(e)[:200]
+        result2.overall_score = 0
+        print(f"[EVAL-EMBED] Discrimination test FAILED: {e}")
+
+    results.append(result2)
+    return results

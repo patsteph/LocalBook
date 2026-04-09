@@ -366,7 +366,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                   </div>
                 )}
                 <div className="flex items-center gap-1.5 mt-0.5 text-xs text-gray-500 dark:text-gray-400 overflow-hidden min-w-0">
-                  <span className="shrink-0">{source.type === 'note' ? '📝 NOTE' : isCollectorSource ? 'COLLECTED' : (source.format?.toUpperCase() || 'FILE')}</span>
+                  <span className="shrink-0">{source.type === 'note' ? '📝 NOTE' : isCollectorSource ? 'COLLECTED' : (source.type === 'youtube' || source.format === 'youtube') ? '▶️ YOUTUBE' : (source.format?.toUpperCase() || 'FILE')}</span>
                   <span className="shrink-0 opacity-30">·</span>
                   <span className="shrink-0">{((source.char_count || source.characters || 0) / 1000).toFixed(1)}k</span>
                   {source.status !== 'completed' && (

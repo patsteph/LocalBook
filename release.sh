@@ -52,8 +52,11 @@ if [ "$NEW_VERSION" != "$CURRENT_VERSION" ]; then
 
     # Update backend version (single source of truth for backend-reported app version)
     sed -i '' "s/^APP_VERSION = \".*\"/APP_VERSION = \"${NEW_VERSION}\"/" backend/version.py
-    
-    echo -e "${GREEN}✓ Version updated to ${NEW_VERSION} (app, extension, backend)${NC}"
+
+    # Update README version badge and download link
+    sed -i '' "s|version-[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-blue\.svg|version-${NEW_VERSION}-blue.svg|" README.md
+    sed -i '' "s|LocalBook-v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.zip|LocalBook-v${NEW_VERSION}.zip|" README.md
+    echo -e "${GREEN}✓ Version updated to ${NEW_VERSION} (app, extension, backend, README)${NC}"
 fi
 
 # =============================================================================
@@ -353,10 +356,28 @@ echo -e "${GREEN}✓ Created ${EXTENSION_ARCHIVE} (${EXT_SIZE})${NC}"
 # =============================================================================
 echo -e "\n${YELLOW}Step 8/9: Git operations...${NC}"
 
+# Stub CHANGELOG.md with new version header if it doesn't already have it
+CHANGELOG_HEADER="## v${NEW_VERSION} — $(date '+%B %-d %Y')"
+if [ ! -f CHANGELOG.md ]; then
+    echo -e "# Changelog\n\n${CHANGELOG_HEADER}\n\n_Add release notes here before pushing._\n" > CHANGELOG.md
+    echo -e "${GREEN}  ✓ CHANGELOG.md created${NC}"
+elif ! grep -qF "## v${NEW_VERSION}" CHANGELOG.md; then
+    # Prepend new version header after the first line (title)
+    sed -i '' "1a\\\
+\\\
+${CHANGELOG_HEADER}\\\
+\\\
+_Add release notes here before pushing._\\\
+" CHANGELOG.md
+    echo -e "${GREEN}  ✓ CHANGELOG.md stubbed for v${NEW_VERSION}${NC}"
+else
+    echo -e "  CHANGELOG.md already has v${NEW_VERSION} entry"
+fi
+
 # Commit version changes if any
 # Stage version files + lock files updated during the release pipeline
 git add package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json extension/package.json backend/version.py \
-       Cargo.lock package-lock.json backend/requirements.txt 2>/dev/null || true
+       Cargo.lock package-lock.json backend/requirements.txt README.md CHANGELOG.md 2>/dev/null || true
 
 if [ -n "$(git diff --cached --name-only)" ]; then
     echo -e "  Committing release changes..."

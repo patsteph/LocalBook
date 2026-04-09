@@ -28,6 +28,17 @@ router = APIRouter(prefix="/quiz", tags=["quiz"])
 # Request/Response Models
 # =============================================================================
 
+OPEN_ENDED_TYPES = {"short_answer", "spot_the_error"}
+
+ALL_QUESTION_TYPES = [
+    "multiple_choice",
+    "true_false",
+    "fill_in_the_blank",
+    "short_answer",
+    "spot_the_error",
+]
+
+
 class GenerateQuizRequest(BaseModel):
     notebook_id: str
     num_questions: int = Field(default=5, ge=1, le=20)
@@ -196,27 +207,20 @@ async def generate_quiz(request: GenerateQuizRequest):
         logger.info(f"[STUDIO] Quiz generation started for notebook={request.notebook_id}, questions={request.num_questions}")
         log_quiz_completed(request.notebook_id, request.topic or "", request.difficulty or "medium", total=request.num_questions)
         
-        # Get sources for the notebook
-        sources = await source_store.list(request.notebook_id)
-        if not sources:
-            raise HTTPException(status_code=404, detail="No sources found in notebook")
-        
-        # Filter by specific source IDs if provided
-        if request.source_ids:
-            sources = [s for s in sources if s.get("id") in request.source_ids]
-        
-        # Collect content with source names for reference
-        source_names = [s.get("filename", s.get("title", "Unknown")) for s in sources[:5]]
-        if request.from_highlights:
-            # TODO: Get highlighted content from highlights API
-            content = "\n\n".join([f"[Source: {source_names[i]}]\n{s.get('content', '')[:2000]}" for i, s in enumerate(sources[:5])])
-        else:
-            content = "\n\n".join([f"[Source: {source_names[i]}]\n{s.get('content', '')[:2000]}" for i, s in enumerate(sources[:5])])
-        
+        # Build context via the RAG context builder (chunk-level precision, topic-aware)
+        from services.context_builder import context_builder
+        built = await context_builder.build_context(
+            notebook_id=request.notebook_id,
+            skill_id="quiz",
+            topic=request.topic,
+            source_ids=request.source_ids,
+        )
+        content = built.context
+
         if not content.strip():
             raise HTTPException(status_code=400, detail="No content available to generate quiz")
         
-        # Add topic focus if provided
+        # Add topic focus header if provided
         if request.topic:
             content = f"FOCUS TOPIC: {request.topic}\nGenerate questions specifically about this topic.\n\n{content}"
         
@@ -517,4 +521,66 @@ Respond in valid JSON with this exact structure:
             )],
             summary=f"Gap analysis unavailable — review {fallback_topic}.",
             score_percent=0,
+        )
+
+
+class GradeAnswerRequest(BaseModel):
+    question: str
+    correct_answer: str
+    user_answer: str
+    question_type: str = "short_answer"
+
+
+class GradeAnswerResponse(BaseModel):
+    correct: bool
+    score: float = Field(description="0.0 to 1.0 — partial credit for short_answer")
+    feedback: str
+
+
+@router.post("/grade", response_model=GradeAnswerResponse)
+async def grade_open_ended_answer(request: GradeAnswerRequest):
+    """LLM-grade an open-ended answer (short_answer, spot_the_error, fill_in_the_blank).
+    
+    Uses the fast model for low latency. Returns a correctness score 0-1 and
+    brief feedback so the frontend can show partial credit.
+    """
+    if not request.user_answer.strip():
+        return GradeAnswerResponse(correct=False, score=0.0, feedback="No answer provided.")
+
+    prompt = f"""You are grading a quiz answer. Be fair but accurate.
+
+Question: {request.question}
+Expected answer: {request.correct_answer}
+Student answer: {request.user_answer}
+
+Grade the student answer:
+- Is it essentially correct? (captures the key idea, even if worded differently)
+- Give a score from 0.0 (completely wrong) to 1.0 (fully correct). Partial credit (0.3-0.7) for partially correct answers.
+- Give 1 sentence of feedback.
+
+Respond in JSON:
+{{"correct": true/false, "score": 0.0-1.0, "feedback": "one sentence"}}"""
+
+    try:
+        result = await structured_llm._call_ollama_json(
+            system_prompt="You are a fair quiz grader. Respond only with valid JSON.",
+            user_prompt=prompt,
+            temperature=0.2,
+            timeout_seconds=30.0,
+        )
+        score = float(result.get("score", 0.0))
+        return GradeAnswerResponse(
+            correct=bool(result.get("correct", score >= 0.7)),
+            score=min(1.0, max(0.0, score)),
+            feedback=str(result.get("feedback", "")),
+        )
+    except Exception as e:
+        logger.warning(f"[Quiz] LLM grading failed, falling back to string match: {e}")
+        clean_user = request.user_answer.lower().strip()
+        clean_correct = request.correct_answer.lower().strip()
+        is_correct = clean_user == clean_correct or clean_correct in clean_user
+        return GradeAnswerResponse(
+            correct=is_correct,
+            score=1.0 if is_correct else 0.0,
+            feedback="Correct!" if is_correct else f"Expected: {request.correct_answer}",
         )

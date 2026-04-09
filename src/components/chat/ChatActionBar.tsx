@@ -411,15 +411,9 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
       if (!quiz.questions || quiz.questions.length === 0) {
         throw new Error('The model could not generate quiz questions. Try again or use a different topic.');
       }
-      const quizHtml = quiz.questions.map((q, i) => {
-        const optionsHtml = q.options
-          ? q.options.map((opt, j) => `<li>${String.fromCharCode(65 + j)}. ${opt}</li>`).join('')
-          : '';
-        return `<div class="mb-4"><p><strong>Q${i + 1}.</strong> ${q.question}</p>${optionsHtml ? `<ul>${optionsHtml}</ul>` : ''}<details class="mt-1"><summary class="text-sm text-blue-600 cursor-pointer">Show Answer</summary><p class="text-sm text-green-700 dark:text-green-400 mt-1"><strong>Answer:</strong> ${q.answer}</p><p class="text-sm text-gray-600 dark:text-gray-400">${q.explanation}</p></details></div>`;
-      }).join('');
       ctx.updateCanvasItem(itemId, {
         title: `Quiz: ${quiz.topic || getPrimaryTitle()}`,
-        content: quizHtml,
+        content: JSON.stringify(quiz.questions),
         status: 'complete',
       });
       ctx.setGenerationStatus('complete');

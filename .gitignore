@@ -99,6 +99,8 @@ src-tauri/resources/backend/
 
 # Runtime logs
 backend.log
+npm-debug.log*
+yarn-error.log*
 
 # Built app and release archives
 LocalBook.app/
@@ -106,3 +108,22 @@ LocalBook.app/
 LocalBook-v*.zip
 LocalBook-Extension-v*.zip
 *.zip
+
+# Plasmo / Extension caching
+.plasmo/
+.parcel-cache/
+
+# Vite caching
+.vite/
+
+# SQLite WAL mode files
+*.sqlite-wal
+*.sqlite-shm
+
+# Python Caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Evaluator results (machine-specific)
+backend/evaluator/results/

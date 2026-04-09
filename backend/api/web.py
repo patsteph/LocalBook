@@ -211,10 +211,14 @@ async def add_to_notebook(request: AddToNotebookRequest, background_tasks: Backg
             except Exception:
                 pass
             
+            # Detect YouTube URLs so the source record is labeled correctly
+            is_youtube = "youtube.com" in url or "youtu.be" in url
+            src_type = "youtube" if is_youtube else "web"
+
             # Create source record immediately (shows in UI as "processing")
             src_meta = {
-                "type": "web",
-                "format": "web",
+                "type": src_type,
+                "format": src_type,
                 "url": url,
                 "author": content.get("author"),
                 "date": content.get("date"),

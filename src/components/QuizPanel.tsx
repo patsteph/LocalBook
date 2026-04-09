@@ -5,6 +5,14 @@ import { LoadingSpinner } from './shared/LoadingSpinner';
 import { BookmarkButton } from './shared/BookmarkButton';
 import { useAppShell } from './canvas/CanvasContext';
 
+const ALL_QUESTION_TYPE_OPTIONS = [
+  { id: 'multiple_choice', label: 'Multiple Choice' },
+  { id: 'true_false', label: 'True / False' },
+  { id: 'fill_in_the_blank', label: 'Fill in the Blank' },
+  { id: 'short_answer', label: 'Short Answer' },
+  { id: 'spot_the_error', label: 'Spot the Error' },
+];
+
 interface QuizPanelProps {
   notebookId: string;
   initialTopic?: string;
@@ -29,10 +37,14 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
   const [numQuestions, setNumQuestions] = useState(5);
   const [difficulty, setDifficulty] = useState(initialDifficulty || 'medium');
   const [topic, setTopic] = useState(initialTopic || '');
+  const [selectedTypes, setSelectedTypes] = useState<string[]>(['multiple_choice', 'true_false', 'fill_in_the_blank']);
   const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  // Maps questionId → user's typed/selected answer
   const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
-  const [answeredQuestions, setAnsweredQuestions] = useState<Set<string>>(new Set());
+  // Maps questionId → { correct, feedback, score } — set on reveal
+  const [revealedAnswers, setRevealedAnswers] = useState<Record<string, { correct: boolean; feedback: string; score: number }>>({});
+  const [gradingId, setGradingId] = useState<string | null>(null);
   const [quizResults, setQuizResults] = useState<QuizResult[]>([]);
   const [quizComplete, setQuizComplete] = useState(false);
   
@@ -81,11 +93,11 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
     setLoading(true);
     setError(null);
     try {
-      const result = await quizService.generate(notebookId, numQuestions, difficulty, topic || undefined, chatContext || undefined);
+      const result = await quizService.generate(notebookId, numQuestions, difficulty, topic || undefined, chatContext || undefined, selectedTypes);
       setQuiz(result);
       setCurrentQuestionIndex(0);
       setUserAnswers({});
-      setAnsweredQuestions(new Set());
+      setRevealedAnswers({});
       setQuizResults([]);
       setQuizComplete(false);
       onQuizGenerated?.(result);
@@ -96,35 +108,61 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
     }
   };
 
-  // Handle answer selection
-  const handleSelectAnswer = (questionId: string, answer: string) => {
-    if (answeredQuestions.has(questionId)) return; // Already answered
-    
-    setUserAnswers({ ...userAnswers, [questionId]: answer });
+  const toggleQuestionType = (typeId: string) => {
+    setSelectedTypes(prev =>
+      prev.includes(typeId)
+        ? prev.length > 1 ? prev.filter(t => t !== typeId) : prev  // keep at least one
+        : [...prev, typeId]
+    );
   };
 
-  // Submit answer and check if correct
-  const handleSubmitAnswer = () => {
-    if (!currentQuestion) return;
-    
-    const userAnswer = userAnswers[currentQuestion.id];
+  // Reveal answer for choice-based questions instantly on click (no separate Submit)
+  const handleSelectChoice = (questionId: string, option: string) => {
+    if (revealedAnswers[questionId]) return;
+    const q = quiz?.questions.find(q => q.id === questionId);
+    if (!q) return;
+    const isCorrect = option.toLowerCase().trim() === q.answer.toLowerCase().trim();
+    setUserAnswers(prev => ({ ...prev, [questionId]: option }));
+    setRevealedAnswers(prev => ({ ...prev, [questionId]: { correct: isCorrect, feedback: q.explanation, score: isCorrect ? 1 : 0 } }));
+    setQuizResults(prev => [...prev, { questionId, correct: isCorrect, userAnswer: option, correctAnswer: q.answer }]);
+  };
+
+  // For open-ended types: update typed answer
+  const handleTypeAnswer = (questionId: string, value: string) => {
+    if (revealedAnswers[questionId]) return;
+    setUserAnswers(prev => ({ ...prev, [questionId]: value }));
+  };
+
+  // Submit open-ended answer to LLM grader
+  const handleSubmitOpenEnded = async (questionId: string) => {
+    const q = quiz?.questions.find(q => q.id === questionId);
+    if (!q || revealedAnswers[questionId]) return;
+    const userAnswer = userAnswers[questionId]?.trim();
     if (!userAnswer) return;
-    
-    const isCorrect = userAnswer.toLowerCase().trim() === currentQuestion.answer.toLowerCase().trim();
-    
-    setAnsweredQuestions(prev => new Set(prev).add(currentQuestion.id));
-    setQuizResults(prev => [...prev, {
-      questionId: currentQuestion.id,
-      correct: isCorrect,
-      userAnswer,
-      correctAnswer: currentQuestion.answer
-    }]);
+
+    setGradingId(questionId);
+    try {
+      const gradeResult = await quizService.gradeAnswer({
+        question: q.question,
+        correct_answer: q.answer,
+        user_answer: userAnswer,
+        question_type: q.question_type,
+      });
+      setRevealedAnswers(prev => ({ ...prev, [questionId]: { correct: gradeResult.correct, feedback: gradeResult.feedback, score: gradeResult.score } }));
+      setQuizResults(prev => [...prev, { questionId, correct: gradeResult.correct, userAnswer, correctAnswer: q.answer }]);
+    } catch {
+      // Fallback: string match
+      const isCorrect = userAnswer.toLowerCase() === q.answer.toLowerCase();
+      setRevealedAnswers(prev => ({ ...prev, [questionId]: { correct: isCorrect, feedback: q.explanation, score: isCorrect ? 1 : 0 } }));
+      setQuizResults(prev => [...prev, { questionId, correct: isCorrect, userAnswer, correctAnswer: q.answer }]);
+    } finally {
+      setGradingId(null);
+    }
   };
 
   // Move to next question or finish quiz
   const handleNextQuestion = () => {
     if (!quiz) return;
-    
     if (currentQuestionIndex < quiz.questions.length - 1) {
       setCurrentQuestionIndex(currentQuestionIndex + 1);
     } else {
@@ -136,7 +174,6 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
     if (!quizComplete || !quiz) return;
     const missed = quizResults.filter(r => !r.correct);
     if (missed.length === 0) return;
-    
     setAnalyzingGaps(true);
     const missedQuestions = missed.map(m => {
       const q = quiz.questions.find(qq => qq.id === m.questionId);
@@ -147,7 +184,6 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
         explanation: q?.explanation || '',
       };
     });
-    
     quizService.analyzeGaps(notebookId, missedQuestions, topic || quiz.topic)
       .then(setGapAnalysis)
       .catch(err => console.error('Gap analysis failed:', err))
@@ -161,7 +197,6 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
     setGapAnalysis(null);
   };
 
-  // Calculate score
   const getScore = () => {
     const correct = quizResults.filter(r => r.correct).length;
     return { correct, total: quizResults.length };
@@ -169,15 +204,12 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
 
   const handleReviewRating = async (rating: number) => {
     if (!dueCards[currentCardIndex]) return;
-    
     try {
       await quizService.submitReview(dueCards[currentCardIndex].card_id, rating);
-      
       if (currentCardIndex < dueCards.length - 1) {
         setCurrentCardIndex(currentCardIndex + 1);
         setShowCardAnswer(false);
       } else {
-        // Done reviewing
         await loadDueCards();
         await loadStats();
         setCurrentCardIndex(0);
@@ -190,6 +222,16 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
 
   const currentQuestion = quiz?.questions[currentQuestionIndex];
   const currentCard = dueCards[currentCardIndex];
+
+  const TYPE_LABELS: Record<string, string> = {
+    multiple_choice: 'Multiple Choice',
+    true_false: 'True / False',
+    fill_in_the_blank: 'Fill in the Blank',
+    short_answer: 'Short Answer',
+    spot_the_error: 'Spot the Error',
+  };
+
+  const isChoiceType = (qt: string) => qt === 'multiple_choice' || qt === 'true_false';
 
   return (
     <div className="space-y-4">
@@ -232,7 +274,7 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
         </div>
       )}
 
-      {/* Generate Mode */}
+      {/* Generate Mode — setup form */}
       {mode === 'generate' && !quiz && (
         <div className="space-y-4">
           <div>
@@ -246,7 +288,6 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
               placeholder="e.g., Machine Learning, React Hooks, WWII..."
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
             />
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Focus questions on a specific topic</p>
           </div>
 
           <div>
@@ -279,6 +320,28 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
             </select>
           </div>
 
+          {/* Question Type Selector */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Question Types
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {ALL_QUESTION_TYPE_OPTIONS.map(opt => (
+                <button
+                  key={opt.id}
+                  onClick={() => toggleQuestionType(opt.id)}
+                  className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+                    selectedTypes.includes(opt.id)
+                      ? 'bg-purple-100 border-purple-400 text-purple-700 dark:bg-purple-900/50 dark:border-purple-500 dark:text-purple-300'
+                      : 'bg-white border-gray-300 text-gray-500 dark:bg-gray-800 dark:border-gray-600 dark:text-gray-400 hover:border-gray-400'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <Button onClick={handleGenerateQuiz} disabled={loading} className="w-full">
             {loading ? <LoadingSpinner size="sm" /> : '🎯 Generate Quiz'}
           </Button>
@@ -291,7 +354,7 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
           {/* Progress bar */}
           <div className="flex items-center gap-2">
             <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-              <div 
+              <div
                 className="h-full bg-purple-500 transition-all"
                 style={{ width: `${((currentQuestionIndex + 1) / quiz.questions.length) * 100}%` }}
               />
@@ -309,11 +372,11 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
             </div>
           )}
 
-          <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
-            {/* Difficulty badge */}
+          <div className="bg-white dark:bg-gray-800 border border-purple-100 dark:border-purple-900/50 rounded-lg p-4 shadow-sm">
+            {/* Type + difficulty badge row */}
             <div className="flex justify-between items-start mb-3">
               <span className={`px-2 py-0.5 text-xs rounded-full ${
-                currentQuestion.difficulty === 'easy' 
+                currentQuestion.difficulty === 'easy'
                   ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
                   : currentQuestion.difficulty === 'hard'
                   ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
@@ -322,87 +385,100 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
                 {currentQuestion.difficulty}
               </span>
               <span className="text-xs text-gray-400 dark:text-gray-500">
-                {currentQuestion.question_type === 'true_false' ? 'True/False' : 'Multiple Choice'}
+                {TYPE_LABELS[currentQuestion.question_type] ?? currentQuestion.question_type}
               </span>
             </div>
 
             {/* Question */}
             <p className="font-medium text-gray-900 dark:text-white mb-4">
+              <span className="text-purple-500 dark:text-purple-400 mr-1.5">{currentQuestionIndex + 1}.</span>
               {currentQuestion.question}
             </p>
 
-            {/* Answer Options */}
-            <div className="space-y-2 mb-4">
-              {(currentQuestion.options || ['True', 'False']).map((option, i) => {
-                const isSelected = userAnswers[currentQuestion.id] === option;
-                const isAnswered = answeredQuestions.has(currentQuestion.id);
-                const isCorrect = option.toLowerCase().trim() === currentQuestion.answer.toLowerCase().trim();
-                
-                let buttonClass = 'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700';
-                
-                if (isAnswered) {
-                  if (isCorrect) {
-                    buttonClass = 'border-green-500 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300';
-                  } else if (isSelected) {
-                    buttonClass = 'border-red-500 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300';
-                  } else {
-                    buttonClass = 'border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500';
+            {/* ── Choice-based (MC / T/F) — instant reveal on click ── */}
+            {isChoiceType(currentQuestion.question_type) && (
+              <div className="space-y-1.5">
+                {(currentQuestion.options ?? ['True', 'False']).map((option, i) => {
+                  const revealed = !!revealedAnswers[currentQuestion.id];
+                  const isSelected = userAnswers[currentQuestion.id] === option;
+                  const isCorrect = option.toLowerCase().trim() === currentQuestion.answer.toLowerCase().trim();
+                  let cls = 'border-gray-200 dark:border-gray-700 hover:border-purple-300 dark:hover:border-purple-600 cursor-pointer';
+                  if (revealed) {
+                    if (isCorrect) cls = 'border-green-400 bg-green-50 dark:bg-green-900/20 dark:border-green-600';
+                    else if (isSelected) cls = 'border-red-400 bg-red-50 dark:bg-red-900/20 dark:border-red-600';
+                    else cls = 'border-gray-200 dark:border-gray-700 opacity-50';
                   }
-                } else if (isSelected) {
-                  buttonClass = 'border-purple-500 bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300';
-                }
-                
-                return (
-                  <button
-                    key={i}
-                    onClick={() => handleSelectAnswer(currentQuestion.id, option)}
-                    disabled={isAnswered}
-                    className={`w-full text-left px-3 py-2.5 rounded-lg border-2 transition-colors flex items-center justify-between ${buttonClass}`}
-                  >
-                    <span>{option}</span>
-                    {isAnswered && isCorrect && <span className="text-green-600 dark:text-green-400">✓</span>}
-                    {isAnswered && isSelected && !isCorrect && <span className="text-red-600 dark:text-red-400">✗</span>}
-                  </button>
-                );
-              })}
-            </div>
+                  return (
+                    <button
+                      key={i}
+                      onClick={() => handleSelectChoice(currentQuestion.id, option)}
+                      disabled={revealed}
+                      className={`w-full text-left px-3 py-2 rounded-md border text-sm transition-colors flex items-center gap-2 ${cls}`}
+                    >
+                      <span className="text-xs font-mono text-gray-400 w-4">{String.fromCharCode(65 + i)}</span>
+                      <span className="flex-1 text-gray-800 dark:text-gray-200">{option}</span>
+                      {revealed && isCorrect && <span className="text-green-600 dark:text-green-400 text-base">✓</span>}
+                      {revealed && isSelected && !isCorrect && <span className="text-red-500 text-base">✗</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
-            {/* Submit or feedback */}
-            {!answeredQuestions.has(currentQuestion.id) ? (
-              <Button 
-                onClick={handleSubmitAnswer} 
-                disabled={!userAnswers[currentQuestion.id]}
-                className="w-full"
-              >
-                Submit Answer
-              </Button>
-            ) : (
+            {/* ── Open-ended (fill_in_blank, short_answer, spot_the_error) ── */}
+            {!isChoiceType(currentQuestion.question_type) && (
               <div className="space-y-3">
-                {/* Result */}
-                {quizResults.find(r => r.questionId === currentQuestion.id)?.correct ? (
-                  <div className="bg-green-50 dark:bg-green-900/20 p-3 rounded-lg border border-green-200 dark:border-green-800">
-                    <p className="text-sm font-medium text-green-800 dark:text-green-300">✅ Correct!</p>
-                  </div>
+                {currentQuestion.question_type === 'short_answer' ? (
+                  <textarea
+                    value={userAnswers[currentQuestion.id] ?? ''}
+                    onChange={(e) => handleTypeAnswer(currentQuestion.id, e.target.value)}
+                    disabled={!!revealedAnswers[currentQuestion.id]}
+                    rows={3}
+                    placeholder="Type your answer in 1–2 sentences..."
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 text-sm resize-none disabled:opacity-60"
+                  />
                 ) : (
-                  <div className="bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800">
-                    <p className="text-sm font-medium text-red-800 dark:text-red-300">❌ Incorrect</p>
-                    <p className="text-sm text-red-700 dark:text-red-400 mt-1">
-                      Correct answer: <strong>{currentQuestion.answer}</strong>
-                    </p>
-                  </div>
+                  <input
+                    type="text"
+                    value={userAnswers[currentQuestion.id] ?? ''}
+                    onChange={(e) => handleTypeAnswer(currentQuestion.id, e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !revealedAnswers[currentQuestion.id]) handleSubmitOpenEnded(currentQuestion.id); }}
+                    disabled={!!revealedAnswers[currentQuestion.id]}
+                    placeholder={currentQuestion.question_type === 'fill_in_the_blank' ? 'Fill in the blank...' : 'Identify and correct the error...'}
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 text-sm disabled:opacity-60"
+                  />
                 )}
-                
-                {/* Explanation */}
-                <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg border border-blue-200 dark:border-blue-800">
-                  <p className="text-sm font-medium text-blue-800 dark:text-blue-300">💡 Explanation</p>
-                  <p className="text-sm text-blue-700 dark:text-blue-400 mt-1">{currentQuestion.explanation}</p>
-                </div>
+                {!revealedAnswers[currentQuestion.id] && (
+                  <Button
+                    onClick={() => handleSubmitOpenEnded(currentQuestion.id)}
+                    disabled={!userAnswers[currentQuestion.id]?.trim() || gradingId === currentQuestion.id}
+                    className="w-full"
+                  >
+                    {gradingId === currentQuestion.id ? <LoadingSpinner size="sm" /> : 'Check Answer'}
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {/* ── Feedback panel (shown after reveal for all types) ── */}
+            {revealedAnswers[currentQuestion.id] && (
+              <div className={`mt-3 p-3 rounded-md text-sm ${
+                revealedAnswers[currentQuestion.id].correct
+                  ? 'bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300'
+                  : 'bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300'
+              }`}>
+                <p className="font-medium mb-1">
+                  {revealedAnswers[currentQuestion.id].correct ? '✅ Correct!' : `❌ Not quite — answer: ${currentQuestion.answer}`}
+                </p>
+                <p className="text-xs opacity-80">
+                  {revealedAnswers[currentQuestion.id].feedback || currentQuestion.explanation}
+                </p>
               </div>
             )}
           </div>
 
-          {/* Navigation */}
-          {answeredQuestions.has(currentQuestion.id) && (
+          {/* Next button — shown once answered */}
+          {revealedAnswers[currentQuestion.id] && (
             <Button onClick={handleNextQuestion} className="w-full">
               {currentQuestionIndex < quiz.questions.length - 1 ? 'Next Question →' : '🎉 See Results'}
             </Button>

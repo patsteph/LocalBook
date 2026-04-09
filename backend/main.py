@@ -46,12 +46,41 @@ if "--verify-kokoro" in sys.argv or "--verify-tts" in sys.argv:
         sys.exit(0)
 
 import asyncio
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
+# ── Safe Startup: purge LLM Locker .env overrides ────────────────────────────
+# The LLM Locker writes model swaps to .env so they take effect in-process.
+# On restart we ALWAYS revert to known-good defaults (OLMo + Phi4) so users
+# never get stuck with an OOM-inducing config they can't recover from.
+_env_path = Path(__file__).parent / ".env"
+if _env_path.exists():
+    print("[SafeStart] Removing .env overrides — reverting to known-good model config")
+    _env_path.unlink()
+
 from config import settings
 
+# ── Apply user-chosen permanent defaults ──────────────────────────────────────
+# If the user saved a preferred combo via the Locker UI, apply it now.
+# This runs AFTER .env purge + config load, so we start from known-good
+# defaults and then overlay the user's validated choice.
+import json as _json
+_prefs_path = settings.data_dir / "user_preferences.json"
+if _prefs_path.exists():
+    try:
+        _prefs = _json.loads(_prefs_path.read_text())
+        _default_combo = _prefs.get("default_combo", {})
+        if _default_combo.get("main_model"):
+            settings.ollama_model = _default_combo["main_model"]
+        if _default_combo.get("fast_model"):
+            settings.ollama_fast_model = _default_combo["fast_model"]
+        if _default_combo.get("vision_model"):
+            settings.vision_model = _default_combo["vision_model"]
+        print(f"[SafeStart] Applied user default combo: {settings.ollama_model} + {settings.ollama_fast_model}")
+    except Exception as e:
+        print(f"[SafeStart] Failed to load user preferences, using built-in defaults: {e}")
 
 from utils.tasks import safe_create_task
 from utils.diagnostics import install_signal_handlers, start_heartbeat, stop_heartbeat, record_endpoint
@@ -79,7 +108,7 @@ from storage.findings_store import init_findings_store
 init_findings_store(settings.data_dir)
 
 # NOW import API modules — stores will read the (possibly corrected) use_sqlite flag
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings, curator, collector, source_discovery, people, video
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings, curator, collector, source_discovery, people, video, evaluator
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
 from services.startup_checks import run_all_startup_checks
@@ -345,6 +374,7 @@ app.include_router(curator.router, tags=["curator"])
 app.include_router(collector.router, tags=["collector"])
 app.include_router(source_discovery.router, tags=["source-discovery"])
 app.include_router(people.router, tags=["people"])
+app.include_router(evaluator.router, tags=["evaluator"])
 
 @app.get("/")
 async def root():
