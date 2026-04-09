@@ -127,3 +127,11 @@ LocalBook-Extension-v*.zip
 
 # Evaluator results (machine-specific)
 backend/evaluator/results/
+
+# Release / build tooling (maintainer-only)
+release.sh
+scripts/
+
+# Evaluator test fixtures and sample content (not needed by end users)
+backend/evaluator/test_content/
+backend/evaluator/test_fixtures/
