@@ -25,25 +25,14 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v1.5.2
+## 🎉 What's New in v1.6.0
+- **YouTube Sources** — YouTube videos now ingest with a full-transcript summary for better retrieval and display as `▶️ YOUTUBE` throughout the app
+- **LLM Locker Improvements** — Smarter RAM estimation eliminates false memory rejections; per-model tuning profiles added to the registry
+- **Labs Toggle** — Experimental features (LLM Evaluator, Locker) now live behind a toggle in the Health Portal
+- **Release Pipeline** — Version badge, download links, and CHANGELOG are all auto-updated on each release
+- **Quiz Enhancements** — Studio quizzes now use RAG chunk retrieval for higher-quality questions drawn from the full document corpus; five question types supported (Multiple Choice, True/False, Fill in the Blank, Short Answer, Spot the Error) selectable before generation; choice questions reveal instantly on click with A/B/C/D prefixes matching the Feynman curriculum experience; open-ended answers graded by LLM with partial credit and feedback
 
-### Audio Processor
-| Feature | Description |
-|---------|-------------|
-| 🎙️ **Main Model Narration** | Video narration now uses the main model (olmo-3) instead of phi4-mini for richer, more natural spoken language |
-| 📏 **Sentence-Count Guidance** | Replaced explicit word count targets with sentence-count guidance — eliminates model fixation on counting |
-
-### Adaptive Collection
-| Feature | Description |
-|---------|-------------|
-| 📊 **Stagnation Detection** | Detects when a notebook's collection hasn't found new content in 5+ days (mild → moderate → plateau tiers) |
-| 🔭 **Auto-Expand Search** | Automatically widens search queries, lowers confidence floor, and seeds from cross-notebook shared entities |
-| 🪦 **Collection Tombstone** | Prominent banner surfaces pending approval items and expansion mode status in the notebook view |
-| 🧠 **Morning Brief Integration** | Stagnation status appears in morning briefs and Curator chat with severity-appropriate messaging |
-| ⏱️ **Plateau Frequency Reduction** | After 15+ days of stagnation, collection frequency is automatically halved to conserve resources |
-| 🔀 **Rejection Reason Tracking** | Collection history now records why items were rejected, informing smarter future query generation |
-| ⚙️ **Auto-Expand Toggle** | Per-notebook toggle in the Collector Profile to enable/disable adaptive expansion |
-
+---
 ---
 
 ## v1.5
