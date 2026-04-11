@@ -21,6 +21,7 @@ langgraph>=0.2.0  # Allow 0.x or 1.x - basic graph functionality
 
 # Security/Encryption
 cryptography>=42.0.0  # For credential locker encryption
+pyobjc-framework-LocalAuthentication>=10.0; sys_platform == "darwin"  # Touch ID / biometric auth for Keychain
 
 # Document processing
 PyMuPDF>=1.26.6  # pymupdf4llm requires >=1.26.6 (encoding bug was fixed in later 1.26.x)

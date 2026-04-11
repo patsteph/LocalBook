@@ -20,20 +20,67 @@ class LLMLocker:
     """Safely manages universal model switching."""
     
     @classmethod
+    def _live_model_info(cls, ollama_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Query Ollama /api/show for a model that is not in the static registry.
+        Returns a minimal dict with size_gb, ram_required_gb, supports_vision.
+        Returns None if Ollama is unreachable or model is unknown.
+        """
+        import urllib.request
+        from config import settings as _s
+        try:
+            import json as _json
+            req = urllib.request.Request(
+                f"{_s.ollama_base_url}/api/show",
+                data=_json.dumps({"name": ollama_name}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = _json.loads(resp.read().decode())
+            size_bytes = data.get("size", 0)
+            size_gb = size_bytes / (1024 ** 3)
+            ram_gb = round(size_gb * 1.25, 1)
+            return {
+                "size_gb": size_gb,
+                "ram_required_gb": ram_gb,
+                "supports_vision": False,  # conservative default for unknown models
+            }
+        except Exception:
+            return None
+
+    @classmethod
     def analyze_swap(cls, target_ollama_name: str, role: str) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Analyze if a swap to target_model is safe on current hardware.
         role: "main_model", "fast_model", or "vision_model"
-        
+
+        Models not in the static registry are allowed — live Ollama data is
+        used to estimate RAM requirements so users can freely test any model
+        they have pulled.
+
         Returns: (is_safe, message, recommended_changes)
         recommended_changes is a dict of config shifts (e.g. dropping vision model if main model includes it)
         """
         model_info = registry.get_model(target_ollama_name)
+        _live: Optional[Dict[str, Any]] = None
+
         if not model_info:
-            return False, f"Model '{target_ollama_name}' is not in the official registry.", {}
-            
-        if role not in model_info.supported_roles:
-            return False, f"Model '{target_ollama_name}' is not supported for role: {role}.", {}
+            # Not in registry — query Ollama live instead of hard-blocking
+            _live = cls._live_model_info(target_ollama_name)
+            if _live is None:
+                return (
+                    False,
+                    f"Model '{target_ollama_name}' is not installed in Ollama or Ollama is unreachable.",
+                    {},
+                )
+            logger.info(f"[LLMLocker] '{target_ollama_name}' not in registry — using live Ollama data.")
+        else:
+            if role not in model_info.supported_roles:
+                # Still allow the swap — roles in registry are advisory, not a hard gate
+                logger.warning(
+                    f"[LLMLocker] '{target_ollama_name}' not listed for role '{role}' in registry — allowing anyway."
+                )
             
         hw = get_hardware_profile()
         sys_ram = hw.memory_gb
@@ -45,7 +92,7 @@ class LLMLocker:
         
         # We need a rough estimate of currently loaded required RAM
         # If we are swapping main, we subtract current_main's RAM and add target's RAM
-        target_ram = model_info.min_ram_gb
+        target_ram = model_info.min_ram_gb if model_info else int(_live["ram_required_gb"])
         
         if role == "main_model":
             changes_key = "ollama_model"
@@ -58,12 +105,15 @@ class LLMLocker:
             changes_key: target_ollama_name
         }
         
-        if role == "embedding_model" and getattr(model_info, 'embedding_dim', 0) > 0:
+        if model_info and getattr(model_info, 'embedding_dim', 0) > 0:
             changes["embedding_dim"] = model_info.embedding_dim
-        
+
+        # Determine if target supports vision
+        _supports_vision = (model_info.supports_vision if model_info else (_live or {}).get("supports_vision", False))
+
         # Vision Collapse / Restoration Logic
         if role == "main_model":
-            if model_info.supports_vision:
+            if _supports_vision:
                 # Main model handles vision natively — collapse to 2-model setup
                 # Set vision_model to the main model itself so downstream code uses it
                 changes["vision_model"] = target_ollama_name
@@ -96,10 +146,13 @@ class LLMLocker:
         
         def _model_vram(name: str) -> float:
             """Estimate actual VRAM footprint for a loaded model."""
+            # If this is the target we already have live data for, use it
+            if name == target_ollama_name and _live:
+                return _live["size_gb"] * 1.2
             info = registry.get_model(name)
             if info and info.disk_size_gb > 0:
                 return info.disk_size_gb * 1.2  # weights + KV cache overhead
-            return 3.0  # conservative default for unknown models
+            return 3.0  # conservative default for unknown models without live data
         
         if role == "main_model":
             main_vram = _model_vram(target_ollama_name)
@@ -129,11 +182,11 @@ class LLMLocker:
             ), {}
 
         # Warning cap for recommended RAM
-        if model_info.recommended_ram_gb > sys_ram:
+        if model_info and model_info.recommended_ram_gb > sys_ram:
             msg += f" WARNING: This model heavily bottlenecks on {sys_ram}GB and is recommended for {model_info.recommended_ram_gb}GB+ systems."
-            
+
         # Context extraction
-        if hasattr(model_info, 'context_window'):
+        if model_info and hasattr(model_info, 'context_window'):
             changes["MAX_RAG_CONTEXT"] = min(model_info.context_window, 131072)
             
         return True, msg, changes
@@ -204,6 +257,16 @@ class LLMLocker:
         if "embedding_dim" in changes:
             setattr(settings, 'embedding_dim', int(changes["embedding_dim"]))
             
+        # Invalidate the settings/ollama/models cache so the next fetch reflects changes
+        try:
+            from api.settings import _ollama_models_cache, _ollama_models_lock
+            import threading
+            with _ollama_models_lock:
+                _ollama_models_cache["ts"] = None
+                _ollama_models_cache["data"] = None
+        except Exception:
+            pass  # non-fatal — cache will expire naturally after 30s
+
         # Write to .env
         output_lines = [f"{k}={v}" for k, v in env_dict.items()]
         env_path.write_text("\n".join(output_lines))

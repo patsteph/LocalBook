@@ -1,81 +1,221 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { settingsService } from '../services/settings';
+import { API_BASE_URL } from '../services/api';
 
 interface LLMSelectorProps {
   selectedProvider: string;
   onProviderChange: (provider: string) => void;
 }
 
+interface OllamaModel {
+  name: string;
+  display_name: string;
+  size_gb: number;
+  ram_required_gb: number;
+  context_window: number;
+  suggested_role: 'main' | 'fast' | 'embeddings';
+  supports_vision: boolean;
+  vendor: string;
+  origin_country: string;
+  parameter_count: string;
+  active_as: string | null;
+  in_registry: boolean;
+}
+
+interface ActiveModels {
+  main: string;
+  fast: string;
+  embeddings: string;
+  vision: string;
+}
+
+type Role = 'main' | 'fast' | 'embeddings';
+
+const ROLE_META: Record<Role, { label: string; api_role: string; color: string; desc: string }> = {
+  main:       { label: 'Main',       api_role: 'main_model',       color: 'blue',   desc: '≥ 5 GB — deep reasoning, synthesis' },
+  fast:       { label: 'Fast',       api_role: 'fast_model',       color: 'green',  desc: '< 5 GB — routing, quick tasks' },
+  embeddings: { label: 'Embeddings', api_role: 'embedding_model',  color: 'purple', desc: 'Vector search embeddings' },
+};
+
+function ActiveBadge() {
+  return (
+    <span className="px-2 py-0.5 text-xs font-medium rounded-md bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300">
+      ● Active
+    </span>
+  );
+}
+
 export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onProviderChange }) => {
   const [mode, setMode] = useState<'local' | 'cloud'>('local');
-  const [availableProviders, setAvailableProviders] = useState<{[key: string]: boolean}>({});
-  const [currentModel, setCurrentModel] = useState<string>('mistral-nemo');
-  const [fastModel, setFastModel] = useState<string>('phi4-mini');
+  const [models, setModels] = useState<OllamaModel[]>([]);
+  const [active, setActive] = useState<ActiveModels>({ main: '', fast: '', embeddings: '', vision: '' });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState<string | null>(null);
+  const [switchMsg, setSwitchMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [availableProviders, setAvailableProviders] = useState<{ [key: string]: boolean }>({});
 
   useEffect(() => {
-    loadAvailableProviders();
-    loadCurrentModel();
-    // Set mode based on selected provider
-    if (selectedProvider === 'ollama') {
-      setMode('local');
-    } else {
-      setMode('cloud');
-    }
+    if (selectedProvider !== 'ollama') setMode('cloud');
+    else setMode('local');
   }, [selectedProvider]);
 
-  const loadAvailableProviders = async () => {
+  useEffect(() => {
+    loadModels();
+    loadProviders();
+  }, []);
+
+  const loadModels = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/settings/ollama/models`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setModels(data.models ?? []);
+      setActive(data.active ?? {});
+    } catch (e: any) {
+      setError(e.message ?? 'Could not reach Ollama');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadProviders = async () => {
     try {
       const status = await settingsService.getAPIKeysStatus();
       setAvailableProviders(status.configured);
-    } catch (err) {
-      console.error('Failed to load provider status:', err);
-    }
+    } catch { /* non-fatal */ }
   };
 
-  const loadCurrentModel = async () => {
+  const handleSwitch = useCallback(async (modelName: string, role: Role) => {
+    setSwitching(`${modelName}:${role}`);
+    setSwitchMsg(null);
     try {
-      const info = await settingsService.getLLMInfo();
-      setCurrentModel(info.model_name);
-      if (info.fast_model_name) {
-        setFastModel(info.fast_model_name);
+      const res = await fetch(`${API_BASE_URL}/evaluator/swap`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_model: modelName, role: ROLE_META[role].api_role }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSwitchMsg({ text: data.detail ?? 'Switch failed', ok: false });
+      } else {
+        setSwitchMsg({ text: data.message ?? `Switched ${role} → ${modelName}`, ok: true });
+        await loadModels();
+        if (role !== 'embeddings') onProviderChange('ollama');
       }
-    } catch (err) {
-      console.error('Failed to load LLM info:', err);
+    } catch (e: any) {
+      setSwitchMsg({ text: e.message ?? 'Network error', ok: false });
+    } finally {
+      setSwitching(null);
     }
-  };
-
-  const handleModeToggle = (newMode: 'local' | 'cloud') => {
-    setMode(newMode);
-    if (newMode === 'local') {
-      onProviderChange('ollama');
-    } else {
-      // Select first available cloud provider
-      if (availableProviders.custom_llm) {
-        onProviderChange('custom_llm');
-      } else if (availableProviders.openai) {
-        onProviderChange('openai');
-      } else if (availableProviders.anthropic) {
-        onProviderChange('anthropic');
-      } else if (availableProviders.google_ai) {
-        onProviderChange('google_ai');
-      }
-    }
-  };
+  }, [onProviderChange]);
 
   const cloudProviders = [
-    { id: 'custom_llm', name: 'Custom LLM', subtitle: 'Company Internal', available: availableProviders.custom_llm, special: true },
-    { id: 'openai', name: 'OpenAI', subtitle: 'GPT-4o', available: availableProviders.openai },
-    { id: 'anthropic', name: 'Anthropic', subtitle: 'Claude 3.5 Sonnet', available: availableProviders.anthropic },
-    { id: 'google_ai', name: 'Google AI', subtitle: 'Gemini 1.5 Flash', available: availableProviders.google_ai },
+    { id: 'custom_llm',  name: 'Custom LLM',  subtitle: 'Company Internal',  available: availableProviders.custom_llm,  special: true },
+    { id: 'openai',      name: 'OpenAI',       subtitle: 'GPT-4o',             available: availableProviders.openai },
+    { id: 'anthropic',   name: 'Anthropic',    subtitle: 'Claude 3.5 Sonnet',  available: availableProviders.anthropic },
+    { id: 'google_ai',   name: 'Google AI',    subtitle: 'Gemini 1.5 Flash',   available: availableProviders.google_ai },
   ];
 
+  const modelsForRole = (role: Role) =>
+    models.filter(m => m.suggested_role === role);
+
+  const renderModelRow = (m: OllamaModel, role: Role) => {
+    const key = `${m.name}:${role}`;
+    const isSwitching = switching === key;
+    const isActive = active[role] === m.name;
+
+    return (
+      <div
+        key={key}
+        className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all ${
+          isActive
+            ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50 dark:bg-emerald-900/10'
+            : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600'
+        }`}
+      >
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+            <span className="font-medium text-sm text-gray-900 dark:text-white truncate">
+              {m.display_name}
+            </span>
+            {isActive && <ActiveBadge />}
+            {m.supports_vision && (
+              <span className="px-1.5 py-0.5 text-xs rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
+                👁 Vision
+              </span>
+            )}
+            {!m.in_registry && (
+              <span className="px-1.5 py-0.5 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">
+                Community
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500 dark:text-gray-400">
+            <span>{m.size_gb} GB disk</span>
+            <span>~{m.ram_required_gb} GB RAM</span>
+            {m.context_window > 0 && <span>{(m.context_window / 1000).toFixed(0)}K ctx</span>}
+            {m.origin_country && <span>{m.origin_country}</span>}
+          </div>
+        </div>
+        <button
+          onClick={() => !isActive && handleSwitch(m.name, role)}
+          disabled={isActive || isSwitching}
+          className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+            isActive
+              ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 cursor-default'
+              : isSwitching
+              ? 'bg-gray-200 dark:bg-gray-700 text-gray-400 cursor-wait'
+              : 'bg-blue-600 hover:bg-blue-700 text-white'
+          }`}
+        >
+          {isActive ? 'Active' : isSwitching ? '…' : 'Use'}
+        </button>
+      </div>
+    );
+  };
+
+  const renderRoleColumn = (role: Role) => {
+    const meta = ROLE_META[role];
+    const roleModels = modelsForRole(role);
+    const colorBorder: Record<string, string> = {
+      blue:   'border-blue-200 dark:border-blue-800',
+      green:  'border-green-200 dark:border-green-800',
+      purple: 'border-purple-200 dark:border-purple-800',
+    };
+    const colorHeader: Record<string, string> = {
+      blue:   'bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-300',
+      green:  'bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300',
+      purple: 'bg-purple-50 dark:bg-purple-900/20 text-purple-800 dark:text-purple-300',
+    };
+    return (
+      <div key={role} className={`flex-1 rounded-xl border ${colorBorder[meta.color]} overflow-hidden`}>
+        <div className={`px-3 py-2 ${colorHeader[meta.color]}`}>
+          <div className="font-semibold text-sm">{meta.label}</div>
+          <div className="text-xs opacity-75 mt-0.5">{meta.desc}</div>
+        </div>
+        <div className="p-2 space-y-1.5">
+          {roleModels.length === 0 ? (
+            <p className="text-xs text-gray-400 dark:text-gray-500 text-center py-3">
+              No {meta.label.toLowerCase()} models pulled
+            </p>
+          ) : (
+            roleModels.map(m => renderModelRow(m, role))
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div className="p-4">
-      {/* Toggle Switch */}
-      <div className="flex items-center justify-center mb-4">
+    <div className="p-4 space-y-4">
+      {/* Mode Toggle */}
+      <div className="flex items-center justify-center">
         <div className="relative inline-flex items-center bg-gray-200 dark:bg-gray-700 rounded-full p-1">
           <button
-            onClick={() => handleModeToggle('local')}
+            onClick={() => { setMode('local'); onProviderChange('ollama'); }}
             className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${
               mode === 'local'
                 ? 'bg-blue-600 text-white shadow-lg'
@@ -85,7 +225,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
             🏠 Local
           </button>
           <button
-            onClick={() => handleModeToggle('cloud')}
+            onClick={() => setMode('cloud')}
             className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${
               mode === 'cloud'
                 ? 'bg-blue-600 text-white shadow-lg'
@@ -97,38 +237,60 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
         </div>
       </div>
 
-      {/* Local Mode */}
+      {/* Local — Dynamic Ollama Model Table */}
       {mode === 'local' && (
         <div className="space-y-3">
-          <button
-            onClick={() => onProviderChange('ollama')}
-            className={`w-full p-4 rounded-lg border-2 transition-all ${
-              selectedProvider === 'ollama'
-                ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20'
-                : 'border-gray-300 dark:border-gray-600 hover:border-blue-400 bg-white dark:bg-gray-800'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="text-3xl">🦙</div>
-              <div className="flex-1 text-left">
-                <div className="font-semibold text-gray-900 dark:text-white">Ollama</div>
-                <div className="text-sm text-gray-600 dark:text-gray-400">Main: {currentModel}</div>
-                <div className="text-sm text-gray-500 dark:text-gray-400">Fast: {fastModel}</div>
-              </div>
-              {selectedProvider === 'ollama' && (
-                <svg className="w-6 h-6 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                </svg>
-              )}
+          {loading ? (
+            <div className="flex items-center justify-center py-10">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
             </div>
-          </button>
-          <div className="text-sm text-gray-500 dark:text-gray-400 text-center">
-            Running locally on your machine - completely private
-          </div>
+          ) : error ? (
+            <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 p-4 text-center space-y-2">
+              <p className="text-sm font-medium text-red-700 dark:text-red-400">Ollama unreachable</p>
+              <p className="text-xs text-red-600 dark:text-red-500">{error}</p>
+              <button
+                onClick={loadModels}
+                className="px-3 py-1.5 text-xs font-medium bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/50"
+              >
+                Retry
+              </button>
+            </div>
+          ) : models.length === 0 ? (
+            <div className="text-center py-8 space-y-2">
+              <p className="text-sm text-gray-500 dark:text-gray-400">No models found in Ollama</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500">Run <code className="px-1 bg-gray-100 dark:bg-gray-700 rounded">ollama pull &lt;model&gt;</code> to add one</p>
+            </div>
+          ) : (
+            <>
+              {switchMsg && (
+                <div className={`rounded-lg px-3 py-2 text-sm ${
+                  switchMsg.ok
+                    ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                    : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800'
+                }`}>
+                  {switchMsg.text}
+                </div>
+              )}
+              <div className="flex gap-3">
+                {(['main', 'fast', 'embeddings'] as Role[]).map(renderRoleColumn)}
+              </div>
+              <div className="flex items-center justify-between pt-1">
+                <p className="text-xs text-gray-400 dark:text-gray-500">
+                  {models.length} model{models.length !== 1 ? 's' : ''} installed · roles auto-classified by size
+                </p>
+                <button
+                  onClick={loadModels}
+                  className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  Refresh
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
-      {/* Cloud Mode */}
+      {/* Cloud Providers */}
       {mode === 'cloud' && (
         <div className="space-y-3">
           {cloudProviders.map((provider) => (
@@ -156,11 +318,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                 </div>
                 <div className="flex-1 text-left">
                   <div className="flex items-center gap-2">
-                    <div className={`font-semibold ${
-                      provider.available
-                        ? 'text-gray-900 dark:text-white'
-                        : 'text-gray-400 dark:text-gray-500'
-                    }`}>
+                    <div className={`font-semibold ${provider.available ? 'text-gray-900 dark:text-white' : 'text-gray-400 dark:text-gray-500'}`}>
                       {provider.name}
                     </div>
                     {provider.special && provider.available && (
@@ -169,11 +327,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                       </span>
                     )}
                   </div>
-                  <div className={`text-sm ${
-                    provider.available
-                      ? 'text-gray-600 dark:text-gray-400'
-                      : 'text-gray-400 dark:text-gray-500'
-                  }`}>
+                  <div className={`text-sm ${provider.available ? 'text-gray-600 dark:text-gray-400' : 'text-gray-400 dark:text-gray-500'}`}>
                     {provider.available ? provider.subtitle : 'Not configured'}
                   </div>
                 </div>
@@ -186,13 +340,9 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
             </button>
           ))}
           {!cloudProviders.some(p => p.available) && (
-            <div className="text-center py-4">
-              <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-                No cloud providers configured
-              </p>
-              <p className="text-xs text-gray-400 dark:text-gray-500">
-                Configure API keys in Settings to use cloud LLMs
-              </p>
+            <div className="text-center py-4 space-y-1">
+              <p className="text-sm text-gray-500 dark:text-gray-400">No cloud providers configured</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500">Configure API keys in Settings to use cloud LLMs</p>
             </div>
           )}
         </div>

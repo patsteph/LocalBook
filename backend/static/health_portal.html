@@ -1038,10 +1038,7 @@
                     <p style="color: var(--text-secondary); font-size: 14px; margin-top: 4px;">Dynamic model hot-swapping with hardware guardrails.</p>
                 </div>
                 <div style="display: flex; gap: 12px; align-items: center;">
-                    <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; background: var(--bg-secondary); padding: 8px 16px; border-radius: 20px; border: 1px solid var(--border-color);">
-                        <input type="checkbox" id="localOnlyToggle" onchange="loadLockerRegistry()" style="width: 16px; height: 16px; cursor: pointer;">
-                        Show Local Only
-                    </label>
+                    <button onclick="loadLockerRegistry()" style="padding: 8px 16px; border-radius: 20px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); font-size: 14px; cursor: pointer;">🔄 Refresh</button>
                 </div>
             </div>
 
@@ -1126,107 +1123,104 @@
 
         // --- LLM LOCKER LOGIC ---
         async function loadLockerRegistry() {
+            const mainList = document.getElementById('mainModelsList');
+            const fastList = document.getElementById('fastModelsList');
+            const embedList = document.getElementById('embeddingsList');
+            mainList.innerHTML = '<div style="padding: 20px; color: var(--text-secondary);">Loading...</div>';
+            fastList.innerHTML = '';
+            embedList.innerHTML = '';
             try {
-                const [regRes, hwRes] = await Promise.all([
-                    fetch(`${API_BASE}/evaluator/models/registry`),
+                const [liveRes, hwRes] = await Promise.all([
+                    fetch(`${API_BASE}/settings/ollama/models`),
                     fetch(`${API_BASE}/evaluator/hardware`)
                 ]);
-                
-                const regData = await regRes.json();
+
+                const liveData = await liveRes.json();
                 const hwData = await hwRes.json();
                 const currentCombo = hwData.combo;
                 const sysRam = hwData.hardware.memory_gb;
-                const showLocalOnly = document.getElementById('localOnlyToggle').checked;
 
-                const mainList = document.getElementById('mainModelsList');
-                const fastList = document.getElementById('fastModelsList');
-                const embedList = document.getElementById('embeddingsList');
-                
                 mainList.innerHTML = '';
                 fastList.innerHTML = '';
                 embedList.innerHTML = '';
 
-                let models = regData.models;
-                if (showLocalOnly) {
-                    models = models.filter(m => m.is_installed);
+                // Live endpoint returns only installed models — sort by display name
+                const models = (liveData.models || []).sort((a, b) =>
+                    a.display_name.localeCompare(b.display_name)
+                );
+
+                if (models.length === 0) {
+                    const empty = '<div style="padding: 20px; color: var(--text-secondary); font-size: 13px;">No models pulled yet</div>';
+                    mainList.innerHTML = empty;
+                    return;
                 }
-                
-                // Sort models: installed first, then display name
-                models.sort((a, b) => {
-                    if (b.is_installed !== a.is_installed) return b.is_installed - a.is_installed;
-                    return a.display_name.localeCompare(b.display_name);
-                });
 
                 models.forEach(model => {
+                    const role = model.suggested_role; // 'main' | 'fast' | 'embeddings'
                     const card = createModelCard(model, currentCombo, sysRam);
-                    if (model.supported_roles.includes('main_model')) {
-                        mainList.appendChild(card.cloneNode(true));
-                    }
-                    if (model.supported_roles.includes('fast_model')) {
-                        fastList.appendChild(card.cloneNode(true));
-                    }
-                    if (model.supported_roles.includes('embedding_model')) {
-                        embedList.appendChild(card.cloneNode(true));
+                    if (role === 'main') {
+                        mainList.appendChild(card);
+                    } else if (role === 'fast') {
+                        fastList.appendChild(card);
+                    } else if (role === 'embeddings') {
+                        embedList.appendChild(card);
+                    } else {
+                        mainList.appendChild(card); // fallback
                     }
                 });
 
-                // Attach event listeners to all newly created buttons
+                // Attach event listeners
                 document.querySelectorAll('.swap-btn').forEach(btn => {
                     btn.onclick = (e) => executeSwap(e.target.dataset.model, e.target.dataset.role, e.target);
                 });
 
             } catch (e) {
                 console.error("Failed to load locker", e);
+                mainList.innerHTML = '<div style="padding: 20px; color: var(--red);">Failed to load models — is Ollama running?</div>';
             }
         }
 
         function createModelCard(model, currentCombo, sysRam) {
+            // model shape from /settings/ollama/models:
+            // { name, display_name, size_gb, ram_required_gb, suggested_role,
+            //   supports_vision, vendor, origin_country, active_as, in_registry }
             const card = document.createElement('div');
-            card.className = `model-card ${model.is_installed ? 'is-local' : 'not-installed'}`;
-            
-            const isMainActive = currentCombo.main_model === model.ollama_name;
-            const isFastActive = currentCombo.fast_model === model.ollama_name;
-            const isEmbedActive = currentCombo.embedding_model === model.ollama_name;
-            
-            if (isMainActive || isFastActive || isEmbedActive) card.classList.add('active');
-            
-            const ramColor = model.min_ram_gb > sysRam ? 'var(--red)' : 'inherit';
-            const ramWarning = model.min_ram_gb > sysRam ? '⚠️ Insufficient RAM' : '';
+            card.className = 'model-card is-local';
+
+            const isMainActive = currentCombo.main_model === model.name;
+            const isFastActive = currentCombo.fast_model === model.name;
+            const isEmbedActive = currentCombo.embedding_model === model.name;
+            const isActive = isMainActive || isFastActive || isEmbedActive;
+
+            if (isActive) card.classList.add('active');
+
+            const ramColor = model.ram_required_gb > sysRam ? 'var(--red)' : 'inherit';
+            const ramWarning = model.ram_required_gb > sysRam ? ' ⚠️ Low RAM' : '';
+            const role = model.suggested_role; // 'main' | 'fast' | 'embeddings'
+            const apiRole = role === 'main' ? 'main_model' : role === 'fast' ? 'fast_model' : 'embedding_model';
+            const activeLabel = isMainActive ? 'Main Active' : isFastActive ? 'Fast Active' : isEmbedActive ? 'Embed Active' : null;
 
             card.innerHTML = `
-                ${model.is_installed ? '<div class="local-badge">Local</div>' : ''}
+                <div class="local-badge">Local</div>
                 <div class="model-main-info">
                     <div>
                         <div class="model-name-title">
                             ${model.display_name}
                             ${model.supports_vision ? '<span class="vision-supported-badge">VISION</span>' : ''}
+                            ${!model.in_registry ? '<span style="font-size:10px;background:#444;padding:1px 5px;border-radius:4px;margin-left:4px;">Community</span>' : ''}
                         </div>
-                        <div class="model-vendor">${model.vendor} (${model.origin_country})</div>
+                        <div class="model-vendor">${model.vendor || ''}${model.origin_country ? ' (' + model.origin_country + ')' : ''}</div>
                     </div>
                 </div>
                 <div class="model-meta">
-                    <div class="meta-item"><span>📦</span> ${model.disk_size_gb} GB</div>
-                    <div class="meta-item" style="color: ${ramColor}"><span>🧠</span> Min ${model.min_ram_gb} GB ${ramWarning}</div>
+                    <div class="meta-item"><span>📦</span> ${model.size_gb} GB</div>
+                    <div class="meta-item" style="color: ${ramColor}"><span>🧠</span> ~${model.ram_required_gb} GB RAM${ramWarning}</div>
                 </div>
                 <div class="locker-actions">
-                    ${model.supported_roles.includes('main_model') ? `
-                        <button class="swap-btn" data-model="${model.ollama_name}" data-role="main_model" 
-                            ${isMainActive ? 'disabled' : ''} ${model.min_ram_gb > sysRam ? 'disabled' : ''}>
-                            ${isMainActive ? 'Main Active' : 'Set as Main'}
-                        </button>
-                    ` : ''}
-                    ${model.supported_roles.includes('fast_model') ? `
-                        <button class="swap-btn" data-model="${model.ollama_name}" data-role="fast_model" 
-                            ${isFastActive ? 'disabled' : ''} ${model.min_ram_gb > sysRam ? 'disabled' : ''}>
-                            ${isFastActive ? 'Fast Active' : 'Set as Fast'}
-                        </button>
-                    ` : ''}
-                    ${model.supported_roles.includes('embedding_model') ? `
-                        <button class="swap-btn" data-model="${model.ollama_name}" data-role="embedding_model" 
-                            ${isEmbedActive ? 'disabled' : ''} ${model.min_ram_gb > sysRam ? 'disabled' : ''}>
-                            ${isEmbedActive ? 'Embed Active' : 'Set as Embed'}
-                        </button>
-                    ` : ''}
+                    <button class="swap-btn" data-model="${model.name}" data-role="${apiRole}"
+                        ${isActive || model.ram_required_gb > sysRam ? 'disabled' : ''}>
+                        ${activeLabel || (role === 'embeddings' ? 'Set as Embed' : role === 'fast' ? 'Set as Fast' : 'Set as Main')}
+                    </button>
                 </div>
             `;
             return card;

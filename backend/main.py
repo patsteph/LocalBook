@@ -183,10 +183,11 @@ async def _run_startup_tasks():
     # background scheduler tries to use Brave Search with a locked keychain.
     async def _warm_keychain():
         try:
-            from api.settings import get_api_key
+            import asyncio as _asyncio
+            from services.keychain_manager import get_api_key_async
             keys_found = []
             for key_name in ("brave_api_key", "youtube_api_key"):
-                val = get_api_key(key_name)
+                val = await get_api_key_async(key_name)
                 if val:
                     keys_found.append(key_name)
             if keys_found:
@@ -211,6 +212,9 @@ async def _run_startup_tasks():
         from services.coaching_insights import check_stale_insights_on_startup
         safe_create_task(check_stale_insights_on_startup(), name="coaching-insights-check")
         print("🧠 Coaching insights staleness check queued")
+        from services.shallow_scrape_remediation import run_shallow_scrape_remediation
+        safe_create_task(run_shallow_scrape_remediation(), name="shallow-scrape-remediation")
+        print("🔧 Shallow scrape remediation queued (ISS-002)")
 
     await _step("starting", "Starting background services...", 75, _start_services())
 

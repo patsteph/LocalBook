@@ -232,11 +232,18 @@ async def save_default_combo(payload: dict):
     fast_model = payload.get("fast_model") or settings.ollama_fast_model
     vision_model = payload.get("vision_model") or settings.vision_model
     
-    # Validate models exist in registry
+    # Validate models are installed in Ollama (registry match preferred, live fallback for community models)
+    import httpx as _httpx
+    from config import settings as _s
     for name, role in [(main_model, "main"), (fast_model, "fast")]:
         info = model_registry.get_model(name)
         if not info:
-            raise HTTPException(status_code=400, detail=f"Unknown {role} model: {name}")
+            try:
+                r = _httpx.post(f"{_s.ollama_base_url}/api/show", json={"name": name}, timeout=5.0)
+                if r.status_code != 200:
+                    raise HTTPException(status_code=400, detail=f"{role} model '{name}' is not installed in Ollama.")
+            except _httpx.RequestError:
+                raise HTTPException(status_code=503, detail="Ollama is not reachable — cannot validate models.")
     
     prefs_path = settings.data_dir / "user_preferences.json"
     

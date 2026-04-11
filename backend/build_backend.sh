@@ -188,6 +188,8 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.startup_checks \
     --hidden-import=services.structured_llm \
     --hidden-import=services.stuck_source_recovery \
+    --hidden-import=services.keychain_manager \
+    --hidden-import=services.shallow_scrape_remediation \
     --hidden-import=services.svg_templates \
     --hidden-import=services.template_scorer \
     --hidden-import=services.theme_extractor \

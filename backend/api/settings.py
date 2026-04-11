@@ -2,14 +2,22 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
-import keyring
 import json
+import threading
 from config import settings
+from services.keychain_manager import (
+    get_api_key as _km_get,
+    get_api_key_async as _km_get_async,
+    set_api_key as _km_set,
+    delete_api_key as _km_delete,
+    get_all_keys_status as _km_status,
+)
 
 router = APIRouter()
 
-# Service name for keychain storage
-SERVICE_NAME = "LocalBook"
+# Module-level cache for /ollama/models with a lock for thread safety
+_ollama_models_cache: dict = {"ts": None, "data": None}
+_ollama_models_lock = threading.Lock()
 
 # User profile storage path
 USER_PROFILE_PATH = settings.data_dir / "user_profile.json"
@@ -52,22 +60,17 @@ async def get_api_keys_status():
         "gemini_api_key",
         "custom_llm",
     ]
-
-    configured = {}
-    for key_name in key_names:
-        try:
-            value = keyring.get_password(SERVICE_NAME, key_name)
-            configured[key_name] = value is not None and len(value) > 0
-        except Exception:
-            configured[key_name] = False
-
+    try:
+        configured = await _km_status(key_names)
+    except Exception:
+        configured = {k: False for k in key_names}
     return APIKeysStatusResponse(configured=configured)
 
 @router.post("/api-keys/set")
 async def set_api_key(request: SetAPIKeyRequest):
     """Set an API key in the system keychain"""
     try:
-        keyring.set_password(SERVICE_NAME, request.key_name, request.value)
+        _km_set(request.key_name, request.value)
         return {"message": f"API key '{request.key_name}' saved successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save API key: {str(e)}")
@@ -76,13 +79,189 @@ async def set_api_key(request: SetAPIKeyRequest):
 async def delete_api_key(key_name: str):
     """Delete an API key from the system keychain"""
     try:
-        keyring.delete_password(SERVICE_NAME, key_name)
+        _km_delete(key_name)
         return {"message": f"API key '{key_name}' deleted successfully"}
-    except keyring.errors.PasswordDeleteError:
-        # Key doesn't exist, that's OK
+    except KeyError:
         return {"message": f"API key '{key_name}' was not configured"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete API key: {str(e)}")
+
+@router.get("/ollama/models")
+async def get_ollama_models():
+    """
+    Return all locally installed Ollama models enriched with live metadata.
+
+    Calls GET /api/tags (model list) then POST /api/show (per-model details)
+    in parallel, classifies each model into main / fast / embeddings, and
+    appends current-active state from settings.  Cached in-process for 30 s.
+    """
+    import asyncio
+    import time
+    import httpx
+    from config import settings as app_settings
+
+    CACHE_TTL = 30  # seconds
+
+    # Module-level cache — checked under lock to prevent concurrent fetches
+    now = time.monotonic()
+    with _ollama_models_lock:
+        if _ollama_models_cache["ts"] and (now - _ollama_models_cache["ts"]) < CACHE_TTL:
+            return _ollama_models_cache["data"]
+
+    base_url = app_settings.ollama_base_url
+
+    async def _fetch_tags(client: httpx.AsyncClient) -> list:
+        try:
+            r = await client.get(f"{base_url}/api/tags", timeout=5.0)
+            r.raise_for_status()
+            return r.json().get("models", [])
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Ollama not reachable: {e}")
+
+    async def _fetch_show(client: httpx.AsyncClient, name: str) -> dict:
+        try:
+            r = await client.post(
+                f"{base_url}/api/show",
+                json={"name": name},
+                timeout=8.0,
+            )
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            pass
+        return {}
+
+    def _classify_model(name: str, show: dict, size_bytes: int) -> str:
+        """
+        Auto-classify an installed model into main / fast / embeddings.
+
+        Rules (checked in order):
+        1. Name contains an embedding keyword → embeddings
+        2. Model reports embedding_only capability → embeddings
+        3. Parameter count >= 7B → main (regardless of quantization size)
+        4. Size on disk >= 5 GB → main
+        5. Otherwise → fast
+        """
+        lower = name.lower()
+        embed_keywords = ("embed", "nomic", "mxbai", "bge", "minilm", "gte-")
+        if any(k in lower for k in embed_keywords):
+            return "embeddings"
+
+        model_info_caps = show.get("model_info", {})
+        if model_info_caps.get("general.architecture") == "bert":
+            return "embeddings"
+
+        # Extract parameter count from name (e.g., "7B", "8B", "70b")
+        import re as _re
+        param_match = _re.search(r'(\d+)([bB])', name)
+        if param_match:
+            param_count = int(param_match.group(1))
+            if param_count >= 7:
+                return "main"
+
+        # Also check Ollama metadata for parameter count
+        meta_params = model_info_caps.get("general.parameter_count")
+        if meta_params and isinstance(meta_params, (int, float)):
+            if meta_params >= 7_000_000_000:  # 7B parameters
+                return "main"
+
+        size_gb = size_bytes / (1024 ** 3)
+        if size_gb >= 4.0:
+            return "main"
+        return "fast"
+
+    def _estimate_ram(size_bytes: int) -> float:
+        """Estimate required RAM in GB: disk size * 1.25 (weights + KV cache)."""
+        return round(size_bytes / (1024 ** 3) * 1.25, 1)
+
+    def _parse_context(show: dict) -> int:
+        """Extract context window from model metadata."""
+        params = show.get("model_info", {})
+        for key in ("llama.context_length", "context_length"):
+            val = params.get(key)
+            if val and isinstance(val, int):
+                return val
+        # Fallback: check modelfile for num_ctx
+        modelfile = show.get("modelfile", "")
+        for line in modelfile.splitlines():
+            if line.strip().upper().startswith("PARAMETER NUM_CTX"):
+                parts = line.split()
+                if len(parts) >= 3:
+                    try:
+                        return int(parts[2])
+                    except ValueError:
+                        pass
+        return 4096
+
+    from evaluator.model_registry import model_registry  # hoisted — one import for all enrichments
+
+    async with httpx.AsyncClient() as client:
+        raw_models = await _fetch_tags(client)
+
+        semaphore = asyncio.Semaphore(4)
+
+        async def _enrich(m: dict) -> dict:
+            async with semaphore:
+                name = m.get("name", "")
+                size_bytes = m.get("size", 0)
+                show = await _fetch_show(client, name)
+
+                suggested_role = _classify_model(name, show, size_bytes)
+                ram_required = _estimate_ram(size_bytes)
+                context_window = _parse_context(show)
+
+                reg = model_registry.get_model(name)
+
+                # Detect vision for community models via Ollama show data
+                if reg:
+                    _vision = reg.supports_vision
+                else:
+                    _mi = show.get("model_info", {})
+                    _vision = (
+                        "vision" in name.lower()
+                        or "llava" in name.lower()
+                        or any("projector" in k for k in _mi)
+                        or _mi.get("clip.has_vision_encoder", False)
+                    )
+
+                return {
+                    "name": name,
+                    "display_name": (reg.display_name if reg else name.split(":")[0].replace("-", " ").title()),
+                    "size_bytes": size_bytes,
+                    "size_gb": round(size_bytes / (1024 ** 3), 1),
+                    "ram_required_gb": ram_required,
+                    "context_window": context_window,
+                    "suggested_role": suggested_role,
+                    "supports_vision": _vision,
+                    "supports_json_mode": (reg.supports_json_mode if reg else False),
+                    "vendor": (reg.vendor if reg else ""),
+                    "origin_country": (reg.origin_country if reg else ""),
+                    "parameter_count": (reg.parameter_count if reg else ""),
+                    "modified_at": m.get("modified_at", ""),
+                    "in_registry": reg is not None,
+                }
+
+        enriched = await asyncio.gather(*[_enrich(m) for m in raw_models])
+
+    # Attach active-role flags from current settings
+    active = {
+        "main": app_settings.ollama_model,
+        "fast": app_settings.ollama_fast_model,
+        "embeddings": app_settings.embedding_model,
+        "vision": app_settings.vision_model,
+    }
+    for m in enriched:
+        m["active_as"] = next(
+            (role for role, active_name in active.items() if active_name == m["name"]),
+            None,
+        )
+
+    result = {"models": list(enriched), "active": active}
+    with _ollama_models_lock:
+        _ollama_models_cache["data"] = result
+        _ollama_models_cache["ts"] = now
+    return result
+
 
 @router.get("/llm-info")
 async def get_llm_info():
@@ -94,9 +273,9 @@ async def get_llm_info():
     }
 
 def get_api_key(key_name: str) -> str | None:
-    """Helper function to get an API key from the keychain"""
+    """Sync helper to get an API key (safe for background tasks / startup)."""
     try:
-        return keyring.get_password(SERVICE_NAME, key_name)
+        return _km_get(key_name)
     except Exception:
         return None
 
