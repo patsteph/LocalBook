@@ -395,27 +395,47 @@ class WebScraper:
             }
 
     async def _scrape_web_page(self, url: str) -> Dict:
-        """Scrape content from web page using trafilatura.
+        """Scrape content from web page using httpx + trafilatura.
         
-        Runs blocking trafilatura calls in thread pool to avoid blocking event loop.
+        Uses httpx with browser headers to fetch (avoids bot blocking),
+        then trafilatura for content extraction.
         """
         try:
-            loop = asyncio.get_event_loop()
+            # Use httpx with browser-like headers to avoid bot detection
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate, br",
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            }
             
-            # Run blocking trafilatura.fetch_url in thread pool
-            downloaded = await loop.run_in_executor(None, trafilatura.fetch_url, url)
-
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.get(url, headers=headers)
+                
+            if response.status_code != 200:
+                return {
+                    "success": False,
+                    "url": url,
+                    "error": f"HTTP {response.status_code}"
+                }
+            
+            downloaded = response.text
+            
             if not downloaded:
                 return {
                     "success": False,
                     "url": url,
-                    "error": "Failed to download page"
+                    "error": "Empty response"
                 }
 
             # Extract image references from HTML before trafilatura strips them
             image_refs = self._extract_image_references(downloaded, base_url=url)
 
             # Run blocking trafilatura.extract in thread pool
+            loop = asyncio.get_event_loop()
             def extract_content(html):
                 return trafilatura.extract(
                     html,

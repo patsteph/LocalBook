@@ -1627,8 +1627,17 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             
             SHALLOW_MAX_CHARS = 900
             
-            # Query for shallow sources (same query as health check)
+            # Clear remediated flags so we can retry with the improved scraper
             conn = get_db().get_connection()
+            cursor = conn.execute(
+                "UPDATE sources SET metadata_json = "
+                "json_remove(metadata_json, '$.remediated_shallow_scrape') "
+                "WHERE json_extract(metadata_json, '$.collected_by') = 'collector' "
+                "AND LENGTH(content) < ?",
+                (SHALLOW_MAX_CHARS,)
+            )
+            if cursor.rowcount > 0:
+                add_log("INFO", f"Cleared remediated flags from {cursor.rowcount} sources for retry", "health_portal")
             rows = conn.execute(
                 "SELECT * FROM sources WHERE LENGTH(content) < ? "
                 "AND json_extract(metadata_json, '$.collected_by') = 'collector' "
