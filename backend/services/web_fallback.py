@@ -89,22 +89,16 @@ class WebFallbackService:
             return []
     
     async def scrape_url(self, url: str) -> Optional[str]:
-        """Scrape content from a URL using trafilatura."""
+        """Scrape content from a URL using the main web_scraper pipeline."""
         try:
-            import trafilatura
+            from services.web_scraper import web_scraper
+            result = await web_scraper._scrape_single(url)
             
-            async with httpx.AsyncClient(timeout=self.scrape_timeout) as client:
-                response = await client.get(url, follow_redirects=True)
-                if response.status_code != 200:
-                    return None
-                
-                html = response.text
-                text = trafilatura.extract(html, include_comments=False, include_tables=True)
-                
-                if text:
-                    # Limit to first ~2000 chars for context
-                    return text[:2000] + "..." if len(text) > 2000 else text
-                return None
+            if result and result.get("success") and result.get("text"):
+                text = result["text"]
+                # Limit to first ~2000 chars for context
+                return text[:2000] + "..." if len(text) > 2000 else text
+            return None
                 
         except Exception as e:
             print(f"[WebFallback] Scrape error for {url}: {e}")

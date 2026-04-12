@@ -1567,7 +1567,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
             from services.web_scraper import web_scraper
             scraped = await web_scraper._scrape_single(page_url)
             
-            if not scraped.get("success") or not scraped.get("text"):
+            if not scraped or not scraped.get("success") or not scraped.get("text"):
                 self.update_source_health(page_url, page_url, success=False)
                 return items
             
@@ -1991,7 +1991,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 else:
                     from services.web_scraper import web_scraper
                     scraped = await web_scraper._scrape_single(item.url)
-                    if scraped.get("success") and scraped.get("text"):
+                    if scraped and scraped.get("success") and scraped.get("text"):
                         full_text = scraped["text"]
                         if len(full_text) > len(content):
                             logger.info(f"Enriched '{item.title}': {len(content)} -> {len(full_text)} chars")

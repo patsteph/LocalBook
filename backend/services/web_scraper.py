@@ -158,7 +158,8 @@ class WebScraper:
         try:
             async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
                 response = await client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) LocalBook/1.0"
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "*/*",
                 })
                 if response.status_code != 200:
                     return {"success": False, "url": display_url,
@@ -397,65 +398,21 @@ class WebScraper:
     async def _scrape_web_page(self, url: str) -> Dict:
         """Scrape content from web page using Playwright + trafilatura.
         
-        Uses Playwright (real Chromium browser) to bypass Cloudflare/bot detection,
-        then trafilatura for content extraction. Playwright is already a dependency
-        used for social auth in People Profiler.
+        Phase 1 — FETCH: Playwright (real Chromium) with httpx fallback.
+        Phase 2 — EXTRACT: trafilatura parses the HTML into clean text.
         """
-        downloaded = None
-        
-        # Try Playwright first (bypasses Cloudflare)
         try:
-            from playwright.async_api import async_playwright
-            
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-                page = await context.new_page()
-                
-                # Navigate and wait for content to load
-                await page.goto(url, wait_until="networkidle", timeout=30000)
-                
-                # Get the rendered HTML
-                downloaded = await page.content()
-                
-                await browser.close()
-                
-        except Exception as e:
-            # Fallback to httpx if Playwright fails
-            print(f"[WebScraper] Playwright failed ({e}), trying httpx fallback")
-            import httpx
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Referer": "https://www.google.com/",
-                "DNT": "1",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-            }
-            
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-                response = await client.get(url, headers=headers)
-                
-            if response.status_code != 200:
-                return {
-                    "success": False,
-                    "url": url,
-                    "error": f"HTTP {response.status_code}"
-                }
-            
-            downloaded = response.text
-            
+            # ── Phase 1: FETCH HTML ──────────────────────────────────────
+            downloaded = await self._fetch_html(url)
+
             if not downloaded:
                 return {
                     "success": False,
                     "url": url,
-                    "error": "Empty response"
+                    "error": "Failed to download page (both Playwright and httpx failed)"
                 }
 
+            # ── Phase 2: EXTRACT content ─────────────────────────────────
             # Extract image references from HTML before trafilatura strips them
             image_refs = self._extract_image_references(downloaded, base_url=url)
 
@@ -501,7 +458,7 @@ class WebScraper:
                 "text": text,
                 "word_count": word_count,
                 "char_count": char_count,
-                "html": downloaded,  # Raw HTML for optional background vision processing
+                "html": downloaded,
             }
         except Exception as e:
             return {
@@ -509,6 +466,54 @@ class WebScraper:
                 "url": url,
                 "error": str(e)
             }
+
+    async def _fetch_html(self, url: str) -> str | None:
+        """Fetch raw HTML from a URL. Tries Playwright first, falls back to httpx.
+        
+        Returns HTML string or None on failure.
+        """
+        # Strategy 1: Playwright (real Chromium — bypasses Cloudflare)
+        try:
+            from playwright.async_api import async_playwright
+            
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/120.0.0.0 Safari/537.36"
+                )
+                page = await context.new_page()
+                await page.goto(url, wait_until="networkidle", timeout=30000)
+                html = await page.content()
+                await browser.close()
+                
+            if html and len(html) > 200:
+                return html
+        except Exception as e:
+            print(f"[WebScraper] Playwright failed for {url}: {e}")
+
+        # Strategy 2: httpx with browser headers
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Referer": "https://www.google.com/",
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            }
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.get(url, headers=headers)
+            if response.status_code == 200 and response.text:
+                return response.text
+        except Exception as e:
+            print(f"[WebScraper] httpx fallback also failed for {url}: {e}")
+
+        return None
 
     async def scrape_with_html(self, url: str) -> Dict:
         """Scrape a URL and also return the raw HTML for link extraction.
@@ -536,42 +541,11 @@ class WebScraper:
             result["html"] = None
             return result
 
-        try:
-            loop = asyncio.get_event_loop()
-            downloaded = await loop.run_in_executor(None, trafilatura.fetch_url, url)
-            if not downloaded:
-                return {"success": False, "url": url, "error": "Failed to download page", "html": None}
-
-            def extract_content(html):
-                return trafilatura.extract(html, include_comments=False, include_tables=True, no_fallback=False)
-
-            # Extract image references before trafilatura strips them
-            image_refs = self._extract_image_references(downloaded, base_url=url)
-
-            text = await loop.run_in_executor(None, extract_content, downloaded)
-            metadata = await loop.run_in_executor(None, trafilatura.extract_metadata, downloaded)
-
-            title = metadata.title if metadata and metadata.title else url
-            author = metadata.author if metadata and metadata.author else None
-            date = metadata.date if metadata and metadata.date else None
-
-            full_text = (text or "")
-            if image_refs and full_text:
-                full_text = full_text + image_refs
-
-            return {
-                "success": True,
-                "url": url,
-                "title": title,
-                "author": author,
-                "date": date,
-                "text": full_text,
-                "word_count": len(full_text.split()),
-                "char_count": len(full_text),
-                "html": downloaded,
-            }
-        except Exception as e:
-            return {"success": False, "url": url, "error": str(e), "html": None}
+        # Use the same Playwright+httpx fetch pipeline as _scrape_web_page
+        result = await self._scrape_web_page(url)
+        if "html" not in result:
+            result["html"] = None
+        return result
 
     def is_index_page(self, url: str, html: str, extracted_text: str) -> bool:
         """Detect whether a page is an index/listing page rather than an article.

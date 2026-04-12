@@ -141,7 +141,7 @@ class RSSFetcher(BaseFetcher):
 
 
 class WebPageFetcher(BaseFetcher):
-    """Fetches and extracts content from web pages"""
+    """Fetches and extracts content from web pages using the main scraper pipeline"""
     
     async def fetch(
         self, 
@@ -161,60 +161,35 @@ class WebPageFetcher(BaseFetcher):
             return []
         
         items = []
-        session = await self._get_session()
         
         try:
-            async with session.get(page_url) as response:
-                if response.status != 200:
-                    return []
-                
-                html = await response.text()
-                
-                # Basic extraction - find article-like content
-                # In production, would use BeautifulSoup or existing web_scraper
-                title = self._extract_title(html)
-                content = self._extract_content(html)
-                
-                if title and content:
-                    item = FetchedItem(
-                        title=title,
-                        url=page_url,
-                        content=content,
-                        summary=content[:300],
-                        source_name=source_config.get("name", page_url),
-                        source_type="web",
-                        source_url=page_url,
-                        published_date=datetime.utcnow(),
-                        metadata={"scraped": True}
-                    )
-                    item.compute_hash()
-                    items.append(item)
+            from services.web_scraper import web_scraper
+            scraped = await web_scraper._scrape_single(page_url)
+            
+            if not scraped or not scraped.get("success") or not scraped.get("text"):
+                return []
+            
+            title = scraped.get("title", page_url)
+            content = scraped["text"][:5000]
+            
+            item = FetchedItem(
+                title=title,
+                url=page_url,
+                content=content,
+                summary=content[:300],
+                source_name=source_config.get("name", page_url),
+                source_type="web",
+                source_url=page_url,
+                published_date=datetime.utcnow(),
+                metadata={"scraped": True}
+            )
+            item.compute_hash()
+            items.append(item)
             
         except Exception as e:
             logger.error(f"Web fetch error for {page_url}: {e}")
         
         return items
-    
-    def _extract_title(self, html: str) -> str:
-        """Extract title from HTML"""
-        match = re.search(r'<title[^>]*>([^<]+)</title>', html, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-        return ""
-    
-    def _extract_content(self, html: str) -> str:
-        """Extract main content from HTML (simplified)"""
-        # Remove scripts and styles
-        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Extract text from paragraphs
-        paragraphs = re.findall(r'<p[^>]*>([^<]+)</p>', html, re.IGNORECASE)
-        content = ' '.join(paragraphs)
-        
-        # Clean up
-        content = re.sub(r'\s+', ' ', content).strip()
-        return content[:5000]  # Limit content length
 
 
 class SECFetcher(BaseFetcher):

@@ -56,8 +56,9 @@ async def _remediate_source(notebook_id: str, source: dict) -> bool:
         logger.warning(f"[ShallowRemedy] Scrape failed for '{title}': {e}")
         return False
 
-    if not scraped.get("success"):
-        logger.debug(f"[ShallowRemedy] Scrape unsuccessful for '{title}': {scraped.get('error')}")
+    if not scraped or not scraped.get("success"):
+        err = scraped.get("error", "unknown") if scraped else "no response"
+        logger.debug(f"[ShallowRemedy] Scrape unsuccessful for '{title}': {err}")
         return False
 
     new_content = scraped.get("text", "")
