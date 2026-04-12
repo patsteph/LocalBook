@@ -395,18 +395,43 @@ class WebScraper:
             }
 
     async def _scrape_web_page(self, url: str) -> Dict:
-        """Scrape content from web page using httpx + trafilatura.
+        """Scrape content from web page using Playwright + trafilatura.
         
-        Uses httpx with browser headers to fetch (avoids bot blocking),
-        then trafilatura for content extraction.
+        Uses Playwright (real Chromium browser) to bypass Cloudflare/bot detection,
+        then trafilatura for content extraction. Playwright is already a dependency
+        used for social auth in People Profiler.
         """
+        downloaded = None
+        
+        # Try Playwright first (bypasses Cloudflare)
         try:
-            # Use httpx with browser-like headers to avoid bot detection
+            from playwright.async_api import async_playwright
+            
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                page = await context.new_page()
+                
+                # Navigate and wait for content to load
+                await page.goto(url, wait_until="networkidle", timeout=30000)
+                
+                # Get the rendered HTML
+                downloaded = await page.content()
+                
+                await browser.close()
+                
+        except Exception as e:
+            # Fallback to httpx if Playwright fails
+            print(f"[WebScraper] Playwright failed ({e}), trying httpx fallback")
+            import httpx
             headers = {
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
                 "Accept-Encoding": "gzip, deflate, br",
+                "Referer": "https://www.google.com/",
                 "DNT": "1",
                 "Connection": "keep-alive",
                 "Upgrade-Insecure-Requests": "1",

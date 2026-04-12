@@ -1656,8 +1656,8 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             fixed = 0
             failed = 0
             
-            # Process each shallow source
-            for row in rows:
+            # Process each shallow source with rate limiting
+            for i, row in enumerate(rows):
                 source = dict(row)
                 source_id = source.get("id")
                 notebook_id = source.get("notebook_id")
@@ -1686,6 +1686,10 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                 except Exception as e:
                     add_log("ERROR", f"Failed to fix {title[:50]}: {e}", "health_portal")
                     failed += 1
+                
+                # Rate limiting: 1 second delay between scrapes (except last one)
+                if i < len(rows) - 1:
+                    await asyncio.sleep(1)
             
             add_log("INFO", f"Shallow remediation complete: {fixed} fixed, {failed} no improvement", "health_portal")
             return {
