@@ -126,16 +126,28 @@ async def run_shallow_scrape_remediation():
         logger.debug("[ShallowRemedy] Already completed — skipping.")
         return
 
+    # Query database directly — don't use source_store which may read from stale JSON cache
     try:
-        from storage.source_store import source_store
+        from storage.database import get_db
+        conn = get_db().get_connection()
+        rows = conn.execute("SELECT * FROM sources").fetchall()
+        all_sources: Dict[str, List[Dict]] = {}
+        for row in rows:
+            src = dict(row)
+            # Unpack metadata_json
+            meta = src.pop('metadata_json', None)
+            if meta:
+                try:
+                    import json as _json
+                    extra = _json.loads(meta) if isinstance(meta, str) else meta
+                    src.update(extra)
+                except Exception:
+                    pass
+            nb_id = src.get("notebook_id")
+            if nb_id:
+                all_sources.setdefault(nb_id, []).append(src)
     except Exception as e:
-        logger.error(f"[ShallowRemedy] Could not import source_store: {e}")
-        return
-
-    try:
-        all_sources = await source_store.list_all()
-    except Exception as e:
-        logger.error(f"[ShallowRemedy] Could not list sources: {e}")
+        logger.error(f"[ShallowRemedy] Could not query database: {e}")
         return
 
     candidates = []
