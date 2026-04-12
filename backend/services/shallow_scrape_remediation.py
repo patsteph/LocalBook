@@ -131,7 +131,9 @@ async def run_shallow_scrape_remediation():
         from storage.database import get_db
         conn = get_db().get_connection()
         rows = conn.execute("SELECT * FROM sources").fetchall()
+        print(f"[ShallowRemedy] Loaded {len(rows)} source rows from database")
         all_sources: Dict[str, List[Dict]] = {}
+        collector_count = 0
         for row in rows:
             src = dict(row)
             # Unpack metadata_json
@@ -143,38 +145,45 @@ async def run_shallow_scrape_remediation():
                     src.update(extra)
                 except Exception:
                     pass
+            if src.get("collected_by") == "collector":
+                collector_count += 1
             nb_id = src.get("notebook_id")
             if nb_id:
                 all_sources.setdefault(nb_id, []).append(src)
+        print(f"[ShallowRemedy] {collector_count} collector-owned sources found")
     except Exception as e:
+        print(f"[ShallowRemedy] ERROR: Could not query database: {e}")
         logger.error(f"[ShallowRemedy] Could not query database: {e}")
         return
 
     candidates = []
+    skipped_collector = 0
+    skipped_remediated = 0
+    skipped_format = 0
+    skipped_no_url = 0
+    skipped_too_long = 0
     for notebook_id, sources in all_sources.items():
         for src in sources:
-            # Only collector-owned sources
             if src.get("collected_by") != "collector":
+                skipped_collector += 1
                 continue
-
-            # Skip already-remediated
             if src.get("remediated_shallow_scrape"):
+                skipped_remediated += 1
                 continue
-
-            # Skip non-web formats
             fmt = (src.get("format") or src.get("type") or "").lower()
             if fmt in SKIP_FORMATS:
+                skipped_format += 1
                 continue
-
-            # Must have a URL to re-scrape
             if not src.get("url"):
+                skipped_no_url += 1
                 continue
-
-            # Check content length in shallow range
             content = src.get("content") or ""
             char_count = len(content)
-            if SHALLOW_MIN <= char_count <= SHALLOW_MAX:
-                candidates.append((notebook_id, src))
+            if not (SHALLOW_MIN <= char_count <= SHALLOW_MAX):
+                skipped_too_long += 1
+                continue
+            candidates.append((notebook_id, src))
+    print(f"[ShallowRemedy] Filter: {skipped_collector} non-collector, {skipped_remediated} already-fixed, {skipped_format} wrong-format, {skipped_no_url} no-url, {skipped_too_long} size-outside-range")
 
     if not candidates:
         logger.info("[ShallowRemedy] No shallow-scraped collected sources found — nothing to do.")
