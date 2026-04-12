@@ -212,9 +212,27 @@ async def _run_startup_tasks():
         from services.coaching_insights import check_stale_insights_on_startup
         safe_create_task(check_stale_insights_on_startup(), name="coaching-insights-check")
         print("🧠 Coaching insights staleness check queued")
-        from services.shallow_scrape_remediation import run_shallow_scrape_remediation
-        safe_create_task(run_shallow_scrape_remediation(), name="shallow-scrape-remediation")
-        print("🔧 Shallow scrape remediation queued (ISS-002)")
+        # Clear shallow scrape remediation flags so Health Portal can detect them
+        async def _clear_shallow_flags():
+            try:
+                from storage.database import get_db
+                conn = get_db().get_connection()
+                # Clear remediated_shallow_scrape flag from all collector sources
+                # so they appear in Health Portal for manual inspection/repair
+                cursor = conn.execute(
+                    "UPDATE sources SET metadata_json = "
+                    "json_remove(metadata_json, '$.remediated_shallow_scrape') "
+                    "WHERE json_extract(metadata_json, '$.collected_by') = 'collector'"
+                )
+                if cursor.rowcount > 0:
+                    print(f"🔄 Cleared shallow scrape flags from {cursor.rowcount} sources (Health Portal will scan)")
+                else:
+                    print("� No shallow scrape flags to clear")
+            except Exception as e:
+                print(f"⚠️ Could not clear shallow flags: {e}")
+        
+        safe_create_task(_clear_shallow_flags(), name="clear-shallow-flags")
+        print("🔄 Shallow scrape flags cleared — Health Portal will scan for issues")
 
     await _step("starting", "Starting background services...", 75, _start_services())
 

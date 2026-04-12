@@ -738,14 +738,45 @@ async def full_health_check():
             results["issues"].append({
                 "severity": "medium",
                 "title": f"{len(stuck_sources)} Stuck Source(s)",
-                "message": "Some sources failed to index.",
-                "repair": "reindex_stuck",
-                "repair_params": {"sources": stuck_sources}
+                "message": "Sources stuck in processing state.",
+                "repair": "reindex_all"
             })
-            if results["overall"] == "healthy":
-                results["overall"] = "degraded"
     except Exception as e:
         add_log("WARN", f"Stuck sources check failed: {e}", "health_portal")
+    
+    # Shallow Sources Check (ISS-002)
+    try:
+        from storage.database import get_db
+        conn = get_db().get_connection()
+        rows = conn.execute(
+            "SELECT id, filename, LENGTH(content) as char_count, url "
+            "FROM sources WHERE LENGTH(content) < 900 "
+            "AND json_extract(metadata_json, '$.collected_by') = 'collector' "
+            "AND url IS NOT NULL "
+            "AND (json_extract(metadata_json, '$.remediated_shallow_scrape') IS NULL "
+            "     OR json_extract(metadata_json, '$.remediated_shallow_scrape') = false)"
+        ).fetchall()
+        
+        shallow_count = len(rows)
+        shallow_sources = [dict(r) for r in rows[:5]]  # First 5 for display
+        
+        add_check("data_integrity", {
+            "name": "shallow_sources",
+            "display": "Shallow Sources",
+            "status": "pass" if shallow_count == 0 else "warn",
+            "details": {"shallow_count": shallow_count, "examples": shallow_sources}
+        })
+        
+        if shallow_count > 0:
+            examples = ", ".join([s['filename'][:40] for s in shallow_sources[:3]])
+            results["issues"].append({
+                "severity": "medium",
+                "title": f"{shallow_count} Shallow Source(s)",
+                "message": f"Sources with minimal content: {examples}...",
+                "repair": "fix_shallow_sources"
+            })
+    except Exception as e:
+        add_log("WARN", f"Shallow sources check failed: {e}", "health_portal")
     
     # ============ CONFIGURATION SECTION ============
     
@@ -1581,6 +1612,82 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             return {"status": "success", "message": f"Reindexed {len(notebook_ids)} notebooks", "details": results}
         except Exception as e:
             add_log("ERROR", f"Stuck reindex failed: {e}", "health_portal")
+            return {"status": "error", "message": str(e)}
+    
+    elif action == "fix_shallow_sources":
+        """Re-scrape shallow collected sources and re-index them."""
+        try:
+            add_log("INFO", "Starting shallow sources remediation (ISS-002)", "health_portal")
+            
+            # Import and run the remediation
+            from services.shallow_scrape_remediation import _remediate_source
+            from storage.database import get_db
+            from storage.source_store import source_store
+            import asyncio
+            
+            SHALLOW_MAX_CHARS = 900
+            
+            # Query for shallow sources (same query as health check)
+            conn = get_db().get_connection()
+            rows = conn.execute(
+                "SELECT * FROM sources WHERE LENGTH(content) < ? "
+                "AND json_extract(metadata_json, '$.collected_by') = 'collector' "
+                "AND url IS NOT NULL "
+                "AND (json_extract(metadata_json, '$.remediated_shallow_scrape') IS NULL "
+                "     OR json_extract(metadata_json, '$.remediated_shallow_scrape') = false)",
+                (SHALLOW_MAX_CHARS,)
+            ).fetchall()
+            
+            if not rows:
+                add_log("INFO", "No shallow sources found to fix", "health_portal")
+                return {"status": "success", "message": "No shallow sources found", "fixed": 0}
+            
+            add_log("INFO", f"Found {len(rows)} shallow sources to re-scrape", "health_portal")
+            
+            fixed = 0
+            failed = 0
+            
+            # Process each shallow source
+            for row in rows:
+                source = dict(row)
+                source_id = source.get("id")
+                notebook_id = source.get("notebook_id")
+                title = source.get("filename") or source.get("title") or source_id
+                
+                add_log("INFO", f"Re-scraping: {title[:60]}...", "health_portal")
+                
+                try:
+                    # Unpack metadata_json
+                    meta = source.pop('metadata_json', None)
+                    if meta:
+                        import json as _json
+                        extra = _json.loads(meta) if isinstance(meta, str) else meta
+                        source.update(extra)
+                    
+                    # Run the remediation
+                    result = await _remediate_source(notebook_id, source)
+                    if result:
+                        fixed += 1
+                        add_log("INFO", f"✓ Fixed: {title[:50]}...", "health_portal")
+                    else:
+                        # Mark as remediated even if no improvement (so we don't retry)
+                        add_log("WARN", f"✗ No improvement: {title[:50]}...", "health_portal")
+                        failed += 1
+                        
+                except Exception as e:
+                    add_log("ERROR", f"Failed to fix {title[:50]}: {e}", "health_portal")
+                    failed += 1
+            
+            add_log("INFO", f"Shallow remediation complete: {fixed} fixed, {failed} no improvement", "health_portal")
+            return {
+                "status": "success" if fixed > 0 else "partial",
+                "message": f"Fixed {fixed} shallow sources, {failed} had no improvement",
+                "fixed": fixed,
+                "failed": failed
+            }
+            
+        except Exception as e:
+            add_log("ERROR", f"Shallow sources repair failed: {e}", "health_portal")
             return {"status": "error", "message": str(e)}
     
     elif action == "kill_port":
