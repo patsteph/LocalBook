@@ -212,27 +212,38 @@ async def _run_startup_tasks():
         from services.coaching_insights import check_stale_insights_on_startup
         safe_create_task(check_stale_insights_on_startup(), name="coaching-insights-check")
         print("🧠 Coaching insights staleness check queued")
-        # Clear shallow scrape remediation flags so Health Portal can detect them
-        async def _clear_shallow_flags():
+        # Note: shallow scrape remediation flags (remediated_shallow_scrape) are
+        # intentionally preserved across restarts. Sources that were attempted and
+        # failed to improve stay marked so the Health Portal doesn't re-report them.
+        # Users can manually retry via the "Fix Shallow Sources" button which
+        # clears flags before re-attempting.
+
+        # One-time migration: re-mark shallow collector sources whose flags were
+        # previously cleared by the old startup code (removed in v1.6.1).
+        async def _migrate_shallow_flags():
             try:
+                from config import settings as _s
+                sentinel = _s.data_dir / ".shallow_flag_migration_done"
+                if sentinel.exists():
+                    return
                 from storage.database import get_db
                 conn = get_db().get_connection()
-                # Clear remediated_shallow_scrape flag from all collector sources
-                # so they appear in Health Portal for manual inspection/repair
                 cursor = conn.execute(
                     "UPDATE sources SET metadata_json = "
-                    "json_remove(metadata_json, '$.remediated_shallow_scrape') "
-                    "WHERE json_extract(metadata_json, '$.collected_by') = 'collector'"
+                    "json_set(metadata_json, '$.remediated_shallow_scrape', true) "
+                    "WHERE json_extract(metadata_json, '$.collected_by') = 'collector' "
+                    "AND LENGTH(content) < 900 "
+                    "AND url IS NOT NULL "
+                    "AND (json_extract(metadata_json, '$.remediated_shallow_scrape') IS NULL "
+                    "     OR json_extract(metadata_json, '$.remediated_shallow_scrape') = false)"
                 )
                 if cursor.rowcount > 0:
-                    print(f"🔄 Cleared shallow scrape flags from {cursor.rowcount} sources (Health Portal will scan)")
-                else:
-                    print("� No shallow scrape flags to clear")
+                    print(f"🔧 Migration: marked {cursor.rowcount} previously-attempted shallow sources as remediated")
+                sentinel.write_text("done")
             except Exception as e:
-                print(f"⚠️ Could not clear shallow flags: {e}")
-        
-        safe_create_task(_clear_shallow_flags(), name="clear-shallow-flags")
-        print("🔄 Shallow scrape flags cleared — Health Portal will scan for issues")
+                print(f"⚠️ Shallow flag migration failed (non-fatal): {e}")
+
+        safe_create_task(_migrate_shallow_flags(), name="migrate-shallow-flags")
 
     await _step("starting", "Starting background services...", 75, _start_services())
 

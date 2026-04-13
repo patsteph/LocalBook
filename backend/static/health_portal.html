@@ -1239,10 +1239,11 @@
             const card = document.createElement('div');
             card.className = 'model-card is-local';
 
-            const isMainActive = currentCombo.main_model === model.name;
-            const isFastActive = currentCombo.fast_model === model.name;
-            const isEmbedActive = currentCombo.embedding_model === model.name;
-            const isVisionActive = currentCombo.vision_model === model.name;
+            // Use backend's active_as (handles ":latest" normalization) with combo fallback
+            const isMainActive = model.active_as === 'main' || currentCombo.main_model === model.name;
+            const isFastActive = model.active_as === 'fast' || currentCombo.fast_model === model.name;
+            const isEmbedActive = model.active_as === 'embeddings' || currentCombo.embedding_model === model.name;
+            const isVisionActive = model.active_as === 'vision' || currentCombo.vision_model === model.name;
             const isActive = isMainActive || isFastActive || isEmbedActive;
 
             if (isActive || isVisionActive) card.classList.add('active');

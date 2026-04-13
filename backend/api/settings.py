@@ -326,9 +326,22 @@ async def get_ollama_models():
         "embeddings": app_settings.embedding_model,
         "vision": app_settings.vision_model,
     }
+
+    def _names_match(config_name: str, ollama_name: str) -> bool:
+        """Config may omit ':latest' tag that Ollama includes."""
+        if config_name == ollama_name:
+            return True
+        # "snowflake-arctic-embed2" matches "snowflake-arctic-embed2:latest"
+        if ollama_name.endswith(":latest") and config_name == ollama_name.rsplit(":latest", 1)[0]:
+            return True
+        # "model" matches "model:tag" by base name
+        if config_name == ollama_name.split(":")[0]:
+            return True
+        return False
+
     for m in enriched:
         m["active_as"] = next(
-            (role for role, active_name in active.items() if active_name == m["name"]),
+            (role for role, active_name in active.items() if _names_match(active_name, m["name"])),
             None,
         )
 
