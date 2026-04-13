@@ -778,6 +778,40 @@ async def full_health_check():
     except Exception as e:
         add_log("WARN", f"Shallow sources check failed: {e}", "health_portal")
     
+    # Duplicate Sources Check (ISS-003)
+    try:
+        from storage.database import get_db
+        conn = get_db().get_connection()
+        dup_rows = conn.execute(
+            "SELECT notebook_id, url, COUNT(*) as cnt, "
+            "GROUP_CONCAT(id, ',') as ids "
+            "FROM sources "
+            "WHERE url IS NOT NULL AND url != '' "
+            "GROUP BY notebook_id, url "
+            "HAVING cnt > 1"
+        ).fetchall()
+        
+        dup_count = sum(r['cnt'] - 1 for r in dup_rows)  # Count of extras to remove
+        dup_groups = len(dup_rows)
+        dup_examples = [{"url": r['url'][:60], "count": r['cnt']} for r in dup_rows[:5]]
+        
+        add_check("data_integrity", {
+            "name": "duplicate_sources",
+            "display": "Duplicate Sources",
+            "status": "pass" if dup_count == 0 else "warn",
+            "details": {"duplicate_count": dup_count, "groups": dup_groups, "examples": dup_examples}
+        })
+        
+        if dup_count > 0:
+            results["issues"].append({
+                "severity": "medium",
+                "title": f"{dup_count} Duplicate Source(s)",
+                "message": f"{dup_groups} URL(s) have multiple copies. Best version will be kept.",
+                "repair": "fix_duplicate_sources"
+            })
+    except Exception as e:
+        add_log("WARN", f"Duplicate sources check failed: {e}", "health_portal")
+    
     # ============ CONFIGURATION SECTION ============
     
     # Embedding Dimension Check
@@ -1686,6 +1720,12 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                 except Exception as e:
                     add_log("ERROR", f"Failed to fix {title[:50]}: {e}", "health_portal")
                     failed += 1
+                    # Mark as remediated so it doesn't keep showing up
+                    try:
+                        from storage.source_store import source_store as _ss
+                        await _ss.update(notebook_id, source_id, {"remediated_shallow_scrape": True})
+                    except Exception:
+                        pass
                 
                 # Rate limiting: 1 second delay between scrapes (except last one)
                 if i < len(rows) - 1:
@@ -1701,6 +1741,80 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             
         except Exception as e:
             add_log("ERROR", f"Shallow sources repair failed: {e}", "health_portal")
+            return {"status": "error", "message": str(e)}
+    
+    elif action == "fix_duplicate_sources":
+        # Remove duplicate sources within the same notebook, keeping the most complete version
+        try:
+            add_log("INFO", "Starting duplicate sources cleanup (ISS-003)", "health_portal")
+            
+            from storage.database import get_db
+            from storage.source_store import source_store
+            from services.rag_engine import rag_engine
+            
+            conn = get_db().get_connection()
+            dup_rows = conn.execute(
+                "SELECT notebook_id, url, GROUP_CONCAT(id, ',') as ids "
+                "FROM sources "
+                "WHERE url IS NOT NULL AND url != '' "
+                "GROUP BY notebook_id, url "
+                "HAVING COUNT(*) > 1"
+            ).fetchall()
+            
+            if not dup_rows:
+                add_log("INFO", "No duplicate sources found", "health_portal")
+                return {"status": "success", "message": "No duplicates found", "removed": 0}
+            
+            add_log("INFO", f"Found {len(dup_rows)} URL(s) with duplicates", "health_portal")
+            
+            removed = 0
+            for dup in dup_rows:
+                notebook_id = dup['notebook_id']
+                url = dup['url']
+                source_ids = dup['ids'].split(',')
+                
+                # Fetch all copies and pick the best one (longest content)
+                copies = []
+                for sid in source_ids:
+                    row = conn.execute(
+                        "SELECT id, filename, LENGTH(content) as char_count "
+                        "FROM sources WHERE id = ?", (sid,)
+                    ).fetchone()
+                    if row:
+                        copies.append(dict(row))
+                
+                if len(copies) < 2:
+                    continue
+                
+                # Sort by content length descending — keep the first (most complete)
+                copies.sort(key=lambda x: x.get('char_count') or 0, reverse=True)
+                keeper = copies[0]
+                to_remove = copies[1:]
+                
+                for dupe in to_remove:
+                    try:
+                        # Delete from vector store first
+                        await rag_engine.delete_source(notebook_id, dupe['id'])
+                    except Exception:
+                        pass
+                    # Delete from source store
+                    await source_store.delete(notebook_id, dupe['id'])
+                    removed += 1
+                
+                title = keeper.get('filename', url)[:50]
+                add_log("INFO", 
+                    f"Kept best copy of '{title}' ({keeper.get('char_count', 0)} chars), "
+                    f"removed {len(to_remove)} duplicate(s)", "health_portal")
+            
+            add_log("INFO", f"Duplicate cleanup complete: removed {removed} duplicate source(s)", "health_portal")
+            return {
+                "status": "success",
+                "message": f"Removed {removed} duplicate sources",
+                "removed": removed
+            }
+            
+        except Exception as e:
+            add_log("ERROR", f"Duplicate cleanup failed: {e}", "health_portal")
             return {"status": "error", "message": str(e)}
     
     elif action == "kill_port":

@@ -54,11 +54,15 @@ async def _remediate_source(notebook_id: str, source: dict) -> bool:
         scraped = await web_scraper._scrape_single(url)
     except Exception as e:
         logger.warning(f"[ShallowRemedy] Scrape failed for '{title}': {e}")
+        # Mark as remediated so we don't retry sources that crash
+        await source_store.update(notebook_id, source_id, {"remediated_shallow_scrape": True})
         return False
 
     if not scraped or not scraped.get("success"):
         err = scraped.get("error", "unknown") if scraped else "no response"
         logger.debug(f"[ShallowRemedy] Scrape unsuccessful for '{title}': {err}")
+        # Mark as remediated so we don't retry sources that can't be scraped
+        await source_store.update(notebook_id, source_id, {"remediated_shallow_scrape": True})
         return False
 
     new_content = scraped.get("text", "")
