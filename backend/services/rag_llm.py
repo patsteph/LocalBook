@@ -118,13 +118,15 @@ async def call_ollama(
         options.update(extra_options)
     async with httpx.AsyncClient(timeout=timeout) as client:
         print(f"Calling Ollama with model: {use_model}, num_predict: {num_predict}, num_ctx: {num_ctx or 'default'}")
+        # Main model stays loaded indefinitely; fast model auto-unloads after 10m idle
+        _keep_alive = "10m" if use_model == settings.ollama_fast_model else -1
         response = await client.post(
             f"{settings.ollama_base_url}/api/generate",
             json={
                 "model": use_model,
                 "prompt": f"{system_prompt}\n\n{prompt}",
                 "stream": False,
-                "keep_alive": -1,  # Keep model loaded indefinitely (Tier 1 optimization)
+                "keep_alive": _keep_alive,
                 "options": options
             }
         )
@@ -270,12 +272,13 @@ async def stream_ollama(
         if extra_options:
             stream_options.update(extra_options)
 
-        # Tier 1 optimizations: keep_alive prevents cold start, num_predict caps runaway generation
+        # Main model stays loaded indefinitely; fast model auto-unloads after 10m idle
+        _keep_alive = "10m" if use_fast_model else -1
         request_json = {
             "model": model,
             "prompt": f"{system_prompt}\n\n{prompt}",
             "stream": True,
-            "keep_alive": -1,  # Keep model loaded indefinitely (Tier 1 optimization)
+            "keep_alive": _keep_alive,
             "options": stream_options,
         }
         if stop_sequences:

@@ -674,7 +674,7 @@
         /* LLM Locker Styles */
         .locker-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            grid-template-columns: 1fr 1fr;
             gap: 20px;
             margin-top: 20px;
         }
@@ -790,6 +790,34 @@
             font-size: 9px;
             font-weight: bold;
             margin-left: 8px;
+        }
+        .capability-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 9px;
+            font-weight: bold;
+            margin-left: 4px;
+        }
+        .badge-json { background: rgba(59, 130, 246, 0.2); color: var(--blue); }
+        .badge-eval { background: rgba(234, 179, 8, 0.2); color: #ca8a04; }
+        .model-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+        }
+        .model-stats .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .model-subtitle {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 2px;
         }
 
         .grade-f { background: rgba(239, 68, 68, 0.2); color: var(--red); }
@@ -1068,8 +1096,14 @@
                     </div>
                 </div>
                 <div class="locker-column">
-                    <div class="column-title"><span>🧩</span> Embeddings Models</div>
+                    <div class="column-title"><span>🧩</span> Embeddings</div>
                     <div id="embeddingsList">
+                        <div style="padding: 20px; color: var(--text-secondary);">Loading registry...</div>
+                    </div>
+                </div>
+                <div class="locker-column">
+                    <div class="column-title"><span>🔬</span> Specialty Models</div>
+                    <div id="specialtyModelsList">
                         <div style="padding: 20px; color: var(--text-secondary);">Loading registry...</div>
                     </div>
                 </div>
@@ -1126,9 +1160,11 @@
             const mainList = document.getElementById('mainModelsList');
             const fastList = document.getElementById('fastModelsList');
             const embedList = document.getElementById('embeddingsList');
+            const specList = document.getElementById('specialtyModelsList');
             mainList.innerHTML = '<div style="padding: 20px; color: var(--text-secondary);">Loading...</div>';
             fastList.innerHTML = '';
             embedList.innerHTML = '';
+            specList.innerHTML = '';
             try {
                 const [liveRes, hwRes] = await Promise.all([
                     fetch(`${API_BASE}/settings/ollama/models`),
@@ -1143,6 +1179,7 @@
                 mainList.innerHTML = '';
                 fastList.innerHTML = '';
                 embedList.innerHTML = '';
+                specList.innerHTML = '';
 
                 // Live endpoint returns only installed models — sort by display name
                 const models = (liveData.models || []).sort((a, b) =>
@@ -1156,7 +1193,7 @@
                 }
 
                 models.forEach(model => {
-                    const role = model.suggested_role; // 'main' | 'fast' | 'embeddings'
+                    const role = model.suggested_role; // 'main' | 'fast' | 'embeddings' | 'specialty'
                     const card = createModelCard(model, currentCombo, sysRam);
                     if (role === 'main') {
                         mainList.appendChild(card);
@@ -1164,8 +1201,17 @@
                         fastList.appendChild(card);
                     } else if (role === 'embeddings') {
                         embedList.appendChild(card);
+                    } else if (role === 'specialty') {
+                        specList.appendChild(card);
                     } else {
                         mainList.appendChild(card); // fallback
+                    }
+                });
+
+                // Show empty state for columns with no models
+                [mainList, fastList, embedList, specList].forEach(list => {
+                    if (list.children.length === 0) {
+                        list.innerHTML = '<div style="padding: 16px; color: var(--text-secondary); font-size: 12px;">No models in this category</div>';
                     }
                 });
 
@@ -1180,48 +1226,87 @@
             }
         }
 
+        // Origin country → flag emoji map
+        const COUNTRY_FLAGS = {US:'🇺🇸',CN:'🇨🇳',FR:'🇫🇷',DE:'🇩🇪',CA:'🇨🇦','US/EU':'🇺🇸','FR/US':'🇫🇷'};
+
+        function formatCtx(ctx) {
+            if (!ctx || ctx <= 0) return '';
+            if (ctx >= 1000) return Math.round(ctx / 1024) + 'K';
+            return ctx.toString();
+        }
+
         function createModelCard(model, currentCombo, sysRam) {
-            // model shape from /settings/ollama/models:
-            // { name, display_name, size_gb, ram_required_gb, suggested_role,
-            //   supports_vision, vendor, origin_country, active_as, in_registry }
             const card = document.createElement('div');
             card.className = 'model-card is-local';
 
             const isMainActive = currentCombo.main_model === model.name;
             const isFastActive = currentCombo.fast_model === model.name;
             const isEmbedActive = currentCombo.embedding_model === model.name;
+            const isVisionActive = currentCombo.vision_model === model.name;
             const isActive = isMainActive || isFastActive || isEmbedActive;
 
-            if (isActive) card.classList.add('active');
+            if (isActive || isVisionActive) card.classList.add('active');
 
             const ramColor = model.ram_required_gb > sysRam ? 'var(--red)' : 'inherit';
-            const ramWarning = model.ram_required_gb > sysRam ? ' ⚠️ Low RAM' : '';
-            const role = model.suggested_role; // 'main' | 'fast' | 'embeddings'
-            const apiRole = role === 'main' ? 'main_model' : role === 'fast' ? 'fast_model' : 'embedding_model';
-            const activeLabel = isMainActive ? 'Main Active' : isFastActive ? 'Fast Active' : isEmbedActive ? 'Embed Active' : null;
+            const ramWarning = model.ram_required_gb > sysRam ? ' ⚠️' : '';
+            const role = model.suggested_role;
+            const apiRole = role === 'main' ? 'main_model' : role === 'fast' ? 'fast_model' : role === 'embeddings' ? 'embedding_model' : 'vision_model';
+            const activeLabel = isMainActive ? 'Main Active' : isFastActive ? 'Fast Active' : isEmbedActive ? 'Embed Active' : isVisionActive ? 'Vision Active' : null;
+
+            // Subtitle line: vendor · params
+            const flag = COUNTRY_FLAGS[model.origin_country] || '';
+            const vendorStr = model.vendor || 'Community';
+            const paramStr = model.parameter_count ? ` · ${model.parameter_count} params` : '';
+            const subtitle = `${flag ? flag + ' ' : ''}${vendorStr}${paramStr}`;
+
+            // Capability badges
+            let badges = '';
+            if (model.supports_vision) badges += '<span class="vision-supported-badge">VISION</span>';
+            if (model.supports_json_mode) badges += '<span class="capability-badge badge-json">JSON</span>';
+            if (!model.in_registry) badges += '<span style="font-size:10px;background:#444;padding:1px 5px;border-radius:4px;margin-left:4px;">Community</span>';
+
+            // Context window display
+            const ctxStr = formatCtx(model.context_window);
+
+            // Eval score
+            const evalHtml = model.eval_score > 0
+                ? `<div class="stat-item"><span class="capability-badge badge-eval">⭐ ${model.eval_score.toFixed(1)}</span> tested</div>`
+                : `<div class="stat-item" style="opacity:0.5">Not tested</div>`;
+
+            // Quantization
+            const quantStr = model.quantization ? model.quantization : '';
+
+            // Swap button (specialty models are system-managed — no swap)
+            let actionsHtml = '';
+            if (role === 'specialty') {
+                actionsHtml = `<div class="locker-actions">
+                    <span style="font-size:11px;color:var(--text-secondary);padding:8px 0;">System-managed${isVisionActive ? ' · <strong style="color:var(--blue)">Active Vision</strong>' : ''}</span>
+                </div>`;
+            } else {
+                const btnLabel = activeLabel || (role === 'embeddings' ? 'Set as Embed' : role === 'fast' ? 'Set as Fast' : 'Set as Main');
+                actionsHtml = `<div class="locker-actions">
+                    <button class="swap-btn" data-model="${model.name}" data-role="${apiRole}"
+                        ${isActive || model.ram_required_gb > sysRam ? 'disabled' : ''}>
+                        ${btnLabel}
+                    </button>
+                </div>`;
+            }
 
             card.innerHTML = `
                 <div class="local-badge">Local</div>
                 <div class="model-main-info">
                     <div>
-                        <div class="model-name-title">
-                            ${model.display_name}
-                            ${model.supports_vision ? '<span class="vision-supported-badge">VISION</span>' : ''}
-                            ${!model.in_registry ? '<span style="font-size:10px;background:#444;padding:1px 5px;border-radius:4px;margin-left:4px;">Community</span>' : ''}
-                        </div>
-                        <div class="model-vendor">${model.vendor || ''}${model.origin_country ? ' (' + model.origin_country + ')' : ''}</div>
+                        <div class="model-name-title">${model.display_name} ${badges}</div>
+                        <div class="model-subtitle">${subtitle}</div>
                     </div>
                 </div>
-                <div class="model-meta">
-                    <div class="meta-item"><span>📦</span> ${model.size_gb} GB</div>
-                    <div class="meta-item" style="color: ${ramColor}"><span>🧠</span> ~${model.ram_required_gb} GB RAM${ramWarning}</div>
+                <div class="model-stats">
+                    <div class="stat-item">💾 ${model.size_gb} GB${quantStr ? ' · ' + quantStr : ''}</div>
+                    <div class="stat-item" style="color:${ramColor}">🧠 ${model.in_registry ? '' : '~'}${model.ram_required_gb} GB RAM${ramWarning}</div>
+                    ${ctxStr ? `<div class="stat-item">📐 ${ctxStr} ctx</div>` : '<div></div>'}
+                    ${evalHtml}
                 </div>
-                <div class="locker-actions">
-                    <button class="swap-btn" data-model="${model.name}" data-role="${apiRole}"
-                        ${isActive || model.ram_required_gb > sysRam ? 'disabled' : ''}>
-                        ${activeLabel || (role === 'embeddings' ? 'Set as Embed' : role === 'fast' ? 'Set as Fast' : 'Set as Main')}
-                    </button>
-                </div>
+                ${actionsHtml}
             `;
             return card;
         }

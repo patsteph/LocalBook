@@ -1827,7 +1827,7 @@ Write the brief now:"""
                 temperature=0.7,
                 timeout=90.0,
                 num_predict=1500,
-                extra_options={"keep_alive": "5m"},
+                extra_options={"keep_alive": -1},
             )
             narrative = response.get("response", "").strip()
             # Guard against error strings from ollama_client being treated as valid narrative
@@ -1927,7 +1927,7 @@ Return ONLY valid JSON, no explanation."""
                 temperature=0.3,
                 timeout=30.0,
                 num_predict=500,
-                extra_options={"keep_alive": -1},
+                extra_options={"keep_alive": "10m"},
             )
             text = response.get("response", "").strip()
             # Parse JSON from response

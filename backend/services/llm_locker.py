@@ -40,7 +40,7 @@ class LLMLocker:
                 data = _json.loads(resp.read().decode())
             size_bytes = data.get("size", 0)
             size_gb = size_bytes / (1024 ** 3)
-            ram_gb = round(size_gb * 1.25, 1)
+            ram_gb = round(size_gb * 1.3, 1)
             return {
                 "size_gb": size_gb,
                 "ram_required_gb": ram_gb,
@@ -96,10 +96,14 @@ class LLMLocker:
         
         if role == "main_model":
             changes_key = "ollama_model"
+        elif role == "fast_model":
+            changes_key = "ollama_fast_model"
         elif role == "embedding_model":
             changes_key = "embedding_model"
+        elif role == "vision_model":
+            changes_key = "vision_model"
         else:
-            changes_key = f"ollama_{role}"
+            changes_key = role
             
         changes = {
             changes_key: target_ollama_name

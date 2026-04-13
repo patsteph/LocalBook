@@ -92,8 +92,8 @@ async def get_ollama_models():
     Return all locally installed Ollama models enriched with live metadata.
 
     Calls GET /api/tags (model list) then POST /api/show (per-model details)
-    in parallel, classifies each model into main / fast / embeddings, and
-    appends current-active state from settings.  Cached in-process for 30 s.
+    in parallel, classifies each model into main / fast / embeddings / specialty,
+    and appends current-active state from settings.  Cached in-process for 30 s.
     """
     import asyncio
     import time
@@ -131,48 +131,75 @@ async def get_ollama_models():
             pass
         return {}
 
-    def _classify_model(name: str, show: dict, size_bytes: int) -> str:
-        """
-        Auto-classify an installed model into main / fast / embeddings.
+    def _is_vision_model(name: str, show: dict) -> bool:
+        """Detect if a model has vision capabilities from Ollama metadata."""
+        lower = name.lower()
+        if "vision" in lower or "llava" in lower:
+            return True
+        mi = show.get("model_info", {})
+        return (
+            any("projector" in k for k in mi)
+            or mi.get("clip.has_vision_encoder", False)
+        )
 
-        Rules (checked in order):
-        1. Name contains an embedding keyword → embeddings
-        2. Model reports embedding_only capability → embeddings
-        3. Parameter count >= 7B → main (regardless of quantization size)
-        4. Size on disk >= 5 GB → main
-        5. Otherwise → fast
+    def _classify_model(name: str, show: dict, size_bytes: int, reg) -> str:
+        """
+        Classify an installed model into main / fast / embeddings / specialty.
+
+        Waterfall (checked in order):
+        1. Embedding keyword or architecture       → "embeddings"
+        2. Registry: ONLY vision_model (no main/fast) → "specialty"
+        3. Registry: has main_model or fast_model   → use that role
+        4. No registry + has vision + disk < 4 GB   → "specialty"
+        5. Disk size >= 4 GB                        → "main"
+        6. Disk size < 4 GB                         → "fast"
         """
         lower = name.lower()
+
+        # Step 1: Embeddings
         embed_keywords = ("embed", "nomic", "mxbai", "bge", "minilm", "gte-")
         if any(k in lower for k in embed_keywords):
             return "embeddings"
-
-        model_info_caps = show.get("model_info", {})
-        if model_info_caps.get("general.architecture") == "bert":
+        mi = show.get("model_info", {})
+        if mi.get("general.architecture") == "bert":
             return "embeddings"
 
-        # Extract parameter count from name (e.g., "7B", "8B", "70b")
-        import re as _re
-        param_match = _re.search(r'(\d+)([bB])', name)
-        if param_match:
-            param_count = int(param_match.group(1))
-            if param_count >= 7:
+        # Step 2 & 3: Registry-based classification
+        if reg:
+            roles = reg.supported_roles or []
+            has_main = "main_model" in roles
+            has_fast = "fast_model" in roles
+            has_vision_only = "vision_model" in roles and not has_main and not has_fast
+            if has_vision_only:
+                return "specialty"
+            # If model has both main + fast roles, use whichever is listed first
+            # (registry convention: primary role is listed first)
+            if has_main and has_fast:
+                return "main" if roles.index("main_model") < roles.index("fast_model") else "fast"
+            if has_main:
                 return "main"
+            if has_fast:
+                return "fast"
 
-        # Also check Ollama metadata for parameter count
-        meta_params = model_info_caps.get("general.parameter_count")
-        if meta_params and isinstance(meta_params, (int, float)):
-            if meta_params >= 7_000_000_000:  # 7B parameters
-                return "main"
-
+        # Step 4: Non-registry vision model (small)
         size_gb = size_bytes / (1024 ** 3)
+        if not reg and _is_vision_model(name, show) and size_gb < 4.0:
+            return "specialty"
+
+        # Step 5 & 6: Disk-size threshold
         if size_gb >= 4.0:
             return "main"
         return "fast"
 
-    def _estimate_ram(size_bytes: int) -> float:
-        """Estimate required RAM in GB: disk size * 1.25 (weights + KV cache)."""
-        return round(size_bytes / (1024 ** 3) * 1.25, 1)
+    def _estimate_ram(size_bytes: int, reg) -> float:
+        """Estimate required RAM in GB.
+        
+        Registry models use hand-verified min_ram_gb.
+        Unknown models: disk_size * 1.3 (weights + KV cache + overhead).
+        """
+        if reg and reg.min_ram_gb > 0:
+            return float(reg.min_ram_gb)
+        return round(size_bytes / (1024 ** 3) * 1.3, 1)
 
     def _parse_context(show: dict) -> int:
         """Extract context window from model metadata."""
@@ -195,6 +222,55 @@ async def get_ollama_models():
 
     from evaluator.model_registry import model_registry  # hoisted — one import for all enrichments
 
+    # Pre-load evaluator scores so we can attach best score per model
+    _eval_scores: dict[str, float] = {}  # model_name → best overall_score
+    try:
+        from evaluator.evaluator_service import get_results_list
+        for run in get_results_list():
+            for key in ("main_model", "fast_model"):
+                mname = run.get(key, "")
+                score = run.get("overall_score", 0)
+                if mname and score > _eval_scores.get(mname, 0):
+                    _eval_scores[mname] = score
+    except Exception:
+        pass  # evaluator may not have any runs yet
+
+    def _extract_quant(name: str, show: dict) -> str:
+        """Extract quantization level from model name tag or modelfile FROM line."""
+        import re as _re
+        # Common quant patterns: Q4_K_M, Q5_0, Q8_0, F16, FP16, BF16, etc.
+        _quant_re = _re.compile(r'(Q\d+_K(?:_[A-Z])?|Q\d+_[0-9]|(?:B?F|FP)16|F32)', _re.IGNORECASE)
+
+        # 1. Check model name/tag (e.g., "model:7b-q4_K_M")
+        qmatch = _quant_re.search(name)
+        if qmatch:
+            return qmatch.group(1).upper()
+
+        # 2. Check modelfile FROM line which contains the GGUF blob/filename
+        modelfile = show.get("modelfile", "")
+        for line in modelfile.splitlines():
+            stripped = line.strip()
+            if stripped.upper().startswith("FROM"):
+                qmatch = _quant_re.search(stripped)
+                if qmatch:
+                    return qmatch.group(1).upper()
+
+        return ""
+
+    def _extract_param_count(name: str, show: dict) -> str:
+        """Extract parameter count string from Ollama metadata or name."""
+        mi = show.get("model_info", {})
+        meta_params = mi.get("general.parameter_count")
+        if meta_params and isinstance(meta_params, (int, float)):
+            if meta_params >= 1_000_000_000:
+                return f"{meta_params / 1_000_000_000:.1f}B".replace(".0B", "B")
+            elif meta_params >= 1_000_000:
+                return f"{meta_params / 1_000_000:.0f}M"
+        # Fallback: extract from name (e.g., "7b", "3.8b")
+        import re as _re
+        m = _re.search(r'(\d+(?:\.\d+)?)\s*[bB]', name)
+        return f"{m.group(1)}B" if m else ""
+
     async with httpx.AsyncClient() as client:
         raw_models = await _fetch_tags(client)
 
@@ -206,27 +282,25 @@ async def get_ollama_models():
                 size_bytes = m.get("size", 0)
                 show = await _fetch_show(client, name)
 
-                suggested_role = _classify_model(name, show, size_bytes)
-                ram_required = _estimate_ram(size_bytes)
-                context_window = _parse_context(show)
-
                 reg = model_registry.get_model(name)
 
-                # Detect vision for community models via Ollama show data
+                suggested_role = _classify_model(name, show, size_bytes, reg)
+                ram_required = _estimate_ram(size_bytes, reg)
+                context_window = _parse_context(show)
+
+                # Vision detection
                 if reg:
                     _vision = reg.supports_vision
                 else:
-                    _mi = show.get("model_info", {})
-                    _vision = (
-                        "vision" in name.lower()
-                        or "llava" in name.lower()
-                        or any("projector" in k for k in _mi)
-                        or _mi.get("clip.has_vision_encoder", False)
-                    )
+                    _vision = _is_vision_model(name, show)
+
+                # Parameter count: registry > Ollama metadata > name parse
+                param_count = (reg.parameter_count if reg else "") or _extract_param_count(name, show)
 
                 return {
                     "name": name,
                     "display_name": (reg.display_name if reg else name.split(":")[0].replace("-", " ").title()),
+                    "family": (reg.family if reg else ""),
                     "size_bytes": size_bytes,
                     "size_gb": round(size_bytes / (1024 ** 3), 1),
                     "ram_required_gb": ram_required,
@@ -234,9 +308,11 @@ async def get_ollama_models():
                     "suggested_role": suggested_role,
                     "supports_vision": _vision,
                     "supports_json_mode": (reg.supports_json_mode if reg else False),
-                    "vendor": (reg.vendor if reg else ""),
+                    "vendor": (reg.vendor if reg else "Community"),
                     "origin_country": (reg.origin_country if reg else ""),
-                    "parameter_count": (reg.parameter_count if reg else ""),
+                    "parameter_count": param_count,
+                    "quantization": _extract_quant(name, show),
+                    "eval_score": _eval_scores.get(name, 0),
                     "modified_at": m.get("modified_at", ""),
                     "in_registry": reg is not None,
                 }

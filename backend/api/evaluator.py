@@ -202,11 +202,12 @@ async def swap_model(payload: dict):
         raise HTTPException(status_code=400, detail="Missing target_model or role")
         
     try:
-        # role should be 'main_model' or 'fast_model'
-        # sanitize it to what the locker expects if UI sends slightly different strings
+        # Sanitize role strings from UI to what the locker expects
         normalized_role = role
         if role == "main": normalized_role = "main_model"
         if role == "fast": normalized_role = "fast_model"
+        if role == "embeddings": normalized_role = "embedding_model"
+        if role == "vision": normalized_role = "vision_model"
         
         message = locker.execute_swap(target_model, normalized_role)
         return {"status": "success", "message": message}

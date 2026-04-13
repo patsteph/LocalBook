@@ -118,7 +118,7 @@ class StructuredLLMService:
                     "prompt": f"{system_prompt}\n\nUser request:\n{user_prompt}",
                     "stream": False,
                     "format": "json",
-                    "keep_alive": "5m",
+                    "keep_alive": -1,
                     "options": {
                         "temperature": temperature,
                         "num_predict": 3000,

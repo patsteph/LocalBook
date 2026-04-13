@@ -52,7 +52,7 @@ def mark_embedding_used():
     _last_embedding_use = time.time()
 
 
-async def warm_ollama_model(model: str) -> bool:
+async def warm_ollama_model(model: str, keep_alive = "30m") -> bool:
     """Send a minimal request to keep an Ollama model loaded in memory"""
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -62,7 +62,7 @@ async def warm_ollama_model(model: str) -> bool:
                     "model": model,
                     "prompt": "Hi",
                     "stream": False,
-                    "keep_alive": "30m",  # Keep model in VRAM for 30 minutes
+                    "keep_alive": keep_alive,
                     "options": {
                         "num_predict": 1  # Generate just 1 token
                     }
@@ -144,18 +144,22 @@ async def warmup_cycle(force_all: bool = False):
     result_map = {}
     
     # ── 1. Ollama models (safe — loaded in Ollama's process, not ours) ──
+    # Main model: keep loaded indefinitely (primary workhorse)
     if force_all or (now - _last_main_model_use < MODEL_IDLE_TIMEOUT):
         try:
-            result_map["main"] = await warm_ollama_model(settings.ollama_model)
+            result_map["main"] = await warm_ollama_model(settings.ollama_model, keep_alive=-1)
         except Exception:
             result_map["main"] = False
     
+    # Fast model: 10m keep_alive — auto-unloads when idle to reclaim memory
     if force_all or (now - _last_fast_model_use < MODEL_IDLE_TIMEOUT):
         if settings.ollama_fast_model != settings.ollama_model or "main" not in result_map:
             try:
-                result_map["fast"] = await warm_ollama_model(settings.ollama_fast_model)
+                result_map["fast"] = await warm_ollama_model(settings.ollama_fast_model, keep_alive="10m")
             except Exception:
                 result_map["fast"] = False
+    
+    # Vision model: NOT warmed here — loads lazily on first vision task to save memory
     
     # ── 2. In-process models (heavy — check memory first) ──
     avail = _get_available_memory()
