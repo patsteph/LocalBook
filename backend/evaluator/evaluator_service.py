@@ -95,10 +95,10 @@ def _check_available_memory() -> tuple[bool, str]:
         mem = psutil.virtual_memory()
         available_gb = mem.available / (1024 ** 3)
         total_gb = mem.total / (1024 ** 3)
-        if available_gb < 3.0:
+        if available_gb < 1.0:
             return False, (
                 f"Insufficient available memory: {available_gb:.1f}GB free of {total_gb:.0f}GB total. "
-                f"The evaluator needs at least 3GB free RAM to run safely. "
+                f"The evaluator needs at least 1GB free RAM to run safely. "
                 f"Close other applications or wait for current Ollama operations to finish."
             )
         return True, f"{available_gb:.1f}GB available"
@@ -120,14 +120,8 @@ async def run_full_evaluation() -> ComboEvalSummary:
     """
     from config import settings
 
-    if _progress.running:
-        raise RuntimeError("An evaluation is already running")
-
-    # Pre-flight memory check
-    mem_ok, mem_msg = _check_available_memory()
-    if not mem_ok:
-        raise RuntimeError(f"Pre-flight check failed: {mem_msg}")
-    print(f"[EVALUATOR] Memory pre-flight: {mem_msg}")
+    # Note: _progress.running and run_start_time are already set by the /run endpoint
+    # to prevent race conditions with the frontend status polling.
 
     _progress.running = True
     _progress.error = ""
@@ -136,6 +130,12 @@ async def run_full_evaluation() -> ComboEvalSummary:
     notebook_id = None
 
     try:
+        # Pre-flight memory check (inside try so errors are always captured)
+        mem_ok, mem_msg = _check_available_memory()
+        if not mem_ok:
+            raise RuntimeError(f"Pre-flight check failed: {mem_msg}")
+        print(f"[EVALUATOR] Memory pre-flight: {mem_msg}")
+
         config = _load_config()
         combo = ModelCombo.from_config(settings)
 

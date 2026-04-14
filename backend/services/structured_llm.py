@@ -106,7 +106,7 @@ class StructuredLLMService:
         self.model = settings.ollama_model
         self.max_retries = 3
     
-    async def _call_ollama_json(self, system_prompt: str, user_prompt: str, temperature: float = 0.7, timeout_seconds: float = 60.0) -> Dict[str, Any]:
+    async def _call_ollama_json(self, system_prompt: str, user_prompt: str, temperature: float = 0.7, timeout_seconds: float = 60.0, num_predict: int = 3000) -> Dict[str, Any]:
         """Call Ollama with JSON mode enabled."""
         timeout = httpx.Timeout(timeout_seconds)
         
@@ -121,7 +121,7 @@ class StructuredLLMService:
                     "keep_alive": -1,
                     "options": {
                         "temperature": temperature,
-                        "num_predict": 3000,
+                        "num_predict": num_predict,
                         "repeat_penalty": 1.2,
                         "repeat_last_n": 128,
                     }
@@ -148,17 +148,22 @@ class StructuredLLMService:
         content: str, 
         num_questions: int = 5,
         difficulty: str = "medium",
-        question_types: Optional[List[str]] = None
+        question_types: Optional[List[str]] = None,
+        source_names: Optional[List[str]] = None
     ) -> QuizOutput:
         """Generate a professional-quality quiz from content with structured output."""
         
         question_types = question_types or ["multiple_choice", "true_false", "fill_in_the_blank"]
         types_str = ", ".join(question_types)
         
+        # Build source name list for the prompt so the LLM cites real sources
+        source_list_str = ""
+        if source_names:
+            source_list_str = "\n\nAVAILABLE SOURCE NAMES (use these exact names in source_reference):\n" + "\n".join(f"- {s}" for s in source_names)
+        
         system_prompt = f"""You are an expert instructional designer creating assessment questions for mastery learning.
 
-Create exactly {num_questions} high-quality questions based on the provided content.
-Use a MIX of these question types: {types_str}
+Create exactly {num_questions} high-quality questions based ONLY on the provided content.
 
 Output a valid JSON object with this structure:
 {{
@@ -166,16 +171,24 @@ Output a valid JSON object with this structure:
         {{
             "question": "clear, unambiguous question text",
             "answer": "the correct answer",
-            "explanation": "why this is correct, referencing the source material",
+            "explanation": "why this is correct, with a direct quote from the source",
             "difficulty": "{difficulty}",
             "question_type": "one of: {types_str}",
             "options": "array of 4 options for multiple_choice, ['True','False'] for true_false, null for others",
-            "source_reference": "name of source document this question comes from"
+            "source_reference": "exact name of the source document this fact comes from"
         }}
     ],
     "topic": "main topic being tested",
     "source_summary": "brief summary of source material used"
 }}
+
+═══ ACCURACY RULES (MANDATORY — violating these makes the quiz harmful) ═══
+1. Every answer MUST be directly supported by an explicit statement in the source text.
+2. Do NOT use outside knowledge. If the source text does not contain enough info to form a question, generate FEWER questions rather than guessing.
+3. For multiple_choice: the "answer" field must be the EXACT CHARACTER-FOR-CHARACTER copy of one of the four "options" strings. No paraphrasing.
+4. For true_false: the statement must be unambiguously true or false ACCORDING TO THE SOURCE TEXT, not general knowledge.
+5. Distractors (wrong options) must be clearly wrong according to the source — not trick questions.
+6. The "explanation" must include a short direct quote from the source that proves the answer.
 
 QUESTION TYPE RULES:
 - multiple_choice: 4 plausible options; "answer" must be EXACT COPY of one option string
@@ -187,6 +200,7 @@ QUESTION TYPE RULES:
 - spot_the_error: show a statement containing a deliberate factual mistake; "answer" is the corrected version; options=null
   Example question: "Marie Curie won the Nobel Prize in Physics and Chemistry, becoming the first person to win two Nobels in the same field."
   Example answer: "She won in different fields (Physics 1903, Chemistry 1911), not the same field."
+{source_list_str}
 
 QUALITY REQUIREMENTS:
 1. Test UNDERSTANDING, not trivial recall
@@ -204,40 +218,51 @@ DIFFICULTY GUIDELINES:
 
         for attempt in range(self.max_retries):
             try:
-                # Use simpler prompt on retries
+                # Use simpler prompt on retries but KEEP accuracy rules
                 use_prompt = system_prompt
                 if attempt > 0:
                     use_prompt = f"""Generate a JSON quiz with {num_questions} questions about the content below.
+CRITICAL: Every answer MUST be directly stated in the source text. Do NOT use outside knowledge.
+For multiple_choice: "answer" must be an EXACT COPY of one of the "options" strings.
 
 Return ONLY a JSON object like this:
 {{
   "questions": [
     {{
       "question": "question text",
-      "answer": "correct answer",
-      "explanation": "why correct",
+      "answer": "correct answer (must match one option exactly for MC)",
+      "explanation": "why correct, with a direct quote from the source",
       "difficulty": "{difficulty}",
       "question_type": "multiple_choice",
-      "options": ["A", "B", "C", "D"]
+      "options": ["A", "B", "C", "D"],
+      "source_reference": "source document name"
     }}
   ],
   "topic": "topic name",
   "source_summary": "brief summary"
 }}"""
 
+                # Scale output tokens: ~300 tokens per question + overhead for JSON structure
+                predict_tokens = max(3000, num_questions * 350 + 500)
                 result = await self._call_ollama_json(
                     use_prompt,
-                    f"Content:\n{content[:8000]}",
-                    temperature=0.4 + (attempt * 0.15),
+                    f"Content:\n{content[:12000]}",
+                    temperature=0.2 + (attempt * 0.1),
                     timeout_seconds=120.0,
+                    num_predict=predict_tokens,
                 )
                 logger.info(f"[Quiz] Attempt {attempt+1}: LLM returned keys={list(result.keys()) if result else 'empty'}")
 
                 # Robust parsing: handle common LLM JSON variations
-                quiz = self._parse_quiz_result(result, difficulty)
+                quiz = self._parse_quiz_result(result, difficulty, source_names=source_names)
                 if quiz and quiz.questions:
-                    logger.info(f"[Quiz] Generated {len(quiz.questions)} questions on attempt {attempt+1}")
-                    return quiz
+                    # Verification pass: check each answer against source content
+                    verified = await self._verify_quiz_answers(quiz.questions, content[:12000])
+                    if verified:
+                        quiz.questions = verified
+                        logger.info(f"[Quiz] Generated {len(quiz.questions)} verified questions on attempt {attempt+1}")
+                        return quiz
+                    logger.warning(f"[Quiz] Attempt {attempt+1}: all questions failed verification, retrying")
                 logger.warning(f"[Quiz] Attempt {attempt+1}: parsed 0 questions, retrying")
             except Exception as e:
                 logger.warning(f"[Quiz] Attempt {attempt+1} failed: {type(e).__name__}: {e}")
@@ -246,7 +271,7 @@ Return ONLY a JSON object like this:
         
         return QuizOutput(questions=[], topic="Quiz generation failed", source_summary="All retries exhausted")
 
-    def _parse_quiz_result(self, result: Dict[str, Any], difficulty: str) -> Optional[QuizOutput]:
+    def _parse_quiz_result(self, result: Dict[str, Any], difficulty: str, source_names: Optional[List[str]] = None) -> Optional[QuizOutput]:
         """Parse quiz JSON from LLM with flexible field matching."""
         if not result or not isinstance(result, dict):
             return None
@@ -337,15 +362,32 @@ Return ONLY a JSON object like this:
                             if score > best_score:
                                 best_score = score
                                 best_option = opt
-                        if best_option and best_score >= 0.25:
+                        if best_option and best_score >= 0.5:
                             logger.info(f"[Quiz] Snapped answer to closest option "
                                        f"(score={best_score:.2f}): '{answer[:60]}' → '{best_option[:60]}'")
                             answer = best_option
                         else:
-                            # Last resort: force answer to be option A (better than impossible answer)
-                            logger.warning(f"[Quiz] Answer '{answer[:60]}' matches no option "
-                                          f"(best={best_score:.2f}). Forcing to first option.")
-                            answer = options[0]
+                            # SKIP this question — forcing a wrong answer is worse than having fewer questions
+                            logger.warning(f"[Quiz] DROPPING question — answer '{answer[:60]}' matches no option "
+                                          f"(best={best_score:.2f}). Question: '{q.get('question', '')[:80]}'")
+                            continue
+
+                # Validate source_reference against real source names
+                raw_ref = q.get('source_reference', q.get('source', None))
+                validated_ref = None
+                if raw_ref and source_names:
+                    # Exact match first
+                    if raw_ref in source_names:
+                        validated_ref = raw_ref
+                    else:
+                        # Case-insensitive substring match
+                        raw_lower = raw_ref.lower()
+                        for sn in source_names:
+                            if raw_lower in sn.lower() or sn.lower() in raw_lower:
+                                validated_ref = sn
+                                break
+                elif raw_ref:
+                    validated_ref = raw_ref  # No source_names to validate against
 
                 parsed_questions.append(QuizQuestion(
                     question=q.get('question', q.get('text', q.get('q', ''))),
@@ -354,7 +396,7 @@ Return ONLY a JSON object like this:
                     difficulty=q.get('difficulty', difficulty),
                     question_type=q_type,
                     options=options,
-                    source_reference=q.get('source_reference', q.get('source', None)),
+                    source_reference=validated_ref,
                 ))
             except Exception as e:
                 logger.debug(f"[Quiz] Skipping malformed question: {e}")
@@ -368,6 +410,81 @@ Return ONLY a JSON object like this:
             topic=result.get('topic', result.get('title', result.get('subject', ''))),
             source_summary=result.get('source_summary', result.get('summary', '')),
         )
+    
+    async def _verify_quiz_answers(self, questions: List[QuizQuestion], source_content: str) -> List[QuizQuestion]:
+        """Verify each quiz answer against source content. Drop questions with unsupported answers.
+        
+        Uses a lightweight LLM call per batch to check if answers are grounded in the source text.
+        This is the key defense against hallucinated answers.
+        """
+        if not questions:
+            return questions
+        
+        # Build a batch verification prompt — check all questions at once for efficiency
+        q_list = []
+        for i, q in enumerate(questions):
+            q_list.append(f"Q{i+1}: {q.question}\nAnswer: {q.answer}")
+        questions_text = "\n\n".join(q_list)
+        
+        verify_prompt = f"""You are a fact-checker. For each question-answer pair below, determine if the answer is DIRECTLY SUPPORTED by the source text provided.
+
+Reply with a JSON object:
+{{
+  "verdicts": [
+    {{"q": 1, "supported": true, "reason": "brief reason"}},
+    {{"q": 2, "supported": false, "reason": "answer says X but source says Y"}}
+  ]
+}}
+
+Rules:
+- "supported" = true ONLY if the source text explicitly states or directly implies the answer.
+- "supported" = false if the answer uses outside knowledge, is a hallucination, or contradicts the source.
+- Be STRICT. When in doubt, mark as false.
+
+QUESTIONS TO VERIFY:
+{questions_text}"""
+
+        try:
+            result = await self._call_ollama_json(
+                verify_prompt,
+                f"SOURCE TEXT:\n{source_content[:10000]}",
+                temperature=0.0,
+                timeout_seconds=90.0,
+            )
+            
+            verdicts = result.get("verdicts", [])
+            if not verdicts:
+                logger.warning("[Quiz Verify] No verdicts returned, keeping all questions")
+                return questions
+            
+            # Build lookup: q_number → supported
+            supported_map = {}
+            for v in verdicts:
+                q_num = v.get("q", 0)
+                supported_map[q_num] = v.get("supported", True)
+                if not v.get("supported", True):
+                    logger.info(f"[Quiz Verify] REJECTED Q{q_num}: {v.get('reason', 'no reason')}")
+            
+            # Filter: keep only supported questions
+            verified = []
+            for i, q in enumerate(questions):
+                q_num = i + 1
+                if supported_map.get(q_num, True):  # Default to keeping if verdict missing
+                    verified.append(q)
+                else:
+                    logger.warning(f"[Quiz Verify] Dropped question: '{q.question[:80]}' — answer not supported by source")
+            
+            dropped = len(questions) - len(verified)
+            if dropped > 0:
+                logger.info(f"[Quiz Verify] Kept {len(verified)}/{len(questions)} questions ({dropped} dropped as unsupported)")
+            else:
+                logger.info(f"[Quiz Verify] All {len(verified)} questions verified as source-grounded")
+            
+            return verified
+            
+        except Exception as e:
+            logger.warning(f"[Quiz Verify] Verification failed ({e}), keeping all questions as fallback")
+            return questions
     
     # Color theme palettes - synced with frontend VisualToolbar.tsx and svg_templates.py
     COLOR_THEMES = {

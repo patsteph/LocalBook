@@ -226,6 +226,13 @@ async def _capture_remote_document(url: str, notebook_id: str, title: str, backg
 
         print(f"[BROWSER] Extracted {word_count} words from remote {file_format}: {url}")
 
+        # Record token savings from document content vs web search
+        try:
+            from services.rag_metrics import rag_metrics
+            rag_metrics.record_token_savings(text)
+        except Exception as e:
+            print(f"[BROWSER] Could not record token savings: {e}")
+
         # Score through Curator
         curator_scoring = await curator.score_user_item(
             notebook_id=notebook_id,
@@ -462,6 +469,13 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
                     log_document_captured(request.notebook_id, request.url, arxiv_title, "arxiv_pdf")
                 except Exception:
                     pass
+                # Record token savings from PDF content vs web search
+                try:
+                    from services.rag_metrics import rag_metrics
+                    rag_metrics.record_token_savings(text)
+                except Exception as e:
+                    print(f"[BROWSER] Could not record token savings: {e}")
+                
                 print(f"[BROWSER] ArXiv PDF captured: {arxiv_title} ({word_count} words, {chunks} chunks)")
                 return CaptureResponse(
                     success=True, source_id=source_id, title=arxiv_title,
@@ -532,6 +546,13 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
         
         source_id = str(uuid.uuid4())
         print(f"[BROWSER] Capturing page: {request.url} ({word_count} words)")
+        
+        # Record token savings from scraping vs web search
+        try:
+            from services.rag_metrics import rag_metrics
+            rag_metrics.record_token_savings(content)
+        except Exception as e:
+            print(f"[BROWSER] Could not record token savings: {e}")
         
         # Score through Curator for learning (user-provided content gets bonus weight)
         from agents.curator import curator
@@ -723,6 +744,13 @@ async def capture_selection(request: SelectionCaptureRequest):
         
         print(f"[BROWSER] Selection capture: {word_count} words from {request.url}")
         
+        # Record token savings from selection vs web search
+        try:
+            from services.rag_metrics import rag_metrics
+            rag_metrics.record_token_savings(request.selected_text)
+        except Exception as e:
+            print(f"[BROWSER] Could not record token savings: {e}")
+        
         # Score through Curator with HIGH weight - selections are explicit user interest
         # 2.0x bonus because user took deliberate action to highlight this
         curator_scoring = await curator.score_user_item(
@@ -865,6 +893,13 @@ async def capture_youtube(request: YouTubeCaptureRequest):
         reading_time = max(1, word_count // 200)
         
         print(f"[BROWSER] YouTube capture: '{title}' ({word_count} words)")
+        
+        # Record token savings from transcript vs web search
+        try:
+            from services.rag_metrics import rag_metrics
+            rag_metrics.record_token_savings(content)
+        except Exception as e:
+            print(f"[BROWSER] Could not record token savings: {e}")
         
         # Score through Curator for learning
         from agents.curator import curator

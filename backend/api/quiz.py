@@ -239,7 +239,8 @@ async def generate_quiz(request: GenerateQuizRequest):
             content=content,
             num_questions=request.num_questions,
             difficulty=request.difficulty,
-            question_types=request.question_types
+            question_types=request.question_types,
+            source_names=built.source_names,
         )
         
         # Create quiz response

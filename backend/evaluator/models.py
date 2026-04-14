@@ -395,10 +395,16 @@ class EvalProgress:
     progress_percent: int = 0
     current_test: str = ""
     elapsed_seconds: float = 0.0
+    run_start_time: float = 0.0  # time.time() when run started — for live elapsed computation
     results_so_far: dict = field(default_factory=dict)
     error: str = ""
 
     def to_dict(self) -> dict:
+        import time as _time
+        # Compute elapsed dynamically while running
+        elapsed = self.elapsed_seconds
+        if self.running and self.run_start_time > 0:
+            elapsed = _time.time() - self.run_start_time
         return {
             "running": self.running,
             "phase": self.phase,
@@ -406,7 +412,7 @@ class EvalProgress:
             "total_phases": self.total_phases,
             "progress_percent": self.progress_percent,
             "current_test": self.current_test,
-            "elapsed_seconds": round(self.elapsed_seconds, 1),
+            "elapsed_seconds": round(elapsed, 1),
             "results_so_far": self.results_so_far,
             "error": self.error,
         }

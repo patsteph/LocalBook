@@ -32,6 +32,7 @@ _COLLECTOR_HELP = """**@collector — Your automated content collection agent**
 
 | Command | What it does |
 |---|---|
+| `@collector subscribe <URL>` | **Subscribe** to a source — scrapes now + auto-checks for new content on schedule (YouTube channels, blogs, RSS) |
 | `@collector add <URL>` | Add a **URL as a monitored source** (RSS feed or web page) |
 | `@collector remove <URL>` | Remove a source |
 | `@collector add keyword <topic>` | Track a **news keyword** for alerts |
@@ -773,9 +774,150 @@ async def _stream_collector(chat_query: ChatQuery):
         params = classified.get("params", {})
 
         # -----------------------------------------------------------------
+        # SUBSCRIBE (resolve → scrape now → register recurring feed)
+        # -----------------------------------------------------------------
+        if intent == "subscribe":
+            url = (params.get("url") or "").strip().rstrip('.,;:)')
+            if not url and url_match:
+                url = url_match.group(1).rstrip('.,;:)')
+            if url:
+                from services.web_scraper import web_scraper
+
+                yield f"data: {json.dumps({'type': 'status', 'message': f'{collector_name} resolving subscription target...', 'query_type': 'collector'})}\n\n"
+
+                try:
+                    sub = await web_scraper.resolve_subscription_target(url)
+                except Exception as e:
+                    reply = f"**Could not resolve subscription target:** {url}\n- Error: {e}"
+                    follow_ups = ['Try adding as a regular source', 'Show my sources']
+                    sub = None
+
+                if sub:
+                    src_type = sub["source_type"]
+                    feed_url = sub.get("feed_url")
+                    channel_name = sub.get("channel_name") or url
+                    schedule_raw = params.get("schedule")
+                    freq = _parse_freq(schedule_raw) if schedule_raw else sub.get("default_schedule", "weekly")
+
+                    lines = []
+
+                    # ── Step 1: Immediate scrape ──
+                    immediate_url = sub.get("immediate_url", url)
+                    yield f"data: {json.dumps({'type': 'status', 'message': f'{collector_name} scraping content...', 'query_type': 'collector'})}\n\n"
+
+                    immediate_ok = False
+                    is_yt_video = web_scraper._is_youtube_url(immediate_url) and ("/watch" in immediate_url or "youtu.be/" in immediate_url or "/shorts/" in immediate_url)
+                    if src_type == "youtube_channel" and is_yt_video:
+                        # Scrape the specific video transcript
+                        try:
+                            yt_result = await web_scraper._scrape_youtube(immediate_url)
+                            if yt_result.get("success") and yt_result.get("text"):
+                                wc = len(yt_result["text"].split())
+                                yt_title = yt_result.get("title", "Video")
+                                lines.append(f"**Immediate:** Scraped transcript from \"{yt_title}\" ({wc:,} words)")
+                                immediate_ok = True
+                        except Exception:
+                            pass
+                    
+                    if not immediate_ok:
+                        try:
+                            # Use cached scrape from resolve_subscription_target if available
+                            cached = sub.get("_scraped")
+                            if cached and cached.get("success") and cached.get("text"):
+                                scraped = cached
+                            else:
+                                scraped = await web_scraper.scrape_with_html(immediate_url)
+                            if scraped.get("success") and scraped.get("text"):
+                                wc = len(scraped["text"].split())
+                                pg_title = scraped.get("title", "Page")
+                                lines.append(f"**Immediate:** Scraped \"{pg_title}\" ({wc:,} words)")
+                                immediate_ok = True
+                        except Exception:
+                            pass
+                    
+                    if not immediate_ok:
+                        lines.append(f"**Immediate:** Could not scrape content from {immediate_url} (will still subscribe)")
+
+                    # ── Step 2: Register subscription ──
+                    yield f"data: {json.dumps({'type': 'status', 'message': f'{collector_name} setting up subscription...', 'query_type': 'collector'})}\n\n"
+
+                    if src_type == "youtube_channel" and feed_url:
+                        # Register YouTube channel as RSS feed
+                        rss_feeds = list(config.sources.get("rss_feeds", []))
+                        if feed_url not in rss_feeds:
+                            rss_feeds.append(feed_url)
+                            collector_agent.update_config({
+                                "sources": {**config.sources, "rss_feeds": rss_feeds},
+                                "schedule": {**config.schedule, "frequency": freq},
+                            })
+                        lines.append(f"\n**Subscribed:** {channel_name}")
+                        lines.append(f"- YouTube channel RSS feed registered")
+                        lines.append(f"- Schedule: **{freq}** checks for new uploads")
+                        lines.append(f"- New videos will be auto-scraped for transcripts")
+                        _notify_curator(f"Collector subscribed to YouTube channel: {channel_name} ({feed_url}). Schedule: {freq}.")
+
+                    elif src_type == "rss_feed" and feed_url:
+                        rss_feeds = list(config.sources.get("rss_feeds", []))
+                        if feed_url not in rss_feeds:
+                            rss_feeds.append(feed_url)
+                            collector_agent.update_config({
+                                "sources": {**config.sources, "rss_feeds": rss_feeds},
+                                "schedule": {**config.schedule, "frequency": freq},
+                            })
+                        lines.append(f"\n**Subscribed:** {channel_name}")
+                        lines.append(f"- RSS feed registered: {feed_url}")
+                        lines.append(f"- Schedule: **{freq}** checks for new content")
+                        _notify_curator(f"Collector subscribed to RSS feed: {channel_name} ({feed_url}). Schedule: {freq}.")
+
+                    elif src_type == "feed_page":
+                        feed_pages = list(config.sources.get("feed_pages", []))
+                        if url not in feed_pages:
+                            feed_pages.append(url)
+                            collector_agent.update_config({
+                                "sources": {**config.sources, "feed_pages": feed_pages},
+                                "schedule": {**config.schedule, "frequency": freq},
+                            })
+                        lines.append(f"\n**Subscribed:** {channel_name}")
+                        lines.append(f"- Feed page registered for article monitoring")
+                        lines.append(f"- Schedule: **{freq}** checks for new articles")
+                        _notify_curator(f"Collector subscribed to feed page: {channel_name} ({url}). Schedule: {freq}.")
+
+                    else:
+                        # Couldn't find a feed — register as web page with schedule
+                        web_pages = list(config.sources.get("web_pages", []))
+                        if url not in web_pages:
+                            web_pages.append(url)
+                            collector_agent.update_config({
+                                "sources": {**config.sources, "web_pages": web_pages},
+                                "schedule": {**config.schedule, "frequency": freq},
+                            })
+                        lines.append(f"\n**Registered:** {channel_name}")
+                        lines.append(f"- No RSS feed found — registered as monitored web page")
+                        lines.append(f"- Schedule: **{freq}** checks for changes")
+                        _notify_curator(f"Collector registered web source (no feed found): {channel_name} ({url}). Schedule: {freq}.")
+
+                    # ── Step 3: Preview upcoming content (YouTube channels) ──
+                    if src_type == "youtube_channel" and feed_url:
+                        try:
+                            import feedparser
+                            feed = feedparser.parse(feed_url)
+                            if feed.entries:
+                                lines.append(f"\n**Recent uploads** ({len(feed.entries[:5])} shown):")
+                                for entry in feed.entries[:5]:
+                                    lines.append(f"- [{entry.get('title', 'Untitled')}]({entry.get('link', '')})")
+                        except Exception:
+                            pass
+
+                    reply = "\n".join(lines)
+                    follow_ups = ['Collect now', 'Show my subscription sources', 'Subscribe to another channel']
+            else:
+                reply = "Please provide a URL to subscribe to. Example: *\"subscribe to https://youtube.com/@stanfordgsb\"*"
+                follow_ups = ['Show my sources', 'How do subscriptions work?']
+
+        # -----------------------------------------------------------------
         # ADD URL (with optional schedule)
         # -----------------------------------------------------------------
-        if intent == "add_url":
+        elif intent == "add_url":
             url = (params.get("url") or "").strip().rstrip('.,;:)')
             # Fallback: extract URL from message if LLM missed it
             if not url and url_match:
@@ -1117,8 +1259,23 @@ async def _stream_collector(chat_query: ChatQuery):
             lines.append(f"- **Filters:** max age {config.filters.get('max_age_days', 30)}d, min relevance {config.filters.get('min_relevance', 0.5)}")
             web_ct = len(config.sources.get("web_pages", []))
             rss_ct = len(config.sources.get("rss_feeds", []))
+            feed_ct = len(config.sources.get("feed_pages", []))
             kw_ct = len(config.sources.get("news_keywords", []))
-            lines.append(f"- **Sources:** {web_ct} web pages, {rss_ct} RSS feeds, {kw_ct} keywords")
+            parts = []
+            if web_ct: parts.append(f"{web_ct} web pages")
+            if rss_ct: parts.append(f"{rss_ct} RSS/channel feeds")
+            if feed_ct: parts.append(f"{feed_ct} feed pages")
+            if kw_ct: parts.append(f"{kw_ct} keywords")
+            lines.append(f"- **Sources:** {', '.join(parts) if parts else 'none configured'}")
+            # List subscription feeds
+            rss_feeds = config.sources.get("rss_feeds", [])
+            if rss_feeds:
+                lines.append(f"\n**Subscriptions ({len(rss_feeds)}):**")
+                for feed in rss_feeds:
+                    if "youtube.com/feeds" in feed:
+                        lines.append(f"- 📺 YouTube channel: {feed}")
+                    else:
+                        lines.append(f"- 📡 {feed}")
             reply = "\n".join(lines)
 
         # -----------------------------------------------------------------

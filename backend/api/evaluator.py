@@ -54,11 +54,36 @@ async def run_evaluation(background_tasks: BackgroundTasks):
     from evaluator.evaluator_service import get_progress
 
     progress = get_progress()
+    
+    # Debug logging to understand the state
+    import time as _time
+    real_elapsed = (_time.time() - progress.run_start_time) if progress.run_start_time > 0 else 0
+    logger.info(f"[EVALUATOR] /run called - running={progress.running}, phase={progress.phase}, real_elapsed={real_elapsed:.0f}s")
+    
     if progress.running:
-        raise HTTPException(
-            status_code=409,
-            detail="An evaluation is already running. Check /evaluator/status for progress."
-        )
+        # Additional safety: if we've been running for an unreasonable time (>30 min),
+        # assume it's stuck and force reset
+        if real_elapsed > 1800:  # 30 minutes
+            logger.warning("[EVALUATOR] Detected stuck run (>30min), forcing reset")
+            progress.running = False
+            progress.error = ""
+        else:
+            logger.warning(f"[EVALUATOR] Rejecting run request - already running (phase={progress.phase}, real_elapsed={real_elapsed:.0f}s)")
+            raise HTTPException(
+                status_code=409,
+                detail="An evaluation is already running. Check /evaluator/status for progress."
+            )
+
+    # Reset progress state cleanly before starting new run
+    logger.info("[EVALUATOR] Resetting progress state before starting new evaluation")
+    progress.running = True  # Set TRUE immediately so status polls see it as running
+    progress.error = ""
+    progress.results_so_far = {}
+    progress.elapsed_seconds = 0.0
+    progress.run_start_time = _time.time()  # For live elapsed computation in to_dict()
+    progress.phase = 0
+    progress.phase_name = "Starting..."
+    progress.current_test = "Initializing evaluation"
 
     # Run in background
     background_tasks.add_task(_run_evaluation_background)
@@ -71,21 +96,50 @@ async def run_evaluation(background_tasks: BackgroundTasks):
 
 async def _run_evaluation_background():
     """Background task to run the full evaluation."""
-    from evaluator.evaluator_service import run_full_evaluation
+    from evaluator.evaluator_service import run_full_evaluation, get_progress
 
+    logger.info("[EVALUATOR] Background task started")
     try:
         summary = await run_full_evaluation()
         logger.info(f"[EVALUATOR] Evaluation complete: {summary.overall_grade} ({summary.overall_score:.1f})")
     except Exception as e:
         logger.error(f"[EVALUATOR] Evaluation failed: {e}")
         traceback.print_exc()
+        # Defensive: ensure error and running flag are always set
+        progress = get_progress()
+        if not progress.error:
+            progress.error = str(e)
+        if progress.running:
+            logger.warning("[EVALUATOR] Forcing reset of stuck running flag after exception")
+            progress.running = False
 
 
 @router.get("/status")
 async def get_status():
     """Get current evaluation progress."""
     from evaluator.evaluator_service import get_progress
-    return get_progress().to_dict()
+    
+    progress = get_progress()
+    
+    # Recovery: detect inconsistent states and auto-reset
+    if progress.running:
+        import time as _time
+        # Compute real elapsed from start time (elapsed_seconds field only updates at end)
+        real_elapsed = (_time.time() - progress.run_start_time) if progress.run_start_time > 0 else 0
+        # If we've been stuck at phase 0 for more than 2 min, the background task likely crashed
+        if progress.phase == 0 and progress.phase_name == "Starting..." and real_elapsed > 120:
+            logger.warning(f"[EVALUATOR] Detected stuck state (phase=0, real_elapsed={real_elapsed:.0f}s), auto-resetting")
+            progress.running = False
+            progress.error = "Evaluation failed to start — background task did not begin. Check server logs."
+        # If we've been running for an unreasonable time (>30 min), assume stuck
+        elif real_elapsed > 1800:
+            logger.warning(f"[EVALUATOR] Detected long-running state (real_elapsed={real_elapsed:.0f}s), auto-resetting")
+            progress.running = False
+            progress.error = "Evaluation timed out after 30 minutes."
+    
+    return progress.to_dict()
+
+
 
 
 @router.get("/results")

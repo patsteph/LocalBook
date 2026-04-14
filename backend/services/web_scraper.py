@@ -1,7 +1,7 @@
 """Web scraping and search service"""
 import asyncio
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional
 from urllib.parse import urlparse, parse_qs
 import trafilatura
 import httpx
@@ -467,7 +467,7 @@ class WebScraper:
                 "error": str(e)
             }
 
-    async def _fetch_html(self, url: str) -> str | None:
+    async def _fetch_html(self, url: str) -> Optional[str]:
         """Fetch raw HTML from a URL. Tries Playwright first, falls back to httpx.
         
         Returns HTML string or None on failure.
@@ -759,6 +759,180 @@ class WebScraper:
         except Exception:
             # Never break scraping — if parsing fails, just skip images
             return ""
+
+
+    # ─── Subscription Resolution ──────────────────────────────────────
+    
+    async def resolve_subscription_target(self, url: str) -> Dict:
+        """Resolve a URL to its underlying subscription feed.
+        
+        Returns a dict with:
+            source_type: 'youtube_channel' | 'rss_feed' | 'feed_page' | 'web_page'
+            feed_url: The RSS/Atom feed URL (if discovered)
+            channel_id: YouTube channel ID (if applicable)
+            channel_name: Human-readable channel/source name
+            immediate_url: URL to scrape immediately for instant value
+            default_schedule: Suggested schedule frequency
+        """
+        parsed = urlparse(url)
+        domain = (parsed.hostname or "").lower().replace("www.", "")
+        
+        result = {
+            "source_type": "web_page",
+            "feed_url": None,
+            "channel_id": None,
+            "channel_name": None,
+            "immediate_url": url,
+            "default_schedule": "weekly",
+        }
+        
+        # ── YouTube: video, channel, or playlist ──
+        if domain in ("youtube.com", "youtu.be", "m.youtube.com"):
+            return await self._resolve_youtube_subscription(url, parsed, result)
+        
+        # ── Substack ──
+        if domain.endswith("substack.com"):
+            pub = domain.split(".substack.com")[0]
+            result["source_type"] = "rss_feed"
+            result["feed_url"] = f"https://{pub}.substack.com/feed"
+            result["channel_name"] = f"Substack: {pub}"
+            result["default_schedule"] = "daily"
+            return result
+        
+        # ── Generic: try RSS autodiscovery from HTML ──
+        try:
+            scraped = await self.scrape_with_html(url)
+            raw_html = scraped.get("html", "")
+            
+            # Cache the scraped data so caller doesn't need to re-fetch
+            result["_scraped"] = scraped
+            
+            if raw_html:
+                # Check for RSS/Atom <link> tags
+                feed_url = self._discover_rss_from_html(raw_html, url)
+                if feed_url:
+                    result["source_type"] = "rss_feed"
+                    result["feed_url"] = feed_url
+                    result["channel_name"] = scraped.get("title", domain)
+                    result["default_schedule"] = "daily"
+                    return result
+                
+                # Check if it's an index/feed page
+                is_index = self.is_index_page(url, raw_html, scraped.get("text", ""))
+                if is_index:
+                    result["source_type"] = "feed_page"
+                    result["channel_name"] = scraped.get("title", domain)
+                    result["default_schedule"] = "weekly"
+                    return result
+            
+            # Fallback: regular web page
+            result["channel_name"] = scraped.get("title", domain)
+        except Exception as e:
+            print(f"[WebScraper] Subscription resolution failed for {url}: {e}")
+            result["channel_name"] = domain
+        
+        return result
+    
+    async def _resolve_youtube_subscription(self, url: str, parsed, result: Dict) -> Dict:
+        """Resolve YouTube URLs to channel RSS feeds."""
+        path = parsed.path or ""
+        
+        # ── Channel URL: /@handle, /c/name, /channel/ID ──
+        channel_id = None
+        channel_name = None
+        immediate_url = url
+        
+        if path.startswith("/@") or path.startswith("/c/") or path.startswith("/channel/"):
+            # This is already a channel URL
+            channel_id = await self._resolve_youtube_channel_id(url)
+            parts = path.split("/")
+            channel_name = parts[1] if len(parts) > 1 else "YouTube Channel"
+            if channel_name.startswith("@"):
+                channel_name = channel_name[1:]
+            immediate_url = url  # Will scrape latest videos from channel page
+        
+        # ── Video URL: extract channel from video page ──
+        elif "/watch" in path or path.startswith("/shorts/") or "youtu.be" in (parsed.hostname or ""):
+            video_id = self._extract_youtube_id(url)
+            if video_id:
+                immediate_url = url  # Scrape this specific video transcript
+                # Try to get channel info from the video page
+                channel_id = await self._get_channel_from_video(url)
+        
+        # ── Playlist URL ──
+        elif "/playlist" in path:
+            channel_id = await self._resolve_youtube_channel_id(url)
+            immediate_url = url
+        
+        if channel_id:
+            result["source_type"] = "youtube_channel"
+            result["feed_url"] = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+            result["channel_id"] = channel_id
+            result["channel_name"] = channel_name or f"YouTube Channel ({channel_id[:8]}...)"
+            result["immediate_url"] = immediate_url
+            result["default_schedule"] = "weekly"
+        else:
+            # Couldn't resolve channel — treat as single video
+            result["source_type"] = "web_page"
+            result["channel_name"] = "YouTube Video"
+            result["immediate_url"] = immediate_url
+            result["default_schedule"] = "manual"
+        
+        return result
+    
+    async def _resolve_youtube_channel_id(self, url: str) -> Optional[str]:
+        """Resolve a YouTube channel/page URL to its channel ID by fetching the page HTML."""
+        try:
+            html = await self._fetch_html(url)
+            if html:
+                # Look for channel ID in meta tags or canonical links
+                # Pattern: "channel_id":"UC..." or /channel/UC...
+                match = re.search(r'"(?:externalId|channelId)"\s*:\s*"(UC[a-zA-Z0-9_-]+)"', html)
+                if match:
+                    return match.group(1)
+                match = re.search(r'/channel/(UC[a-zA-Z0-9_-]+)', html)
+                if match:
+                    return match.group(1)
+        except Exception as e:
+            print(f"[WebScraper] Could not resolve YouTube channel ID: {e}")
+        return None
+    
+    async def _get_channel_from_video(self, video_url: str) -> Optional[str]:
+        """Extract channel ID from a YouTube video page."""
+        try:
+            html = await self._fetch_html(video_url)
+            if html:
+                # YouTube embeds channel ID in video pages
+                match = re.search(r'"channelId"\s*:\s*"(UC[a-zA-Z0-9_-]+)"', html)
+                if match:
+                    return match.group(1)
+                match = re.search(r'/channel/(UC[a-zA-Z0-9_-]+)', html)
+                if match:
+                    return match.group(1)
+        except Exception as e:
+            print(f"[WebScraper] Could not get channel from video: {e}")
+        return None
+    
+    def _discover_rss_from_html(self, html: str, base_url: str) -> Optional[str]:
+        """Discover RSS/Atom feed URL from HTML <link> tags."""
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "html.parser")
+            
+            # Look for <link rel="alternate" type="application/rss+xml"> or atom+xml
+            for link_tag in soup.find_all("link", rel="alternate"):
+                link_type = (link_tag.get("type") or "").lower()
+                if "rss" in link_type or "atom" in link_type:
+                    href = link_tag.get("href", "")
+                    if href:
+                        # Resolve relative URLs
+                        if href.startswith("/"):
+                            parsed_base = urlparse(base_url)
+                            href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+                        return href
+        except Exception:
+            pass
+        return None
 
 
 web_scraper = WebScraper()

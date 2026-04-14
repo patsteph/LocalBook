@@ -44,7 +44,8 @@ STUDIO_INTENTS: List[Dict[str, str]] = [
 ]
 
 COLLECTOR_INTENTS: List[Dict[str, str]] = [
-    {"id": "add_url", "desc": "User wants to add a URL (web page or RSS feed) as a source", "params": "url: the URL, is_rss: true if RSS/feed, schedule: frequency if mentioned (hourly/daily/weekly)"},
+    {"id": "subscribe", "desc": "User wants to subscribe to, follow, or monitor a source for recurring new content (YouTube channel, blog, podcast, newsletter). Includes phrases like 'subscribe', 'follow', 'monitor', 'watch for new', 'keep checking', or any URL with a schedule request", "params": "url: the URL, schedule: frequency if mentioned (hourly/daily/weekly)"},
+    {"id": "add_url", "desc": "User wants to add a single specific URL (web page or RSS feed) as a one-time source without subscribing for updates", "params": "url: the URL, is_rss: true if RSS/feed, schedule: frequency if mentioned (hourly/daily/weekly)"},
     {"id": "remove_source", "desc": "User wants to remove, stop, disable, or unsubscribe from a source", "params": "url: the URL to remove"},
     {"id": "add_keyword", "desc": "User wants to track a news keyword or topic for alerts", "params": "keyword: the keyword or topic"},
     {"id": "set_intent", "desc": "User is describing the intent, purpose, or goal of this notebook/collector", "params": "intent: the described intent"},

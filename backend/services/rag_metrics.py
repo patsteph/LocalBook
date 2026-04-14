@@ -137,6 +137,10 @@ class RAGMetricsService:
         self._total_completion_tokens = 0
         self._total_generation_time_ns = 0  # nanoseconds from Ollama eval_duration
         
+        # Token savings from local content (browser extension, etc.)
+        self._total_tokens_saved = 0  # Tokens saved by using local content instead of web search
+        self._total_scraped_tokens = 0  # Total tokens from scraped/captured content
+        
         # Metrics file path
         self._metrics_file = Path(settings.db_path).parent / "rag_metrics.json"
         print(f"[RAGMetrics] Initializing with file: {self._metrics_file}")
@@ -160,7 +164,10 @@ class RAGMetricsService:
                     self._total_prompt_tokens = tokens.get("prompt_tokens", 0)
                     self._total_completion_tokens = tokens.get("completion_tokens", 0)
                     self._total_generation_time_ns = tokens.get("generation_time_ns", 0)
-                    print(f"[RAGMetrics] Loaded {len(self._metrics)} historical metrics, total_queries={self._total_queries}, tokens={self._total_prompt_tokens + self._total_completion_tokens:,}")
+                    # Token savings
+                    self._total_tokens_saved = tokens.get("tokens_saved", 0)
+                    self._total_scraped_tokens = tokens.get("scraped_tokens", 0)
+                    print(f"[RAGMetrics] Loaded {len(self._metrics)} historical metrics, total_queries={self._total_queries}, tokens={self._total_prompt_tokens + self._total_completion_tokens:,}, saved={self._total_tokens_saved:,}")
             else:
                 print(f"[RAGMetrics] No metrics file found at {self._metrics_file}, starting fresh")
                 # Create the file immediately
@@ -185,6 +192,8 @@ class RAGMetricsService:
                     "prompt_tokens": self._total_prompt_tokens,
                     "completion_tokens": self._total_completion_tokens,
                     "generation_time_ns": self._total_generation_time_ns,
+                    "tokens_saved": self._total_tokens_saved,
+                    "scraped_tokens": self._total_scraped_tokens,
                 },
                 "last_updated": datetime.now().isoformat()
             }
@@ -303,7 +312,42 @@ class RAGMetricsService:
             "completion_tokens": self._total_completion_tokens,
             "total_tokens": total_tokens,
             "avg_tokens_per_sec": round(avg_tokens_per_sec, 1),
+            "tokens_saved": self._total_tokens_saved,
+            "scraped_tokens": self._total_scraped_tokens,
         }
+    
+    def count_tokens(self, text: str) -> int:
+        """Count tokens in text using tiktoken."""
+        try:
+            import tiktoken
+            tokenizer = tiktoken.get_encoding("cl100k_base")
+            return len(tokenizer.encode(text))
+        except Exception:
+            # Fallback: rough estimate (1 token per 4 characters)
+            return len(text) // 4
+    
+    def record_token_savings(self, scraped_text: str, estimated_search_tokens: int = None):
+        """Record token savings from scraped content vs web search.
+        
+        Args:
+            scraped_text: The scraped/captured content text
+            estimated_search_tokens: Estimated tokens that would have been used for web search.
+                                   If None, estimates based on content length.
+        """
+        scraped_tokens = self.count_tokens(scraped_text)
+        
+        # Estimate web search tokens if not provided (typically longer than scraped content)
+        if estimated_search_tokens is None:
+            # Web search results are typically 2-3x longer than direct content extraction
+            estimated_search_tokens = int(scraped_tokens * 2.5)
+        
+        if scraped_tokens > 0 and estimated_search_tokens > scraped_tokens:
+            saved = estimated_search_tokens - scraped_tokens
+            self._total_tokens_saved += saved
+            self._total_scraped_tokens += scraped_tokens
+            print(f"[RAGMetrics] Recorded token savings: {saved:,} tokens saved ({scraped_tokens:,} scraped vs {estimated_search_tokens:,} search)")
+            # Trigger save to persist the savings
+            self._save_metrics()
     
     def record_cache_hit(self, cache_type: str, hit: bool):
         """Record cache hit/miss."""

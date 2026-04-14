@@ -905,6 +905,10 @@
                     <div id="tokensPerSecValue" class="system-stat-value">--</div>
                     <div class="system-stat-label">Avg Tokens/sec</div>
                 </div>
+                <div class="system-stat">
+                    <div id="scrapedTokensValue" class="system-stat-value" style="color: var(--purple);">--</div>
+                    <div class="system-stat-label">Scraped Tokens</div>
+                </div>
             </div>
         </div>
         
@@ -1488,6 +1492,7 @@
                 document.getElementById('tokensPerSecValue').textContent = data.token_stats.avg_tokens_per_sec 
                     ? `${data.token_stats.avg_tokens_per_sec.toFixed(1)}` 
                     : '--';
+                document.getElementById('scrapedTokensValue').textContent = fmt(data.token_stats.scraped_tokens || 0);
             }
             
             // Update sections
@@ -1893,7 +1898,11 @@
             document.getElementById('latestResultsContainer').style.display = 'none';
             
             try {
-                await fetch(`${API_BASE}/evaluator/run`, { method: 'POST' });
+                const resp = await fetch(`${API_BASE}/evaluator/run`, { method: 'POST' });
+                if (!resp.ok) {
+                    const errorData = await resp.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `HTTP ${resp.status}: ${resp.statusText}`);
+                }
                 startEvalPolling();
             } catch (err) {
                 alert("Failed to start evaluator: " + err);
@@ -1901,6 +1910,7 @@
             }
         }
 
+        
         function startEvalPolling() {
             if (evaluatorPollInterval) clearInterval(evaluatorPollInterval);
             evaluatorPollInterval = setInterval(checkEvalStatus, 2000);
@@ -1943,6 +1953,14 @@
                         }
                     }
                 } else if (evaluatorPollInterval) {
+                    // Guard: if elapsed < 5s and no error, the background task likely
+                    // hasn't started yet. Keep polling instead of declaring completion.
+                    if (!data.error && data.elapsed_seconds < 5 && data.phase === 0) {
+                        console.log('[Evaluator] Waiting for background task to start...');
+                        document.getElementById('evalStatusTitle').textContent = 'Starting evaluation...';
+                        return;
+                    }
+                    
                     // We were actively polling and now it stopped
                     clearInterval(evaluatorPollInterval);
                     evaluatorPollInterval = null;

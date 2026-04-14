@@ -89,6 +89,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"  # LLM Locker writes LOCALBOOK_-prefixed keys to .env; ignore them
 
 settings = Settings()
 
