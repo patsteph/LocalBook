@@ -48,8 +48,8 @@ def robust_json_parse(
     # Attempt 1: direct parse (already valid JSON)
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as _e:
+        logger.debug(f"[json-repair] {type(_e).__name__}: {_e}")
 
     # Attempt 2: strip markdown fences
     fence_match = _MARKDOWN_FENCE_RE.search(text)
@@ -68,8 +68,8 @@ def robust_json_parse(
 
         try:
             return json.loads(cleaned)
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as _e:
+            logger.debug(f"[json-repair] {type(_e).__name__}: {_e}")
 
     tag = f"[{label}] " if label else ""
     logger.debug(f"{tag}robust_json_parse failed on: {raw[:200]}...")

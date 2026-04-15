@@ -5,6 +5,8 @@ Styles are purely cosmetic — they don't change layout, only colors, fonts, and
 """
 
 from typing import Dict
+import logging
+logger = logging.getLogger(__name__)
 
 
 VISUAL_STYLES: Dict[str, Dict[str, str]] = {
@@ -171,8 +173,8 @@ def extract_style_from_pptx(pptx_path: str) -> Dict[str, str]:
                 if typeface and typeface != '':
                     font_family = f"'{typeface}', system-ui, -apple-system, sans-serif"
 
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[styles] {type(_e).__name__}: {_e}")
 
     # If background is dark, ensure text colors are light
     bg_rgb = _hex_to_rgb(bg_color)

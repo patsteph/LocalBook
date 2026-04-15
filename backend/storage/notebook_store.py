@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import List, Optional, Dict
 from config import settings
 from utils.json_io import atomic_write_json
+import logging
+logger = logging.getLogger(__name__)
 
 class NotebookStore:
     def __init__(self):
@@ -67,8 +69,8 @@ class NotebookStore:
             counts = await source_store.count_by_notebook()
             for notebook in notebooks:
                 notebook["source_count"] = counts.get(notebook["id"], 0)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning(f"[notebook-store] {type(_e).__name__}: {_e}")
         
         return notebooks
 

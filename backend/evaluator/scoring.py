@@ -9,6 +9,8 @@ import json
 import time
 from typing import Optional
 from evaluator.models import EvalResult, _score_to_grade
+import logging
+logger = logging.getLogger(__name__)
 
 
 # ─── Deterministic Scoring ───────────────────────────────────────────────────
@@ -39,8 +41,8 @@ def score_json_validity(output: str) -> tuple[int, str]:
         if isinstance(parsed, (dict, list)):
             return 100, ""
         return 80, "Parsed but unexpected type"
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as _e:
+        logger.debug(f"[scoring] {type(_e).__name__}: {_e}")
 
     # Try extracting JSON from markdown code blocks
     code_block = re.search(r'```(?:json)?\s*\n?([\s\S]*?)\n?```', json_str)
@@ -58,8 +60,8 @@ def score_json_validity(output: str) -> tuple[int, str]:
         try:
             json.loads(json_str[start:end + 1])
             return 80, ""  # Penalty for extra text around JSON
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as _e:
+            logger.debug(f"[scoring] {type(_e).__name__}: {_e}")
 
     return 0, "No valid JSON found"
 

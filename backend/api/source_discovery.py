@@ -15,6 +15,8 @@ from services.source_discovery import source_discovery
 from services.company_profiler import company_profiler
 from agents.curator import curator
 from agents.collector import get_collector
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/source-discovery", tags=["source-discovery"])
 
@@ -91,8 +93,8 @@ async def discover_sources(request: DiscoverRequest):
             existing_urls = [s.get("url") for s in existing_sources if s.get("url")]
             if existing_urls:
                 print(f"[DISCOVERY] Found {len(existing_urls)} existing source URLs for seed discovery")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[source-discovery] {type(_e).__name__}: {_e}")
         
         # Read stored notebook_purpose from collector config — the wizard sets this
         # BEFORE source discovery runs, so it's the authoritative purpose.
@@ -116,8 +118,8 @@ async def discover_sources(request: DiscoverRequest):
                     if mapped:
                         effective_purpose = mapped
                         print(f"[DISCOVERY] Using stored notebook_purpose: {stored_purpose} → {mapped}")
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning(f"[source-discovery] {type(_e).__name__}: {_e}")
         
         # Step 1: Run source discovery
         result = await source_discovery.discover_sources(

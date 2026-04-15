@@ -27,6 +27,8 @@ from services import rag_embeddings
 from services import rag_chunking
 from services.entity_extractor import entity_extractor
 from services.entity_graph import entity_graph
+import logging
+logger = logging.getLogger(__name__)
 
 _concept_extraction_semaphore = asyncio.Semaphore(int(os.getenv("LOCALBOOK_KG_CONCURRENCY", "4")))
 
@@ -54,8 +56,8 @@ def get_table(notebook_id: str):
     # Try to open existing table first (fast path)
     try:
         return db.open_table(table_name)
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[rag-storage] {type(_e).__name__}: {_e}")
 
     # Table doesn't exist — create with placeholder to define schema
     try:
@@ -92,8 +94,8 @@ def get_stored_vector_dim(table) -> Optional[int]:
                     match = re.search(r'\[(\d+)\]', type_str)
                     if match:
                         return int(match.group(1))
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[rag-storage] {type(_e).__name__}: {_e}")
     return None
 
 
@@ -104,8 +106,8 @@ def table_has_parent_text(table) -> bool:
         for field in schema:
             if field.name == "parent_text":
                 return True
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[rag-storage] {type(_e).__name__}: {_e}")
     return False
 
 
@@ -116,8 +118,8 @@ def table_has_synthetic_questions(table) -> bool:
         for field in schema:
             if field.name == "synthetic_questions":
                 return True
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[rag-storage] {type(_e).__name__}: {_e}")
     return False
 
 

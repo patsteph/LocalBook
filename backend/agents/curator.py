@@ -767,8 +767,8 @@ Be concise and cite which notebook each insight comes from."""
                     collector = get_collector(notebook["id"])
                     cfg = collector.get_config()
                     subject = cfg.subject if hasattr(cfg, "subject") and cfg.subject else ""
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[curator] {type(_e).__name__}: {_e}")
                 
                 # Strip 'origin' from story dicts before passing to RecentStory model
                 stories_raw = stats.get("recent_stories", [])
@@ -893,8 +893,8 @@ Be concise and cite which notebook each insight comes from."""
                 collector = get_collector(notebook["id"])
                 cfg = collector.get_config()
                 subject = cfg.subject if hasattr(cfg, "subject") and cfg.subject else ""
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[curator] {type(_e).__name__}: {_e}")
             
             stories_raw = stats.get("recent_stories", [])
             stories = []
@@ -1242,8 +1242,8 @@ Write the weekly wrap up now:"""
             if runs_since and not stats["top_item"]:
                 approved = stats["collection_items_approved"]
                 stats["top_item"] = f"Collector ran {len(runs_since)} time{'s' if len(runs_since) != 1 else ''}, approved {approved} of {stats['collection_items_found']} items examined"
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # Phase 4: Collection quality metrics + recent syntheses for enriched brief
         try:
@@ -1265,8 +1265,8 @@ Write the weekly wrap up now:"""
                 gaps = [s.get("gap_reasons", {}) for s in syntheses if s.get("gap_reasons")]
                 if gaps:
                     stats["collection_gap_reasons"] = gaps[0]
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # User interactions — track activity types separately (never conflate with items_added)
         try:
@@ -1301,8 +1301,8 @@ Write the weekly wrap up now:"""
                 if topic:
                     studio_topics.add(topic[:80])
             stats["studio_topics"] = list(studio_topics)[:5]
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # Person changes — surface profile changes for people notebooks
         try:
@@ -1316,8 +1316,8 @@ Write the weekly wrap up now:"""
                             stats["person_changes"].append(
                                 f"{member.name}: {change.get('description', '')}"
                             )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # Key dates — surface upcoming events within 7 days
         try:
@@ -1338,8 +1338,8 @@ Write the weekly wrap up now:"""
                     ]
                     if not stats["top_item"]:
                         stats["top_item"] = f"Upcoming: {upcoming[0]['event']} on {upcoming[0]['date']}"
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # Use preloaded sources if available, otherwise load (still only once per call)
         all_sources = preloaded_sources if preloaded_sources is not None else []
@@ -1347,8 +1347,8 @@ Write the weekly wrap up now:"""
             try:
                 from storage.source_store import source_store
                 all_sources = await source_store.list(notebook_id)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning(f"[curator] {type(_e).__name__}: {_e}")
         
         # Recent sources — pull actual titles of recently added content
         try:
@@ -1409,8 +1409,8 @@ Write the weekly wrap up now:"""
             tagged = len([s for s in all_sources if s.get("tags") and len(s.get("tags", [])) > 0])
             stats["sources_summarized"] = tagged
             stats["sources_unread"] = len(all_sources) - tagged
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # Recent highlights — what the user explicitly marked as important
         try:
@@ -1426,8 +1426,8 @@ Write the weekly wrap up now:"""
             if highlight_count > 0:
                 stats["highlights_since"] = highlight_count
                 stats["recent_highlight_texts"] = recent_highlights
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # Unfinished threads — conversations where user asked a question
         # but didn't follow up (using existing recall memory SQLite)
@@ -1463,8 +1463,8 @@ Write the weekly wrap up now:"""
                             unfinished.append(hint)
                 
                 stats["unfinished_threads"] = unfinished[:3]
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # Topic drift — compare recent source topics vs older ones
         try:
@@ -1513,8 +1513,8 @@ Write the weekly wrap up now:"""
                         break
                 
                 stats["emerging_topics"] = emerging
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # Temporal lookback — "this day in your research" (7 days ago)
         try:
@@ -1532,8 +1532,8 @@ Write the weekly wrap up now:"""
                 stats["one_week_ago_items"] = [
                     s.get("title", "")[:100] for s in week_ago_sources[:3]
                 ]
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # Stagnation status — adaptive collection awareness
         try:
@@ -1542,8 +1542,8 @@ Write the weekly wrap up now:"""
             if stag.get("stagnating"):
                 stats["stagnation_severity"] = stag["severity"]
                 stats["stagnation_days"] = stag["days_since_growth"]
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         return stats
     
@@ -2370,8 +2370,8 @@ Respond with JSON only:
                     queries_used=collection_task.get("smart_queries", []),
                     exploration_queries=collection_task.get("exploration_queries", []),
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[curator] {type(_e).__name__}: {_e}")
             return result
         
         # Step 3: Curator judges ALL collected items
@@ -2465,8 +2465,8 @@ Respond with JSON only:
                 "strategy": collection_task.get("strategy", "standard"),
                 "trigger": "orchestrated",
             })
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         return result
     
@@ -2734,8 +2734,8 @@ Respond with ONLY a JSON array of strings, no other text:
             recently_used_queries = get_recent_queries(notebook_id, lookback_runs=5)
             if recently_used_queries:
                 print(f"[CURATOR] 🔄 Loaded {len(recently_used_queries)} recently used queries for rotation")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # ── Stagnation detection ──
         stagnation_report = None
@@ -2783,8 +2783,8 @@ Respond with ONLY a JSON array of strings, no other text:
                         domain = urlparse(url).netloc.lower().replace("www.", "")
                         if domain:
                             source_domains.add(domain)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         except Exception as e:
             logger.debug(f"Could not load sources for smart directives: {e}")
         
@@ -2854,8 +2854,8 @@ QUERY PATTERNS THAT ALWAYS FAILED (avoid these styles):
                 
                 if adaptive_block:
                     print(f"[CURATOR] 📈 Adaptive learning: {len(successful)} good patterns, {len(failed)} bad patterns")
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[curator] {type(_e).__name__}: {_e}")
             
             # Build stagnation context for the prompt if applicable
             stagnation_prompt_block = ""
@@ -3124,8 +3124,8 @@ Respond with ONLY a JSON array of strings, no other text:
                     queries_used=task.get("smart_queries", []),
                     exploration_queries=task.get("exploration_queries", []),
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[curator] {type(_e).__name__}: {_e}")
             return {"items_collected": 0, "message": "No new items found"}
         
         # Judge results (pass deadline so judgment can auto-defer if time is tight)
@@ -3433,8 +3433,8 @@ Respond with ONLY a JSON array of strings, no other text:
                     search_context = "\nRelevant content from current notebook:\n" + "\n".join(
                         f"- {r.entry.content[:200]}" for r in results
                     )
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # Stagnation awareness for current notebook
         stagnation_context = ""
@@ -3451,8 +3451,8 @@ Respond with ONLY a JSON array of strings, no other text:
                         stagnation_context = f"\n📊 This notebook's collection has stagnated ({days} days without growth). Search criteria have been automatically expanded to adjacent topics."
                     elif sev == "mild":
                         stagnation_context = f"\n🔭 This notebook's collection is in expansion mode — no new content in {days} days, exploring wider search criteria."
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         # Search across ALL notebooks for cross-references (PARALLEL)
         cross_context = ""
@@ -3483,8 +3483,8 @@ Respond with ONLY a JSON array of strings, no other text:
                         if r.combined_score > 0.3:
                             nb_name = nb.get("name", nb.get("title", "Untitled"))
                             cross_context += f"\n- [{nb_name}]: {r.entry.content[:200]}"
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         if cross_context:
             cross_context = f"\nCross-notebook connections:\n{cross_context}"
@@ -3510,8 +3510,8 @@ Respond with ONLY a JSON array of strings, no other text:
         try:
             core_memory = memory_store.load_core_memory()
             core_memory_block = core_memory.to_prompt_block()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning(f"[curator] {type(_e).__name__}: {_e}")
         
         system_prompt = f"""You are {self.name}, the Curator of a research system called LocalBook.
 Your personality: {self.personality}
@@ -3608,8 +3608,8 @@ Rules:
                             "content": r.entry.content[:200],
                             "score": r.combined_score
                         })
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
         if not cross_hits:
             # Also check pending insights

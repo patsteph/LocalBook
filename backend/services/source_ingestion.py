@@ -52,8 +52,8 @@ async def create_and_ingest_source(
     content_date = None
     try:
         content_date = extract_content_date(filename, date_text)
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[source-ingestion] {type(_e).__name__}: {_e}")
 
     # Build metadata
     metadata: Dict[str, Any] = {
@@ -123,8 +123,8 @@ async def create_and_ingest_source(
     # 5. Log event
     try:
         log_document_captured(notebook_id, url or filename, filename, source_type)
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[source-ingestion] {type(_e).__name__}: {_e}")
 
     return {
         "source_id": sid,

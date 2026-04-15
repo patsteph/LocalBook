@@ -19,6 +19,8 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Qu
 from pydantic import BaseModel
 
 from services.job_queue import job_queue, JobType, JobStatus, Job
+import logging
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -235,13 +237,13 @@ class WebSocketManager:
         if job_id and job_id in self.connections:
             try:
                 self.connections[job_id].remove(websocket)
-            except ValueError:
-                pass
+            except ValueError as _e:
+                logger.debug(f"[jobs] {type(_e).__name__}: {_e}")
         else:
             try:
                 self.global_connections.remove(websocket)
-            except ValueError:
-                pass
+            except ValueError as _e:
+                logger.debug(f"[jobs] {type(_e).__name__}: {_e}")
         
         job_queue.remove_listener(listener, job_id)
     
@@ -309,11 +311,11 @@ async def websocket_all_jobs(websocket: WebSocket):
                             "job": status
                         })
                         
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as _e:
+                logger.debug(f"[jobs] {type(_e).__name__}: {_e}")
                 
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as _e:
+        logger.warning(f"[jobs] {type(_e).__name__}: {_e}")
     finally:
         ws_manager.disconnect(websocket, None, listener)
 
@@ -353,10 +355,10 @@ async def websocket_job(websocket: WebSocket, job_id: str):
                         "success": success
                     })
                     
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as _e:
+                logger.debug(f"[jobs] {type(_e).__name__}: {_e}")
                 
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as _e:
+        logger.warning(f"[jobs] {type(_e).__name__}: {_e}")
     finally:
         ws_manager.disconnect(websocket, job_id, listener)

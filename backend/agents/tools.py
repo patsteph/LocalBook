@@ -10,6 +10,8 @@ app flow calls the underlying services directly (rag_engine, structured_llm, etc
 
 from typing import Optional, List
 from langchain_core.tools import tool
+import logging
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -387,13 +389,13 @@ def _try_parse_json(text: str) -> dict | None:
     # Try raw first
     try:
         return json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        pass
+    except (json.JSONDecodeError, ValueError) as _e:
+        logger.debug(f"[tools] {type(_e).__name__}: {_e}")
     # Try after sanitizing
     try:
         return json.loads(_sanitize_llm_json(text))
-    except (json.JSONDecodeError, ValueError):
-        pass
+    except (json.JSONDecodeError, ValueError) as _e:
+        logger.debug(f"[tools] {type(_e).__name__}: {_e}")
     return None
 
 

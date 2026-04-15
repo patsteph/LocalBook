@@ -207,8 +207,8 @@ class ResearchEngine:
                         reasons.append(f"{age_days}d old")
                     else:
                         reasons.append(f"Older ({age_days}d)")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[research-engine] {type(_e).__name__}: {_e}")
 
             # Author presence (signals editorial quality)
             if s.get("author"):

@@ -301,8 +301,8 @@ async def lifespan(app: FastAPI):
         _startup_task.cancel()
         try:
             await _startup_task
-        except asyncio.CancelledError:
-            pass
+        except asyncio.CancelledError as _e:
+            logger.debug(f"[main] {type(_e).__name__}: {_e}")
     
     # ── Graceful shutdown: flush stores, cancel tasks, close connections ──
     print("👋 LocalBook API shutting down — flushing stores...")
@@ -357,6 +357,8 @@ app.add_middleware(
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+import logging
+logger = logging.getLogger(__name__)
 
 class DiagnosticsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):

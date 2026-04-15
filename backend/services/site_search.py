@@ -28,6 +28,8 @@ import os
 import re
 
 from api.settings import get_api_key
+import logging
+logger = logging.getLogger(__name__)
 
 
 class TimeRange(Enum):
@@ -281,8 +283,8 @@ class YouTubeSearchHandler(SiteSearchHandler):
                             view_count_formatted = f"{count / 1_000:.1f}K views"
                         else:
                             view_count_formatted = f"{count} views"
-                    except:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[site-search] {type(_e).__name__}: {_e}")
                 
                 results.append(SearchResult(
                     title=vd["title"],
@@ -385,8 +387,8 @@ class ArXivSearchHandler(SiteSearchHandler):
                         pub_datetime = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
                         if pub_datetime.replace(tzinfo=None) < date_filter:
                             continue
-                    except:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[site-search] {type(_e).__name__}: {_e}")
                 
                 results.append(SearchResult(
                     title=title.text.strip() if title is not None else "",
@@ -1123,8 +1125,8 @@ class SiteSearchService:
             if site_domain:
                 try:
                     return await BraveFallbackHandler(site_domain).search(query, time_range, max_results)
-                except:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[site-search] {type(_e).__name__}: {_e}")
             return []
 
 

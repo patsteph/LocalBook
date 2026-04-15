@@ -23,6 +23,8 @@ from typing import List, Dict, Optional
 import httpx
 
 from config import settings
+import logging
+logger = logging.getLogger(__name__)
 
 
 # Standard tag vocabulary — LLM picks from these to ensure consistency
@@ -149,8 +151,8 @@ Tags:"""
                 tags = json.loads(match.group())
                 if isinstance(tags, list):
                     return self._normalize_tags(tags)
-        except (json.JSONDecodeError, ValueError):
-            pass
+        except (json.JSONDecodeError, ValueError) as _e:
+            logger.debug(f"[auto-tagger] {type(_e).__name__}: {_e}")
         
         # Fallback: extract quoted strings
         quoted = re.findall(r'"([^"]+)"', raw)

@@ -856,8 +856,20 @@ class WebScraper:
             video_id = self._extract_youtube_id(url)
             if video_id:
                 immediate_url = url  # Scrape this specific video transcript
-                # Try to get channel info from the video page
-                channel_id = await self._get_channel_from_video(url)
+                # For youtu.be short URLs, use canonical watch URL for lookups
+                lookup_url = url
+                if "youtu.be" in (parsed.hostname or ""):
+                    lookup_url = f"https://www.youtube.com/watch?v={video_id}"
+                # Get channel name from oEmbed (lightweight, reliable)
+                try:
+                    oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        resp = await client.get(oembed_url)
+                        if resp.status_code == 200:
+                            channel_name = resp.json().get("author_name")
+                except Exception as _oe_err:
+                    print(f"[WebScraper] oEmbed channel name lookup failed for {video_id}: {_oe_err}")
+                channel_id = await self._get_channel_from_video(lookup_url)
         
         # ── Playlist URL ──
         elif "/playlist" in path:
@@ -898,11 +910,35 @@ class WebScraper:
         return None
     
     async def _get_channel_from_video(self, video_url: str) -> Optional[str]:
-        """Extract channel ID from a YouTube video page."""
+        """Extract channel ID from a YouTube video URL.
+
+        Strategy (ordered by reliability):
+        1. oEmbed API -> get author_url (channel handle) -> fetch channel page -> extract ID
+        2. Direct HTML scrape of video page -> regex for channelId in JSON
+        """
+        video_id = self._extract_youtube_id(video_url)
+
+        # Strategy 1: oEmbed -> channel handle -> channel page -> channel ID
+        if video_id:
+            try:
+                oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(oembed_url)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        author_url = data.get("author_url", "")
+                        if author_url:
+                            channel_id = await self._resolve_youtube_channel_id(author_url)
+                            if channel_id:
+                                print(f"[WebScraper] Resolved channel via oEmbed: {author_url} -> {channel_id}")
+                                return channel_id
+            except Exception as e:
+                print(f"[WebScraper] oEmbed channel resolution failed: {e}")
+
+        # Strategy 2: Direct HTML scrape fallback
         try:
             html = await self._fetch_html(video_url)
             if html:
-                # YouTube embeds channel ID in video pages
                 match = re.search(r'"channelId"\s*:\s*"(UC[a-zA-Z0-9_-]+)"', html)
                 if match:
                     return match.group(1)
@@ -910,7 +946,7 @@ class WebScraper:
                 if match:
                     return match.group(1)
         except Exception as e:
-            print(f"[WebScraper] Could not get channel from video: {e}")
+            print(f"[WebScraper] Could not get channel from video HTML: {e}")
         return None
     
     def _discover_rss_from_html(self, html: str, base_url: str) -> Optional[str]:
@@ -930,8 +966,8 @@ class WebScraper:
                             parsed_base = urlparse(base_url)
                             href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
                         return href
-        except Exception:
-            pass
+        except Exception as _e:
+            print(f"[WebScraper] RSS discovery failed for {base_url}: {_e}")
         return None
 
 

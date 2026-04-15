@@ -11,6 +11,8 @@ import httpx
 import time
 from typing import Optional
 from config import settings
+import logging
+logger = logging.getLogger(__name__)
 
 # Background task reference
 _warmup_task: Optional[asyncio.Task] = None
@@ -241,8 +243,8 @@ async def stop_warmup_task():
         _warmup_task.cancel()
         try:
             await _warmup_task
-        except asyncio.CancelledError:
-            pass
+        except asyncio.CancelledError as _e:
+            logger.debug(f"[model-warmup] {type(_e).__name__}: {_e}")
         _warmup_task = None
     
     print("🔥 Model warmup service stopped")

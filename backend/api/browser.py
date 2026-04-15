@@ -18,6 +18,8 @@ from version import APP_VERSION
 from api.constellation_ws import notify_source_updated
 from services.event_logger import log_document_captured
 from services.content_date_extractor import extract_content_date
+import logging
+logger = logging.getLogger(__name__)
 
 
 class PageCaptureRequest(BaseModel):
@@ -293,8 +295,8 @@ async def _capture_remote_document(url: str, notebook_id: str, title: str, backg
         try:
             from services.auto_tagger import auto_tagger
             await auto_tagger.tag_source_in_notebook(notebook_id, source_id, title, text[:3000])
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[browser] {type(_e).__name__}: {_e}")
 
         # Notify frontend
         await notify_source_updated({
@@ -313,8 +315,8 @@ async def _capture_remote_document(url: str, notebook_id: str, title: str, backg
 
         try:
             log_document_captured(notebook_id, url, title, f"remote_{file_format}")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[browser] {type(_e).__name__}: {_e}")
 
         return CaptureResponse(
             success=True,
@@ -463,12 +465,12 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
                     await auto_tagger.tag_source_in_notebook(
                         request.notebook_id, source_id, arxiv_title, text[:3000],
                     )
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[browser] {type(_e).__name__}: {_e}")
                 try:
                     log_document_captured(request.notebook_id, request.url, arxiv_title, "arxiv_pdf")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[browser] {type(_e).__name__}: {_e}")
                 # Record token savings from PDF content vs web search
                 try:
                     from services.rag_metrics import rag_metrics
@@ -611,8 +613,8 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             content_date = extract_content_date(best_title, content[:800] if content else "")
             if not content_date and metadata.get("date"):
                 content_date = extract_content_date("", metadata["date"])
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[browser] {type(_e).__name__}: {_e}")
         
         # Create source with initial status + Curator scoring metadata
         source_data = {
@@ -698,8 +700,8 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
         print(f"[BROWSER] Successfully captured: {best_title} ({chunks} chunks)")
         try:
             log_document_captured(request.notebook_id, request.url, best_title, "web_capture")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[browser] {type(_e).__name__}: {_e}")
         return CaptureResponse(
             success=True,
             source_id=source_id,
@@ -831,8 +833,8 @@ async def capture_selection(request: SelectionCaptureRequest):
         
         try:
             log_document_captured(request.notebook_id, request.url, f"Selection: {request.title}", "web_selection")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[browser] {type(_e).__name__}: {_e}")
         return CaptureResponse(
             success=True,
             source_id=source_id,
@@ -980,8 +982,8 @@ async def capture_youtube(request: YouTubeCaptureRequest):
         
         try:
             log_document_captured(request.notebook_id, request.video_url, title, "youtube")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[browser] {type(_e).__name__}: {_e}")
         return CaptureResponse(
             success=True,
             source_id=source_id,

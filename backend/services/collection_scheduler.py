@@ -270,8 +270,8 @@ class CollectionScheduler:
             if stag.get("severity") == "plateau" and getattr(config, 'auto_expand', True):
                 interval = interval * 2
                 logger.info(f"[Scheduler] Plateau detected for {notebook_id} — stretching interval to {interval}")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[collection-scheduler] {type(_e).__name__}: {_e}")
         
         return datetime.utcnow() - last_run >= interval
 

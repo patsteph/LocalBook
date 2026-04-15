@@ -35,6 +35,8 @@ from models.memory import (
     ArchivalMemoryEntry, MemorySearchResult, MemoryConflict
 )
 from config import settings
+import logging
+logger = logging.getLogger(__name__)
 
 
 class MemoryStore:
@@ -681,8 +683,8 @@ class MemoryStore:
                 print(f"[MEMORY] Archival table migration check failed ({e}), recreating")
                 try:
                     self.archival_db.drop_table("archival_memories")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.warning(f"[memory-store] {type(_e).__name__}: {_e}")
                 self.archival_db.create_table("archival_memories", schema=required_schema)
     
     def add_archival_memory(

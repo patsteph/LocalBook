@@ -18,6 +18,8 @@ import numpy as np
 import uuid
 
 from config import settings
+import logging
+logger = logging.getLogger(__name__)
 
 
 # ─── Kokoro Voice Catalog ─────────────────────────────────────────────────────
@@ -230,8 +232,8 @@ class AudioLLMService:
                 return original_download(model, *args, **kwargs)
             
             spacy.cli.download = _safe_download
-        except ImportError:
-            pass
+        except ImportError as _e:
+            logger.debug(f"[audio-llm] {type(_e).__name__}: {_e}")
     
     @staticmethod
     def _validate_safetensors_file(path: str) -> bool:

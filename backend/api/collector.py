@@ -11,6 +11,8 @@ from services.stock_price import get_stock_quote
 from services.key_dates import get_key_dates
 from services.event_logger import log_source_approved, log_source_rejected
 from services.company_profiler import company_profiler
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/collector", tags=["collector"])
 
@@ -186,8 +188,8 @@ async def approve_item(notebook_id: str, item_id: str):
     
     try:
         log_source_approved(notebook_id, item_id, {"item_id": item_id})
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[collector] {type(_e).__name__}: {_e}")
     return {"success": True}
 
 
@@ -222,8 +224,8 @@ async def reject_item(notebook_id: str, item_id: str, request: RejectionRequest)
     
     try:
         log_source_rejected(notebook_id, item_id, {"item_id": item_id, "reason": request.reason, "feedback_type": request.feedback_type})
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[collector] {type(_e).__name__}: {_e}")
     return {"success": True}
 
 
@@ -298,8 +300,8 @@ async def get_collector_profile(notebook_id: str):
             print(f"[PROFILE] Clearing stale company_profile from non-company notebook (purpose={purpose})")
             try:
                 collector.update_config({"company_profile": {}})
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning(f"[collector] {type(_e).__name__}: {_e}")
     else:
         # Legacy notebook with no purpose set — infer from intent text.
         # Order matters: check specific patterns before generic ones.
@@ -334,8 +336,8 @@ async def get_collector_profile(notebook_id: str):
                 updates_to_persist["company_profile"] = {}
             try:
                 collector.update_config(updates_to_persist)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning(f"[collector] {type(_e).__name__}: {_e}")
     
     company = config.company_profile or {}
     ticker = None
@@ -378,8 +380,8 @@ async def get_collector_profile(notebook_id: str):
         if profile_dirty:
             try:
                 collector.update_config({"company_profile": company})
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning(f"[collector] {type(_e).__name__}: {_e}")
 
         # Build parallel tasks for company data
         async def _no_stock():

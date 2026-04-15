@@ -23,6 +23,8 @@ from agents.tools import (
 import httpx
 import json
 from config import settings
+import logging
+logger = logging.getLogger(__name__)
 
 
 INTENT_CLASSIFICATION_PROMPT = """You are an intent classifier for LocalBook, a research and learning assistant.
@@ -87,8 +89,8 @@ async def classify_intent(query: str) -> dict:
                 end = text.rfind("}") + 1
                 if start >= 0 and end > start:
                     return json.loads(text[start:end])
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as _e:
+                logger.debug(f"[supervisor] {type(_e).__name__}: {_e}")
     
     # Default fallback
     return {

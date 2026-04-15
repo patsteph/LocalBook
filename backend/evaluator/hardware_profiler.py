@@ -8,6 +8,8 @@ import platform
 import subprocess
 import re
 from evaluator.models import HardwareProfile
+import logging
+logger = logging.getLogger(__name__)
 
 _cached_profile: HardwareProfile | None = None
 
@@ -77,8 +79,8 @@ def get_hardware_profile() -> HardwareProfile:
             gpu_match = re.search(r'"gpu-core-count"\s*=\s*(\d+)', ioreg.stdout)
             if gpu_match:
                 profile.gpu_cores = int(gpu_match.group(1))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[hardware-profiler] {type(_e).__name__}: {_e}")
 
     # ── Metal support (always True on Apple Silicon) ─────────────────────
     profile.metal_support = "Apple" in profile.chip if profile.chip else True

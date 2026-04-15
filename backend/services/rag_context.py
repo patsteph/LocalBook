@@ -12,6 +12,8 @@ import re
 from typing import Dict, List, Set, Tuple
 
 from storage.source_store import source_store
+import logging
+logger = logging.getLogger(__name__)
 
 # Pattern matching the "YouTube Video {id}" fallback title
 _YT_FALLBACK_RE = re.compile(r'^YouTube Video ([A-Za-z0-9_-]{8,15})$')
@@ -50,8 +52,8 @@ async def _try_fix_youtube_title(filename: str, source_id: str, source_data: Dic
                         print(f"[RAG] Fixed YouTube title: '{filename}' → '{real_title}'")
                     _yt_title_cache[video_id] = real_title
                     return real_title
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[rag-context] {type(_e).__name__}: {_e}")
     
     # Cache the failure so we don't retry every query
     _yt_title_cache[video_id] = filename

@@ -127,8 +127,8 @@ async def get_ollama_models():
             )
             if r.status_code == 200:
                 return r.json()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning(f"[settings] {type(_e).__name__}: {_e}")
         return {}
 
     def _is_vision_model(name: str, show: dict) -> bool:
@@ -216,8 +216,8 @@ async def get_ollama_models():
                 if len(parts) >= 3:
                     try:
                         return int(parts[2])
-                    except ValueError:
-                        pass
+                    except ValueError as _e:
+                        logger.debug(f"[settings] {type(_e).__name__}: {_e}")
         return 4096
 
     from evaluator.model_registry import model_registry  # hoisted — one import for all enrichments

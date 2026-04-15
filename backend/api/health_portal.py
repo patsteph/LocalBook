@@ -217,8 +217,8 @@ async def full_health_check():
             try:
                 table = db.open_table(nb)
                 total_db_chunks += table.count_rows()
-            except:
-                pass
+            except Exception as _e:
+                logger.debug(f"[health-portal] {type(_e).__name__}: {_e}")
         
         add_check("core_services", {
             "name": "database",
@@ -724,8 +724,8 @@ async def full_health_check():
                                 "status": status,
                                 "chunks": chunks
                             })
-                    except:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[health-portal] {type(_e).__name__}: {_e}")
         
         add_check("data_integrity", {
             "name": "stuck_sources",
@@ -1490,8 +1490,8 @@ async def full_health_check():
             "embedding": embedding_cache.get_stats(),
             "answer": answer_cache.get_stats()
         }
-    except:
-        pass
+    except Exception as _e:
+        logger.debug(f"[health-portal] {type(_e).__name__}: {_e}")
     
     add_log("INFO", f"Full health check completed: {results['overall']}", "health_portal")
     
@@ -1724,8 +1724,8 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                     try:
                         from storage.source_store import source_store as _ss
                         await _ss.update(notebook_id, source_id, {"remediated_shallow_scrape": True})
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[health-portal] {type(_e).__name__}: {_e}")
                 
                 # Rate limiting: 1 second delay between scrapes (except last one)
                 if i < len(rows) - 1:
@@ -1795,8 +1795,8 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                     try:
                         # Delete from vector store first
                         await rag_engine.delete_source(notebook_id, dupe['id'])
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[health-portal] {type(_e).__name__}: {_e}")
                     # Delete from source store
                     await source_store.delete(notebook_id, dupe['id'])
                     removed += 1
@@ -2277,7 +2277,7 @@ async def stream_logs(websocket: WebSocket):
                 last_index = len(LOG_BUFFER)
             
             await asyncio.sleep(0.5)
-    except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass
+    except WebSocketDisconnect as _e:
+        logger.debug(f"[health-portal] {type(_e).__name__}: {_e}")
+    except Exception as _e:
+        logger.debug(f"[health-portal] {type(_e).__name__}: {_e}")

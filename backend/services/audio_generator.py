@@ -18,6 +18,8 @@ from storage.source_store import source_store
 from storage.skills_store import skills_store
 from services.rag_engine import rag_engine
 from services.context_builder import context_builder
+import logging
+logger = logging.getLogger(__name__)
 
 class AudioGenerator:
     """Generate podcast audio from notebooks using Kokoro-82M"""
@@ -1911,8 +1913,8 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
                     try:
                         import mlx.core as mx
                         mx.clear_cache()
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[audio-generator] {type(_e).__name__}: {_e}")
                     # Brief pause to let GPU cool and OS reclaim resources
                     await asyncio.sleep(0.5)
                 except asyncio.TimeoutError:
@@ -1991,8 +1993,8 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
                 if _td.exists():
                     import shutil
                     shutil.rmtree(_td, ignore_errors=True)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[audio-generator] {type(_e).__name__}: {_e}")
 
     def _parse_script_for_tts(self, script: str, host_names: Optional[Tuple[str, str]] = None) -> List[tuple]:
         """Parse script into speaker turns, cleaned for TTS.

@@ -144,8 +144,8 @@ class CoachingInsightGenerator:
                     sid = s.get("id", "")
                     if sid:
                         source_dates[sid] = s.get("content_date") or s.get("created_at", "")
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning(f"[coaching-insights] {type(_e).__name__}: {_e}")
 
             queries = [
                 f"team priorities goals objectives for {person_name}",

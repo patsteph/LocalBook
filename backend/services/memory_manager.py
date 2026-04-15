@@ -339,8 +339,8 @@ class MemoryManager:
                     all_data = table.to_pandas()
                     mask = (all_data["access_count"] == 0) & (all_data["created_at"] < cutoff)
                     results = all_data[mask].head(100).to_dict("records")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.warning(f"[memory-manager] {type(_e).__name__}: {_e}")
             
             if results:
                 ids_to_prune = [r["id"] for r in results if "id" in r]
@@ -349,8 +349,8 @@ class MemoryManager:
                         try:
                             table.delete(f"id = '{rid}'")
                             pruned += 1
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            logger.warning(f"[memory-manager] {type(_e).__name__}: {_e}")
                     if pruned > 0:
                         logger.info(f"Pruned {pruned} archival memories (>90 days, never accessed)")
         except Exception as e:

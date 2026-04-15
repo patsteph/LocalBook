@@ -9,6 +9,8 @@ from typing import Dict
 from pathlib import Path
 from storage.source_store import source_store
 from services.rag_engine import rag_engine
+import logging
+logger = logging.getLogger(__name__)
 
 class DocumentProcessor:
     """Process and ingest documents"""
@@ -382,8 +384,8 @@ class DocumentProcessor:
                         stream_text = stream_data.decode('utf-8', errors='ignore')
                         if stream_text.strip():
                             text_parts.append(stream_text)
-                    except:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
             
             ole.close()
             
@@ -435,8 +437,8 @@ class DocumentProcessor:
                     # Look for readable sentences
                     sentences = re.findall(r'[A-Za-z][A-Za-z0-9\s,.\'-]{10,}[.!?]', text)
                     text_parts.extend(sentences)
-                except:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
             
             ole.close()
             
@@ -605,8 +607,8 @@ class DocumentProcessor:
                                 label_cols_idx.append(i)
                             elif df.iloc[:, i].dtype in ['int64', 'float64', 'int32', 'float32']:
                                 value_cols_idx.append(i)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
             
             # Track last non-empty values for hierarchical labels
             last_labels = [''] * len(label_cols_idx)
@@ -638,8 +640,8 @@ class DocumentProcessor:
                             continue
                         formatted_val = int(num_val) if float(num_val).is_integer() else num_val
                         sentences.append(f"{row_subject}: {col_name} = {formatted_val}")
-                    except (ValueError, TypeError):
-                        pass
+                    except (ValueError, TypeError) as _e:
+                        logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
         
         # ALWAYS also add row-by-row extraction for complete coverage
         # This ensures no data is missed even if pivot extraction fails
@@ -1193,8 +1195,8 @@ class DocumentProcessor:
                 if text.strip() and len(text.strip()) > 20:
                     print("[DocProcessor] Fallback: decoded as Latin-1 text")
                     return text
-            except:
-                pass
+            except Exception as _e:
+                logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
         extraction_attempts.append("text decode")
         
         # Strategy 2: Try as PDF (common for mislabeled files)
@@ -1203,8 +1205,8 @@ class DocumentProcessor:
             if text and len(text.strip()) > 50:
                 print("[DocProcessor] Fallback: extracted as PDF")
                 return text
-        except:
-            pass
+        except Exception as _e:
+            logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
         extraction_attempts.append("PDF")
         
         # Strategy 3: Try as DOCX
@@ -1213,8 +1215,8 @@ class DocumentProcessor:
             if text and len(text.strip()) > 50:
                 print("[DocProcessor] Fallback: extracted as DOCX")
                 return text
-        except:
-            pass
+        except Exception as _e:
+            logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
         extraction_attempts.append("DOCX")
         
         # Strategy 4: Try as Excel
@@ -1223,8 +1225,8 @@ class DocumentProcessor:
             if text and len(text.strip()) > 50:
                 print("[DocProcessor] Fallback: extracted as Excel")
                 return text
-        except:
-            pass
+        except Exception as _e:
+            logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
         extraction_attempts.append("Excel")
         
         # Strategy 5: Try OCR as last resort (treat as image)
@@ -1233,8 +1235,8 @@ class DocumentProcessor:
             if text and len(text.strip()) > 20:
                 print("[DocProcessor] Fallback: extracted via OCR")
                 return text
-        except:
-            pass
+        except Exception as _e:
+            logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
         extraction_attempts.append("OCR")
         
         # All strategies failed
@@ -1335,8 +1337,8 @@ class DocumentProcessor:
                     return 'html'
                 return 'xml'
             return 'txt'
-        except UnicodeDecodeError:
-            pass
+        except UnicodeDecodeError as _e:
+            logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
         
         return None
     
@@ -1367,8 +1369,8 @@ class DocumentProcessor:
                 # Check for Jupyter notebook
                 if any(n.endswith('.ipynb') for n in names):
                     return 'ipynb'
-        except:
-            pass
+        except Exception as _e:
+            logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
         return 'zip'
     
     def _detect_ole_subtype(self, content: bytes) -> str:
@@ -1408,8 +1410,8 @@ class DocumentProcessor:
                 # M4A audio
                 if brand == b'M4A ':
                     return 'm4a'
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[document-processor] {type(_e).__name__}: {_e}")
         return 'mp4'  # Default to MP4 video
 
 document_processor = DocumentProcessor()

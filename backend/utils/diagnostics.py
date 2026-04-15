@@ -22,6 +22,8 @@ from typing import Optional
 import psutil
 
 from config import settings
+import logging
+logger = logging.getLogger(__name__)
 
 # ─── Diagnostics Logger (separate from app logging) ──────────────────────────
 
@@ -92,8 +94,8 @@ def _active_tasks_summary() -> list:
         if loop.is_running():
             tasks = asyncio.all_tasks(loop)
             return [t.get_name() for t in tasks if not t.done()]
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[diagnostics] {type(_e).__name__}: {_e}")
     return []
 
 
@@ -122,8 +124,8 @@ def _write_crash_snapshot(sig_name: str):
                 f.write(f"\n[CRASH] Signal={sig_name} time={_now_iso()} "
                         f"last_endpoint={_last_endpoint}\n")
                 f.flush()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning(f"[diagnostics] {type(_e).__name__}: {_e}")
 
 
 def _signal_handler(signum, frame):
@@ -184,8 +186,8 @@ async def _heartbeat_loop():
             # Don't let heartbeat crash take down the app
             try:
                 log.warning(f"[HB] Heartbeat error: {e}")
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[diagnostics] {type(_e).__name__}: {_e}")
 
 
 def start_heartbeat():
@@ -235,6 +237,6 @@ def read_crash_snapshots() -> list:
         for i, block in enumerate(blocks):
             if "CRASH SNAPSHOT" in block:
                 snapshots.append(block.strip())
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[diagnostics] {type(_e).__name__}: {_e}")
     return snapshots

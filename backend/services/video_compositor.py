@@ -250,8 +250,8 @@ class VideoCompositor:
             # Clean up temp directory
             try:
                 shutil.rmtree(temp_dir, ignore_errors=True)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[video-compositor] {type(_e).__name__}: {_e}")
 
     async def _render_slide_clip(
         self,

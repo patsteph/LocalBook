@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import List, Optional, Dict
 from config import settings
 from utils.json_io import atomic_write_json
+import logging
+logger = logging.getLogger(__name__)
 
 
 class HighlightsStore:
@@ -105,8 +107,8 @@ class HighlightsStore:
         try:
             from services.event_logger import log_highlight
             log_highlight(notebook_id, source_id, highlighted_text, annotation or None)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning(f"[highlights-store] {type(_e).__name__}: {_e}")
 
         return highlight
 

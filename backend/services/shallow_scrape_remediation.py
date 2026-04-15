@@ -148,8 +148,8 @@ async def run_shallow_scrape_remediation():
                     import json as _json
                     extra = _json.loads(meta) if isinstance(meta, str) else meta
                     src.update(extra)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.warning(f"[shallow-scrape-remediation] {type(_e).__name__}: {_e}")
             if src.get("collected_by") == "collector":
                 collector_count += 1
             nb_id = src.get("notebook_id")
@@ -194,8 +194,8 @@ async def run_shallow_scrape_remediation():
         logger.info("[ShallowRemedy] No shallow-scraped collected sources found — nothing to do.")
         try:
             sentinel.write_text("completed — 0 candidates found")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning(f"[shallow-scrape-remediation] {type(_e).__name__}: {_e}")
         return
 
     logger.info(f"[ShallowRemedy] Found {len(candidates)} shallow collected source(s) to re-scrape.")

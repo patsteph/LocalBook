@@ -11,6 +11,8 @@ from typing import Optional, List, Dict, Any
 
 from storage.findings_store import get_findings_store
 from services.event_logger import event_logger, EventType
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/findings", tags=["findings"])
 
@@ -67,8 +69,8 @@ async def create_finding(request: CreateFindingRequest):
     
     try:
         event_logger.log(EventType.FINDING_CREATED, request.notebook_id, {"type": request.type, "title": request.title})
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"[findings] {type(_e).__name__}: {_e}")
     
     return FindingResponse(**finding.to_dict())
 

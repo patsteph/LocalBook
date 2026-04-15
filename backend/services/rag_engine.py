@@ -42,6 +42,8 @@ from services import rag_search
 from services import rag_context
 from services import rag_verification
 from services import rag_storage
+import logging
+logger = logging.getLogger(__name__)
 
 # BM25 for hybrid search
 try:
@@ -285,8 +287,8 @@ class RAGEngine:
                     "citations": [], "sources": [], "web_sources": None,
                     "follow_up_questions": [], "low_confidence": True
                 }
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[rag-engine] {type(_e).__name__}: {_e}")
 
         # Step 2b: Query decomposition for complex queries
         is_complex, complexity_type = query_decomposer.is_complex_query(question)
@@ -1131,8 +1133,8 @@ Answer the question, citing sources inline as [N]. Do not list references at the
                 follow_up_questions = await asyncio.wait_for(followup_task, timeout=5.0)
                 if follow_up_questions:
                     yield {"type": "follow_up_questions", "questions": follow_up_questions}
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
+            except (asyncio.TimeoutError, asyncio.CancelledError) as _e:
+                logger.debug(f"[rag-engine] {type(_e).__name__}: {_e}")
 
         # Step 8: Memory extraction (fire-and-forget)
         async def _extract_memories_background():

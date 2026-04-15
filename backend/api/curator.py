@@ -5,6 +5,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from agents.curator import curator, CollectedItem
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/curator", tags=["curator"])
 
@@ -212,8 +214,8 @@ async def curator_overwatch(request: OverwatchRequest):
         oversight = cfg.get("oversight", {})
         if isinstance(oversight, dict) and oversight.get("overwatch_enabled") is False:
             return {"aside": None, "curator_name": curator.name}
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[curator] {type(_e).__name__}: {_e}")
 
     aside = await curator.generate_overwatch_aside(
         query=request.query,
@@ -281,8 +283,8 @@ async def should_show_morning_brief(local_hour: int = -1):
                 last_shown_ts = datetime.fromisoformat(raw)
             else:
                 last_shown_ts = datetime.strptime(raw, "%Y-%m-%d")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
     
     # ── 2. Compute real hours since last brief ──
     if last_shown_ts:

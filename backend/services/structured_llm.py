@@ -280,8 +280,8 @@ Return ONLY a JSON object like this:
             quiz = QuizOutput(**result)
             if quiz.questions:
                 return quiz
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[structured-llm] {type(_e).__name__}: {_e}")
 
         # Handle common variations: {"quiz": [...]}, {"quiz_questions": [...]}
         questions_raw = None
@@ -802,8 +802,8 @@ QUESTIONS TO VERIFY:
                     if num_str:
                         try:
                             value = int(float(num_str))
-                        except:
-                            pass
+                        except Exception as _e:
+                            logger.debug(f"[structured-llm] {type(_e).__name__}: {_e}")
                 segments.append({"name": item, "value": value})
             
             data = {"title": title or "Distribution", "segments": segments}

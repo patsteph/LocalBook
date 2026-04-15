@@ -4,6 +4,8 @@ import time
 import asyncio
 from datetime import datetime
 from evaluator.models import EvalResult
+import logging
+logger = logging.getLogger(__name__)
 
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
     """Execute multiple identical requests concurrently and measure processing efficiency."""
@@ -28,8 +30,8 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     # Pre-warm model to ensure cold-start doesn't skew concurrency math
     try:
         await ollama_client.generate(prompt="hi", model=main_model, num_predict=1)
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[concurrency] {type(_e).__name__}: {_e}")
 
     start = time.time()
     

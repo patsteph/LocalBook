@@ -14,6 +14,8 @@ import asyncio
 import os
 from pathlib import Path
 from typing import Optional
+import logging
+logger = logging.getLogger(__name__)
 
 # Browser instance — lazy loaded, reused across renders
 _browser = None
@@ -160,8 +162,8 @@ async def render_mermaid_to_png(
         if page:
             try:
                 await page.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[mermaid-renderer] {type(_e).__name__}: {_e}")
 
 
 async def shutdown():
@@ -171,8 +173,8 @@ async def shutdown():
         if _browser:
             try:
                 await _browser.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[mermaid-renderer] {type(_e).__name__}: {_e}")
             _browser = None
             print("[MermaidRenderer] Browser closed")
 

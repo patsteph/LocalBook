@@ -364,8 +364,8 @@ async def get_default_combo():
             combo = existing.get("default_combo")
             if combo:
                 return {"has_custom_default": True, "combo": combo}
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[evaluator] {type(_e).__name__}: {_e}")
     
     return {
         "has_custom_default": False,

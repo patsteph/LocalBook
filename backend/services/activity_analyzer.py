@@ -200,13 +200,13 @@ def analyze_activity(person: PersonProfile) -> ActivityProfile:
                         dt = datetime.fromisoformat(d.replace("Z", "+00:00")).replace(tzinfo=None)
                         if gh_last is None or dt > gh_last:
                             gh_last = dt
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[activity-analyzer] {type(_e).__name__}: {_e}")
             if gh_last is None and person.last_collected.get("github"):
                 try:
                     gh_last = datetime.fromisoformat(person.last_collected["github"])
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[activity-analyzer] {type(_e).__name__}: {_e}")
             if gh_last:
                 platform_last_active["github"] = gh_last.isoformat()
 
@@ -277,8 +277,8 @@ def analyze_activity(person: PersonProfile) -> ActivityProfile:
                 datetime.fromisoformat(d) for d in platform_last_active.values()
             )
             overall_last_active = best.isoformat()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[activity-analyzer] {type(_e).__name__}: {_e}")
 
     # Sort all recent items chronologically (oldest first) for progression
     recent_items.sort(key=lambda ri: ri.date or '')

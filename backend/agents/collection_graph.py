@@ -256,8 +256,8 @@ async def apply_decisions_node(state: CollectionState) -> Dict:
             queries_used=task.get("smart_queries", []),
             exploration_queries=task.get("exploration_queries", []),
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[collection-graph] {type(_e).__name__}: {_e}")
 
     logger.info(f"[CollectionGraph] Decisions: {approved} approved, {rejected} rejected, "
                 f"{filtered} filtered, {len(pending)} pending review")

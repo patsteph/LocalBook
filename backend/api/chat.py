@@ -1,4 +1,6 @@
 """Chat API endpoints"""
+import json
+import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -6,7 +8,8 @@ from typing import Optional, List
 from services.rag_engine import rag_engine
 from services.query_orchestrator import get_orchestrator
 from services.event_logger import log_chat_qa
-import json
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -177,8 +180,8 @@ async def query(chat_query: ChatQuery):
         try:
             sources_used = [c.get("source_id", "") for c in (result.get("citations") or [])] if isinstance(result, dict) else [c.source_id for c in getattr(result, 'citations', [])]
             log_chat_qa(chat_query.notebook_id, chat_query.question, result.answer if hasattr(result, 'answer') else result.get("answer", ""), sources_used)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[chat] log_chat_qa failed (non-fatal): {_e}")
         
         return result
     except Exception as e:
@@ -262,8 +265,8 @@ async def query_stream(chat_query: ChatQuery):
             # Log the completed Q&A interaction for memory consolidation
             try:
                 log_chat_qa(chat_query.notebook_id, chat_query.question, "".join(answer_parts), sources_used)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[chat] log_chat_qa failed (non-fatal): {_e}")
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -407,8 +410,8 @@ async def _stream_curator(chat_query: ChatQuery):
                 if brief_file.exists():
                     try:
                         saved_brief = _json.loads(brief_file.read_text())
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.warning(f"[chat] Failed to parse saved brief: {_e}")
 
                 if saved_brief and saved_brief.get("narrative"):
                     parts = [saved_brief["narrative"]]
@@ -446,8 +449,8 @@ async def _stream_curator(chat_query: ChatQuery):
                 if wrap_files:
                     try:
                         saved_wrap = _json.loads(wrap_files[0].read_text())
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.warning(f"[chat] Failed to parse saved wrap-up: {_e}")
 
                 if saved_wrap and saved_wrap.get("narrative"):
                     reply = saved_wrap["narrative"]
@@ -626,8 +629,8 @@ async def _stream_curator(chat_query: ChatQuery):
                 oversight = cfg.get("oversight", {})
                 if isinstance(oversight, dict):
                     excluded = [e for e in oversight.get("excluded_notebook_ids", []) if not e.startswith("name:")]
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning(f"[chat] Failed to load oversight config: {_e}")
 
             search_result = await cross_notebook_search.search(
                 query=chat_query.question,
@@ -704,8 +707,8 @@ Answer:"""
         # Log the interaction
         try:
             log_chat_qa(chat_query.notebook_id, f"@curator {chat_query.question}", reply, [r["source_id"] for r in results] if results else [])
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[chat] log_chat_qa failed (non-fatal): {_e}")
 
     except Exception as e:
         import traceback
@@ -760,8 +763,8 @@ async def _stream_collector(chat_query: ChatQuery):
                     content=msg, source_type=MemorySourceType.AGENT_GENERATED,
                     importance=MemoryImportance.MEDIUM, notebook_id=notebook_id,
                 ), namespace=AgentNamespace.CURATOR)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning(f"[chat] Memory store failed: {_e}")
 
         # Helper: extract URL from message (simple, reliable)
         url_match = _re.search(r'(https?://[^\s,]+)', q)
@@ -782,12 +785,18 @@ async def _stream_collector(chat_query: ChatQuery):
                 url = url_match.group(1).rstrip('.,;:)')
             if url:
                 from services.web_scraper import web_scraper
+                import time as _time
+                _op_start = _time.time()
+                _trace = [f"[Subscribe] START url={url}"]
 
                 yield f"data: {json.dumps({'type': 'status', 'message': f'{collector_name} resolving subscription target...', 'query_type': 'collector'})}\n\n"
 
                 try:
                     sub = await web_scraper.resolve_subscription_target(url)
+                    _trace.append(f"  resolve: type={sub.get('source_type')}, feed={sub.get('feed_url')}, channel={sub.get('channel_name')}")
                 except Exception as e:
+                    logger.warning(f"[Subscribe] resolve_subscription_target failed for {url}: {e}")
+                    _trace.append(f"  resolve: FAILED — {e}")
                     reply = f"**Could not resolve subscription target:** {url}\n- Error: {e}"
                     follow_ups = ['Try adding as a regular source', 'Show my sources']
                     sub = None
@@ -799,9 +808,11 @@ async def _stream_collector(chat_query: ChatQuery):
                     schedule_raw = params.get("schedule")
                     freq = _parse_freq(schedule_raw) if schedule_raw else sub.get("default_schedule", "weekly")
 
+                    from services.source_ingestion import create_and_ingest_source
+                    notebook_id = chat_query.notebook_id
                     lines = []
 
-                    # ── Step 1: Immediate scrape ──
+                    # ── Step 1: Immediate scrape + ingest as source ──
                     immediate_url = sub.get("immediate_url", url)
                     yield f"data: {json.dumps({'type': 'status', 'message': f'{collector_name} scraping content...', 'query_type': 'collector'})}\n\n"
 
@@ -814,10 +825,30 @@ async def _stream_collector(chat_query: ChatQuery):
                             if yt_result.get("success") and yt_result.get("text"):
                                 wc = len(yt_result["text"].split())
                                 yt_title = yt_result.get("title", "Video")
-                                lines.append(f"**Immediate:** Scraped transcript from \"{yt_title}\" ({wc:,} words)")
-                                immediate_ok = True
-                        except Exception:
-                            pass
+                                # Ingest as a source in the notebook
+                                try:
+                                    content = f"Title: {yt_title}\n\nTranscript:\n{yt_result['text']}"
+                                    ingest_result = await create_and_ingest_source(
+                                        notebook_id=notebook_id,
+                                        filename=yt_title,
+                                        text=content,
+                                        source_type="youtube",
+                                        url=immediate_url,
+                                        extra_metadata={"capture_type": "youtube", "user_provided": True},
+                                    )
+                                    _trace.append(f"  ingest: OK source_id={ingest_result['source_id']}, {ingest_result['chunks']} chunks")
+                                    lines.append(f"**Immediate:** Scraped transcript from \"{yt_title}\" ({wc:,} words)")
+                                    immediate_ok = True
+                                except Exception as _ingest_err:
+                                    _trace.append(f"  ingest: FAILED — {_ingest_err}")
+                                    logger.warning(f"[Subscribe] Ingest failed for {yt_title}: {_ingest_err}")
+                                    lines.append(f"**Immediate:** Scraped transcript but failed to save: {_ingest_err}")
+                                _trace.append(f"  transcript: OK {wc} words — {yt_title}")
+                            else:
+                                _trace.append(f"  transcript: FAILED — {yt_result.get('error', 'no text')}")
+                        except Exception as _yt_err:
+                            _trace.append(f"  transcript: EXCEPTION — {_yt_err}")
+                            logger.warning(f"[Subscribe] YouTube transcript exception: {_yt_err}")
                     
                     if not immediate_ok:
                         try:
@@ -825,18 +856,39 @@ async def _stream_collector(chat_query: ChatQuery):
                             cached = sub.get("_scraped")
                             if cached and cached.get("success") and cached.get("text"):
                                 scraped = cached
+                                _trace.append("  html_scrape: used cached result")
                             else:
                                 scraped = await web_scraper.scrape_with_html(immediate_url)
                             if scraped.get("success") and scraped.get("text"):
                                 wc = len(scraped["text"].split())
                                 pg_title = scraped.get("title", "Page")
-                                lines.append(f"**Immediate:** Scraped \"{pg_title}\" ({wc:,} words)")
-                                immediate_ok = True
-                        except Exception:
-                            pass
+                                # Ingest as a source in the notebook
+                                try:
+                                    ingest_result = await create_and_ingest_source(
+                                        notebook_id=notebook_id,
+                                        filename=pg_title,
+                                        text=scraped["text"],
+                                        source_type="web",
+                                        url=immediate_url,
+                                        extra_metadata={"user_provided": True},
+                                    )
+                                    _trace.append(f"  ingest: OK source_id={ingest_result['source_id']}, {ingest_result['chunks']} chunks")
+                                    lines.append(f"**Immediate:** Scraped \"{pg_title}\" ({wc:,} words)")
+                                    immediate_ok = True
+                                except Exception as _ingest_err:
+                                    _trace.append(f"  ingest: FAILED — {_ingest_err}")
+                                    logger.warning(f"[Subscribe] Ingest failed for {pg_title}: {_ingest_err}")
+                                    lines.append(f"**Immediate:** Scraped but failed to save: {_ingest_err}")
+                                _trace.append(f"  html_scrape: OK {wc} words — {pg_title}")
+                            else:
+                                _trace.append(f"  html_scrape: FAILED — {scraped.get('error', 'no text')}")
+                        except Exception as _scrape_err:
+                            _trace.append(f"  html_scrape: EXCEPTION — {_scrape_err}")
+                            logger.warning(f"[Subscribe] HTML scrape exception: {_scrape_err}")
                     
                     if not immediate_ok:
                         lines.append(f"**Immediate:** Could not scrape content from {immediate_url} (will still subscribe)")
+                        _trace.append(f"  scrape: ALL METHODS FAILED for {immediate_url}")
 
                     # ── Step 2: Register subscription ──
                     yield f"data: {json.dumps({'type': 'status', 'message': f'{collector_name} setting up subscription...', 'query_type': 'collector'})}\n\n"
@@ -854,6 +906,7 @@ async def _stream_collector(chat_query: ChatQuery):
                         lines.append(f"- YouTube channel RSS feed registered")
                         lines.append(f"- Schedule: **{freq}** checks for new uploads")
                         lines.append(f"- New videos will be auto-scraped for transcripts")
+                        _trace.append(f"  rss: registered feed={feed_url}, schedule={freq}")
                         _notify_curator(f"Collector subscribed to YouTube channel: {channel_name} ({feed_url}). Schedule: {freq}.")
 
                     elif src_type == "rss_feed" and feed_url:
@@ -905,9 +958,14 @@ async def _stream_collector(chat_query: ChatQuery):
                                 lines.append(f"\n**Recent uploads** ({len(feed.entries[:5])} shown):")
                                 for entry in feed.entries[:5]:
                                     lines.append(f"- [{entry.get('title', 'Untitled')}]({entry.get('link', '')})")
-                        except Exception:
-                            pass
+                                _trace.append(f"  preview: {len(feed.entries)} entries in feed")
+                        except Exception as _feed_err:
+                            _trace.append(f"  preview: FAILED — {_feed_err}")
+                            logger.warning(f"[Subscribe] Feed preview failed: {_feed_err}")
 
+                    _elapsed = _time.time() - _op_start
+                    _trace.append(f"  DONE in {_elapsed:.1f}s")
+                    logger.info("\n".join(_trace))
                     reply = "\n".join(lines)
                     follow_ups = ['Collect now', 'Show my subscription sources', 'Subscribe to another channel']
             else:
@@ -1168,14 +1226,14 @@ async def _stream_collector(chat_query: ChatQuery):
                 try:
                     updates["max_age_days"] = int(params["max_age_days"])
                     parts.append(f"max age: {updates['max_age_days']} days")
-                except (ValueError, TypeError):
-                    pass
+                except (ValueError, TypeError) as _e:
+                    logger.debug(f"[chat] Invalid max_age_days param: {_e}")
             if params.get("min_relevance"):
                 try:
                     updates["min_relevance"] = float(params["min_relevance"])
                     parts.append(f"min relevance: {updates['min_relevance']}")
-                except (ValueError, TypeError):
-                    pass
+                except (ValueError, TypeError) as _e:
+                    logger.debug(f"[chat] Invalid min_relevance param: {_e}")
             if updates:
                 collector_agent.update_config({"filters": {**config.filters, **updates}})
                 reply = f"Done. **Filters updated:** {', '.join(parts)}"
@@ -1738,8 +1796,8 @@ async def _stream_studio(chat_query: ChatQuery):
         # Log interaction
         try:
             log_chat_qa(notebook_id, f"@studio {q}", reply[:500], [])
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[chat] log_chat_qa failed (non-fatal): {_e}")
 
     except Exception as e:
         import traceback

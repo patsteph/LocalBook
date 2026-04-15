@@ -217,10 +217,10 @@ class EventLogger:
                             
                             event_type = data.get("event_type", "unknown")
                             counts[event_type] = counts.get(event_type, 0) + 1
-                        except:
-                            pass
-            except:
-                pass
+                        except Exception as _e:
+                            logger.debug(f"[event-logger] {type(_e).__name__}: {_e}")
+            except Exception as _e:
+                logger.debug(f"[event-logger] {type(_e).__name__}: {_e}")
         
         return counts
     

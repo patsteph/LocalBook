@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, asdict, field
+import logging
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -56,14 +58,14 @@ class FindingsStore:
         if d.get('content_json'):
             try:
                 content = json.loads(d['content_json']) if isinstance(d['content_json'], str) else d['content_json']
-            except (json.JSONDecodeError, TypeError):
-                pass
+            except (json.JSONDecodeError, TypeError) as _e:
+                logger.debug(f"[findings-store] {type(_e).__name__}: {_e}")
         tags = []
         if d.get('tags'):
             try:
                 tags = json.loads(d['tags']) if isinstance(d['tags'], str) else d['tags']
-            except (json.JSONDecodeError, TypeError):
-                pass
+            except (json.JSONDecodeError, TypeError) as _e:
+                logger.debug(f"[findings-store] {type(_e).__name__}: {_e}")
         return Finding(
             id=d['id'],
             notebook_id=d['notebook_id'],

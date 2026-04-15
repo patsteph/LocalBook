@@ -173,8 +173,8 @@ class CollectorAgent:
             loop = None
             try:
                 loop = asyncio.get_running_loop()
-            except RuntimeError:
-                pass
+            except RuntimeError as _e:
+                logger.debug(f"[collector] {type(_e).__name__}: {_e}")
 
             if loop and loop.is_running():
                 # Schedule as a background task; sets will fill async
@@ -387,8 +387,8 @@ class CollectorAgent:
                     if seed_query not in sweep_keywords:
                         sweep_keywords.append(seed_query)
                 print(f"[COLLECTOR] First sweep enriched with {len(seed_domains.get('seed_domains', []))} seed domains")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[collector] {type(_e).__name__}: {_e}")
 
         if sweep_keywords:
             items = await self._quick_collect(sweep_keywords)
@@ -433,8 +433,8 @@ class CollectorAgent:
                         ))
                 except Exception as e:
                     logger.debug(f"Quick collect search failed for '{kw}': {e}")
-        except ImportError:
-            pass
+        except ImportError as _e:
+            logger.debug(f"[collector] {type(_e).__name__}: {_e}")
         
         # 2. RSS feeds
         for feed_url in self.config.sources.get("rss_feeds", [])[:5]:
@@ -661,8 +661,8 @@ class CollectorAgent:
         for page_url in self.config.sources.get("web_pages", []):
             try:
                 configured_domains.add(urlparse(page_url).netloc.lower().replace("www.", ""))
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[collector] {type(_e).__name__}: {_e}")
         
         new_domains = []
         for domain, count in sorted(domain_counts.items(), key=lambda x: -x[1]):
@@ -770,8 +770,8 @@ class CollectorAgent:
             if item.url:
                 try:
                     domain = urlparse(item.url).netloc.lower().replace("www.", "")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[collector] {type(_e).__name__}: {_e}")
             domain_buckets.setdefault(domain, []).append(item)
 
         # Build diversity score for each item:
@@ -785,8 +785,8 @@ class CollectorAgent:
             if item.url:
                 try:
                     domain = urlparse(item.url).netloc.lower().replace("www.", "")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[collector] {type(_e).__name__}: {_e}")
 
             diversity_score = 0.0
 
@@ -1738,8 +1738,8 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                     from datetime import date as date_type
                     parsed_date = datetime.fromisoformat(extracted)
                     age_hours = (datetime.utcnow() - parsed_date).total_seconds() / 3600
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[collector] {type(_e).__name__}: {_e}")
         
         max_age_hours = max_age_days * 24
         

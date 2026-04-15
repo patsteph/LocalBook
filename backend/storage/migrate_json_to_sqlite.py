@@ -318,8 +318,8 @@ def _needs_remigration(conn) -> bool:
                 "Forcing re-migration.", json_count
             )
             return True
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"[migrate-json-to-sqlite] {type(_e).__name__}: {_e}")
     
     return False
 

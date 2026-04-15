@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 from evaluator.models import ModelInfo
+import logging
+logger = logging.getLogger(__name__)
 
 _REGISTRY_PATH = Path(__file__).parent / "registry_data" / "known_models.json"
 
@@ -121,8 +123,8 @@ class ModelRegistry:
             try:
                 from backend.config import get_settings
                 base_url = get_settings().ollama_base_url
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[model-registry] {type(_e).__name__}: {_e}")
                 
             req = urllib.request.Request(f"{base_url}/api/tags")
             with urllib.request.urlopen(req, timeout=5.0) as response:

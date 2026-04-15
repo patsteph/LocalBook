@@ -9,6 +9,8 @@ from storage.source_store import source_store
 from api.constellation_ws import notify_source_updated
 from services.content_date_extractor import extract_content_date
 from services.event_logger import log_document_captured
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -208,8 +210,8 @@ async def add_to_notebook(request: AddToNotebookRequest, background_tasks: Backg
                     cd = extract_content_date("", scraped_date)
                 if not cd:
                     cd = extract_content_date(title, text[:800] if text else "")
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[web] {type(_e).__name__}: {_e}")
             
             # Detect YouTube URLs so the source record is labeled correctly
             is_youtube = "youtube.com" in url or "youtu.be" in url
@@ -419,8 +421,8 @@ async def quick_add(request: QuickAddRequest, background_tasks: BackgroundTasks)
         try:
             from services.collection_history import record_engagement
             record_engagement(request.notebook_id, "source_add")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[web] {type(_e).__name__}: {_e}")
         
         return {
             "message": "Added (processing in background)",

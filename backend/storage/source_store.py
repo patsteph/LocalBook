@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import List, Optional, Dict
 from config import settings
 from utils.json_io import atomic_write_json
+import logging
+logger = logging.getLogger(__name__)
 
 class SourceStore:
     def __init__(self):
@@ -70,8 +72,8 @@ class SourceStore:
             try:
                 extra = json.loads(meta) if isinstance(meta, str) else meta
                 d.update(extra)
-            except (json.JSONDecodeError, TypeError):
-                pass
+            except (json.JSONDecodeError, TypeError) as _e:
+                logger.debug(f"[source-store] {type(_e).__name__}: {_e}")
         return d
 
     async def list(self, notebook_id: str) -> List[Dict]:
@@ -381,8 +383,8 @@ class SourceStore:
                     tags = json.loads(row['tags']) if isinstance(row['tags'], str) else row['tags']
                     for tag in (tags or []):
                         tag_counts[tag] = tag_counts.get(tag, 0) + 1
-                except (json.JSONDecodeError, TypeError):
-                    pass
+                except (json.JSONDecodeError, TypeError) as _e:
+                    logger.debug(f"[source-store] {type(_e).__name__}: {_e}")
             return [
                 {"tag": tag, "count": count}
                 for tag, count in sorted(tag_counts.items(), key=lambda x: (-x[1], x[0]))

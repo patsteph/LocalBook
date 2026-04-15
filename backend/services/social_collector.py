@@ -489,8 +489,8 @@ Profile text:
             el = await page.query_selector(selector)
             if el:
                 return (await el.inner_text()).strip()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[social-collector] {type(_e).__name__}: {_e}")
         return ""
 
     async def _safe_inner_text(self, parent, selector: str) -> str:
@@ -499,8 +499,8 @@ Profile text:
             el = await parent.query_selector(selector)
             if el:
                 return (await el.inner_text()).strip()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[social-collector] {type(_e).__name__}: {_e}")
         return ""
 
     async def _run_intelligence_pipeline(
@@ -572,8 +572,8 @@ Profile text:
                             notebook_id,
                             {"person": person.name, "change": change.get("description", ""), "category": change.get("category", ""), "severity": change.get("severity", "info")},
                         )
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[social-collector] {type(_e).__name__}: {_e}")
                 
                 # Wire changes into timeline as events
                 try:
@@ -599,8 +599,8 @@ Profile text:
                         if notebook_id not in _timeline_data:
                             _timeline_data[notebook_id] = []
                         _timeline_data[notebook_id].append(event)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[social-collector] {type(_e).__name__}: {_e}")
 
         except Exception as e:
             logger.error(f"[Collector] Intelligence pipeline failed for {person.name}: {e}")

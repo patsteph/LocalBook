@@ -16,6 +16,8 @@ from models.knowledge_graph import (
 # NOTE: knowledge_graph_service is legacy (1395 lines) - replaced by BERTopic
 # Keeping services/knowledge_graph.py for now as migration_manager references it
 from services.topic_modeling import topic_modeling_service
+import logging
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/graph", tags=["knowledge-graph"])
@@ -422,8 +424,8 @@ async def get_notebook_themes(notebook_id: str, limit: int = 50):
     try:
         all_sources = await source_store.list(notebook_id)
         source_lookup = {s["id"]: s.get("filename", "Unknown") for s in all_sources}
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"[graph] {type(_e).__name__}: {_e}")
     
     # Pre-compute connection counts per topic from graph edges
     graph_data = await _build_graph_from_topics(notebook_id)
@@ -741,8 +743,8 @@ async def reset_knowledge_graph(notebook_id: str):
         # Still try to notify build complete so UI isn't stuck
         try:
             await notify_build_complete()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[graph] {type(_e).__name__}: {_e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

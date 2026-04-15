@@ -7,6 +7,8 @@ from services.document_processor import document_processor
 from services.rag_engine import rag_engine
 from services.topic_modeling import topic_modeling_service
 from services.event_logger import log_document_captured
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -93,8 +95,8 @@ async def _process_upload_background(
         # Timeline extraction
         try:
             await extract_timeline_for_source(notebook_id, source_id, text, filename)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
 
         # Image processing for PDFs/PPTs
         file_ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
@@ -103,8 +105,8 @@ async def _process_upload_background(
                 await document_processor.process_images_background(
                     content, notebook_id, source_id, filename
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[sources] {type(_e).__name__}: {_e}")
 
         # Auto-tag
         try:
@@ -112,8 +114,8 @@ async def _process_upload_background(
             await auto_tagger.tag_source_in_notebook(
                 notebook_id, source_id, filename, text[:3000]
             )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
 
     except Exception as e:
         import traceback
@@ -131,8 +133,8 @@ async def _process_upload_background(
                 "title": filename,
                 "error": str(e)[:100],
             })
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
 
 
 @router.post("/upload")
@@ -180,8 +182,8 @@ async def upload_source(
                 cd = extract_content_date(filename, "")
                 if cd:
                     source_meta["content_date"] = cd
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[sources] {type(_e).__name__}: {_e}")
 
             source = await source_store.create(
                 notebook_id=notebook_id,
@@ -199,12 +201,12 @@ async def upload_source(
             try:
                 from services.collection_history import record_engagement
                 record_engagement(notebook_id, "source_upload")
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[sources] {type(_e).__name__}: {_e}")
             try:
                 log_document_captured(notebook_id, filename, filename, "upload")
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[sources] {type(_e).__name__}: {_e}")
 
             return {
                 "source_id": source_id,
@@ -269,15 +271,15 @@ async def upload_source(
         # Log document capture event
         try:
             log_document_captured(notebook_id, filename, filename, "upload")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
         
         # Record engagement to suppress stale-research tombstone
         try:
             from services.collection_history import record_engagement
             record_engagement(notebook_id, "source_upload")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
         
         return result
     except Exception as e:
@@ -351,8 +353,8 @@ async def create_note(notebook_id: str, request: NoteCreateRequest, background_t
 
         try:
             log_document_captured(notebook_id, title, title, "note")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
 
         return {
             "source_id": source["id"],

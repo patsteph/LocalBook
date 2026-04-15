@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+logger = logging.getLogger(__name__)
 
 _log = logging.getLogger(__name__)
 
@@ -113,8 +114,8 @@ def ensure_playwright_browsers_path():
         if result.returncode == 0:
             _log.info("[Playwright] Chromium installed via system playwright CLI")
             return
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[playwright-utils] {type(_e).__name__}: {_e}")
 
     _log.error(
         "[Playwright] All auto-install strategies failed. "

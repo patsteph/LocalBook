@@ -19,6 +19,8 @@ import httpx
 import numpy as np
 
 from config import settings
+import logging
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -201,8 +203,8 @@ class TopicModelingService:
                         rebuild_data = json.load(f)
                     self._rebuild_doc_counts = rebuild_data.get("doc_counts", {})
                     self._rebuild_source_counts = rebuild_data.get("source_counts", {})
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[topic-modeling] {type(_e).__name__}: {_e}")
             
             # Update load time AFTER successful load
             self._last_load_time = time.time()
@@ -246,8 +248,8 @@ class TopicModelingService:
                 }
                 with open(self.rebuild_state_path, 'w') as f:
                     json.dump(rebuild_data, f, indent=2)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[topic-modeling] {type(_e).__name__}: {_e}")
             
             # Save BERTopic model
             if self._model is not None and hasattr(self._model, 'save'):
@@ -454,8 +456,8 @@ class TopicModelingService:
                 rep_docs = self._model.get_representative_docs(topic_id)
                 if rep_docs:
                     topic.representative_docs = [d[:200] for d in rep_docs[:3]]
-            except:
-                pass
+            except Exception as _e:
+                logger.debug(f"[topic-modeling] {type(_e).__name__}: {_e}")
             
             # Update source/notebook tracking
             if source_id not in topic.source_ids:
@@ -961,8 +963,8 @@ Return ONLY the label, nothing else."""
                         rep_docs = self._model.get_representative_docs(bt_id)
                         if rep_docs:
                             topic.representative_docs = [d[:200] for d in rep_docs[:3]]
-                    except:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[topic-modeling] {type(_e).__name__}: {_e}")
                     
                     topic.notebook_ids = [notebook_id]
                     topic.source_ids = list(set(

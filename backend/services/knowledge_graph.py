@@ -27,6 +27,8 @@ from models.knowledge_graph import (
 )
 from config import settings
 from storage.notebook_store import notebook_store
+import logging
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeGraphService:
@@ -389,8 +391,8 @@ Respond ONLY with JSON:"""
                 existing = table.search().where(f"id = '{concept_id}'").limit(1).to_list()
                 if existing:
                     matched_record = existing[0]
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[knowledge-graph] {type(_e).__name__}: {_e}")
         
         # SLOW PATH: If not in cache, do embedding search for fuzzy matching
         if not matched_record:

@@ -8,6 +8,8 @@ import asyncio
 import time
 from pathlib import Path
 from evaluator.models import EvalResult, IngestionResult, _score_to_grade
+import logging
+logger = logging.getLogger(__name__)
 
 EVALUATOR_DIR = Path(__file__).parent.parent
 
@@ -336,24 +338,24 @@ async def cleanup_test_notebook(notebook_id: str):
             for source in sources:
                 try:
                     await rag_engine.delete_source(notebook_id, source["id"])
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as _e:
+                    logger.warning(f"[ingestion] {type(_e).__name__}: {_e}")
+        except Exception as _e:
+            logger.warning(f"[ingestion] {type(_e).__name__}: {_e}")
 
         # Delete sources
         try:
             await source_store.delete_all(notebook_id)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning(f"[ingestion] {type(_e).__name__}: {_e}")
 
         # Delete notebook data directory
         try:
             nb_dir = Path(settings.data_dir) / "notebooks" / notebook_id
             if nb_dir.exists():
                 shutil.rmtree(nb_dir)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[ingestion] {type(_e).__name__}: {_e}")
 
         # Delete notebook record
         await notebook_store.delete(notebook_id)

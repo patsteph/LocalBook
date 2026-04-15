@@ -412,8 +412,8 @@ class VideoGenerator:
             try:
                 import mlx.core as mx
                 mx.clear_cache()
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[video-generator] {type(_e).__name__}: {_e}")
             await asyncio.sleep(0.3)
 
         if chunks_failed > 0:

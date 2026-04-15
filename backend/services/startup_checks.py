@@ -12,6 +12,8 @@ import lancedb
 import pyarrow as pa
 from typing import List, Tuple, Dict, Any
 from config import settings
+import logging
+logger = logging.getLogger(__name__)
 
 # Required Ollama models for v0.6.0
 # Vision model is dynamically read from settings so the Locker can swap it
@@ -389,8 +391,8 @@ async def reset_knowledge_graph_tables():
             knowledge_graph_service._initialized = False
             knowledge_graph_service._cache_loaded = False
             knowledge_graph_service._concept_name_cache = {}
-        except:
-            pass
+        except Exception as _e:
+            logger.debug(f"[startup-checks] {type(_e).__name__}: {_e}")
             
     except Exception as e:
         print(f"[Startup] Error resetting KG tables: {e}")

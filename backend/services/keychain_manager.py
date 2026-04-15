@@ -175,8 +175,8 @@ def _migrate_legacy_keys() -> None:
                     bundle[key_name] = val
                     to_delete.append(key_name)
                     logger.info(f"[Keychain] Migrated legacy key: {key_name}")
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning(f"[keychain-manager] {type(_e).__name__}: {_e}")
 
         if to_delete:
             _save_bundle(bundle)
@@ -185,10 +185,10 @@ def _migrate_legacy_keys() -> None:
         for key_name in to_delete:
             try:
                 keyring.delete_password(SERVICE_NAME, key_name)
-            except keyring.errors.PasswordDeleteError:
-                pass
-            except Exception:
-                pass
+            except keyring.errors.PasswordDeleteError as _e:
+                logger.warning(f"[keychain-manager] {type(_e).__name__}: {_e}")
+            except Exception as _e:
+                logger.warning(f"[keychain-manager] {type(_e).__name__}: {_e}")
 
         _migration_done = True
         logger.info("[Keychain] Legacy key migration complete.")

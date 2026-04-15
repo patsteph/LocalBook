@@ -30,6 +30,8 @@ import httpx
 
 from config import settings
 from storage.source_store import source_store
+import logging
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -88,8 +90,8 @@ class RLMExecutor:
             if progress_callback:
                 try:
                     progress_callback(msg)
-                except:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[rlm-executor] {type(_e).__name__}: {_e}")
         
         log(f"Starting RLM analysis for notebook {notebook_id}")
         

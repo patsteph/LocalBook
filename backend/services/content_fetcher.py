@@ -106,8 +106,8 @@ class RSSFetcher(BaseFetcher):
                 if entry.get("published_parsed"):
                     try:
                         published = datetime(*entry.published_parsed[:6])
-                    except:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[content-fetcher] {type(_e).__name__}: {_e}")
                 
                 # Filter by keywords if provided
                 if keywords:

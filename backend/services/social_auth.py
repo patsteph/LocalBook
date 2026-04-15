@@ -81,8 +81,8 @@ class SocialAuthService:
         # Zero out the decrypted bytes in memory
         try:
             ctypes.memset(ctypes.c_char_p(state_bytes), 0, len(state_bytes))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[social-auth] {type(_e).__name__}: {_e}")
         return state
 
     def _save_encrypted_state(self, platform: str, state: dict) -> str:
@@ -266,8 +266,8 @@ class SocialAuthService:
                 file_size = enc_path.stat().st_size
                 with open(enc_path, "wb") as f:
                     f.write(b"\x00" * file_size)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.warning(f"[social-auth] {type(_e).__name__}: {_e}")
             enc_path.unlink(missing_ok=True)
             logger.info(f"Disconnected platform: {platform}")
             return True

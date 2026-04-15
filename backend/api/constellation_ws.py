@@ -3,6 +3,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Set
 import json
 import asyncio
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/constellation", tags=["constellation"])
 
@@ -107,7 +109,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 except Exception:
                     break
                     
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as _e:
+        logger.debug(f"[constellation-ws] {type(_e).__name__}: {_e}")
     finally:
         connected_clients.discard(websocket)

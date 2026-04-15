@@ -14,6 +14,8 @@ from typing import AsyncGenerator, Optional
 import httpx
 
 from config import settings
+import logging
+logger = logging.getLogger(__name__)
 
 
 def _get_model_options(model_name: str) -> dict:
@@ -28,8 +30,8 @@ def _get_model_options(model_name: str) -> dict:
         info = model_registry.get_model(model_name)
         if info and info.ollama_options:
             return dict(info.ollama_options)  # Copy to avoid mutating registry
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[rag-llm] {type(_e).__name__}: {_e}")
     return {}
 
 

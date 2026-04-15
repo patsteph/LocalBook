@@ -202,8 +202,8 @@ def _extract_from_content(text: str) -> Optional[str]:
                     from dateutil.parser import parse as dateparse
                     dt = dateparse(m.group(1))
                     return dt.strftime("%Y-%m-%d")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[content-date-extractor] {type(_e).__name__}: {_e}")
             elif ptype == 'date_header_numeric':
                 parts = re.split(r'[/\-]', m.group(1))
                 if len(parts) == 3:

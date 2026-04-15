@@ -17,6 +17,8 @@ from typing import Dict, List, Optional
 import httpx
 
 from config import settings
+import logging
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -237,8 +239,8 @@ Focus on information that would be useful for answering questions about this doc
             info = model_registry.get_model(self.vision_model)
             if info:
                 return info.vision_api_style
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[multimodal-extractor] {type(_e).__name__}: {_e}")
         return "generate"  # Safe default for Granite/LLaVA
     
     def _generate_basic_description(self, image: ExtractedImage) -> str:

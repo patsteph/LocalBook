@@ -24,6 +24,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Awaitable
 from collections import OrderedDict
+import logging
+logger = logging.getLogger(__name__)
 
 
 class JobStatus(str, Enum):
@@ -308,13 +310,13 @@ class JobQueue:
         if job_id and job_id in self._progress_listeners:
             try:
                 self._progress_listeners[job_id].remove(callback)
-            except ValueError:
-                pass
+            except ValueError as _e:
+                logger.debug(f"[job-queue] {type(_e).__name__}: {_e}")
         else:
             try:
                 self._global_listeners.remove(callback)
-            except ValueError:
-                pass
+            except ValueError as _e:
+                logger.debug(f"[job-queue] {type(_e).__name__}: {_e}")
     
     async def _notify_listeners(self, job: Job):
         """Notify all relevant listeners about job update."""
@@ -363,8 +365,8 @@ class JobQueue:
                 await asyncio.wait_for(job._task, timeout=timeout)
             except asyncio.TimeoutError:
                 return None
-            except asyncio.CancelledError:
-                pass
+            except asyncio.CancelledError as _e:
+                logger.debug(f"[job-queue] {type(_e).__name__}: {_e}")
         
         return job.to_dict()
     
@@ -482,8 +484,8 @@ async def _topic_rebuild_handler(
                                     # Backfill content into source store
                                     try:
                                         await source_store.update(notebook_id, source_id_for_rag, {"content": content})
-                                    except Exception:
-                                        pass
+                                    except Exception as _e:
+                                        logger.warning(f"[job-queue] {type(_e).__name__}: {_e}")
                     except Exception as e:
                         print(f"[TopicModel] RAG chunk fallback failed for source {i+1}: {e}")
                 

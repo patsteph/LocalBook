@@ -130,8 +130,8 @@ def _should_auto_enable_coaching(config: PeopleNotebookConfig, notebook_id: str)
             intent = (cdata.get("intent", "") + " " + cdata.get("subject", "")).lower()
             if any(kw in intent for kw in _COACHING_KEYWORDS):
                 return True
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[people] {type(_e).__name__}: {_e}")
     
     return False
 
@@ -373,8 +373,8 @@ async def analyze_member_activity(notebook_id: str, member_id: str):
         )
         if focus:
             member.activity_profile.focus_summary = focus
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[people] {type(_e).__name__}: {_e}")
     member.updated_at = datetime.utcnow().isoformat()
     _save_config(notebook_id, config)
     return member.activity_profile.model_dump()
