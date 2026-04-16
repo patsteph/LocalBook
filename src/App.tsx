@@ -305,7 +305,14 @@ function App() {
     onMessage: useCallback((message: any) => {
       if (message.type === 'source_updated' && message.data?.notebook_id === selectedNotebookId) {
         setRefreshSources(prev => prev + 1);
-        if (message.data.status === 'failed') {
+        if (message.data.status === 'completed') {
+          addToast({
+            type: 'success',
+            title: 'Source added',
+            message: message.data.title || 'New content collected',
+            duration: 4000,
+          });
+        } else if (message.data.status === 'failed') {
           addToast({
             type: 'error',
             title: 'Failed to add source',

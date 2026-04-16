@@ -1039,3 +1039,37 @@ async def summarize_content(request: SummarizeRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Extension-Assisted Scrape Queue (Phase 3 fallback)
+# ═════════════════════════════════════════════════════════════════════
+
+class ExtensionScrapeResult(BaseModel):
+    """Result from extension scraping a page."""
+    content: str
+    title: str = ""
+    html: Optional[str] = None
+
+
+@router.get("/pending-scrapes")
+async def get_pending_scrapes():
+    """Extension polls this to find URLs the backend needs scraped."""
+    from services.browser_scrape_queue import browser_scrape_queue
+    pending = browser_scrape_queue.get_pending()
+    return {"requests": pending, "count": len(pending)}
+
+
+@router.post("/scrape-result/{request_id}")
+async def submit_scrape_result(request_id: str, result: ExtensionScrapeResult):
+    """Extension submits scraped page content for a pending request."""
+    from services.browser_scrape_queue import browser_scrape_queue
+    found = browser_scrape_queue.submit_result(
+        request_id=request_id,
+        content=result.content,
+        title=result.title,
+        html=result.html or "",
+    )
+    if not found:
+        raise HTTPException(status_code=404, detail="Scrape request not found or expired")
+    return {"success": True}

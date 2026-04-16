@@ -324,7 +324,7 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                   {message.follow_up_questions.map((question, idx) => (
                     <button
                       key={idx}
-                      onClick={() => onFollowUp(question)}
+                      onClick={() => onFollowUp(message.agentType ? `@${message.agentType} ${question}` : question)}
                       className="text-xs px-2.5 py-1 bg-purple-100 dark:bg-purple-800/40 text-purple-800 dark:text-purple-200 rounded-full hover:bg-purple-200 dark:hover:bg-purple-700/50 transition-colors border border-purple-300 dark:border-purple-600"
                     >
                       {question}

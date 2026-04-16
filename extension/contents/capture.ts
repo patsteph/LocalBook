@@ -34,6 +34,9 @@ turndown.addRule("removeByClass", {
   replacement: () => ""
 })
 
+// Cap HTML input to Turndown to prevent main-thread lockup on huge DOMs
+const MAX_HTML_FOR_TURNDOWN = 2_000_000  // 2MB
+
 function extractMainContent(): string {
   // Try semantic selectors first (like FolioLM's approach)
   const selectors = ["article", "main", '[role="main"]', ".post-content",
@@ -41,11 +44,19 @@ function extractMainContent(): string {
   for (const sel of selectors) {
     const el = document.querySelector(sel)
     if (el && el.textContent && el.textContent.trim().length > 200) {
-      return turndown.turndown(el.innerHTML)
+      const html = el.innerHTML
+      if (html.length > MAX_HTML_FOR_TURNDOWN) {
+        return el.textContent.trim()  // Plain text fallback for huge elements
+      }
+      return turndown.turndown(html)
     }
   }
-  // Fallback to body
-  return turndown.turndown(document.body.innerHTML)
+  // Fallback to body — cap to prevent lockup
+  const bodyHtml = document.body.innerHTML
+  if (bodyHtml.length > MAX_HTML_FOR_TURNDOWN) {
+    return document.body.innerText || ""
+  }
+  return turndown.turndown(bodyHtml)
 }
 
 function extractOutboundLinks(): Array<{ url: string; text: string; context: string }> {
@@ -73,27 +84,45 @@ function extractOutboundLinks(): Array<{ url: string; text: string; context: str
   return links.slice(0, 30)
 }
 
+// Single unified message listener — avoids duplicate listener registration
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "getPageContent") {
-    const markdown = extractMainContent()
-    const html = document.documentElement.outerHTML
-    const metadata = extractMetadata()
-    const outboundLinks = extractOutboundLinks()
-    
-    sendResponse({
-      content: markdown,
-      html,
-      metadata,
-      outboundLinks
-    })
+  switch (request.action) {
+    case "getPageContent": {
+      const markdown = extractMainContent()
+      // Cap HTML to 500KB — full outerHTML can be huge
+      const MAX_HTML = 500_000
+      const html = document.documentElement.outerHTML.substring(0, MAX_HTML)
+      const metadata = extractMetadata()
+      const outboundLinks = extractOutboundLinks()
+      sendResponse({ content: markdown, html, metadata, outboundLinks })
+      return true
+    }
+
+    case "getSelection": {
+      const selection = window.getSelection()?.toString() || ""
+      sendResponse({ selection })
+      return true
+    }
+
+    case "captureSelection": {
+      const selection = window.getSelection()?.toString() || ""
+      if (selection) {
+        chrome.runtime.sendMessage({
+          action: "captureToLocalBook",
+          data: {
+            type: "selection",
+            content: selection,
+            url: window.location.href,
+            title: document.title
+          }
+        })
+      }
+      return false  // No async response needed
+    }
+
+    default:
+      return false  // Not our message — don't hold the channel open
   }
-  
-  if (request.action === "getSelection") {
-    const selection = window.getSelection()?.toString() || ""
-    sendResponse({ selection })
-  }
-  
-  return true // Keep message channel open for async response
 })
 
 function extractMetadata() {
@@ -111,24 +140,5 @@ function extractMetadata() {
     keywords: getMeta("keywords").split(",").map(k => k.trim()).filter(Boolean)
   }
 }
-
-// Listen for context menu clicks (for "Add to LocalBook" option)
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "captureSelection") {
-    const selection = window.getSelection()?.toString() || ""
-    if (selection) {
-      // Send selection to background script for capture
-      chrome.runtime.sendMessage({
-        action: "captureToLocalBook",
-        data: {
-          type: "selection",
-          content: selection,
-          url: window.location.href,
-          title: document.title
-        }
-      })
-    }
-  }
-})
 
 export {}

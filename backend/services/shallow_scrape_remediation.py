@@ -1,29 +1,38 @@
 """
 Shallow Scrape Remediation — ISS-002
 
-Scans collected sources (collected_by="collector") whose stored content
-falls in the 300–600 char range — the signature of a shallow scrape where
-only the page header/meta was captured.  Re-scrapes each candidate URL
+Phase 1: Scans collected sources (collected_by="collector") whose stored
+content falls in the 300–900 char range — the signature of a shallow scrape
+where only the page header/meta was captured.  Re-scrapes each candidate URL
 using the current web_scraper (trafilatura-based, fixed), updates the
 source content, and re-indexes it in LanceDB.
+
+Phase 2: Deletes sources that already went through remediation
+(remediated_shallow_scrape=True) but are still under 1000 chars.  These are
+permanently shallow (paywalled, anti-bot, or thin pages) and pollute the
+RAG index with noise.
 
 Runs once in the background at startup, after the HTTP server is ready.
 Skips:
   - Sources without a URL
   - Sources not marked as collected_by="collector"
   - Sources whose format/type is 'youtube', 'note', 'document', 'pdf', 'upload'
-  - Sources already marked remediated_shallow_scrape=True
+  - Sources already marked remediated_shallow_scrape=True (Phase 1 only)
   - Sources where re-scrape yields less content than what was stored
 """
 
 import asyncio
 import logging
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
 # Char range that indicates a shallow scrape (header/snippet only).
 SHALLOW_MIN = 300
-SHALLOW_MAX = 600
+SHALLOW_MAX = 900
+
+# Sources under this threshold that already went through remediation are garbage — delete them.
+DELETE_THRESHOLD = 1000
 
 # Source types that are NOT web-scraped — skip these entirely.
 SKIP_FORMATS = {"youtube", "note", "document", "pdf", "upload", "docx", "pptx", "xlsx", "csv"}
@@ -220,8 +229,66 @@ async def run_shallow_scrape_remediation():
     print(f"✅ ShallowRemedy: {fixed} source(s) enriched, {skipped} skipped (no improvement or scrape failed).")
     logger.info(f"[ShallowRemedy] Complete — {fixed} enriched, {skipped} skipped.")
 
+    # ── Phase 2: Delete sources that are still shallow after remediation ──
+    # Sources with remediated_shallow_scrape=True but still under 1000 chars
+    # are permanently shallow (paywalled, anti-bot, or just thin pages).
+    # They pollute the RAG index — remove them.
+    # Re-query DB to pick up sources that were just remediated in Phase 1.
+    delete_candidates = []
+    try:
+        fresh_rows = conn.execute(
+            "SELECT * FROM sources WHERE "
+            "json_extract(metadata_json, '$.remediated_shallow_scrape') = true "
+            "AND LENGTH(COALESCE(content, '')) < ?",
+            (DELETE_THRESHOLD,)
+        ).fetchall()
+        for row in fresh_rows:
+            src = dict(row)
+            meta = src.pop('metadata_json', None)
+            if meta:
+                try:
+                    import json as _json
+                    extra = _json.loads(meta) if isinstance(meta, str) else meta
+                    src.update(extra)
+                except Exception:
+                    pass
+            fmt = (src.get("format") or src.get("type") or "").lower()
+            if fmt in SKIP_FORMATS:
+                continue
+            nb_id = src.get("notebook_id")
+            if nb_id:
+                delete_candidates.append((nb_id, src))
+    except Exception as q_err:
+        logger.warning(f"[ShallowRemedy] Phase 2 query failed: {q_err}")
+
+    if delete_candidates:
+        print(f"🗑️  ShallowRemedy Phase 2: deleting {len(delete_candidates)} remediated-but-still-shallow source(s)")
+        logger.info(f"[ShallowRemedy] Phase 2: {len(delete_candidates)} sources to delete (< {DELETE_THRESHOLD} chars, already remediated)")
+        deleted = 0
+        for notebook_id, src in delete_candidates:
+            source_id = src.get("id")
+            title = src.get("filename") or src.get("title") or source_id
+            char_count = len(src.get("content") or "")
+            try:
+                from storage.source_store import source_store
+                from services.rag_engine import rag_engine
+                # Remove from RAG index first
+                try:
+                    await rag_engine.delete_source(notebook_id, source_id)
+                except Exception as rag_err:
+                    logger.debug(f"[ShallowRemedy] RAG delete failed for '{title}': {rag_err}")
+                # Remove from source store
+                await source_store.delete(notebook_id, source_id)
+                deleted += 1
+                logger.info(f"[ShallowRemedy] Deleted shallow source: '{title}' ({char_count} chars)")
+            except Exception as del_err:
+                logger.warning(f"[ShallowRemedy] Failed to delete '{title}': {del_err}")
+        print(f"🗑️  ShallowRemedy Phase 2: {deleted}/{len(delete_candidates)} deleted")
+    else:
+        print(f"[ShallowRemedy] Phase 2: no remediated-but-still-shallow sources to delete")
+
     # Write sentinel so this job never runs again on subsequent startups
     try:
-        sentinel.write_text(f"completed — {fixed} enriched, {skipped} skipped")
+        sentinel.write_text(f"completed — {fixed} enriched, {skipped} skipped, {len(delete_candidates)} deleted")
     except Exception as e:
         logger.warning(f"[ShallowRemedy] Could not write sentinel file: {e}")

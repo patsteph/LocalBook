@@ -131,6 +131,10 @@ echo -e "\n${YELLOW}Step 1/3: Building backend...${NC}"
 if [ ! -f "$BACKEND_EXE" ] || [ "$DO_REBUILD" = true ] || [ "$DO_CLEAN" = true ]; then
     cd backend
     
+    # Clear stale bytecode — prevents phantom AttributeError from cached .pyc
+    find . -maxdepth 4 -type d -name '__pycache__' -not -path './.venv/*' -exec rm -rf {} + 2>/dev/null || true
+    echo -e "${GREEN}✓ Cleared stale __pycache__${NC}"
+    
     # Clean rebuild: remove venv entirely to ensure fresh install
     if [ "$DO_CLEAN" = true ]; then
         echo -e "${YELLOW}Clean build: removing existing virtual environment...${NC}"

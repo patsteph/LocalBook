@@ -109,8 +109,11 @@ class RSSFetcher(BaseFetcher):
                     except Exception as _e:
                         logger.debug(f"[content-fetcher] {type(_e).__name__}: {_e}")
                 
-                # Filter by keywords if provided
-                if keywords:
+                # Filter by keywords if provided — but skip filtering for
+                # explicitly-subscribed feeds (YouTube channels, etc.) where
+                # the user wants ALL new content, not just keyword matches.
+                is_subscribed_feed = "youtube.com/feeds/" in (feed_url or "")
+                if keywords and not is_subscribed_feed:
                     content_lower = f"{title} {summary}".lower()
                     if not any(kw.lower() in content_lower for kw in keywords):
                         continue
@@ -464,10 +467,8 @@ class YouTubeFetcher(BaseFetcher):
             for entry in feed.entries[:10]:
                 title = entry.get("title", "")
                 
-                # Filter by keywords if provided
-                if keywords:
-                    if not any(kw.lower() in title.lower() for kw in keywords):
-                        continue
+                # NOTE: No keyword filtering for channel feeds — user explicitly
+                # subscribed to this channel, so they want ALL new videos.
                 
                 item = FetchedItem(
                     title=title,

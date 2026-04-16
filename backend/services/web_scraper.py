@@ -1,5 +1,6 @@
 """Web scraping and search service"""
 import asyncio
+import logging
 import re
 from typing import List, Dict, Optional
 from urllib.parse import urlparse, parse_qs
@@ -8,6 +9,8 @@ import httpx
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 from api.settings import get_api_key
+
+logger = logging.getLogger(__name__)
 
 # Timeouts
 SCRAPE_TIMEOUT = 120.0  # total timeout per URL (documents can be large)
@@ -119,8 +122,12 @@ class WebScraper:
         
         return list(results)
     
-    async def _scrape_single(self, url: str) -> Dict:
-        """Scrape a single URL - routes to appropriate handler"""
+    async def _scrape_single(self, url: str, extension_fallback: bool = False) -> Dict:
+        """Scrape a single URL - routes to appropriate handler.
+        
+        Set extension_fallback=True to enable Phase 3 browser extension
+        fallback for URLs that Playwright+httpx can't handle.
+        """
         if self._is_youtube_url(url):
             return await self._scrape_youtube(url)
         elif self._is_arxiv_url(url):
@@ -130,7 +137,7 @@ class WebScraper:
         elif self._get_google_export_url(url):
             return await self._scrape_remote_document(self._get_google_export_url(url), original_url=url)
         else:
-            return await self._scrape_web_page(url)
+            return await self._scrape_web_page(url, extension_fallback=extension_fallback)
 
     def _is_document_url(self, url: str) -> bool:
         """Check if URL points to a downloadable document (PDF, PPTX, DOCX, etc.)"""
@@ -395,17 +402,22 @@ class WebScraper:
                 "error": str(e)
             }
 
-    async def _scrape_web_page(self, url: str) -> Dict:
+    async def _scrape_web_page(self, url: str, extension_fallback: bool = False) -> Dict:
         """Scrape content from web page using Playwright + trafilatura.
         
         Phase 1 — FETCH: Playwright (real Chromium) with httpx fallback.
         Phase 2 — EXTRACT: trafilatura parses the HTML into clean text.
+        Phase 3 — EXTENSION FALLBACK: If Phase 1 or 2 fail and extension_fallback
+                  is True, queue the URL for the LocalBook browser extension to
+                  scrape in the user's real browser (bypasses bot protection, etc.).
         """
         try:
             # ── Phase 1: FETCH HTML ──────────────────────────────────────
             downloaded = await self._fetch_html(url)
 
             if not downloaded:
+                if extension_fallback:
+                    return await self._try_extension_fallback(url, "both Playwright and httpx failed to download")
                 return {
                     "success": False,
                     "url": url,
@@ -429,6 +441,8 @@ class WebScraper:
             text = await loop.run_in_executor(None, extract_content, downloaded)
 
             if not text:
+                if extension_fallback:
+                    return await self._try_extension_fallback(url, "trafilatura extracted no text from HTML")
                 return {
                     "success": False,
                     "url": url,
@@ -449,6 +463,14 @@ class WebScraper:
             word_count = len(text.split())
             char_count = len(text)
 
+            # If Playwright+trafilatura returned something but it's very shallow,
+            # try the extension as well — it often gets more from JS-heavy pages.
+            if extension_fallback and char_count < 500:
+                logger.info(f"[Scraper] Phase 2 result shallow ({char_count} chars) for {url} — trying extension fallback")
+                ext_result = await self._try_extension_fallback(url, f"shallow result ({char_count} chars)")
+                if ext_result.get("success") and len(ext_result.get("text", "")) > char_count:
+                    return ext_result
+
             return {
                 "success": True,
                 "url": url,
@@ -466,6 +488,34 @@ class WebScraper:
                 "url": url,
                 "error": str(e)
             }
+
+    async def _try_extension_fallback(self, url: str, reason: str) -> Dict:
+        """Phase 3: Ask the browser extension to scrape a URL.
+        
+        Opens the URL in the user's default browser and waits for the
+        extension to extract content and post it back.  Returns a standard
+        scrape result dict.  If the extension is not available or times out,
+        returns a failure dict — no worse than the original failure.
+        """
+        try:
+            from services.browser_scrape_queue import browser_scrape_queue
+            logger.info(f"[Scraper] Phase 3 extension fallback for {url} (reason: {reason})")
+            print(f"🌐 Extension fallback: opening {url} in browser (reason: {reason})")
+
+            result = await browser_scrape_queue.request_scrape(url, open_browser=True)
+            if result and result.get("success"):
+                logger.info(f"[Scraper] Extension fallback SUCCESS for {url}: {result.get('char_count', 0)} chars")
+                return result
+
+            logger.info(f"[Scraper] Extension fallback returned no usable content for {url}")
+        except Exception as ext_err:
+            logger.warning(f"[Scraper] Extension fallback error for {url}: {ext_err}")
+
+        return {
+            "success": False,
+            "url": url,
+            "error": f"All scrape methods failed ({reason}). Extension fallback unavailable or timed out."
+        }
 
     async def _fetch_html(self, url: str) -> Optional[str]:
         """Fetch raw HTML from a URL. Tries Playwright first, falls back to httpx.
@@ -515,10 +565,11 @@ class WebScraper:
 
         return None
 
-    async def scrape_with_html(self, url: str) -> Dict:
+    async def scrape_with_html(self, url: str, extension_fallback: bool = False) -> Dict:
         """Scrape a URL and also return the raw HTML for link extraction.
         
         Returns the same dict as _scrape_single but with an extra 'html' key.
+        Set extension_fallback=True to enable Phase 3 browser extension fallback.
         """
         if self._is_youtube_url(url):
             result = await self._scrape_youtube(url)
@@ -542,7 +593,7 @@ class WebScraper:
             return result
 
         # Use the same Playwright+httpx fetch pipeline as _scrape_web_page
-        result = await self._scrape_web_page(url)
+        result = await self._scrape_web_page(url, extension_fallback=extension_fallback)
         if "html" not in result:
             result["html"] = None
         return result
@@ -582,6 +633,10 @@ class WebScraper:
                         "privacy", "terms", "cookie", "search", "faq", "help",
                         "subscribe", "newsletter", "sitemap", "careers", "advertise"}
 
+        # If current page is root (/), single-segment paths like /article-slug are articles
+        current_segments = [s for s in path.split("/") if s]
+        min_segments = 1 if len(current_segments) == 0 else 2
+
         for a in all_links:
             href = a["href"]
             # Resolve relative URLs
@@ -603,9 +658,9 @@ class WebScraper:
             # Skip anchors, assets
             if link_path.endswith((".png", ".jpg", ".css", ".js", ".xml", ".pdf")):
                 continue
-            # Must have path depth > 1 segment (not just "/")
+            # Must have enough path depth (relaxed for root pages)
             segments = [s for s in link_path.split("/") if s]
-            if len(segments) < 2:
+            if len(segments) < min_segments:
                 continue
             # Must not be the same as current URL path
             if link_path == path:
@@ -624,6 +679,9 @@ class WebScraper:
         if len(unique_articles) >= 5 and text_word_count < 800:
             return True
         if len(unique_articles) >= 12:
+            return True
+        # Blog detection: very thin content + several descriptive links = index/blog
+        if len(unique_articles) >= 3 and text_word_count < 300:
             return True
 
         return False
@@ -650,6 +708,10 @@ class WebScraper:
         seen_urls = set()
         articles = []
 
+        # If current page is root (/), single-segment paths are articles
+        current_segments = [s for s in current_path.split("/") if s]
+        min_segments = 1 if len(current_segments) == 0 else 2
+
         for a in all_links:
             href = a["href"]
             if href.startswith("/"):
@@ -668,7 +730,7 @@ class WebScraper:
             if link_path.endswith((".png", ".jpg", ".css", ".js", ".xml", ".pdf")):
                 continue
             segments = [s for s in link_path.split("/") if s]
-            if len(segments) < 2:
+            if len(segments) < min_segments:
                 continue
             if link_path == current_path:
                 continue
@@ -834,47 +896,82 @@ class WebScraper:
         return result
     
     async def _resolve_youtube_subscription(self, url: str, parsed, result: Dict) -> Dict:
-        """Resolve YouTube URLs to channel RSS feeds."""
-        path = parsed.path or ""
+        """Resolve YouTube URLs to channel RSS feeds.
         
-        # ── Channel URL: /@handle, /c/name, /channel/ID ──
+        Returns result dict with:
+          - source_type, feed_url, channel_id, channel_name, immediate_url, default_schedule
+          - playlist_videos: list of {"video_id", "title", "url"} if a playlist was detected
+          - playlist_id: the playlist ID if detected
+        """
+        path = parsed.path or ""
+        query_params = parse_qs(parsed.query or "")
+        
         channel_id = None
         channel_name = None
         immediate_url = url
+        playlist_id = query_params.get("list", [None])[0]  # &list=PLxxxxxx
+        playlist_videos = []
         
+        print(f"[YT-Resolve] url={url}  path={path}  playlist_id={playlist_id}  host={parsed.hostname}")
+        
+        # ── Channel URL: /@handle, /c/name, /channel/ID ──
         if path.startswith("/@") or path.startswith("/c/") or path.startswith("/channel/"):
-            # This is already a channel URL
+            print(f"[YT-Resolve] Detected: CHANNEL URL")
             channel_id = await self._resolve_youtube_channel_id(url)
             parts = path.split("/")
             channel_name = parts[1] if len(parts) > 1 else "YouTube Channel"
             if channel_name.startswith("@"):
                 channel_name = channel_name[1:]
-            immediate_url = url  # Will scrape latest videos from channel page
+            immediate_url = url
+            print(f"[YT-Resolve] channel_id={channel_id}  channel_name={channel_name}")
         
-        # ── Video URL: extract channel from video page ──
+        # ── Video URL: extract channel + check for playlist param ──
         elif "/watch" in path or path.startswith("/shorts/") or "youtu.be" in (parsed.hostname or ""):
             video_id = self._extract_youtube_id(url)
+            print(f"[YT-Resolve] Detected: VIDEO URL  video_id={video_id}")
             if video_id:
-                immediate_url = url  # Scrape this specific video transcript
-                # For youtu.be short URLs, use canonical watch URL for lookups
+                immediate_url = url
                 lookup_url = url
                 if "youtu.be" in (parsed.hostname or ""):
                     lookup_url = f"https://www.youtube.com/watch?v={video_id}"
-                # Get channel name from oEmbed (lightweight, reliable)
+                # Get channel name from oEmbed
                 try:
                     oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         resp = await client.get(oembed_url)
                         if resp.status_code == 200:
                             channel_name = resp.json().get("author_name")
+                            print(f"[YT-Resolve] oEmbed channel_name={channel_name}")
                 except Exception as _oe_err:
-                    print(f"[WebScraper] oEmbed channel name lookup failed for {video_id}: {_oe_err}")
+                    print(f"[YT-Resolve] oEmbed FAILED for {video_id}: {_oe_err}")
                 channel_id = await self._get_channel_from_video(lookup_url)
+                print(f"[YT-Resolve] channel_id={channel_id}")
+                
+                # If video is part of a playlist, extract all playlist videos
+                if playlist_id:
+                    print(f"[YT-Resolve] Video has playlist param: {playlist_id}")
+                    playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+                    playlist_videos = await self._extract_playlist_video_ids(playlist_url)
+                    print(f"[YT-Resolve] Playlist extraction: {len(playlist_videos)} videos")
+                else:
+                    print(f"[YT-Resolve] No &list= param in URL — playlist extraction skipped")
         
-        # ── Playlist URL ──
+        # ── Playlist URL: /playlist?list=PLxxxxxx ──
         elif "/playlist" in path:
+            print(f"[YT-Resolve] Detected: PLAYLIST URL")
+            if not playlist_id:
+                playlist_id = query_params.get("list", [None])[0]
+            if playlist_id:
+                playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+                playlist_videos = await self._extract_playlist_video_ids(playlist_url)
+                print(f"[YT-Resolve] Playlist extraction: {len(playlist_videos)} videos")
+            else:
+                print(f"[YT-Resolve] Playlist URL but no list= param found!")
             channel_id = await self._resolve_youtube_channel_id(url)
             immediate_url = url
+            print(f"[YT-Resolve] channel_id={channel_id}")
+        else:
+            print(f"[YT-Resolve] Detected: UNKNOWN YouTube URL pattern")
         
         if channel_id:
             result["source_type"] = "youtube_channel"
@@ -883,12 +980,22 @@ class WebScraper:
             result["channel_name"] = channel_name or f"YouTube Channel ({channel_id[:8]}...)"
             result["immediate_url"] = immediate_url
             result["default_schedule"] = "weekly"
+            print(f"[YT-Resolve] RESULT: youtube_channel  feed={result['feed_url']}")
         else:
             # Couldn't resolve channel — treat as single video
             result["source_type"] = "web_page"
             result["channel_name"] = "YouTube Video"
             result["immediate_url"] = immediate_url
             result["default_schedule"] = "manual"
+            print(f"[YT-Resolve] RESULT: web_page (no channel resolved)")
+        
+        # Attach playlist data if found
+        if playlist_videos:
+            result["playlist_videos"] = playlist_videos
+            result["playlist_id"] = playlist_id
+            print(f"[YT-Resolve] Attached {len(playlist_videos)} playlist_videos to result")
+        else:
+            print(f"[YT-Resolve] No playlist_videos to attach")
         
         return result
     
@@ -949,6 +1056,142 @@ class WebScraper:
             print(f"[WebScraper] Could not get channel from video HTML: {e}")
         return None
     
+    async def _extract_playlist_video_ids(self, playlist_url: str, max_videos: int = 20) -> List[Dict]:
+        """Extract video IDs and titles from a YouTube playlist page.
+        
+        Returns list of {"video_id": str, "title": str, "url": str}.
+        Uses HTML scraping — no API key required.
+        """
+        import json as _json
+        videos = []
+        try:
+            print(f"[Playlist] Fetching HTML for {playlist_url}")
+            html = await self._fetch_html(playlist_url)
+            if not html:
+                print(f"[Playlist] _fetch_html returned None/empty for {playlist_url}")
+                return videos
+            print(f"[Playlist] Got {len(html):,} chars of HTML")
+            
+            # Strategy 1: Parse ytInitialData JSON blob (re.DOTALL for multi-line)
+            match = re.search(r'var\s+ytInitialData\s*=\s*', html)
+            if match:
+                # Find the JSON object start and use bracket matching
+                json_start = match.end()
+                json_str = self._extract_json_object(html, json_start)
+                if json_str:
+                    print(f"[Playlist] Found ytInitialData JSON ({len(json_str):,} chars)")
+                    try:
+                        data = _json.loads(json_str)
+                        top_keys = list(data.keys())[:5]
+                        print(f"[Playlist] Top-level keys: {top_keys}")
+                        
+                        # Navigate to playlist video list
+                        browse = data.get("contents", {}).get("twoColumnBrowseResultsRenderer", {})
+                        tabs = browse.get("tabs", [])
+                        print(f"[Playlist] twoColumnBrowseResultsRenderer has {len(tabs)} tabs")
+                        
+                        if tabs:
+                            tab_content = tabs[0].get("tabRenderer", {}).get("content", {})
+                            section_contents = (tab_content
+                                .get("sectionListRenderer", {})
+                                .get("contents", []))
+                            print(f"[Playlist] sectionListRenderer has {len(section_contents)} sections")
+                            
+                            if section_contents:
+                                item_section = section_contents[0].get("itemSectionRenderer", {})
+                                isr_contents = item_section.get("contents", [])
+                                print(f"[Playlist] itemSectionRenderer has {len(isr_contents)} items")
+                                
+                                if isr_contents:
+                                    playlist_renderer = isr_contents[0].get("playlistVideoListRenderer", {})
+                                    pl_contents = playlist_renderer.get("contents", [])
+                                    print(f"[Playlist] playlistVideoListRenderer has {len(pl_contents)} videos")
+                                    
+                                    for item in pl_contents[:max_videos]:
+                                        renderer = item.get("playlistVideoRenderer", {})
+                                        vid = renderer.get("videoId")
+                                        title_obj = renderer.get("title", {})
+                                        title = (title_obj.get("runs", [{}])[0].get("text")
+                                                or title_obj.get("simpleText", ""))
+                                        if vid:
+                                            videos.append({
+                                                "video_id": vid,
+                                                "title": title or f"Video {vid}",
+                                                "url": f"https://www.youtube.com/watch?v={vid}",
+                                            })
+                                    print(f"[Playlist] Strategy 1 (JSON nav): {len(videos)} videos")
+                                else:
+                                    print(f"[Playlist] itemSectionRenderer.contents is empty")
+                                    # Dump first-level keys for debugging
+                                    if section_contents:
+                                        s0_keys = list(section_contents[0].keys())
+                                        print(f"[Playlist] section[0] keys: {s0_keys}")
+                    except _json.JSONDecodeError as e:
+                        print(f"[Playlist] JSON decode FAILED: {e}")
+                else:
+                    print(f"[Playlist] Could not extract JSON object from ytInitialData")
+            else:
+                print(f"[Playlist] No ytInitialData found in HTML")
+            
+            # Strategy 2: Regex fallback — find all videoId values in the HTML
+            if not videos:
+                print(f"[Playlist] Strategy 1 failed, trying regex fallback")
+                seen = set()
+                for vid_match in re.finditer(r'"videoId"\s*:\s*"([a-zA-Z0-9_-]{11})"', html):
+                    vid = vid_match.group(1)
+                    if vid not in seen:
+                        seen.add(vid)
+                        videos.append({
+                            "video_id": vid,
+                            "title": f"Video {vid}",
+                            "url": f"https://www.youtube.com/watch?v={vid}",
+                        })
+                        if len(videos) >= max_videos:
+                            break
+                print(f"[Playlist] Strategy 2 (regex): {len(videos)} videos")
+            
+            print(f"[Playlist] RESULT: {len(videos)} videos from {playlist_url}")
+        except Exception as e:
+            import traceback
+            print(f"[Playlist] EXCEPTION: {e}")
+            traceback.print_exc()
+        return videos
+
+    @staticmethod
+    def _extract_json_object(text: str, start: int) -> Optional[str]:
+        """Extract a complete JSON object from text starting at position start.
+        
+        Uses bracket counting instead of regex — handles nested objects correctly.
+        """
+        # Find the opening brace
+        idx = text.find('{', start)
+        if idx == -1:
+            return None
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(idx, min(idx + 5_000_000, len(text))):
+            c = text[i]
+            if escape:
+                escape = False
+                continue
+            if c == '\\':
+                if in_string:
+                    escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[idx:i + 1]
+        return None
+
     def _discover_rss_from_html(self, html: str, base_url: str) -> Optional[str]:
         """Discover RSS/Atom feed URL from HTML <link> tags."""
         try:

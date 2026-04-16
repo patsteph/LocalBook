@@ -13,14 +13,28 @@ interface Notebook {
 
 let cachedNotebooks: Notebook[] = []
 
-// Create context menu on install
+// Scrape-assist polling constants (used in onInstalled/onStartup below)
+const SCRAPE_POLL_ALARM = "localbook-scrape-poll"
+// Poll at 30s normally. Only switches to fast (3s) when there are actually
+// pending scrape requests, then reverts to slow when the queue is empty.
+// This prevents the service worker from waking every 3s for nothing.
+const SCRAPE_POLL_SLOW_MINUTES = 0.5   // 30 seconds
+const SCRAPE_POLL_FAST_MINUTES = 0.05  // ~3 seconds (Chrome minimum)
+let scrapeAlarmFast = false
+
+// Concurrency limit — never open more than 2 scrape-assist tabs at once
+const MAX_CONCURRENT_SCRAPES = 2
+
+// Create context menu on install + start scrape-assist polling
 chrome.runtime.onInstalled.addListener(() => {
   createContextMenus()
+  chrome.alarms.create(SCRAPE_POLL_ALARM, { periodInMinutes: SCRAPE_POLL_SLOW_MINUTES })
 })
 
-// Also refresh menus when extension starts
+// Also refresh menus when extension starts + ensure alarm is running
 chrome.runtime.onStartup.addListener(() => {
   refreshNotebookMenus()
+  chrome.alarms.create(SCRAPE_POLL_ALARM, { periodInMinutes: SCRAPE_POLL_SLOW_MINUTES })
 })
 
 async function createContextMenus() {
@@ -154,12 +168,15 @@ async function captureSelection(text: string, url: string, title: string, notebo
 async function capturePage(tab: chrome.tabs.Tab, notebookId: string) {
   try {
     // Execute script to get page content
+    // Cap HTML size to prevent OOM in service worker (~500KB max)
+    const MAX_HTML_CHARS = 500_000
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id! },
-      func: () => ({
+      func: (maxChars: number) => ({
         content: document.body.innerText || "",
-        html: document.documentElement.outerHTML
-      })
+        html: document.documentElement.outerHTML.substring(0, maxChars)
+      }),
+      args: [MAX_HTML_CHARS]
     })
     
     const pageData = results[0]?.result
@@ -204,7 +221,8 @@ async function captureLink(url: string, notebookId: string) {
 }
 
 function showNotification(message: string) {
-  chrome.notifications.create({
+  // Use a stable ID so repeated notifications replace instead of stacking
+  chrome.notifications.create("localbook-status", {
     type: "basic",
     iconUrl: "icon.png",
     title: "LocalBook",
@@ -228,5 +246,219 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     })
   }
 })
+
+
+// ═══════════════════════════════════════════════════════════════════
+// Extension-Assisted Scrape Queue (Phase 3 fallback)
+// ═══════════════════════════════════════════════════════════════════
+// The backend queues URLs it couldn't scrape (bot protection, etc.)
+// and opens them in the user's default browser.  This poller picks
+// up those requests, waits for the tab to load, extracts content
+// via the content script, and posts the result back.
+
+// IDs we've already started processing — avoid duplicate work
+const processingIds = new Map<string, number>()  // id -> timestamp
+const PROCESSING_TTL_MS = 120_000  // 2 minutes — auto-expire stale entries
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== SCRAPE_POLL_ALARM) return
+  await pollPendingScrapes()
+})
+
+async function pollPendingScrapes() {
+  // GC stale processingIds to prevent memory leaks
+  const now = Date.now()
+  for (const [id, ts] of processingIds) {
+    if (now - ts > PROCESSING_TTL_MS) processingIds.delete(id)
+  }
+
+  try {
+    // Abort if fetch takes >5s (backend might be hung)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 5000)
+    const res = await fetch(`${API_BASE}/browser/pending-scrapes`, { signal: controller.signal })
+    clearTimeout(timeout)
+
+    if (!res.ok) {
+      // Backend down — switch to slow polling to save resources
+      setScrapeAlarmSpeed(false)
+      return
+    }
+    const data = await res.json()
+    const requests: Array<{ id: string; url: string }> = data.requests || []
+
+    if (requests.length === 0) {
+      // Nothing pending — slow down polling
+      setScrapeAlarmSpeed(false)
+      return
+    }
+
+    // Something pending — speed up polling
+    setScrapeAlarmSpeed(true)
+
+    // Respect concurrency limit
+    const activeCount = processingIds.size
+    const slotsAvailable = Math.max(0, MAX_CONCURRENT_SCRAPES - activeCount)
+
+    for (const req of requests.slice(0, slotsAvailable)) {
+      if (processingIds.has(req.id)) continue
+      processingIds.set(req.id, Date.now())
+      handleScrapeRequest(req.id, req.url).finally(() => {
+        processingIds.delete(req.id)
+      })
+    }
+  } catch {
+    // Backend not running or unreachable — slow down polling
+    setScrapeAlarmSpeed(false)
+  }
+}
+
+function setScrapeAlarmSpeed(fast: boolean) {
+  if (fast === scrapeAlarmFast) return  // no change needed
+  scrapeAlarmFast = fast
+  chrome.alarms.create(SCRAPE_POLL_ALARM, {
+    periodInMinutes: fast ? SCRAPE_POLL_FAST_MINUTES : SCRAPE_POLL_SLOW_MINUTES
+  })
+}
+
+async function handleScrapeRequest(requestId: string, url: string) {
+  let tabWeOpened: number | null = null
+  try {
+    // Find tab that already has this URL open (backend opened it via webbrowser.open)
+    let tab = await findTabByUrl(url)
+
+    if (!tab) {
+      // Open in a background tab
+      tab = await chrome.tabs.create({ url, active: false })
+      tabWeOpened = tab.id ?? null
+    }
+
+    if (!tab?.id) {
+      console.warn(`[ExtScrape] Could not get tab for ${url}`)
+      return
+    }
+
+    // Wait for the tab to finish loading (with tab-close safety)
+    await waitForTabLoad(tab.id, 25000)
+
+    // Small delay for JS-heavy pages to finish rendering
+    await sleep(2500)
+
+    // Extract content via content script message
+    // Cap HTML to 500KB to avoid blowing up service worker memory
+    const MAX_HTML = 500_000
+    let content = ""
+    let title = ""
+    let html = ""
+
+    try {
+      const response = await chrome.tabs.sendMessage(tab.id, { action: "getPageContent" })
+      if (response?.content) {
+        content = response.content
+        title = response.metadata?.title || ""
+        html = (response.html || "").substring(0, MAX_HTML)
+      }
+    } catch {
+      // Content script not injected — try scripting API fallback
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (maxHtml: number) => ({
+            content: document.body.innerText || "",
+            html: document.documentElement.outerHTML.substring(0, maxHtml),
+            title: document.title
+          }),
+          args: [MAX_HTML]
+        })
+        const result = results[0]?.result
+        if (result) {
+          content = result.content
+          title = result.title || ""
+          html = result.html || ""
+        }
+      } catch (scriptErr) {
+        console.error(`[ExtScrape] Scripting fallback failed for ${url}:`, scriptErr)
+      }
+    }
+
+    // Post result back to backend (with timeout)
+    const postController = new AbortController()
+    const postTimeout = setTimeout(() => postController.abort(), 10000)
+    await fetch(`${API_BASE}/browser/scrape-result/${requestId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, title, html }),
+      signal: postController.signal
+    })
+    clearTimeout(postTimeout)
+
+    console.log(`[ExtScrape] Submitted result for ${requestId}: ${content.length} chars`)
+
+    // Close the tab if WE opened it (not if the user had it)
+    if (tabWeOpened) {
+      try { await chrome.tabs.remove(tabWeOpened) } catch {}
+    }
+  } catch (err) {
+    console.error(`[ExtScrape] Failed to process ${requestId}:`, err)
+    // Clean up tab we opened on failure
+    if (tabWeOpened) {
+      try { await chrome.tabs.remove(tabWeOpened) } catch {}
+    }
+  }
+}
+
+async function findTabByUrl(url: string): Promise<chrome.tabs.Tab | null> {
+  try {
+    // Use Chrome's built-in URL filter first (much cheaper than querying all tabs)
+    const urlBase = url.split("#")[0].split("?")[0]
+    const tabs = await chrome.tabs.query({ url: `${urlBase}*` })
+    if (tabs.length > 0) return tabs[0]
+
+    // Fallback: normalize and compare (handles query string differences)
+    const allTabs = await chrome.tabs.query({ currentWindow: true })
+    const normalize = (u: string) => u.split("#")[0].replace(/\/$/, "").toLowerCase()
+    const target = normalize(url)
+    for (const tab of allTabs) {
+      if (tab.url && normalize(tab.url) === target) return tab
+    }
+  } catch {}
+  return null
+}
+
+function waitForTabLoad(tabId: number, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false
+    const settle = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      chrome.tabs.onUpdated.removeListener(onUpdated)
+      chrome.tabs.onRemoved.removeListener(onRemoved)
+      resolve()
+    }
+
+    const timer = setTimeout(settle, timeoutMs)
+
+    function onUpdated(updatedTabId: number, changeInfo: chrome.tabs.TabChangeInfo) {
+      if (updatedTabId === tabId && changeInfo.status === "complete") settle()
+    }
+
+    function onRemoved(removedTabId: number) {
+      if (removedTabId === tabId) settle()  // Tab was closed before loading
+    }
+
+    chrome.tabs.onRemoved.addListener(onRemoved)
+
+    // Check if already loaded
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab.status === "complete") settle()
+      else chrome.tabs.onUpdated.addListener(onUpdated)
+    }).catch(settle)  // Tab doesn't exist
+  })
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
 
 export {}

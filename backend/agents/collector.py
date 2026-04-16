@@ -1518,8 +1518,11 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 summary = entry.get("summary", entry.get("description", ""))
                 content = f"{title} {summary}".lower()
                 
-                # Filter by search terms if provided
-                if search_terms:
+                # Filter by search terms if provided — but skip filtering for
+                # explicitly-subscribed feeds (YouTube channels) where the user
+                # wants ALL new content, not just keyword matches.
+                is_subscribed_feed = "youtube.com/feeds/" in (feed_url or "")
+                if search_terms and not is_subscribed_feed:
                     if not any(term.lower() in content for term in search_terms):
                         continue
                 
@@ -1580,8 +1583,8 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 if not any(term.lower() in text_lower for term in search_terms):
                     return items
             
-            # Skip very thin pages
-            if len(text) < 200:
+            # Skip shallow pages — under 1000 chars is typically just header/nav noise
+            if len(text) < 1000:
                 return items
             
             item = CollectedItem(
@@ -1708,20 +1711,33 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
             reasons.append(relevance["reason"])
         
         # Source trust - is this a reliable source?
-        health = self._source_health.get(item.source_name)
-        if health:
-            if health.health == SourceHealth.HEALTHY:
-                item.source_trust = 0.9
-                reasons.append(f"Trusted source ({health.items_collected} items collected)")
-            elif health.health == SourceHealth.DEGRADED:
-                item.source_trust = 0.6
-                reasons.append("Source has been slow recently")
-            else:
-                item.source_trust = 0.3
-                reasons.append("Source reliability issues")
+        # User-added sources get high trust — the user explicitly validated them
+        user_sources = set(
+            list(self.config.sources.get("web_pages", []))
+            + list(self.config.sources.get("rss_feeds", []))
+            + list(self.config.sources.get("feed_pages", []))
+        )
+        item_source_url = item.source_url or item.url or ""
+        is_user_added = any(item_source_url.startswith(s) or s.startswith(item_source_url) for s in user_sources if s)
+
+        if is_user_added:
+            item.source_trust = 0.95
+            reasons.append("User-added source (high trust)")
         else:
-            item.source_trust = 0.5
-            reasons.append("New source (no history)")
+            health = self._source_health.get(item.source_name)
+            if health:
+                if health.health == SourceHealth.HEALTHY:
+                    item.source_trust = 0.9
+                    reasons.append(f"Trusted source ({health.items_collected} items collected)")
+                elif health.health == SourceHealth.DEGRADED:
+                    item.source_trust = 0.6
+                    reasons.append("Source has been slow recently")
+                else:
+                    item.source_trust = 0.3
+                    reasons.append("Source reliability issues")
+            else:
+                item.source_trust = 0.5
+                reasons.append("New source (no history)")
         
         # Freshness score - how recent is this?
         max_age_days = self.config.filters.get("max_age_days", 30) if self.config.filters else 30
@@ -1976,11 +1992,10 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 return False
         
         # Enrich thin content by scraping full article (RSS feeds only have summaries)
-        # Minimum content threshold — anything below this is a headline, not a source
-        # NOTE: RSS summaries are typically 150-400 chars, search snippets 100-300.
-        # Setting this too high (e.g. 500) silently kills items when scraping fails
-        # on paywalled/anti-bot sites like Yahoo Finance.
-        MIN_CONTENT_CHARS = 150
+        # Minimum content threshold — sources under 1000 chars are shallow scrapes
+        # (just headers/meta/snippets) and pollute the RAG index with noise.
+        # The enrichment block below tries to upgrade thin content before this gate.
+        MIN_CONTENT_CHARS = 1000
         
         content = item.content
         if item.url and len(content) < 1000:

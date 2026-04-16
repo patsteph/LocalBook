@@ -96,15 +96,23 @@ function SidePanel() {
   // Journey tracking
   const [pageActions, setPageActions] = useState<string[]>([])
 
-  // Initialize
+  // Initialize — register listeners and clean them up on unmount
   useEffect(() => {
     handleCheckConnection()
     handleGetCurrentPage()
 
-    chrome.tabs.onActivated.addListener(() => handleGetCurrentPage())
-    chrome.tabs.onUpdated.addListener((_, changeInfo) => {
+    const onActivated = () => handleGetCurrentPage()
+    const onUpdated = (_: number, changeInfo: chrome.tabs.TabChangeInfo) => {
       if (changeInfo.status === 'complete') handleGetCurrentPage()
-    })
+    }
+
+    chrome.tabs.onActivated.addListener(onActivated)
+    chrome.tabs.onUpdated.addListener(onUpdated)
+
+    return () => {
+      chrome.tabs.onActivated.removeListener(onActivated)
+      chrome.tabs.onUpdated.removeListener(onUpdated)
+    }
   }, [])
 
   // Save session state when it changes

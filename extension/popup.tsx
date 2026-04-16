@@ -90,15 +90,17 @@ function IndexPopup() {
       // Get page content from content script
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
       
+      const MAX_HTML_CHARS = 500_000  // 500KB cap to prevent OOM
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id! },
-        func: () => {
+        func: (maxChars: number) => {
           // Get text content
           const content = document.body.innerText || ""
-          // Get HTML for metadata extraction
-          const html = document.documentElement.outerHTML
+          // Get HTML for metadata extraction (capped)
+          const html = document.documentElement.outerHTML.substring(0, maxChars)
           return { content, html }
-        }
+        },
+        args: [MAX_HTML_CHARS]
       })
 
       const pageData = results[0]?.result

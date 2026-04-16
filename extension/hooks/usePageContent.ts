@@ -47,13 +47,15 @@ export async function getPageContent(): Promise<PageContent | null> {
       // Content script not injected on this page — fall back to scripting API
     }
 
-    // Fallback: basic extraction via scripting API
+    // Fallback: basic extraction via scripting API (cap HTML to 500KB)
+    const MAX_HTML = 500_000
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: () => ({
+      func: (maxChars: number) => ({
         content: document.body.innerText,
-        html: document.documentElement.outerHTML
-      })
+        html: document.documentElement.outerHTML.substring(0, maxChars)
+      }),
+      args: [MAX_HTML]
     })
     return results[0]?.result || null
   } catch (e) {

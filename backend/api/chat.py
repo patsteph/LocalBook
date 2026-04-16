@@ -1,4 +1,5 @@
 """Chat API endpoints"""
+import asyncio
 import json
 import logging
 from fastapi import APIRouter, HTTPException
@@ -8,6 +9,7 @@ from typing import Optional, List
 from services.rag_engine import rag_engine
 from services.query_orchestrator import get_orchestrator
 from services.event_logger import log_chat_qa
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -557,7 +559,7 @@ async def _stream_curator(chat_query: ChatQuery):
                 else:
                     lines.append("No strong themes found — try adding more notes first.")
                 reply = "\n".join(lines)
-                follow_ups = ['Apply these suggestions', 'Show collector profile', 'Discover patterns']
+                follow_ups = ['Discover patterns', 'Show your profile', 'What themes connect my notebooks?']
             except Exception as e:
                 reply = f"Failed to analyze notes: {e}"
                 follow_ups = []
@@ -613,7 +615,7 @@ async def _stream_curator(chat_query: ChatQuery):
                         lines.append(f"- **{name}**: History unavailable")
 
                 reply = "\n".join(lines)
-                follow_ups = ['Collect now for all notebooks', 'Show source health', 'What patterns exist?']
+                follow_ups = ['Show collection schedule', 'Discover patterns', 'What patterns exist?']
             except Exception as se:
                 reply = f"Could not retrieve schedule status: {se}"
             handled = True
@@ -690,7 +692,7 @@ Answer:"""
                     response = await ollama_client.generate(
                         prompt=prompt,
                         system=f"You are {curator_name}, a research curator who synthesizes knowledge across multiple research notebooks. Personality: {curator.personality}",
-                        model=settings.default_model,
+                        model=settings.ollama_model,
                         temperature=0.5,
                     )
                     reply = response.get("response", "I couldn't generate a synthesis. Please try rephrasing your question.")
@@ -726,6 +728,7 @@ async def _ingest_source_background(notebook_id: str, source_id: str, text: str,
     """
     from services.rag_engine import rag_engine
     from storage.source_store import source_store as _ss
+    from api.constellation_ws import notify_source_updated
     try:
         result = await rag_engine.ingest_document(
             notebook_id=notebook_id,
@@ -743,12 +746,183 @@ async def _ingest_source_background(notebook_id: str, source_id: str, text: str,
             "content": text,
         })
         logger.info(f"[Subscribe] Background ingest done: {filename} — {chunks} chunks, {characters} chars")
+        await notify_source_updated({
+            "notebook_id": notebook_id,
+            "source_id": source_id,
+            "status": "completed",
+            "title": filename,
+            "chunks": chunks,
+            "characters": characters,
+        })
     except Exception as e:
         logger.error(f"[Subscribe] Background ingest FAILED for {filename}: {e}")
         await _ss.update(notebook_id, source_id, {
             "status": "failed",
             "error": str(e)[:200],
         })
+        try:
+            await notify_source_updated({
+                "notebook_id": notebook_id,
+                "source_id": source_id,
+                "status": "failed",
+                "title": filename,
+                "error": str(e)[:100],
+            })
+        except Exception:
+            pass
+
+
+async def _ingest_youtube_batch_background(
+    notebook_id: str,
+    videos: list,
+    skip_url: str = "",
+    max_concurrent: int = 2,
+):
+    """Background task: scrape + ingest a batch of YouTube video transcripts.
+
+    Each video is scraped for its transcript, a source record is created, and
+    the heavy RAG pipeline runs in the background.  A semaphore limits
+    concurrent transcript fetches to *max_concurrent* to stay gentle on RAM
+    and network.
+
+    *skip_url* is the video that was already scraped in Step 1 — we skip it
+    to avoid duplicates.
+    """
+    from services.web_scraper import web_scraper
+    from storage.source_store import source_store as _ss
+    from utils.tasks import safe_create_task
+
+    logger.info(f"[YT-batch] === STARTED === notebook={notebook_id[:8]}, {len(videos)} videos, skip_url={skip_url}")
+
+    # Normalise the skip URL to a video ID for robust comparison
+    skip_vid = web_scraper._extract_youtube_id(skip_url) if skip_url else None
+    logger.info(f"[YT-batch] skip_vid={skip_vid}")
+    sem = asyncio.Semaphore(max_concurrent)
+    ingested = 0
+    skipped = 0
+    failed = 0
+
+    async def _process_one(video: dict):
+        nonlocal ingested, skipped, failed
+        vid = video.get("video_id", "")
+        if vid == skip_vid:
+            logger.info(f"[YT-batch] SKIP (already scraped): {vid}")
+            skipped += 1
+            return
+        video_url = video.get("url") or f"https://www.youtube.com/watch?v={vid}"
+        logger.info(f"[YT-batch] Processing: {vid} — {video.get('title', '?')[:50]}")
+        async with sem:
+            try:
+                MIN_SOURCE_CHARS = 1000  # Reject shallow transcripts
+                yt_result = await web_scraper._scrape_youtube(video_url)
+                if not (yt_result.get("success") and yt_result.get("text")):
+                    err = yt_result.get('error', 'unknown')
+                    logger.info(f"[YT-batch] No transcript for {vid}: {err}")
+                    failed += 1
+                    return
+                title = yt_result.get("title", video.get("title", f"Video {vid}"))
+                text = f"Title: {title}\n\nTranscript:\n{yt_result['text']}"
+                wc = len(yt_result["text"].split())
+                if len(text) < MIN_SOURCE_CHARS:
+                    logger.info(f"[YT-batch] SHALLOW transcript for {vid}: {len(text)} chars < {MIN_SOURCE_CHARS} — skipped")
+                    failed += 1
+                    return
+                logger.info(f"[YT-batch] Transcript OK: {vid} — {wc:,} words")
+                src_meta = {
+                    "type": "youtube", "format": "youtube",
+                    "url": video_url, "status": "processing",
+                    "chunks": 0, "characters": 0,
+                    "capture_type": "youtube", "user_provided": True,
+                    "word_count": wc,
+                }
+                rec = await _ss.create(notebook_id=notebook_id, filename=title, metadata=src_meta)
+                sid = rec["id"]
+                logger.info(f"[YT-batch] Source created: {sid[:8]} — firing ingest task")
+                safe_create_task(
+                    _ingest_source_background(notebook_id, sid, text, title, "youtube"),
+                    name=f"yt-batch-{sid[:8]}",
+                )
+                ingested += 1
+            except Exception as e:
+                import traceback
+                logger.warning(f"[YT-batch] EXCEPTION for {vid}: {e}")
+                traceback.print_exc()
+                failed += 1
+
+    tasks = [_process_one(v) for v in videos]
+    await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info(f"[YT-batch] === DONE === {ingested} ingested, {skipped} skipped (dup), {failed} failed out of {len(videos)} total")
+
+
+async def _ingest_feed_articles_background(
+    notebook_id: str,
+    articles: list,
+    max_concurrent: int = 2,
+):
+    """Background task: scrape + ingest articles found on a feed/index page.
+
+    Each article URL is scraped, a source record is created, and the heavy
+    RAG pipeline runs in the background.  A semaphore limits concurrency.
+    """
+    from services.web_scraper import web_scraper
+    from storage.source_store import source_store as _ss
+    from api.constellation_ws import notify_source_updated
+
+    MIN_SOURCE_CHARS = 1000
+    logger.info(f"[feed-ingest] === STARTED === notebook={notebook_id[:8]}, {len(articles)} articles")
+
+    sem = asyncio.Semaphore(max_concurrent)
+    ingested = 0
+    failed = 0
+
+    async def _process_one(article):
+        nonlocal ingested, failed
+        art_url = article.get("url", "")
+        art_title = article.get("title", art_url)
+        async with sem:
+            try:
+                scraped = await web_scraper.scrape_with_html(art_url, extension_fallback=True)
+                if not scraped.get("success") or not scraped.get("text"):
+                    logger.warning(f"[feed-ingest] SKIP (no content): {art_url}")
+                    failed += 1
+                    return
+                text = scraped["text"]
+                if len(text) < MIN_SOURCE_CHARS:
+                    logger.info(f"[feed-ingest] SKIP (shallow {len(text)} chars): {art_url}")
+                    failed += 1
+                    return
+
+                title = scraped.get("title", art_title)
+                wc = scraped.get("word_count", len(text.split()))
+
+                # Check for duplicate URL
+                existing = await _ss.list(notebook_id)
+                existing_urls = {s.get("url") or s.get("metadata", {}).get("url", "") for s in existing}
+                if art_url in existing_urls:
+                    logger.info(f"[feed-ingest] SKIP (dup): {art_url}")
+                    return
+
+                src_meta = {
+                    "type": "web", "format": "web",
+                    "url": art_url, "status": "processing",
+                    "chunks": 0, "characters": 0,
+                    "capture_type": "web", "user_provided": True,
+                    "word_count": wc,
+                }
+                source_rec = await _ss.create(
+                    notebook_id=notebook_id, filename=title, metadata=src_meta
+                )
+                _sid = source_rec["id"]
+                await _ingest_source_background(notebook_id, _sid, text, title, "web")
+                ingested += 1
+                logger.info(f"[feed-ingest] OK: {title} ({wc} words)")
+            except Exception as e:
+                logger.error(f"[feed-ingest] FAILED {art_url}: {e}")
+                failed += 1
+
+    tasks = [_process_one(a) for a in articles]
+    await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info(f"[feed-ingest] === DONE === {ingested} ingested, {failed} failed out of {len(articles)} total")
 
 
 async def _stream_collector(chat_query: ChatQuery):
@@ -778,7 +952,7 @@ async def _stream_collector(chat_query: ChatQuery):
 
     try:
         reply = ""
-        follow_ups = ['Show my collection status', 'Find new sources about this topic', 'What sources need attention?']
+        follow_ups = ['Show my collection status', 'Check source health', 'Collect now']
         config = collector_agent.get_config()
 
         # Helper: parse frequency from text
@@ -811,6 +985,14 @@ async def _stream_collector(chat_query: ChatQuery):
         intent = classified["intent"]
         params = classified.get("params", {})
 
+        # Safety net: if message contains a URL but intent fell through to
+        # show_status (fallback), the user almost certainly wants add_url.
+        if intent == "show_status" and url_match:
+            logger.info(f"[collector] Intent override: show_status → add_url (URL detected in message)")
+            intent = "add_url"
+            if not params.get("url"):
+                params["url"] = url_match.group(1).rstrip('.,;:)')
+
         # -----------------------------------------------------------------
         # SUBSCRIBE (resolve → scrape now → register recurring feed)
         # -----------------------------------------------------------------
@@ -833,7 +1015,7 @@ async def _stream_collector(chat_query: ChatQuery):
                     logger.warning(f"[Subscribe] resolve_subscription_target failed for {url}: {e}")
                     _trace.append(f"  resolve: FAILED — {e}")
                     reply = f"**Could not resolve subscription target:** {url}\n- Error: {e}"
-                    follow_ups = ['Try adding as a regular source', 'Show my sources']
+                    follow_ups = ['Show my collection status', 'Show my sources']
                     sub = None
 
                 if sub:
@@ -854,6 +1036,8 @@ async def _stream_collector(chat_query: ChatQuery):
 
                     immediate_ok = False
                     is_yt_video = web_scraper._is_youtube_url(immediate_url) and ("/watch" in immediate_url or "youtu.be/" in immediate_url or "/shorts/" in immediate_url)
+                    MIN_SOURCE_CHARS = 1000  # Reject shallow scrapes
+
                     if src_type == "youtube_channel" and is_yt_video:
                         # Scrape the specific video transcript
                         try:
@@ -862,32 +1046,36 @@ async def _stream_collector(chat_query: ChatQuery):
                                 wc = len(yt_result["text"].split())
                                 yt_title = yt_result.get("title", "Video")
                                 content = f"Title: {yt_title}\n\nTranscript:\n{yt_result['text']}"
-                                # Create source record immediately (shows in UI as "processing")
-                                try:
-                                    src_meta = {
-                                        "type": "youtube", "format": "youtube",
-                                        "url": immediate_url, "status": "processing",
-                                        "chunks": 0, "characters": 0,
-                                        "capture_type": "youtube", "user_provided": True,
-                                        "word_count": wc,
-                                    }
-                                    source_rec = await _src_store.create(
-                                        notebook_id=notebook_id, filename=yt_title, metadata=src_meta
-                                    )
-                                    _sid = source_rec["id"]
-                                    # Fire-and-forget: heavy RAG pipeline runs in background
-                                    safe_create_task(
-                                        _ingest_source_background(notebook_id, _sid, content, yt_title, "youtube"),
-                                        name=f"subscribe-ingest-{_sid[:8]}"
-                                    )
-                                    _trace.append(f"  source: CREATED id={_sid}, ingest queued in background")
-                                    lines.append(f"**Immediate:** Scraped transcript from \"{yt_title}\" ({wc:,} words)")
-                                    immediate_ok = True
-                                except Exception as _ingest_err:
-                                    _trace.append(f"  source: FAILED — {_ingest_err}")
-                                    logger.warning(f"[Subscribe] Source creation failed for {yt_title}: {_ingest_err}")
-                                    lines.append(f"**Immediate:** Scraped transcript but failed to save: {_ingest_err}")
-                                _trace.append(f"  transcript: OK {wc} words — {yt_title}")
+                                if len(content) < MIN_SOURCE_CHARS:
+                                    _trace.append(f"  transcript: SHALLOW ({len(content)} chars < {MIN_SOURCE_CHARS}) — skipped")
+                                    lines.append(f"**Immediate:** Transcript too short ({len(content)} chars) — skipped")
+                                else:
+                                    # Create source record immediately (shows in UI as "processing")
+                                    try:
+                                        src_meta = {
+                                            "type": "youtube", "format": "youtube",
+                                            "url": immediate_url, "status": "processing",
+                                            "chunks": 0, "characters": 0,
+                                            "capture_type": "youtube", "user_provided": True,
+                                            "word_count": wc,
+                                        }
+                                        source_rec = await _src_store.create(
+                                            notebook_id=notebook_id, filename=yt_title, metadata=src_meta
+                                        )
+                                        _sid = source_rec["id"]
+                                        # Fire-and-forget: heavy RAG pipeline runs in background
+                                        safe_create_task(
+                                            _ingest_source_background(notebook_id, _sid, content, yt_title, "youtube"),
+                                            name=f"subscribe-ingest-{_sid[:8]}"
+                                        )
+                                        _trace.append(f"  source: CREATED id={_sid}, ingest queued in background")
+                                        lines.append(f"**Immediate:** Scraped transcript from \"{yt_title}\" ({wc:,} words)")
+                                        immediate_ok = True
+                                    except Exception as _ingest_err:
+                                        _trace.append(f"  source: FAILED — {_ingest_err}")
+                                        logger.warning(f"[Subscribe] Source creation failed for {yt_title}: {_ingest_err}")
+                                        lines.append(f"**Immediate:** Scraped transcript but failed to save: {_ingest_err}")
+                                    _trace.append(f"  transcript: OK {wc} words — {yt_title}")
                             else:
                                 _trace.append(f"  transcript: FAILED — {yt_result.get('error', 'no text')}")
                         except Exception as _yt_err:
@@ -902,35 +1090,39 @@ async def _stream_collector(chat_query: ChatQuery):
                                 scraped = cached
                                 _trace.append("  html_scrape: used cached result")
                             else:
-                                scraped = await web_scraper.scrape_with_html(immediate_url)
+                                scraped = await web_scraper.scrape_with_html(immediate_url, extension_fallback=True)
                             if scraped.get("success") and scraped.get("text"):
                                 wc = len(scraped["text"].split())
                                 pg_title = scraped.get("title", "Page")
-                                # Create source record immediately (shows in UI as "processing")
-                                try:
-                                    src_meta = {
-                                        "type": "web", "format": "web",
-                                        "url": immediate_url, "status": "processing",
-                                        "chunks": 0, "characters": 0,
-                                        "user_provided": True, "word_count": wc,
-                                    }
-                                    source_rec = await _src_store.create(
-                                        notebook_id=notebook_id, filename=pg_title, metadata=src_meta
-                                    )
-                                    _sid = source_rec["id"]
-                                    # Fire-and-forget: heavy RAG pipeline runs in background
-                                    safe_create_task(
-                                        _ingest_source_background(notebook_id, _sid, scraped["text"], pg_title, "web"),
-                                        name=f"subscribe-ingest-{_sid[:8]}"
-                                    )
-                                    _trace.append(f"  source: CREATED id={_sid}, ingest queued in background")
-                                    lines.append(f"**Immediate:** Scraped \"{pg_title}\" ({wc:,} words)")
-                                    immediate_ok = True
-                                except Exception as _ingest_err:
-                                    _trace.append(f"  source: FAILED — {_ingest_err}")
-                                    logger.warning(f"[Subscribe] Source creation failed for {pg_title}: {_ingest_err}")
-                                    lines.append(f"**Immediate:** Scraped but failed to save: {_ingest_err}")
-                                _trace.append(f"  html_scrape: OK {wc} words — {pg_title}")
+                                if len(scraped["text"]) < MIN_SOURCE_CHARS:
+                                    _trace.append(f"  html_scrape: SHALLOW ({len(scraped['text'])} chars < {MIN_SOURCE_CHARS}) — skipped")
+                                    lines.append(f"**Immediate:** Page too shallow ({len(scraped['text'])} chars) — skipped")
+                                else:
+                                    # Create source record immediately (shows in UI as "processing")
+                                    try:
+                                        src_meta = {
+                                            "type": "web", "format": "web",
+                                            "url": immediate_url, "status": "processing",
+                                            "chunks": 0, "characters": 0,
+                                            "user_provided": True, "word_count": wc,
+                                        }
+                                        source_rec = await _src_store.create(
+                                            notebook_id=notebook_id, filename=pg_title, metadata=src_meta
+                                        )
+                                        _sid = source_rec["id"]
+                                        # Fire-and-forget: heavy RAG pipeline runs in background
+                                        safe_create_task(
+                                            _ingest_source_background(notebook_id, _sid, scraped["text"], pg_title, "web"),
+                                            name=f"subscribe-ingest-{_sid[:8]}"
+                                        )
+                                        _trace.append(f"  source: CREATED id={_sid}, ingest queued in background")
+                                        lines.append(f"**Immediate:** Scraped \"{pg_title}\" ({wc:,} words)")
+                                        immediate_ok = True
+                                    except Exception as _ingest_err:
+                                        _trace.append(f"  source: FAILED — {_ingest_err}")
+                                        logger.warning(f"[Subscribe] Source creation failed for {pg_title}: {_ingest_err}")
+                                        lines.append(f"**Immediate:** Scraped but failed to save: {_ingest_err}")
+                                    _trace.append(f"  html_scrape: OK {wc} words — {pg_title}")
                             else:
                                 _trace.append(f"  html_scrape: FAILED — {scraped.get('error', 'no text')}")
                         except Exception as _scrape_err:
@@ -1000,19 +1192,83 @@ async def _stream_collector(chat_query: ChatQuery):
                         lines.append(f"- Schedule: **{freq}** checks for changes")
                         _notify_curator(f"Collector registered web source (no feed found): {channel_name} ({url}). Schedule: {freq}.")
 
-                    # ── Step 3: Preview upcoming content (YouTube channels) ──
+                    # ── Step 3: Batch-scrape playlist videos and/or channel feed ──
+                    batch_videos = []  # videos to scrape in background
+                    logger.info(f"[Subscribe] Step 3: sub keys={list(sub.keys())}")
+                    
+                    # 3a: Playlist videos (from URL with &list= or /playlist?list=)
+                    playlist_videos = sub.get("playlist_videos", [])
+                    playlist_id = sub.get("playlist_id")
+                    logger.info(f"[Subscribe] Step 3a: playlist_id={playlist_id}, playlist_videos={len(playlist_videos)}")
+                    if playlist_videos:
+                        batch_videos = list(playlist_videos)  # copy
+                        lines.append(f"\n**Playlist** (`{playlist_id}`): {len(playlist_videos)} videos found — scraping transcripts in background")
+                        _trace.append(f"  playlist: {len(playlist_videos)} videos from {playlist_id}")
+                    
+                    # 3b: Recent channel feed videos (if no playlist, or in addition to)
                     if src_type == "youtube_channel" and feed_url:
+                        logger.info(f"[Subscribe] Step 3b: fetching feed {feed_url}")
                         try:
                             import feedparser
                             feed = feedparser.parse(feed_url)
+                            logger.info(f"[Subscribe] Step 3b: feedparser returned {len(feed.entries)} entries, bozo={feed.bozo}")
+                            if feed.bozo:
+                                logger.warning(f"[Subscribe] Feed parse warning: {feed.bozo_exception}")
+                            feed_video_ids = set(v.get("video_id") for v in batch_videos)
+                            added_from_feed = 0
                             if feed.entries:
-                                lines.append(f"\n**Recent uploads** ({len(feed.entries[:5])} shown):")
-                                for entry in feed.entries[:5]:
-                                    lines.append(f"- [{entry.get('title', 'Untitled')}]({entry.get('link', '')})")
-                                _trace.append(f"  preview: {len(feed.entries)} entries in feed")
+                                for entry in feed.entries[:10]:
+                                    # YouTube Atom feeds have yt:videoId as a dedicated field
+                                    vid = entry.get("yt_videoid")
+                                    if not vid:
+                                        # Fallback: parse from link
+                                        link = entry.get("link", "")
+                                        if "watch?v=" in link:
+                                            vid = link.split("watch?v=")[-1].split("&")[0]
+                                        elif "youtu.be/" in link:
+                                            vid = link.split("/")[-1].split("?")[0]
+                                    entry_title = entry.get("title", f"Video {vid}")
+                                    logger.info(f"[Subscribe] Feed entry: vid={vid}  title={entry_title[:50]}")
+                                    if vid and vid not in feed_video_ids:
+                                        batch_videos.append({
+                                            "video_id": vid,
+                                            "title": entry_title,
+                                            "url": f"https://www.youtube.com/watch?v={vid}",
+                                        })
+                                        feed_video_ids.add(vid)
+                                        added_from_feed += 1
+                                if not playlist_videos:
+                                    lines.append(f"\n**Recent uploads:** {added_from_feed} videos found — scraping transcripts in background")
+                                elif added_from_feed > 0:
+                                    lines.append(f"**Channel feed:** {added_from_feed} additional recent videos queued")
+                                _trace.append(f"  feed: {len(feed.entries)} entries, {added_from_feed} added to batch")
+                            else:
+                                logger.warning(f"[Subscribe] Feed returned 0 entries for {feed_url}")
                         except Exception as _feed_err:
-                            _trace.append(f"  preview: FAILED — {_feed_err}")
-                            logger.warning(f"[Subscribe] Feed preview failed: {_feed_err}")
+                            import traceback
+                            _trace.append(f"  feed: FAILED — {_feed_err}")
+                            logger.warning(f"[Subscribe] Feed parse failed: {_feed_err}")
+                            traceback.print_exc()
+                    else:
+                        logger.info(f"[Subscribe] Step 3b skipped: src_type={src_type}, feed_url={feed_url}")
+                    
+                    # Fire background batch scrape
+                    logger.info(f"[Subscribe] Step 3 TOTAL: {len(batch_videos)} videos in batch, skip_url={immediate_url}")
+                    if batch_videos:
+                        for i, bv in enumerate(batch_videos):
+                            logger.info(f"[Subscribe]   batch[{i}]: {bv.get('video_id')} — {bv.get('title', '?')[:40]}")
+                        safe_create_task(
+                            _ingest_youtube_batch_background(
+                                notebook_id=notebook_id,
+                                videos=batch_videos,
+                                skip_url=immediate_url,
+                                max_concurrent=2,
+                            ),
+                            name=f"yt-batch-{notebook_id[:8]}",
+                        )
+                        _trace.append(f"  batch: {len(batch_videos)} videos queued for background scrape")
+                    else:
+                        logger.warning(f"[Subscribe] Step 3: NO videos to batch-scrape!")
 
                     _elapsed = _time.time() - _op_start
                     _trace.append(f"  DONE in {_elapsed:.1f}s")
@@ -1021,7 +1277,7 @@ async def _stream_collector(chat_query: ChatQuery):
                     follow_ups = ['Collect now', 'Show my subscription sources', 'Subscribe to another channel']
             else:
                 reply = "Please provide a URL to subscribe to. Example: *\"subscribe to https://youtube.com/@stanfordgsb\"*"
-                follow_ups = ['Show my sources', 'How do subscriptions work?']
+                follow_ups = ['Show my sources', 'Show my collection status']
 
         # -----------------------------------------------------------------
         # ADD URL (with optional schedule)
@@ -1056,7 +1312,7 @@ async def _stream_collector(chat_query: ChatQuery):
                     from services.web_scraper import web_scraper
 
                     # Use scrape_with_html so we can check for index pages
-                    scraped = await web_scraper.scrape_with_html(url)
+                    scraped = await web_scraper.scrape_with_html(url, extension_fallback=True)
                     raw_html = scraped.get("html")
 
                     # ── Index / feed page detection ──────────────────────
@@ -1085,7 +1341,6 @@ async def _stream_collector(chat_query: ChatQuery):
                                 "schedule": {**config.schedule, "frequency": freq if freq != "manual" else "weekly"},
                             })
 
-                            # Preview the articles found (but do NOT ingest — collection pipeline handles that)
                             sched_label = freq if freq != "manual" else "weekly"
                             lines = [f"**Feed page registered:** [{scraped.get('title', url)}]({url})",
                                      f"- **Schedule:** {sched_label} checks for new articles",
@@ -1094,18 +1349,30 @@ async def _stream_collector(chat_query: ChatQuery):
                                 lines.append(f"- [{a['title']}]({a['url']})")
                             if len(article_links) > 8:
                                 lines.append(f"- *...and {len(article_links) - 8} more*")
-                            lines.append(f"\nThese will be scraped, scored for relevance, and processed on the next **{sched_label}** collection run.")
-                            lines.append("Articles that pass my quality filters will appear in your notebook sources.")
+
+                            # Immediately scrape + ingest top articles in background
+                            from utils.tasks import safe_create_task
+                            safe_create_task(
+                                _ingest_feed_articles_background(
+                                    notebook_id=notebook_id,
+                                    articles=article_links,
+                                    max_concurrent=2,
+                                ),
+                                name=f"feed-ingest-{notebook_id[:8]}",
+                            )
+                            lines.append(f"\nScraping {len(article_links)} articles now — they'll appear in your sources shortly.")
                             reply = "\n".join(lines)
-                            _notify_curator(f"Collector registered feed page: {url}. {len(article_links)} articles detected.")
+                            _notify_curator(f"Collector registered feed page: {url}. {len(article_links)} articles being ingested.")
 
                         follow_ups = ['Collect now', 'Show my collection status', 'Add another source']
 
                     elif scraped.get("success") and scraped.get("text"):
                         # ── SINGLE URL FLOW ──────────────────────────────
-                        # Register in collector profile only — collection pipeline handles ingestion
+                        # Register in collector AND immediately ingest the
+                        # already-scraped content so it appears in sources now.
                         title = scraped.get("title", url)
-                        wc = scraped.get("word_count", len(scraped["text"].split()))
+                        text = scraped["text"]
+                        wc = scraped.get("word_count", len(text.split()))
 
                         web_pages = list(config.sources.get("web_pages", []))
                         if url not in web_pages:
@@ -1114,16 +1381,75 @@ async def _stream_collector(chat_query: ChatQuery):
                             "sources": {**config.sources, "web_pages": web_pages},
                             "schedule": {**config.schedule, "frequency": freq},
                         })
-                        lines = [f"Done. **Source registered:** [{title}]({url})",
-                                 f"- **{wc}** words detected on page"]
-                        if freq != "manual":
-                            lines.append(f"- **Schedule set:** {freq} checks")
+
+                        # Create source record + fire background ingest
+                        from utils.tasks import safe_create_task
+                        MIN_SOURCE_CHARS = 1000
+                        if len(text) >= MIN_SOURCE_CHARS:
+                            try:
+                                src_meta = {
+                                    "type": "web", "format": "web",
+                                    "url": url, "status": "processing",
+                                    "chunks": 0, "characters": 0,
+                                    "capture_type": "web", "user_provided": True,
+                                    "word_count": wc,
+                                }
+                                source_rec = await source_store.create(
+                                    notebook_id=notebook_id, filename=title, metadata=src_meta
+                                )
+                                _sid = source_rec["id"]
+                                safe_create_task(
+                                    _ingest_source_background(notebook_id, _sid, text, title, "web"),
+                                    name=f"add-url-ingest-{_sid[:8]}"
+                                )
+                                lines = [f"Done. **Source added:** [{title}]({url})",
+                                         f"- **{wc:,}** words scraped and ingesting now"]
+                            except Exception as _ie:
+                                logger.warning(f"[add_url] Source creation failed: {_ie}")
+                                lines = [f"Done. **Source registered:** [{title}]({url})",
+                                         f"- **{wc:,}** words detected (ingest failed: {_ie})"]
                         else:
+                            # Content too short — try article extraction as fallback
+                            # (the page may be a blog/index that is_index_page missed)
+                            fallback_articles = []
+                            if raw_html:
+                                fallback_articles = web_scraper.extract_article_links(url, raw_html, max_links=10)
+                            if fallback_articles:
+                                # It IS an index page — switch to feed page flow
+                                feed_pages = list(config.sources.get("feed_pages", []))
+                                if url not in feed_pages:
+                                    feed_pages.append(url)
+                                collector_agent.update_config({
+                                    "sources": {**config.sources, "feed_pages": feed_pages},
+                                    "schedule": {**config.schedule, "frequency": freq if freq != "manual" else "weekly"},
+                                })
+                                sched_label = freq if freq != "manual" else "weekly"
+                                lines = [f"**Blog/index page detected:** [{title}]({url})",
+                                         f"- **{len(fallback_articles)} articles found** — scraping now\n"]
+                                for a in fallback_articles[:6]:
+                                    lines.append(f"- [{a['title']}]({a['url']})")
+                                if len(fallback_articles) > 6:
+                                    lines.append(f"- *...and {len(fallback_articles) - 6} more*")
+                                safe_create_task(
+                                    _ingest_feed_articles_background(
+                                        notebook_id=notebook_id,
+                                        articles=fallback_articles,
+                                        max_concurrent=2,
+                                    ),
+                                    name=f"feed-ingest-{notebook_id[:8]}",
+                                )
+                                lines.append(f"\n- **Schedule:** {sched_label} checks for new articles")
+                                _notify_curator(f"Collector registered blog: {title} ({url}). {len(fallback_articles)} articles being ingested.")
+                            else:
+                                lines = [f"Done. **Source registered:** [{title}]({url})",
+                                         f"- Content too short ({len(text)} chars) for immediate ingest"]
+
+                        if freq != "manual" and "Schedule set" not in str(lines):
+                            lines.append(f"- **Schedule set:** {freq} checks")
+                        elif freq == "manual" and "Schedule" not in str(lines):
                             lines.append(f"- **Schedule:** manual (say \"check daily\" to automate)")
-                        lines.append(f"\nThis will be processed through the collection pipeline on the next run.")
-                        lines.append("Say **\"collect now\"** to trigger an immediate collection.")
                         reply = "\n".join(lines)
-                        _notify_curator(f"Collector registered web source: {title} ({url}). Schedule: {freq}.")
+                        _notify_curator(f"Collector added web source: {title} ({url}). Schedule: {freq}.")
                     else:
                         error = scraped.get("error", "Could not extract content")
                         reply = f"**Could not fetch:** {url}\n- Reason: {error}\n\nTry a different URL, or add content manually via the Sources panel."
@@ -1299,11 +1625,12 @@ async def _stream_collector(chat_query: ChatQuery):
             try:
                 from agents.curator import curator
                 result = await curator.assign_immediate_collection(notebook_id=notebook_id)
-                found = result.get("items_found", 0)
-                queued = result.get("items_queued", 0)
-                reply = f"**Collection complete.**\n- **{found}** items found\n- **{queued}** items queued for review"
+                found = result.get("items_collected", 0)
+                approved = result.get("items_approved", 0)
+                queued = result.get("items_pending", 0)
+                reply = f"**Collection complete.**\n- **{found}** items found\n- **{approved}** auto-approved\n- **{queued}** items queued for review"
                 if queued > 0:
-                    follow_ups = ['Show pending items', 'Approve all pending', 'Show collection status']
+                    follow_ups = ['Show pending items', 'Approve all pending', 'Check source health']
             except Exception as ce:
                 reply = f"Collection failed: {ce}"
 
@@ -1324,7 +1651,7 @@ async def _stream_collector(chat_query: ChatQuery):
                     lines.append(f"- ...and {len(pending) - 10} more")
                 lines.append(f"\nSay *\"approve all\"* or review in the Collector panel.")
                 reply = "\n".join(lines)
-                follow_ups = ['Approve all pending', 'Reject all pending', 'Show collection status']
+                follow_ups = ['Approve all pending', 'Show my collection status', 'Collect now']
 
         # -----------------------------------------------------------------
         # APPROVE ALL PENDING
@@ -1398,7 +1725,8 @@ async def _stream_collector(chat_query: ChatQuery):
             else:
                 lines = ["**Recent collection runs:**\n"]
                 for h in history:
-                    lines.append(f"- {h.get('started_at', '?')}: {h.get('items_found', 0)} found, {h.get('items_queued', 0)} queued")
+                    ts = str(h.get('timestamp', '?'))[:16].replace('T', ' ')
+                    lines.append(f"- {ts}: {h.get('items_found', 0)} found, {h.get('items_approved', 0)} approved, {h.get('items_pending', 0)} pending")
                 reply = "\n".join(lines)
 
         # -----------------------------------------------------------------
@@ -1574,7 +1902,7 @@ async def _stream_research(chat_query: ChatQuery):
 
         follow_ups = []
         if new_results:
-            follow_ups = ['Add all results as sources', 'Deep dive into the top result', 'Narrow the search']
+            follow_ups = ['Deep dive into the top result', 'Narrow the search', 'Search a specific site']
         else:
             follow_ups = ['Try a broader search', 'Search a specific site', 'Deep dive with filters']
 

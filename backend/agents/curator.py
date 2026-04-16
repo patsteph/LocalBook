@@ -671,7 +671,7 @@ Be concise and cite which notebook each insight comes from."""
             response = await ollama_client.generate(
                 prompt=prompt,
                 system=f"You are {self.name}, a research curator. Personality: {self.personality}",
-                model=settings.default_model,
+                model=settings.ollama_model,
                 temperature=0.5
             )
             
