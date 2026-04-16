@@ -7,7 +7,7 @@ httpx.AsyncClient for Ollama API calls. Provides:
 2. Token recording on every call (via rag_metrics)
 3. Model registry option lookup (per-model temperature, top_k, etc.)
 4. Model warmup tracking (mark_*_model_used)
-5. keep_alive policy (main=-1, fast=10m)
+5. keep_alive policy (main=30m, fast=10m)
 6. Consistent error handling and logging
 
 Migration guide:
@@ -85,10 +85,8 @@ def _mark_model_used(model: str):
 
 
 def _keep_alive_for(model: str):
-    """Return keep_alive policy: main model stays loaded, fast model auto-unloads."""
-    if model == settings.ollama_fast_model:
-        return "10m"
-    return -1
+    """Return keep_alive policy: 5m for all models — warmup loop re-pings active ones."""
+    return "5m"
 
 
 class OllamaService:
@@ -304,7 +302,7 @@ class OllamaService:
         payload = {
             "model": use_model,
             "input": text,
-            "keep_alive": keep_alive if keep_alive is not None else -1,
+            "keep_alive": keep_alive if keep_alive is not None else "5m",
         }
 
         client = self._get_client()

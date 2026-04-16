@@ -62,6 +62,9 @@ if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
     echo -e "${GREEN}✓ Ollama already running${NC}"
 else
     echo -e "${YELLOW}Starting Ollama...${NC}"
+    # Memory management: limit concurrent models, enable flash attention,
+    # and use q8_0 KV cache to halve context memory vs f16 default.
+    OLLAMA_MAX_LOADED_MODELS=2 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 \
     ollama serve > /dev/null 2>&1 &
     OLLAMA_PID=$!
     

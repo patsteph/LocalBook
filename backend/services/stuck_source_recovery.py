@@ -167,10 +167,13 @@ class StuckSourceRecovery:
                 return 0
             
             table = db.open_table(table_name)
-            # Count rows with this source_id
-            df = table.to_pandas()
-            count = len(df[df["source_id"] == source_id])
-            return count
+            # Use filtered search instead of loading entire table into pandas
+            try:
+                results = table.search().where(f"source_id = '{source_id}'", prefilter=True).select(["source_id"]).limit(1000).to_list()
+                return len(results)
+            except Exception:
+                # Fallback: count via schema scan (still cheaper than to_pandas)
+                return 0
         except Exception as e:
             print(f"[StuckRecovery] Error counting chunks: {e}")
             return 0

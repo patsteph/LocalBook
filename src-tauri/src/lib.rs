@@ -188,13 +188,18 @@ async fn ensure_ollama_running() {
     for path in &ollama_paths {
         let attempt = std::process::Command::new(path)
             .arg("serve")
+            // Memory management: limit concurrent models, enable flash attention,
+            // and use q8_0 KV cache to halve context memory vs f16 default.
+            .env("OLLAMA_MAX_LOADED_MODELS", "2")
+            .env("OLLAMA_FLASH_ATTENTION", "1")
+            .env("OLLAMA_KV_CACHE_TYPE", "q8_0")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();
         
         if attempt.is_ok() {
             result = Some(attempt);
-            println!("Started Ollama from: {}", path);
+            println!("Started Ollama from: {} (MAX_LOADED_MODELS=2, FLASH_ATTN=1, KV=q8_0)", path);
             break;
         }
     }
@@ -202,6 +207,9 @@ async fn ensure_ollama_running() {
     let result = result.unwrap_or_else(|| {
         std::process::Command::new("ollama")
             .arg("serve")
+            .env("OLLAMA_MAX_LOADED_MODELS", "2")
+            .env("OLLAMA_FLASH_ATTENTION", "1")
+            .env("OLLAMA_KV_CACHE_TYPE", "q8_0")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()

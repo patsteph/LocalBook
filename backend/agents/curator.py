@@ -1827,7 +1827,7 @@ Write the brief now:"""
                 temperature=0.7,
                 timeout=90.0,
                 num_predict=1500,
-                extra_options={"keep_alive": -1},
+                extra_options={"keep_alive": "5m"},
             )
             narrative = response.get("response", "").strip()
             # Guard against error strings from ollama_client being treated as valid narrative

@@ -716,6 +716,41 @@ Answer:"""
         yield f"data: {json.dumps({'error': f'Curator error: {e}'})}\n\n"
 
 
+async def _ingest_source_background(notebook_id: str, source_id: str, text: str, filename: str, source_type: str):
+    """Background task: run the heavy RAG ingest pipeline (chunk → embed → entities).
+
+    Creates the source record upfront so the UI shows it immediately as
+    "processing", then this task updates it to "completed" when done.
+    Runs outside the chat SSE stream to avoid blocking the response and
+    to let Ollama unload the main model before embedding starts.
+    """
+    from services.rag_engine import rag_engine
+    from storage.source_store import source_store as _ss
+    try:
+        result = await rag_engine.ingest_document(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            text=text,
+            filename=filename,
+            source_type=source_type,
+        )
+        chunks = result.get("chunks", 0)
+        characters = result.get("characters", len(text))
+        await _ss.update(notebook_id, source_id, {
+            "chunks": chunks,
+            "characters": characters,
+            "status": "completed",
+            "content": text,
+        })
+        logger.info(f"[Subscribe] Background ingest done: {filename} — {chunks} chunks, {characters} chars")
+    except Exception as e:
+        logger.error(f"[Subscribe] Background ingest FAILED for {filename}: {e}")
+        await _ss.update(notebook_id, source_id, {
+            "status": "failed",
+            "error": str(e)[:200],
+        })
+
+
 async def _stream_collector(chat_query: ChatQuery):
     """Stream a Collector response in SSE format.
     
@@ -808,7 +843,8 @@ async def _stream_collector(chat_query: ChatQuery):
                     schedule_raw = params.get("schedule")
                     freq = _parse_freq(schedule_raw) if schedule_raw else sub.get("default_schedule", "weekly")
 
-                    from services.source_ingestion import create_and_ingest_source
+                    from storage.source_store import source_store as _src_store
+                    from utils.tasks import safe_create_task
                     notebook_id = chat_query.notebook_id
                     lines = []
 
@@ -825,23 +861,31 @@ async def _stream_collector(chat_query: ChatQuery):
                             if yt_result.get("success") and yt_result.get("text"):
                                 wc = len(yt_result["text"].split())
                                 yt_title = yt_result.get("title", "Video")
-                                # Ingest as a source in the notebook
+                                content = f"Title: {yt_title}\n\nTranscript:\n{yt_result['text']}"
+                                # Create source record immediately (shows in UI as "processing")
                                 try:
-                                    content = f"Title: {yt_title}\n\nTranscript:\n{yt_result['text']}"
-                                    ingest_result = await create_and_ingest_source(
-                                        notebook_id=notebook_id,
-                                        filename=yt_title,
-                                        text=content,
-                                        source_type="youtube",
-                                        url=immediate_url,
-                                        extra_metadata={"capture_type": "youtube", "user_provided": True},
+                                    src_meta = {
+                                        "type": "youtube", "format": "youtube",
+                                        "url": immediate_url, "status": "processing",
+                                        "chunks": 0, "characters": 0,
+                                        "capture_type": "youtube", "user_provided": True,
+                                        "word_count": wc,
+                                    }
+                                    source_rec = await _src_store.create(
+                                        notebook_id=notebook_id, filename=yt_title, metadata=src_meta
                                     )
-                                    _trace.append(f"  ingest: OK source_id={ingest_result['source_id']}, {ingest_result['chunks']} chunks")
+                                    _sid = source_rec["id"]
+                                    # Fire-and-forget: heavy RAG pipeline runs in background
+                                    safe_create_task(
+                                        _ingest_source_background(notebook_id, _sid, content, yt_title, "youtube"),
+                                        name=f"subscribe-ingest-{_sid[:8]}"
+                                    )
+                                    _trace.append(f"  source: CREATED id={_sid}, ingest queued in background")
                                     lines.append(f"**Immediate:** Scraped transcript from \"{yt_title}\" ({wc:,} words)")
                                     immediate_ok = True
                                 except Exception as _ingest_err:
-                                    _trace.append(f"  ingest: FAILED — {_ingest_err}")
-                                    logger.warning(f"[Subscribe] Ingest failed for {yt_title}: {_ingest_err}")
+                                    _trace.append(f"  source: FAILED — {_ingest_err}")
+                                    logger.warning(f"[Subscribe] Source creation failed for {yt_title}: {_ingest_err}")
                                     lines.append(f"**Immediate:** Scraped transcript but failed to save: {_ingest_err}")
                                 _trace.append(f"  transcript: OK {wc} words — {yt_title}")
                             else:
@@ -862,22 +906,29 @@ async def _stream_collector(chat_query: ChatQuery):
                             if scraped.get("success") and scraped.get("text"):
                                 wc = len(scraped["text"].split())
                                 pg_title = scraped.get("title", "Page")
-                                # Ingest as a source in the notebook
+                                # Create source record immediately (shows in UI as "processing")
                                 try:
-                                    ingest_result = await create_and_ingest_source(
-                                        notebook_id=notebook_id,
-                                        filename=pg_title,
-                                        text=scraped["text"],
-                                        source_type="web",
-                                        url=immediate_url,
-                                        extra_metadata={"user_provided": True},
+                                    src_meta = {
+                                        "type": "web", "format": "web",
+                                        "url": immediate_url, "status": "processing",
+                                        "chunks": 0, "characters": 0,
+                                        "user_provided": True, "word_count": wc,
+                                    }
+                                    source_rec = await _src_store.create(
+                                        notebook_id=notebook_id, filename=pg_title, metadata=src_meta
                                     )
-                                    _trace.append(f"  ingest: OK source_id={ingest_result['source_id']}, {ingest_result['chunks']} chunks")
+                                    _sid = source_rec["id"]
+                                    # Fire-and-forget: heavy RAG pipeline runs in background
+                                    safe_create_task(
+                                        _ingest_source_background(notebook_id, _sid, scraped["text"], pg_title, "web"),
+                                        name=f"subscribe-ingest-{_sid[:8]}"
+                                    )
+                                    _trace.append(f"  source: CREATED id={_sid}, ingest queued in background")
                                     lines.append(f"**Immediate:** Scraped \"{pg_title}\" ({wc:,} words)")
                                     immediate_ok = True
                                 except Exception as _ingest_err:
-                                    _trace.append(f"  ingest: FAILED — {_ingest_err}")
-                                    logger.warning(f"[Subscribe] Ingest failed for {pg_title}: {_ingest_err}")
+                                    _trace.append(f"  source: FAILED — {_ingest_err}")
+                                    logger.warning(f"[Subscribe] Source creation failed for {pg_title}: {_ingest_err}")
                                     lines.append(f"**Immediate:** Scraped but failed to save: {_ingest_err}")
                                 _trace.append(f"  html_scrape: OK {wc} words — {pg_title}")
                             else:

@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 _warmup_task: Optional[asyncio.Task] = None
 _should_run = True
 
-# Warmup interval in seconds (ping every 2 minutes to keep models in memory)
-# Reduced from 45s to save resources - models stay warm for ~5min anyway
-WARMUP_INTERVAL = 120
+# Warmup interval in seconds — must be shorter than keep_alive so models
+# don't expire between pings, but long enough to avoid constant churn.
+WARMUP_INTERVAL = 240  # 4 minutes
 
 # Track last usage time for each model type (only warm if used in last 10 min)
 _last_main_model_use: float = 0
@@ -146,18 +146,20 @@ async def warmup_cycle(force_all: bool = False):
     result_map = {}
     
     # ── 1. Ollama models (safe — loaded in Ollama's process, not ours) ──
-    # Main model: keep loaded indefinitely (primary workhorse)
+    # keep_alive="5m" — short TTL so Ollama reclaims RAM quickly.
+    # The warmup loop (every 4 min) re-pings active models before expiry.
     if force_all or (now - _last_main_model_use < MODEL_IDLE_TIMEOUT):
         try:
-            result_map["main"] = await warm_ollama_model(settings.ollama_model, keep_alive=-1)
+            result_map["main"] = await warm_ollama_model(settings.ollama_model, keep_alive="5m")
         except Exception:
             result_map["main"] = False
     
-    # Fast model: 10m keep_alive — auto-unloads when idle to reclaim memory
-    if force_all or (now - _last_fast_model_use < MODEL_IDLE_TIMEOUT):
+    # Fast model: only warm if recently used (NOT at startup).
+    # Lazy-loads on first ingestion/auto-tag — saves ~4GB RAM at boot.
+    if not force_all and (now - _last_fast_model_use < MODEL_IDLE_TIMEOUT):
         if settings.ollama_fast_model != settings.ollama_model or "main" not in result_map:
             try:
-                result_map["fast"] = await warm_ollama_model(settings.ollama_fast_model, keep_alive="10m")
+                result_map["fast"] = await warm_ollama_model(settings.ollama_fast_model, keep_alive="5m")
             except Exception:
                 result_map["fast"] = False
     
@@ -212,10 +214,12 @@ async def initial_warmup():
     
     print("🔥 Warming up AI models (this ensures fast first query)...")
     
-    # Mark all models as "used" so they get warmed
+    # Only mark models we actually warm at startup as "used".
+    # Fast model is NOT warmed at startup — it lazy-loads on first
+    # ingestion/auto-tag call, saving ~4GB RAM at boot.
     now = time.time()
     _last_main_model_use = now
-    _last_fast_model_use = now
+    # _last_fast_model_use intentionally NOT set — lazy-loads on demand
     _last_embedding_use = now
     _last_reranker_use = now
     
