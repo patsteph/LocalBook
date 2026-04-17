@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from services.rag_engine import rag_engine
 from services.query_orchestrator import get_orchestrator
 from services.event_logger import log_chat_qa
@@ -202,28 +202,30 @@ async def query_stream(chat_query: ChatQuery):
     - target=None: Default RAG pipeline
     """
     
-    # @mention routing — delegate to specialized agent streams
+    # @mention routing — delegate to specialized agent streams via the
+    # multi-intent dispatcher (supports compound messages like
+    # "add this URL and set my focus to X").
     if chat_query.target == "curator":
         return StreamingResponse(
-            _stream_curator(chat_query),
+            _dispatch_multi_intent(chat_query, "curator", _stream_curator),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
     if chat_query.target == "collector":
         return StreamingResponse(
-            _stream_collector(chat_query),
+            _dispatch_multi_intent(chat_query, "collector", _stream_collector),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
     if chat_query.target == "research":
         return StreamingResponse(
-            _stream_research(chat_query),
+            _dispatch_multi_intent(chat_query, "research", _stream_research),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
     if chat_query.target == "studio":
         return StreamingResponse(
-            _stream_studio(chat_query),
+            _dispatch_multi_intent(chat_query, "studio", _stream_studio),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
@@ -235,7 +237,7 @@ async def query_stream(chat_query: ChatQuery):
         if is_cross_notebook_query(chat_query.question):
             print(f"[Chat] Auto-routing cross-notebook query to Curator: '{chat_query.question[:60]}...'")
             return StreamingResponse(
-                _stream_curator(chat_query),
+                _dispatch_multi_intent(chat_query, "curator", _stream_curator),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
@@ -284,11 +286,98 @@ async def query_stream(chat_query: ChatQuery):
     )
 
 
-async def _stream_curator(chat_query: ChatQuery):
+async def _dispatch_multi_intent(chat_query: "ChatQuery", agent_type: str, handler_fn):
+    """Multi-intent dispatcher: classify once, run the handler per classified action.
+
+    Single-intent messages are handled exactly as before — one classifier call,
+    one handler invocation with the classified action injected. Compound messages
+    (classifier returns ``actions`` with multiple entries) run the handler once
+    per action in sequence, swallowing intermediate ``done`` events so the SSE
+    stream stays open until the final action completes.
+
+    If classification fails, falls through to the handler with no injected
+    action so the handler can do its own classification — preserving the
+    pre-multi-intent error recovery path.
+    """
+    from services.intent_classifier import classify_intent
+    from services.ollama_client import ollama_client
+
+    q = chat_query.question
+
+    # Help requests short-circuit inside each handler; let them handle it natively.
+    if _is_help_request(q):
+        async for chunk in handler_fn(chat_query):
+            yield chunk
+        return
+
+    # Try to classify the message into one or more actions.
+    try:
+        classified = await classify_intent(q, agent_type, ollama_client)
+    except Exception as e:
+        logger.warning(f"[multi-intent] Classification failed for {agent_type}: {e}; delegating to handler")
+        async for chunk in handler_fn(chat_query):
+            yield chunk
+        return
+
+    actions = classified.get("actions") or []
+    if not actions:
+        # Defensive: classifier should always return at least one action, but
+        # if something pathological happens, let the handler do its own thing.
+        async for chunk in handler_fn(chat_query):
+            yield chunk
+        return
+
+    if len(actions) == 1:
+        # Fast path — behaviour is identical to pre-multi-intent code. The
+        # handler still sees classified["intent"]/classified["params"] unchanged.
+        async for chunk in handler_fn(chat_query, injected_action=classified):
+            yield chunk
+        return
+
+    # Compound message — run each action in sequence.
+    intent_list = ", ".join(a["intent"] for a in actions)
+    logger.info(f"[multi-intent] {agent_type}: {len(actions)} actions → {intent_list}")
+
+    for idx, action in enumerate(actions):
+        is_last = (idx == len(actions) - 1)
+
+        # Visible separator so the user sees the agent moving between actions.
+        if idx > 0:
+            sep_msg = f"Action {idx + 1}/{len(actions)}: {action['intent']}"
+            sep_payload = json.dumps({
+                "type": "status",
+                "message": sep_msg,
+                "query_type": agent_type,
+            })
+            yield f"data: {sep_payload}\n\n"
+
+        # Each handler call sees a single-intent classified dict, so its
+        # internal if/elif chain fires exactly as it does in single-intent mode.
+        single_classified = {
+            "intent": action["intent"],
+            "params": action.get("params", {}) or {},
+            "confidence": action.get("confidence", 0.5),
+            "actions": [action],
+        }
+
+        async for chunk in handler_fn(chat_query, injected_action=single_classified):
+            # Swallow the handler's "done" event for every action except the
+            # last one — otherwise the UI closes the stream after the first
+            # action completes and subsequent actions are never shown.
+            if not is_last and '"type": "done"' in chunk:
+                continue
+            yield chunk
+
+
+async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[str, Any]] = None):
     """Stream a Curator response in SSE format.
     
     LLM-based NLP intent router — anything you can do in the Curator settings
     panel or cross-notebook features, you can do here via natural language.
+
+    If ``injected_action`` is provided, it bypasses the LLM classifier and uses
+    the provided {intent, params} directly. This is used by the multi-intent
+    dispatcher to execute each classified action in sequence.
     """
     from agents.curator import curator
     from services.cross_notebook_search import cross_notebook_search
@@ -317,9 +406,12 @@ async def _stream_curator(chat_query: ChatQuery):
             return f"data: {json.dumps({'type': 'done', 'follow_up_questions': follow_ups, 'curator_name': curator_name, 'agent_name': curator_name, 'agent_type': 'curator'})}\n\n"
 
         # =================================================================
-        # LLM-based Intent Classification
+        # LLM-based Intent Classification (bypassed if injected by dispatcher)
         # =================================================================
-        classified = await classify_intent(q, "curator", ollama_client)
+        if injected_action:
+            classified = injected_action
+        else:
+            classified = await classify_intent(q, "curator", ollama_client)
         intent = classified["intent"]
         params = classified.get("params", {})
         handled = False
@@ -725,11 +817,29 @@ async def _ingest_source_background(notebook_id: str, source_id: str, text: str,
     "processing", then this task updates it to "completed" when done.
     Runs outside the chat SSE stream to avoid blocking the response and
     to let Ollama unload the main model before embedding starts.
+
+    Mirrors services/source_ingestion.create_and_ingest_source:
+    1. Extract content_date + update source
+    2. RAG ingest (chunk + embed)
+    3. Update source with chunks/status
+    4. Auto-tag (non-fatal)
+    5. Log document_captured event
+    6. Notify via websocket
     """
     from services.rag_engine import rag_engine
     from storage.source_store import source_store as _ss
     from api.constellation_ws import notify_source_updated
     try:
+        # 1. Content date extraction (non-fatal)
+        try:
+            from services.content_date_extractor import extract_content_date
+            content_date = extract_content_date(filename, text[:800] if text else "")
+            if content_date:
+                await _ss.update(notebook_id, source_id, {"content_date": content_date})
+        except Exception as _dt_err:
+            logger.debug(f"[ingest] content_date extraction failed (non-fatal): {_dt_err}")
+
+        # 2. RAG ingestion
         result = await rag_engine.ingest_document(
             notebook_id=notebook_id,
             source_id=source_id,
@@ -739,13 +849,33 @@ async def _ingest_source_background(notebook_id: str, source_id: str, text: str,
         )
         chunks = result.get("chunks", 0)
         characters = result.get("characters", len(text))
+
+        # 3. Update source
         await _ss.update(notebook_id, source_id, {
             "chunks": chunks,
             "characters": characters,
             "status": "completed",
             "content": text,
         })
-        logger.info(f"[Subscribe] Background ingest done: {filename} — {chunks} chunks, {characters} chars")
+        logger.info(f"[ingest] Background ingest done: {filename} — {chunks} chunks, {characters} chars")
+
+        # 4. Auto-tag (non-fatal) — matches services/source_ingestion.py
+        try:
+            from services.auto_tagger import auto_tagger
+            await auto_tagger.tag_source_in_notebook(
+                notebook_id, source_id, filename, text[:3000]
+            )
+        except Exception as _tag_err:
+            logger.debug(f"[ingest] Auto-tagging failed (non-fatal): {_tag_err}")
+
+        # 5. Log event (non-fatal)
+        try:
+            from services.event_logger import log_document_captured
+            log_document_captured(notebook_id, filename, filename, source_type)
+        except Exception as _ev_err:
+            logger.debug(f"[ingest] Event log failed (non-fatal): {_ev_err}")
+
+        # 6. Notify websocket
         await notify_source_updated({
             "notebook_id": notebook_id,
             "source_id": source_id,
@@ -755,7 +885,7 @@ async def _ingest_source_background(notebook_id: str, source_id: str, text: str,
             "characters": characters,
         })
     except Exception as e:
-        logger.error(f"[Subscribe] Background ingest FAILED for {filename}: {e}")
+        logger.error(f"[ingest] Background ingest FAILED for {filename}: {e}")
         await _ss.update(notebook_id, source_id, {
             "status": "failed",
             "error": str(e)[:200],
@@ -902,18 +1032,27 @@ async def _ingest_feed_articles_background(
                     logger.info(f"[feed-ingest] SKIP (dup): {art_url}")
                     return
 
+                # Detect correct source type — a feed page may link to
+                # YouTube videos, arxiv papers, or regular web articles.
+                if web_scraper._is_youtube_url(art_url):
+                    art_src_type = "youtube"
+                elif web_scraper._is_arxiv_url(art_url):
+                    art_src_type = "arxiv"
+                else:
+                    art_src_type = "web"
+
                 src_meta = {
-                    "type": "web", "format": "web",
+                    "type": art_src_type, "format": art_src_type,
                     "url": art_url, "status": "processing",
                     "chunks": 0, "characters": 0,
-                    "capture_type": "web", "user_provided": True,
+                    "capture_type": art_src_type, "user_provided": True,
                     "word_count": wc,
                 }
                 source_rec = await _ss.create(
                     notebook_id=notebook_id, filename=title, metadata=src_meta
                 )
                 _sid = source_rec["id"]
-                await _ingest_source_background(notebook_id, _sid, text, title, "web")
+                await _ingest_source_background(notebook_id, _sid, text, title, art_src_type)
                 ingested += 1
                 logger.info(f"[feed-ingest] OK: {title} ({wc} words)")
             except Exception as e:
@@ -925,11 +1064,15 @@ async def _ingest_feed_articles_background(
     logger.info(f"[feed-ingest] === DONE === {ingested} ingested, {failed} failed out of {len(articles)} total")
 
 
-async def _stream_collector(chat_query: ChatQuery):
+async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dict[str, Any]] = None):
     """Stream a Collector response in SSE format.
     
     LLM-based NLP intent router — anything you can do in the Collector settings
     panel, you can do here via natural language.
+
+    If ``injected_action`` is provided, it bypasses the LLM classifier and uses
+    the provided {intent, params} directly. This is used by the multi-intent
+    dispatcher to execute each classified action in sequence.
     """
     import re as _re
     from storage.source_store import source_store
@@ -979,9 +1122,12 @@ async def _stream_collector(chat_query: ChatQuery):
         url_match = _re.search(r'(https?://[^\s,]+)', q)
 
         # =================================================================
-        # LLM-based Intent Classification
+        # LLM-based Intent Classification (bypassed if injected by dispatcher)
         # =================================================================
-        classified = await classify_intent(q, "collector", ollama_client)
+        if injected_action:
+            classified = injected_action
+        else:
+            classified = await classify_intent(q, "collector", ollama_client)
         intent = classified["intent"]
         params = classified.get("params", {})
 
@@ -992,6 +1138,19 @@ async def _stream_collector(chat_query: ChatQuery):
             intent = "add_url"
             if not params.get("url"):
                 params["url"] = url_match.group(1).rstrip('.,;:)')
+
+        # Safety net: if classified as add_url but message mentions channel/subscribe/follow,
+        # user likely wants recurring subscription, not one-off URL add.
+        if intent == "add_url" and url_match:
+            _q_low = q.lower()
+            if any(kw in _q_low for kw in (
+                "add the channel", "channel to sources", "subscribe", "follow", "monitor",
+                "keep checking", "watch for new",
+            )):
+                logger.info(f"[collector] Intent override: add_url → subscribe (subscription keyword detected)")
+                intent = "subscribe"
+                if not params.get("url"):
+                    params["url"] = url_match.group(1).rstrip('.,;:)')
 
         # -----------------------------------------------------------------
         # SUBSCRIBE (resolve → scrape now → register recurring feed)
@@ -1024,6 +1183,16 @@ async def _stream_collector(chat_query: ChatQuery):
                     channel_name = sub.get("channel_name") or url
                     schedule_raw = params.get("schedule")
                     freq = _parse_freq(schedule_raw) if schedule_raw else sub.get("default_schedule", "weekly")
+                    # Message-level fallback: catch schedule keywords in compound
+                    # messages that the classifier may have missed
+                    _q_low = q.lower()
+                    if not schedule_raw:
+                        if "hourly" in _q_low or "every hour" in _q_low:
+                            freq = "hourly"
+                        elif "daily" in _q_low or "every day" in _q_low or "each day" in _q_low:
+                            freq = "daily"
+                        elif "weekly" in _q_low or "every week" in _q_low:
+                            freq = "weekly"
 
                     from storage.source_store import source_store as _src_store
                     from utils.tasks import safe_create_task
@@ -1308,6 +1477,19 @@ async def _stream_collector(chat_query: ChatQuery):
                     yield f"data: {json.dumps({'type': 'status', 'message': f'{collector_name} fetching {url}...', 'query_type': 'collector'})}\n\n"
                     schedule_raw = params.get("schedule", "manual")
                     freq = _parse_freq(schedule_raw) if schedule_raw and schedule_raw != "manual" else "manual"
+                    # Message-level fallback: catch schedule keywords the LLM may have
+                    # missed when multiple commands are bundled in one message
+                    # (e.g. "scrape this video AND collect daily")
+                    if freq == "manual":
+                        _q_low = q.lower()
+                        if "hourly" in _q_low or "every hour" in _q_low:
+                            freq = "hourly"
+                        elif "daily" in _q_low or "every day" in _q_low or "each day" in _q_low:
+                            freq = "daily"
+                        elif "weekly" in _q_low or "every week" in _q_low:
+                            freq = "weekly"
+                        if freq != "manual":
+                            logger.info(f"[add_url] Message-level schedule detected: {freq}")
 
                     from services.web_scraper import web_scraper
 
@@ -1374,6 +1556,15 @@ async def _stream_collector(chat_query: ChatQuery):
                         text = scraped["text"]
                         wc = scraped.get("word_count", len(text.split()))
 
+                        # Detect the correct source type (youtube / arxiv / web)
+                        # so the UI labels match what the user actually added.
+                        if web_scraper._is_youtube_url(url):
+                            src_type = "youtube"
+                        elif web_scraper._is_arxiv_url(url):
+                            src_type = "arxiv"
+                        else:
+                            src_type = "web"
+
                         web_pages = list(config.sources.get("web_pages", []))
                         if url not in web_pages:
                             web_pages.append(url)
@@ -1385,13 +1576,16 @@ async def _stream_collector(chat_query: ChatQuery):
                         # Create source record + fire background ingest
                         from utils.tasks import safe_create_task
                         MIN_SOURCE_CHARS = 1000
+                        handled = False  # True if a branch built full reply + notified curator
+                        lines = []
+
                         if len(text) >= MIN_SOURCE_CHARS:
                             try:
                                 src_meta = {
-                                    "type": "web", "format": "web",
+                                    "type": src_type, "format": src_type,
                                     "url": url, "status": "processing",
                                     "chunks": 0, "characters": 0,
-                                    "capture_type": "web", "user_provided": True,
+                                    "capture_type": src_type, "user_provided": True,
                                     "word_count": wc,
                                 }
                                 source_rec = await source_store.create(
@@ -1399,7 +1593,7 @@ async def _stream_collector(chat_query: ChatQuery):
                                 )
                                 _sid = source_rec["id"]
                                 safe_create_task(
-                                    _ingest_source_background(notebook_id, _sid, text, title, "web"),
+                                    _ingest_source_background(notebook_id, _sid, text, title, src_type),
                                     name=f"add-url-ingest-{_sid[:8]}"
                                 )
                                 lines = [f"Done. **Source added:** [{title}]({url})",
@@ -1419,11 +1613,11 @@ async def _stream_collector(chat_query: ChatQuery):
                                 feed_pages = list(config.sources.get("feed_pages", []))
                                 if url not in feed_pages:
                                     feed_pages.append(url)
+                                sched_label = freq if freq != "manual" else "weekly"
                                 collector_agent.update_config({
                                     "sources": {**config.sources, "feed_pages": feed_pages},
-                                    "schedule": {**config.schedule, "frequency": freq if freq != "manual" else "weekly"},
+                                    "schedule": {**config.schedule, "frequency": sched_label},
                                 })
-                                sched_label = freq if freq != "manual" else "weekly"
                                 lines = [f"**Blog/index page detected:** [{title}]({url})",
                                          f"- **{len(fallback_articles)} articles found** — scraping now\n"]
                                 for a in fallback_articles[:6]:
@@ -1438,18 +1632,22 @@ async def _stream_collector(chat_query: ChatQuery):
                                     ),
                                     name=f"feed-ingest-{notebook_id[:8]}",
                                 )
-                                lines.append(f"\n- **Schedule:** {sched_label} checks for new articles")
+                                lines.append(f"\n- **Schedule set:** {sched_label} checks for new articles")
+                                reply = "\n".join(lines)
                                 _notify_curator(f"Collector registered blog: {title} ({url}). {len(fallback_articles)} articles being ingested.")
+                                handled = True
                             else:
                                 lines = [f"Done. **Source registered:** [{title}]({url})",
                                          f"- Content too short ({len(text)} chars) for immediate ingest"]
 
-                        if freq != "manual" and "Schedule set" not in str(lines):
-                            lines.append(f"- **Schedule set:** {freq} checks")
-                        elif freq == "manual" and "Schedule" not in str(lines):
-                            lines.append(f"- **Schedule:** manual (say \"check daily\" to automate)")
-                        reply = "\n".join(lines)
-                        _notify_curator(f"Collector added web source: {title} ({url}). Schedule: {freq}.")
+                        # Unified schedule + notify for all non-fallback paths
+                        if not handled:
+                            if freq != "manual":
+                                lines.append(f"- **Schedule set:** {freq} checks")
+                            else:
+                                lines.append(f"- **Schedule:** manual (say \"check daily\" to automate)")
+                            reply = "\n".join(lines)
+                            _notify_curator(f"Collector added web source: {title} ({url}). Schedule: {freq}.")
                     else:
                         error = scraped.get("error", "Could not extract content")
                         reply = f"**Could not fetch:** {url}\n- Reason: {error}\n\nTry a different URL, or add content manually via the Sources panel."
@@ -1770,7 +1968,7 @@ async def _stream_collector(chat_query: ChatQuery):
         yield f"data: {json.dumps({'error': f'Collector error: {e}'})}\n\n"
 
 
-async def _stream_research(chat_query: ChatQuery):
+async def _stream_research(chat_query: ChatQuery, injected_action: Optional[Dict[str, Any]] = None):
     """Stream a Research agent response in SSE format.
 
     LLM-based NLP intent router with three modes:
@@ -1796,8 +1994,11 @@ async def _stream_research(chat_query: ChatQuery):
     yield f"data: {json.dumps({'type': 'status', 'message': 'Research agent analysing your request...', 'query_type': 'research'})}\n\n"
 
     try:
-        # ── Intent classification ────────────────────────────────────────
-        classified = await classify_intent(q, "research", ollama_client)
+        # ── Intent classification (bypassed if injected by dispatcher) ──
+        if injected_action:
+            classified = injected_action
+        else:
+            classified = await classify_intent(q, "research", ollama_client)
         intent = classified["intent"]
         params = classified.get("params", {})
 
@@ -1914,7 +2115,7 @@ async def _stream_research(chat_query: ChatQuery):
         yield f"data: {json.dumps({'error': f'Research error: {e}'})}\n\n"
 
 
-async def _stream_studio(chat_query: ChatQuery):
+async def _stream_studio(chat_query: ChatQuery, injected_action: Optional[Dict[str, Any]] = None):
     """Stream a Studio agent response in SSE format.
 
     LLM-based intent router — lets the user create Studio content (audio,
@@ -1938,8 +2139,11 @@ async def _stream_studio(chat_query: ChatQuery):
     yield f"data: {json.dumps({'type': 'status', 'message': 'Studio interpreting your request...', 'query_type': 'studio'})}\n\n"
 
     try:
-        # ── Intent classification ────────────────────────────────────────
-        classified = await classify_intent(q, "studio", ollama_client)
+        # ── Intent classification (bypassed if injected by dispatcher) ──
+        if injected_action:
+            classified = injected_action
+        else:
+            classified = await classify_intent(q, "studio", ollama_client)
         intent = classified["intent"]
         params = classified.get("params", {})
         topic = (params.get("topic") or "").strip() or None

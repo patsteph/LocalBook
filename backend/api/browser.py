@@ -548,7 +548,18 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
         
         source_id = str(uuid.uuid4())
         print(f"[BROWSER] Capturing page: {request.url} ({word_count} words)")
-        
+
+        # Detect the correct source type from the URL so YouTube videos /
+        # arxiv papers captured via the extension are labeled consistently
+        # (not as generic WEB).
+        from services.web_scraper import web_scraper as _ws
+        if _ws._is_youtube_url(request.url):
+            resolved_source_type = "youtube"
+        elif _ws._is_arxiv_url(request.url):
+            resolved_source_type = "arxiv"
+        else:
+            resolved_source_type = "web"
+
         # Record token savings from scraping vs web search
         try:
             from services.rag_metrics import rag_metrics
@@ -563,7 +574,7 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             title=request.title,
             content=content,
             url=request.url,
-            source_type="web",
+            source_type=resolved_source_type,
             user_weight_bonus=1.5  # User explicitly captured this
         )
         print(f"[BROWSER] Curator scored: relevance={curator_scoring['relevance_score']:.2f}, topics={curator_scoring['topics']}")
@@ -620,8 +631,8 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
         source_data = {
             "id": source_id,
             "notebook_id": request.notebook_id,
-            "type": "web",
-            "format": "web",
+            "type": resolved_source_type,
+            "format": resolved_source_type,
             "url": request.url,
             "title": best_title,
             "filename": best_title,
@@ -659,7 +670,7 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             source_id=source_id,
             text=content,
             filename=best_title,
-            source_type="web"
+            source_type=resolved_source_type,
         )
         
         # Update source with RAG results (same as document_processor does)

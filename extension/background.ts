@@ -25,6 +25,26 @@ let scrapeAlarmFast = false
 // Concurrency limit — never open more than 2 scrape-assist tabs at once
 const MAX_CONCURRENT_SCRAPES = 2
 
+// Track tabs opened for scraping so we can clean up orphans.
+// Uses chrome.storage.session so the map survives service worker
+// termination (cleared on browser close, not on worker restart).
+const SCRAPE_TAB_TTL_MS = 60_000  // close orphaned tabs after 60s
+const SCRAPE_TABS_KEY = "_scrapeTabIds"  // storage key
+
+async function trackScrapeTab(tabId: number) {
+  const data = await chrome.storage.session.get(SCRAPE_TABS_KEY)
+  const map: Record<string, number> = data[SCRAPE_TABS_KEY] || {}
+  map[String(tabId)] = Date.now()
+  await chrome.storage.session.set({ [SCRAPE_TABS_KEY]: map })
+}
+
+async function untrackScrapeTab(tabId: number) {
+  const data = await chrome.storage.session.get(SCRAPE_TABS_KEY)
+  const map: Record<string, number> = data[SCRAPE_TABS_KEY] || {}
+  delete map[String(tabId)]
+  await chrome.storage.session.set({ [SCRAPE_TABS_KEY]: map })
+}
+
 // Create context menu on install + start scrape-assist polling
 chrome.runtime.onInstalled.addListener(() => {
   createContextMenus()
@@ -272,6 +292,9 @@ async function pollPendingScrapes() {
     if (now - ts > PROCESSING_TTL_MS) processingIds.delete(id)
   }
 
+  // Clean up any scrape tabs left open by a suspended service worker
+  await cleanupOrphanedScrapeTabs()
+
   try {
     // Abort if fetch takes >5s (backend might be hung)
     const controller = new AbortController()
@@ -331,6 +354,8 @@ async function handleScrapeRequest(requestId: string, url: string) {
       // Open in a background tab
       tab = await chrome.tabs.create({ url, active: false })
       tabWeOpened = tab.id ?? null
+      // Track globally so orphan sweep can clean up if service worker suspends/terminates
+      if (tabWeOpened) await trackScrapeTab(tabWeOpened)
     }
 
     if (!tab?.id) {
@@ -393,18 +418,36 @@ async function handleScrapeRequest(requestId: string, url: string) {
     clearTimeout(postTimeout)
 
     console.log(`[ExtScrape] Submitted result for ${requestId}: ${content.length} chars`)
-
-    // Close the tab if WE opened it (not if the user had it)
-    if (tabWeOpened) {
-      try { await chrome.tabs.remove(tabWeOpened) } catch {}
-    }
   } catch (err) {
     console.error(`[ExtScrape] Failed to process ${requestId}:`, err)
-    // Clean up tab we opened on failure
+  } finally {
+    // ALWAYS close tabs we opened — finally{} is more reliable than
+    // duplicating cleanup in try + catch (catches service worker suspension edge cases)
     if (tabWeOpened) {
+      await untrackScrapeTab(tabWeOpened)
       try { await chrome.tabs.remove(tabWeOpened) } catch {}
     }
   }
+}
+
+/** Close any scrape tabs that have been open longer than SCRAPE_TAB_TTL_MS.
+ *  Called on every poll tick as a belt-and-suspenders safety net.
+ *  Uses chrome.storage.session so it works even after worker termination. */
+async function cleanupOrphanedScrapeTabs() {
+  const data = await chrome.storage.session.get(SCRAPE_TABS_KEY)
+  const map: Record<string, number> = data[SCRAPE_TABS_KEY] || {}
+  const now = Date.now()
+  let changed = false
+  for (const [tabIdStr, openedAt] of Object.entries(map)) {
+    if (now - openedAt > SCRAPE_TAB_TTL_MS) {
+      const tabId = Number(tabIdStr)
+      console.warn(`[ExtScrape] Closing orphaned scrape tab ${tabId} (open ${Math.round((now - openedAt) / 1000)}s)`)
+      delete map[tabIdStr]
+      changed = true
+      try { await chrome.tabs.remove(tabId) } catch {}
+    }
+  }
+  if (changed) await chrome.storage.session.set({ [SCRAPE_TABS_KEY]: map })
 }
 
 async function findTabByUrl(url: string): Promise<chrome.tabs.Tab | null> {

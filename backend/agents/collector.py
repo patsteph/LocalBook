@@ -97,6 +97,7 @@ class CollectedItem(BaseModel):
     preview: str = ""
     source_name: str
     source_type: str = "web"  # rss, web, news, manual
+    source_url: str = ""  # feed/page URL this item was fetched from
     collected_at: datetime = Field(default_factory=datetime.utcnow)
     
     # Confidence scoring (Enhancement #8)
@@ -1156,12 +1157,16 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 print(f"[COLLECTOR] Iterative strategy yielded {len(iterative_items)} items — skipping standard fetch")
                 # Skip standard fetcher — go straight to processing
                 # But still fetch from RSS/configured sources for breadth
+                # Include feed_pages and web_pages so user-added sources are always checked
                 try:
                     from services.content_fetcher import unified_fetcher as _uf
                     sources = task.get("sources", self.config.sources)
-                    rss_sources = {"rss_feeds": sources.get("rss_feeds", [])}
-                    if rss_sources["rss_feeds"]:
-                        rss_items = await _uf.fetch_all(rss_sources, keywords[:3])
+                    supplement_sources = {
+                        "rss_feeds": sources.get("rss_feeds", []),
+                        "feed_pages": sources.get("feed_pages", []),
+                    }
+                    if any(supplement_sources.values()):
+                        rss_items = await _uf.fetch_all(supplement_sources, keywords[:3])
                         for fetched in rss_items:
                             item = CollectedItem(
                                 title=fetched.title,
@@ -1170,11 +1175,12 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                                 preview=fetched.summary or fetched.content[:300],
                                 source_name=fetched.source_name,
                                 source_type=fetched.source_type,
+                                source_url=fetched.source_url,
                                 collected_at=fetched.published_date or datetime.utcnow(),
                                 content_hash=fetched.content_hash,
                             )
                             collected_items.append(item)
-                        print(f"[COLLECTOR] RSS supplement: +{len(rss_items)} items")
+                        print(f"[COLLECTOR] Source supplement (RSS+feed pages): +{len(rss_items)} items")
                 except Exception as rss_err:
                     logger.debug(f"RSS supplement failed (non-fatal): {rss_err}")
                 
@@ -1248,6 +1254,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                     preview=fetched.summary or fetched.content[:300],
                     source_name=fetched.source_name,
                     source_type=fetched.source_type,
+                    source_url=fetched.source_url,
                     collected_at=fetched.published_date or datetime.utcnow(),
                     content_hash=fetched.content_hash
                 )
@@ -1321,6 +1328,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                                     preview=result["text"][:300],
                                     source_name=f"via {item.title[:40]}",
                                     source_type="web",
+                                    source_url=result.get("url", ""),
                                     collected_at=datetime.utcnow(),
                                 )
                                 expanded_items.append(expanded_item)
@@ -1533,6 +1541,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                     preview=summary[:300] if summary else title,
                     source_name=feed.feed.get("title", feed_url),
                     source_type="rss",
+                    source_url=feed_url,
                     collected_at=datetime.utcnow()
                 )
                 items.append(item)
@@ -1594,6 +1603,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 preview=text[:300],
                 source_name=scraped.get("domain", page_url),
                 source_type="web",
+                source_url=page_url,
                 collected_at=datetime.utcnow(),
             )
             items.append(item)
@@ -1718,7 +1728,10 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
             + list(self.config.sources.get("feed_pages", []))
         )
         item_source_url = item.source_url or item.url or ""
-        is_user_added = any(item_source_url.startswith(s) or s.startswith(item_source_url) for s in user_sources if s)
+        is_user_added = bool(item_source_url) and any(
+            item_source_url.startswith(s) or s.startswith(item_source_url)
+            for s in user_sources if s
+        )
 
         if is_user_added:
             item.source_trust = 0.95

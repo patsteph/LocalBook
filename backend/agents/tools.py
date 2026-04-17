@@ -233,15 +233,25 @@ async def capture_page_tool(
         Dictionary with capture result
     """
     from services.source_ingestion import create_and_ingest_source
-    
+    from services.web_scraper import web_scraper as _ws
+
     word_count = len(content.split())
     reading_time = max(1, word_count // 200)
-    
+
+    # Detect correct source type from URL so captures of YouTube videos /
+    # arxiv papers are labeled consistently (not as generic "web").
+    if _ws._is_youtube_url(url):
+        resolved_source_type = "youtube"
+    elif _ws._is_arxiv_url(url):
+        resolved_source_type = "arxiv"
+    else:
+        resolved_source_type = "web"
+
     result = await create_and_ingest_source(
         notebook_id=notebook_id,
         filename=title,
         text=content,
-        source_type="web",
+        source_type=resolved_source_type,
         url=url,
         extra_metadata={
             "word_count": word_count,

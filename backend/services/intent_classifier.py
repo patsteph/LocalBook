@@ -66,19 +66,28 @@ COLLECTOR_INTENTS: List[Dict[str, str]] = [
     {"id": "show_history", "desc": "User wants to see recent collection run history or when the last run happened", "params": "none"},
 ]
 
-_SYSTEM_PROMPT = """You are an intent classifier for a research notebook app. Given a user message directed at an AI agent, classify the intent and extract parameters.
+_SYSTEM_PROMPT = """You are an intent classifier for a research notebook app. Given a user message directed at an AI agent, classify the intent(s) and extract parameters.
 
 Available intents:
 {intent_list}
 
-Respond with ONLY valid JSON (no markdown, no explanation):
+Respond with ONLY valid JSON (no markdown, no explanation).
+
+For a SINGLE-intent message, use this format:
 {{"intent": "<intent_id>", "params": {{...extracted parameters...}}, "confidence": <0.0-1.0>}}
 
+For a COMPOUND message that asks the agent to perform MULTIPLE distinct actions (e.g., "add this URL AND set my focus to X"), use this format:
+{{"actions": [
+  {{"intent": "<intent_id_1>", "params": {{...}}, "confidence": <0.0-1.0>}},
+  {{"intent": "<intent_id_2>", "params": {{...}}, "confidence": <0.0-1.0>}}
+], "confidence": <0.0-1.0>}}
+
 Rules:
-- Pick the single best matching intent
+- Prefer the single-intent format unless the message clearly requests two or more DISTINCT operations
+- Do NOT split a single operation into multiple intents (e.g., "subscribe to this channel daily" is ONE subscribe intent with schedule=daily, not two actions)
 - Extract relevant parameters from the message
 - If the message is a general question or doesn't match a specific command, use the fallback intent
-- confidence should reflect how well the message matches the intent
+- confidence should reflect how well the message matches each intent
 - URLs should be extracted exactly as they appear"""
 
 
@@ -142,22 +151,63 @@ async def classify_intent(
 
         parsed = json.loads(raw)
 
-        # Validate intent ID
         valid_ids = {i["id"] for i in intents}
-        if parsed.get("intent") not in valid_ids:
-            logger.warning(f"LLM returned unknown intent '{parsed.get('intent')}', falling back to {fallback}")
-            parsed["intent"] = fallback
-            parsed["confidence"] = 0.3
 
+        # Normalize into a list of actions. Supports both:
+        #   {"intent": "...", "params": {...}, "confidence": 0.x}                (single)
+        #   {"actions": [{intent, params, confidence}, ...], "confidence": 0.x}  (compound)
+        actions: List[Dict[str, Any]] = []
+        if isinstance(parsed.get("actions"), list) and parsed["actions"]:
+            for act in parsed["actions"]:
+                if not isinstance(act, dict):
+                    continue
+                intent_id = act.get("intent")
+                if intent_id not in valid_ids:
+                    logger.warning(f"LLM returned unknown intent '{intent_id}' in compound action; skipping")
+                    continue
+                actions.append({
+                    "intent": intent_id,
+                    "params": act.get("params", {}) or {},
+                    "confidence": float(act.get("confidence", 0.5)),
+                })
+        else:
+            intent_id = parsed.get("intent")
+            if intent_id not in valid_ids:
+                logger.warning(f"LLM returned unknown intent '{intent_id}', falling back to {fallback}")
+                intent_id = fallback
+                parsed["confidence"] = 0.3
+            actions.append({
+                "intent": intent_id,
+                "params": parsed.get("params", {}) or {},
+                "confidence": float(parsed.get("confidence", 0.5)),
+            })
+
+        # Fallback if all compound actions were invalid
+        if not actions:
+            actions.append({"intent": fallback, "params": {}, "confidence": 0.1})
+
+        # Return legacy top-level fields (intent/params) for backward compat plus
+        # the new 'actions' list that multi-intent dispatchers can iterate over.
         return {
-            "intent": parsed.get("intent", fallback),
-            "params": parsed.get("params", {}),
-            "confidence": parsed.get("confidence", 0.5),
+            "intent": actions[0]["intent"],
+            "params": actions[0]["params"],
+            "confidence": actions[0]["confidence"],
+            "actions": actions,
         }
 
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.warning(f"Intent classification parse error: {e}, raw='{raw[:200] if 'raw' in dir() else 'N/A'}'")
-        return {"intent": fallback, "params": {}, "confidence": 0.1}
+        return {
+            "intent": fallback,
+            "params": {},
+            "confidence": 0.1,
+            "actions": [{"intent": fallback, "params": {}, "confidence": 0.1}],
+        }
     except Exception as e:
         logger.warning(f"Intent classification failed: {e}")
-        return {"intent": fallback, "params": {}, "confidence": 0.1}
+        return {
+            "intent": fallback,
+            "params": {},
+            "confidence": 0.1,
+            "actions": [{"intent": fallback, "params": {}, "confidence": 0.1}],
+        }
