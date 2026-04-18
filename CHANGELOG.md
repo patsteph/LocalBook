@@ -2,6 +2,19 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## v1.6.1
+
+### Chat Agents
+- **Multi-Intent Messages** — `@collector`, `@curator`, `@research`, and `@studio` can now handle compound requests in a single message (e.g. "add this URL and set my focus to X"); the classifier decomposes the message and each action runs in sequence
+- **Smarter Compound Routing** — Messages like "scrape this video, add the channel, collect daily" now correctly subscribe to the channel, schedule daily collection, and ingest the video in one turn
+- **Schedule Keyword Fallback** — "daily", "hourly", and "weekly" in a message are honored even when the LLM classifier doesn't extract them into params
+
+### Sources
+- **Consistent YouTube / arXiv Labels** — YouTube videos and arXiv papers now display as `▶️ YOUTUBE` / `ARXIV` regardless of how they were added (chat, browser extension capture, feed-page article, or agent tool); previously some paths mislabeled them as generic `WEB`
+- **Full Ingest Pipeline for Chat Adds** — Sources added via `@collector` now run the same pipeline as direct captures, including auto-tagging, content-date extraction, and `document_captured` event logging
+
+---
+
 ## v1.6.0
 
 - **YouTube Sources** — YouTube videos now ingest with a full-transcript summary for better retrieval and display as `▶️ YOUTUBE` throughout the app

@@ -657,6 +657,19 @@ pymupdf4llm==0.2.9
     # via -r requirements.in
 pynndescent==0.6.0
     # via umap-learn
+pyobjc-core==12.1
+    # via
+    #   pyobjc-framework-cocoa
+    #   pyobjc-framework-localauthentication
+    #   pyobjc-framework-security
+pyobjc-framework-cocoa==12.1
+    # via
+    #   pyobjc-framework-localauthentication
+    #   pyobjc-framework-security
+pyobjc-framework-localauthentication==12.1 ; sys_platform == "darwin"
+    # via -r requirements.in
+pyobjc-framework-security==12.1
+    # via pyobjc-framework-localauthentication
 pyparsing==3.3.2
     # via rdflib
 pyperclip==1.11.0

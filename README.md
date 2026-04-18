@@ -2,7 +2,7 @@
 
 **Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
-[![Version](https://img.shields.io/badge/version-1.6.0-blue.svg)](https://github.com/patsteph/LocalBook/releases)
+[![Version](https://img.shields.io/badge/version-1.6.1-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
 [![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -25,13 +25,16 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v1.6.0
-- **YouTube Sources** — YouTube videos now ingest with a full-transcript summary for better retrieval and display as `▶️ YOUTUBE` throughout the app
-- **LLM Locker Improvements** — Smarter RAM estimation eliminates false memory rejections; per-model tuning profiles added to the registry
-- **Labs Toggle** — Experimental features (LLM Evaluator, Locker) now live behind a toggle in the Health Portal
-- **Release Pipeline** — Version badge, download links, and CHANGELOG are all auto-updated on each release
-- **Quiz Enhancements** — Studio quizzes now use RAG chunk retrieval for higher-quality questions drawn from the full document corpus; five question types supported (Multiple Choice, True/False, Fill in the Blank, Short Answer, Spot the Error) selectable before generation; choice questions reveal instantly on click with A/B/C/D prefixes matching the Feynman curriculum experience; open-ended answers graded by LLM with partial credit and feedback
+## 🎉 What's New in v1.6.1
+### Chat Agents
+- **Multi-Intent Messages** — `@collector`, `@curator`, `@research`, and `@studio` can now handle compound requests in a single message (e.g. "add this URL and set my focus to X"); the classifier decomposes the message and each action runs in sequence
+- **Smarter Compound Routing** — Messages like "scrape this video, add the channel, collect daily" now correctly subscribe to the channel, schedule daily collection, and ingest the video in one turn
+- **Schedule Keyword Fallback** — "daily", "hourly", and "weekly" in a message are honored even when the LLM classifier doesn't extract them into params
+### Sources
+- **Consistent YouTube / arXiv Labels** — YouTube videos and arXiv papers now display as `▶️ YOUTUBE` / `ARXIV` regardless of how they were added (chat, browser extension capture, feed-page article, or agent tool); previously some paths mislabeled them as generic `WEB`
+- **Full Ingest Pipeline for Chat Adds** — Sources added via `@collector` now run the same pipeline as direct captures, including auto-tagging, content-date extraction, and `document_captured` event logging
 
+---
 ---
 ---
 
