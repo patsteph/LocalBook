@@ -27,6 +27,7 @@ from services import rag_embeddings
 from services import rag_chunking
 from services.entity_extractor import entity_extractor
 from services.entity_graph import entity_graph
+from services.progress_reporter import ProgressReporter, get_noop_reporter
 import logging
 logger = logging.getLogger(__name__)
 
@@ -131,28 +132,58 @@ async def ingest_document(
     text: str,
     filename: str = "Unknown",
     source_type: str = "document",
+    reporter: Optional[ProgressReporter] = None,
 ) -> Dict:
-    """Ingest a document into the RAG system."""
+    """Ingest a document into the RAG system.
+
+    reporter (optional): emits progress events during chunking, summarization,
+    HyDE question generation, embedding, and indexing. When omitted, a no-op
+    reporter is used so existing callers are unaffected.
+    """
+    reporter = reporter or get_noop_reporter()
 
     # Use source-type-aware chunking for better retrieval
+    await reporter.emit("chunking", 50, f"Splitting text into semantic chunks ({source_type})...")
     chunks = rag_chunking.chunk_text_smart(text, source_type, filename)
+    await reporter.emit(
+        "chunking", 55,
+        f"Split into {len(chunks)} chunks for semantic search",
+        details={"chunk_count": len(chunks)},
+    )
 
     # Skip summary for web sources (they have search snippets already)
     # YouTube gets its own proportional sampling summary
     summary = None
     if source_type not in ['web']:
+        await reporter.emit("summarizing", 60, "Generating document summary with local LLM...")
         summary = await generate_document_summary(text, filename, source_type)
         if summary:
             print(f"[RAG] Generated summary for {filename}: {len(summary)} chars")
+            await reporter.emit(
+                "summarizing", 65,
+                f"Summary generated ({len(summary)} chars)",
+                details={"summary_chars": len(summary)},
+            )
 
     # Generate synthetic questions for HyDE
+    await reporter.emit(
+        "hyde_questions", 68,
+        "Generating synthetic questions to improve retrieval (HyDE)...",
+    )
     questions = await generate_chunk_questions(chunks)
     texts_to_embed = [f"{c}\n\nQuestions this answers:\n{q}" if q else c for c, q in zip(chunks, questions)]
 
     # Generate embeddings
+    await reporter.emit(
+        "embedding", 72,
+        f"Computing {len(texts_to_embed)} embeddings (1024-dim snowflake-arctic)...",
+        details={"vector_count": len(texts_to_embed)},
+    )
     embeddings = await rag_embeddings.encode_async(texts_to_embed)
+    await reporter.emit("embedding", 85, "Embeddings ready")
 
     # Insert into LanceDB
+    await reporter.emit("indexing", 88, "Writing vectors to LanceDB index...")
     table = get_table(notebook_id)
 
     # Check schema evolution flags
@@ -194,6 +225,11 @@ async def ingest_document(
         data.append(summary_row)
 
     table.add(data)
+    await reporter.emit(
+        "indexing", 95,
+        f"Indexed {len(data)} vectors in notebook",
+        details={"rows_written": len(data)},
+    )
 
     # Fire-and-forget topic modeling in background
     from utils.tasks import safe_create_task

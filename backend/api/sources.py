@@ -1,12 +1,16 @@
 """Sources API endpoints"""
+import asyncio
+import json
 from typing import List
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from storage.source_store import source_store
 from services.document_processor import document_processor
 from services.rag_engine import rag_engine
 from services.topic_modeling import topic_modeling_service
 from services.event_logger import log_document_captured
+from services.progress_reporter import ProgressReporter
 import logging
 logger = logging.getLogger(__name__)
 
@@ -288,6 +292,174 @@ async def upload_source(
         print(f"[UPLOAD] Error processing {filename}: {error_msg}")
         print(f"[UPLOAD] Traceback:\n{tb}")
         raise HTTPException(status_code=500, detail=f"Failed to process file: {error_msg}")
+
+
+# =========================================================================
+# Streaming Upload with Granular Progress (v1.6.2)
+# =========================================================================
+# New SSE-based upload endpoint that reports stage-by-stage ingestion progress
+# so users can see the full RAG journey (extract -> chunk -> summarize ->
+# embed -> index). The legacy POST /upload endpoint is untouched; agents,
+# extension captures, and other non-UI callers continue to use it.
+
+async def _run_upload_with_reporter(
+    *,
+    content: bytes,
+    filename: str,
+    notebook_id: str,
+    reporter: ProgressReporter,
+    do_auto_tag: bool,
+    do_timeline: bool,
+    do_image_extract: bool,
+):
+    """Execute the full ingestion pipeline, emitting progress via reporter.
+
+    On success emits a terminal `complete` event with the source result.
+    On failure emits a terminal `error` event with the message.
+    Always closes the reporter's queue when done.
+    """
+    import traceback
+    from api.timeline import extract_timeline_for_source
+
+    try:
+        await reporter.emit("received", 3, f"Received {filename} ({len(content):,} bytes)")
+
+        # Run the full document-processor pipeline with the reporter threaded in
+        result = await document_processor.process(
+            content=content,
+            filename=filename,
+            notebook_id=notebook_id,
+            reporter=reporter,
+        )
+
+        source_id = result.get("source_id")
+        chunks = result.get("chunks", 0)
+        characters = result.get("characters", 0)
+
+        # Fetch full source for downstream tasks
+        source = await source_store.get(source_id) if source_id else None
+
+        # Auto-tag (foreground so it shows in the journey)
+        if do_auto_tag and source:
+            try:
+                await reporter.emit("tagging", 96, "Auto-tagging with notebook topics...")
+                from services.auto_tagger import auto_tagger
+                tag_text = (source.get("content", "") or "")[:3000]
+                await auto_tagger.tag_source_in_notebook(
+                    notebook_id, source_id, filename, tag_text,
+                )
+            except Exception as tag_err:
+                logger.debug(f"[sources] auto-tag failed (non-fatal): {tag_err}")
+
+        # Fire-and-forget background extras (timeline extraction, image OCR)
+        if source_id and source and source.get("content"):
+            if do_timeline:
+                asyncio.create_task(
+                    extract_timeline_for_source(
+                        notebook_id, source_id, source["content"], filename,
+                    )
+                )
+            if do_image_extract:
+                file_ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
+                if file_ext in ['pdf', 'pptx']:
+                    asyncio.create_task(
+                        document_processor.process_images_background(
+                            content, notebook_id, source_id, filename,
+                        )
+                    )
+
+        # Log & engagement (non-fatal)
+        try:
+            log_document_captured(notebook_id, filename, filename, "upload")
+        except Exception as _e:
+            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
+        try:
+            from services.collection_history import record_engagement
+            record_engagement(notebook_id, "source_upload")
+        except Exception as _e:
+            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
+
+        await reporter.complete(
+            f"Ready — {chunks} chunks, {characters:,} chars",
+            details={
+                "source_id": source_id,
+                "chunks": chunks,
+                "characters": characters,
+                "format": result.get("format"),
+                "filename": filename,
+            },
+        )
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[UPLOAD-STREAM] Error for {filename}: {e}\n{tb}")
+        await reporter.error(str(e)[:300], details={"filename": filename})
+    finally:
+        await reporter.close()
+
+
+@router.post("/upload/stream")
+async def upload_source_stream(
+    file: UploadFile = File(...),
+    notebook_id: str = Form(...),
+):
+    """Upload a document and stream granular progress events (SSE).
+
+    Emits stage-by-stage updates so the UI can show the full RAG journey:
+    received -> detecting -> extracting -> analyzing -> creating_record ->
+    chunking -> summarizing -> hyde_questions -> embedding -> indexing ->
+    tagging -> complete (or error).
+
+    Each event is JSON on a single `data:` line:
+      {"stage": "embedding", "percent": 72, "message": "...", "details": {...}}
+
+    The final event has stage="complete" (with source_id/chunks/characters in
+    details) or stage="error" (with the failure message).
+
+    The legacy POST /upload endpoint remains unchanged for non-UI callers.
+    """
+    content = await file.read()
+    filename = file.filename or "upload"
+    print(f"[UPLOAD-STREAM] Received {filename}, size={len(content)} bytes, notebook={notebook_id}")
+
+    reporter = ProgressReporter()
+
+    # Kick off the ingestion as a background task so the streamer can drain
+    # the queue concurrently. The task runs to completion even if the client
+    # disconnects — no data loss, matches the existing background-task pattern.
+    asyncio.create_task(
+        _run_upload_with_reporter(
+            content=content,
+            filename=filename,
+            notebook_id=notebook_id,
+            reporter=reporter,
+            do_auto_tag=True,
+            do_timeline=True,
+            do_image_extract=True,
+        )
+    )
+
+    async def _sse_generator():
+        # Initial ping so the client immediately knows the connection is live
+        yield ": ping\n\n"
+        while True:
+            evt = await reporter.queue.get()
+            if evt is None:
+                # Sentinel: reporter.close() called — stream is finished
+                yield "event: done\ndata: {}\n\n"
+                return
+            yield evt.to_sse()
+
+    return StreamingResponse(
+        _sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 
 @router.post("/{notebook_id}/note")
 async def create_note(notebook_id: str, request: NoteCreateRequest, background_tasks: BackgroundTasks):

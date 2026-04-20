@@ -15,29 +15,52 @@ logger = logging.getLogger(__name__)
 class DocumentProcessor:
     """Process and ingest documents"""
 
-    async def process(self, content: bytes, filename: str, notebook_id: str) -> Dict:
+    async def process(self, content: bytes, filename: str, notebook_id: str, reporter=None) -> Dict:
         """Process a document and add to RAG system.
-        
+
         Every uploaded file is treated as source information that should be
         retrievable when answering questions. This method:
         1. Extracts text optimized for semantic search (not just raw extraction)
         2. Creates a source record with metadata
         3. Ingests into the RAG vector store
         4. Extracts concepts for the knowledge graph
+
+        reporter (optional): ProgressReporter for stage-by-stage UI updates.
+        When None, processing runs silently (existing behaviour preserved).
         """
+        from services.progress_reporter import get_noop_reporter
+        reporter = reporter or get_noop_reporter()
+
         # Detect file type with magic byte fallback for unknown extensions
+        await reporter.emit("detecting", 8, "Detecting file format...")
         file_format = self._get_file_type(filename, content)
+        await reporter.emit(
+            "detecting", 12,
+            f"Identified: {file_format.upper()}",
+            details={"format": file_format, "size_bytes": len(content)},
+        )
         print(f"[DocProcessor] Processing {filename} (type: {file_format}, size: {len(content)} bytes)")
 
         # Extract text based on file type - optimized for semantic search
+        await reporter.emit(
+            "extracting", 15,
+            f"Extracting text from {file_format.upper()}...",
+            details={"format": file_format},
+        )
         text = await self._extract_text(content, filename)
-        
+
         if not text or not text.strip():
             raise ValueError(f"No text content could be extracted from {filename}")
-        
+
+        await reporter.emit(
+            "extracting", 35,
+            f"Extracted {len(text):,} characters",
+            details={"characters": len(text)},
+        )
         print(f"[DocProcessor] Extracted {len(text)} characters from {filename}")
 
         # Extract content date (when the content is FROM, not when uploaded)
+        await reporter.emit("analyzing", 38, "Identifying content date...")
         from services.content_date_extractor import extract_content_date
         content_date = extract_content_date(filename, text[:800])
 
@@ -52,8 +75,14 @@ class DocumentProcessor:
         }
         if content_date:
             source_metadata["content_date"] = content_date
+            await reporter.emit(
+                "analyzing", 40,
+                f"Content date: {content_date}",
+                details={"content_date": content_date},
+            )
             print(f"[DocProcessor] Content date for {filename}: {content_date}")
 
+        await reporter.emit("creating_record", 42, "Creating source record...")
         source = await source_store.create(
             notebook_id=notebook_id,
             filename=filename,
@@ -67,7 +96,8 @@ class DocumentProcessor:
                 source_id=source["id"],
                 text=text,
                 filename=filename,
-                source_type=file_format
+                source_type=file_format,
+                reporter=reporter,
             )
 
             # Update source with processing results

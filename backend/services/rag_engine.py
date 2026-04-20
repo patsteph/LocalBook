@@ -157,10 +157,17 @@ class RAGEngine:
         source_id: str,
         text: str,
         filename: str = "Unknown",
-        source_type: str = "document"
+        source_type: str = "document",
+        reporter=None,
     ) -> Dict:
-        """Ingest a document into the RAG system"""
-        return await rag_storage.ingest_document(notebook_id, source_id, text, filename, source_type)
+        """Ingest a document into the RAG system.
+
+        reporter (optional): ProgressReporter for stage-by-stage progress events.
+        When None, ingestion runs silently (existing behaviour).
+        """
+        return await rag_storage.ingest_document(
+            notebook_id, source_id, text, filename, source_type, reporter=reporter,
+        )
 
     async def append_to_document(
         self,

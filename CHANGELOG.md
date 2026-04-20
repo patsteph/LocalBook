@@ -2,6 +2,17 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## v1.6.2
+
+### Upload Experience
+- **Granular Ingestion Progress** — The file upload progress bar now streams stage-by-stage updates instead of jumping from 0% to 100%; users see the full RAG journey as it happens (receive → detect format → extract text → analyze → chunk → summarize → HyDE questions → embed → index → tag)
+- **"Show journey" Expander** — Optional checklist view reveals every stage with a plain-English description of what's happening and why (e.g. "HyDE questions — generating synthetic questions each chunk answers to boost recall at query time")
+- **Per-File Progress** — Each file in a multi-file upload gets its own progress bar, stage label, and completion state; overall bar averages across all files
+- **New SSE Endpoint** `POST /sources/upload/stream` — Backward-compatible addition; the existing `POST /sources/upload` is unchanged so agent tools, browser extension captures, and direct API callers are unaffected
+- **Reusable ProgressReporter** — New `backend/services/progress_reporter.py` threads optional progress events through `document_processor.process()` and `rag_engine.ingest_document()` with a zero-cost no-op fallback for existing callers
+
+---
+
 ## v1.6.1
 
 ### Chat Agents

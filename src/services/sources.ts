@@ -1,6 +1,22 @@
 // Source document API service
-import api from './api';
+import api, { API_BASE_URL } from './api';
 import { Source } from '../types';
+
+// ── Streaming upload progress types ────────────────────────────────────────
+export interface UploadProgressEvent {
+  stage: string;           // e.g. "received", "extracting", "chunking", "embedding", "complete", "error"
+  percent: number;         // 0..100
+  message: string;         // human-readable description
+  details?: Record<string, any>;
+}
+
+export interface UploadStreamResult {
+  source_id?: string;
+  chunks?: number;
+  characters?: number;
+  format?: string;
+  filename?: string;
+}
 
 export const sourceService = {
   async list(notebookId: string): Promise<Source[]> {
@@ -31,6 +47,87 @@ export const sourceService = {
       });
       throw error;
     }
+  },
+
+  /**
+   * Upload a file and stream granular ingestion progress via SSE.
+   *
+   * The backend emits stage-by-stage events (received, detecting, extracting,
+   * chunking, summarizing, hyde_questions, embedding, indexing, tagging,
+   * complete/error) so the UI can show the full RAG journey.
+   *
+   * onProgress is called for every event EXCEPT the terminal one. The promise
+   * resolves with the `complete` event's details on success, or rejects with
+   * an Error on `error` / network failure.
+   */
+  async uploadWithProgress(
+    notebookId: string,
+    file: File,
+    onProgress: (evt: UploadProgressEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<UploadStreamResult> {
+    const formData = new FormData();
+    formData.append('notebook_id', notebookId);
+    formData.append('file', file);
+
+    const response = await fetch(`${API_BASE_URL}/sources/upload/stream`, {
+      method: 'POST',
+      body: formData,
+      signal,
+    });
+
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => '');
+      throw new Error(
+        `Upload failed (${response.status}): ${text || response.statusText}`,
+      );
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE events are delimited by blank lines ("\n\n").
+        let sepIdx: number;
+        while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+          const rawEvent = buffer.slice(0, sepIdx);
+          buffer = buffer.slice(sepIdx + 2);
+
+          // Ignore comments (lines starting with ":") and empty frames
+          const lines = rawEvent.split('\n').filter(l => !l.startsWith(':') && l.trim() !== '');
+          const dataLine = lines.find(l => l.startsWith('data:'));
+          if (!dataLine) continue;
+          const payload = dataLine.slice(5).trim();
+          if (!payload || payload === '{}') continue;
+
+          let evt: UploadProgressEvent;
+          try {
+            evt = JSON.parse(payload) as UploadProgressEvent;
+          } catch {
+            continue; // skip malformed frames
+          }
+
+          if (evt.stage === 'complete') {
+            return (evt.details || {}) as UploadStreamResult;
+          }
+          if (evt.stage === 'error') {
+            throw new Error(evt.message || 'Upload failed');
+          }
+          onProgress(evt);
+        }
+      }
+    } finally {
+      try { reader.releaseLock(); } catch { /* ignore */ }
+    }
+
+    // Stream ended without a complete/error event — treat as completed silently
+    return {};
   },
 
   async delete(notebookId: string, sourceId: string): Promise<void> {
