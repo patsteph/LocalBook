@@ -101,6 +101,11 @@ class ModelInfo:
     # Per-model Ollama generation options (temperature, top_p, top_k, etc.)
     ollama_options: dict = field(default_factory=dict)
 
+    # v1.7.0: Backend provider — "ollama" (default) or "llama_server" (sidecar).
+    # See services/llm_provider.py. Registry entries without this field are
+    # treated as Ollama-hosted for backward compatibility.
+    provider: str = "ollama"
+
     def to_dict(self) -> dict:
         return {
             "ollama_name": self.ollama_name,
@@ -119,6 +124,7 @@ class ModelInfo:
             "policy_tags": self.policy_tags,
             "is_installed": self.is_installed,
             "ollama_options": self.ollama_options,
+            "provider": self.provider,
         }
 
 
@@ -206,6 +212,63 @@ class EvalResult:
     skipped: bool = False
     skip_reason: str = ""
 
+    # v1.8.2: Provider / backend visibility — stamped by every test runner so
+    # results show exactly which backend served each test and whether Bonsai
+    # or an Ollama model was running.
+    provider: str = ""                   # "ollama" | "llama_server" | ""
+    backend_url: str = ""                # e.g. "http://127.0.0.1:8090"
+    model_context_window: int = 0        # capability-aware, helps explain truncation
+
+    def stamp_provider(self, model_name: str) -> None:
+        """Populate provider/backend_url/context_window from the resolver.
+
+        Called by test runners right after they pick the model so the
+        persisted EvalResult carries backend provenance without each runner
+        duplicating the routing logic.
+        """
+        try:
+            from evaluator.capabilities import capabilities_for
+            caps = capabilities_for(model_name)
+            self.model_used = model_name
+            self.provider = caps.provider
+            self.backend_url = caps.backend_url
+            self.model_context_window = caps.context_window
+        except Exception:
+            # Never let telemetry break a run
+            self.model_used = model_name or self.model_used
+
+    def mark_skipped(self, reason: str) -> None:
+        """Mark this test as skipped with a human-readable reason.
+
+        Reserved for cases where the capability is *literally not configured*
+        for the current combo (e.g. no embedding_model set, no vision_model
+        set). A capability that's configured but limited (e.g. small context
+        window) should be reported via `mark_degraded()` instead so the
+        evaluator still exercises the real code path.
+        """
+        self.skipped = True
+        self.skip_reason = reason
+        self.passed = True   # not a failure — feature simply not in this combo
+        self.overall_score = 0
+        self.failure_reason = ""
+
+    def mark_degraded(self, note: str) -> None:
+        """Flag that the test ran but the inputs were adapted to the model's
+        physical limits (e.g. prompt trimmed to fit context window).
+
+        The test still scores honestly; this note surfaces in the UI so the
+        user sees that Bonsai's 4K context forced a trimmed needle haystack,
+        rather than silently assuming 8K worked.
+        """
+        # Record under sub_scores to keep the flat EvalResult shape stable
+        self.sub_scores = dict(self.sub_scores) if self.sub_scores else {}
+        self.sub_scores["degraded"] = True
+        notes = self.sub_scores.get("degraded_notes", [])
+        if not isinstance(notes, list):
+            notes = [str(notes)]
+        notes.append(note)
+        self.sub_scores["degraded_notes"] = notes
+
     def to_dict(self) -> dict:
         return {
             "test_id": self.test_id,
@@ -232,6 +295,10 @@ class EvalResult:
             "failure_reason": self.failure_reason,
             "skipped": self.skipped,
             "skip_reason": self.skip_reason,
+            # v1.8.2
+            "provider": self.provider,
+            "backend_url": self.backend_url,
+            "model_context_window": self.model_context_window,
         }
 
 
@@ -246,6 +313,11 @@ class CategoryResult:
     passed: bool = False
     warnings: list = field(default_factory=list)
     total_time_ms: float = 0.0
+    # v1.8.2: a category is "skipped" when every test in it was skipped.
+    # Skipped categories are excluded from the overall weighted score so a
+    # text-only model isn't penalised for lacking vision.
+    skipped: bool = False
+    skip_reason: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -257,6 +329,8 @@ class CategoryResult:
             "passed": self.passed,
             "warnings": self.warnings,
             "total_time_ms": round(self.total_time_ms, 1),
+            "skipped": self.skipped,
+            "skip_reason": self.skip_reason,
         }
 
 
@@ -340,6 +414,18 @@ class ComboEvalSummary:
     # Verdict
     warnings: list = field(default_factory=list)
 
+    # v1.8.2: Provider provenance — records which backends served which roles
+    # and which categories were skipped for capability reasons, so the UI can
+    # show "Ran on Ollama + llama-server (Bonsai-8B)" at a glance.
+    providers_used: dict = field(default_factory=dict)   # {role: {provider, backend_url, model}}
+    skipped_categories: list = field(default_factory=list)  # [{category, reason}]
+    # v1.8.3: Production readiness — the "will this combo actually work in
+    # the app?" verdict, compressed from raw scores into pass/degraded/fail
+    # per user-facing feature plus a single-headline rollup.
+    feature_parity: list = field(default_factory=list)   # [{category, feature, verdict, ...}]
+    production_readiness: dict = field(default_factory=dict)  # {counts, headline}
+    preflight: dict = field(default_factory=dict)         # PreflightReport.to_dict()
+
     def to_dict(self) -> dict:
         return {
             "run_id": self.run_id,
@@ -355,6 +441,12 @@ class ComboEvalSummary:
             "avg_ttft_ms": round(self.avg_ttft_ms, 1),
             "total_run_time_seconds": round(self.total_run_time_seconds, 1),
             "warnings": self.warnings,
+            "providers_used": self.providers_used,
+            "skipped_categories": self.skipped_categories,
+            # v1.8.3
+            "feature_parity": self.feature_parity,
+            "production_readiness": self.production_readiness,
+            "preflight": self.preflight,
         }
 
 

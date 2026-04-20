@@ -9,10 +9,14 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     """Run intent classification tests against known expected intents."""
     from services.intent_classifier import classify_intent
     from services.ollama_client import ollama_client
+    from config import settings
 
     tests = config.get("intent_classification_tests", [])
     if not tests:
         return []
+
+    # Intent classification uses the configured fast model via ollama_client
+    _fast_model = getattr(settings, "ollama_fast_model", "") or getattr(settings, "ollama_model", "")
 
     results = []
     correct = 0
@@ -24,10 +28,10 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             category="intent_classify",
             test_name=f"Intent: {test['message'][:40]}...",
             model_combo=combo_name,
-            model_used="fast_model",
             hardware_fingerprint=hw_fingerprint,
             timestamp=datetime.utcnow().isoformat(),
         )
+        result.stamp_provider(_fast_model)
 
         try:
             start = time.time()

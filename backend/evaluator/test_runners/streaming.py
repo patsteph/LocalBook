@@ -17,10 +17,10 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         category="streaming",
         test_name="Streaming Chat Response",
         model_combo=combo_name,
-        model_used=settings.ollama_model,
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat(),
     )
+    result.stamp_provider(settings.ollama_model)
 
     try:
         start = time.time()

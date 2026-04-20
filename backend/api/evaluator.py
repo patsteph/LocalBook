@@ -244,17 +244,62 @@ async def cleanup():
     from evaluator.evaluator_service import cleanup_stale_notebook
     await cleanup_stale_notebook()
     return {"message": "Cleanup complete"}
+
+
+@router.get("/providers")
+async def get_providers():
+    """Report health status for every known LLM provider (Ollama, llama-server).
+
+    Used by the UI to show sidecar availability badges and by pre-flight checks
+    before allowing swaps to llama-server-backed models.
+    """
+    from services.llm_provider import providers_status
+    providers = await providers_status()
+    return {"providers": providers}
+
+
+# ── v1.8.0 (Phase 2): llama-server sidecar lifecycle control ──────────────────
+
+@router.get("/sidecar/status")
+async def get_sidecar_status():
+    """Return runtime state of the llama-server sidecar (running, healthy, pid)."""
+    from services.sidecar_manager import sidecar_manager
+    return await sidecar_manager.status()
+
+
+@router.post("/sidecar/start")
+async def start_sidecar():
+    """Start the sidecar if it isn't already healthy. Blocks up to ~45s."""
+    from services.sidecar_manager import sidecar_manager
+    from services.llm_provider import invalidate_health_cache
+    ok = await sidecar_manager.ensure_started(timeout=45.0)
+    invalidate_health_cache()
+    if not ok:
+        raise HTTPException(status_code=503, detail=sidecar_manager.last_error or "Failed to start sidecar")
+    return {"status": "success", "message": "Sidecar started and healthy", **(await sidecar_manager.status())}
+
+
+@router.post("/sidecar/stop")
+async def stop_sidecar():
+    """Stop the sidecar child process. Idempotent."""
+    from services.sidecar_manager import sidecar_manager
+    from services.llm_provider import invalidate_health_cache
+    await sidecar_manager.stop(grace_seconds=5.0)
+    invalidate_health_cache()
+    return {"status": "success", "message": "Sidecar stopped"}
+
+
 @router.post("/swap")
 async def swap_model(payload: dict):
     """Swap the active model for a specific role (main_model or fast_model)."""
     from services.llm_locker import locker, ModelSwapError
-    
+
     target_model = payload.get("target_model")
     role = payload.get("role")
-    
+
     if not target_model or not role:
         raise HTTPException(status_code=400, detail="Missing target_model or role")
-        
+
     try:
         # Sanitize role strings from UI to what the locker expects
         normalized_role = role
@@ -262,7 +307,28 @@ async def swap_model(payload: dict):
         if role == "fast": normalized_role = "fast_model"
         if role == "embeddings": normalized_role = "embedding_model"
         if role == "vision": normalized_role = "vision_model"
-        
+
+        # v1.8.0 (Phase 2): auto-spawn the sidecar when the target is a
+        # llama_server-provider model. This is what makes "click Use → run
+        # evaluator" actually work without the user launching anything.
+        try:
+            from evaluator.model_registry import model_registry
+            _info = model_registry.get_model(target_model)
+            if _info and getattr(_info, "provider", "ollama") == "llama_server":
+                from services.sidecar_manager import sidecar_manager
+                from services.llm_provider import invalidate_health_cache
+                ok = await sidecar_manager.ensure_started(timeout=45.0)
+                invalidate_health_cache()
+                if not ok:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Sidecar failed to start: {sidecar_manager.last_error}",
+                    )
+        except HTTPException:
+            raise
+        except Exception as _e:
+            logger.warning(f"[evaluator] sidecar pre-spawn skipped: {_e}")
+
         message = locker.execute_swap(target_model, normalized_role)
         return {"status": "success", "message": message}
     except ModelSwapError as e:

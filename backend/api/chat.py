@@ -41,6 +41,8 @@ _COLLECTOR_HELP = """**@collector — Your automated content collection agent**
 | `@collector add <URL>` | Add a **URL as a monitored source** (RSS feed or web page) |
 | `@collector remove <URL>` | Remove a source |
 | `@collector add keyword <topic>` | Track a **news keyword** for alerts |
+| `@collector add note <content>` | Save a **user note** as a searchable source (e.g. *"note: the key insight is…"*) |
+| `@collector note what we discussed above` | **Capture the current chat** as a synthesized markdown note-source |
 | `@collector set intent <description>` | Set the notebook's **collection intent/purpose** |
 | `@collector set subject <name>` | Set the **research subject** |
 | `@collector set focus <areas>` | Set or add **focus areas** |
@@ -108,7 +110,7 @@ class ChatQuery(BaseModel):
     deep_think: Optional[bool] = False  # Enable Deep Think mode with chain-of-thought reasoning
     use_orchestrator: Optional[bool] = True  # v0.60: Auto-detect complex queries and decompose
     target: Optional[str] = None  # v1.4: @mention routing — 'curator', 'collector', 'studio', or None for default RAG
-    chat_context: Optional[str] = None  # v1.5: @studio — recent conversation context for content generation
+    chat_context: Optional[str] = None  # v1.5: @studio / @collector — recent conversation context for content generation and note synthesis
 
 
 class WebSource(BaseModel):
@@ -1139,6 +1141,52 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
             if not params.get("url"):
                 params["url"] = url_match.group(1).rstrip('.,;:)')
 
+        # Safety net: detect explicit note-creation phrases and force add_note.
+        # Small fast-models sometimes mis-route these to show_status / add_keyword.
+        # We only override when the user isn't also pasting a URL (add_url wins then).
+        if intent in ("show_status", "add_keyword", "set_intent", "set_subject") and not url_match:
+            _q_strip = q.strip()
+            _q_low = _q_strip.lower()
+            _note_triggers = (
+                "add a note", "add this note", "add the note", "save a note",
+                "save this note", "save the note", "jot this down", "jot down",
+                "remember this", "take a note", "capture this note",
+                "note to my sources", "note to sources", "here's a note",
+                "heres a note", "log this note",
+            )
+            # Also catch leading "note:" or "note -"
+            starts_with_note = bool(_re.match(r'^\s*note\s*[:\-—]\s*', _q_strip, _re.IGNORECASE))
+            if any(t in _q_low for t in _note_triggers) or starts_with_note:
+                logger.info(f"[collector] Intent override: {intent} → add_note (note phrase detected)")
+                intent = "add_note"
+                # Strip the trigger phrase to recover the note body
+                body = _q_strip
+                if starts_with_note:
+                    body = _re.sub(r'^\s*note\s*[:\-—]\s*', '', body, count=1, flags=_re.IGNORECASE)
+                else:
+                    # Remove the matched trigger + common connectors ("to my sources", "for me", etc.)
+                    body = _re.sub(
+                        r'^(?:please\s+)?'
+                        r'(?:add|save|jot(?:\s+down)?|take|log|capture|remember)\s+'
+                        r'(?:a|this|the)?\s*note\s*'
+                        r'(?:down)?\s*'
+                        r'(?:to\s+(?:my\s+)?sources?)?\s*'
+                        r'(?:for\s+me)?\s*'
+                        r'[:.\-—]?\s*',
+                        '',
+                        body,
+                        count=1,
+                        flags=_re.IGNORECASE,
+                    )
+                body = body.strip().lstrip(':.-—').strip()
+                # Preserve whatever the classifier already extracted, otherwise
+                # hand the cleaned body to the handler.
+                if not params.get("content") and body:
+                    params["content"] = body
+                # Empty body + chat_context available → treat as from_chat
+                if not body and (getattr(chat_query, "chat_context", None) or "").strip():
+                    params["from_chat"] = True
+
         # Safety net: if classified as add_url but message mentions channel/subscribe/follow,
         # user likely wants recurring subscription, not one-off URL add.
         if intent == "add_url" and url_match:
@@ -1692,6 +1740,163 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
                     collector_agent.update_config({"sources": {**config.sources, "news_keywords": keywords}})
                     reply = f"Done. **News keyword added:** {keyword}\n- Will be searched on the next collection run."
                     _notify_curator(f"Collector added news keyword: {keyword}")
+
+        # -----------------------------------------------------------------
+        # ADD NOTE (save a user note as a searchable source)
+        # -----------------------------------------------------------------
+        elif intent == "add_note":
+            from services.rag_engine import rag_engine
+            from datetime import datetime as _dt
+
+            # Normalize params
+            raw_title = (params.get("title") or "").strip().strip('"\'')
+            raw_content = (params.get("content") or "").strip()
+            from_chat = params.get("from_chat")
+            if isinstance(from_chat, str):
+                from_chat = from_chat.lower() in ("true", "yes", "1")
+            from_chat = bool(from_chat)
+
+            # Heuristic fallback: a user request like "add a note about the
+            # research above" has little/no explicit content AND chat_context
+            # is available → treat as from_chat even if classifier missed it.
+            chat_ctx = (chat_query.chat_context or "").strip() if hasattr(chat_query, "chat_context") else ""
+            if not from_chat and chat_ctx and len(raw_content) < 40:
+                _q_low = q.lower()
+                if any(kw in _q_low for kw in (
+                    "we discussed", "we were discussing", "we are discussing",
+                    "above", "this chat", "this conversation", "the research",
+                    "what we just", "the thread", "the discussion",
+                )):
+                    from_chat = True
+
+            if from_chat and chat_ctx:
+                yield f"data: {json.dumps({'type': 'status', 'message': f'{collector_name} summarizing the conversation into a note...', 'query_type': 'collector'})}\n\n"
+                # Ask the model to synthesize a crisp markdown note from the
+                # recent chat. Keep the prompt tight — we want a saveable note,
+                # not a full essay.
+                focus_hint = raw_content or q  # what the user wants the note to focus on
+                synth_prompt = (
+                    "You are helping a researcher save a note from their recent chat. "
+                    "Write a concise, self-contained Markdown note capturing the key "
+                    "findings, claims, and open questions discussed. Prefer bullet "
+                    "points. Include a '# Title' on the first line. Do NOT add a "
+                    "preamble like 'Here is your note'. Keep it under 400 words.\n\n"
+                    f"User request: {q}\n\n"
+                    f"Focus (if given): {focus_hint}\n\n"
+                    "Recent conversation:\n"
+                    "------\n"
+                    f"{chat_ctx}\n"
+                    "------\n\n"
+                    "Now write the note (start with the `# Title` heading):"
+                )
+                synthesized = ""
+                try:
+                    resp = await ollama_client.generate(
+                        prompt=synth_prompt,
+                        model=getattr(settings, "ollama_fast_model", None) or settings.ollama_model,
+                        temperature=0.3,
+                        num_predict=600,
+                        timeout=45.0,
+                    )
+                    synthesized = (resp or {}).get("response", "").strip()
+                except Exception as _synth_err:
+                    logger.warning(f"[add_note] chat synthesis failed (non-fatal): {_synth_err}")
+
+                if synthesized:
+                    # Extract title from first H1 if the model included one
+                    first_line = synthesized.splitlines()[0].lstrip("# ").strip() if synthesized.splitlines() else ""
+                    note_title = raw_title or (first_line[:80] if first_line else f"Chat note — {_dt.utcnow().strftime('%Y-%m-%d %H:%M')}")
+                    note_body = synthesized
+                else:
+                    # Synthesis unavailable — save raw chat as fallback so the
+                    # user never loses the intent to capture this thread.
+                    note_title = raw_title or f"Chat capture — {_dt.utcnow().strftime('%Y-%m-%d %H:%M')}"
+                    note_body = (
+                        f"# {note_title}\n\n"
+                        f"_User asked to save this conversation._\n\n"
+                        f"**Request:** {q}\n\n"
+                        f"## Conversation\n\n{chat_ctx}"
+                    )
+            else:
+                # Pure dictation path — user gave the note body directly
+                note_body = raw_content
+                if not note_body:
+                    # Nothing to save — nudge the user
+                    reply = (
+                        "**I can save a note for you as a searchable source.** Try:\n"
+                        "- *\"@collector add a note titled 'Meeting Thoughts': the research team agreed…\"*\n"
+                        "- *\"@collector note what we just discussed above\"* (captures the recent chat)\n"
+                        "- *\"@collector save this: <your content>\"*"
+                    )
+                    follow_ups = ["Show my sources", "Add a note about the research above", "Show my collection status"]
+                    # Skip the rest of the handler
+                    note_body = None
+
+                if note_body is not None:
+                    note_title = raw_title or (
+                        note_body.splitlines()[0].lstrip("# ").strip()[:80]
+                        if note_body.splitlines() else f"Note — {_dt.utcnow().strftime('%Y-%m-%d %H:%M')}"
+                    )
+
+            # Create + ingest the note-source (mirrors POST /{notebook_id}/note)
+            if note_body:
+                yield f"data: {json.dumps({'type': 'status', 'message': f'{collector_name} saving your note as a source...', 'query_type': 'collector'})}\n\n"
+                try:
+                    src = await source_store.create(
+                        notebook_id=notebook_id,
+                        filename=note_title,
+                        metadata={
+                            "type": "note",
+                            "format": "markdown",
+                            "size": len(note_body.encode("utf-8")),
+                            "chunks": 0,
+                            "characters": 0,
+                            "status": "processing",
+                            "origin": "collector_chat",   # provenance tag
+                        },
+                    )
+                    src_id = src["id"]
+                    ingest_result = await rag_engine.ingest_document(
+                        notebook_id=notebook_id,
+                        source_id=src_id,
+                        text=note_body,
+                        filename=note_title,
+                        source_type="note",
+                    )
+                    await source_store.update(notebook_id, src_id, {
+                        "chunks": ingest_result.get("chunks", 0),
+                        "characters": ingest_result.get("characters", len(note_body)),
+                        "status": "completed",
+                        "content": note_body,
+                    })
+                    # Best-effort auto-tag (same as /note endpoint)
+                    try:
+                        from services.auto_tagger import auto_tagger
+                        await auto_tagger.tag_source_in_notebook(
+                            notebook_id, src_id, note_title, note_body[:3000]
+                        )
+                    except Exception as _tag_err:
+                        logger.debug(f"[add_note] auto-tag failed (non-fatal): {_tag_err}")
+
+                    word_count = len(note_body.split())
+                    preview = note_body.strip().splitlines()[0] if note_body.strip() else ""
+                    if preview.startswith("#"):
+                        preview = preview.lstrip("# ").strip()
+                    reply = (
+                        f"Done. **Note saved as source:** {note_title}\n"
+                        f"- **{word_count:,}** words indexed into the notebook ({ingest_result.get('chunks', 0)} chunks)\n"
+                        f"- Source type: **note** — searchable in chat and shows in the Sources panel\n"
+                        + (f"- *{preview[:140]}*" if preview and preview != note_title else "")
+                    )
+                    follow_ups = ["Show my sources", "Edit this note", "Add another note"]
+                    _notify_curator(
+                        f"Collector saved a user note: \"{note_title}\" "
+                        f"({word_count} words, from_chat={from_chat})."
+                    )
+                except Exception as _create_err:
+                    logger.exception(f"[add_note] failed to save note: {_create_err}")
+                    reply = f"**Could not save the note:** {_create_err}"
+                    follow_ups = ["Show my sources", "Show my collection status"]
 
         # -----------------------------------------------------------------
         # SET INTENT

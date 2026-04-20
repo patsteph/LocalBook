@@ -4,6 +4,7 @@ import time
 import math
 from datetime import datetime
 from evaluator.models import EvalResult
+from evaluator.capabilities import capabilities_for, FEATURES
 import httpx
 
 
@@ -18,11 +19,22 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 async def _embed(text: str, model: str) -> list[float]:
-    """Get embedding from Ollama API."""
+    """Get embedding from the resolved backend (Ollama or sidecar).
+
+    v1.8.2: uses the provider resolver's base URL instead of hardcoding
+    localhost:11434. If the embedding model isn't actually an embedding
+    model on its backend, callers should skip the test via capabilities.
+    """
+    from services.llm_provider import resolve as _resolve_provider, Provider as _Provider
+    route = _resolve_provider(model)
+    # Ollama is the only backend that serves /api/embeddings today; sidecar
+    # embeddings would require llama-server --embeddings which we don't spawn.
+    if route.provider is not _Provider.OLLAMA:
+        return []
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
-            "http://localhost:11434/api/embeddings",
-            json={"model": model, "prompt": text}
+            f"{route.base_url}/api/embeddings",
+            json={"model": model, "prompt": text},
         )
         if response.status_code == 200:
             data = response.json()
@@ -45,10 +57,22 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         category="embedding_quality",
         test_name="Embedding Dimensions & Throughput",
         model_combo=combo_name,
-        model_used=embed_model,
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat(),
     )
+    result.stamp_provider(embed_model)
+
+    # Capability gate: skip if embed backend cannot serve embeddings
+    if not embed_model:
+        result.mark_skipped("No embedding model configured")
+        print("[EVAL-EMBED] skipped — no embedding model configured")
+        return [result]
+    _caps = capabilities_for(embed_model)
+    if not _caps.supports(FEATURES.EMBEDDINGS):
+        reason = _caps.skip_reason(FEATURES.EMBEDDINGS) or f"{embed_model} backend has no /api/embeddings"
+        result.mark_skipped(reason)
+        print(f"[EVAL-EMBED] skipped — {reason}")
+        return [result]
 
     test_passages = [
         "Retrieval-augmented generation combines retrieval with generation.",
@@ -104,10 +128,10 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         category="embedding_quality",
         test_name="Semantic Discrimination",
         model_combo=combo_name,
-        model_used=embed_model,
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat(),
     )
+    result2.stamp_provider(embed_model)
 
     try:
         embed_tests = config.get("embedding_test_passages", {})

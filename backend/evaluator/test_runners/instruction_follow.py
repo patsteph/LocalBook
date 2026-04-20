@@ -21,10 +21,10 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         category="instruction_follow",
         test_name="Numbered List Format Compliance",
         model_combo=combo_name,
-        model_used=settings.ollama_model,
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat(),
     )
+    result.stamp_provider(settings.ollama_model)
 
     try:
         start = time.time()
@@ -65,10 +65,10 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         category="instruction_follow",
         test_name="Paragraph + Negative Constraint",
         model_combo=combo_name,
-        model_used=settings.ollama_model,
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat(),
     )
+    result.stamp_provider(settings.ollama_model)
 
     try:
         start = time.time()

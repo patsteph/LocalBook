@@ -18,10 +18,10 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         category="structured_json",
         test_name="Quiz Generation (JSON Validation)",
         model_combo=combo_name,
-        model_used=settings.ollama_model,
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat(),
     )
+    result.stamp_provider(settings.ollama_model)
 
     try:
         start = time.time()

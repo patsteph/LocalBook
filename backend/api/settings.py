@@ -315,9 +315,52 @@ async def get_ollama_models():
                     "eval_score": _eval_scores.get(name, 0),
                     "modified_at": m.get("modified_at", ""),
                     "in_registry": reg is not None,
+                    "provider": (getattr(reg, "provider", "ollama") if reg else "ollama"),
                 }
 
         enriched = await asyncio.gather(*[_enrich(m) for m in raw_models])
+
+        # v1.7.0: append llama-server sidecar models when the sidecar is healthy.
+        # These are registry-only (not in Ollama's /api/tags) so they need to be
+        # surfaced separately for the UI to display them.
+        try:
+            from services.llm_provider import health_check, Provider as _Provider
+            sidecar_healthy = await health_check(_Provider.LLAMA_SERVER)
+        except Exception:
+            sidecar_healthy = False
+
+        if sidecar_healthy:
+            for reg_model in model_registry.list_all():
+                if getattr(reg_model, "provider", "ollama") != "llama_server":
+                    continue
+                # Guess suggested_role from registry metadata
+                roles = reg_model.supported_roles or []
+                if "main_model" in roles:
+                    _sr = "main"
+                elif "fast_model" in roles:
+                    _sr = "fast"
+                else:
+                    _sr = "main"
+                enriched.append({
+                    "name": reg_model.ollama_name,
+                    "display_name": reg_model.display_name,
+                    "family": reg_model.family,
+                    "size_bytes": int(reg_model.disk_size_gb * (1024 ** 3)),
+                    "size_gb": reg_model.disk_size_gb,
+                    "ram_required_gb": float(reg_model.min_ram_gb),
+                    "context_window": reg_model.context_window,
+                    "suggested_role": _sr,
+                    "supports_vision": reg_model.supports_vision,
+                    "supports_json_mode": reg_model.supports_json_mode,
+                    "vendor": reg_model.vendor,
+                    "origin_country": reg_model.origin_country,
+                    "parameter_count": reg_model.parameter_count,
+                    "quantization": "",
+                    "eval_score": _eval_scores.get(reg_model.ollama_name, 0),
+                    "modified_at": "",
+                    "in_registry": True,
+                    "provider": "llama_server",
+                })
 
     # Attach active-role flags from current settings
     active = {

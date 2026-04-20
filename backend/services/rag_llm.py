@@ -119,20 +119,39 @@ async def call_ollama(
     if extra_options:
         options.update(extra_options)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        print(f"Calling Ollama with model: {use_model}, num_predict: {num_predict}, num_ctx: {num_ctx or 'default'}")
+        print(f"Calling LLM with model: {use_model}, num_predict: {num_predict}, num_ctx: {num_ctx or 'default'}")
         # Short keep_alive — warmup loop re-pings active models every 4 min
         _keep_alive = "5m"
-        response = await client.post(
-            f"{settings.ollama_base_url}/api/generate",
-            json={
-                "model": use_model,
-                "prompt": f"{system_prompt}\n\n{prompt}",
-                "stream": False,
-                "keep_alive": _keep_alive,
-                "options": options
-            }
+        payload = {
+            "model": use_model,
+            "prompt": f"{system_prompt}\n\n{prompt}",
+            "stream": False,
+            "keep_alive": _keep_alive,
+            "options": options,
+        }
+
+        # v1.8.0: provider routing (identical Ollama path + translated OpenAI path)
+        from services.llm_provider import (
+            resolve as _resolve_provider,
+            ollama_to_openai_payload,
+            openai_non_stream_to_ollama_response,
         )
-        result = response.json()
+        _route = _resolve_provider(use_model)
+
+        if _route.api_style == "ollama":
+            response = await client.post(
+                f"{_route.base_url}/api/generate",
+                json=payload,
+            )
+            result = response.json()
+        else:
+            openai_payload = ollama_to_openai_payload(payload, is_chat=False)
+            response = await client.post(
+                f"{_route.base_url}/v1/chat/completions",
+                json=openai_payload,
+            )
+            result = openai_non_stream_to_ollama_response(response.json(), is_chat=False)
+
         # Track model usage for warmup service
         from services.model_warmup import mark_fast_model_used, mark_main_model_used
         if use_model == settings.ollama_fast_model:
@@ -141,7 +160,7 @@ async def call_ollama(
             mark_main_model_used()
         # Record token usage for Health Portal token economy stats
         _record_ollama_tokens(result)
-        print(f"Ollama response received, length: {len(result.get('response', ''))}")
+        print(f"LLM response received, length: {len(result.get('response', ''))}")
         return result.get("response", "No response from LLM")
 
 
@@ -285,7 +304,7 @@ async def stream_ollama(
         }
         if stop_sequences:
             request_json["stop"] = stop_sequences
-        
+
         # Track model usage for warmup service
         from services.model_warmup import mark_fast_model_used, mark_main_model_used
         if use_fast_model:
@@ -293,20 +312,57 @@ async def stream_ollama(
         else:
             mark_main_model_used()
 
-        async with client.stream(
-            "POST",
-            f"{settings.ollama_base_url}/api/generate",
-            json=request_json
-        ) as response:
-            async for line in response.aiter_lines():
-                if line:
-                    data = json.loads(line)
-                    # olmo-3:7b-instruct streams response tokens directly
-                    if data.get("response"):
-                        yield data["response"]
-                    # Final chunk contains token stats
-                    if data.get("done"):
-                        _record_ollama_tokens(data)
+        # ── v1.7.0: provider routing ─────────────────────────────────────
+        # Resolve the backend for this model. Ollama-backed models keep the
+        # existing /api/generate path byte-for-byte. Sidecar-backed models
+        # (Bonsai via llama-server) translate to /v1/chat/completions.
+        from services.llm_provider import (
+            resolve as _resolve_provider,
+            ollama_to_openai_payload,
+            openai_stream_chunk_to_ollama,
+        )
+        _route = _resolve_provider(model)
+
+        if _route.api_style == "ollama":
+            async with client.stream(
+                "POST",
+                f"{_route.base_url}/api/generate",
+                json=request_json,
+            ) as response:
+                async for line in response.aiter_lines():
+                    if line:
+                        data = json.loads(line)
+                        # Ollama streams response tokens directly
+                        if data.get("response"):
+                            yield data["response"]
+                        # Final chunk contains token stats
+                        if data.get("done"):
+                            _record_ollama_tokens(data)
+        else:
+            # OpenAI-compatible streaming (llama-server sidecar).
+            openai_payload = ollama_to_openai_payload(request_json, is_chat=False)
+            async with client.stream(
+                "POST",
+                f"{_route.base_url}/v1/chat/completions",
+                json=openai_payload,
+            ) as response:
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    payload_text = line[5:].strip()
+                    if not payload_text or payload_text == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(payload_text)
+                    except Exception:
+                        continue
+                    translated = openai_stream_chunk_to_ollama(chunk, is_chat=False)
+                    if not translated:
+                        continue
+                    if translated.get("response"):
+                        yield translated["response"]
+                    if translated.get("done"):
+                        _record_ollama_tokens(translated)
 
 
 # ─── OpenAI ──────────────────────────────────────────────────────────────────────

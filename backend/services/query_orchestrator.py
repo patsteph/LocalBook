@@ -275,19 +275,19 @@ FINDINGS:
 Provide a comprehensive answer that synthesizes all the findings. Use [1], [2], etc. to cite sources."""
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{self.ollama_base_url}/api/generate",
-                    json={
-                        "model": self.main_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.3, "num_predict": 1000}
-                    }
-                )
-                
-                if response.status_code == 200:
-                    answer = response.json().get("response", "")
+            # v1.8.0: route via ollama_service so sidecar-backed models work
+            from services.ollama_service import ollama_service as _os
+            _resp = await _os.generate(
+                prompt=prompt,
+                model=self.main_model,
+                temperature=0.3,
+                num_predict=1000,
+                timeout=60.0,
+            )
+            # ollama_service returns the same shape as Ollama /api/generate on success
+            if True:
+                if _resp is not None:
+                    answer = _resp.get("response", "")
                     
                     # Extract unique sources from citations
                     sources = list(set(c.get("source_id", "") for c in all_citations if c.get("source_id")))

@@ -12,15 +12,16 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     from config import settings
 
     q = config["queries"]["followup"]
+    _model_for_this_test = getattr(settings, 'fast_model', settings.ollama_model)
     result = EvalResult(
         test_id="fast_followup",
         category="fast_followup",
         test_name="Fast Follow-Up Response",
         model_combo=combo_name,
-        model_used=getattr(settings, 'fast_model', settings.ollama_model),
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat(),
     )
+    result.stamp_provider(_model_for_this_test)
 
     try:
         start = time.time()

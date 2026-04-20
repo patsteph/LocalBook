@@ -293,7 +293,16 @@ async def lifespan(app: FastAPI):
     
     # Layer 2: Start heartbeat logger (30s interval)
     start_heartbeat()
-    
+
+    # v1.8.0: Auto-start llama-server sidecar when the active combo uses one
+    # (or when user_preferences.json → sidecar.auto_start is truthy). Runs
+    # in a background task so a slow Metal init never blocks FastAPI boot.
+    try:
+        from services.sidecar_manager import maybe_auto_start_on_boot
+        safe_create_task(maybe_auto_start_on_boot(), name="sidecar-autostart")
+    except Exception as _e:
+        logger.debug(f"[main] sidecar auto-start skipped: {_e}")
+
     yield
     
     # Wait for startup task to complete if still running
@@ -307,6 +316,13 @@ async def lifespan(app: FastAPI):
     # ── Graceful shutdown: flush stores, cancel tasks, close connections ──
     print("👋 LocalBook API shutting down — flushing stores...")
     
+    # v1.8.0: Stop sidecar cleanly so we don't leak llama-server across restarts
+    try:
+        from services.sidecar_manager import sidecar_manager
+        await sidecar_manager.stop(grace_seconds=5.0)
+    except Exception as _e:
+        logger.debug(f"[main] sidecar stop error: {_e}")
+
     # Stop warmup task on shutdown
     await stop_warmup_task()
     

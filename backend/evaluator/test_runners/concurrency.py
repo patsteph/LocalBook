@@ -22,10 +22,10 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         category="concurrency",
         test_name=f"Concurrent Load ({num_queries} simultaneous requests)",
         model_combo=combo_name,
-        model_used=main_model,
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat() + "Z",
     )
+    result.stamp_provider(main_model)
     
     # Pre-warm model to ensure cold-start doesn't skew concurrency math
     try:

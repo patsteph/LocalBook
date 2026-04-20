@@ -20,6 +20,8 @@ interface OllamaModel {
   parameter_count: string;
   active_as: string | null;
   in_registry: boolean;
+  // v1.7.0: backend that serves this model — "ollama" (default) or "llama_server" (sidecar)
+  provider?: string;
 }
 
 interface ActiveModels {
@@ -126,6 +128,10 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     const key = `${m.name}:${role}`;
     const isSwitching = switching === key;
     const isActive = active[role] === m.name;
+    const isSidecar = m.provider === 'llama_server';
+    // Phase 2 (v1.8.0): sidecar models are fully selectable. The backend
+    // auto-starts llama-server when the swap endpoint receives a
+    // llama_server-provider target.
 
     return (
       <div
@@ -142,6 +148,14 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
               {m.display_name}
             </span>
             {isActive && <ActiveBadge />}
+            {isSidecar && (
+              <span
+                title="Served by a llama-server sidecar (experimental — Phase 1 evaluator-only)"
+                className="px-1.5 py-0.5 text-xs rounded bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300"
+              >
+                ⚗ Sidecar
+              </span>
+            )}
             {m.supports_vision && (
               <span className="px-1.5 py-0.5 text-xs rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
                 👁 Vision
@@ -163,6 +177,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
         <button
           onClick={() => !isActive && handleSwitch(m.name, role)}
           disabled={isActive || isSwitching}
+          title={isSidecar ? 'Switching to this model will auto-start the llama-server sidecar (may take 10–20 s on first use).' : undefined}
           className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
             isActive
               ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 cursor-default'

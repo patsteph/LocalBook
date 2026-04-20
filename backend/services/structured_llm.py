@@ -102,45 +102,92 @@ class StructuredLLMService:
     """Service for generating structured outputs from LLM using Pydantic models."""
     
     def __init__(self):
-        self.base_url = settings.ollama_base_url
-        self.model = settings.ollama_model
+        # NB: base_url / model are resolved per call (post v1.8.0) so Locker
+        # swaps and sidecar routing take effect without needing a restart.
         self.max_retries = 3
-    
+
     async def _call_ollama_json(self, system_prompt: str, user_prompt: str, temperature: float = 0.7, timeout_seconds: float = 60.0, num_predict: int = 3000) -> Dict[str, Any]:
-        """Call Ollama with JSON mode enabled."""
+        """Call the active LLM with JSON mode enabled.
+
+        Provider-aware (v1.8.0):
+          - Ollama models use native `format: "json"` on /api/generate.
+          - llama-server sidecar models use OpenAI `response_format={"type":"json_object"}`
+            on /v1/chat/completions.
+        """
+        from services.llm_provider import (
+            resolve as _resolve_provider,
+            Provider as _Provider,
+            ollama_to_openai_payload,
+            openai_non_stream_to_ollama_response,
+        )
+
+        # Re-read settings per call so Locker swaps are respected
+        active_model = settings.ollama_model
+        route = _resolve_provider(active_model)
         timeout = httpx.Timeout(timeout_seconds)
-        
+
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/api/generate",
-                json={
-                    "model": self.model,
+            if route.provider is _Provider.OLLAMA:
+                response = await client.post(
+                    f"{route.base_url}/api/generate",
+                    json={
+                        "model": active_model,
+                        "prompt": f"{system_prompt}\n\nUser request:\n{user_prompt}",
+                        "stream": False,
+                        "format": "json",
+                        "keep_alive": "5m",
+                        "options": {
+                            "temperature": temperature,
+                            "num_predict": num_predict,
+                            "repeat_penalty": 1.2,
+                            "repeat_last_n": 128,
+                        },
+                    },
+                )
+                if response.status_code != 200:
+                    logger.error(f"[StructuredLLM] Ollama HTTP {response.status_code}: {response.text[:200]}")
+                    return {}
+                raw_response = response.json().get("response", "")
+            else:
+                # Sidecar path — translate to OpenAI chat-completions with json_object response
+                ollama_shape = {
+                    "model": active_model,
                     "prompt": f"{system_prompt}\n\nUser request:\n{user_prompt}",
                     "stream": False,
-                    "format": "json",
-                    "keep_alive": "5m",
                     "options": {
                         "temperature": temperature,
                         "num_predict": num_predict,
-                        "repeat_penalty": 1.2,
-                        "repeat_last_n": 128,
-                    }
+                    },
                 }
-            )
-            if response.status_code != 200:
-                logger.error(f"[StructuredLLM] Ollama returned HTTP {response.status_code}: {response.text[:200]}")
-                return {}
-            result = response.json()
-            raw_response = result.get("response", "")
+                openai_payload = ollama_to_openai_payload(ollama_shape, is_chat=False)
+                openai_payload["response_format"] = {"type": "json_object"}
+                response = await client.post(
+                    f"{route.base_url}/v1/chat/completions",
+                    json=openai_payload,
+                )
+                if response.status_code != 200:
+                    logger.error(f"[StructuredLLM] Sidecar HTTP {response.status_code}: {response.text[:200]}")
+                    return {}
+                normalized = openai_non_stream_to_ollama_response(response.json(), is_chat=False)
+                raw_response = normalized.get("response", "")
+
             if not raw_response.strip():
-                logger.warning(f"[StructuredLLM] Ollama returned empty response")
+                logger.warning(f"[StructuredLLM] Empty response (model={active_model}, provider={route.provider.value})")
                 return {}
             try:
                 parsed = json.loads(raw_response)
-                logger.debug(f"[StructuredLLM] Parsed JSON keys: {list(parsed.keys()) if isinstance(parsed, dict) else type(parsed)}")
                 return parsed
             except json.JSONDecodeError as e:
-                logger.warning(f"[StructuredLLM] JSON parse failed: {e}. Raw: {raw_response[:200]}")
+                # Sidecar may still wrap JSON in prose even with response_format.
+                # Try to recover with a permissive repair.
+                try:
+                    from utils.json_repair import robust_json_parse
+                    parsed = robust_json_parse(raw_response, label="StructuredLLM", fallback=None)
+                    if parsed and isinstance(parsed, (dict, list)):
+                        return parsed
+                except Exception:
+                    pass
+                logger.warning(f"[StructuredLLM] JSON parse failed (model={active_model}): {e}. Raw: {raw_response[:200]}")
                 return {}
     
     async def generate_quiz(

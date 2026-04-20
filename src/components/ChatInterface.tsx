@@ -300,7 +300,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
           llm_provider: llmProvider,
           deep_think: deepThink,
           target: target || undefined,
-          ...(target === 'studio' ? { chat_context: messages.slice(-8).map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 400)}`).join('\n\n').slice(0, 3000) } : {}),
+          ...((target === 'studio' || target === 'collector') ? { chat_context: messages.slice(-8).map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 400)}`).join('\n\n').slice(0, 3000) } : {}),
         },
         {
           onMode: (isDeepThink, _autoUpgraded) => {

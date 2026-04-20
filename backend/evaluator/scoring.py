@@ -171,7 +171,9 @@ async def llm_judge_score(
     Uses the Ollama API directly — the judge model should be different from
     the model that generated the answer to avoid self-evaluation bias.
     """
-    import httpx
+    # v1.8.0: route via ollama_client (provider-aware). Works for both Ollama
+    # and llama-server sidecar judge models, and respects ollama_base_url.
+    from services.ollama_client import ollama_client
 
     prompt = f"""You are an expert evaluator. Score the following AI answer on a scale of 0-100.
 
@@ -184,21 +186,20 @@ Answer: {answer[:3000]}
 Respond with ONLY a JSON object: {{"score": <0-100>, "reason": "<one sentence>"}}"""
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "http://localhost:11434/api/generate",
-                json={
-                    "model": judge_model,
-                    "prompt": prompt,
-                    "system": "You are a strict but fair answer quality evaluator. Always respond with valid JSON only.",
-                    "stream": False,
-                    "options": {"temperature": 0.1, "num_predict": 100},
-                }
-            )
+        result = await ollama_client.generate(
+            prompt=prompt,
+            model=judge_model,
+            system="You are a strict but fair answer quality evaluator. Always respond with valid JSON only.",
+            temperature=0.1,
+            num_predict=100,
+            timeout=30.0,
+        )
 
-        if response.status_code == 200:
-            result = response.json()
-            text = result.get("response", "")
+        # ollama_client.generate always returns a dict with "response" (possibly
+        # containing "Error: ..." on transport failure). Treat success as non-empty
+        # non-error text.
+        if result and isinstance(result, dict):
+            text = result.get("response", "") or ""
             # Extract score from JSON
             try:
                 parsed = json.loads(text.strip())
@@ -209,6 +210,7 @@ Respond with ONLY a JSON object: {{"score": <0-100>, "reason": "<one sentence>"}
                 if match:
                     return max(0, min(100, int(match.group(1))))
                 return 50  # Default to middle if can't parse
+        return 50  # result was not a usable dict
     except Exception as e:
         print(f"[SCORING] LLM judge failed: {e}")
         return 50  # Default score on failure

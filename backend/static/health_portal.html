@@ -1086,6 +1086,21 @@
                 </div>
             </div>
 
+            <!-- v1.8.0: Sidecar status card (llama-server for Bonsai-8B etc.) -->
+            <div id="sidecarCard" style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; padding: 12px 20px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span id="sidecarDot" style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #999;"></span>
+                    <div>
+                        <div style="font-size: 13px; font-weight: 600;">llama-server Sidecar</div>
+                        <div id="sidecarSubtitle" style="font-size: 12px; color: var(--text-secondary);">Checking…</div>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <button id="sidecarStartBtn" onclick="startSidecar()" style="padding: 6px 14px; border-radius: 8px; border: 1px solid var(--blue); background: transparent; color: var(--blue); font-size: 13px; cursor: pointer;">Start</button>
+                    <button id="sidecarStopBtn" onclick="stopSidecar()" style="padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); font-size: 13px; cursor: pointer;">Stop</button>
+                </div>
+            </div>
+
             <div class="locker-grid" id="lockerGrid">
                 <div class="locker-column">
                     <div class="column-title"><span>🚀</span> Main Reasoning Models</div>
@@ -1135,7 +1150,79 @@
             } else if (tabName === 'locker') {
                 loadLockerRegistry();
                 loadDefaultCombo();
+                loadSidecarStatus();
             }
+        }
+
+        // ── v1.8.0: Sidecar status + controls ─────────────────────────
+        async function loadSidecarStatus() {
+            const dot = document.getElementById('sidecarDot');
+            const subtitle = document.getElementById('sidecarSubtitle');
+            const startBtn = document.getElementById('sidecarStartBtn');
+            const stopBtn = document.getElementById('sidecarStopBtn');
+            if (!dot || !subtitle) return;
+            try {
+                const res = await fetch(`${API_BASE}/evaluator/sidecar/status`);
+                const s = await res.json();
+                const modelName = (s.model_path || '').split('/').pop() || 'no model configured';
+                if (s.running && s.healthy) {
+                    dot.style.background = 'var(--green, #22c55e)';
+                    const uptime = s.uptime_seconds ? `${Math.round(s.uptime_seconds)}s` : '';
+                    const ownerTag = s.owned ? `pid ${s.pid}` : 'external process';
+                    subtitle.textContent = `Running · ${modelName} · ${ownerTag}${uptime ? ' · uptime ' + uptime : ''}`;
+                    startBtn.disabled = true; startBtn.style.opacity = '0.5';
+                    // Stop button only works for sidecars we own; foreign ones
+                    // were launched outside the backend (e.g. via the dev script).
+                    stopBtn.disabled = !s.owned;
+                    stopBtn.style.opacity = s.owned ? '1' : '0.5';
+                    stopBtn.title = s.owned ? '' : 'Cannot stop an externally-launched sidecar from the UI';
+                } else if (s.running && !s.healthy) {
+                    dot.style.background = 'var(--yellow, #eab308)';
+                    subtitle.textContent = `Starting… · pid ${s.pid}`;
+                    startBtn.disabled = true; startBtn.style.opacity = '0.5';
+                    stopBtn.disabled = false; stopBtn.style.opacity = '1';
+                } else {
+                    dot.style.background = '#999';
+                    const hint = s.model_exists
+                        ? `Stopped · ${modelName} available`
+                        : `Stopped · model file missing at ${s.model_path || '?'}`;
+                    subtitle.textContent = s.last_error ? `Stopped · ${s.last_error}` : hint;
+                    startBtn.disabled = false; startBtn.style.opacity = '1';
+                    stopBtn.disabled = true; stopBtn.style.opacity = '0.5';
+                }
+            } catch (e) {
+                dot.style.background = '#999';
+                subtitle.textContent = 'Backend unreachable';
+                startBtn.disabled = true; stopBtn.disabled = true;
+            }
+        }
+
+        async function startSidecar() {
+            const subtitle = document.getElementById('sidecarSubtitle');
+            subtitle.textContent = 'Starting… (Metal init + model load, ~10–20s)';
+            try {
+                const res = await fetch(`${API_BASE}/evaluator/sidecar/start`, { method: 'POST' });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    alert(`Failed to start sidecar: ${data.detail || res.statusText}`);
+                }
+            } catch (e) {
+                alert(`Network error starting sidecar: ${e.message}`);
+            }
+            await loadSidecarStatus();
+            // Locker model list depends on sidecar health → refresh
+            await loadLockerRegistry();
+        }
+
+        async function stopSidecar() {
+            if (!confirm('Stop the llama-server sidecar? Any running evaluations using a sidecar model will fail.')) return;
+            try {
+                await fetch(`${API_BASE}/evaluator/sidecar/stop`, { method: 'POST' });
+            } catch (e) {
+                alert(`Network error stopping sidecar: ${e.message}`);
+            }
+            await loadSidecarStatus();
+            await loadLockerRegistry();
         }
 
         // Labs toggle - show/hide LLM Evaluator and LLM Locker tabs
@@ -1808,8 +1895,30 @@
                         </div>
                     </div>
                     <div style="padding: 20px;">
-                        <h4 style="margin-bottom: 15px;">Category Breakdown</h4>
-                        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                `;
+
+                // v1.8.3: Production readiness banner
+                html += renderReadinessBanner(run);
+
+                // v1.8.2: Providers used (which backend served which role)
+                html += renderProvidersUsed(run);
+
+                // v1.8.3: Feature parity list (pass/degraded/fail/not_applicable per feature)
+                html += renderFeatureParity(run);
+
+                // v1.8.3: Preflight report (collapsible, closed by default)
+                html += renderPreflight(run);
+
+                // Category Breakdown is now a collapsible drill-down: Feature
+                // Parity above already shows the user-facing verdicts, so we
+                // don't want the raw 10-category table duplicating that space
+                // on first view.
+                html += `
+                        <details style="margin-bottom: 16px;">
+                            <summary style="cursor: pointer; font-weight: 600; padding: 8px 0; font-size: 14px;">
+                                Category breakdown (${Object.keys(run.categories || {}).length} internal tests) <span style="color: var(--text-secondary); font-weight: 400; font-size: 12px;">— click to expand</span>
+                            </summary>
+                        <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px;">
                             <thead>
                                 <tr style="text-align: left; border-bottom: 2px solid var(--border-color);">
                                     <th style="padding: 10px;">Category</th>
@@ -1820,25 +1929,55 @@
                             </thead>
                             <tbody>
                 `;
-                
+
                 for (const [catId, cat] of Object.entries(run.categories)) {
+                    const statusCell = formatCategoryStatus(cat);
+                    const rowBg = cat.skipped
+                        ? 'background: rgba(148, 163, 184, 0.08);'
+                        : '';
                     html += `
-                        <tr style="border-bottom: 1px solid var(--border-color);">
+                        <tr style="border-bottom: 1px solid var(--border-color); ${rowBg}">
                             <td style="padding: 10px; font-weight: 500;">${cat.display_name}</td>
-                            <td style="padding: 10px;"><span class="eval-score-badge ${getGradeClass(cat.score)}">${cat.score}</span></td>
+                            <td style="padding: 10px;">${cat.skipped ? '<span style="color: var(--text-secondary);">—</span>' : `<span class="eval-score-badge ${getGradeClass(cat.score)}">${cat.score}</span>`}</td>
                             <td style="padding: 10px;">${(cat.total_time_ms / 1000).toFixed(1)}s</td>
-                            <td style="padding: 10px;">${cat.passed ? '✅ Pass' : '❌ Fail'}</td>
+                            <td style="padding: 10px;">${statusCell}</td>
                         </tr>
                     `;
+
+                    // v1.8.3: Surface degraded/skip notes at the category level
+                    if (cat.skipped && cat.skip_reason) {
+                        html += `
+                            <tr style="background: rgba(148, 163, 184, 0.04);">
+                                <td colspan="4" style="padding: 6px 10px 10px 30px; font-size: 12px; color: var(--text-secondary);">
+                                    ⊘ ${escapeHtml(cat.skip_reason)}
+                                </td>
+                            </tr>
+                        `;
+                    }
                     
-                    // Render sub-scores if available (e.g. RAG Chat)
+                    // Render sub-scores / degraded / provider info per test
                     if (cat.tests && cat.tests.length > 0) {
                         for (const test of cat.tests) {
-                            if (test.sub_scores && Object.keys(test.sub_scores).length > 0) {
+                            const hasSubScores = test.sub_scores && Object.keys(test.sub_scores).length > 0;
+                            const isDegraded = hasSubScores && test.sub_scores.degraded === true;
+                            const degradedNotes = (hasSubScores && Array.isArray(test.sub_scores.degraded_notes))
+                                ? test.sub_scores.degraded_notes : [];
+                            // Only render the subscore strip for RAG-Chat-shaped tests (with retrieval/facts/…)
+                            const hasRagShape = hasSubScores && (
+                                'retrieval' in test.sub_scores || 'facts' in test.sub_scores
+                            );
+                            const providerBadge = test.provider
+                                ? `<span style="display: inline-block; padding: 1px 6px; border-radius: 4px; background: ${test.provider === 'llama_server' ? 'rgba(168,85,247,0.15)' : 'rgba(59,130,246,0.12)'}; color: ${test.provider === 'llama_server' ? '#a855f7' : '#3b82f6'}; font-size: 10px; font-weight: 600;">${test.provider}</span>`
+                                : '';
+                            if (hasRagShape) {
                                 html += `
                                     <tr style="border-bottom: 1px dashed var(--border-color); background: rgba(0,0,0,0.02); font-size: 12px;">
                                         <td style="padding: 6px 10px 6px 30px; color: var(--text-secondary);">
-                                            <div style="font-weight: 500; color: var(--text-color); margin-bottom: 2px;">${test.test_name}</div>
+                                            <div style="font-weight: 500; color: var(--text-color); margin-bottom: 2px; display: flex; gap: 8px; align-items: center;">
+                                                <span>${escapeHtml(test.test_name)}</span>
+                                                ${providerBadge}
+                                                ${isDegraded ? '<span style="padding: 1px 6px; border-radius: 4px; background: rgba(234,179,8,0.18); color: #ca8a04; font-size: 10px; font-weight: 600;">DEGRADED</span>' : ''}
+                                            </div>
                                             <div style="display: flex; gap: 12px; flex-wrap: wrap;">
                                                 <span>Retrieval: <b class="${test.sub_scores.retrieval < 70 ? 'grade-f' : ''}">${test.sub_scores.retrieval || 0}</b></span>
                                                 <span>Facts: <b class="${test.sub_scores.facts < 70 ? 'grade-f' : ''}">${test.sub_scores.facts || 0}</b></span>
@@ -1846,8 +1985,21 @@
                                                 <span>Judge: <b class="${test.sub_scores.judge < 70 ? 'grade-f' : ''}">${test.sub_scores.judge || 0}</b></span>
                                                 <span>Speed: <b class="${test.sub_scores.speed < 70 ? 'grade-f' : ''}">${test.sub_scores.speed || 0}</b></span>
                                             </div>
+                                            ${degradedNotes.length ? `<div style="margin-top: 4px; color: #ca8a04;">⚠️ ${escapeHtml(degradedNotes[0])}</div>` : ''}
                                         </td>
                                         <td colspan="3"></td>
+                                    </tr>
+                                `;
+                            } else if (isDegraded || providerBadge) {
+                                // Still surface degraded / provider info for non-RAG-shaped tests
+                                html += `
+                                    <tr style="border-bottom: 1px dashed var(--border-color); background: rgba(0,0,0,0.02); font-size: 12px;">
+                                        <td colspan="4" style="padding: 6px 10px 6px 30px; color: var(--text-secondary);">
+                                            <span style="font-weight: 500; color: var(--text-color);">${escapeHtml(test.test_name)}</span>
+                                            ${providerBadge ? ' ' + providerBadge : ''}
+                                            ${isDegraded ? ' <span style="padding: 1px 6px; border-radius: 4px; background: rgba(234,179,8,0.18); color: #ca8a04; font-size: 10px; font-weight: 600;">DEGRADED</span>' : ''}
+                                            ${degradedNotes.length ? `<div style="margin-top: 2px; color: #ca8a04;">⚠️ ${escapeHtml(degradedNotes[0])}</div>` : ''}
+                                        </td>
                                     </tr>
                                 `;
                             }
@@ -1858,16 +2010,19 @@
                 html += `
                             </tbody>
                         </table>
+                        </details>
                 `;
 
                 if (run.warnings && run.warnings.length > 0) {
                     html += `
-                        <div style="margin-top: 20px; padding: 15px; background: rgba(234, 179, 8, 0.1); border-radius: 8px; border-left: 4px solid var(--yellow);">
-                            <div style="font-weight: 600; color: var(--yellow); margin-bottom: 8px;">Warnings</div>
-                            <ul style="margin: 0; padding-left: 20px; font-size: 13px;">
+                        <details style="margin-top: 12px; padding: 12px 15px; background: rgba(234, 179, 8, 0.08); border-radius: 8px; border-left: 4px solid var(--yellow);">
+                            <summary style="cursor: pointer; font-weight: 600; color: var(--yellow);">
+                                Warnings (${run.warnings.length})
+                            </summary>
+                            <ul style="margin: 8px 0 0 0; padding-left: 20px; font-size: 13px;">
                                 ${run.warnings.map(w => `<li>${w}</li>`).join('')}
                             </ul>
-                        </div>
+                        </details>
                     `;
                 }
 
@@ -1877,6 +2032,166 @@
             } catch (err) {
                 content.innerHTML = `<div style="padding: 40px; color: var(--red);">Failed to load results: ${err.message}</div>`;
             }
+        }
+
+        // ─── v1.8.2 / v1.8.3 Evaluator result helpers ───────────────────
+
+        function escapeHtml(s) {
+            if (s == null) return '';
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        function renderReadinessBanner(run) {
+            const pr = run.production_readiness;
+            if (!pr || !pr.headline) return '';
+            const counts = pr.counts || {};
+            const styles = {
+                ready:  { bg: 'rgba(34,197,94,0.10)',  border: '#22c55e', icon: '✅', label: 'Production Ready' },
+                viable: { bg: 'rgba(234,179,8,0.10)',  border: '#eab308', icon: '⚠️', label: 'Viable with Caveats' },
+                risky:  { bg: 'rgba(239,68,68,0.10)',  border: '#ef4444', icon: '🚫', label: 'Not Production Ready' },
+            };
+            const s = styles[pr.headline] || styles.viable;
+            return `
+                <div style="margin-bottom: 16px; padding: 14px 18px; background: ${s.bg}; border-left: 4px solid ${s.border}; border-radius: 8px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span style="font-size: 20px;">${s.icon}</span>
+                            <span style="font-weight: 600; font-size: 15px;">${s.label}</span>
+                        </div>
+                        <div style="display: flex; gap: 12px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums;">
+                            <span>✅ ${counts.pass || 0} pass</span>
+                            <span>⚠️ ${counts.degraded || 0} degraded</span>
+                            <span>🚫 ${counts.fail || 0} fail</span>
+                            <span>⊘ ${counts.not_applicable || 0} n/a</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderProvidersUsed(run) {
+            const pu = run.providers_used;
+            if (!pu || Object.keys(pu).length === 0) return '';
+            const order = ['main', 'fast', 'embedding', 'vision'];
+            const pretty = { main: 'Main', fast: 'Fast', embedding: 'Embeddings', vision: 'Vision' };
+            const cells = order
+                .filter(role => pu[role])
+                .map(role => {
+                    const info = pu[role];
+                    const tag = info.provider === 'llama_server'
+                        ? `<span style="padding: 1px 6px; border-radius: 4px; background: rgba(168,85,247,0.15); color: #a855f7; font-size: 10px; font-weight: 600;">⚗ sidecar</span>`
+                        : `<span style="padding: 1px 6px; border-radius: 4px; background: rgba(59,130,246,0.12); color: #3b82f6; font-size: 10px; font-weight: 600;">ollama</span>`;
+                    return `
+                        <div style="padding: 10px 12px; background: var(--bg-secondary); border-radius: 8px; border: 1px solid var(--border-color);">
+                            <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary);">${pretty[role]}</div>
+                            <div style="font-weight: 500; margin: 2px 0;">${escapeHtml(info.model || '—')}</div>
+                            <div style="display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary);">
+                                ${tag}
+                                <span>${escapeHtml(info.backend_url || '')}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            if (!cells) return '';
+            return `
+                <div style="margin-bottom: 16px;">
+                    <h4 style="margin: 0 0 8px 0; font-size: 14px;">Backends in Use</h4>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px;">
+                        ${cells}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderFeatureParity(run) {
+            const fp = run.feature_parity;
+            if (!fp || fp.length === 0) return '';
+            const verdictStyle = {
+                pass:           { bg: 'rgba(34,197,94,0.06)',  color: '#16a34a', label: 'PASS' },
+                degraded:       { bg: 'rgba(234,179,8,0.06)',  color: '#ca8a04', label: 'DEGRADED' },
+                fail:           { bg: 'rgba(239,68,68,0.06)',  color: '#dc2626', label: 'FAIL' },
+                not_applicable: { bg: 'rgba(148,163,184,0.06)',color: '#64748b', label: 'N/A' },
+            };
+            const rows = fp.map(entry => {
+                const s = verdictStyle[entry.verdict] || verdictStyle.not_applicable;
+                const scoreCell = entry.verdict === 'not_applicable'
+                    ? '<span style="color: var(--text-secondary);">—</span>'
+                    : `<span class="eval-score-badge ${getGradeClass(entry.score)}">${entry.score}</span>`;
+                return `
+                    <div style="display: grid; grid-template-columns: 32px 1fr auto auto; align-items: center; gap: 10px; padding: 8px 12px; background: ${s.bg}; border-radius: 6px;">
+                        <div style="font-size: 18px; text-align: center;">${entry.icon || ''}</div>
+                        <div>
+                            <div style="font-weight: 500;">${escapeHtml(entry.feature)}</div>
+                            ${entry.note ? `<div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">${escapeHtml(entry.note)}</div>` : ''}
+                        </div>
+                        <div>${scoreCell}</div>
+                        <div style="padding: 2px 8px; border-radius: 4px; background: ${s.color}; color: white; font-size: 10px; font-weight: 700; letter-spacing: 0.5px;">${s.label}</div>
+                    </div>
+                `;
+            }).join('');
+            return `
+                <div style="margin-bottom: 16px;">
+                    <h4 style="margin: 0 0 8px 0; font-size: 14px;">Feature Parity — will this combo work in the app?</h4>
+                    <div style="display: flex; flex-direction: column; gap: 4px;">${rows}</div>
+                </div>
+            `;
+        }
+
+        function renderPreflight(run) {
+            const pf = run.preflight;
+            if (!pf || !Array.isArray(pf.checks) || pf.checks.length === 0) return '';
+            const rows = pf.checks.map(c => {
+                const statusColors = { pass: '#22c55e', warn: '#eab308', fail: '#ef4444' };
+                const dot = `<span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${statusColors[c.status] || '#64748b'};"></span>`;
+                return `
+                    <tr>
+                        <td style="padding: 6px 10px; white-space: nowrap;">${dot} <b>${escapeHtml(c.name)}</b></td>
+                        <td style="padding: 6px 10px; font-size: 12px; color: var(--text-secondary);">${escapeHtml(c.message || '')}</td>
+                    </tr>
+                `;
+            }).join('');
+            return `
+                <details style="margin-bottom: 16px;">
+                    <summary style="cursor: pointer; font-weight: 600; padding: 8px 0; font-size: 14px;">
+                        Pre-flight report (${pf.checks.length} checks)
+                    </summary>
+                    <table style="width: 100%; border-collapse: collapse; margin-top: 8px; background: var(--bg-secondary); border-radius: 6px; overflow: hidden;">
+                        <tbody>${rows}</tbody>
+                    </table>
+                </details>
+            `;
+        }
+
+        function renderSkippedCategories(run) {
+            const skipped = run.skipped_categories;
+            if (!skipped || skipped.length === 0) return '';
+            const items = skipped.map(s =>
+                `<li><b>${escapeHtml(s.display_name || s.category)}</b>: ${escapeHtml(s.reason || 'not configured')}</li>`
+            ).join('');
+            return `
+                <div style="margin-bottom: 16px; padding: 10px 14px; background: rgba(148,163,184,0.08); border-radius: 8px; border-left: 3px solid #94a3b8;">
+                    <div style="font-weight: 600; font-size: 13px; margin-bottom: 4px;">⊘ Skipped categories (excluded from overall)</div>
+                    <ul style="margin: 0; padding-left: 20px; font-size: 12px; color: var(--text-secondary);">${items}</ul>
+                </div>
+            `;
+        }
+
+        function formatCategoryStatus(cat) {
+            if (cat.skipped) {
+                return '<span style="color: #64748b; font-weight: 500;">⊘ Skipped</span>';
+            }
+            // Was any test in this category degraded?
+            const degraded = (cat.tests || []).some(t =>
+                t.sub_scores && t.sub_scores.degraded === true
+            );
+            if (degraded) {
+                return '<span style="color: #ca8a04; font-weight: 500;">⚠️ Degraded</span>';
+            }
+            return cat.passed ? '✅ Pass' : '❌ Fail';
         }
 
         function getGradeClass(score) {

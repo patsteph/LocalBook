@@ -177,18 +177,35 @@ class OllamaService:
         read_timeout = timeout or 600.0
         _caller = _get_caller()
         _t0 = time.time()
+        # v1.7.0: resolve provider. Ollama path is byte-identical to pre-provider code.
+        from services.llm_provider import (
+            resolve as _resolve_provider,
+            ollama_to_openai_payload,
+            openai_non_stream_to_ollama_response,
+        )
+        route = _resolve_provider(use_model)
         try:
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json=payload,
-                timeout=httpx.Timeout(10.0, read=read_timeout),
-            )
-            response.raise_for_status()
-            result = response.json()
+            if route.api_style == "ollama":
+                response = await client.post(
+                    f"{route.base_url}/api/generate",
+                    json=payload,
+                    timeout=httpx.Timeout(10.0, read=read_timeout),
+                )
+                response.raise_for_status()
+                result = response.json()
+            else:
+                openai_payload = ollama_to_openai_payload(payload, is_chat=False)
+                response = await client.post(
+                    f"{route.base_url}/v1/chat/completions",
+                    json=openai_payload,
+                    timeout=httpx.Timeout(10.0, read=read_timeout),
+                )
+                response.raise_for_status()
+                result = openai_non_stream_to_ollama_response(response.json(), is_chat=False)
             _record_tokens(result)
             _mark_model_used(use_model)
             _elapsed = time.time() - _t0
-            logger.info(f"[OllamaService] generate OK model={use_model} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')}")
+            logger.info(f"[OllamaService] generate OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')}")
             return result
         except httpx.TimeoutException:
             _elapsed = time.time() - _t0
@@ -255,18 +272,35 @@ class OllamaService:
         read_timeout = timeout or 600.0
         _caller = _get_caller()
         _t0 = time.time()
+        # v1.7.0: resolve provider. Ollama path is byte-identical to pre-provider code.
+        from services.llm_provider import (
+            resolve as _resolve_provider,
+            ollama_to_openai_payload,
+            openai_non_stream_to_ollama_response,
+        )
+        route = _resolve_provider(use_model)
         try:
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/chat",
-                json=payload,
-                timeout=httpx.Timeout(10.0, read=read_timeout),
-            )
-            response.raise_for_status()
-            result = response.json()
+            if route.api_style == "ollama":
+                response = await client.post(
+                    f"{route.base_url}/api/chat",
+                    json=payload,
+                    timeout=httpx.Timeout(10.0, read=read_timeout),
+                )
+                response.raise_for_status()
+                result = response.json()
+            else:
+                openai_payload = ollama_to_openai_payload(payload, is_chat=True)
+                response = await client.post(
+                    f"{route.base_url}/v1/chat/completions",
+                    json=openai_payload,
+                    timeout=httpx.Timeout(10.0, read=read_timeout),
+                )
+                response.raise_for_status()
+                result = openai_non_stream_to_ollama_response(response.json(), is_chat=True)
             _record_tokens(result)
             _mark_model_used(use_model)
             _elapsed = time.time() - _t0
-            logger.info(f"[OllamaService] chat OK model={use_model} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')}")
+            logger.info(f"[OllamaService] chat OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')}")
             return result
         except httpx.TimeoutException:
             _elapsed = time.time() - _t0
@@ -384,21 +418,55 @@ class OllamaService:
         read_timeout = timeout or 600.0
         _caller = _get_caller()
         _t0 = time.time()
+        # v1.7.0: provider routing for streaming
+        from services.llm_provider import (
+            resolve as _resolve_provider,
+            ollama_to_openai_payload,
+            openai_stream_chunk_to_ollama,
+        )
+        route = _resolve_provider(use_model)
         try:
-            async with client.stream(
-                "POST",
-                f"{settings.ollama_base_url}/api/generate",
-                json=payload,
-                timeout=httpx.Timeout(10.0, read=read_timeout),
-            ) as response:
-                async for line in response.aiter_lines():
-                    if line:
-                        data = json.loads(line)
-                        yield data
-                        if data.get("done"):
-                            _record_tokens(data)
+            if route.api_style == "ollama":
+                async with client.stream(
+                    "POST",
+                    f"{route.base_url}/api/generate",
+                    json=payload,
+                    timeout=httpx.Timeout(10.0, read=read_timeout),
+                ) as response:
+                    async for line in response.aiter_lines():
+                        if line:
+                            data = json.loads(line)
+                            yield data
+                            if data.get("done"):
+                                _record_tokens(data)
+                                _elapsed = time.time() - _t0
+                                logger.info(f"[OllamaService] stream OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={data.get('eval_count', '?')}")
+            else:
+                openai_payload = ollama_to_openai_payload(payload, is_chat=False)
+                async with client.stream(
+                    "POST",
+                    f"{route.base_url}/v1/chat/completions",
+                    json=openai_payload,
+                    timeout=httpx.Timeout(10.0, read=read_timeout),
+                ) as response:
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        payload_text = line[5:].strip()
+                        if not payload_text or payload_text == "[DONE]":
+                            continue
+                        try:
+                            chunk = json.loads(payload_text)
+                        except Exception:
+                            continue
+                        translated = openai_stream_chunk_to_ollama(chunk, is_chat=False)
+                        if translated is None:
+                            continue
+                        yield translated
+                        if translated.get("done"):
+                            _record_tokens(translated)
                             _elapsed = time.time() - _t0
-                            logger.info(f"[OllamaService] stream OK model={use_model} caller={_caller} {_elapsed:.1f}s tokens={data.get('eval_count', '?')}")
+                            logger.info(f"[OllamaService] stream OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={translated.get('eval_count', '?')}")
         except httpx.TimeoutException:
             _elapsed = time.time() - _t0
             logger.error(f"[OllamaService] stream TIMEOUT model={use_model} caller={_caller} {_elapsed:.1f}s")

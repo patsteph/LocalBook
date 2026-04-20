@@ -2,6 +2,79 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## v1.8.0 — Sidecar Lifecycle + One-Click Bonsai Swap (Phase 2)
+
+### Sidecar process management
+- **`services/sidecar_manager.py`** — New `SidecarManager` singleton that spawns `llama-server` as a child process, polls `/health` until ready (45 s default timeout), and terminates cleanly on shutdown (SIGTERM → SIGKILL fallback). Layered config: env vars → `user_preferences.json → sidecar` → built-in defaults (binary at `~/src/llama.cpp/build/bin/llama-server` or PATH, model at `~/.localbook/models/bonsai/Bonsai-8B-Q1_0.gguf`, port 8090).
+- **Binary + model auto-discovery** — Checks source-built llama.cpp location first (needed for Q1_0 since Homebrew's formula lags), falls back to `/opt/homebrew/bin/llama-server`, then `PATH`.
+- **Foreign-process detection** — If the configured port already answers `/health`, the manager adopts the existing sidecar rather than refusing to start. Status API reports `owned: false` so the UI can disable the Stop button for sidecars launched outside the backend.
+- **FastAPI lifespan integration** — Auto-starts the sidecar in a background task when the active `main_model` or `fast_model` is a `llama_server`-provider model (or `sidecar.auto_start=true` in prefs); stops it during graceful shutdown. Never blocks backend boot — spawn failures are logged, not fatal.
+
+### One-click swap from Locker / LLMSelector
+- **`LLMLocker.analyze_swap()`** — Dropped the Phase 1 `LOCALBOOK_ALLOW_SIDECAR_SWAP` env gate. Sidecar models are now first-class swap targets. Retained a fast `/health` pre-check so a ghost request can't silently swap to a dead backend.
+- **`POST /evaluator/swap`** — When the target is a sidecar model, auto-invokes `sidecar_manager.ensure_started()` with a 45 s timeout, invalidates the provider health cache, and only then executes the swap. User flow becomes: click **Use** → sidecar warms up → model becomes active → evaluator picks it up from `config.settings`.
+- **`LLMSelector`** (frontend) — Removed the Phase 1 "Labs"/disabled state. Sidecar models are selectable; ⚗ Sidecar badge remains so users know what they're picking. Button tooltip explains the 10–20 s warmup on first use.
+
+### Lifecycle control surface
+- **`GET /evaluator/sidecar/status`** — Reports `running`, `owned`, `healthy`, `pid`, `uptime_seconds`, `binary_path`, `model_path`, `model_exists`, `port`, `last_error`.
+- **`POST /evaluator/sidecar/start`** — Ensures the sidecar is up (blocks up to 45 s). Returns 503 with structured error detail if Metal init / model load fails.
+- **`POST /evaluator/sidecar/stop`** — Graceful SIGTERM, 5 s grace, then SIGKILL. Idempotent. Skipped if the process is foreign (not owned by us).
+
+### Health Portal Locker UI
+- **Sidecar status card** — New compact card above the Locker grid. Status dot (green / yellow / grey), model filename, uptime, `owned` vs `external process` label. Start/Stop buttons wired to the lifecycle endpoints. Refreshes the locker model list after any state change so Bonsai becomes selectable / de-selectable in sync.
+- **Stop button gating** — Disabled with tooltip for foreign sidecars (launched via `scripts/start_bonsai_sidecar.sh` instead of the backend) so the UI never claims power it doesn't have.
+
+### Tests
+- `python3 -m services.llm_provider` now also validates `SidecarManager.resolve_config()` and `.status()` without spawning a subprocess, keeping the smoke suite hermetic.
+
+### What Phase 2 delivers end-to-end
+The user story `Bonsai benchmark in five clicks` now works:
+
+1. Open Health Portal → **Locker** tab → Bonsai appears in **Main Reasoning Models** (if sidecar healthy) or greyed (if stopped).
+2. Click **Start** on the Sidecar status card → llama-server spins up in ~10–20 s.
+3. Click **Set as Main** on Bonsai → backend confirms sidecar health, swaps `settings.ollama_model`.
+4. Switch to **Evaluator** tab → click **Run** → benchmark runs against Bonsai via the translator built in Phase 1.
+5. (Optional) **Save Current as Default** → next boot auto-spawns the sidecar before the first request.
+
+### Deliberately **not** in Phase 2
+- Memory/perf metrics in the sidecar status card (planned for Phase 3 dedicated tab).
+- Model picker in the sidecar card (Phase 1 registers exactly one sidecar model — Bonsai; picker only matters once there are multiple).
+- Evaluator per-run model override (today you must swap first; a future "run with" dropdown would let you benchmark without touching the active config).
+
+---
+
+## v1.7.0 — Multi-Provider LLM Infrastructure (Phase 1)
+
+### Foundation for non-Ollama backends
+- **`services/llm_provider.py`** — New routing layer with a `Provider` enum (`ollama`, `llama_server`), a `ProviderRoute` dataclass, async/sync health checks with a 10-second TTL cache, and an Ollama↔OpenAI payload translator covering generate + chat, streaming + non-streaming, token usage, and stop sequences. Unknown models fall back to the Ollama route byte-for-byte, so existing behavior is preserved.
+- **`ModelInfo.provider`** — New registry field on entries in `known_models.json` (default `"ollama"`). Entries can now be tagged `"provider": "llama_server"` to route them through a locally running sidecar that speaks the OpenAI chat API.
+- **`model_registry.refresh_installed_status()`** — Ollama models still checked via `/api/tags`; sidecar models are now marked installed iff the llama-server `/health` endpoint returns 200.
+
+### Call sites threaded through the resolver
+- **`services/ollama_service.py`** — `generate`, `chat`, and `stream_generate` now resolve the provider first; Ollama-backed models keep the existing `/api/generate` / `/api/chat` paths, sidecar-backed models translate to `/v1/chat/completions` with streaming SSE parsed back into Ollama-shape dicts so existing callers read `response["message"]["content"]` / `response["response"]` unchanged.
+- **`services/rag_llm.stream_ollama()`** — Same routing; token-economy metrics and stop sequences work on either path.
+- **`services/model_warmup.py`** — Skips Ollama keep-alive pings for models served by a sidecar (llama-server is always resident).
+
+### Bonsai-8B registry entry
+- Added `bonsai-8b` to `known_models.json` (8B params, 1-bit Q1_0 GGUF, 1.16 GB disk, 4 GB RAM min, Apache-2.0, US-origin, `"provider": "llama_server"`). Tagged `experimental` and `sidecar` so it's clearly distinguishable in the UI.
+
+### Evaluator + settings APIs
+- **`GET /evaluator/providers`** — New endpoint reporting per-provider health (`ollama`, `llama_server`) with base URL and live status.
+- **`GET /settings/ollama/models`** — Now appends registered sidecar models to the returned list when the sidecar `/health` probe succeeds; each row carries a `provider` field for the UI. Uncached response shape is backward-compatible.
+
+### Safety — Phase 1 keeps sidecar models inert in the user UI
+- **`LLMLocker.analyze_swap()`** — Rejects any swap to a `llama_server`-provider model unless `LOCALBOOK_ALLOW_SIDECAR_SWAP=1` is set in the environment. When allowed, a live sidecar `/health` check is required before the swap proceeds. Phase 2 (Labs toggle) will flip this gate under UI control.
+- **`LLMSelector`** (frontend) — Sidecar models now render with a ⚗ **Sidecar** badge; the Use button shows as disabled "Labs" with a Phase 2 tooltip. Ollama models are unchanged.
+
+### Developer tooling
+- **`backend/scripts/start_bonsai_sidecar.sh`** — Convenience launcher. Prefers a source-built `llama-server` at `~/src/llama.cpp/build/bin/llama-server` (needed for Q1_0 since Homebrew's formula lags), falls back to PATH. Supports `--bg` for background mode with logs under `/tmp/bonsai-server.{log,err}`. Reads `BONSAI_MODEL_PATH`, `BONSAI_PORT`, `BONSAI_CTX_SIZE`, `BONSAI_NGL` for overrides.
+- **Smoke tests** — `python3 -m services.llm_provider` runs in-memory assertions for the resolver fallback, provider enum parsing, and all four translator functions (generate/chat × stream/non-stream). No pytest dependency introduced.
+
+### Architectural intent
+Phase 1 delivers infrastructure only. No user-visible behavior changes on the default Ollama path. Bonsai-8B is wired end-to-end so the Evaluator can benchmark it, but the Locker UI keeps it gated pending Phase 2's Labs toggle + automated sidecar lifecycle.
+
+---
+
 ## v1.6.2
 
 ### Upload Experience

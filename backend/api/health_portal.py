@@ -301,30 +301,63 @@ async def full_health_check():
               results["overall"] = "degraded"
       
       # Model Loading Status (cold start detection)
+      # v1.8.0: provider-aware — sidecar-backed models never appear in Ollama's
+      # /api/ps, so we check llama-server /health for them instead.
       try:
-          async with httpx.AsyncClient(timeout=5.0) as client:
-              resp = await client.get(f"{settings.ollama_base_url}/api/ps")
-              if resp.status_code == 200:
-                  running = resp.json().get("models", [])
-                  loaded_models = [m.get("name", "") for m in running]
-                  main_loaded = any(settings.ollama_model in m for m in loaded_models)
-                  fast_loaded = any(settings.ollama_fast_model in m for m in loaded_models)
-                  
-                  add_check("ai_models", {
-                      "name": "model_loading",
-                      "display": "Models Loaded",
-                      "status": "pass" if main_loaded else "warn",
-                      "details": {"main_model": settings.ollama_model, "main_loaded": main_loaded, "fast_loaded": fast_loaded}
+          from services.llm_provider import resolve as _resolve_provider, Provider as _Provider, health_check as _provider_health
+
+          async def _is_model_loaded(model_name: str) -> bool:
+              if not model_name:
+                  return False
+              route = _resolve_provider(model_name)
+              if route.provider is _Provider.LLAMA_SERVER:
+                  # llama-server loads exactly one model at boot; healthy == loaded.
+                  return await _provider_health(_Provider.LLAMA_SERVER)
+              # Ollama path — look in /api/ps
+              try:
+                  async with httpx.AsyncClient(timeout=5.0) as client:
+                      resp = await client.get(f"{settings.ollama_base_url}/api/ps")
+                      if resp.status_code != 200:
+                          return False
+                      names = [m.get("name", "") for m in resp.json().get("models", [])]
+                      return any(model_name in n for n in names)
+              except Exception:
+                  return False
+
+          main_loaded = await _is_model_loaded(settings.ollama_model)
+          fast_loaded = await _is_model_loaded(settings.ollama_fast_model)
+
+          main_route = _resolve_provider(settings.ollama_model)
+          backend_label = "sidecar" if main_route.provider is _Provider.LLAMA_SERVER else "ollama"
+
+          add_check("ai_models", {
+              "name": "model_loading",
+              "display": "Models Loaded",
+              "status": "pass" if main_loaded else "warn",
+              "details": {
+                  "main_model": settings.ollama_model,
+                  "main_loaded": main_loaded,
+                  "fast_loaded": fast_loaded,
+                  "main_backend": backend_label,
+              },
+          })
+
+          if not main_loaded:
+              if main_route.provider is _Provider.LLAMA_SERVER:
+                  results["issues"].append({
+                      "severity": "medium",
+                      "title": "Sidecar Not Running",
+                      "message": f"{settings.ollama_model} is served by llama-server, which is not responding on {main_route.base_url}. Start the sidecar from the Locker tab.",
+                      "repair": None,
                   })
-                  
-                  if not main_loaded:
-                      results["issues"].append({
-                          "severity": "low",
-                          "title": "Main Model Not Loaded",
-                          "message": f"{settings.ollama_model} not in memory. First query will be slow.",
-                          "repair": "warmup_model",
-                          "repair_params": {"model": settings.ollama_model}
-                      })
+              else:
+                  results["issues"].append({
+                      "severity": "low",
+                      "title": "Main Model Not Loaded",
+                      "message": f"{settings.ollama_model} not in memory. First query will be slow.",
+                      "repair": "warmup_model",
+                      "repair_params": {"model": settings.ollama_model},
+                  })
       except Exception as e:
           add_log("WARN", f"Model loading check failed: {e}", "health_portal")
       

@@ -48,6 +48,7 @@ class ModelRegistry:
                     recommended_ram_gb=entry.get("recommended_ram_gb", 0),
                     policy_tags=entry.get("policy_tags", []),
                     ollama_options=entry.get("ollama_options", {}),
+                    provider=entry.get("provider", "ollama"),
                 )
                 self._models[info.ollama_name] = info
             self._loaded = True
@@ -114,7 +115,15 @@ class ModelRegistry:
         return filtered
 
     def refresh_installed_status(self):
-        """Query Ollama and update the is_installed flag for all registry models."""
+        """Refresh is_installed for every registry entry.
+
+        - Ollama-provider models: presence in GET /api/tags.
+        - llama-server-provider models: sidecar GET /health returns 200.
+          (llama-server loads exactly one model at boot, so if it's healthy we
+          treat the registered model as installed.)
+        """
+        # ── 1. Ollama models ──
+        installed_ollama: set[str] = set()
         try:
             import urllib.request
             import json
@@ -125,27 +134,35 @@ class ModelRegistry:
                 base_url = get_settings().ollama_base_url
             except Exception as _e:
                 logger.debug(f"[model-registry] {type(_e).__name__}: {_e}")
-                
+
             req = urllib.request.Request(f"{base_url}/api/tags")
             with urllib.request.urlopen(req, timeout=5.0) as response:
-                if response.getcode() != 200:
+                if response.getcode() == 200:
+                    data = json.loads(response.read().decode())
+                    installed_ollama = {m.get("name") for m in data.get("models", []) if "name" in m}
+                else:
                     print(f"[MODEL-REGISTRY] Ollama /api/tags returned {response.getcode()}")
-                    return
-                data = json.loads(response.read().decode())
-            installed_names = {model.get("name") for model in data.get("models", []) if "name" in model}
-
-            # Reset and update flags
-            for name, model in self._models.items():
-                # Exact match or tag-less match (e.g. "llama3" matches "llama3:latest")
-                model.is_installed = (name in installed_names)
-                if not model.is_installed:
-                    # Look for any installed version of this model family/name
-                    base_name = name.split(":")[0]
-                    # Also try matching with :latest implicitly if exactly matched
-                    model.is_installed = any(n.startswith(base_name) for n in installed_names)
-
         except Exception as e:
-            print(f"[MODEL-REGISTRY] Failed to refresh install status: {e}")
+            print(f"[MODEL-REGISTRY] Failed to refresh Ollama install status: {e}")
+
+        # ── 2. llama-server sidecar health (cheap, cached) ──
+        sidecar_healthy = False
+        try:
+            from services.llm_provider import health_check_sync, Provider
+            sidecar_healthy = health_check_sync(Provider.LLAMA_SERVER)
+        except Exception as _e:
+            logger.debug(f"[model-registry] sidecar health check failed: {_e}")
+
+        # ── 3. Update flags per-entry based on provider ──
+        for name, model in self._models.items():
+            if getattr(model, "provider", "ollama") == "llama_server":
+                model.is_installed = sidecar_healthy
+                continue
+            # Exact match or tag-less match (e.g. "llama3" matches "llama3:latest")
+            model.is_installed = (name in installed_ollama)
+            if not model.is_installed:
+                base_name = name.split(":")[0]
+                model.is_installed = any(n.startswith(base_name) for n in installed_ollama)
 
     def get_installed_models(self) -> list[dict]:
         """Query Ollama for currently installed models (Legacy/Direct)."""

@@ -130,11 +130,14 @@ async def run_full_evaluation() -> ComboEvalSummary:
     notebook_id = None
 
     try:
-        # Pre-flight memory check (inside try so errors are always captured)
-        mem_ok, mem_msg = _check_available_memory()
-        if not mem_ok:
-            raise RuntimeError(f"Pre-flight check failed: {mem_msg}")
-        print(f"[EVALUATOR] Memory pre-flight: {mem_msg}")
+        # ── Pre-flight (memory + all backends the combo uses) ──────────
+        from evaluator.preflight import run_preflight, providers_used_summary
+        preflight_report = await run_preflight(settings)
+        print("[EVALUATOR] Pre-flight report:")
+        for c in preflight_report.checks:
+            print(f"  [{c.status.upper()}] {c.name}: {c.message}")
+        if preflight_report.blocking_failure:
+            raise RuntimeError(f"Pre-flight failed: {preflight_report.blocking_failure}")
 
         config = _load_config()
         combo = ModelCombo.from_config(settings)
@@ -148,6 +151,10 @@ async def run_full_evaluation() -> ComboEvalSummary:
             combo=combo.to_dict(),
             hardware=hw.to_dict(),
         )
+        # v1.8.2: record which backend served which role so the summary
+        # shows "Ran on Ollama + llama-server (Bonsai-8B)" at a glance.
+        summary.providers_used = providers_used_summary(settings)
+        print(f"[EVALUATOR] Providers in use: {summary.providers_used}")
 
         # ── Phase 1: Create Test Notebook ────────────────────────────────
         _update_progress(1, "Creating test notebook")
@@ -285,16 +292,43 @@ async def run_full_evaluation() -> ComboEvalSummary:
         summary.categories = {k: v.to_dict() for k, v in category_results.items()}
         summary.category_scores = {k: v.score for k, v in category_results.items()}
 
+        # v1.8.2: collect skipped categories so the UI can explain why the
+        # overall score ignores them, and exclude them from the weighted avg.
+        summary.skipped_categories = [
+            {"category": k, "display_name": v.display_name, "reason": v.skip_reason}
+            for k, v in category_results.items()
+            if v.skipped
+        ]
+        scoring_input = {
+            k: v.score for k, v in category_results.items() if not v.skipped
+        }
+
         # Get weights from config
         weights = config.get("scoring", {}).get("category_weights", {})
         if not weights:
-            weights = {k: 10 for k in category_results}
+            weights = {k: 10 for k in scoring_input}
 
         overall_score, overall_grade = scoring.compute_overall_score(
-            summary.category_scores, weights
+            scoring_input, weights
         )
         summary.overall_score = overall_score
         summary.overall_grade = overall_grade
+
+        # v1.8.3: production readiness synthesis — compresses raw scores into
+        # a pass/degraded/fail verdict per user-facing feature so the UI shows
+        # "will this combo actually work in the app?" at a glance.
+        try:
+            from evaluator import feature_parity as _fp
+            summary.feature_parity = _fp.synthesize(summary.categories)
+            summary.production_readiness = _fp.rollup(summary.feature_parity)
+        except Exception as _e:
+            print(f"[EVALUATOR] feature_parity synthesis failed (non-fatal): {_e}")
+
+        # Persist the preflight report for result-viewer inspection
+        try:
+            summary.preflight = preflight_report.to_dict()
+        except Exception:
+            summary.preflight = {}
 
         # Performance profile
         summary.avg_tokens_per_sec = sum(all_tps) / len(all_tps) if all_tps else 0
@@ -345,16 +379,24 @@ async def run_full_evaluation() -> ComboEvalSummary:
 
 
 def _build_category(name: str, display_name: str, results: list[EvalResult]) -> CategoryResult:
-    """Build a CategoryResult from individual test results."""
+    """Build a CategoryResult from individual test results.
+
+    v1.8.2: if every test in a category was skipped (e.g. vision category on a
+    text-only model), mark the whole category as skipped so it can be excluded
+    from the overall weighted average rather than scored as zero.
+    """
     score, grade = scoring.compute_category_score(results)
+    all_skipped = bool(results) and all(r.skipped for r in results)
     cat = CategoryResult(
         category=name,
         display_name=display_name,
         tests=results,
         score=score,
         grade=grade,
-        passed=score >= 40,
+        passed=(score >= 40) or all_skipped,
         total_time_ms=sum(r.total_time_ms for r in results),
+        skipped=all_skipped,
+        skip_reason=(results[0].skip_reason if all_skipped and results else ""),
     )
     # Add warnings for failed tests
     for r in results:

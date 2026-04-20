@@ -145,23 +145,38 @@ async def warmup_cycle(force_all: bool = False):
     now = time.time()
     result_map = {}
     
+    # v1.7.0: Skip Ollama warmup for models served by llama-server (always resident).
+    def _is_sidecar(name: str) -> bool:
+        try:
+            from services.llm_provider import resolve as _resolve_provider
+            return _resolve_provider(name).api_style != "ollama"
+        except Exception:
+            return False
+
     # ── 1. Ollama models (safe — loaded in Ollama's process, not ours) ──
     # keep_alive="5m" — short TTL so Ollama reclaims RAM quickly.
     # The warmup loop (every 4 min) re-pings active models before expiry.
     if force_all or (now - _last_main_model_use < MODEL_IDLE_TIMEOUT):
-        try:
-            result_map["main"] = await warm_ollama_model(settings.ollama_model, keep_alive="5m")
-        except Exception:
-            result_map["main"] = False
-    
+        if _is_sidecar(settings.ollama_model):
+            # Sidecar models are always loaded by llama-server — no warmup needed
+            result_map["main"] = True
+        else:
+            try:
+                result_map["main"] = await warm_ollama_model(settings.ollama_model, keep_alive="5m")
+            except Exception:
+                result_map["main"] = False
+
     # Fast model: only warm if recently used (NOT at startup).
     # Lazy-loads on first ingestion/auto-tag — saves ~4GB RAM at boot.
     if not force_all and (now - _last_fast_model_use < MODEL_IDLE_TIMEOUT):
         if settings.ollama_fast_model != settings.ollama_model or "main" not in result_map:
-            try:
-                result_map["fast"] = await warm_ollama_model(settings.ollama_fast_model, keep_alive="5m")
-            except Exception:
-                result_map["fast"] = False
+            if _is_sidecar(settings.ollama_fast_model):
+                result_map["fast"] = True
+            else:
+                try:
+                    result_map["fast"] = await warm_ollama_model(settings.ollama_fast_model, keep_alive="5m")
+                except Exception:
+                    result_map["fast"] = False
     
     # Vision model: NOT warmed here — loads lazily on first vision task to save memory
     

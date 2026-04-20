@@ -390,6 +390,25 @@
       "recommended_ram_gb": 12,
       "policy_tags": ["us-origin", "open-source"],
       "ollama_options": {"temperature": 0.85, "top_k": 64, "top_p": 0.95}
+    },
+    {
+      "ollama_name": "bonsai-8b",
+      "display_name": "Bonsai-8B (1-bit, experimental)",
+      "family": "bonsai",
+      "parameter_count": "8B",
+      "vendor": "PrismML",
+      "origin_country": "US",
+      "license": "Apache-2.0",
+      "supported_roles": ["main_model"],
+      "context_window": 65536,
+      "supports_json_mode": false,
+      "supports_vision": false,
+      "disk_size_gb": 1.16,
+      "min_ram_gb": 4,
+      "recommended_ram_gb": 6,
+      "policy_tags": ["us-origin", "open-source", "experimental", "sidecar"],
+      "ollama_options": {"temperature": 0.5, "top_p": 0.85, "top_k": 20, "repeat_penalty": 1.1},
+      "provider": "llama_server"
     }
   ]
 }

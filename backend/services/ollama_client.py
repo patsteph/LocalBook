@@ -30,59 +30,65 @@ class OllamaClient:
         images: Optional[list] = None,
     ) -> Dict[str, Any]:
         """
-        Generate a response from Ollama.
-        
-        Args:
-            prompt: The user prompt
-            model: Model to use (defaults to settings.ollama_model)
-            system: System prompt (optional)
-            temperature: Sampling temperature
-            timeout: Request timeout in seconds
-            num_predict: Max tokens to generate (optional)
-            extra_options: Additional Ollama options (optional)
-            
-        Returns:
-            Dict with 'response' key containing the generated text
+        Generate a response from the LLM backend.
+
+        Resolves the correct provider (Ollama native vs llama-server sidecar)
+        per-call via services.llm_provider. Callers get the same return shape
+        regardless of backend (`{"response": "...", ...}` with eval_count etc).
         """
         model = model or settings.ollama_model
-        
-        options: Dict[str, Any] = {
-            "temperature": temperature
-        }
+
+        options: Dict[str, Any] = {"temperature": temperature}
         if num_predict is not None:
             options["num_predict"] = num_predict
         if extra_options:
             options.update(extra_options)
-        
-        payload = {
+
+        payload: Dict[str, Any] = {
             "model": model,
             "prompt": prompt,
             "stream": False,
             "options": options,
         }
-        
         if system:
             payload["system"] = system
-        
-        # Images are a top-level field for /api/generate (LLaVA/Granite style)
         if images:
             payload["images"] = images
-        
+
+        # v1.8.0: provider routing — identical semantics for Ollama path.
+        from services.llm_provider import (
+            resolve as _resolve_provider,
+            ollama_to_openai_payload,
+            openai_non_stream_to_ollama_response,
+        )
+        route = _resolve_provider(model)
+
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=timeout)) as client:
-                response = await client.post(
-                    f"{self.base_url}/api/generate",
-                    json=payload
-                )
-                response.raise_for_status()
-                return response.json()
+                if route.api_style == "ollama":
+                    response = await client.post(
+                        f"{route.base_url}/api/generate",
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                else:
+                    # llama-server OpenAI-compatible route (images unsupported there;
+                    # Bonsai is text-only so this is acceptable).
+                    openai_payload = ollama_to_openai_payload(payload, is_chat=False)
+                    response = await client.post(
+                        f"{route.base_url}/v1/chat/completions",
+                        json=openai_payload,
+                    )
+                    response.raise_for_status()
+                    return openai_non_stream_to_ollama_response(response.json(), is_chat=False)
         except httpx.TimeoutException:
-            logger.error(f"Ollama request timed out after {timeout}s")
+            logger.error(f"LLM request timed out after {timeout}s (model={model}, provider={route.provider.value})")
             return {"response": "Request timed out"}
         except Exception as e:
-            logger.error(f"Ollama request failed: {e}")
+            logger.error(f"LLM request failed (model={model}, provider={route.provider.value}): {e}")
             return {"response": f"Error: {str(e)}"}
-    
+
     async def chat(
         self,
         messages: list,
@@ -92,46 +98,52 @@ class OllamaClient:
         images: Optional[list] = None,
     ) -> Dict[str, Any]:
         """
-        Chat completion with Ollama.
-        
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-            model: Model to use
-            temperature: Sampling temperature
-            timeout: Request timeout in seconds
-            images: Optional list of base64-encoded image strings (injected into last user message)
-            
-        Returns:
-            Dict with 'message' key containing the response
+        Chat completion against the resolved backend (Ollama or sidecar).
+        Same return shape as Ollama's /api/chat: {"message": {"role": "...", "content": "..."}}.
         """
         model = model or settings.ollama_model
-        
+
         # If images are provided, inject them into the last user message
         if images:
             for msg in reversed(messages):
                 if msg.get("role") == "user":
                     msg["images"] = images
                     break
-        
+
         payload = {
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {
-                "temperature": temperature
-            }
+            "options": {"temperature": temperature},
         }
-        
+
+        # v1.8.0: provider routing
+        from services.llm_provider import (
+            resolve as _resolve_provider,
+            ollama_to_openai_payload,
+            openai_non_stream_to_ollama_response,
+        )
+        route = _resolve_provider(model)
+
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=timeout)) as client:
-                response = await client.post(
-                    f"{self.base_url}/api/chat",
-                    json=payload
-                )
-                response.raise_for_status()
-                return response.json()
+                if route.api_style == "ollama":
+                    response = await client.post(
+                        f"{route.base_url}/api/chat",
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                else:
+                    openai_payload = ollama_to_openai_payload(payload, is_chat=True)
+                    response = await client.post(
+                        f"{route.base_url}/v1/chat/completions",
+                        json=openai_payload,
+                    )
+                    response.raise_for_status()
+                    return openai_non_stream_to_ollama_response(response.json(), is_chat=True)
         except Exception as e:
-            logger.error(f"Ollama chat request failed: {e}")
+            logger.error(f"LLM chat request failed (model={model}, provider={route.provider.value}): {e}")
             return {"message": {"content": f"Error: {str(e)}"}}
 
     async def vision_describe(

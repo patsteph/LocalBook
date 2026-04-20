@@ -5,16 +5,22 @@ import base64
 from datetime import datetime
 from pathlib import Path
 from evaluator.models import EvalResult
-import httpx
+from evaluator.capabilities import capabilities_for, FEATURES
 
 EVALUATOR_DIR = Path(__file__).parent.parent
 
 
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
-    """Test vision model with an image from the test PDF."""
+    """Test vision model with a generated chart image.
+
+    Capability-aware (v1.8.2): if no vision model is configured or the
+    configured vision model does not support vision (e.g. because the main
+    model was swapped to a text-only sidecar), the test is *skipped* rather
+    than marked failing, so category scores aren't unfairly penalised.
+    """
     from config import settings
 
-    vision_model = getattr(settings, 'vision_model', 'granite3.2-vision:2b')
+    vision_model = getattr(settings, 'vision_model', '') or ''
     vision_config = config.get("vision_test", {})
 
     result = EvalResult(
@@ -22,14 +28,26 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         category="vision",
         test_name="Image Description Accuracy",
         model_combo=combo_name,
-        model_used=vision_model,
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat(),
     )
+    result.stamp_provider(vision_model)
+
+    # ── Capability gate ────────────────────────────────────────────────
+    if not vision_model:
+        result.mark_skipped("No vision model configured for this combo")
+        print("[EVAL-VISION] skipped — no vision model configured")
+        return [result]
+
+    caps = capabilities_for(vision_model)
+    if not caps.supports(FEATURES.VISION):
+        reason = caps.skip_reason(FEATURES.VISION) or f"{vision_model} does not support vision"
+        result.mark_skipped(reason)
+        print(f"[EVAL-VISION] skipped — {reason}")
+        return [result]
 
     try:
         # Generate a simple test image (bar chart) as PNG
-        # Using reportlab to render the same chart from the test PDF
         image_data = _generate_test_chart()
         if not image_data:
             raise ValueError("Could not generate test chart image")

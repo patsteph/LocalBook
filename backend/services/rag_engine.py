@@ -602,17 +602,17 @@ Extract:
 
 JSON:"""
             
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": settings.ollama_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"num_predict": 200, "temperature": 0}
-                    }
-                )
-                result = response.json().get("response", "{}")
+            # v1.8.0: route via ollama_service so sidecar-backed models work
+            from services.ollama_service import ollama_service as _os
+            _resp = await _os.generate(
+                prompt=prompt,
+                model=settings.ollama_model,
+                temperature=0,
+                num_predict=200,
+                timeout=10.0,
+            )
+            result = _resp.get("response", "{}")
+            if True:  # keep original indentation scope
                 from utils.json_repair import robust_json_parse
                 analysis = robust_json_parse(result, label="RAG-QueryAnalysis", fallback=None)
                 if analysis and isinstance(analysis, dict):

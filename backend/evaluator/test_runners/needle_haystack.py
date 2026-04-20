@@ -4,29 +4,52 @@ import time
 import math
 from datetime import datetime
 from evaluator.models import EvalResult
+from evaluator.capabilities import capabilities_for
 
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
     """Test model's ability to retain and locate specific information inside massive context windows."""
     from services.ollama_client import ollama_client
     from config import settings
-    
+
     main_model = getattr(settings, 'ollama_model', 'olmo-3:7b-instruct')
     test_config = config.get("needle_haystack_test", {})
-    
+
     needle = test_config.get("needle", "The secret passcode is Omega-99.")
     question = test_config.get("question", "What is the secret passcode?")
     expected_answer = test_config.get("expected_answer", "Omega-99")
     target_tokens = test_config.get("padding_target_tokens", 8000)
-    
+
+    # v1.8.2: adapt the needle test to the model's actual context window so a
+    # small-ctx model (e.g. Bonsai 4K) isn't scored against an 8K haystack it
+    # physically cannot ingest. We trim target_tokens to ~75% of the window,
+    # leaving headroom for the prompt framing and completion. The test STILL
+    # RUNS and scores honestly — the adaptation is surfaced as a degraded
+    # note so the user sees the true state of affairs.
+    caps = capabilities_for(main_model)
+    original_target = target_tokens
+    degraded_note = ""
+    if caps.context_window and target_tokens > caps.context_window * 0.75:
+        adjusted = int(caps.context_window * 0.75)
+        degraded_note = (
+            f"Adapted haystack {original_target}→{adjusted} tokens to fit "
+            f"{main_model} context window ({caps.context_window}). "
+            f"Production behavior at {original_target} tokens is UNTESTED — "
+            f"the app would truncate or error if given longer input."
+        )
+        print(f"[EVAL-NEEDLE] {degraded_note}")
+        target_tokens = adjusted
+
     result = EvalResult(
         test_id="needle_haystack",
         category="needle_haystack",
         test_name=f"Context Stress (~{target_tokens} tokens)",
         model_combo=combo_name,
-        model_used=main_model,
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat() + "Z",
     )
+    result.stamp_provider(main_model)
+    if degraded_note:
+        result.mark_degraded(degraded_note)
     
     # Generate Haystack (approx 4 chars per token)
     base_text = "The LocalBook RAG framework is designed for privacy-first AI. " * 50

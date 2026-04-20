@@ -65,6 +65,24 @@ class LLMLocker:
         model_info = registry.get_model(target_ollama_name)
         _live: Optional[Dict[str, Any]] = None
 
+        # v1.8.0 (Phase 2): llama-server sidecar swaps are permitted. The API
+        # layer is expected to call `sidecar_manager.ensure_started()` before
+        # invoking analyze_swap; we still defend here with a cheap health
+        # check so a ghost request can't silently swap to a dead backend.
+        if model_info and getattr(model_info, "provider", "ollama") == "llama_server":
+            try:
+                from services.llm_provider import health_check_sync, Provider
+                if not health_check_sync(Provider.LLAMA_SERVER):
+                    return (
+                        False,
+                        f"llama-server sidecar is not responding on the configured port. "
+                        f"Click 'Start' in the Locker's Sidecar panel or check the binary/model paths.",
+                        {},
+                    )
+            except Exception as _e:
+                logger.debug(f"[LLMLocker] sidecar health probe failed: {_e}")
+                return (False, "Could not probe llama-server health.", {})
+
         if not model_info:
             # Not in registry — query Ollama live instead of hard-blocking
             _live = cls._live_model_info(target_ollama_name)
