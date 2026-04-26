@@ -5,6 +5,7 @@ import { explorationService } from '../services/exploration';
 import { voiceService } from '../services/voice';
 import { ChatMessage, Citation as CitationType } from '../types';
 import { curatorService } from '../services/curatorApi';
+import { sourceService } from '../services/sources';
 import { Button } from './shared/Button';
 import { ErrorMessage } from './shared/ErrorMessage';
 import { SourceNotesViewer } from './SourceNotesViewer';
@@ -562,6 +563,36 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     setSelectedSource({ sourceId, sourceName, searchTerm });
     setSourceViewerOpen(true);
   };
+
+  // Listen for openSourceByName events (dispatched by FlashcardsCanvasTile and
+  // any other artifact that only knows a source by its display name). We
+  // resolve the ID via sourceService.list and open the existing viewer.
+  useEffect(() => {
+    const handler = async (e: Event) => {
+      const detail = (e as CustomEvent).detail || {};
+      const targetNotebook = detail.notebookId || notebookId;
+      const sourceName = detail.sourceName as string | undefined;
+      const searchTerm = (detail.searchTerm as string | undefined) || '';
+      if (!targetNotebook || !sourceName) return;
+      try {
+        const sources = await sourceService.list(targetNotebook);
+        const match =
+          sources.find(s => s.filename === sourceName) ||
+          sources.find(s => (s.filename || '').toLowerCase() === sourceName.toLowerCase()) ||
+          sources.find(s => (s.filename || '').toLowerCase().includes(sourceName.toLowerCase())) ||
+          sources.find(s => sourceName.toLowerCase().includes((s.filename || '').toLowerCase()));
+        if (match) {
+          handleViewSource(match.id, match.filename, searchTerm);
+        } else {
+          console.warn('[openSourceByName] No source matched:', sourceName);
+        }
+      } catch (err) {
+        console.warn('[openSourceByName] lookup failed:', err);
+      }
+    };
+    window.addEventListener('openSourceByName', handler);
+    return () => window.removeEventListener('openSourceByName', handler);
+  }, [notebookId]);
 
   // Voice recording handlers
   const startRecording = async () => {

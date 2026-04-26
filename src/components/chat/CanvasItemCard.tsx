@@ -1,7 +1,7 @@
 import React from 'react';
 import DOMPurify from 'dompurify';
 import {
-  FileText, Palette, Target, Mic, MessageSquare, PenLine,
+  FileText, Palette, Target, Layers, Mic, MessageSquare, PenLine,
   BookOpen, ChevronDown, X, Video,
 } from 'lucide-react';
 import { useCanvas } from '../canvas/CanvasContext';
@@ -11,6 +11,7 @@ import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { SVGRenderer } from '../shared/SVGRenderer';
 import { FeynmanQuizBlock, FeynmanAudioBlock, StudioQuizBlock, isFeynmanBlock } from '../shared/FeynmanBlocks';
 import { AudioCanvasPlayer } from './AudioCanvasPlayer';
+import { FlashcardsCanvasTile } from './FlashcardsCanvasTile';
 import { API_BASE_URL } from '../../services/api';
 import { RichNoteEditor } from '../RichNoteEditor';
 
@@ -20,6 +21,7 @@ const TYPE_ICONS: Record<CanvasItem['type'], React.ReactNode> = {
   'document': <FileText className={iconSm} />,
   'visual': <Palette className={iconSm} />,
   'quiz': <Target className={iconSm} />,
+  'flashcards': <Layers className={iconSm} />,
   'audio': <Mic className={iconSm} />,
   'video': <Video className={iconSm} />,
   'chat-response': <MessageSquare className={iconSm} />,
@@ -44,6 +46,7 @@ const TYPE_ACCENTS: Record<CanvasItem['type'], string> = {
   'document': 'border-l-blue-500',
   'visual': 'border-l-purple-500',
   'quiz': 'border-l-amber-500',
+  'flashcards': 'border-l-fuchsia-500',
   'audio': 'border-l-green-500',
   'video': 'border-l-rose-500',
   'chat-response': 'border-l-gray-400',
@@ -54,6 +57,7 @@ const TYPE_LABELS: Record<CanvasItem['type'], string> = {
   'document': 'Document',
   'visual': 'Visual',
   'quiz': 'Quiz',
+  'flashcards': 'Flash Cards',
   'audio': 'Audio',
   'video': 'Video',
   'chat-response': 'Response',
@@ -292,6 +296,43 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
             item.content.trimStart().startsWith('[')
               ? <StudioQuizBlock json={item.content} />
               : <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(item.content) }} />
+          )}
+          {item.type === 'flashcards' && (
+            item.metadata?.notebookId ? (
+              <FlashcardsCanvasTile
+                itemId={item.id}
+                notebookId={item.metadata.notebookId}
+                topic={item.metadata.topic || ''}
+                difficulty={(item.metadata.difficulty as any) || 'medium'}
+                count={item.metadata.count || 10}
+                chatContext={item.metadata.chatContext}
+                tutorGender={item.metadata.tutorGender ?? 'female'}
+                tutorAccent={item.metadata.tutorAccent ?? 'us'}
+                tutorAutoplay={item.metadata.tutorAutoplay ?? true}
+                includeVisuals={item.metadata.includeVisuals ?? false}
+                parentStatus={item.status}
+                parentError={item.metadata?.errorMessage}
+                onStatusChange={(status, errorMessage) => {
+                  ctx.updateCanvasItem(item.id, {
+                    status,
+                    metadata: {
+                      ...item.metadata,
+                      ...(errorMessage ? { errorMessage } : { errorMessage: null }),
+                    },
+                  });
+                }}
+              />
+            ) : (
+              <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-900/40 rounded-lg">
+                <div className="flex-shrink-0 w-9 h-9 rounded-full bg-fuchsia-100 dark:bg-fuchsia-900/30 text-fuchsia-500 flex items-center justify-center">
+                  <Layers className="w-4 h-4 animate-pulse" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-900 dark:text-white">{item.title}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Missing notebook context</p>
+                </div>
+              </div>
+            )
           )}
           {item.type === 'audio' && (
             item.metadata?.audioId && item.metadata?.notebookId ? (

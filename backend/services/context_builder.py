@@ -564,6 +564,72 @@ class ContextBuilder:
         logger.info(f"[ContextBuilder] Reduce phase: {len(detail_parts)} detailed sources")
         
         return content_parts, source_names
+    
+    async def expand_sources_for_flashcards(
+        self,
+        notebook_id: str,
+        topic: Optional[str],
+        current_sources: List[str],  # source IDs already used
+        min_additional_sources: int = 5
+    ) -> List[Dict]:
+        """Find semantically adjacent sources when initial sources lack sufficient material.
+        
+        Uses the RAG engine to find sources that are conceptually related to the topic
+        but weren't in the initial top-ranked set. This helps ensure we have enough
+        content to generate the requested number of flashcards.
+        """
+        try:
+            from storage.source_store import source_store
+            from services.rag_engine import rag_engine
+            
+            # Get all sources in the notebook
+            all_sources = await source_store.list_sources(notebook_id)
+            if not all_sources:
+                return []
+            
+            # Filter out already-used sources
+            used_ids = set(current_sources)
+            available = [s for s in all_sources if s.get("id") not in used_ids]
+            
+            if not topic or len(available) < min_additional_sources:
+                return available[:min_additional_sources]
+            
+            # Use embeddings to find semantically adjacent sources
+            # Create a broader query by removing specific constraints
+            expanded_topic = f"{topic} concepts principles applications examples"
+            
+            # Get embeddings for the expanded topic
+            topic_embedding = rag_engine.encode([expanded_topic])[0]
+            
+            # Get embeddings for available sources (use summaries if available)
+            source_texts = []
+            for s in available:
+                summary = s.get("summary", "")
+                content_preview = s.get("content_preview", "")
+                text = summary if summary else content_preview
+                source_texts.append(text[:500] if text else s.get("filename", ""))
+            
+            source_embeddings = rag_engine.encode(source_texts)
+            
+            # Calculate similarity scores
+            scored_sources = []
+            for i, source in enumerate(available):
+                similarity = float(np.dot(topic_embedding, source_embeddings[i]) / (
+                    np.linalg.norm(topic_embedding) * np.linalg.norm(source_embeddings[i]) + 1e-8
+                ))
+                source["_adjacency_score"] = similarity
+                scored_sources.append((similarity, source))
+            
+            # Sort by similarity and return top additional sources
+            scored_sources.sort(key=lambda x: x[0], reverse=True)
+            additional = [s for _, s in scored_sources[:min_additional_sources]]
+            
+            logger.info(f"[ContextBuilder] Expanded sources: found {len(additional)} adjacent sources for '{topic[:50]}...'")
+            return additional
+            
+        except Exception as e:
+            logger.warning(f"[ContextBuilder] Source expansion failed: {e}")
+            return []
 
 
 # Singleton

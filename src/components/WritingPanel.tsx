@@ -4,6 +4,7 @@ import { writingService, FormatOption, WritingResult } from '../services/writing
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { BookmarkButton } from './shared/BookmarkButton';
+import { API_BASE_URL } from '../services/api';
 
 interface WritingPanelProps {
   notebookId: string;
@@ -23,6 +24,22 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
   const [maxWords, setMaxWords] = useState(500);
   const [useSources, setUseSources] = useState(false);
   const [result, setResult] = useState<WritingResult | null>(null);
+  const [voiceProfile, setVoiceProfile] = useState<any>(null);
+
+  useEffect(() => {
+    const fetchVoiceProfile = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/settings/voice-profile`);
+        if (res.ok) {
+          const data = await res.json();
+          if (Object.keys(data).length > 0) setVoiceProfile(data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch voice profile for panel", err);
+      }
+    };
+    fetchVoiceProfile();
+  }, []);
 
   useEffect(() => {
     loadOptions();
@@ -55,7 +72,8 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
         selectedTask,
         selectedFormat,
         maxWords,
-        useSources ? notebookId : undefined
+        useSources ? notebookId : undefined,
+        voiceProfile
       );
       setResult(data);
     } catch (err: any) {
@@ -124,7 +142,7 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
           Style
         </label>
         <div className="grid grid-cols-2 gap-2">
-          {formats.slice(0, 6).map((format) => (
+          {formats.slice(0, 8).map((format) => (
             <button
               key={format.value}
               onClick={() => setSelectedFormat(format.value)}

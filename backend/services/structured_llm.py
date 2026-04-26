@@ -29,15 +29,22 @@ from services.svg_templates import build_svg_visual, COLOR_THEMES as SVG_COLOR_T
 # Output Models for Structured Generation
 # =============================================================================
 
+class VisualLabels(BaseModel):
+    """Labels shown vs hidden in a visual diagram."""
+    shown: List[str] = Field(default_factory=list, description="Labels that are visible in the diagram")
+    hidden: List[str] = Field(default_factory=list, description="Labels that are hidden (user must identify)")
+
 class QuizQuestion(BaseModel):
     """A single quiz question with answer and explanation."""
     question: str = Field(description="The question text")
     answer: str = Field(description="The correct answer")
     explanation: str = Field(description="Why this answer is correct")
     difficulty: str = Field(default="medium", description="easy, medium, or hard")
-    question_type: str = Field(default="multiple_choice", description="multiple_choice or true_false")
+    question_type: str = Field(default="multiple_choice", description="multiple_choice, true_false, short_answer, fill_in_the_blank, spot_the_error, or visual_diagram")
     options: Optional[List[str]] = Field(default=None, description="Answer options - required for multiple_choice, ['True', 'False'] for true_false")
     source_reference: Optional[str] = Field(default=None, description="Name of the source document this question is from")
+    visual_svg: Optional[str] = Field(default=None, description="SVG diagram code for visual_diagram questions (one label replaced with ???)")
+    visual_labels: Optional[VisualLabels] = Field(default=None, description="Labels shown vs hidden for visual_diagram questions")
 
 
 class QuizOutput(BaseModel):
@@ -201,16 +208,124 @@ class StructuredLLMService:
         """Generate a professional-quality quiz from content with structured output."""
         
         question_types = question_types or ["multiple_choice", "true_false", "fill_in_the_blank"]
+
+        # Auto-detect topics that benefit from visual diagrams (architecture, process flows, etc.)
+        # We add visual_diagram as an option (not requirement) — LLM can use it when appropriate.
+        visual_keywords = [
+            'architecture', 'pipeline', 'workflow', 'process flow', 'diagram',
+            'layered', 'stack', 'topology', 'framework structure', 'system design',
+            'data flow', 'rag pipeline', 'neural network', 'lifecycle', 'phases',
+        ]
+        content_lower = content.lower()[:2000]  # Check first 2KB only for speed
+        has_visual_content = any(kw in content_lower for kw in visual_keywords)
+        if has_visual_content and 'visual_diagram' not in question_types:
+            # Allow but don't require visual_diagram questions
+            logger.info(f"[Quiz] Detected visual-friendly content, making visual_diagram available")
+            question_types = list(question_types) + ['visual_diagram']
+
         types_str = ", ".join(question_types)
+
+        # Request more questions than needed to account for sanitization dropout
+        # We'll generate 1.3x the requested count, then filter down to the exact number
+        generation_target = int(num_questions * 1.3) + 2
+        generation_target = min(generation_target, 25)  # Cap at 25 to avoid overwhelming the LLM
         
+        # Build a type-mix hint when multiple types are requested so the LLM
+        # doesn't collapse the whole deck into a single type (short_answer
+        # especially tends to dominate).
+        mix_str = ""
+        if len(question_types) > 1:
+            # visual_diagram is treated as a garnish, not a share — it's hard to produce
+            # and only makes sense when the content genuinely has a labeled structure.
+            primary_types = [qt for qt in question_types if qt != 'visual_diagram']
+            share = 100 // max(1, len(primary_types))
+            parts = [f"~{share}% {qt}" for qt in primary_types]
+            visual_note = ""
+            if 'visual_diagram' in question_types:
+                visual_note = (
+                    "- visual_diagram: aim for 1-2 cards TOTAL (not a share of the deck), and ONLY when the "
+                    "content describes a concrete labeled structure (architecture layers, pipeline stages, OSI model, etc.).\n"
+                )
+            mix_str = (
+                "\n\nQUESTION TYPE MIX (MANDATORY):\n"
+                f"- Generate {generation_target} questions spread roughly evenly across these types: "
+                + ", ".join(parts) + ".\n"
+                + visual_note +
+                "- CRITICAL: Do NOT produce a deck of only one type. If you cannot find source material for a given type, "
+                "continue searching for other facts to maintain the target count.\n"
+                "- multiple_choice is the PRIMARY type — at least HALF of all cards MUST be multiple_choice when that type is requested.\n"
+                "- When question_type is multiple_choice, the 'answer' field MUST be the EXACT text of one of the 4 options. "
+                "DO NOT use 'A', 'B', 'C', 'D', or letter labels. Write the full option text as the answer.\n"
+                "- Example of CORRECT multiple_choice:\n"
+                '  {{"question_type": "multiple_choice", "question": "...", '
+                '"options": ["Photosynthesis", "Respiration", "Digestion", "Fermentation"], '
+                '"answer": "Photosynthesis"}}\n'
+                "- Example of WRONG multiple_choice (DO NOT DO THIS): answer='A' or answer='Option A'.\n"
+                "- You MUST generate the full target count of questions — this is critical for the learning experience."
+            )
+
         # Build source name list for the prompt so the LLM cites real sources
         source_list_str = ""
         if source_names:
             source_list_str = "\n\nAVAILABLE SOURCE NAMES (use these exact names in source_reference):\n" + "\n".join(f"- {s}" for s in source_names)
-        
+
+        # Only include visual_diagram rules if it's in the requested types
+        visual_diagram_rules = ""
+        if 'visual_diagram' in question_types:
+            visual_diagram_rules = (
+                "\n- visual_diagram: For architecture, process flows, or systems with labeled components.\n"
+                "  Produce a SIMPLE inline SVG (viewBox 0 0 400 200) with 3-5 labeled rectangles "
+                "connected by arrows. Replace EXACTLY ONE label text with \"???\" — that is the answer the user must identify. "
+                "The 'answer' field is the correct word that belongs in place of \"???\". "
+                "Include 'options' with 4 plausible labels (the correct one plus 3 distractors). "
+                "Include 'visual_labels' with 'shown' (labels the user sees) and 'hidden' (must contain the correct answer).\n"
+                "  FULL EXAMPLE (copy this structure exactly, adapting the content):\n"
+                '  {{"question_type": "visual_diagram",\n'
+                '    "question": "What is the missing stage in this RAG pipeline?",\n'
+                '    "answer": "Retriever",\n'
+                '    "options": ["Retriever", "Tokenizer", "Classifier", "Compiler"],\n'
+                '    "visual_svg": "<svg xmlns=\\"http://www.w3.org/2000/svg\\" viewBox=\\"0 0 400 120\\">'
+                '<rect x=\\"10\\" y=\\"40\\" width=\\"80\\" height=\\"40\\" fill=\\"#dbeafe\\" stroke=\\"#1e3a8a\\"/>'
+                '<text x=\\"50\\" y=\\"65\\" text-anchor=\\"middle\\" font-size=\\"12\\">Query</text>'
+                '<rect x=\\"110\\" y=\\"40\\" width=\\"80\\" height=\\"40\\" fill=\\"#fef3c7\\" stroke=\\"#92400e\\"/>'
+                '<text x=\\"150\\" y=\\"65\\" text-anchor=\\"middle\\" font-size=\\"12\\">???</text>'
+                '<rect x=\\"210\\" y=\\"40\\" width=\\"80\\" height=\\"40\\" fill=\\"#dcfce7\\" stroke=\\"#166534\\"/>'
+                '<text x=\\"250\\" y=\\"65\\" text-anchor=\\"middle\\" font-size=\\"12\\">LLM</text>'
+                '<rect x=\\"310\\" y=\\"40\\" width=\\"80\\" height=\\"40\\" fill=\\"#fce7f3\\" stroke=\\"#9d174d\\"/>'
+                '<text x=\\"350\\" y=\\"65\\" text-anchor=\\"middle\\" font-size=\\"12\\">Answer</text>'
+                '<line x1=\\"90\\" y1=\\"60\\" x2=\\"110\\" y2=\\"60\\" stroke=\\"#333\\" marker-end=\\"url(#a)\\"/>'
+                '<line x1=\\"190\\" y1=\\"60\\" x2=\\"210\\" y2=\\"60\\" stroke=\\"#333\\"/>'
+                '<line x1=\\"290\\" y1=\\"60\\" x2=\\"310\\" y2=\\"60\\" stroke=\\"#333\\"/></svg>",\n'
+                '    "visual_labels": {{"shown": ["Query", "LLM", "Answer"], "hidden": ["Retriever"]}},\n'
+                '    "explanation": "The retriever fetches relevant documents from the vector store before the LLM generates the answer.",\n'
+                '    "difficulty": "medium"}}\n'
+                "  RULES: visual_svg MUST start with <svg and end with </svg>. Keep it under 1500 characters. "
+                "Use simple rect/text/line elements only — no CSS, no external references, no scripts."
+            )
+
         system_prompt = f"""You are an expert instructional designer creating assessment questions for mastery learning.
 
-Create exactly {num_questions} high-quality questions based ONLY on the provided content.
+Create exactly {generation_target} high-quality questions based ONLY on the provided content.
+
+═══ QUESTION WORDING RULES (MANDATORY — questions MUST be self-contained) ═══
+The learner will see each question on its own card, WITHOUT the source text in front of them.
+Every question must make sense to a reader who has NEVER seen the source.
+
+NEVER use phrases that reference the source/context the model was given. Banned phrases include:
+- "according to the source", "according to the text", "according to the passage", "according to the article"
+- "as described in the source/text/article/passage/document"
+- "in the same source", "in the same article", "the same passage", "in the same text"
+- "the author states", "the passage says", "the text mentions", "the document claims"
+- "based on the provided content", "in the reading", "as explained above", "as mentioned earlier"
+- Any other meta reference to "the source", "the passage", "the text", "the article", or "the context".
+
+Instead, write questions as natural, self-contained prompts about the subject matter itself.
+ - BAD:  "Which of the following best describes the role of middle managers in the age of AI, as described in the same source?"
+ - GOOD: "Which of the following best describes how the role of middle managers is evolving in the age of AI?"
+ - BAD:  "According to the text, what are the three pillars of servant leadership?"
+ - GOOD: "What are the three pillars of servant leadership?"
+ - BAD:  "In the passage, what year was the Fed Funds Rate raised?"
+ - GOOD: "In what year did the Federal Reserve raise the Fed Funds Rate to combat post-pandemic inflation?"
 
 Output a valid JSON object with this structure:
 {{
@@ -235,34 +350,66 @@ Output a valid JSON object with this structure:
 3. For multiple_choice: the "answer" field must be the EXACT CHARACTER-FOR-CHARACTER copy of one of the four "options" strings. No paraphrasing.
 4. For true_false: the statement must be unambiguously true or false ACCORDING TO THE SOURCE TEXT, not general knowledge.
 5. Distractors (wrong options) must be clearly wrong according to the source — not trick questions.
-6. The "explanation" must include a short direct quote from the source that proves the answer.
+6. The "explanation" must be a concise teaching statement (1-2 sentences). It may reference a specific fact from the source, but it must NEVER start with "The source states", "Remember we said", "The text explains", or similar meta-phrases. Write it as a standalone explanation a tutor would say.
+
+SELF-CHECK BEFORE OUTPUTTING:
+- Verify every answer is explicitly stated in the source text.
+- For multiple_choice: confirm the "answer" string is IDENTICAL to one of the four "options" strings (copy-paste exact).
+- Confirm no question or explanation references "the source", "the passage", "the text", or "the article".
+- Confirm each explanation is a concise standalone statement, not a raw truncated quote.
+- Confirm every short_answer answer is ≤ 6 words. If the answer needs to be longer, change the question_type to multiple_choice.
+- If any question fails these checks, fix it or remove it and generate fewer total questions.
+
+QUESTION TYPE SELECTION — choose the BEST type for each fact:
+- multiple_choice: Use when you can write 4 clearly distinct options and the answer is a single term, name, or short phrase (≤ 6 words). This is the DEFAULT and preferred type.
+- fill_in_the_blank: Use for specific key terms, dates, names, or short phrases that fit naturally in a sentence with a blank.
+- short_answer: Use ONLY when the answer is a very short phrase (1-6 words) that the user can type quickly. NEVER use short_answer for paragraph-length answers. If the concept requires a longer response, use multiple_choice instead.
+- true_false: Use for unambiguous factual statements.
+- spot_the_error: Use for subtle factual mistakes that test deep understanding.
+
+ANSWER LENGTH RULES:
+- multiple_choice answer: must be ≤ 6 words, and must be an EXACT COPY of one option.
+- fill_in_the_blank answer: 1-3 words (a specific term).
+- short_answer answer: 1-6 words maximum. If you need more, use multiple_choice.
+- true_false answer: "True" or "False".
+- NEVER write paragraph-length answers. Flashcard answers must be quick to read and type.
 
 QUESTION TYPE RULES:
 - multiple_choice: 4 plausible options; "answer" must be EXACT COPY of one option string
 - true_false: statement unambiguously true or false; options=["True","False"]
 - fill_in_the_blank: sentence with ___ replacing a key term; "answer" is the missing word/phrase; options=null
   Example: "The process by which plants convert sunlight to energy is called ___." answer: "photosynthesis"
-- short_answer: open-ended question requiring 1-2 sentence response; options=null
-  Example: "Explain why the Fed raised interest rates in 2022."
+- short_answer: open-ended question requiring a SHORT answer (1-6 words); options=null
+  Example: "What metal is the primary component of steel?" answer: "iron"
+  BAD: "Explain the economic impacts of the 2008 financial crisis." — too long; use multiple_choice instead.
 - spot_the_error: show a statement containing a deliberate factual mistake; "answer" is the corrected version; options=null
   Example question: "Marie Curie won the Nobel Prize in Physics and Chemistry, becoming the first person to win two Nobels in the same field."
   Example answer: "She won in different fields (Physics 1903, Chemistry 1911), not the same field."
-{source_list_str}
+{visual_diagram_rules}{source_list_str}{mix_str}
+
+LEARNING BEST PRACTICES:
+- Vary the format: if a concept appears twice, use different types (e.g., MC then fill_in_the_blank)
+- Interleave topics: don't cluster all questions about one concept together
+- Prefer "why" and "how" questions over "what is X" when possible
+- Use concrete, specific details rather than vague generalizations
 
 QUALITY REQUIREMENTS:
 1. Test UNDERSTANDING, not trivial recall
 2. Distractors for multiple_choice should represent common misconceptions
 3. fill_in_the_blank answers should be specific key terms, not vague phrases
-4. short_answer model answers should be 1-2 concise sentences
+4. short_answer answers must be 1-6 words maximum — if longer, redesign as multiple_choice
 5. spot_the_error mistakes should be subtle and plausible, not obvious
-6. Explanations should teach, not just state the answer
-7. Questions should span different topics from the source material
+6. Explanations should teach in 1-2 concise sentences, not dump raw source text
+7. Questions should be specific and fact-based, not vague or interpretive
+8. Every question must be answerable without seeing the source text
+9. Questions should span different topics from the source material
 
 DIFFICULTY GUIDELINES:
 - easy: Basic recall and comprehension
 - medium: Application and analysis
 - hard: Synthesis and evaluation across concepts"""
 
+        best_quiz: Optional[QuizOutput] = None  # Track best attempt across retries
         for attempt in range(self.max_retries):
             try:
                 # Use simpler prompt on retries but KEEP accuracy rules
@@ -290,7 +437,8 @@ Return ONLY a JSON object like this:
 }}"""
 
                 # Scale output tokens: ~300 tokens per question + overhead for JSON structure
-                predict_tokens = max(3000, num_questions * 350 + 500)
+                # Use generation_target to ensure we have enough content after filtering
+                predict_tokens = max(4000, generation_target * 350 + 800)
                 result = await self._call_ollama_json(
                     use_prompt,
                     f"Content:\n{content[:12000]}",
@@ -303,20 +451,102 @@ Return ONLY a JSON object like this:
                 # Robust parsing: handle common LLM JSON variations
                 quiz = self._parse_quiz_result(result, difficulty, source_names=source_names)
                 if quiz and quiz.questions:
-                    # Verification pass: check each answer against source content
-                    verified = await self._verify_quiz_answers(quiz.questions, content[:12000])
-                    if verified:
-                        quiz.questions = verified
-                        logger.info(f"[Quiz] Generated {len(quiz.questions)} verified questions on attempt {attempt+1}")
-                        return quiz
-                    logger.warning(f"[Quiz] Attempt {attempt+1}: all questions failed verification, retrying")
-                logger.warning(f"[Quiz] Attempt {attempt+1}: parsed 0 questions, retrying")
+                    logger.info(f"[Quiz] Attempt {attempt+1}: parsed {len(quiz.questions)} raw questions")
+                    # Lightweight deterministic sanity check (fast, no extra LLM call)
+                    # Pass question_types so sanitizer won't auto-convert to types the user didn't ask for
+                    sanitized = self._sanitize_quiz(quiz.questions, allowed_types=question_types)
+                    # Emergency fallback: if sanitizer killed everything, keep raw questions
+                    if not sanitized and quiz.questions and attempt == self.max_retries - 1:
+                        logger.warning(f"[Quiz] Sanitizer dropped all {len(quiz.questions)} questions — returning raw as emergency fallback")
+                        sanitized = quiz.questions[:num_questions]
+                    if sanitized:
+                        # Trim to exact requested count, prioritizing variety of question types
+                        if len(sanitized) > num_questions:
+                            # Sort to ensure we get a mix of question types
+                            type_order = {t: i for i, t in enumerate(question_types or ['multiple_choice'])}
+                            sanitized.sort(key=lambda q: type_order.get(q.question_type, 99))
+                            # Take evenly from each type to maximize variety
+                            selected: List[QuizQuestion] = []
+                            by_type: Dict[str, List[QuizQuestion]] = {}
+                            for q in sanitized:
+                                by_type.setdefault(q.question_type, []).append(q)
+                            # Round-robin select from each type
+                            type_keys = list(by_type.keys())
+                            idx = 0
+                            while len(selected) < num_questions and by_type:
+                                key = type_keys[idx % len(type_keys)]
+                                if by_type[key]:
+                                    selected.append(by_type[key].pop(0))
+                                if not by_type[key]:
+                                    del by_type[key]
+                                    type_keys = list(by_type.keys())
+                                    if not type_keys:
+                                        break
+                                idx += 1
+                            quiz.questions = selected
+                        else:
+                            quiz.questions = sanitized[:num_questions]
+                        logger.info(f"[Quiz] Generated {len(quiz.questions)} questions on attempt {attempt+1} (requested {num_questions})")
+                        # Track best attempt so far
+                        if best_quiz is None or len(quiz.questions) > len(best_quiz.questions):
+                            best_quiz = quiz
+                        # Accept immediately if we got at least 70%
+                        if len(quiz.questions) >= num_questions * 0.7:
+                            return quiz
+                        logger.warning(f"[Quiz] Only got {len(quiz.questions)}/{num_questions}, will retry")
+                    else:
+                        logger.warning(f"[Quiz] Attempt {attempt+1}: all questions failed structural validation, retrying")
+                else:
+                    logger.warning(f"[Quiz] Attempt {attempt+1}: parsed 0 questions, retrying")
             except Exception as e:
                 logger.warning(f"[Quiz] Attempt {attempt+1} failed: {type(e).__name__}: {e}")
             if attempt < self.max_retries - 1:
                 await asyncio.sleep(1)
         
+        # Fallback: return the best attempt we had, even if below threshold
+        if best_quiz and best_quiz.questions:
+            logger.info(f"[Quiz] Returning best attempt with {len(best_quiz.questions)} questions (threshold not met)")
+            return best_quiz
         return QuizOutput(questions=[], topic="Quiz generation failed", source_summary="All retries exhausted")
+
+    # ── Meta-phrase scrubber ────────────────────────────────────────────────
+    # Some models still leak references to "the source / text / passage / article"
+    # even when instructed not to.  These patterns strip the leaked phrasing
+    # deterministically so the learner sees a self-contained question.
+    _META_PHRASE_PATTERNS = [
+        # Trailing ", as described in the (same) source/text/article/passage/document"
+        re.compile(r"[,;]?\s*as (?:described|mentioned|stated|explained|noted|outlined|discussed|shown) in (?:the )?(?:same |above |provided |given |preceding )?(?:source|text|article|passage|document|content|reading|material)s?\b\.?", re.IGNORECASE),
+        # Leading "According to the source/text/passage/etc., "
+        re.compile(r"\baccording to (?:the |this )?(?:same |above |provided |given )?(?:source|text|article|passage|document|content|reading|author|material)s?[,:]?\s*", re.IGNORECASE),
+        # "In the (same/above) source/text/passage/..."
+        re.compile(r"\bin (?:the |this )(?:same |above |provided |given |preceding )?(?:source|text|article|passage|document|content|reading|material)s?[,:]?\s*", re.IGNORECASE),
+        # "The (author|passage|text|article) (states|says|mentions|claims|argues|notes) "
+        re.compile(r"\bthe (?:author|passage|text|article|document|source)s? (?:states?|says?|mentions?|claims?|argues?|notes?|describes?|explains?)\b[,:]?\s*", re.IGNORECASE),
+        # "Based on the (provided|given) (content|source|text)"
+        re.compile(r"\bbased on (?:the |this )?(?:provided |given |above )?(?:source|text|article|passage|document|content|reading|material)s?[,:]?\s*", re.IGNORECASE),
+        # "as (explained|mentioned|noted) (above|earlier|previously)"
+        re.compile(r"\bas (?:explained|mentioned|noted|stated|described|shown|discussed) (?:above|earlier|previously|before)\b[,:]?\s*", re.IGNORECASE),
+        # Bare "in the same source/text/article/passage"
+        re.compile(r"\bin the same (?:source|text|article|passage|document|content|reading|material)s?\b", re.IGNORECASE),
+    ]
+
+    def _scrub_meta_phrases(self, text: str) -> str:
+        """Remove context-leaking phrases from a question.  Keeps the semantic
+        content intact while stripping references to "the source", "the text",
+        etc.  Also tidies up double-spaces and stray punctuation left behind."""
+        if not text:
+            return text
+        scrubbed = text
+        for pat in self._META_PHRASE_PATTERNS:
+            scrubbed = pat.sub(" ", scrubbed)
+        # Collapse whitespace & tidy punctuation that may be left orphaned
+        scrubbed = re.sub(r"\s+", " ", scrubbed).strip()
+        scrubbed = re.sub(r"\s+([,.;:?!])", r"\1", scrubbed)
+        scrubbed = re.sub(r"([,;:])\s*([.?!])", r"\2", scrubbed)
+        # Capitalize the first character if we've stripped a leading clause
+        if scrubbed and scrubbed[0].islower():
+            scrubbed = scrubbed[0].upper() + scrubbed[1:]
+        return scrubbed
 
     def _parse_quiz_result(self, result: Dict[str, Any], difficulty: str, source_names: Optional[List[str]] = None) -> Optional[QuizOutput]:
         """Parse quiz JSON from LLM with flexible field matching."""
@@ -326,6 +556,8 @@ Return ONLY a JSON object like this:
             # Try direct parse first
             quiz = QuizOutput(**result)
             if quiz.questions:
+                for _q in quiz.questions:
+                    _q.question = self._scrub_meta_phrases(_q.question)
                 return quiz
         except Exception as _e:
             logger.debug(f"[structured-llm] {type(_e).__name__}: {_e}")
@@ -433,17 +665,39 @@ Return ONLY a JSON object like this:
                             if raw_lower in sn.lower() or sn.lower() in raw_lower:
                                 validated_ref = sn
                                 break
+                        # Fuzzy: if still no match, keep the raw name so the UI at least shows a source link
+                        if not validated_ref:
+                            validated_ref = raw_ref
                 elif raw_ref:
                     validated_ref = raw_ref  # No source_names to validate against
 
+                # Scrub meta-phrases from both question and explanation
+                scrubbed_question = self._scrub_meta_phrases(
+                    q.get('question', q.get('text', q.get('q', '')))
+                )
+                raw_explanation = q.get('explanation', q.get('rationale', q.get('reason', 'See source material')))
+                scrubbed_explanation = self._scrub_meta_phrases(raw_explanation)
+
+                # Parse visual diagram fields if present
+                visual_svg = q.get('visual_svg') or q.get('diagram_svg') or q.get('svg')
+                visual_labels_raw = q.get('visual_labels') or q.get('diagram_labels')
+                visual_labels = None
+                if visual_labels_raw and isinstance(visual_labels_raw, dict):
+                    visual_labels = VisualLabels(
+                        shown=visual_labels_raw.get('shown', []),
+                        hidden=visual_labels_raw.get('hidden', [])
+                    )
+
                 parsed_questions.append(QuizQuestion(
-                    question=q.get('question', q.get('text', q.get('q', ''))),
+                    question=scrubbed_question,
                     answer=answer,
-                    explanation=q.get('explanation', q.get('rationale', q.get('reason', 'See source material'))),
+                    explanation=scrubbed_explanation,
                     difficulty=q.get('difficulty', difficulty),
                     question_type=q_type,
                     options=options,
                     source_reference=validated_ref,
+                    visual_svg=visual_svg,
+                    visual_labels=visual_labels,
                 ))
             except Exception as e:
                 logger.debug(f"[Quiz] Skipping malformed question: {e}")
@@ -457,7 +711,158 @@ Return ONLY a JSON object like this:
             topic=result.get('topic', result.get('title', result.get('subject', ''))),
             source_summary=result.get('source_summary', result.get('summary', '')),
         )
-    
+
+    def _sanitize_quiz(self, questions: List[QuizQuestion], allowed_types: Optional[List[str]] = None) -> List[QuizQuestion]:
+        """Fast deterministic filter — drops structurally-invalid questions.
+
+        This replaces the heavy LLM-based _verify_quiz_answers with cheap
+        checks that catch the most common generation mistakes:
+        empty text, answer-not-in-options, questions that are too short,
+        or answers that are too long for the chosen question type.
+        It runs in microseconds and never blocks on a second model call.
+        
+        allowed_types: if provided, only convert to types in this list.
+        Otherwise drop rather than convert (preserves variety).
+        """
+        # Default to a permissive set if none provided (backwards compat)
+        allowed = set(allowed_types) if allowed_types else {
+            'multiple_choice', 'true_false', 'fill_in_the_blank',
+            'short_answer', 'spot_the_error', 'visual_diagram'
+        }
+        can_fallback_short = 'short_answer' in allowed
+        kept: List[QuizQuestion] = []
+        for q in questions:
+            # Must have non-empty question and answer
+            if not q.question or len(q.question.strip()) < 10:
+                logger.info(f"[Quiz Sanitize] Dropped — question too short/empty: '{q.question[:40] if q.question else ''}'")
+                continue
+            if not q.answer or len(str(q.answer).strip()) < 1:
+                logger.info(f"[Quiz Sanitize] Dropped — empty answer for question: '{q.question[:40]}'")
+                continue
+
+            # multiple_choice: answer must be in options (should already be true
+            # from parsing, but re-check as a safety net)
+            if q.question_type == 'multiple_choice' and q.options:
+                opts = [str(o).strip() for o in q.options]
+                ans = str(q.answer).strip()
+                if ans not in opts:
+                    # Try case-insensitive match
+                    lower_opts = [o.lower() for o in opts]
+                    ans_lower = ans.lower()
+                    if ans_lower in lower_opts:
+                        idx = lower_opts.index(ans_lower)
+                        q.answer = opts[idx]
+                    else:
+                        # Try A/B/C/D letter answer (e.g. "A" or "A.")
+                        first_char = ans.strip('.').strip().upper()
+                        if len(first_char) == 1 and first_char in 'ABCD':
+                            idx = ord(first_char) - ord('A')
+                            if idx < len(opts):
+                                q.answer = opts[idx]
+                                logger.info(f"[Quiz Sanitize] Converted letter answer '{ans}' to option: '{opts[idx][:40]}'")
+                            else:
+                                logger.info(f"[Quiz Sanitize] MC letter answer out of range, dropping: '{q.question[:40]}'")
+                                continue
+                        else:
+                            # Try substring match (answer contained in option or vice versa)
+                            matched = False
+                            for i, opt in enumerate(opts):
+                                if ans_lower in opt.lower() or opt.lower() in ans_lower:
+                                    q.answer = opts[i]
+                                    logger.info(f"[Quiz Sanitize] Fuzzy-matched MC answer '{ans[:30]}' → '{opts[i][:30]}'")
+                                    matched = True
+                                    break
+                            if not matched:
+                                # Drop rather than convert — preserves type variety.
+                                # If short_answer IS in allowed types, convert to preserve the card.
+                                if can_fallback_short:
+                                    logger.info(f"[Quiz Sanitize] MC answer not in options, converting to short_answer: q='{q.question[:40]}' a='{ans[:30]}'")
+                                    q.question_type = 'short_answer'
+                                    q.options = None
+                                else:
+                                    logger.info(f"[Quiz Sanitize] MC answer not in options, dropping (short_answer not allowed): q='{q.question[:40]}' a='{ans[:30]}'")
+                                    continue
+                # MC needs 2+ options; if fewer, drop or convert
+                if q.question_type == 'multiple_choice':
+                    if len(opts) < 2:
+                        logger.info(f"[Quiz Sanitize] MC has < 2 options, dropping")
+                        continue
+                    if len(opts) < 4:
+                        if can_fallback_short:
+                            logger.info(f"[Quiz Sanitize] MC has only {len(opts)} options, converting to short_answer")
+                            q.question_type = 'short_answer'
+                            q.options = None
+                        else:
+                            logger.info(f"[Quiz Sanitize] MC has only {len(opts)} options, dropping")
+                            continue
+
+            # Answer length enforcement: flashcard answers must be quick to type/read
+            # If too long, keep the question but truncate/convert rather than dropping
+            answer_word_count = len(str(q.answer).strip().split())
+            if q.question_type == 'short_answer' and answer_word_count > 12:
+                # Try to extract a short answer from the first sentence
+                truncated = str(q.answer).strip().split('.')[0]
+                if len(truncated.split()) <= 12:
+                    q.answer = truncated
+                    logger.info(f"[Quiz Sanitize] Truncated short_answer from {answer_word_count} to {len(truncated.split())} words")
+                else:
+                    logger.info(f"[Quiz Sanitize] short_answer too long ({answer_word_count} words), dropping: '{q.question[:40]}'")
+                    continue
+            if q.question_type == 'fill_in_the_blank' and answer_word_count > 6:
+                logger.info(f"[Quiz Sanitize] fill_in_the_blank too long ({answer_word_count} words), converting to short_answer: '{q.question[:40]}'")
+                q.question_type = 'short_answer'
+            if q.question_type == 'multiple_choice' and answer_word_count > 10:
+                logger.info(f"[Quiz Sanitize] MC answer too long ({answer_word_count} words), dropping: '{q.question[:40]}'")
+                continue
+
+            # Explanation length cap — truncate if the LLM dumped a wall of text
+            raw_explanation = str(q.explanation or '').strip()
+            if len(raw_explanation) > 300:
+                # Truncate at sentence boundary
+                truncated = raw_explanation[:300]
+                last_period = truncated.rfind('.')
+                if last_period > 200:
+                    q.explanation = truncated[:last_period + 1]
+                else:
+                    q.explanation = truncated.rsplit(' ', 1)[0] + '…'
+                logger.info(f"[Quiz Sanitize] Truncated explanation from {len(raw_explanation)} to {len(q.explanation)} chars")
+
+            # visual_diagram: must have valid SVG and options; if not, convert to multiple_choice or drop
+            if q.question_type == 'visual_diagram':
+                if not q.visual_svg or len(q.visual_svg.strip()) < 50:
+                    logger.warning(f"[Quiz Sanitize] visual_diagram missing valid SVG, converting to multiple_choice")
+                    q.question_type = 'multiple_choice'
+                    # If no options after conversion, will be checked below
+                elif not q.options or len(q.options) < 2:
+                    logger.warning(f"[Quiz Sanitize] visual_diagram missing options, dropping")
+                    continue
+
+            # true_false: ensure options are ['True', 'False']
+            if q.question_type == 'true_false':
+                q.options = ['True', 'False']
+                # Permissive answer matching - check if true/false appears in the answer
+                ans_lower = str(q.answer).strip().lower()
+                if ans_lower in ('true', 't', 'yes', '1') or ans_lower.startswith('true'):
+                    q.answer = 'True'
+                elif ans_lower in ('false', 'f', 'no', '0') or ans_lower.startswith('false'):
+                    q.answer = 'False'
+                elif 'true' in ans_lower and 'false' not in ans_lower:
+                    q.answer = 'True'
+                elif 'false' in ans_lower and 'true' not in ans_lower:
+                    q.answer = 'False'
+                else:
+                    logger.warning(f"[Quiz Sanitize] true_false answer '{q.answer[:60]}' not valid, dropping")
+                    continue
+
+            # fill_in_the_blank / short_answer / spot_the_error: no extra checks needed
+
+            kept.append(q)
+
+        dropped = len(questions) - len(kept)
+        if dropped:
+            logger.info(f"[Quiz Sanitize] Kept {len(kept)}/{len(questions)} ({dropped} dropped)")
+        return kept
+
     async def _verify_quiz_answers(self, questions: List[QuizQuestion], source_content: str) -> List[QuizQuestion]:
         """Verify each quiz answer against source content. Drop questions with unsupported answers.
         
@@ -484,9 +889,9 @@ Reply with a JSON object:
 }}
 
 Rules:
-- "supported" = true ONLY if the source text explicitly states or directly implies the answer.
-- "supported" = false if the answer uses outside knowledge, is a hallucination, or contradicts the source.
-- Be STRICT. When in doubt, mark as false.
+- "supported" = true if the source text explicitly states, directly implies, or reasonably supports the answer.
+- "supported" = false ONLY if the answer clearly contradicts the source or is completely absent from it.
+- When in doubt, mark as TRUE — it is better to keep a borderline question than to drop a valid one.
 
 QUESTIONS TO VERIFY:
 {questions_text}"""
@@ -505,22 +910,33 @@ QUESTIONS TO VERIFY:
                 return questions
             
             # Build lookup: q_number → supported
+            # Default to True — only drop questions with explicit false + a reason
             supported_map = {}
             for v in verdicts:
                 q_num = v.get("q", 0)
-                supported_map[q_num] = v.get("supported", True)
-                if not v.get("supported", True):
+                explicitly_false = v.get("supported") is False and bool(v.get("reason", "").strip())
+                supported_map[q_num] = not explicitly_false
+                if explicitly_false:
                     logger.info(f"[Quiz Verify] REJECTED Q{q_num}: {v.get('reason', 'no reason')}")
             
             # Filter: keep only supported questions
             verified = []
             for i, q in enumerate(questions):
                 q_num = i + 1
-                if supported_map.get(q_num, True):  # Default to keeping if verdict missing
+                if supported_map.get(q_num, True):
                     verified.append(q)
                 else:
                     logger.warning(f"[Quiz Verify] Dropped question: '{q.question[:80]}' — answer not supported by source")
             
+            # Safety net: if verification wiped more than half the deck, skip the filter.
+            # This prevents the verify LLM from silently destroying a valid deck.
+            if len(verified) < max(2, len(questions) // 2):
+                logger.warning(
+                    f"[Quiz Verify] Verification dropped too many questions "
+                    f"({len(verified)}/{len(questions)}); keeping all to avoid empty deck."
+                )
+                return questions
+
             dropped = len(questions) - len(verified)
             if dropped > 0:
                 logger.info(f"[Quiz Verify] Kept {len(verified)}/{len(questions)} questions ({dropped} dropped as unsupported)")

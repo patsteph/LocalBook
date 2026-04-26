@@ -30,9 +30,10 @@ class WriteRequest(BaseModel):
     )
     format_style: str = Field(
         default="professional",
-        description="Style: professional, academic, casual, technical, blog, email"
+        description="Style: professional, academic, casual, technical, blog, email, voice_matched"
     )
     additional_instructions: Optional[str] = None
+    voice_profile: Optional[dict] = None
 
 
 class WriteFromSourcesRequest(BaseModel):
@@ -42,6 +43,7 @@ class WriteFromSourcesRequest(BaseModel):
     format_style: str = Field(default="professional")
     focus_topic: Optional[str] = None
     max_words: Optional[int] = Field(default=500, ge=50, le=2000)
+    voice_profile: Optional[dict] = None
 
 
 class WritingResponse(BaseModel):
@@ -104,6 +106,11 @@ async def get_available_formats() -> List[FormatOption]:
             value="executive_summary",
             label="Executive Summary",
             description="High-level overview for decision makers"
+        ),
+        FormatOption(
+            value="voice_matched",
+            label="My Voice",
+            description="Matches your unique writing style learned by the Voice Engine"
         )
     ]
 
@@ -130,6 +137,20 @@ async def assist_writing(request: WriteRequest):
     
     # Add additional instructions if provided
     content = request.content
+    
+    if request.voice_profile or request.format_style == 'voice_matched':
+        vp = request.voice_profile or {}
+        voice_block = (
+            f"VOICE PROFILE — Match this person's unique writing style:\n"
+            f"- Vocabulary: {vp.get('vocabulary', 'Matches their level of expertise')}\n"
+            f"- Sentence style: {vp.get('style_markers', 'Matches their typical structure')}\n"
+            f"- Thinking approach: {vp.get('thinking_framework', 'Matches their logic')}\n"
+            f"- Formality: {vp.get('formality', 'Matches their tone')}\n\n"
+            f"STRICT INSTRUCTION: Rewrite/generate content so it sounds like it was written by this person. "
+            f"Preserve their idioms, sentence length patterns, and word choices.\n\n"
+        )
+        content = voice_block + content
+
     if request.additional_instructions:
         content = f"Additional instructions: {request.additional_instructions}\n\nContent:\n{content}"
     
@@ -171,6 +192,18 @@ async def write_from_sources(request: WriteFromSourcesRequest):
     if request.max_words:
         combined_content = f"Target length: approximately {request.max_words} words\n\n{combined_content}"
     
+    if request.voice_profile or request.format_style == 'voice_matched':
+        vp = request.voice_profile or {}
+        voice_block = (
+            f"VOICE PROFILE — Match this person's unique writing style:\n"
+            f"- Vocabulary: {vp.get('vocabulary', 'Matches their level of expertise')}\n"
+            f"- Sentence style: {vp.get('style_markers', 'Matches their typical structure')}\n"
+            f"- Thinking approach: {vp.get('thinking_framework', 'Matches their logic')}\n"
+            f"- Formality: {vp.get('formality', 'Matches their tone')}\n\n"
+            f"STRICT INSTRUCTION: Generate content so it sounds like it was written by this person.\n\n"
+        )
+        combined_content = voice_block + combined_content
+    
     result = await structured_llm.assist_writing(
         content=combined_content,
         task=request.task,
@@ -191,6 +224,7 @@ class TransformTextRequest(BaseModel):
     format_style: str = Field(default="professional")
     max_words: Optional[int] = Field(default=500, ge=50, le=2000)
     notebook_id: Optional[str] = Field(default=None, description="If provided, use semantic context from this notebook")
+    voice_profile: Optional[dict] = None
 
 
 @router.post("/transform", response_model=WritingResponse)
@@ -216,6 +250,19 @@ async def transform_text(request: TransformTextRequest):
             
     if request.max_words:
         content = f"Target length: approximately {request.max_words} words\n\n{content}"
+    
+    if request.voice_profile or request.format_style == 'voice_matched':
+        vp = request.voice_profile or {}
+        voice_block = (
+            f"VOICE PROFILE — Match this person's unique writing style:\n"
+            f"- Vocabulary: {vp.get('vocabulary', 'Matches their level of expertise')}\n"
+            f"- Sentence style: {vp.get('style_markers', 'Matches their typical structure')}\n"
+            f"- Thinking approach: {vp.get('thinking_framework', 'Matches their logic')}\n"
+            f"- Formality: {vp.get('formality', 'Matches their tone')}\n\n"
+            f"STRICT INSTRUCTION: Transform the text so it sounds like it was written by this person. "
+            f"If the task is 'expand' or 'continue', maintain their voice exactly.\n\n"
+        )
+        content = voice_block + content
     
     result = await structured_llm.assist_writing(
         content=content,

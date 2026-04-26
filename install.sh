@@ -480,6 +480,28 @@ main() {
 
         cd "$INSTALL_DIR"
 
+        # Build the Continuity Camera sidecar FIRST — required by
+        # tauri.conf.json's externalBin entry. Without it the Tauri build
+        # fails. Signs adhoc when no Developer ID is available (the common
+        # case for end-users), which is fine for local execution.
+        if [ -f "src-tauri/tools/continuity-camera/build.sh" ]; then
+            info "Building Continuity Camera helper (for iPhone scanning)..."
+            if bash src-tauri/tools/continuity-camera/build.sh >/dev/null 2>&1; then
+                success "Continuity Camera helper built"
+            else
+                warn "Continuity Camera helper build failed (iPhone scanning will be unavailable)"
+                # Non-fatal for the overall install — user can still use the
+                # app, just without the "📱 Scan Documents" feature. But the
+                # Tauri build below will still need the binary to exist.
+                mkdir -p src-tauri/binaries
+                # Create empty placeholders so Tauri's externalBin validation
+                # passes — the sidecar will just fail at runtime if invoked.
+                touch src-tauri/binaries/continuity-camera-aarch64-apple-darwin
+                touch src-tauri/binaries/continuity-camera-x86_64-apple-darwin
+                chmod +x src-tauri/binaries/continuity-camera-*-apple-darwin
+            fi
+        fi
+
         # Install frontend dependencies (npm ci = exact versions from lock file)
         info "Installing frontend dependencies..."
         npm ci --silent || { fail "Failed to install frontend dependencies"; exit 1; }

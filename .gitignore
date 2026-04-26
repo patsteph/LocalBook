@@ -131,3 +131,25 @@ backend/evaluator/results/
 # Release / build tooling (maintainer-only)
 release.sh
 scripts/
+
+# Code signing + notarization artifacts (NEVER commit to git)
+# Certificate/keystore files — should only ever live in macOS keychain
+*.p12
+*.pfx
+*.cer
+*.crt
+*.der
+*.provisionprofile
+*.mobileprovision
+certs/
+certificates/
+.certificates/
+# Notarization submission zips (intermediate files)
+LocalBook-notary.zip
+*-notary.zip
+# Signing-identity convenience file (if any maintainer chooses to use one)
+.signing.env
+
+# Sidecar build outputs (universal binary is regenerated on every build)
+src-tauri/binaries/
+src-tauri/tools/continuity-camera/dist/

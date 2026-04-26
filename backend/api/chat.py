@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any
 from services.rag_engine import rag_engine
 from services.query_orchestrator import get_orchestrator
 from services.event_logger import log_chat_qa
+from services.voice_engine import voice_engine
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,9 @@ _CURATOR_HELP = """**@curator — Your cross-notebook research advisor**
 | `@curator enable/disable overwatch` | Toggle whether the Curator chimes in during regular chat |
 | `@curator exclude <notebook>` | Exclude a notebook from cross-notebook operations |
 | `@curator show profile` | Show current Curator configuration |
+| `@curator brain status` | Show what I understand about your notebooks and detected connections |
+| `@curator dismiss that connection` | Tell me a cross-notebook connection is wrong — I'll never show it again |
+| `@curator that connection is useful` | Confirm a connection is valuable — I'll prioritize it in future briefs |
 | `@curator ?` | Show this help |"""
 
 _COLLECTOR_HELP = """**@collector — Your automated content collection agent**
@@ -77,6 +81,7 @@ _STUDIO_HELP = """**@studio — Create content from your conversation**
 | `@studio make a podcast on this` | Generate a **podcast/audio** based on the current conversation |
 | `@studio create a study guide` | Generate a **document** (brief, guide, cheat sheet, etc.) |
 | `@studio quiz me on this` | Generate a **quiz** to test your understanding |
+| `@studio make flash cards on this` | Drop an interactive **Flash Cards** deck (3–50) onto the canvas — answer by click, type, or voice; the tutor reads feedback aloud |
 | `@studio visualize this` | Create a **diagram, flowchart, or mind map** |
 | `@studio make a video explainer` | Create a **video** with narration |
 | `@studio ?` | Show this help |
@@ -155,6 +160,14 @@ async def query(chat_query: ChatQuery):
     from services.visual_cache import visual_cache
     await visual_cache.clear_notebook(chat_query.notebook_id)
     
+    if chat_query.question and chat_query.question.strip():
+        voice_engine.add_observation(
+            text_sample=chat_query.question,
+            source_type="chat",
+            voice_weight=0.5,
+            notebook_id=chat_query.notebook_id
+        )
+    
     try:
         # v0.60: Use orchestrator for complex query detection and decomposition
         if chat_query.use_orchestrator:
@@ -203,7 +216,14 @@ async def query_stream(chat_query: ChatQuery):
     - target='collector': Collection status/commands via Collector
     - target=None: Default RAG pipeline
     """
-    
+    if chat_query.question.strip():
+        voice_engine.add_observation(
+            text_sample=chat_query.question,
+            source_type="chat",
+            voice_weight=0.5,
+            notebook_id=chat_query.notebook_id
+        )
+
     # @mention routing — delegate to specialized agent streams via the
     # multi-intent dispatcher (supports compound messages like
     # "add this URL and set my focus to X").
@@ -621,7 +641,7 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
             freq = synthesis.get("insight_frequency", "daily") if isinstance(synthesis, dict) else "daily"
             lines.append(f"- **Insight frequency:** {freq}")
             reply = "\n".join(lines)
-            follow_ups = ['Change your name', 'Change your personality', 'Disable overwatch']
+            follow_ups = ['Change your name', 'Change your personality', 'Disable overwatch', 'Brain status']
             handled = True
 
         # -----------------------------------------------------------------
@@ -712,6 +732,130 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
                 follow_ups = ['Show collection schedule', 'Discover patterns', 'What patterns exist?']
             except Exception as se:
                 reply = f"Could not retrieve schedule status: {se}"
+            handled = True
+
+        # -----------------------------------------------------------------
+        # BRAIN STATUS
+        # -----------------------------------------------------------------
+        elif intent == "brain_status":
+            yield f"data: {json.dumps({'type': 'status', 'message': f'{curator_name} checking brain status...', 'query_type': 'curator'})}\n\n"
+            try:
+                from services.curator_brain import curator_brain
+                stats = curator_brain.get_stats()
+                digests = curator_brain.get_all_digests()
+                connections = curator_brain.get_active_connections()
+
+                lines = [f"**{curator_name}'s Research Brain**\n"]
+                lines.append(f"- **Notebooks with digests:** {stats.get('digests_total', 0)} ({stats.get('digests_dirty', 0)} pending rebuild)")
+                lines.append(f"- **Active connections:** {stats.get('connections_active', 0)}")
+                lines.append(f"- **Unsurfaced reflections:** {stats.get('reflections_unsurfaced', 0)}")
+
+                if digests:
+                    lines.append("\n**What I understand about each notebook:**")
+                    for d in digests:
+                        summary = d.get("current_summary", "")
+                        if summary:
+                            lines.append(f"\n**{d['name']}**")
+                            lines.append(summary)
+                        else:
+                            lines.append(f"\n**{d['name']}** — digest not yet built")
+
+                if connections:
+                    lines.append("\n**Cross-notebook connections I've detected:**")
+                    for i, c in enumerate(connections[:8], 1):
+                        strength_bar = "▓" * int(c["strength"] * 5) + "░" * (5 - int(c["strength"] * 5))
+                        lines.append(f"{i}. [{strength_bar}] {c['description']}")
+                    lines.append("\n*Say **\"dismiss connection 2\"** or **\"connection 3 is useful\"** to give me feedback.*")
+                elif stats.get('digests_total', 0) > 0:
+                    lines.append("\n*No cross-notebook connections detected yet. More sources needed across notebooks.*")
+                else:
+                    lines.append("\n*Brain not yet built — will populate after the next consolidation cycle (within 6 hours of adding sources).*")
+
+                reply = "\n".join(lines)
+                follow_ups = ['Find patterns', 'Morning brief', 'Discover connections']
+            except Exception as bse:
+                reply = f"Could not retrieve brain status: {bse}"
+            handled = True
+
+        # -----------------------------------------------------------------
+        # DISMISS CONNECTION
+        # -----------------------------------------------------------------
+        elif intent == "dismiss_connection":
+            try:
+                from services.curator_brain import curator_brain
+                conn_id = params.get("connection_id")
+
+                # If no ID given, show active connections so user can specify
+                if conn_id is None:
+                    connections = curator_brain.get_active_connections()
+                    if not connections:
+                        reply = "No active connections to dismiss right now."
+                    else:
+                        lines = ["Which connection would you like to dismiss? Say the number.\n"]
+                        for i, c in enumerate(connections[:8], 1):
+                            lines.append(f"{i}. {c['description']}")
+                        reply = "\n".join(lines)
+                else:
+                    # User specified an ID — look it up by position (1-based) or raw ID
+                    connections = curator_brain.get_active_connections()
+                    target_id = None
+                    try:
+                        idx = int(conn_id)
+                        # Try 1-based list position first
+                        if 1 <= idx <= len(connections):
+                            target_id = connections[idx - 1]["id"]
+                        else:
+                            # Fall back to raw DB id
+                            target_id = idx
+                    except (TypeError, ValueError):
+                        pass
+
+                    if target_id is not None and curator_brain.dismiss_connection(target_id):
+                        reply = f"Done — I'll stop surfacing that connection. Thanks for the feedback; it helps me calibrate."
+                    else:
+                        reply = f"Couldn't find connection #{conn_id}. Try **@curator brain status** to see the numbered list."
+                follow_ups = ['Brain status', 'Find patterns', 'Show my profile']
+            except Exception as dce:
+                reply = f"Couldn't dismiss connection: {dce}"
+            handled = True
+
+        # -----------------------------------------------------------------
+        # APPROVE CONNECTION (thumbs up)
+        # -----------------------------------------------------------------
+        elif intent == "approve_connection":
+            try:
+                from services.curator_brain import curator_brain
+                conn_id = params.get("connection_id")
+
+                # If no ID given, show active connections so user can specify
+                if conn_id is None:
+                    connections = curator_brain.get_active_connections()
+                    if not connections:
+                        reply = "No active connections to confirm right now."
+                    else:
+                        lines = ["Which connection are you confirming? Say the number.\n"]
+                        for i, c in enumerate(connections[:8], 1):
+                            lines.append(f"{i}. {c['description']}")
+                        reply = "\n".join(lines)
+                else:
+                    connections = curator_brain.get_active_connections()
+                    target_id = None
+                    try:
+                        idx = int(conn_id)
+                        if 1 <= idx <= len(connections):
+                            target_id = connections[idx - 1]["id"]
+                        else:
+                            target_id = idx
+                    except (TypeError, ValueError):
+                        pass
+
+                    if target_id is not None and curator_brain.thumbs_up_connection(target_id):
+                        reply = f"Noted — I'll prioritize that connection in future briefs and overwatch. Good signal, thank you."
+                    else:
+                        reply = f"Couldn't find connection #{conn_id}. Try **@curator brain status** to see the numbered list."
+                follow_ups = ['Brain status', 'Find patterns', 'Morning brief']
+            except Exception as ace:
+                reply = f"Couldn't confirm connection: {ace}"
             handled = True
 
         # -----------------------------------------------------------------
@@ -2480,6 +2624,55 @@ async def _stream_studio(chat_query: ChatQuery, injected_action: Optional[Dict[s
 
             except Exception as qe:
                 reply = f"Quiz generation failed: {qe}"
+
+        # -----------------------------------------------------------------
+        # GENERATE FLASH CARDS (reuses quiz generator, directed to Cards tab)
+        # -----------------------------------------------------------------
+        elif intent == "generate_flashcards":
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Studio generating flash cards...', 'query_type': 'studio'})}\n\n"
+            try:
+                from api.quiz import generate_quiz as _gen_quiz, GenerateQuizRequest
+
+                # Flash Cards accept 3..50 (backend model is 1..50, we tighten here)
+                num_cards = int(params.get("num_cards", params.get("num_questions", 10)))
+                if num_cards < 3: num_cards = 3
+                if num_cards > 50: num_cards = 50
+                difficulty = (params.get("difficulty") or "medium").strip().lower()
+                if difficulty not in ("easy", "medium", "hard"):
+                    difficulty = "medium"
+
+                # Flash-card-friendly mix: mostly short_answer (free recall) plus a
+                # few multiple_choice for quick wins. No T/F (too easy to guess on
+                # flashcards) and no spot_the_error (needs highlighted context).
+                result = await _gen_quiz(GenerateQuizRequest(
+                    notebook_id=notebook_id,
+                    num_questions=num_cards,
+                    difficulty=difficulty,
+                    topic=topic,
+                    chat_context=chat_context,
+                    question_types=["short_answer", "multiple_choice", "fill_in_the_blank"],
+                ))
+                questions = result.questions
+                log_content_generated(notebook_id, "flashcards", "flashcards", topic or "chat-context")
+
+                lines = [
+                    f"**Flash Cards ready!** 🧠  ({len(questions)} cards, {difficulty})",
+                    f"",
+                    f"An interactive deck has been dropped onto your canvas — answer by click, type, or voice. "
+                    f"Your tutor will read feedback aloud when you miss one.",
+                    f"",
+                ]
+                # Preview the first few card fronts
+                for i, q_item in enumerate(questions[:3]):
+                    lines.append(f"**Card {i+1}.** {q_item.question}")
+                if len(questions) > 3:
+                    lines.append(f"")
+                    lines.append(f"*...plus {len(questions) - 3} more cards waiting.*")
+                reply = "\n".join(lines)
+                follow_ups = ['Make it harder', 'Give me fewer cards', 'Switch to a full quiz']
+
+            except Exception as fe:
+                reply = f"Flash card generation failed: {fe}"
 
         # -----------------------------------------------------------------
         # GENERATE VISUAL (diagram, chart, etc.)

@@ -1,6 +1,7 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Sparkles, Expand, Shrink, CheckCheck, PenLine, BookOpen, ArrowRight, X, Loader2 } from 'lucide-react';
 import { writingService } from '../services/writing';
+import { API_BASE_URL } from '../services/api';
 
 interface WritingAction {
   id: string;
@@ -45,6 +46,22 @@ export const WritingAssistBar: React.FC<WritingAssistBarProps> = ({
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ text: string; action: string; isSelection: boolean } | null>(null);
+  const [voiceProfile, setVoiceProfile] = useState<any>(null);
+
+  useEffect(() => {
+    const fetchVoiceProfile = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/settings/voice-profile`);
+        if (res.ok) {
+          const data = await res.json();
+          if (Object.keys(data).length > 0) setVoiceProfile(data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch voice profile for assistant", err);
+      }
+    };
+    fetchVoiceProfile();
+  }, []);
 
   const handleAction = useCallback(async (action: WritingAction) => {
     const targetText = selectedText?.trim() || text.trim();
@@ -55,8 +72,10 @@ export const WritingAssistBar: React.FC<WritingAssistBarProps> = ({
       const result = await writingService.transformText(
         targetText,
         action.task,
-        'professional',
-        Math.max(50, Math.min(2000, Math.round(targetText.split(/\s+/).length * (action.task === 'expand' ? 2 : action.task === 'summarize' ? 0.5 : 1.2))))
+        voiceProfile ? 'voice_matched' : 'professional',
+        Math.max(50, Math.min(2000, Math.round(targetText.split(/\s+/).length * (action.task === 'expand' ? 2 : action.task === 'summarize' ? 0.5 : 1.2)))),
+        undefined,
+        voiceProfile
       );
       if (result.content) {
         setPreview({
@@ -78,8 +97,10 @@ export const WritingAssistBar: React.FC<WritingAssistBarProps> = ({
       const result = await writingService.transformText(
         `Continue writing from where this text ends. Maintain the same voice, style, and topic:\n\n${text}`,
         'expand',
-        'professional',
-        200
+        voiceProfile ? 'voice_matched' : 'professional',
+        200,
+        undefined,
+        voiceProfile
       );
       if (result.content) {
         onContinue(result.content);

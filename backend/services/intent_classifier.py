@@ -26,6 +26,9 @@ CURATOR_INTENTS: List[Dict[str, str]] = [
     {"id": "show_profile", "desc": "User wants to see the curator's current configuration or settings", "params": "none"},
     {"id": "note_themes", "desc": "User wants to extract themes from their notes, suggest keywords for the collector based on notes, or connect their notes to collector searches", "params": "none"},
     {"id": "collection_schedule", "desc": "User wants to see the collection schedule, when collectors last ran, what they found, or overall collection status across all notebooks", "params": "none"},
+    {"id": "brain_status", "desc": "User wants to see the brain status, notebook digests, cross-notebook connections, or what the Curator currently understands about their research", "params": "none"},
+    {"id": "dismiss_connection", "desc": "User wants to dismiss, ignore, or remove a cross-notebook connection — says it is wrong, not useful, or they don't want to see it again", "params": "connection_id: integer ID of the connection if the user specifies it"},
+    {"id": "approve_connection", "desc": "User wants to confirm, approve, or thumbs-up a cross-notebook connection — says it is useful, accurate, or interesting", "params": "connection_id: integer ID of the connection if the user specifies it"},
     {"id": "cross_notebook_search", "desc": "User is asking a question that requires searching across notebooks (default for general questions)", "params": "query: the search question"},
 ]
 
@@ -38,7 +41,8 @@ RESEARCH_INTENTS: List[Dict[str, str]] = [
 STUDIO_INTENTS: List[Dict[str, str]] = [
     {"id": "generate_audio", "desc": "User wants to create a podcast, audio, interview, discussion, or listen to content. Keywords: podcast, audio, listen, interview, discussion, conversation, debate, hosts", "params": "topic: the topic or focus, skill_id: podcast style if specified (podcast/interview/feynman_curriculum/deep_analysis), host1_gender: male or female, host2_gender: male or female, duration_minutes: length if specified"},
     {"id": "generate_document", "desc": "User wants to create a written document, summary, report, brief, study guide, cheat sheet, or any text-based content", "params": "topic: the topic or focus, skill_id: document type if clear (executive_brief/study_guide/cheat_sheet/research_summary/white_paper/lesson_plan), style: writing style if mentioned"},
-    {"id": "generate_quiz", "desc": "User wants to create a quiz, test, practice questions, or knowledge check", "params": "topic: the topic or focus, num_questions: number of questions if specified, difficulty: easy/medium/hard if specified"},
+    {"id": "generate_quiz", "desc": "User wants to create a quiz, test, practice questions, or knowledge check — multi-question test with options/grading. Keywords: quiz, test, assessment, questions.", "params": "topic: the topic or focus, num_questions: number of questions if specified, difficulty: easy/medium/hard if specified"},
+    {"id": "generate_flashcards", "desc": "User wants to create flash cards to study interactively — a deck of Q/A cards for self-review, one card at a time, with click/type/voice answering. Keywords: flash cards, flashcards, study cards, memorize, drill, study deck, learning cards. Prefer this over generate_quiz when the user mentions 'cards', 'study', 'memorize', or 'drill'.", "params": "topic: the topic or focus, num_cards: number of cards (3-50) if specified, difficulty: easy/medium/hard if specified"},
     {"id": "generate_visual", "desc": "User wants to create a visual, diagram, chart, infographic, mind map, flowchart, or any visual representation", "params": "topic: the topic or focus, visual_type: type of visual if specified"},
     {"id": "generate_video", "desc": "User wants to create a video, explainer video, or visual presentation with narration", "params": "topic: the topic or focus, duration_minutes: length if specified, visual_style: style if specified, voice: voice preference if specified"},
 ]

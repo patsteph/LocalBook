@@ -274,6 +274,69 @@ class Database:
         except Exception as _e:
             logger.warning(f"[database] {type(_e).__name__}: {_e}")
         
+        # -- canvas_notes --
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS canvas_notes (
+                id TEXT PRIMARY KEY,
+                notebook_id TEXT,
+                title TEXT NOT NULL DEFAULT '',
+                content_markdown TEXT DEFAULT '',
+                content_blocknote_json TEXT DEFAULT '{}',
+                source_type TEXT DEFAULT 'typed',
+                tags TEXT DEFAULT '[]',
+                note_type TEXT DEFAULT 'note',
+                voice_weight REAL DEFAULT 1.0,
+                original_image_paths TEXT DEFAULT '[]',
+                scan_confidence REAL,
+                wikilinks_out TEXT DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                saved_as_source_id TEXT,
+                FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE SET NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_canvas_notes_notebook ON canvas_notes(notebook_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_canvas_notes_updated ON canvas_notes(updated_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_canvas_notes_source_type ON canvas_notes(source_type)
+        """)
+
+        # -- voice_observations --
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS voice_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text_sample TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                voice_weight REAL DEFAULT 1.0,
+                word_count INTEGER DEFAULT 0,
+                notebook_id TEXT,
+                source_note_id TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE SET NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_voice_obs_created ON voice_observations(created_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_voice_obs_weight ON voice_observations(voice_weight DESC)
+        """)
+
+        # -- voice_profile (singleton row) --
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS voice_profile (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                profile_json TEXT NOT NULL DEFAULT '{}',
+                sample_count INTEGER DEFAULT 0,
+                last_rebuilt TEXT NOT NULL DEFAULT '',
+                rebuild_version INTEGER DEFAULT 0
+            )
+        """)
+
         # -- migration tracking --
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS migration_meta (

@@ -12,9 +12,16 @@ export interface QuizQuestion {
   answer: string;
   explanation: string;
   difficulty: string;
-  question_type: string;  // 'multiple_choice' or 'true_false'
+  question_type: string;  // 'multiple_choice', 'true_false', 'short_answer', 'fill_in_the_blank', 'visual_diagram'
   options?: string[];
   source_reference?: string;  // Name of source document
+  /** Visual diagram SVG for diagram-based flashcards (optional) */
+  visual_svg?: string;
+  /** Labels that are shown vs hidden in the diagram */
+  visual_labels?: {
+    shown: string[];
+    hidden: string[];  // The answer should be one of these
+  };
 }
 
 export interface Quiz {
@@ -100,7 +107,16 @@ export const quizService = {
         ...(questionTypes?.length ? { question_types: questionTypes } : {}),
       }),
     });
-    if (!response.ok) throw new Error('Failed to generate quiz');
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const body = await response.json();
+        detail = body?.detail || body?.message || JSON.stringify(body);
+      } catch {
+        try { detail = await response.text(); } catch {}
+      }
+      throw new Error(`Quiz generation failed (${response.status})${detail ? `: ${detail}` : ''}`);
+    }
     return response.json();
   },
 

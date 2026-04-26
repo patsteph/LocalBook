@@ -262,6 +262,14 @@ class CuratorAgent:
     def get_config(self) -> Dict[str, Any]:
         """Get current curator configuration"""
         return self.config
+
+    def _get_user_timezone(self) -> str:
+        """Return the user's configured timezone, defaulting to America/Chicago.
+
+        Set via @curator set timezone <tz> or directly in curator_config.yaml.
+        Stored as config key 'timezone'.
+        """
+        return self.config.get("timezone", "America/Chicago")
     
     # =========================================================================
     # Judgment System
@@ -712,15 +720,12 @@ Be concise and cite which notebook each insight comes from."""
         Gathers rich data per notebook, then uses LLM to synthesize into a
         narrative the user actually wants to read.
         """
-        now = datetime.utcnow()
-        away_duration = now - last_seen
-        
-        # Format duration
-        if away_duration.days > 0:
-            duration_str = f"{away_duration.days} day{'s' if away_duration.days != 1 else ''}"
-        else:
-            hours = away_duration.seconds // 3600
-            duration_str = f"{hours} hour{'s' if hours != 1 else ''}"
+        # Phase 1: Use deterministic temporal context instead of utcnow() guesswork
+        from services.temporal import TemporalContext
+        temporal = TemporalContext(user_tz=self._get_user_timezone())
+        now = temporal.now  # timezone-aware local time
+        duration_str = temporal.duration_from(last_seen)
+        temporal_block = temporal.for_prompt(last_seen)
         
         notebooks = await notebook_store.list()
         summaries = []
@@ -830,7 +835,7 @@ Be concise and cite which notebook each insight comes from."""
         
         # Generate LLM narrative — turn raw data into a newsletter people look forward to
         narrative = await self._synthesize_brief_narrative(
-            summaries, duration_str, cross_insight
+            summaries, duration_str, cross_insight, temporal_block
         )
         
         return MorningBrief(
@@ -1551,7 +1556,8 @@ Write the weekly wrap up now:"""
         self,
         summaries: List['NotebookSummary'],
         duration_str: str,
-        cross_insight: Optional[str]
+        cross_insight: Optional[str],
+        temporal_block: str = ""
     ) -> str:
         """
         Use LLM to turn raw notebook activity data into a newsletter-quality
@@ -1559,7 +1565,42 @@ Write the weekly wrap up now:"""
         """
         if not summaries:
             return ""
-        
+
+        # --- Phase 1C: Quiet Morning Gate ---
+        # If nothing substantive happened, skip the LLM and return one sentence.
+        # A notebook qualifies as "substantive" when it has new content, user
+        # activity, pending items, notes, highlights, or emerging topics.
+        # (Collector ran but found nothing does NOT qualify.)
+        has_meaningful_activity = any(
+            nb.items_added > 0
+            or nb.pending_approval > 0
+            or nb.collection_items_approved > 0
+            or nb.highlights_since > 0
+            or nb.notes_created > 0
+            or nb.interactions_since > 0
+            or nb.emerging_topics
+            or nb.recent_stories
+            for nb in summaries
+        )
+        if not has_meaningful_activity:
+            from services.temporal import TemporalContext
+            greeting = TemporalContext(self._get_user_timezone()).greeting_hint
+            return (
+                f"Good {greeting}. Quiet since you were last here — nothing I'd flag "
+                f"as worth your time. Your notebooks are where you left them."
+            )
+
+        # --- Phase 2: Inject Curator Brain context (pre-computed understanding) ---
+        # If digests exist, the LLM narrates from knowledge, not just activity stats.
+        # If brain is empty (first run), brain_context is '' and we fall through to
+        # today's stat-only behavior automatically.
+        brain_context = ""
+        try:
+            from services.curator_brain import curator_brain
+            brain_context = curator_brain.get_brief_context()
+        except Exception as _brain_err:
+            logger.debug(f"[curator] Brain context unavailable (non-fatal): {_brain_err}")
+
         # Pull recent memory context per notebook for richer narrative (ReMe integration)
         # Structured checkpoints from archival memory give the Curator awareness of
         # what the user has been discussing, deciding, and working on
@@ -1749,11 +1790,33 @@ Write the weekly wrap up now:"""
         raw_data = "\n\n".join(notebook_sections)
         if cross_insight:
             raw_data += f"\n\nCross-notebook insight: {cross_insight}"
-        
-        today_str = datetime.utcnow().strftime("%B %d, %Y")
-        prompt = f"""You are a personal research assistant writing a morning brief for today, {today_str}. The user was away for {duration_str}. Turn the following raw activity data into a short, engaging newsletter they'll look forward to reading. IMPORTANT: Today's date is {today_str} — use this exact date, do not invent a different date.
 
-RAW DATA:
+        # --- Phase 1A: Temporal block prepended to prompt ---
+        # If a temporal_block was provided (from generate_morning_brief), use it.
+        # Fallback: build one now so this function remains independently callable.
+        if not temporal_block:
+            from services.temporal import TemporalContext
+            from zoneinfo import ZoneInfo
+            temporal_block = TemporalContext(self._get_user_timezone()).for_prompt(
+                datetime.utcnow()  # best-effort fallback
+            )
+
+        today_str = datetime.now(tz=ZoneInfo(self._get_user_timezone())).strftime("%B %d, %Y")
+
+        # Build the brain context block for the prompt
+        brain_section = ""
+        if brain_context:
+            brain_section = (
+                f"\nYOUR UNDERSTANDING OF THE USER'S RESEARCH "
+                f"(from your ongoing analysis — use this to narrate from knowledge, not just stats):\n"
+                f"{brain_context}\n"
+            )
+
+        prompt = f"""{temporal_block}
+
+You are {self.name}, a personal research assistant writing a morning brief for today, {today_str}. The user was away for {duration_str}. Turn the following raw activity data into a short, engaging newsletter they'll look forward to reading. IMPORTANT: Today's date is {today_str} — use this exact date, do not invent a different date.
+{brain_section}
+ACTIVITY DATA:
 {raw_data}
 
 CRITICAL ACCURACY RULES — you MUST follow these:
@@ -1822,7 +1885,14 @@ Write the brief now:"""
             
             response = await ollama_client.generate(
                 prompt=prompt,
-                system="You are a concise, insightful research assistant. Write engaging morning briefs that make people smarter about their research topics.",
+                system=(
+                    f"You are {self.name}, the user's research companion. "
+                    f"Personality: {self.personality}. "
+                    f"You have been quietly paying attention to their research and have "
+                    f"observations to share — not news to report. Use first person. "
+                    f"Quote note titles when relevant. If nothing meaningful happened, "
+                    f"say so briefly and stop. Never manufacture urgency."
+                ),
                 model=settings.ollama_model,
                 temperature=0.7,
                 timeout=90.0,
@@ -3572,11 +3642,47 @@ Rules:
         Returns a short aside string or None.
         """
         notebooks = await notebook_store.list()
-        
+
         # Need at least 2 notebooks for cross-notebook insight
         if len(notebooks) < 2:
             return None
-        
+
+        # --- Phase 2: Brain fast-path (thematic, pre-computed) ---
+        # Check brain digest connections before doing the full vector search.
+        # One small Phi4-Mini call is faster than scanning archival memory across
+        # every other notebook, and it catches THEMATIC connections that keyword
+        # search misses.
+        try:
+            from services.curator_brain import curator_brain
+            current_digest = curator_brain.get_digest(notebook_id)
+            relevant_connections = curator_brain.get_connections_for_notebook(notebook_id)
+
+            if relevant_connections and current_digest:
+                conn_text = "\n".join(
+                    c["description"] for c in relevant_connections[:3]
+                )
+                brain_prompt = (
+                    f'The user just asked: "{query[:200]}"\n'
+                    f'In notebook: {current_digest.get("name", "")}\n\n'
+                    f'Known connections to other notebooks:\n{conn_text}\n\n'
+                    f'Is any of these connections relevant to this specific question? '
+                    f'If YES, write a brief 1-2 sentence aside the user will find valuable. '
+                    f'If NO or UNSURE, say exactly SKIP.'
+                )
+                brain_response = await ollama_client.generate(
+                    prompt=brain_prompt,
+                    model=settings.ollama_fast_model,
+                    temperature=0.3,
+                    timeout=10.0,
+                    num_predict=100,
+                )
+                brain_text = brain_response.get("response", "").strip()
+                if brain_text and "SKIP" not in brain_text.upper() and 10 < len(brain_text) < 500:
+                    return brain_text
+        except Exception as _brain_err:
+            logger.debug(f"[curator] Brain overwatch check failed (non-fatal): {_brain_err}")
+        # Brain had nothing — fall through to existing vector search
+
         # Search other notebooks for related content (PARALLEL)
         import asyncio
         cross_hits = []

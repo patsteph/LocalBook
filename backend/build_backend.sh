@@ -412,13 +412,61 @@ fi
 TRIMMED_SIZE=$(du -sh "$OUTPUT_DIR/localbook-backend" | cut -f1)
 echo -e "${GREEN}✓ Bundle trimmed to: $TRIMMED_SIZE${NC}"
 
-# Sign all binaries for macOS Sequoia compatibility
-# macOS Sequoia requires proper code signing for all .so/.dylib files
-echo -e "${YELLOW}Signing binaries for macOS compatibility...${NC}"
-find "$OUTPUT_DIR/localbook-backend/_internal" -name "*.so" -exec codesign --force --sign - {} \; 2>/dev/null
-find "$OUTPUT_DIR/localbook-backend/_internal" -name "*.dylib" -exec codesign --force --sign - {} \; 2>/dev/null
-codesign --force --sign - "$OUTPUT_DIR/localbook-backend/localbook-backend" 2>/dev/null
-echo -e "${GREEN}✓ Code signing complete${NC}"
+# Sign all binaries for macOS compatibility.
+#
+# Dual-mode signing:
+#   * If APPLE_SIGNING_IDENTITY is set (release builds): sign with Developer
+#     ID + hardened runtime + timestamp + entitlements. This produces
+#     notarization-eligible binaries.
+#   * Otherwise (local dev / end-user install.sh): adhoc sign ("-"). Satisfies
+#     macOS Sequoia's signing requirement for .so/.dylib loading but is NOT
+#     notarization-eligible. Same behavior as every release prior to Sprint 7.
+#
+# The entitlements.plist is the APP-level one (grants JIT, library-validation
+# disable, etc.) — the Python backend is a child of LocalBook.app and inherits
+# its TCC grants, but when signed as a standalone child executable under
+# Hardened Runtime it needs these low-level entitlements explicitly.
+BACKEND_INTERNAL="$OUTPUT_DIR/localbook-backend/_internal"
+BACKEND_EXE="$OUTPUT_DIR/localbook-backend/localbook-backend"
+ROOT_ENTITLEMENTS="../src-tauri/entitlements.plist"
+
+if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+    echo -e "${YELLOW}Signing binaries with Developer ID (release mode)...${NC}"
+    echo -e "${YELLOW}  Identity: $APPLE_SIGNING_IDENTITY${NC}"
+
+    if [ ! -f "$ROOT_ENTITLEMENTS" ]; then
+        echo -e "${RED}✗ Expected entitlements file not found: $ROOT_ENTITLEMENTS${NC}"
+        exit 1
+    fi
+
+    # Sign inner dylibs/sofiles FIRST (inside-out signing required by codesign).
+    # Use --options runtime + --timestamp so notarization will accept them.
+    find "$BACKEND_INTERNAL" -name "*.so" -exec \
+        codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" {} \; 2>/dev/null
+    find "$BACKEND_INTERNAL" -name "*.dylib" -exec \
+        codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" {} \; 2>/dev/null
+
+    # Sign the main executable LAST, with entitlements attached.
+    codesign --force --options runtime --timestamp \
+        --entitlements "$ROOT_ENTITLEMENTS" \
+        --sign "$APPLE_SIGNING_IDENTITY" \
+        "$BACKEND_EXE"
+
+    # Verify the outer executable so failures surface here, not at notarization.
+    if ! codesign --verify --strict "$BACKEND_EXE" 2>/dev/null; then
+        echo -e "${RED}✗ codesign --verify failed on $BACKEND_EXE${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Developer ID signing complete (notarization-ready)${NC}"
+else
+    echo -e "${YELLOW}Signing binaries with adhoc identity (local/dev mode)...${NC}"
+    find "$BACKEND_INTERNAL" -name "*.so" -exec codesign --force --sign - {} \; 2>/dev/null
+    find "$BACKEND_INTERNAL" -name "*.dylib" -exec codesign --force --sign - {} \; 2>/dev/null
+    codesign --force --sign - "$BACKEND_EXE" 2>/dev/null
+    echo -e "${GREEN}✓ Adhoc signing complete${NC}"
+fi
 
 # Show size
 SIZE=$(du -sh "$OUTPUT_DIR/localbook-backend" | cut -f1)

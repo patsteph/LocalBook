@@ -175,7 +175,19 @@ class SourceStore:
             data["sources"][source_id] = source
             self._save_data(data)
 
+        # Phase 3A: Mark this notebook's brain digest as dirty so Tier 3
+        # consolidation knows to rebuild it. Non-fatal — brain is optional.
+        try:
+            from services.curator_brain import curator_brain
+            curator_brain.mark_notebook_dirty(
+                notebook_id,
+                name=metadata.get("notebook_title", ""),
+            )
+        except Exception as _brain_err:
+            logger.debug(f"[source-store] Brain dirty-mark failed (non-fatal): {_brain_err}")
+
         return source
+
 
     async def get(self, source_id: str) -> Optional[Dict]:
         """Get a source by ID"""

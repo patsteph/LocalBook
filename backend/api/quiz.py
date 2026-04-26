@@ -41,7 +41,7 @@ ALL_QUESTION_TYPES = [
 
 class GenerateQuizRequest(BaseModel):
     notebook_id: str
-    num_questions: int = Field(default=5, ge=1, le=20)
+    num_questions: int = Field(default=5, ge=1, le=50)
     difficulty: str = Field(default="medium", pattern="^(easy|medium|hard)$")
     topic: Optional[str] = None  # Focus quiz on a specific topic
     question_types: Optional[List[str]] = None
@@ -242,7 +242,13 @@ async def generate_quiz(request: GenerateQuizRequest):
             question_types=request.question_types,
             source_names=built.source_names,
         )
-        
+
+        if not quiz_output.questions:
+            raise HTTPException(
+                status_code=503,
+                detail="Quiz generation produced no valid questions. The source material may be too short or off-topic. Try adding more sources or changing the topic."
+            )
+
         # Create quiz response
         import uuid
         quiz_id = str(uuid.uuid4())[:8]

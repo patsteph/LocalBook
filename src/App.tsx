@@ -20,6 +20,7 @@ import { useReconnectingWebSocket } from './hooks/useReconnectingWebSocket';
 import { prewarmMermaid } from './components/shared/MermaidRenderer';
 import { useSystemHealth, STATUS_COLORS } from './hooks/useSystemHealth';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { noteService } from './services/noteService';
 
 function App() {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
@@ -320,6 +321,24 @@ function App() {
             duration: 8000,
           });
         }
+      } else if (message.type === 'canvas_item_created' && message.item) {
+        const item = message.item;
+        if (item.metadata?.notebookId === selectedNotebookId || !item.metadata?.notebookId) {
+          setCanvasItems(prev => {
+            if (prev.some(i => i.id === item.id)) return prev;
+            return [...prev, {
+              ...item,
+              collapsed: false,
+              timestamp: Date.now()
+            }];
+          });
+          addToast({
+            type: 'success',
+            title: 'New Scan Added',
+            message: item.title || 'Scanned document processed',
+            duration: 4000,
+          });
+        }
       }
     }, [selectedNotebookId, addToast]),
   });
@@ -422,6 +441,39 @@ function App() {
       window.removeEventListener('openCanvasVisual', handleOpenCanvasVisual as EventListener);
     };
   }, [selectedNotebookId]);
+
+  // Restore persisted canvas notes when backend is ready and a notebook is selected
+  useEffect(() => {
+    if (!backendReady || !selectedNotebookId) return;
+
+    noteService.list(selectedNotebookId)
+      .then(notes => {
+        if (!notes || notes.length === 0) return;
+
+        // Merge persisted notes into canvas — add only notes not already present
+        setCanvasItems(prev => {
+          const existingIds = new Set(prev.map(i => i.id));
+          const restored: CanvasItem[] = notes
+            .filter(n => !existingIds.has(n.id))
+            .map(n => ({
+              id: n.id,
+              type: 'note' as const,
+              title: n.title || 'Untitled Note',
+              content: n.content_markdown || '',
+              collapsed: false,
+              timestamp: new Date(n.updated_at).getTime(),
+              metadata: {
+                blocknoteJson: n.content_blocknote_json,
+                notebookId: n.notebook_id,
+                sourceType: n.source_type,
+                persistedNoteId: n.id,  // signals RichNoteEditor that backend row exists
+              },
+            }));
+          return restored.length > 0 ? [...prev, ...restored] : prev;
+        });
+      })
+      .catch(err => console.warn('[App] Note restore failed (non-fatal):', err));
+  }, [backendReady, selectedNotebookId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Listen for backend health events from the Rust watchdog
   useEffect(() => {

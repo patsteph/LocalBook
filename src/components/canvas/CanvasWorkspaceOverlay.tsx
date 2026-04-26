@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import DOMPurify from 'dompurify';
 import {
-  FileText, Palette, Target, Mic, Video, MessageSquare, PenLine,
+  FileText, Palette, Target, Layers, Mic, Video, MessageSquare, PenLine,
   Presentation, Download, Search, Sparkles, Brain, GitBranch,
   CalendarDays, Network, BarChart3, BookOpen, MessageCircle
 } from 'lucide-react';
@@ -24,6 +24,7 @@ import { exportService } from '../../services/export';
 import { Skill } from '../../types';
 import { WritingAssistBar } from '../WritingAssistBar';
 import { AudioCanvasPlayer } from '../chat/AudioCanvasPlayer';
+import { FlashcardsCanvasTile } from '../chat/FlashcardsCanvasTile';
 import { RichNoteEditor } from '../RichNoteEditor';
 
 // Icons for canvas item types
@@ -32,6 +33,7 @@ const TYPE_ICONS: Record<CanvasItem['type'], React.ReactNode> = {
   'document': <FileText className={iconSm} />,
   'visual': <Palette className={iconSm} />,
   'quiz': <Target className={iconSm} />,
+  'flashcards': <Layers className={iconSm} />,
   'audio': <Mic className={iconSm} />,
   'video': <Video className={iconSm} />,
   'chat-response': <MessageSquare className={iconSm} />,
@@ -48,6 +50,7 @@ interface CanvasItemRendererProps {
 }
 
 const CanvasItemRenderer: React.FC<CanvasItemRendererProps> = ({ item, onToggleCollapse, onRemove, isOnly }) => {
+  const ctx = useCanvas();
   return (
     <div className="border-b border-gray-100 dark:border-gray-700/50 last:border-b-0">
       {/* Item header — only show if there are multiple items */}
@@ -86,7 +89,7 @@ const CanvasItemRenderer: React.FC<CanvasItemRendererProps> = ({ item, onToggleC
         ) : (
         <div className="px-6 py-4">
           {/* Generating placeholder */}
-          {item.status === 'generating' && !item.content && item.type !== 'audio' && (
+          {item.status === 'generating' && !item.content && item.type !== 'audio' && item.type !== 'flashcards' && (
             <div className="flex items-center gap-3 py-4">
               <div className="flex gap-1">
                 <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -182,6 +185,40 @@ const CanvasItemRenderer: React.FC<CanvasItemRendererProps> = ({ item, onToggleC
           )}
           {item.type === 'quiz' && item.content && (
             <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(item.content) }} />
+          )}
+          {item.type === 'flashcards' && (
+            item.metadata?.notebookId ? (
+              <FlashcardsCanvasTile
+                itemId={item.id}
+                notebookId={item.metadata.notebookId}
+                topic={item.metadata.topic || ''}
+                difficulty={(item.metadata.difficulty as any) || 'medium'}
+                count={item.metadata.count || 10}
+                chatContext={item.metadata.chatContext}
+                includeVisuals={item.metadata.includeVisuals ?? false}
+                parentStatus={item.status}
+                parentError={item.metadata?.errorMessage}
+                onStatusChange={(status, errorMessage) => {
+                  ctx.updateCanvasItem(item.id, {
+                    status,
+                    metadata: {
+                      ...item.metadata,
+                      ...(errorMessage ? { errorMessage } : { errorMessage: null }),
+                    },
+                  });
+                }}
+              />
+            ) : (
+              <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-900/40 rounded-lg">
+                <div className="flex-shrink-0 w-9 h-9 rounded-full bg-fuchsia-100 dark:bg-fuchsia-900/30 text-fuchsia-500 flex items-center justify-center">
+                  <Layers className="w-4 h-4 animate-pulse" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-900 dark:text-white">{item.title}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Missing notebook context</p>
+                </div>
+              </div>
+            )
           )}
           {item.type === 'audio' && (
             item.metadata?.audioId && item.metadata?.notebookId ? (

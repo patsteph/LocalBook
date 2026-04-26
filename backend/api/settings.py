@@ -573,3 +573,14 @@ async def clear_primary_notebook():
     prefs.pop("primary_notebook_id", None)
     _save_app_preferences(prefs)
     return {"message": "Primary notebook cleared"}
+
+
+# ==================== Voice Profile Endpoint ====================
+
+@router.get("/voice-profile")
+async def get_voice_profile():
+    """Get the user's generated Voice Profile"""
+    from services.voice_engine import voice_engine
+    profile = voice_engine.get_profile()
+    return profile or {}
+

@@ -3,14 +3,34 @@ import { BlockNoteSchema, defaultBlockSpecs, defaultInlineContentSpecs, defaultS
 import '@blocknote/core/fonts/inter.css';
 import { BlockNoteView } from '@blocknote/mantine';
 import '@blocknote/mantine/style.css';
-import { useCreateBlockNote } from '@blocknote/react';
-import { Save, Mic, Loader2 } from 'lucide-react';
+import { useCreateBlockNote, SuggestionMenuController, createReactInlineContentSpec } from '@blocknote/react';
+import { Save, Mic, Loader2, Camera } from 'lucide-react';
+import { open } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
 import { WritingAssistBar } from './WritingAssistBar';
 import { useCanvas } from './canvas/CanvasContext';
 import { CanvasItem } from './canvas/types';
 import { sourceService } from '../services/sources';
 import { voiceService } from '../services/voice';
 import { settingsService } from '../services/settings';
+import { noteService } from '../services/noteService';
+import { API_BASE_URL } from '../services/api';
+import { ScanSessionPanel } from './ScanSessionPanel';
+import {
+  ScanSessionState,
+  ScanSessionPage,
+  newSessionId,
+  loadSession,
+  saveSession,
+  clearSession,
+} from '../services/scanSession';
+
+// macOS detection for Continuity Camera button (Sprint 7).
+// Uses userAgent instead of Tauri's async platform() so we can render
+// conditionally on first paint without a loading flicker.
+const IS_MACOS = typeof navigator !== 'undefined'
+  && /mac/i.test(navigator.userAgent)
+  && !/iphone|ipad|ipod/i.test(navigator.userAgent);
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface RichNoteEditorProps {
@@ -19,12 +39,36 @@ interface RichNoteEditorProps {
 }
 
 // ─── Custom Schema ──────────────────────────────────────────────────────────
+const WikiLink = createReactInlineContentSpec(
+  {
+    type: "wikilink",
+    propSchema: {
+      target: { default: "Unknown" },
+      id: { default: "" },
+    },
+    content: "none",
+  },
+  {
+    render: (props) => (
+      <span 
+        className="wikilink px-1 rounded bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300 cursor-pointer hover:underline mx-0.5"
+        onClick={() => {
+          console.log("Wikilink clicked:", props.inlineContent.props.target);
+        }}
+      >
+        [[{props.inlineContent.props.target}]]
+      </span>
+    ),
+  }
+);
+
 const schema = BlockNoteSchema.create({
   blockSpecs: {
     ...defaultBlockSpecs,
   },
   inlineContentSpecs: {
     ...defaultInlineContentSpecs,
+    wikilink: WikiLink,
   },
   styleSpecs: {
     ...defaultStyleSpecs,
@@ -55,11 +99,14 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
   const [charCount, setCharCount] = useState(0);
   const [selectedText, setSelectedText] = useState('');
   const [fullText, setFullText] = useState('');
+  const [backlinks, setBacklinks] = useState<any[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initializedRef = useRef(false);
   const editorRef = useRef<any>(null);
+  /** true once we've POSTed a create to the backend for this canvas item */
+  const persistedRef = useRef(false);
 
   // Dark mode from app shell
   const darkMode = ctx.darkMode;
@@ -85,6 +132,16 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
 
   // Store ref for external access
   editorRef.current = editor;
+
+  // Fetch backlinks
+  useEffect(() => {
+    const idToUse = item.metadata?.persistedNoteId || item.id;
+    if (idToUse) {
+      noteService.getBacklinks(idToUse)
+        .then(setBacklinks)
+        .catch(() => {});
+    }
+  }, [item.id, item.metadata?.persistedNoteId]);
 
   // On mount: if we have plain text content but no stored blocks, parse markdown into blocks
   useEffect(() => {
@@ -129,27 +186,68 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
         const markdown = await editor.blocksToMarkdownLossy(editor.document);
         const blocksJson = JSON.stringify(editor.document);
 
+        // Extract wikilinks directly from block structure
+        const wikilinksOut: string[] = [];
+        const extractLinks = (blocks: any[]) => {
+          for (const b of blocks) {
+            if (b.content && Array.isArray(b.content)) {
+              for (const c of b.content) {
+                if (c.type === 'wikilink') {
+                  wikilinksOut.push(c.props.id || c.props.target);
+                }
+              }
+            }
+            if (b.children) extractLinks(b.children);
+          }
+        };
+        extractLinks(editor.document);
+
         // Update word/char counts
         const text = markdown.trim();
         setWordCount(text ? text.split(/\s+/).filter(Boolean).length : 0);
         setCharCount(text.length);
 
-        // Persist both formats
+        // Persist both formats to React state (in-memory, instant)
         ctx.updateCanvasItem(item.id, {
           content: markdown,
           metadata: {
             ...item.metadata,
             blocknoteJson: blocksJson,
+            persistedNoteId: item.id,
           },
         });
+
+        // Persist to backend SQLite (survive session close)
+        if (text.length > 0) {
+          const payload = {
+            title: item.title || '',
+            content_markdown: markdown,
+            content_blocknote_json: blocksJson,
+            notebook_id: ctx.selectedNotebookId,
+            source_type: (item.metadata?.sourceType as any) || 'typed',
+            wikilinks_out: wikilinksOut,
+          };
+          if (!persistedRef.current) {
+            // First write — create the backend row using the canvas item ID
+            await noteService.create({ note_id: item.id, ...payload });
+            persistedRef.current = true;
+          } else {
+            // Subsequent writes — partial update
+            await noteService.update(item.id, payload);
+          }
+        }
       } catch (e) {
         console.error('[RichNoteEditor] Auto-save failed:', e);
       }
     }, 500);
-  }, [editor, item.id, item.metadata, ctx]);
+  }, [editor, item.id, item.title, item.metadata, ctx]);
 
   // Cleanup timers and media on unmount
   useEffect(() => {
+    // On mount: check if this note already has a backend row (e.g., restored on app load)
+    if (item.metadata?.persistedNoteId) {
+      persistedRef.current = true;
+    }
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -157,7 +255,7 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
         mediaRecorderRef.current.stop();
       }
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Title change handler
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -300,18 +398,317 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
     handleEditorChange();
   }, [editor, handleEditorChange]);
 
+  const [showScanMenu, setShowScanMenu] = useState(false);
+  const scanMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (scanMenuRef.current && !scanMenuRef.current.contains(e.target as Node)) {
+        setShowScanMenu(false);
+      }
+    };
+    if (showScanMenu) document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [showScanMenu]);
+
+  // ── Sprint 8: Scan Session state ──────────────────────────────────────────
+  // sessionMode is the user's toggle; session is the active batch being
+  // accumulated. Both persist: sessionMode just follows `session` existence,
+  // `session` mirrors to localStorage on every mutation so reloads recover.
+  const [session, setSession] = useState<ScanSessionState | null>(() => loadSession());
+  const sessionMode = session !== null;
+
+  // Persist any session change so an accidental reload or app crash doesn't
+  // lose the user's accumulated captures.
+  useEffect(() => {
+    if (session) saveSession(session);
+    else clearSession();
+  }, [session]);
+
+  const startSession = useCallback((mode: 'document' | 'photo') => {
+    setSession({
+      sessionId: newSessionId(),
+      notebookId: ctx.selectedNotebookId || null,
+      mode,
+      pages: [],
+      createdAt: new Date().toISOString(),
+    });
+    setShowScanMenu(false);
+  }, [ctx.selectedNotebookId]);
+
+  const cancelSession = useCallback(() => {
+    setSession(null);
+  }, []);
+
+  const addPageToSession = useCallback(
+    (path: string, source: ScanSessionPage['source']) => {
+      setSession(prev => {
+        if (!prev) return prev;
+        const label = path.split('/').pop() || `Page ${prev.pages.length + 1}`;
+        return {
+          ...prev,
+          pages: [
+            ...prev.pages,
+            { path, label, addedAt: new Date().toISOString(), source },
+          ],
+        };
+      });
+    },
+    [],
+  );
+
+  const reorderSessionPage = useCallback((from: number, to: number) => {
+    setSession(prev => {
+      if (!prev) return prev;
+      if (to < 0 || to >= prev.pages.length || from === to) return prev;
+      const next = prev.pages.slice();
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return { ...prev, pages: next };
+    });
+  }, []);
+
+  const deleteSessionPage = useCallback((index: number) => {
+    setSession(prev => {
+      if (!prev) return prev;
+      const next = prev.pages.slice();
+      next.splice(index, 1);
+      return { ...prev, pages: next };
+    });
+  }, []);
+
+  const finishSession = useCallback(() => {
+    // Backend has already created the merged note + broadcast canvas_item_created
+    // via WebSocket. Just clear the session locally.
+    setSession(null);
+    ctx.addToast({
+      type: 'success',
+      title: 'Scan Complete',
+      message: 'Pages merged into a new note.',
+      duration: 3000,
+    });
+  }, [ctx]);
+
+  const handleScan = async (mode: 'document' | 'photo') => {
+    setShowScanMenu(false);
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{
+          name: 'Image',
+          extensions: ['png', 'jpeg', 'jpg', 'webp']
+        }]
+      });
+      
+      if (selected && typeof selected === 'string') {
+        // Session mode: accumulate into the batch instead of processing now.
+        if (sessionMode) {
+          addPageToSession(selected, 'file');
+          return;
+        }
+        ctx.addToast({ type: 'info', title: 'Processing Scan', message: mode === 'photo' ? 'Deconstructing scene...' : 'Analyzing document...', duration: 3000 });
+        const res = await fetch(`${API_BASE_URL}/scan/process`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_path: selected, notebook_id: ctx.selectedNotebookId, mode })
+        });
+        
+        if (!res.ok) {
+          throw new Error('Failed to start scan processing');
+        }
+      }
+    } catch (err) {
+      console.error("Scan error", err);
+      ctx.addToast({ type: 'error', title: 'Scan Error', message: String(err), duration: 4000 });
+    }
+  };
+
+  // Sprint 7: Continuity Camera (macOS only). Invokes the signed Swift sidecar
+  // via the `trigger_continuity_camera` Rust command, then posts each captured
+  // image directly to /scan/process (bypasses the watched-folder path).
+  const handleContinuityScan = async (mode: 'document' | 'photo') => {
+    setShowScanMenu(false);
+    if (!IS_MACOS) {
+      ctx.addToast({
+        type: 'error',
+        title: 'Not Available',
+        message: 'Continuity Camera requires macOS 12+ with a paired iPhone or iPad.',
+        duration: 4000,
+      });
+      return;
+    }
+    try {
+      ctx.addToast({
+        type: 'info',
+        title: 'Waiting for iPhone',
+        message: 'Tap Take Photo or Scan Documents on your iPhone to capture.',
+        duration: 5000,
+      });
+
+      const result = await invoke<{ status: string; paths: string[]; message?: string }>(
+        'trigger_continuity_camera'
+      );
+
+      if (result.status !== 'ok' || result.paths.length === 0) {
+        ctx.addToast({
+          type: 'error',
+          title: 'Capture Failed',
+          message: result.message || 'No image was captured.',
+          duration: 5000,
+        });
+        return;
+      }
+
+      // Sprint 8: if session mode is active, accumulate pages into the batch
+      // and let the user add more before transcribing. Otherwise fall back to
+      // the Sprint 7 behaviour: process each page as its own note.
+      if (sessionMode) {
+        for (const path of result.paths) {
+          addPageToSession(path, 'continuity');
+        }
+        ctx.addToast({
+          type: 'info',
+          title: 'Pages Added',
+          message: `${result.paths.length} page${result.paths.length !== 1 ? 's' : ''} added to session.`,
+          duration: 2500,
+        });
+        return;
+      }
+
+      ctx.addToast({
+        type: 'info',
+        title: 'Processing Scan',
+        message: mode === 'photo' ? 'Deconstructing scene...' : 'Analyzing document...',
+        duration: 3000,
+      });
+
+      for (const path of result.paths) {
+        const res = await fetch(`${API_BASE_URL}/scan/process`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            file_path: path,
+            notebook_id: ctx.selectedNotebookId,
+            mode,
+          }),
+        });
+        if (!res.ok) {
+          throw new Error(`Scan API returned ${res.status}`);
+        }
+      }
+    } catch (err) {
+      console.error('Continuity scan error', err);
+      ctx.addToast({
+        type: 'error',
+        title: 'Scan Error',
+        message: String(err),
+        duration: 4000,
+      });
+    }
+  };
+
   return (
     <div className={`rich-note-editor flex flex-col ${compact ? 'px-3 py-2' : 'flex-1 min-h-0 px-5 py-4'}`}>
-      {/* Title */}
-      <input
-        type="text"
-        value={item.title}
-        onChange={handleTitleChange}
-        placeholder="Note title..."
-        className={`w-full bg-transparent border-none outline-none text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 mb-3 ${
-          compact ? 'text-sm font-semibold' : 'text-xl font-bold'
-        }`}
-      />
+      {/* Header */}
+      <div className="flex justify-between items-center mb-3 gap-3">
+        <input
+          type="text"
+          value={item.title}
+          onChange={handleTitleChange}
+          placeholder="Note title..."
+          className={`flex-1 min-w-0 bg-transparent border-none outline-none text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 ${
+            compact ? 'text-sm font-semibold' : 'text-xl font-bold'
+          }`}
+        />
+        <div className="relative" ref={scanMenuRef}>
+          <button 
+            onClick={() => setShowScanMenu(!showScanMenu)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:border-gray-600 dark:hover:bg-gray-700 transition-colors shadow-sm whitespace-nowrap"
+          >
+            <Camera className="w-4 h-4" />
+            Scan
+          </button>
+          
+          {showScanMenu && (
+            <div className="absolute right-0 mt-2 w-60 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
+              {IS_MACOS && (
+                <>
+                  <div className="px-4 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                    From iPhone
+                  </div>
+                  <button
+                    onClick={() => handleContinuityScan('document')}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    📱 Scan Documents
+                  </button>
+                  <button
+                    onClick={() => handleContinuityScan('photo')}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    📱 Take Photo
+                  </button>
+                  <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                  <div className="px-4 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                    From File
+                  </div>
+                </>
+              )}
+              <button
+                onClick={() => handleScan('document')}
+                className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+              >
+                Scan Document (OCR)
+              </button>
+              <button
+                onClick={() => handleScan('photo')}
+                className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+              >
+                Scan Photo (Scene)
+              </button>
+              {/* Sprint 8: Multi-page session mode */}
+              <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+              <div className="px-4 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                Multi-page Session
+              </div>
+              {sessionMode ? (
+                <button
+                  onClick={() => { cancelSession(); setShowScanMenu(false); }}
+                  className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+                >
+                  Cancel Session ({session!.pages.length} pages)
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => startSession('document')}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    Start Document Session
+                  </button>
+                  <button
+                    onClick={() => startSession('photo')}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    Start Photo Session
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Sprint 8: Scan Session Panel (thumbnail grid + finish button) */}
+      {session && (
+        <ScanSessionPanel
+          session={session}
+          onReorder={reorderSessionPage}
+          onDelete={deleteSessionPage}
+          onFinish={finishSession}
+          onCancel={cancelSession}
+        />
+      )}
 
       {/* BlockNote Editor */}
       <div
@@ -326,7 +723,29 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
           onChange={handleEditorChange}
           theme={darkMode ? 'dark' : 'light'}
           data-theming-css-variables-demo
-        />
+        >
+          <SuggestionMenuController
+            triggerCharacter={"["}
+            getItems={async (query) => {
+              if (!query.startsWith("[")) return [];
+              const actualQuery = query.slice(1);
+              const results = await noteService.searchEntities(actualQuery, ctx.selectedNotebookId);
+              return results.map(r => ({
+                title: r.title,
+                subtext: r.type === 'note' ? '📝 Note' : '📄 Source',
+                onItemClick: () => {
+                  editor.insertInlineContent([
+                    {
+                      type: "wikilink",
+                      props: { target: r.title, id: r.id },
+                    },
+                    " "
+                  ]);
+                }
+              }));
+            }}
+          />
+        </BlockNoteView>
       </div>
 
       {/* AI Writing Assist */}
@@ -338,6 +757,20 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
         compact={compact}
         className="mt-2"
       />
+
+      {/* Backlinks Panel */}
+      {backlinks.length > 0 && !compact && (
+        <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Backlinks</h4>
+          <ul className="flex flex-wrap gap-2">
+            {backlinks.map(link => (
+              <li key={link.id} className="text-xs px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded text-blue-600 dark:text-blue-400 cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                {link.title}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Bottom toolbar */}
       <div className={`flex items-center justify-between mt-3 ${compact ? 'gap-2' : 'gap-3'}`}>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
-  FileText, Palette, Target, Mic, Video, Presentation, Download, Search,
+  FileText, Palette, Target, Layers, Mic, Video, Presentation, Download, Search,
   Sparkles, Brain, GitBranch, CalendarDays, Network, BarChart3,
   ChevronUp, ChevronDown, MessageCircle,
 } from 'lucide-react';
@@ -35,6 +35,7 @@ const ACTIONS: ActionDef[] = [
   { id: 'video', icon: <Video className={iconSm} />, label: 'Create Video', shortLabel: 'Video', enabled: (_i, nb) => !!nb },
   { id: 'visual', icon: <Palette className={iconSm} />, label: 'Create Visual', shortLabel: 'Visual', enabled: (_i, nb) => !!nb },
   { id: 'quiz', icon: <Target className={iconSm} />, label: 'Create Quiz', shortLabel: 'Quiz', enabled: (_i, nb) => !!nb },
+  { id: 'cards', icon: <Layers className={iconSm} />, label: 'Create Flash Cards', shortLabel: 'Cards', enabled: (_i, nb) => !!nb },
   { id: 'pptx', icon: <Presentation className={iconSm} />, label: 'Create Slides', shortLabel: 'PPTX', enabled: (items, nb) => !!nb && items.some(i => i.type === 'document' || i.type === 'chat-response' || i.type === 'note') },
   { id: 'pdf', icon: <Download className={iconSm} />, label: 'Download PDF', shortLabel: 'PDF', enabled: (items) => items.some(i => i.type === 'document' || i.type === 'note') },
   { id: 'crossnb', icon: <Search className={iconSm} />, label: 'Cross-Notebook Discovery', shortLabel: 'Discover', enabled: (_i, nb) => !!nb },
@@ -149,6 +150,16 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
   const [quizDifficulty, setQuizDifficulty] = useState(() => localStorage.getItem('lb-bar-quiz-diff') || 'medium');
   const [quizTopic, setQuizTopic] = useState('');
 
+  // ── Flash Cards config ──────────────────────────────────────────────────
+  const [cardsCount, setCardsCount] = useState(() => parseInt(localStorage.getItem('lb-bar-cards-count') || '10'));
+  const [cardsDifficulty, setCardsDifficulty] = useState<'easy' | 'medium' | 'hard'>(() => (localStorage.getItem('lb-bar-cards-diff') as any) || 'medium');
+  const [cardsTopic, setCardsTopic] = useState('');
+  // Tutor voice settings (moved from active card to setup)
+  const [cardsTutorGender, setCardsTutorGender] = useState<'female' | 'male'>(() => (localStorage.getItem('lb-bar-cards-tutor-gender') as any) || 'female');
+  const [cardsTutorAccent, setCardsTutorAccent] = useState<'us' | 'uk'>(() => (localStorage.getItem('lb-bar-cards-tutor-accent') as any) || 'us');
+  const [cardsTutorAutoplay, setCardsTutorAutoplay] = useState(() => localStorage.getItem('lb-bar-cards-tutor-autoplay') !== 'false'); // default true
+  const [cardsIncludeVisuals, setCardsIncludeVisuals] = useState(() => localStorage.getItem('lb-bar-cards-visuals') === 'true');
+
   // ── PPTX config ─────────────────────────────────────────────────────────
   const [pptxTheme, setPptxTheme] = useState(() => localStorage.getItem('lb-bar-pptx-theme') || 'light');
 
@@ -195,6 +206,12 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
   useEffect(() => { localStorage.setItem('lb-bar-visual-color', visualColorTheme); }, [visualColorTheme]);
   useEffect(() => { localStorage.setItem('lb-bar-quiz-count', String(quizCount)); }, [quizCount]);
   useEffect(() => { localStorage.setItem('lb-bar-quiz-diff', quizDifficulty); }, [quizDifficulty]);
+  useEffect(() => { localStorage.setItem('lb-bar-cards-count', String(cardsCount)); }, [cardsCount]);
+  useEffect(() => { localStorage.setItem('lb-bar-cards-diff', cardsDifficulty); }, [cardsDifficulty]);
+  useEffect(() => { localStorage.setItem('lb-bar-cards-tutor-gender', cardsTutorGender); }, [cardsTutorGender]);
+  useEffect(() => { localStorage.setItem('lb-bar-cards-tutor-accent', cardsTutorAccent); }, [cardsTutorAccent]);
+  useEffect(() => { localStorage.setItem('lb-bar-cards-tutor-autoplay', String(cardsTutorAutoplay)); }, [cardsTutorAutoplay]);
+  useEffect(() => { localStorage.setItem('lb-bar-cards-visuals', String(cardsIncludeVisuals)); }, [cardsIncludeVisuals]);
   useEffect(() => { localStorage.setItem('lb-bar-pptx-theme', pptxTheme); }, [pptxTheme]);
   useEffect(() => { localStorage.setItem('lb-bar-pdf-layout', pdfLayout); }, [pdfLayout]);
   useEffect(() => { localStorage.setItem('lb-bar-video-dur', String(videoDuration)); }, [videoDuration]);
@@ -425,6 +442,99 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
     }
     setActionLoading(null);
   };
+
+  /** Spawn a flash-cards canvas tile with the given params. The tile itself
+   *  handles deck generation and interactive study in-place. Shared by the
+   *  Cards pill handler and the createFlashcardsDeck event listener (used by
+   *  completed decks to recommend focused gap decks). */
+  const spawnFlashcardsTile = (opts: {
+    topic: string;
+    difficulty: 'easy' | 'medium' | 'hard';
+    count: number;
+    titlePrefix?: string;
+    includeVisuals?: boolean;
+    tutorConfig?: {
+      gender: 'female' | 'male';
+      accent: 'us' | 'uk';
+      autoplay: boolean;
+    };
+  }) => {
+    if (!notebookId) return;
+    const itemId = `flashcards-${Date.now()}`;
+    const { topic, difficulty, count, titlePrefix } = opts;
+    const shortTopic = topic.length > 50 ? topic.substring(0, 47).trim() + '…' : topic;
+    const title = titlePrefix
+      ? `${titlePrefix}: ${shortTopic}`
+      : shortTopic ? `Flash Cards: ${shortTopic}` : `Flash Cards (${count} ${difficulty})`;
+    ctx.addCanvasItem({
+      id: itemId,
+      type: 'flashcards',
+      title,
+      content: '',
+      collapsed: false,
+      status: 'generating',
+      metadata: {
+        notebookId,
+        topic,
+        difficulty,
+        count,
+        tutorGender: opts.tutorConfig?.gender ?? cardsTutorGender,
+        tutorAccent: opts.tutorConfig?.accent ?? cardsTutorAccent,
+        tutorAutoplay: opts.tutorConfig?.autoplay ?? cardsTutorAutoplay,
+        includeVisuals: opts.includeVisuals ?? false,
+        ...(ctx.chatContext ? { chatContext: ctx.chatContext } : {}),
+      },
+    });
+  };
+
+  const handleCreateCards = () => {
+    if (!notebookId) return;
+    setActionLoading('cards');
+    ctx.setGenerationStatus('generating');
+    const content = getPrimaryContent();
+    const topic = stripAtChat(cardsTopic) || content.substring(0, 300).replace(/[#*_\n]/g, ' ').trim();
+    spawnFlashcardsTile({
+      topic,
+      difficulty: cardsDifficulty,
+      count: cardsCount,
+      includeVisuals: cardsIncludeVisuals,
+      tutorConfig: {
+        gender: cardsTutorGender,
+        accent: cardsTutorAccent,
+        autoplay: cardsTutorAutoplay,
+      },
+    });
+    // The tile itself will mark the item complete/error once the deck is
+    // generated, so no further action is needed here.
+    ctx.setGenerationStatus('complete');
+    setActionLoading(null);
+  };
+
+  // Listen for createFlashcardsDeck events dispatched from an existing
+  // FlashcardsCanvasTile's gap-analysis "Quiz me on this" button.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {};
+      const targetNotebook = detail.notebookId;
+      if (!targetNotebook || targetNotebook !== notebookId) return;
+      const topic = (detail.topic as string) || '';
+      if (!topic) return;
+      const difficulty: 'easy' | 'medium' | 'hard' = ['easy', 'medium', 'hard'].includes(detail.difficulty)
+        ? detail.difficulty
+        : cardsDifficulty;
+      const countRaw = Number(detail.count);
+      const count = Number.isFinite(countRaw) ? Math.max(3, Math.min(50, Math.round(countRaw))) : Math.min(cardsCount, 10);
+      spawnFlashcardsTile({ topic, difficulty, count, titlePrefix: 'Gap study' });
+      ctx.addToast({
+        type: 'info',
+        title: 'New focused deck',
+        message: `${count} ${difficulty} cards on: ${topic}`,
+      });
+    };
+    window.addEventListener('createFlashcardsDeck', handler);
+    return () => window.removeEventListener('createFlashcardsDeck', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notebookId, cardsDifficulty, cardsCount]);
 
   const handleExportPPTX = () => {
     const isCustom = pptxTheme.startsWith('tpl:');
@@ -978,6 +1088,98 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
               </div>
             </CanvasActionPopover>
 
+            {/* ── Flash Cards popover ─────────────────────────────────────── */}
+            <CanvasActionPopover
+              isOpen={activePopover === 'cards'}
+              onClose={() => setActivePopover(null)}
+              title="Flash Cards"
+              generateLabel="Create deck on canvas"
+              generating={actionLoading === 'cards'}
+              onGenerate={() => { setActivePopover(null); handleCreateCards(); }}
+            >
+              <div className="space-y-2.5">
+                <div>
+                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Cards: <span className="font-mono">{cardsCount}</span></label>
+                  <input type="range" min="3" max="50" value={cardsCount} onChange={e => setCardsCount(parseInt(e.target.value))} className="w-full h-1.5 accent-purple-600" />
+                  <div className="flex justify-between text-[10px] text-gray-400 mt-0.5"><span>3</span><span>25</span><span>50</span></div>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Difficulty</label>
+                  <div className="flex gap-1">
+                    {(['easy', 'medium', 'hard'] as const).map(d => (
+                      <button
+                        key={d}
+                        onClick={() => setCardsDifficulty(d)}
+                        className={`flex-1 px-2 py-1.5 text-[11px] rounded-lg border transition-colors capitalize ${
+                          cardsDifficulty === d
+                            ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
+                            : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Topic <span className="text-gray-400">(optional)</span></label>
+                  <input
+                    type="text"
+                    value={cardsTopic}
+                    onChange={e => setCardsTopic(e.target.value)}
+                    placeholder={ctx.chatContext ? 'e.g., @chat photosynthesis' : 'Auto-detected from content'}
+                    className="w-full px-2.5 py-1.5 text-xs border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-purple-400"
+                  />
+                </div>
+                {/* Tutor Voice Settings */}
+                <div className="border-t border-gray-100 dark:border-gray-700 pt-2.5">
+                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1.5 flex items-center gap-1">
+                    <Mic className="w-3 h-3" /> Tutor Voice
+                  </label>
+                  <div className="grid grid-cols-2 gap-1.5 mb-2">
+                    <select
+                      value={cardsTutorGender}
+                      onChange={e => setCardsTutorGender(e.target.value as 'female' | 'male')}
+                      className="px-2 py-1 text-[11px] border border-gray-200 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200"
+                    >
+                      <option value="female">Female</option>
+                      <option value="male">Male</option>
+                    </select>
+                    <select
+                      value={cardsTutorAccent}
+                      onChange={e => setCardsTutorAccent(e.target.value as 'us' | 'uk')}
+                      className="px-2 py-1 text-[11px] border border-gray-200 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200"
+                    >
+                      <option value="us">US Accent</option>
+                      <option value="uk">UK Accent</option>
+                    </select>
+                  </div>
+                  <label className="flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-400 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={cardsTutorAutoplay}
+                      onChange={e => setCardsTutorAutoplay(e.target.checked)}
+                      className="w-3.5 h-3.5 accent-purple-600 rounded"
+                    />
+                    Auto-read explanations aloud
+                  </label>
+                  <label className="flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-400 cursor-pointer mt-1.5">
+                    <input
+                      type="checkbox"
+                      checked={cardsIncludeVisuals}
+                      onChange={e => setCardsIncludeVisuals(e.target.checked)}
+                      className="w-3.5 h-3.5 accent-purple-600 rounded"
+                    />
+                    Include visual diagrams (SVG)
+                  </label>
+                </div>
+                <div className="text-[10px] text-gray-500 dark:text-gray-400 px-1">
+                  Drops an interactive deck onto the canvas. Answer by click, type, or voice — tutor voice reads feedback aloud.
+                  {cardsIncludeVisuals && ' Visual diagrams aim for 1–2 SVG cards when content has a labeled structure.'}
+                </div>
+              </div>
+            </CanvasActionPopover>
+
             {/* ── PPTX popover ──────────────────────────────────────────── */}
             <CanvasActionPopover
               isOpen={activePopover === 'pptx'}
@@ -1068,7 +1270,7 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
               const enabled = action.enabled(ctx.canvasItems, notebookId);
               const loading = actionLoading === action.id;
               const isActive = activePopover === action.id;
-              const CANVAS_TYPE_MAP: Record<string, string> = { docs: 'document', audio: 'audio', video: 'video', visual: 'visual', quiz: 'quiz' };
+              const CANVAS_TYPE_MAP: Record<string, string> = { docs: 'document', audio: 'audio', video: 'video', visual: 'visual', quiz: 'quiz', cards: 'flashcards' };
               const canvasType = CANVAS_TYPE_MAP[action.id];
               const working = loading || (canvasType && ctx.canvasItems.some(
                 item => item.type === canvasType && (item.status === 'generating' || item.status === 'processing')
@@ -1079,6 +1281,7 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
                 video:   { working: 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400',    active: 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 ring-1 ring-rose-400' },
                 visual:  { working: 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400', active: 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 ring-1 ring-amber-400' },
                 quiz:    { working: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400', active: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 ring-1 ring-emerald-400' },
+                cards:   { working: 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400', active: 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 ring-1 ring-purple-400' },
                 pptx:    { working: 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400', active: 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 ring-1 ring-indigo-400' },
                 pdf:     { working: 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300',       active: 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 ring-1 ring-gray-400' },
                 crossnb: { working: 'bg-teal-100 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400',    active: 'bg-teal-100 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 ring-1 ring-teal-400' },

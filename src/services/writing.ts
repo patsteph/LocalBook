@@ -35,7 +35,8 @@ export const writingService = {
   async assist(
     content: string,
     task: string = 'improve',
-    formatStyle: string = 'professional'
+    formatStyle: string = 'professional',
+    voiceProfile?: any
   ): Promise<WritingResult> {
     const response = await fetch(`${API_BASE}/writing/assist`, {
       method: 'POST',
@@ -44,6 +45,7 @@ export const writingService = {
         content,
         task,
         format_style: formatStyle,
+        voice_profile: voiceProfile
       }),
     });
     if (!response.ok) throw new Error('Failed to assist writing');
@@ -55,7 +57,8 @@ export const writingService = {
     task: string = 'summarize',
     formatStyle: string = 'professional',
     focusTopic?: string,
-    maxWords: number = 500
+    maxWords: number = 500,
+    voiceProfile?: any
   ): Promise<WritingResult> {
     const response = await fetch(`${API_BASE}/writing/from-sources`, {
       method: 'POST',
@@ -66,6 +69,7 @@ export const writingService = {
         format_style: formatStyle,
         focus_topic: focusTopic,
         max_words: maxWords,
+        voice_profile: voiceProfile
       }),
     });
     if (!response.ok) throw new Error('Failed to write from sources');
@@ -77,7 +81,8 @@ export const writingService = {
     task: string = 'improve',
     formatStyle: string = 'professional',
     maxWords: number = 500,
-    notebookId?: string
+    notebookId?: string,
+    voiceProfile?: any
   ): Promise<WritingResult> {
     const response = await fetch(`${API_BASE}/writing/transform`, {
       method: 'POST',
@@ -88,6 +93,7 @@ export const writingService = {
         format_style: formatStyle,
         max_words: maxWords,
         ...(notebookId && { notebook_id: notebookId }),
+        voice_profile: voiceProfile
       }),
     });
     if (!response.ok) throw new Error('Failed to transform text');

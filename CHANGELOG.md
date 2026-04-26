@@ -2,6 +2,31 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## v1.9.0 — iPhone Scan Capture + Signed/Notarized Releases (in progress)
+
+### Sprint 7 — Continuity Camera sidecar
+- **`src-tauri/tools/continuity-camera/`** — New Swift CLI sidecar (`ContinuityCamera.swift`) that captures one image from a paired iPhone and returns the path as JSON. After two dead Apple API paths on macOS 26 Tahoe (`NSPerformService "Capture.ImportImage"` removed; `ICDeviceBrowser` no longer enumerates Continuity iPhones — confirmed via `pbs -dump_services` and Image Capture.app), settled on **AVCaptureDevice `.continuityCamera`** as the only public path that works.
+- **Tauri wiring** — `tauri.conf.json` registers the sidecar as `externalBin`; `lib.rs` exposes `trigger_continuity_camera` command that spawns it and parses JSON. `Info.plist` declares `NSCameraUsageDescription`.
+- **Entitlements / signing** — `com.apple.security.device.camera` on the sidecar; dual-mode `build.sh` signs with Developer ID when available, adhoc otherwise. Deployment target bumped to macOS 14 (required for `.continuityCamera`).
+- **Tahoe Info.plist compliance** — `NSCameraUseContinuityCameraDeviceType` added to the main app's `Info.plist` and embedded into the sidecar binary via `-sectcreate __TEXT __info_plist` (without this key, AVCaptureDevice silently returns zero Continuity iPhones on macOS 14+). New `ContinuityCamera-Info.plist` carries the bundle id, usage description, and the opt-in key for the sidecar.
+
+### Sprint 8 — Multi-page scan sessions
+- **`src/components/ScanSessionPanel.tsx`** — Thumbnail grid with reorder/delete/retry, drives the batch flow from the note editor.
+- **`src/services/scanSession.ts`** — Versioned `localStorage` persistence so a session survives reload.
+- **`src/services/scanService.ts`** — SSE client mirroring `uploadWithProgress` for per-page progress.
+- **Backend `POST /scan/process-batch`** — New SSE endpoint in `backend/api/scan.py` + `process_batch` in `scan_pipeline.py`. Merges pages with `--- PAGE N ---` markers. Fixed duplicate-class bug and a broken `ws_manager` import (→ `broadcast_update`) picked up along the way.
+
+### Signing + notarization pipeline
+- **`release.sh`** — Pre-flight checks for `APPLE_SIGNING_IDENTITY` / `APPLE_TEAM_ID`; dynamically injects the signing identity into `tauri.conf.json` at build time (never committed); adds notarization (`xcrun notarytool submit --keychain-profile localbook-notary`) + stapling + Gatekeeper verify. Old standalone `scripts/build-signed-release.sh` removed.
+- **`backend/build_backend.sh`** — Dual-mode: Developer ID + hardened runtime + entitlements when the env var is set, adhoc fallback otherwise. Signs the PyInstaller bundle and every nested binary.
+- **`build.sh` / `install.sh`** — Both now invoke the sidecar build before `npm run tauri build` so end-user installs produce a working (adhoc-signed) sidecar without requiring a Developer Program membership.
+- **`.gitignore`** — Blocks `.signing.env`, certificates, provisioning profiles, notarization zips, and sidecar build outputs from ever reaching the repo.
+
+### Known in-flight
+- Continuity Camera sidecar: AVCaptureDevice path compiles and is ready to test on Tahoe. If device enumeration returns zero iPhones, fallback is watched-folder ingest.
+
+---
+
 ## v1.8.0 — Sidecar Lifecycle + One-Click Bonsai Swap (Phase 2)
 
 ### Sidecar process management

@@ -3,6 +3,10 @@ use tauri::{AppHandle, Emitter, Manager};
 use std::time::Duration;
 use std::path::PathBuf;
 use serde::Serialize;
+use notify::{Watcher, RecursiveMode, EventKind};
+use std::sync::mpsc::channel;
+use tauri_plugin_shell::ShellExt;
+use tauri_plugin_shell::process::CommandEvent;
 
 // State to track the backend process
 struct BackendState {
@@ -833,6 +837,212 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
     Ok(state)
 }
 
+fn setup_scan_watcher(app: &AppHandle) {
+    let app_handle = app.clone();
+    
+    std::thread::spawn(move || {
+        let data_dir = match app_handle.path().app_data_dir() {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        
+        let scans_dir = data_dir.join("scans");
+        if let Err(e) = std::fs::create_dir_all(&scans_dir) {
+            eprintln!("Failed to create scans directory: {}", e);
+            return;
+        }
+        
+        println!("Setting up scan watcher on {:?}", scans_dir);
+        
+        let (tx, rx) = channel();
+        
+        let mut watcher = match notify::recommended_watcher(tx) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("Failed to create watcher: {}", e);
+                return;
+            }
+        };
+        
+        if let Err(e) = watcher.watch(&scans_dir, RecursiveMode::NonRecursive) {
+            eprintln!("Failed to watch directory: {}", e);
+            return;
+        }
+        
+        for res in rx {
+            match res {
+                Ok(event) => {
+                    if let EventKind::Create(_) | EventKind::Modify(_) = event.kind {
+                        for path in event.paths {
+                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                let ext_lower = ext.to_lowercase();
+                                if ["jpg", "jpeg", "png", "webp"].contains(&ext_lower.as_str()) {
+                                    println!("New scan detected: {:?}", path);
+                                    
+                                    let path_str = path.to_string_lossy().to_string();
+                                    
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(Duration::from_millis(500)).await;
+                                        
+                                        let client = reqwest::Client::new();
+                                        match client.post("http://localhost:8000/scan/process")
+                                            .json(&serde_json::json!({
+                                                "file_path": path_str
+                                            }))
+                                            .send()
+                                            .await 
+                                        {
+                                            Ok(res) => {
+                                                if !res.status().is_success() {
+                                                    eprintln!("Scan API error: {}", res.status());
+                                                }
+                                            },
+                                            Err(e) => eprintln!("Failed to call Scan API: {}", e),
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                },
+                Err(e) => eprintln!("watch error: {:?}", e),
+            }
+        }
+    });
+}
+
+// ── Continuity Camera (macOS Sprint 7) ───────────────────────────────────────
+//
+// Spawns the signed `continuity-camera` sidecar, which triggers the macOS
+// "Import from iPhone" dialog. The sidecar writes captured image(s) into
+// <app_data>/scans/continuity/ and prints a JSON result on stdout:
+//
+//   {"status":"ok","paths":["/abs/path/continuity_<uuid>.jpg"]}
+//   {"status":"error","message":"…"}
+//
+// The continuity/ subdirectory is NOT watched by setup_scan_watcher() (which
+// uses RecursiveMode::NonRecursive on scans/), so there is no race with the
+// watched-folder path. The frontend receives the paths back and posts them
+// directly to POST /scan/process.
+
+#[derive(Clone, Serialize)]
+struct ContinuityResult {
+    status: String,
+    paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+#[tauri::command]
+async fn trigger_continuity_camera(app: AppHandle) -> Result<ContinuityResult, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app; // silence unused warning
+        return Err("Continuity Camera is only available on macOS".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Ensure the output directory exists (sidecar also creates it, but we
+        // want deterministic behaviour from the Rust side).
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("failed to get app data dir: {}", e))?;
+        let out_dir = data_dir.join("scans").join("continuity");
+        std::fs::create_dir_all(&out_dir)
+            .map_err(|e| format!("failed to create output dir: {}", e))?;
+        let out_dir_str = out_dir.to_string_lossy().to_string();
+
+        let sidecar = app
+            .shell()
+            .sidecar("continuity-camera")
+            .map_err(|e| format!("sidecar lookup failed: {}", e))?
+            .args([out_dir_str]);
+
+        let (mut rx, _child) = sidecar
+            .spawn()
+            .map_err(|e| format!("failed to spawn continuity-camera: {}", e))?;
+
+        let mut stdout_buf = String::new();
+        let mut stderr_buf = String::new();
+        let mut exit_code: Option<i32> = None;
+
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(bytes) => {
+                    stdout_buf.push_str(&String::from_utf8_lossy(&bytes));
+                }
+                CommandEvent::Stderr(bytes) => {
+                    stderr_buf.push_str(&String::from_utf8_lossy(&bytes));
+                }
+                CommandEvent::Terminated(payload) => {
+                    exit_code = payload.code;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        if !stderr_buf.trim().is_empty() {
+            eprintln!("[continuity-camera stderr] {}", stderr_buf.trim());
+        }
+
+        // Parse the last JSON line from stdout.
+        let last_line = stdout_buf
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim();
+
+        if last_line.is_empty() {
+            return Err(format!(
+                "continuity-camera produced no output (exit {:?})",
+                exit_code
+            ));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(last_line)
+            .map_err(|e| format!("failed to parse sidecar output '{}': {}", last_line, e))?;
+
+        let status = parsed
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("error")
+            .to_string();
+
+        if status != "ok" {
+            let msg = parsed
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            return Ok(ContinuityResult {
+                status,
+                paths: vec![],
+                message: Some(msg),
+            });
+        }
+
+        let paths = parsed
+            .get("paths")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| p.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        Ok(ContinuityResult {
+            status,
+            paths,
+            message: None,
+        })
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -844,12 +1054,14 @@ pub fn run() {
         .setup(|app| {
             let backend_state = setup_backend(&app.handle())?;
             app.manage(backend_state);
+            setup_scan_watcher(&app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             is_backend_ready,
             check_backend_health,
-            get_backend_status
+            get_backend_status,
+            trigger_continuity_camera
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

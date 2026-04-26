@@ -47,8 +47,14 @@
     "resources": [
       "resources/backend/localbook-backend/"
     ],
+    "externalBin": [
+      "binaries/continuity-camera"
+    ],
     "macOS": {
       "minimumSystemVersion": "12.0",
+      "signingIdentity": "-",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist",
       "dmg": {
         "appPosition": { "x": 180, "y": 170 },
         "applicationFolderPosition": { "x": 480, "y": 170 },

@@ -482,19 +482,119 @@ async def recall_weekly_wrap():
     import json
     from pathlib import Path
     from services.event_logger import event_logger
-    
+
     wrap_dir = Path(event_logger.data_dir) / "memory"
     if not wrap_dir.exists():
         return {"wrap": None, "reason": "no_wraps_saved"}
-    
+
     # Find most recent wrap file
     wrap_files = sorted(wrap_dir.glob("weekly_wrap_*.json"), reverse=True)
     if not wrap_files:
         return {"wrap": None, "reason": "no_wraps_saved"}
-    
+
     wrap_file = wrap_files[0]
     try:
         wrap = json.loads(wrap_file.read_text())
         return {"wrap": wrap, "date": wrap_file.stem.replace("weekly_wrap_", "")}
     except Exception:
         return {"wrap": None, "reason": "parse_error"}
+
+
+# =========================================================================
+# Phase 4: Curator Brain — User-Facing Signal API
+# =========================================================================
+
+class ConnectionFeedbackRequest(BaseModel):
+    connection_id: int
+
+
+class MarkSurfacedRequest(BaseModel):
+    reflection_ids: List[int]
+
+
+@router.post("/brain/connections/{connection_id}/dismiss")
+async def dismiss_brain_connection(connection_id: int):
+    """User dismisses a cross-notebook connection — never surface it again."""
+    try:
+        from services.curator_brain import curator_brain
+        ok = curator_brain.dismiss_connection(connection_id)
+        if ok:
+            return {"success": True, "connection_id": connection_id}
+        raise HTTPException(status_code=404, detail="Connection not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[curator-brain] dismiss_connection failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/brain/connections/{connection_id}/thumbs-up")
+async def thumbs_up_brain_connection(connection_id: int):
+    """User signals a connection was valuable — boosts its strength."""
+    try:
+        from services.curator_brain import curator_brain
+        ok = curator_brain.thumbs_up_connection(connection_id)
+        if ok:
+            return {"success": True, "connection_id": connection_id}
+        raise HTTPException(status_code=404, detail="Connection not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[curator-brain] thumbs_up_connection failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/brain/reflections/mark-surfaced")
+async def mark_reflections_surfaced(request: MarkSurfacedRequest):
+    """Mark reflections as shown to the user so they aren't repeated."""
+    try:
+        from services.curator_brain import curator_brain
+        curator_brain.mark_reflections_surfaced(request.reflection_ids)
+        return {"success": True, "marked": len(request.reflection_ids)}
+    except Exception as e:
+        logger.error(f"[curator-brain] mark_reflections_surfaced failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/brain-status")
+async def get_brain_status():
+    """Diagnostic endpoint — shows brain digest and connection health.
+
+    Useful for debugging the Curator Brain without touching the DB directly.
+    Returns: digest counts, dirty counts, active connections, unsurfaced reflections.
+    """
+    try:
+        from services.curator_brain import curator_brain
+        stats = curator_brain.get_stats()
+        connections = curator_brain.get_active_connections()
+        digests = curator_brain.get_all_digests()
+        return {
+            "stats": stats,
+            "digests": [
+                {
+                    "notebook_id": d["notebook_id"],
+                    "name": d["name"],
+                    "dirty": bool(d.get("dirty")),
+                    "source_count": d.get("source_count", 0),
+                    "last_updated": d.get("last_updated"),
+                    "has_summary": bool(d.get("current_summary")),
+                    "key_themes": d.get("key_themes", "[]"),
+                }
+                for d in digests
+            ],
+            "connections": [
+                {
+                    "id": c["id"],
+                    "notebooks": [c["notebook_a"], c["notebook_b"]],
+                    "description": c["description"],
+                    "strength": round(c["strength"], 3),
+                    "status": c["status"],
+                    "discovered_at": c["discovered_at"],
+                }
+                for c in connections
+            ],
+        }
+    except Exception as e:
+        logger.error(f"[curator-brain] brain-status failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

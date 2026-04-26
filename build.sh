@@ -188,13 +188,32 @@ else
     echo -e "${GREEN}✓ Backend binary already exists (use --rebuild to force, --clean for fresh venv)${NC}"
 fi
 
-# Step 2: Install frontend dependencies
-echo -e "\n${YELLOW}Step 2/3: Installing frontend dependencies...${NC}"
+# Step 2: Build Continuity Camera sidecar (macOS helper for iPhone scans)
+# This MUST run before `tauri build` because tauri.conf.json declares the
+# sidecar as an externalBin — the Tauri build fails if the binaries are
+# missing. Signing behavior:
+#   * APPLE_SIGNING_IDENTITY set → signed with Developer ID (release flow)
+#   * Otherwise → adhoc signed (local dev / end-user install.sh)
+# The sidecar's own build script reads both env vars and picks the right mode.
+echo -e "\n${YELLOW}Step 2/4: Building Continuity Camera sidecar...${NC}"
+if [ -f "src-tauri/tools/continuity-camera/build.sh" ]; then
+    bash src-tauri/tools/continuity-camera/build.sh || {
+        echo -e "${RED}✗ Continuity Camera sidecar build failed${NC}"
+        echo -e "${YELLOW}  The Tauri build below will fail because externalBin is missing.${NC}"
+        exit 1
+    }
+    echo -e "${GREEN}✓ Continuity Camera sidecar built${NC}"
+else
+    echo -e "${YELLOW}  (sidecar source not found — skipping; Tauri build may fail)${NC}"
+fi
+
+# Step 3: Install frontend dependencies
+echo -e "\n${YELLOW}Step 3/4: Installing frontend dependencies...${NC}"
 npm install --silent
 echo -e "${GREEN}✓ Frontend dependencies ready${NC}"
 
-# Step 3: Build Tauri app (includes Vite frontend build via beforeBuildCommand)
-echo -e "\n${YELLOW}Step 3/3: Building Tauri application...${NC}"
+# Step 4: Build Tauri app (includes Vite frontend build via beforeBuildCommand)
+echo -e "\n${YELLOW}Step 4/4: Building Tauri application...${NC}"
 rm -rf dist/
 npm run tauri build
 

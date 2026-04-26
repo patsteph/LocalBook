@@ -141,27 +141,83 @@ class MemoryManager:
         Identifies emerging user preferences and patterns.
         """
         from services.event_logger import event_logger, EventType
-        
+
         logger.info("Running 3-hour pattern analysis")
         try:
             # Get events from the last 3 hours
             since = datetime.utcnow() - timedelta(hours=3)
             events = event_logger.get_events_since(since)
-            
+
             # Analyze patterns by event type
             patterns: Dict[str, int] = {}
             for event in events:
                 patterns[event.event_type.value] = patterns.get(event.event_type.value, 0) + 1
-            
+
             # Log notable patterns
             if patterns.get(EventType.SOURCE_REJECTED.value, 0) > patterns.get(EventType.SOURCE_APPROVED.value, 0):
                 logger.info("Pattern: User rejecting more sources than approving - may need Curator tuning")
-            
+
             logger.info(f"Pattern analysis complete: {patterns}")
-            return {"patterns": patterns}
+            result = {"patterns": patterns}
         except Exception as e:
             logger.error(f"Pattern analysis failed: {e}")
-            return {"error": str(e)}
+            result = {"error": str(e)}
+
+        # --- Phase 3C: Lightweight cross-notebook connection scan ---
+        # For notebooks with new content, run a fast Phi4-Mini call to check
+        # whether any new cross-notebook connection is worth noting. Store
+        # findings as brain reflections so the next morning brief picks them up.
+        try:
+            from services.curator_brain import curator_brain
+            from services.ollama_client import ollama_client
+            from config import settings
+
+            dirty = curator_brain.get_dirty_notebooks()
+            reflections_added = 0
+
+            for nb_id in dirty[:3]:  # Cap at 3 to limit LLM load
+                digest = curator_brain.get_digest(nb_id)
+                if not digest or not digest.get("current_summary"):
+                    continue
+
+                other_digests = curator_brain.get_all_digests(exclude=nb_id)
+                others_text = "\n".join(
+                    f"- {d['name']}: {d['current_summary'][:150]}"
+                    for d in other_digests if d.get("current_summary")
+                )
+                if not others_text:
+                    continue
+
+                prompt = (
+                    f"This notebook recently changed:\n"
+                    f"{digest['name']}: {digest.get('current_summary', 'no summary yet')}\n\n"
+                    f"Other notebooks:\n{others_text}\n\n"
+                    f"Is there a new, non-obvious connection worth noting? "
+                    f"If YES, describe in one sentence. If NO, say NONE."
+                )
+                response = await ollama_client.generate(
+                    prompt=prompt,
+                    model=settings.ollama_fast_model,
+                    temperature=0.3,
+                    timeout=15.0,
+                    num_predict=80,
+                )
+                text = response.get("response", "").strip()
+                if text and "NONE" not in text.upper() and len(text) > 15:
+                    curator_brain.add_reflection(
+                        content=text,
+                        evidence_notebooks=[nb_id] + [d["notebook_id"] for d in other_digests[:2]],
+                        importance=3,
+                    )
+                    reflections_added += 1
+
+            if reflections_added:
+                logger.info(f"[memory-manager] Tier 2 added {reflections_added} cross-notebook reflection(s)")
+            result["brain_reflections_added"] = reflections_added
+        except Exception as e:
+            logger.debug(f"[memory-manager] Tier 2 cross-notebook scan failed (non-fatal): {e}")
+
+        return result
     
     async def run_daily_summary(self) -> Dict[str, Any]:
         """
@@ -169,35 +225,66 @@ class MemoryManager:
         Creates a comprehensive summary of the day's learning.
         """
         from services.event_logger import event_logger
-        
+
         logger.info("Running daily memory summary")
         try:
             # Get events from the last 24 hours
             since = datetime.utcnow() - timedelta(hours=24)
             events = event_logger.get_events_since(since)
-            
+
             # Summarize by type
             summary = {
                 "total_events": len(events),
                 "by_type": {},
                 "by_notebook": {}
             }
-            
+
             for event in events:
                 et = event.event_type.value
                 nb = event.notebook_id
                 summary["by_type"][et] = summary["by_type"].get(et, 0) + 1
                 summary["by_notebook"][nb] = summary["by_notebook"].get(nb, 0) + 1
-            
+
             # Clean up old event logs (keep 7 days)
             removed = event_logger.cleanup_old_logs(days_to_keep=7)
             summary["logs_cleaned"] = removed
-            
+
             logger.info(f"Daily summary: {summary['total_events']} events, cleaned {removed} old logs")
-            return summary
         except Exception as e:
             logger.error(f"Daily summary failed: {e}")
-            return {"error": str(e)}
+            summary = {"error": str(e)}
+
+        # --- Phase 3D: Pre-compute morning brief material ---
+        # Rebuild any remaining dirty digests and refresh connections so the
+        # next morning brief is instant. Runs after log cleanup, non-fatal.
+        try:
+            from services.curator_brain import curator_brain
+
+            dirty = curator_brain.get_dirty_notebooks()
+            pre_built = 0
+            for nb_id in dirty:
+                built = await curator_brain.rebuild_notebook_digest(nb_id)
+                if built:
+                    pre_built += 1
+
+            # Refresh cross-notebook connections if any digests were rebuilt
+            new_connections = []
+            if pre_built > 0:
+                new_connections = await curator_brain.detect_connections()
+
+            # Generate a daily reflection if conditions are met (Phase 4A foundation)
+            await curator_brain.maybe_generate_reflection()
+
+            summary["brain_digests_prebuilt"] = pre_built
+            summary["brain_connections_refreshed"] = len(new_connections)
+            logger.info(
+                f"[memory-manager] Tier 4 pre-computed {pre_built} digest(s), "
+                f"{len(new_connections)} connection(s) refreshed for next brief"
+            )
+        except Exception as e:
+            logger.debug(f"[memory-manager] Brief pre-computation failed (non-fatal): {e}")
+
+        return summary
     
     async def run_consolidation(self) -> Dict[str, Any]:
         """
@@ -242,15 +329,56 @@ class MemoryManager:
                 results["errors"].append(f"core_demotion: {str(e)}")
             
             try:
-                # 4. Generate cross-notebook insights (placeholder for Curator)
+                # 4. Build / update Curator Brain (Phase 3B: replaces the placeholder)
+                from services.curator_brain import curator_brain
+
+                dirty = curator_brain.get_dirty_notebooks()
+                digests_built = 0
+                for nb_id in dirty:
+                    built = await curator_brain.rebuild_notebook_digest(nb_id)
+                    if built:
+                        digests_built += 1
+
+                # Detect new connections only when digests actually changed
+                new_connections: list = []
+                new_wikilink_connections: list = []
+                if digests_built > 0:
+                    new_connections = await curator_brain.detect_connections()
+                    new_wikilink_connections = await curator_brain.detect_wikilink_connections()
+
+                results["brain_digests_built"] = digests_built
+                results["brain_connections_found"] = len(new_connections)
+                results["brain_wikilink_connections_found"] = len(new_wikilink_connections)
+                logger.info(
+                    f"[memory-manager] Tier 3 brain: {digests_built} digest(s) rebuilt, "
+                    f"{len(new_connections)} new connection(s), "
+                    f"{len(new_wikilink_connections)} new wikilink connection(s)"
+                )
+            except Exception as e:
+                logger.error(f"Brain building error: {e}")
+                results["errors"].append(f"brain_building: {str(e)}")
+
+            try:
+                # 4b. Rebuild voice profile from recent observations
+                from services.voice_engine import voice_engine
+                profile_rebuilt = await voice_engine.maybe_rebuild_profile()
+                results["voice_profile_rebuilt"] = profile_rebuilt
+                if profile_rebuilt:
+                    logger.info("[memory-manager] Tier 3: Voice profile rebuilt")
+            except Exception as e:
+                logger.error(f"Voice profile rebuild error: {e}")
+                results["errors"].append(f"voice_profile: {str(e)}")
+
+            try:
+                # 5. Generate cross-notebook insights (kept as existing fallback)
                 insights = await self._generate_cross_notebook_insights()
                 results["insights_generated"] = insights
             except Exception as e:
                 logger.error(f"Insight generation error: {e}")
                 results["errors"].append(f"insight_generation: {str(e)}")
-            
+
             try:
-                # 5. Process negative signals for all notebooks
+                # 6. Process negative signals for all notebooks (kept unchanged)
                 from storage.notebook_store import notebook_store
                 notebooks = await notebook_store.list()
                 signals_processed = 0
@@ -484,10 +612,11 @@ class MemoryManager:
     def get_consolidation_status(self) -> Dict[str, Any]:
         """Get current consolidation status"""
         return {
+            "last_compact": self._last_compact.isoformat() if self._last_compact else None,
+            "last_pattern": self._last_pattern.isoformat() if self._last_pattern else None,
             "last_consolidation": self._last_consolidation.isoformat() if self._last_consolidation else None,
-            "next_due": self._should_consolidate(),
-            "interval_hours": self.CONSOLIDATION_INTERVAL_HOURS,
-            "scheduler_running": self._running
+            "last_daily": self._last_daily.isoformat() if self._last_daily else None,
+            "scheduler_running": self._running,
         }
 
 

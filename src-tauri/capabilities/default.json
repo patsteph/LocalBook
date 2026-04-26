@@ -13,6 +13,16 @@
     "fs:allow-write-file",
     "fs:allow-write-text-file",
     "fs:allow-read-file",
-    "fs:allow-exists"
+    "fs:allow-exists",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/continuity-camera",
+          "sidecar": true,
+          "args": [{ "validator": "^/.*$" }]
+        }
+      ]
+    }
   ]
 }
