@@ -227,7 +227,11 @@ for triple in aarch64-apple-darwin x86_64-apple-darwin; do
 done
 
 rm -rf dist/
-npm run tauri build
+# Build .app only by default. Tauri's bundle_dmg.sh uses AppleScript to set
+# window metadata on the mounted DMG and fails on systems without
+# Automation permission. For local dev / install we only need the .app.
+# Use release.sh when you need a notarization-ready DMG.
+npm run tauri build -- --bundles app
 
 # Copy app to easy location
 APP_PATH="src-tauri/target/release/bundle/macos/LocalBook.app"

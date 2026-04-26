@@ -1067,21 +1067,25 @@ print(f'Whisper model cached at: {local_dir}')
         # surface a clear message than rely on Tauri's diagnostics.
         if [ ! -f "src-tauri/binaries/continuity-camera-aarch64-apple-darwin" ] || \
            [ ! -f "src-tauri/binaries/continuity-camera-x86_64-apple-darwin" ]; then
-            error "Continuity Camera sidecar binaries missing in src-tauri/binaries/."
-            error "Run: bash src-tauri/tools/continuity-camera/build.sh"
+            fail "Continuity Camera sidecar binaries missing in src-tauri/binaries/."
+            fail "Run: bash src-tauri/tools/continuity-camera/build.sh"
             exit 1
         fi
 
         npm ci --silent 2>&1 | tail -1 || true
         rm -rf dist/
         info "Building Tauri application (this may take several minutes)..."
-        # Capture exit status explicitly — old version coerced failure to a
-        # warning, which silently hid sidecar / signing problems.
-        if ! npm run tauri build 2>&1; then
-            error "Tauri build failed. See log above. Common causes:"
-            error "  • src-tauri/binaries/continuity-camera-* missing or empty"
-            error "  • Frontend bundle errors (vite build)"
-            error "  • Code signing / entitlements mismatch"
+        # Build only the .app bundle, skipping DMG. Tauri's bundle_dmg.sh
+        # script uses AppleScript to set window metadata on the mounted DMG
+        # and fails on macOS systems that haven't granted Automation
+        # permission to Terminal/your shell. End-user installs don't need a
+        # DMG anyway — we copy the .app directly. release.sh handles DMG
+        # creation for actual distribution builds.
+        if ! npm run tauri build -- --bundles app 2>&1; then
+            fail "Tauri build failed. See log above. Common causes:"
+            fail "  • src-tauri/binaries/continuity-camera-* missing or empty"
+            fail "  • Frontend bundle errors (vite build)"
+            fail "  • Code signing / entitlements mismatch"
             exit 1
         fi
         local app_path="src-tauri/target/release/bundle/macos/$APP_BUNDLE"
@@ -1090,7 +1094,7 @@ print(f'Whisper model cached at: {local_dir}')
             cp -r "$app_path" "./$APP_BUNDLE"
             success "Application rebuilt"
         else
-            error "Application build failed — no app bundle found at $app_path"
+            fail "Application build failed — no app bundle found at $app_path"
             exit 1
         fi
 
