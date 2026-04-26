@@ -127,7 +127,7 @@ for arg in "$@"; do
 done
 
 # Step 1: Build backend
-echo -e "\n${YELLOW}Step 1/3: Building backend...${NC}"
+echo -e "\n${YELLOW}Step 1/4: Building backend...${NC}"
 if [ ! -f "$BACKEND_EXE" ] || [ "$DO_REBUILD" = true ] || [ "$DO_CLEAN" = true ]; then
     cd backend
     
@@ -214,6 +214,18 @@ echo -e "${GREEN}✓ Frontend dependencies ready${NC}"
 
 # Step 4: Build Tauri app (includes Vite frontend build via beforeBuildCommand)
 echo -e "\n${YELLOW}Step 4/4: Building Tauri application...${NC}"
+
+# Hard pre-flight: Tauri's externalBin validation produces a cryptic
+# "resource path ... doesn't exist" error if these are missing. Catch it
+# here with a clearer message instead.
+for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+    if [ ! -f "src-tauri/binaries/continuity-camera-$triple" ]; then
+        echo -e "${RED}✗ Missing sidecar binary: src-tauri/binaries/continuity-camera-$triple${NC}"
+        echo -e "${YELLOW}  Step 2 should have produced this. Run manually: bash src-tauri/tools/continuity-camera/build.sh${NC}"
+        exit 1
+    fi
+done
+
 rm -rf dist/
 npm run tauri build
 

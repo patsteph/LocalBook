@@ -486,7 +486,9 @@ main() {
         # case for end-users), which is fine for local execution.
         if [ -f "src-tauri/tools/continuity-camera/build.sh" ]; then
             info "Building Continuity Camera helper (for iPhone scanning)..."
-            if bash src-tauri/tools/continuity-camera/build.sh >/dev/null 2>&1; then
+            # Don't silence stderr — if this fails the whole Tauri build
+            # fails downstream and we want to know why.
+            if bash src-tauri/tools/continuity-camera/build.sh; then
                 success "Continuity Camera helper built"
             else
                 warn "Continuity Camera helper build failed (iPhone scanning will be unavailable)"
@@ -1041,10 +1043,47 @@ print(f'Whisper model cached at: {local_dir}')
         # Step 4: Rebuild app
         step 4 "Rebuilding application"
         cd "$INSTALL_DIR"
+
+        # Step 4a: Continuity Camera sidecar (REQUIRED — Tauri's externalBin
+        # validation rejects the build if these binaries are missing). Same
+        # rules as the initial-install path: signed adhoc when no Developer
+        # ID is set, which is fine for end-user / local-dev rebuilds.
+        if [ -f "src-tauri/tools/continuity-camera/build.sh" ]; then
+            info "Rebuilding Continuity Camera helper (for iPhone scanning)..."
+            if bash src-tauri/tools/continuity-camera/build.sh; then
+                success "Continuity Camera helper rebuilt"
+            else
+                warn "Continuity Camera helper build failed — installing placeholders"
+                mkdir -p src-tauri/binaries
+                touch src-tauri/binaries/continuity-camera-aarch64-apple-darwin
+                touch src-tauri/binaries/continuity-camera-x86_64-apple-darwin
+                chmod +x src-tauri/binaries/continuity-camera-*-apple-darwin
+            fi
+        fi
+
+        # Hard pre-flight: refuse to invoke `tauri build` if the sidecar
+        # binaries are missing. The Tauri build error in this case is
+        # cryptic ("resource path ... doesn't exist") and we'd rather
+        # surface a clear message than rely on Tauri's diagnostics.
+        if [ ! -f "src-tauri/binaries/continuity-camera-aarch64-apple-darwin" ] || \
+           [ ! -f "src-tauri/binaries/continuity-camera-x86_64-apple-darwin" ]; then
+            error "Continuity Camera sidecar binaries missing in src-tauri/binaries/."
+            error "Run: bash src-tauri/tools/continuity-camera/build.sh"
+            exit 1
+        fi
+
         npm ci --silent 2>&1 | tail -1 || true
         rm -rf dist/
         info "Building Tauri application (this may take several minutes)..."
-        npm run tauri build 2>&1 || warn "Tauri build reported errors (checking for app bundle...)"
+        # Capture exit status explicitly — old version coerced failure to a
+        # warning, which silently hid sidecar / signing problems.
+        if ! npm run tauri build 2>&1; then
+            error "Tauri build failed. See log above. Common causes:"
+            error "  • src-tauri/binaries/continuity-camera-* missing or empty"
+            error "  • Frontend bundle errors (vite build)"
+            error "  • Code signing / entitlements mismatch"
+            exit 1
+        fi
         local app_path="src-tauri/target/release/bundle/macos/$APP_BUNDLE"
         if [ -d "$app_path" ]; then
             rm -rf "./$APP_BUNDLE"

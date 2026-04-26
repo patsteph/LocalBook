@@ -20,6 +20,7 @@ All notable changes to LocalBook will be documented in this file.
 - **`release.sh`** — Pre-flight checks for `APPLE_SIGNING_IDENTITY` / `APPLE_TEAM_ID`; dynamically injects the signing identity into `tauri.conf.json` at build time (never committed); adds notarization (`xcrun notarytool submit --keychain-profile localbook-notary`) + stapling + Gatekeeper verify. Old standalone `scripts/build-signed-release.sh` removed.
 - **`backend/build_backend.sh`** — Dual-mode: Developer ID + hardened runtime + entitlements when the env var is set, adhoc fallback otherwise. Signs the PyInstaller bundle and every nested binary.
 - **`build.sh` / `install.sh`** — Both now invoke the sidecar build before `npm run tauri build` so end-user installs produce a working (adhoc-signed) sidecar without requiring a Developer Program membership.
+- **Build robustness** — `install.sh`'s rebuild path was missing the sidecar build entirely (it was only in the initial-install branch), and Tauri build failures were being coerced to warnings, masking sidecar problems. Both paths now build the sidecar, both unmute its stderr, and both fail loudly with a clear pointer to the manual recovery command. `build.sh` and `install.sh` now also hard-fail with a clear message if `src-tauri/binaries/continuity-camera-*` are missing before invoking `tauri build`.
 - **`.gitignore`** — Blocks `.signing.env`, certificates, provisioning profiles, notarization zips, and sidecar build outputs from ever reaching the repo.
 
 ### Known in-flight
