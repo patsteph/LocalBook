@@ -190,6 +190,17 @@ class CuratorAgent:
         # Prevents Ollama contention when multiple notebooks are due simultaneously.
         self._collection_lock = asyncio.Lock()
         self._active_collection: Optional[str] = None  # notebook_id currently collecting
+
+        # Weekly-wrap single-flight guards. Prevents two concurrent generations
+        # (e.g. chat-triggered + scheduler-triggered) from racing and the second
+        # empty/shorter wrap overwriting the first one the user was reading.
+        self._weekly_wrap_lock = asyncio.Lock()
+        self._weekly_wrap_cache: Optional[WeeklyWrapUp] = None
+        self._weekly_wrap_cached_at: Optional[datetime] = None
+        # Same treatment for morning briefs — same failure mode exists there.
+        self._morning_brief_lock = asyncio.Lock()
+        self._morning_brief_cache: Optional[MorningBrief] = None
+        self._morning_brief_cached_at: Optional[datetime] = None
     
     def _get_config_path(self) -> Path:
         """Get path to curator config file"""
@@ -713,6 +724,45 @@ Be concise and cite which notebook each insight comes from."""
     # =========================================================================
     
     async def generate_morning_brief(self, last_seen: datetime) -> MorningBrief:
+        """Single-flight wrapper around the morning-brief generator.
+
+        Two concurrent callers (scheduler + user-triggered chat, or UI polling
+        + background refresh) would otherwise both spend ~30–90 s building
+        narratives and the second completion silently overwrite the first.
+        We serialize on a lock and, inside the lock, short-circuit if a
+        fresh result is already in memory (<90 s old) so concurrent callers
+        all get the same object.
+        """
+        # Fast path: return cached result without taking the lock at all.
+        now_ts = datetime.utcnow()
+        if (
+            self._morning_brief_cache is not None
+            and self._morning_brief_cached_at is not None
+            and (now_ts - self._morning_brief_cached_at).total_seconds() < 90
+        ):
+            return self._morning_brief_cache
+
+        async with self._morning_brief_lock:
+            # Re-check under the lock — another coroutine may have finished
+            # generating while we were waiting.
+            now_ts = datetime.utcnow()
+            if (
+                self._morning_brief_cache is not None
+                and self._morning_brief_cached_at is not None
+                and (now_ts - self._morning_brief_cached_at).total_seconds() < 90
+            ):
+                logger.info(
+                    "[curator] Reusing morning brief generated %.1fs ago (single-flight)",
+                    (now_ts - self._morning_brief_cached_at).total_seconds(),
+                )
+                return self._morning_brief_cache
+
+            result = await self._generate_morning_brief_impl(last_seen)
+            self._morning_brief_cache = result
+            self._morning_brief_cached_at = datetime.utcnow()
+            return result
+
+    async def _generate_morning_brief_impl(self, last_seen: datetime) -> MorningBrief:
         """
         Generate a newsletter-quality morning brief summarizing activity since
         the user last opened the app.
@@ -847,6 +897,47 @@ Be concise and cite which notebook each insight comes from."""
         )
     
     async def generate_weekly_wrap_up(self) -> WeeklyWrapUp:
+        """Single-flight wrapper around the weekly-wrap generator.
+
+        The user-reported failure mode: they were reading a wrap with a long
+        narrative, then a second (shorter / nearly-empty) wrap appeared and
+        replaced it. Root cause: two callers (chat "weekly wrap" intent +
+        UI refresh, or scheduler + manual) both invoked this method, each
+        wrote its result to `memory/weekly_wrap_YYYY-MM-DD.json`, and the
+        second write clobbered the first.
+
+        Fix: serialize concurrent callers on `_weekly_wrap_lock` and reuse
+        a cached result for 5 minutes. Narrative generation takes 30–90 s;
+        5 minutes comfortably covers any double-click / polling / scheduler
+        overlap without ever going stale enough to mislead the user.
+        """
+        now_ts = datetime.utcnow()
+        if (
+            self._weekly_wrap_cache is not None
+            and self._weekly_wrap_cached_at is not None
+            and (now_ts - self._weekly_wrap_cached_at).total_seconds() < 300
+        ):
+            return self._weekly_wrap_cache
+
+        async with self._weekly_wrap_lock:
+            now_ts = datetime.utcnow()
+            if (
+                self._weekly_wrap_cache is not None
+                and self._weekly_wrap_cached_at is not None
+                and (now_ts - self._weekly_wrap_cached_at).total_seconds() < 300
+            ):
+                logger.info(
+                    "[curator] Reusing weekly wrap generated %.1fs ago (single-flight)",
+                    (now_ts - self._weekly_wrap_cached_at).total_seconds(),
+                )
+                return self._weekly_wrap_cache
+
+            result = await self._generate_weekly_wrap_up_impl()
+            self._weekly_wrap_cache = result
+            self._weekly_wrap_cached_at = datetime.utcnow()
+            return result
+
+    async def _generate_weekly_wrap_up_impl(self) -> WeeklyWrapUp:
         """Generate a Weekly Wrap Up covering the past 7 days of research activity.
         
         Designed to replace the Monday Morning Brief — gives a broader view of

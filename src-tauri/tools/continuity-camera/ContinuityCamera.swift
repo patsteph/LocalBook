@@ -57,13 +57,120 @@ func debug(_ msg: String) {
 }
 
 // ─── Argument parsing ─────────────────────────────────────────────────────────
+//
+// Modes:
+//   continuity-camera --list
+//       Enumerate every camera AVFoundation can see and emit the result as
+//       JSON on stdout, then exit. No window is shown, no capture happens.
+//       Used by the frontend to populate a camera picker when more than one
+//       device is available.
+//
+//   continuity-camera <output_dir> [--camera <uniqueID>] [--include-non-continuity]
+//       Original capture mode. If --camera <uid> is given, that specific
+//       device is selected (matched by AVCaptureDevice.uniqueID); otherwise
+//       the first .continuityCamera is used. --include-non-continuity loosens
+//       the strict filter so a built-in / external camera can be used as a
+//       fallback when no iPhone is paired.
 
-let args = CommandLine.arguments
-guard args.count >= 2 else {
-    emitErrorAndExit("usage: continuity-camera <output_dir>")
+let argv = Array(CommandLine.arguments.dropFirst())
+
+// ─── --list mode ─────────────────────────────────────────────────────────────
+
+func cameraInfoDict(_ d: AVCaptureDevice) -> [String: Any] {
+    let typeStr: String = {
+        switch d.deviceType {
+        case .continuityCamera:        return "continuity"
+        case .external:                return "external"
+        case .builtInWideAngleCamera:  return "builtin"
+        default:                       return d.deviceType.rawValue
+        }
+    }()
+    return [
+        "id":           d.uniqueID,
+        "name":         d.localizedName,
+        "manufacturer": d.manufacturer,
+        "modelID":      d.modelID,
+        "type":         typeStr,
+        "isContinuity": d.deviceType == .continuityCamera,
+    ]
 }
 
-let outputDir = URL(fileURLWithPath: args[1], isDirectory: true)
+func runListMode() -> Never {
+    // Camera authorization is required for AVFoundation to surface device
+    // metadata on macOS 14+. We request it here too — same as capture mode —
+    // so a first-time --list call triggers the standard TCC prompt rather
+    // than silently returning an empty list.
+    func enumerate() -> Never {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.continuityCamera, .external, .builtInWideAngleCamera],
+            mediaType: .video,
+            position: .unspecified
+        )
+        let cams = discovery.devices.map { cameraInfoDict($0) }
+        debug("--list mode: AVFoundation found \(cams.count) camera(s)")
+        emitJSON(["status": "ok", "cameras": cams])
+        exit(0)
+    }
+
+    switch AVCaptureDevice.authorizationStatus(for: .video) {
+    case .authorized:
+        enumerate()
+    case .notDetermined:
+        debug("--list mode: requesting camera authorization")
+        let sema = DispatchSemaphore(value: 0)
+        AVCaptureDevice.requestAccess(for: .video) { _ in sema.signal() }
+        sema.wait()
+        enumerate()
+    case .denied, .restricted:
+        // We still emit an empty success rather than an error so the UI can
+        // distinguish "no cameras attached" from "permission denied".
+        emitJSON([
+            "status": "ok",
+            "cameras": [],
+            "warning": "camera permission denied — grant LocalBook camera access in System Settings → Privacy & Security → Camera",
+        ])
+        exit(0)
+    @unknown default:
+        emitJSON(["status": "ok", "cameras": []])
+        exit(0)
+    }
+}
+
+if argv.first == "--list" {
+    runListMode()
+}
+
+// ─── Capture mode arg parsing ────────────────────────────────────────────────
+
+guard let outArg = argv.first, !outArg.hasPrefix("--") else {
+    emitErrorAndExit(
+        "usage: continuity-camera <output_dir> [--camera <uniqueID>] [--include-non-continuity]\n" +
+        "       continuity-camera --list"
+    )
+}
+
+var preferredCameraID: String? = nil
+var includeNonContinuity = false
+do {
+    var i = 1
+    while i < argv.count {
+        let a = argv[i]
+        if a == "--camera", i + 1 < argv.count {
+            preferredCameraID = argv[i + 1]
+            i += 2
+        } else if a == "--include-non-continuity" {
+            includeNonContinuity = true
+            i += 1
+        } else {
+            // Unknown flag — log and skip rather than fail, so older callers
+            // passing future args don't break this binary.
+            debug("ignoring unknown arg: \(a)")
+            i += 1
+        }
+    }
+}
+
+let outputDir = URL(fileURLWithPath: outArg, isDirectory: true)
 
 do {
     try FileManager.default.createDirectory(
@@ -94,9 +201,13 @@ final class CaptureController: NSObject {
     private var captureButton: NSButton!
     private var finalized = false
     private let outputDir: URL
+    private let preferredCameraID: String?
+    private let includeNonContinuity: Bool
 
-    init(outputDir: URL) {
+    init(outputDir: URL, preferredCameraID: String? = nil, includeNonContinuity: Bool = false) {
         self.outputDir = outputDir
+        self.preferredCameraID = preferredCameraID
+        self.includeNonContinuity = includeNonContinuity
         super.init()
     }
 
@@ -130,24 +241,99 @@ final class CaptureController: NSObject {
 
     /// Discover Continuity Camera devices and wire up the session + window.
     private func discoverAndShow() {
+        // We discover BUILTIN + EXTERNAL + CONTINUITY so the diagnostic log
+        // can show every camera macOS sees (including stranded virtual
+        // cameras like mmhmm). But we ONLY accept .continuityCamera as a
+        // capture target — falling back to "first device" let mmhmm hijack
+        // the session on at least one user machine.
         let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.continuityCamera, .external],
+            deviceTypes: [
+                .continuityCamera,
+                .external,
+                .builtInWideAngleCamera,
+            ],
             mediaType: .video,
             position: .unspecified
         )
         let devices = discovery.devices
-        debug("AVCaptureDevice discovery found \(devices.count) device(s)")
+        debug("AVCaptureDevice discovery found \(devices.count) device(s):")
+        if devices.isEmpty {
+            debug("  (none — AVFoundation returned an empty device list)")
+        }
         for d in devices {
-            debug("  device: \(d.localizedName) uniqueID=\(d.uniqueID) type=\(d.deviceType.rawValue)")
+            let isContinuity = d.deviceType == .continuityCamera ? " [CONTINUITY]" : ""
+            debug("  • \(d.localizedName) — type=\(d.deviceType.rawValue) " +
+                  "manufacturer=\(d.manufacturer) modelID=\(d.modelID) " +
+                  "uniqueID=\(d.uniqueID)\(isContinuity)")
         }
 
-        guard let device = devices.first(where: { $0.deviceType == .continuityCamera })
-                      ?? devices.first else {
-            finish(error: "No iPhone or iPad found via Continuity Camera. Make sure your device is unlocked, nearby, signed in to the same Apple ID, and both Wi-Fi and Bluetooth are on.")
+        // Selection priority:
+        //   1. If --camera <uid> was passed, use that exact device (any type).
+        //      The user has explicitly opted in via the picker UI.
+        //   2. Else: first .continuityCamera (the iPhone — preferred default).
+        //   3. Else, only when --include-non-continuity is set: first external,
+        //      then first builtInWideAngleCamera. By default we still refuse
+        //      to fall through to a virtual camera.
+        let chosen: AVCaptureDevice? = {
+            if let uid = preferredCameraID, !uid.isEmpty {
+                if let exact = devices.first(where: { $0.uniqueID == uid }) {
+                    debug("using user-selected camera: \(exact.localizedName) (\(uid))")
+                    return exact
+                }
+                debug("requested --camera \(uid) not found; falling back to default selection")
+            }
+            if let cont = devices.first(where: { $0.deviceType == .continuityCamera }) {
+                return cont
+            }
+            if includeNonContinuity {
+                if let ext = devices.first(where: { $0.deviceType == .external }) {
+                    debug("falling back to external camera: \(ext.localizedName)")
+                    return ext
+                }
+                if let bi = devices.first(where: { $0.deviceType == .builtInWideAngleCamera }) {
+                    debug("falling back to built-in camera: \(bi.localizedName)")
+                    return bi
+                }
+            }
+            return nil
+        }()
+
+        guard let device = chosen else {
+            let nonContinuityCount = devices.count
+            var msg = "No iPhone or iPad found via Continuity Camera.\n\n"
+            msg += "Checklist:\n"
+            msg += "  • iPhone unlocked and within ~30 ft of this Mac\n"
+            msg += "  • Same Apple ID on both, Wi-Fi + Bluetooth on, same network\n"
+            msg += "  • iPhone: Settings → General → AirPlay & Continuity → "
+            msg += "Continuity Camera = ON\n"
+            msg += "  • Mac: System Settings → General → AirDrop & Handoff → "
+            msg += "Allow Handoff = ON\n\n"
+            if nonContinuityCount > 0 {
+                msg += "AVFoundation did see \(nonContinuityCount) other camera(s) "
+                msg += "(see stderr log) but none is a Continuity device.\n"
+                msg += "If a virtual camera (mmhmm, OBS, etc.) is in that list and the "
+                msg += "app is uninstalled, remove its leftover plugin from "
+                msg += "/Library/CoreMediaIO/Plug-Ins/DAL/ and reboot."
+            } else {
+                msg += "AVFoundation returned ZERO cameras. Camera permission is "
+                msg += "likely denied, OR the embedded NSCameraUseContinuityCameraDeviceType "
+                msg += "key isn't being read by this build.\n\n"
+                msg += "Fix — open System Settings → Privacy & Security → Camera, "
+                msg += "and make sure LocalBook is toggled ON.\n"
+                msg += "If LocalBook isn't listed there yet, reset and relaunch:\n"
+                msg += "  tccutil reset Camera com.localbook.desktop\n"
+                msg += "  tccutil reset Camera com.localbook.continuity-camera\n"
+                msg += "  tccutil reset Camera   # nuclear — resets ALL apps\n"
+                msg += "(the first two may report 'no such bundle identifier' if "
+                msg += "TCC has never seen them; that's fine, the reset still clears "
+                msg += "any stale deny-decision.) Then relaunch LocalBook and say "
+                msg += "YES to the camera prompt."
+            }
+            finish(error: msg)
             return
         }
 
-        debug("selected device: \(device.localizedName)")
+        debug("selected Continuity Camera: \(device.localizedName) (\(device.modelID))")
 
         do {
             let input = try AVCaptureDeviceInput(device: device)
@@ -298,7 +484,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: CaptureController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        controller = CaptureController(outputDir: outputDir)
+        controller = CaptureController(
+            outputDir: outputDir,
+            preferredCameraID: preferredCameraID,
+            includeNonContinuity: includeNonContinuity
+        )
         controller.start()
 
         // Absolute safety timeout: 5 minutes from launch.

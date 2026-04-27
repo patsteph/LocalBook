@@ -17,10 +17,18 @@ interface StagnationData {
   };
   auto_expand: boolean;
   pending_count: number;
+  // Sum of items_found across collection runs in the last 7 days. Used to
+  // detect that the collector is actively bringing things in even if the
+  // server-side stagnation heuristic still flags the notebook (e.g. items
+  // were found but auto-rejected, so days_since_growth keeps growing).
+  // Older backends omit this — undefined is treated as 0.
+  recent_items_found?: number;
 }
 
 const DISMISS_KEY_PREFIX = 'lb-tombstone-dismiss-';
-const DISMISS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+// Bumped from 24h to 3 days. The banner is informational, not urgent — once
+// the user has acknowledged it they shouldn't see it again on every reload.
+const DISMISS_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 
 function isDismissed(notebookId: string): boolean {
   try {
@@ -71,9 +79,15 @@ export const CollectionTombstone: React.FC<CollectionTombstoneProps> = ({
 
   if (!data || dismissed) return null;
 
-  const { stagnation, auto_expand, pending_count } = data;
+  const { stagnation, auto_expand, pending_count, recent_items_found } = data;
   const hasPending = pending_count > 0;
-  const isStagnating = stagnation.stagnating;
+  // If the collector has surfaced anything (approved, pending, or even
+  // rejected) in the last 7 days, treat the notebook as "actively
+  // collecting" — we don't want to nag the user with stagnation/expand
+  // banners while the background process is plainly doing its job.
+  // Pending items themselves also count as activity.
+  const collectorActive = (recent_items_found ?? 0) > 0 || hasPending;
+  const isStagnating = stagnation.stagnating && !collectorActive;
 
   // Nothing to show
   if (!hasPending && !isStagnating) return null;

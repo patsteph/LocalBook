@@ -933,11 +933,97 @@ struct ContinuityResult {
     message: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+struct ContinuityCameraInfo {
+    id: String,
+    name: String,
+    manufacturer: String,
+    #[serde(rename = "modelID")]
+    model_id: String,
+    /// "continuity" | "external" | "builtin" (or raw deviceType id for unknowns)
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(rename = "isContinuity")]
+    is_continuity: bool,
+}
+
+/// Run the sidecar in `--list` mode and return the parsed JSON it emits.
+/// No window is shown and no capture occurs — this is purely for populating
+/// the frontend's camera-picker dropdown.
 #[tauri::command]
-async fn trigger_continuity_camera(app: AppHandle) -> Result<ContinuityResult, String> {
+async fn list_continuity_cameras(
+    app: AppHandle,
+) -> Result<Vec<ContinuityCameraInfo>, String> {
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = app; // silence unused warning
+        let _ = app;
+        return Ok(vec![]);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let sidecar = app
+            .shell()
+            .sidecar("continuity-camera")
+            .map_err(|e| format!("sidecar lookup failed: {}", e))?
+            .args(["--list".to_string()]);
+
+        let (mut rx, _child) = sidecar
+            .spawn()
+            .map_err(|e| format!("failed to spawn continuity-camera --list: {}", e))?;
+
+        let mut stdout_buf = String::new();
+        let mut stderr_buf = String::new();
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(b) => stdout_buf.push_str(&String::from_utf8_lossy(&b)),
+                CommandEvent::Stderr(b) => stderr_buf.push_str(&String::from_utf8_lossy(&b)),
+                CommandEvent::Terminated(_) => break,
+                _ => {}
+            }
+        }
+        if !stderr_buf.trim().is_empty() {
+            eprintln!("[continuity-camera --list stderr] {}", stderr_buf.trim());
+        }
+
+        let last = stdout_buf
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim();
+        if last.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(last)
+            .map_err(|e| format!("failed to parse --list output '{}': {}", last, e))?;
+        let cams = parsed.get("cameras").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+        let mut out = Vec::with_capacity(cams.len());
+        for c in cams {
+            out.push(ContinuityCameraInfo {
+                id:           c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                name:         c.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                manufacturer: c.get("manufacturer").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                model_id:     c.get("modelID").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                kind:         c.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                is_continuity: c.get("isContinuity").and_then(|v| v.as_bool()).unwrap_or(false),
+            });
+        }
+        Ok(out)
+    }
+}
+
+#[tauri::command]
+async fn trigger_continuity_camera(
+    app: AppHandle,
+    camera_id: Option<String>,
+    include_non_continuity: Option<bool>,
+) -> Result<ContinuityResult, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, camera_id, include_non_continuity);
         return Err("Continuity Camera is only available on macOS".to_string());
     }
 
@@ -954,11 +1040,23 @@ async fn trigger_continuity_camera(app: AppHandle) -> Result<ContinuityResult, S
             .map_err(|e| format!("failed to create output dir: {}", e))?;
         let out_dir_str = out_dir.to_string_lossy().to_string();
 
+        // Build argv: <out_dir> [--camera <uid>] [--include-non-continuity]
+        let mut argv: Vec<String> = vec![out_dir_str];
+        if let Some(uid) = camera_id.as_deref() {
+            if !uid.is_empty() {
+                argv.push("--camera".to_string());
+                argv.push(uid.to_string());
+            }
+        }
+        if include_non_continuity.unwrap_or(false) {
+            argv.push("--include-non-continuity".to_string());
+        }
+
         let sidecar = app
             .shell()
             .sidecar("continuity-camera")
             .map_err(|e| format!("sidecar lookup failed: {}", e))?
-            .args([out_dir_str]);
+            .args(argv);
 
         let (mut rx, _child) = sidecar
             .spawn()
@@ -1061,7 +1159,8 @@ pub fn run() {
             is_backend_ready,
             check_backend_health,
             get_backend_status,
-            trigger_continuity_camera
+            trigger_continuity_camera,
+            list_continuity_cameras
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -33,6 +33,7 @@ export interface Source {
   tags?: string[];  // v0.6.0: Document tags
   collected_by?: string;  // 'collector' for auto-collected sources
   confidence_score?: number;  // Collector confidence score
+  created_at?: string;  // ISO timestamp — used for sort-by-recent
 }
 
 export interface Citation {

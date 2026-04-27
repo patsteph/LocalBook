@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { BookOpen, Trash2, PenLine, Archive, ArrowRightLeft } from 'lucide-react';
+import { BookOpen, Trash2, PenLine, Archive, ArrowRightLeft, ArrowUpDown, Loader2 } from 'lucide-react';
 import { sourceService } from '../services/sources';
 import { notebookService } from '../services/notebooks';
 import { Source, Notebook } from '../types';
@@ -17,6 +17,62 @@ interface SourcesListProps {
   onSourceSelect?: (sourceId: string) => void;  // Callback when a source is clicked
 }
 
+// ─── Source sort modes ──────────────────────────────────────────────────────
+// Persisted to localStorage so the user's chosen organization sticks across
+// sessions and notebooks. NotebookLM-style options: recency, alpha, type, size.
+type SortMode = 'recent' | 'oldest' | 'title_asc' | 'title_desc' | 'type' | 'size';
+
+const SORT_LABELS: Record<SortMode, string> = {
+  recent: 'Recently added',
+  oldest: 'Oldest first',
+  title_asc: 'Title A→Z',
+  title_desc: 'Title Z→A',
+  type: 'By type',
+  size: 'Largest first',
+};
+
+const SORT_STORAGE_KEY = 'localbook.sourcesList.sort';
+
+function loadSortMode(): SortMode {
+  try {
+    const v = localStorage.getItem(SORT_STORAGE_KEY);
+    if (v && v in SORT_LABELS) return v as SortMode;
+  } catch { /* ignore */ }
+  return 'recent';
+}
+
+function sortSources(sources: Source[], mode: SortMode): Source[] {
+  // Always return a new array — React state should never see in-place mutation.
+  const arr = [...sources];
+  const titleOf = (s: Source) => (s.filename || '').toLowerCase();
+  const sizeOf = (s: Source) => s.char_count || s.characters || 0;
+  const tsOf = (s: Source) => {
+    if (!s.created_at) return 0;
+    const t = Date.parse(s.created_at);
+    return Number.isNaN(t) ? 0 : t;
+  };
+  switch (mode) {
+    case 'recent':     return arr.sort((a, b) => tsOf(b) - tsOf(a));
+    case 'oldest':     return arr.sort((a, b) => tsOf(a) - tsOf(b));
+    case 'title_asc':  return arr.sort((a, b) => titleOf(a).localeCompare(titleOf(b)));
+    case 'title_desc': return arr.sort((a, b) => titleOf(b).localeCompare(titleOf(a)));
+    case 'size':       return arr.sort((a, b) => sizeOf(b) - sizeOf(a));
+    case 'type': {
+      // Group by type/format, then by title within each group.
+      const typeOf = (s: Source) =>
+        (s.type === 'note' ? 'NOTE' :
+         s.collected_by === 'collector' ? 'COLLECTED' :
+         (s.format || s.type || 'OTHER').toUpperCase());
+      return arr.sort((a, b) => {
+        const ta = typeOf(a); const tb = typeOf(b);
+        if (ta !== tb) return ta.localeCompare(tb);
+        return titleOf(a).localeCompare(titleOf(b));
+      });
+    }
+    default: return arr;
+  }
+}
+
 export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesChange, selectedSourceId, onSourceSelect }) => {
   const [sources, setSources] = useState<Source[]>([]);
   const [loading, setLoading] = useState(false);
@@ -29,6 +85,29 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   const [moveTarget, setMoveTarget] = useState<string | null>(null);
   const [moveNotebooks, setMoveNotebooks] = useState<Notebook[]>([]);
   const [moving, setMoving] = useState(false);
+  // ID of the destination notebook currently being moved into. Used to show
+  // a spinner + "Moving..." label on the chosen row so the user has visible
+  // feedback during the (sometimes 30-60s) re-ingest step on the backend.
+  const [movingToId, setMovingToId] = useState<string | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>(() => loadSortMode());
+  const [showSortMenu, setShowSortMenu] = useState(false);
+
+  // Persist sort choice across sessions and notebooks.
+  useEffect(() => {
+    try { localStorage.setItem(SORT_STORAGE_KEY, sortMode); } catch { /* ignore */ }
+  }, [sortMode]);
+
+  // Close the sort menu when clicking elsewhere.
+  useEffect(() => {
+    if (!showSortMenu) return;
+    const onClick = () => setShowSortMenu(false);
+    // Defer one tick so the click that opened the menu doesn't immediately close it.
+    const t = setTimeout(() => document.addEventListener('mousedown', onClick), 0);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener('mousedown', onClick);
+    };
+  }, [showSortMenu]);
 
   // WebSocket connection for real-time source updates (auto-reconnecting)
   const wsUrl = useMemo(() => API_BASE_URL.replace('http', 'ws') + '/constellation/ws', []);
@@ -119,10 +198,14 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
 
   const untaggedCount = sources.filter(s => !s.tags || s.tags.length === 0).length;
 
-  // Filter sources by active tag
-  const filteredSources = activeTagFilter
-    ? sources.filter(s => s.tags?.includes(activeTagFilter))
-    : sources;
+  // Filter sources by active tag, then apply the user's sort preference.
+  // Memoize so React doesn't re-run the sort on every unrelated render.
+  const filteredSources = useMemo(() => {
+    const base = activeTagFilter
+      ? sources.filter(s => s.tags?.includes(activeTagFilter))
+      : sources;
+    return sortSources(base, sortMode);
+  }, [sources, activeTagFilter, sortMode]);
 
   const handleAutoTagAll = async () => {
     if (!notebookId || autoTagging) return;
@@ -172,20 +255,56 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
 
   return (
     <div className="px-3 py-2">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <h3 className="text-sm font-semibold text-gray-900 dark:text-white truncate">
           Sources ({activeTagFilter ? `${filteredSources.length}/${sources.length}` : sources.length})
         </h3>
-        {untaggedCount > 0 && (
-          <button
-            onClick={handleAutoTagAll}
-            disabled={autoTagging}
-            className="px-2 py-1 text-xs font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30 rounded-lg transition-colors disabled:opacity-50"
-            title={`Auto-tag ${untaggedCount} untagged sources`}
-          >
-            {autoTagging ? 'Tagging...' : `Tag ${untaggedCount} untagged`}
-          </button>
-        )}
+        <div className="flex items-center gap-1 shrink-0">
+          {/* Sort menu — NotebookLM-style organize control. Persists to
+              localStorage so each user keeps their preferred ordering. */}
+          {sources.length > 1 && (
+            <div className="relative" onClick={(e) => e.stopPropagation()}>
+              <button
+                onClick={() => setShowSortMenu(s => !s)}
+                className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                title={`Sort: ${SORT_LABELS[sortMode]}`}
+              >
+                <ArrowUpDown size={12} />
+                <span className="hidden sm:inline">{SORT_LABELS[sortMode]}</span>
+              </button>
+              {showSortMenu && (
+                <div
+                  className="absolute right-0 mt-1 w-44 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50"
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  {(Object.keys(SORT_LABELS) as SortMode[]).map(mode => (
+                    <button
+                      key={mode}
+                      onClick={() => { setSortMode(mode); setShowSortMenu(false); }}
+                      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 ${
+                        mode === sortMode
+                          ? 'text-blue-600 dark:text-blue-400 font-medium'
+                          : 'text-gray-700 dark:text-gray-200'
+                      }`}
+                    >
+                      {mode === sortMode ? '✓ ' : '   '}{SORT_LABELS[mode]}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {untaggedCount > 0 && (
+            <button
+              onClick={handleAutoTagAll}
+              disabled={autoTagging}
+              className="px-2 py-1 text-xs font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30 rounded-lg transition-colors disabled:opacity-50"
+              title={`Auto-tag ${untaggedCount} untagged sources`}
+            >
+              {autoTagging ? 'Tagging...' : `Tag ${untaggedCount} untagged`}
+            </button>
+          )}
+        </div>
       </div>
 
       {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
@@ -333,34 +452,76 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                 </div>
                 {moveTarget === source.id && (
                   <div className="mt-1 p-1.5 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg border border-indigo-200 dark:border-indigo-700" onClick={(e) => e.stopPropagation()}>
-                    <p className="text-[10px] font-medium text-indigo-600 dark:text-indigo-400 mb-1">Move to:</p>
+                    <p className="text-[10px] font-medium text-indigo-600 dark:text-indigo-400 mb-1 flex items-center gap-1">
+                      {moving ? (
+                        <>
+                          <Loader2 size={10} className="animate-spin" />
+                          <span>Moving — re-indexing in target notebook (this can take ~30-60s)…</span>
+                        </>
+                      ) : (
+                        <span>Move to:</span>
+                      )}
+                    </p>
                     {moveNotebooks.length === 0 ? (
                       <p className="text-[10px] text-gray-500">No other notebooks</p>
                     ) : (
                       <div className="flex flex-col gap-0.5 max-h-32 overflow-y-auto">
-                        {moveNotebooks.map(nb => (
-                          <button
-                            key={nb.id}
-                            disabled={moving}
-                            onClick={async () => {
-                              if (!notebookId) return;
-                              setMoving(true);
-                              try {
-                                await sourceService.moveSource(notebookId, source.id, nb.id);
-                                ctx.addToast({ type: 'success', title: `Moved to ${nb.title}` });
-                                setMoveTarget(null);
-                                loadSources();
-                                onSourcesChange?.();
-                              } catch (err) {
-                                console.error('Move failed:', err);
-                                ctx.addToast({ type: 'error', title: 'Failed to move source' });
-                              } finally { setMoving(false); }
-                            }}
-                            className="text-left px-2 py-1 text-[11px] rounded hover:bg-indigo-100 dark:hover:bg-indigo-800/40 text-gray-700 dark:text-gray-300 transition-colors disabled:opacity-50 truncate"
-                          >
-                            {nb.title}
-                          </button>
-                        ))}
+                        {moveNotebooks.map(nb => {
+                          const isThisTarget = movingToId === nb.id;
+                          // While a move is running we disable every option,
+                          // but only the chosen target gets the active styling
+                          // + spinner + indeterminate progress bar so the user
+                          // knows exactly which click registered.
+                          return (
+                            <button
+                              key={nb.id}
+                              disabled={moving}
+                              onClick={async () => {
+                                if (!notebookId) return;
+                                setMoving(true);
+                                setMovingToId(nb.id);
+                                try {
+                                  await sourceService.moveSource(notebookId, source.id, nb.id);
+                                  ctx.addToast({ type: 'success', title: `Moved to ${nb.title}` });
+                                  setMoveTarget(null);
+                                  loadSources();
+                                  onSourcesChange?.();
+                                } catch (err) {
+                                  console.error('Move failed:', err);
+                                  ctx.addToast({ type: 'error', title: 'Failed to move source' });
+                                } finally {
+                                  setMoving(false);
+                                  setMovingToId(null);
+                                }
+                              }}
+                              className={`relative overflow-hidden text-left px-2 py-1 text-[11px] rounded transition-colors truncate ${
+                                isThisTarget
+                                  ? 'bg-indigo-200 dark:bg-indigo-700/60 text-indigo-900 dark:text-indigo-100 ring-1 ring-indigo-400 dark:ring-indigo-500'
+                                  : moving
+                                    ? 'opacity-40 cursor-not-allowed text-gray-700 dark:text-gray-300'
+                                    : 'hover:bg-indigo-100 dark:hover:bg-indigo-800/40 text-gray-700 dark:text-gray-300'
+                              }`}
+                            >
+                              <span className="flex items-center gap-1.5">
+                                {isThisTarget && <Loader2 size={11} className="animate-spin shrink-0" />}
+                                <span className="truncate">{nb.title}</span>
+                                {isThisTarget && <span className="ml-auto text-[10px] opacity-80 shrink-0">Moving…</span>}
+                              </span>
+                              {/* Indeterminate progress bar: a small bar that
+                                  slides L→R repeatedly under the active
+                                  target. The keyframes live in index.css as
+                                  `move-indeterminate` (added alongside this
+                                  feature). */}
+                              {isThisTarget && (
+                                <span
+                                  aria-hidden
+                                  className="absolute left-0 bottom-0 h-0.5 w-1/3 bg-indigo-500 dark:bg-indigo-300 rounded-full"
+                                  style={{ animation: 'move-indeterminate 1.4s ease-in-out infinite' }}
+                                />
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </div>

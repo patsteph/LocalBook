@@ -598,12 +598,20 @@ async def update_note(notebook_id: str, source_id: str, request: NoteUpdateReque
 
 @router.post("/{notebook_id}/{source_id}/move")
 async def move_source(notebook_id: str, source_id: str, request: MoveSourceRequest):
-    """Move a source (note or document) to a different notebook.
+    """Move a source (note, document, web capture, collector item) to a
+    different notebook.
 
-    1. Delete vectors from old notebook's LanceDB table
-    2. Update notebook_id in source_store
-    3. Re-ingest into new notebook's LanceDB table
+    Preserves ALL metadata: tags, url, author, dates, notes, web/collector
+    provenance, content_date, etc. Previously this endpoint copied only
+    type/format/content, silently dropping tags and every other extra field.
+
+    If the source has no cached `content` (common for old web captures whose
+    text lives only in LanceDB chunks), we still do the metadata move and
+    mark the new row as `needs_reindex` rather than hard-failing. That's
+    what was causing the "Failed to move source" toast the user was seeing.
     """
+    from storage.notebook_store import notebook_store
+
     source = await source_store.get(source_id)
     if not source or source.get("notebook_id") != notebook_id:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -612,62 +620,84 @@ async def move_source(notebook_id: str, source_id: str, request: MoveSourceReque
     if target_id == notebook_id:
         raise HTTPException(status_code=400, detail="Source is already in this notebook")
 
-    content = source.get("content", "")
-    if not content:
-        raise HTTPException(status_code=400, detail="Source has no content to re-index")
+    # Verify target notebook actually exists — better than silently orphaning.
+    try:
+        target_nb = await notebook_store.get(target_id)
+    except Exception:
+        target_nb = None
+    if not target_nb:
+        raise HTTPException(status_code=404, detail=f"Target notebook not found: {target_id}")
 
+    content = source.get("content") or ""
     title = source.get("filename", "Untitled")
     source_type = source.get("type", "document")
 
-    # 1. Delete vectors from old notebook
+    # Preserve every field except the ones source_store.create() manages itself.
+    # Keep `created_at` so the source's original date isn't reset by the move.
+    RESERVED = {"id", "notebook_id", "status", "chunks", "characters", "error"}
+    preserved = {k: v for k, v in source.items() if k not in RESERVED}
+    preserved["id"] = source_id
+    preserved["chunks"] = 0
+    preserved["characters"] = 0
+    preserved["status"] = "processing" if content else "needs_reindex"
+
+    # 1. Clean up vectors in the OLD notebook's LanceDB table. Non-fatal —
+    #    worst case is orphaned chunks in the old table that will never be
+    #    queried (their notebook_id no longer references them).
     try:
         await rag_engine.delete_source(notebook_id, source_id)
     except Exception as e:
-        print(f"[MOVE] LanceDB cleanup from old notebook: {e}")
+        logger.warning(f"[MOVE] LanceDB cleanup from old notebook failed (non-fatal): {e}")
 
-    # 2. Delete from old notebook in source_store
-    await source_store.delete(notebook_id, source_id)
-
-    # 3. Re-create in target notebook with same ID
-    new_source = await source_store.create(
+    # 2. Atomic move in source_store. create() issues INSERT OR REPLACE so
+    #    the single row's notebook_id flips in one SQL statement — no window
+    #    where the source exists in both notebooks or in neither.
+    await source_store.create(
         notebook_id=target_id,
         filename=title,
-        metadata={
-            "id": source_id,
-            "type": source_type,
-            "format": source.get("format", "markdown"),
-            "status": "processing",
-            "chunks": 0,
-            "characters": 0,
-            "content": content,
-        }
+        metadata=preserved,
     )
 
-    # 4. Re-ingest into new notebook's RAG
-    try:
-        result = await rag_engine.ingest_document(
-            notebook_id=target_id,
-            source_id=source_id,
-            text=content,
-            filename=title,
-            source_type=source_type,
-        )
-        await source_store.update(target_id, source_id, {
-            "chunks": result.get("chunks", 0),
-            "characters": result.get("characters", len(content)),
-            "status": "completed",
-        })
-    except Exception as e:
-        await source_store.update(target_id, source_id, {
-            "status": "failed",
-            "error": str(e)[:200],
-        })
-        raise HTTPException(status_code=500, detail=f"Failed to re-index in target notebook: {e}")
+    # 3. Re-ingest into target notebook if we have content. If not, the move
+    #    still succeeded at the metadata level; user can delete or manually
+    #    repopulate from the needs_reindex status.
+    if content:
+        try:
+            result = await rag_engine.ingest_document(
+                notebook_id=target_id,
+                source_id=source_id,
+                text=content,
+                filename=title,
+                source_type=source_type,
+            )
+            await source_store.update(target_id, source_id, {
+                "chunks": result.get("chunks", 0),
+                "characters": result.get("characters", len(content)),
+                "status": "completed",
+            })
+        except Exception as e:
+            # Move itself already succeeded — source is in target nb but not
+            # queryable yet. Return 200 with a reindex_error so the frontend
+            # can show a partial-success toast instead of a hard failure.
+            await source_store.update(target_id, source_id, {
+                "status": "failed",
+                "error": str(e)[:200],
+            })
+            return {
+                "message": f"Moved '{title}' but re-indexing failed",
+                "source_id": source_id,
+                "target_notebook_id": target_id,
+                "reindexed": False,
+                "reindex_error": str(e)[:200],
+            }
+    else:
+        logger.info(f"[MOVE] {source_id} had no cached content; marked needs_reindex in target")
 
     return {
         "message": f"Moved '{title}' to target notebook",
         "source_id": source_id,
         "target_notebook_id": target_id,
+        "reindexed": bool(content),
     }
 
 

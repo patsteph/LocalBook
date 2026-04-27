@@ -162,18 +162,43 @@ async def get_pending_approvals(notebook_id: str):
 
 @router.get("/{notebook_id}/stagnation")
 async def get_stagnation_status(notebook_id: str):
-    """Get stagnation status for a notebook — used by the frontend tombstone banner."""
-    from services.collection_history import detect_stagnation
-    
+    """Get stagnation status for a notebook — used by the frontend tombstone banner.
+
+    Also returns `recent_items_found` (sum of items_found across collection
+    runs in the last 7 days). The frontend uses this to suppress the
+    "Expanding search scope" / "Collection has plateaued" suggestions when
+    the collector is actively bringing items in in the background — the
+    user already sees activity and doesn't need a redundant nag banner.
+    """
+    from services.collection_history import detect_stagnation, _load_history
+    from datetime import datetime, timedelta
+
     collector = get_collector(notebook_id)
     config = collector.get_config()
     pending = collector.get_pending_approvals()
     report = detect_stagnation(notebook_id)
-    
+
+    # Sum items_found across runs in the last 7 days. Best-effort — any
+    # parsing error just yields 0 and lets the banner behave as before.
+    recent_items_found = 0
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=7)
+        for entry in _load_history(notebook_id):
+            ts_raw = entry.get("timestamp", "")
+            try:
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00").replace("+00:00", ""))
+            except (ValueError, TypeError):
+                continue
+            if ts >= cutoff:
+                recent_items_found += int(entry.get("items_found", 0) or 0)
+    except Exception:
+        recent_items_found = 0
+
     return {
         "stagnation": report,
         "auto_expand": getattr(config, 'auto_expand', True),
         "pending_count": len(pending),
+        "recent_items_found": recent_items_found,
     }
 
 

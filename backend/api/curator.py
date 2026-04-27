@@ -433,7 +433,13 @@ WEEKLY_RETENTION_WEEKS = 4
 
 @router.post("/weekly-wrap/save")
 async def save_weekly_wrap(wrap: dict):
-    """Persist this week's wrap up so it can be recalled later."""
+    """Persist this week's wrap up so it can be recalled later.
+
+    Guardrail: refuse to overwrite an existing wrap for the same day if the
+    incoming one has an empty narrative and the existing one does not. This
+    is belt-and-braces behind the curator's single-flight lock — a regressed
+    second generation with no content cannot clobber a good one.
+    """
     import json
     from pathlib import Path
     from services.event_logger import event_logger
@@ -442,6 +448,22 @@ async def save_weekly_wrap(wrap: dict):
     wrap_dir = Path(event_logger.data_dir) / "memory"
     wrap_dir.mkdir(parents=True, exist_ok=True)
     wrap_file = wrap_dir / f"weekly_wrap_{today_str}.json"
+
+    incoming_narrative = (wrap.get("narrative") or "").strip()
+    if wrap_file.exists() and not incoming_narrative:
+        try:
+            existing = json.loads(wrap_file.read_text())
+            existing_narrative = (existing.get("narrative") or "").strip()
+            if existing_narrative:
+                return {
+                    "success": False,
+                    "date": today_str,
+                    "reason": "refused_overwrite_with_empty",
+                    "cleaned": 0,
+                }
+        except Exception:
+            pass  # Corrupt existing file — allow overwrite.
+
     wrap_file.write_text(json.dumps(wrap, default=str))
     
     # Age out old wraps

@@ -7,7 +7,11 @@
 // Schema is versioned so future breaking changes can migrate or invalidate
 // old payloads cleanly.
 
-const STORAGE_KEY = 'localbook.scanSession.v1';
+// Bumped to v2: schema now carries `noteId` so a lingering session on
+// note A can't bleed into a freshly-created note B. v1 payloads are
+// silently dropped because they have no way to identify their origin.
+const STORAGE_KEY = 'localbook.scanSession.v2';
+const LEGACY_KEYS = ['localbook.scanSession.v1'];
 
 export interface ScanSessionPage {
   /** Absolute filesystem path returned by the scan source (Continuity or
@@ -23,6 +27,9 @@ export interface ScanSessionPage {
 
 export interface ScanSessionState {
   sessionId: string;
+  /** Note this session belongs to. Used to scope persistence so opening
+   *  any other note doesn't accidentally inherit pages from this one. */
+  noteId: string;
   notebookId: string | null;
   mode: 'document' | 'photo';
   pages: ScanSessionPage[];
@@ -39,13 +46,26 @@ export function newSessionId(): string {
   );
 }
 
-export function loadSession(): ScanSessionState | null {
+/**
+ * Load any persisted session, optionally filtering to a specific note id.
+ * If `noteId` is provided, returns null when the stored session belongs
+ * to a different note (this is the common case — prevents a stale
+ * session bleeding into newly opened notes).
+ */
+export function loadSession(noteId?: string): ScanSessionState | null {
+  // Drop any legacy v1 payloads on first read so they can't haunt us.
+  for (const k of LEGACY_KEYS) {
+    try { localStorage.removeItem(k); } catch { /* ignore */ }
+  }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as ScanSessionState;
     // Minimal shape validation — drop anything malformed rather than crash
-    if (!parsed || !Array.isArray(parsed.pages) || !parsed.sessionId) {
+    if (!parsed || !Array.isArray(parsed.pages) || !parsed.sessionId || !parsed.noteId) {
+      return null;
+    }
+    if (noteId !== undefined && parsed.noteId !== noteId) {
       return null;
     }
     return parsed;

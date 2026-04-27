@@ -149,6 +149,14 @@ html:not(.dark) .focus\:ring-blue-500:focus { --tw-ring-color: #5a8ae0 !importan
   100% { filter: brightness(1); }
 }
 
+/* Indeterminate progress bar used by SourcesList → move-target buttons.
+   The bar element is sized to ~33% width and slides L→R repeatedly so the
+   user can see "something is happening" during the 30-60s re-ingest. */
+@keyframes move-indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Rich Note Editor — BlockNote theming overrides
    ═══════════════════════════════════════════════════════════════════════════ */

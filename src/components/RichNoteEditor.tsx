@@ -24,6 +24,12 @@ import {
   saveSession,
   clearSession,
 } from '../services/scanSession';
+import {
+  CameraPickerModal,
+  ContinuityCameraInfo,
+  loadPreferredCameraId,
+  savePreferredCameraId,
+} from './CameraPickerModal';
 
 // macOS detection for Continuity Camera button (Sprint 7).
 // Uses userAgent instead of Tauri's async platform() so we can render
@@ -401,6 +407,14 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
   const [showScanMenu, setShowScanMenu] = useState(false);
   const scanMenuRef = useRef<HTMLDivElement>(null);
 
+  // ── Continuity Camera picker state ──────────────────────────────────────
+  // When more than one camera is available we show a modal so the user can
+  // choose. The chosen camera id (and the scan mode that triggered the
+  // picker) is held here so handleContinuityScan can resume after selection.
+  const [pickerOpen, setPickerOpen]       = useState(false);
+  const [pickerCameras, setPickerCameras] = useState<ContinuityCameraInfo[]>([]);
+  const [pickerMode, setPickerMode]       = useState<'document' | 'photo'>('document');
+
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
       if (scanMenuRef.current && !scanMenuRef.current.contains(e.target as Node)) {
@@ -415,7 +429,13 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
   // sessionMode is the user's toggle; session is the active batch being
   // accumulated. Both persist: sessionMode just follows `session` existence,
   // `session` mirrors to localStorage on every mutation so reloads recover.
-  const [session, setSession] = useState<ScanSessionState | null>(() => loadSession());
+  //
+  // CRITICAL: only restore a persisted session if it belongs to THIS note.
+  // Without the noteId scope filter, every freshly-created note would
+  // resurrect a lingering session from some prior abandoned note.
+  const [session, setSession] = useState<ScanSessionState | null>(
+    () => loadSession(item.id)
+  );
   const sessionMode = session !== null;
 
   // Persist any session change so an accidental reload or app crash doesn't
@@ -428,13 +448,14 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
   const startSession = useCallback((mode: 'document' | 'photo') => {
     setSession({
       sessionId: newSessionId(),
+      noteId: item.id,
       notebookId: ctx.selectedNotebookId || null,
       mode,
       pages: [],
       createdAt: new Date().toISOString(),
     });
     setShowScanMenu(false);
-  }, [ctx.selectedNotebookId]);
+  }, [ctx.selectedNotebookId, item.id]);
 
   const cancelSession = useCallback(() => {
     setSession(null);
@@ -523,9 +544,80 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
     }
   };
 
-  // Sprint 7: Continuity Camera (macOS only). Invokes the signed Swift sidecar
-  // via the `trigger_continuity_camera` Rust command, then posts each captured
-  // image directly to /scan/process (bypasses the watched-folder path).
+  // Sprint 7+ : Continuity Camera (macOS only). Flow:
+  //   1. Enumerate cameras via `list_continuity_cameras` (sidecar --list).
+  //   2. If no preferred camera is remembered AND there's >1 camera, open
+  //      the picker. Otherwise skip straight to capture.
+  //   3. Capture invokes `trigger_continuity_camera` with the chosen id;
+  //      the sidecar uses that exact device or, if missing, falls back to
+  //      first .continuityCamera.
+  //   4. Resulting image paths are either added to the active scan session
+  //      (multi-page accumulation) or POSTed to /scan/process directly.
+  //
+  // Picker preference is persisted to localStorage (CAMERA_PREF_STORAGE_KEY)
+  // so subsequent scans skip the modal until the user clears it.
+  const runCapture = async (mode: 'document' | 'photo', cameraId: string | null) => {
+    ctx.addToast({
+      type: 'info',
+      title: 'Waiting for iPhone',
+      message: 'Tap Take Photo or Scan Documents on your iPhone to capture.',
+      duration: 5000,
+    });
+
+    // include_non_continuity = true when the user has explicitly picked a
+    // non-iPhone camera, so the sidecar is allowed to use it. When no
+    // preferred id is set we keep the strict iPhone-only behaviour.
+    const result = await invoke<{ status: string; paths: string[]; message?: string }>(
+      'trigger_continuity_camera',
+      { cameraId, includeNonContinuity: !!cameraId }
+    );
+
+    if (result.status !== 'ok' || result.paths.length === 0) {
+      ctx.addToast({
+        type: 'error',
+        title: 'Capture Failed',
+        message: result.message || 'No image was captured.',
+        duration: 6000,
+      });
+      return;
+    }
+
+    if (sessionMode) {
+      for (const path of result.paths) {
+        addPageToSession(path, 'continuity');
+      }
+      ctx.addToast({
+        type: 'info',
+        title: 'Pages Added',
+        message: `${result.paths.length} page${result.paths.length !== 1 ? 's' : ''} added to session.`,
+        duration: 2500,
+      });
+      return;
+    }
+
+    ctx.addToast({
+      type: 'info',
+      title: 'Processing Scan',
+      message: mode === 'photo' ? 'Deconstructing scene...' : 'Analyzing document...',
+      duration: 3000,
+    });
+
+    for (const path of result.paths) {
+      const res = await fetch(`${API_BASE_URL}/scan/process`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_path: path,
+          notebook_id: ctx.selectedNotebookId,
+          mode,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`Scan API returned ${res.status}`);
+      }
+    }
+  };
+
   const handleContinuityScan = async (mode: 'document' | 'photo') => {
     setShowScanMenu(false);
     if (!IS_MACOS) {
@@ -537,65 +629,28 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
       });
       return;
     }
+
     try {
-      ctx.addToast({
-        type: 'info',
-        title: 'Waiting for iPhone',
-        message: 'Tap Take Photo or Scan Documents on your iPhone to capture.',
-        duration: 5000,
-      });
+      // Quick non-blocking enumerate. Returns [] if perms are denied or no
+      // camera is attached — we fall through to the legacy "capture and let
+      // the sidecar produce the friendly error" path in that case.
+      const cameras = await invoke<ContinuityCameraInfo[]>('list_continuity_cameras');
+      const remembered = loadPreferredCameraId();
+      const rememberedExists = remembered && cameras.some(c => c.id === remembered);
 
-      const result = await invoke<{ status: string; paths: string[]; message?: string }>(
-        'trigger_continuity_camera'
-      );
-
-      if (result.status !== 'ok' || result.paths.length === 0) {
-        ctx.addToast({
-          type: 'error',
-          title: 'Capture Failed',
-          message: result.message || 'No image was captured.',
-          duration: 5000,
-        });
+      // Decide whether to show the picker.
+      //   • 0 or 1 camera → no picker (sidecar handles missing-iphone case)
+      //   • multiple AND no remembered choice → show picker
+      //   • multiple AND remembered choice still present → use it silently
+      if (cameras.length > 1 && !rememberedExists) {
+        setPickerCameras(cameras);
+        setPickerMode(mode);
+        setPickerOpen(true);
         return;
       }
 
-      // Sprint 8: if session mode is active, accumulate pages into the batch
-      // and let the user add more before transcribing. Otherwise fall back to
-      // the Sprint 7 behaviour: process each page as its own note.
-      if (sessionMode) {
-        for (const path of result.paths) {
-          addPageToSession(path, 'continuity');
-        }
-        ctx.addToast({
-          type: 'info',
-          title: 'Pages Added',
-          message: `${result.paths.length} page${result.paths.length !== 1 ? 's' : ''} added to session.`,
-          duration: 2500,
-        });
-        return;
-      }
-
-      ctx.addToast({
-        type: 'info',
-        title: 'Processing Scan',
-        message: mode === 'photo' ? 'Deconstructing scene...' : 'Analyzing document...',
-        duration: 3000,
-      });
-
-      for (const path of result.paths) {
-        const res = await fetch(`${API_BASE_URL}/scan/process`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            file_path: path,
-            notebook_id: ctx.selectedNotebookId,
-            mode,
-          }),
-        });
-        if (!res.ok) {
-          throw new Error(`Scan API returned ${res.status}`);
-        }
-      }
+      const cameraId = rememberedExists ? remembered : null;
+      await runCapture(mode, cameraId);
     } catch (err) {
       console.error('Continuity scan error', err);
       ctx.addToast({
@@ -607,10 +662,28 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
     }
   };
 
+  const handlePickerSelect = async (cam: ContinuityCameraInfo, remember: boolean) => {
+    setPickerOpen(false);
+    if (remember) savePreferredCameraId(cam.id);
+    try {
+      await runCapture(pickerMode, cam.id);
+    } catch (err) {
+      console.error('Continuity scan (post-picker) error', err);
+      ctx.addToast({
+        type: 'error',
+        title: 'Scan Error',
+        message: String(err),
+        duration: 4000,
+      });
+    }
+  };
+
   return (
     <div className={`rich-note-editor flex flex-col ${compact ? 'px-3 py-2' : 'flex-1 min-h-0 px-5 py-4'}`}>
-      {/* Header */}
-      <div className="flex justify-between items-center mb-3 gap-3">
+      {/* Header. pr-10 reserves space for the absolute-positioned close X
+          rendered by the parent (ChatInterface / CanvasItemCard) at top-3 right-3
+          so the Scan button doesn't end up partially hidden under it. */}
+      <div className="flex justify-between items-center mb-3 gap-3 pr-10">
         <input
           type="text"
           value={item.title}
@@ -815,6 +888,15 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
           )}
         </button>
       </div>
+
+      {/* Camera picker — only shown when multiple cameras are available and no
+          remembered choice. handlePickerSelect resumes the capture flow. */}
+      <CameraPickerModal
+        isOpen={pickerOpen}
+        cameras={pickerCameras}
+        onSelect={handlePickerSelect}
+        onCancel={() => setPickerOpen(false)}
+      />
     </div>
   );
 };
