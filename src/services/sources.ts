@@ -1,6 +1,16 @@
 // Source document API service
 import api, { API_BASE_URL } from './api';
 import { Source } from '../types';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+
+/**
+ * Detect whether we're running inside the Tauri runtime.
+ * In Tauri, the global `__TAURI_INTERNALS__` is injected on every page.
+ */
+export const isTauri = (): boolean => {
+  return typeof (window as any).__TAURI_INTERNALS__ !== 'undefined';
+};
 
 // ── Streaming upload progress types ────────────────────────────────────────
 export interface UploadProgressEvent {
@@ -128,6 +138,45 @@ export const sourceService = {
 
     // Stream ended without a complete/error event — treat as completed silently
     return {};
+  },
+
+  /**
+   * Upload a file from a local path via the Tauri-native streaming command.
+   *
+   * Bypasses the WebView entirely so large files (40MB+) don't trigger
+   * WKWebView OOM. The Rust backend streams the file from disk, multipart-encodes
+   * it without buffering, posts to /sources/upload/stream, and forwards SSE
+   * progress events via window.emit on a per-call channel.
+   *
+   * Only works inside Tauri. Caller must check isTauri() first.
+   */
+  async uploadFromPath(
+    notebookId: string,
+    path: string,
+    onProgress: (evt: UploadProgressEvent) => void,
+  ): Promise<UploadStreamResult> {
+    // Unique channel per upload so concurrent uploads don't cross-talk
+    const channelId = `${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+    const eventTopic = `upload-progress-${channelId}`;
+
+    const unlisten = await listen<UploadProgressEvent>(eventTopic, (event) => {
+      try {
+        onProgress(event.payload);
+      } catch (e) {
+        console.warn('[uploadFromPath] onProgress callback threw:', e);
+      }
+    });
+
+    try {
+      const result = await invoke<UploadStreamResult>('upload_file_streaming', {
+        path,
+        notebookId,
+        channelId,
+      });
+      return result || {};
+    } finally {
+      try { unlisten(); } catch { /* ignore */ }
+    }
   },
 
   async delete(notebookId: string, sourceId: string): Promise<void> {

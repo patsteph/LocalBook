@@ -1,5 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { sourceService, UploadProgressEvent } from '../services/sources';
+import React, { useState, useRef, useEffect } from 'react';
+import { sourceService, UploadProgressEvent, isTauri } from '../services/sources';
 import { ErrorMessage } from './shared/ErrorMessage';
 
 interface SourceUploadProps {
@@ -7,8 +7,18 @@ interface SourceUploadProps {
   onUploadComplete: () => void;
 }
 
+/**
+ * Unified upload item — represents either a browser File (web/dev mode) or a
+ * filesystem path (Tauri native mode). Path mode bypasses the WebView's memory
+ * for large files by streaming directly via the Rust upload_file_streaming command.
+ */
+type UploadItem =
+  | { kind: 'file'; file: File; name: string; size: number }
+  | { kind: 'path'; path: string; name: string; size: number };
+
 interface FileUploadStatus {
-  file: File;
+  name: string;
+  size: number;
   status: 'pending' | 'uploading' | 'success' | 'error';
   percent: number;
   stage: string;
@@ -16,6 +26,21 @@ interface FileUploadStatus {
   error?: string;
   history: { stage: string; message: string; percent: number }[];
 }
+
+// Accepted file extensions (used by both HTML input and Tauri dialog)
+const ACCEPTED_EXTENSIONS = [
+  'pdf', 'docx', 'doc', 'txt', 'md', 'pptx', 'ppt', 'xlsx', 'xls',
+  'csv', 'epub', 'ipynb', 'odt', 'ods', 'rtf', 'tex', 'bib', 'svg',
+  'heic', 'heif', 'png', 'jpg', 'jpeg', 'webp', 'tiff', 'bmp', 'gif',
+  'mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'wma',
+  'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'm4v',
+];
+
+// Helper: extract base filename from a filesystem path (works on macOS/Linux/Windows)
+const basename = (p: string): string => {
+  const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return idx >= 0 ? p.slice(idx + 1) : p;
+};
 
 // Human-readable stage descriptions for the "journey" expander.
 // Keyed by backend stage id. Shown in the order stages first appear.
@@ -50,15 +75,15 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
   const [showJourney, setShowJourney] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
+  const inTauri = isTauri();
 
-  const processFiles = async (files: FileList | File[]) => {
-    if (!notebookId) return;
-
-    const fileArray = Array.from(files);
+  const processItems = async (items: UploadItem[]) => {
+    if (!notebookId || items.length === 0) return;
 
     // Initialize upload statuses
-    const statuses: FileUploadStatus[] = fileArray.map(file => ({
-      file,
+    const statuses: FileUploadStatus[] = items.map(it => ({
+      name: it.name,
+      size: it.size,
       status: 'pending',
       percent: 0,
       stage: '',
@@ -72,9 +97,9 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
     let successCount = 0;
     let errorCount = 0;
 
-    // Upload files sequentially to avoid overwhelming the server
-    for (let i = 0; i < fileArray.length; i++) {
-      const file = fileArray[i];
+    // Upload sequentially to avoid overwhelming the server
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
 
       // Flip to "uploading" with an initial 2% so the bar visibly starts moving
       setUploadStatuses(prev => prev.map((s, idx) =>
@@ -100,7 +125,13 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
           }));
         };
 
-        await sourceService.uploadWithProgress(notebookId, file, onProgress);
+        if (item.kind === 'path') {
+          // Tauri-native path upload — streams directly from disk, bypasses WebView
+          await sourceService.uploadFromPath(notebookId, item.path, onProgress);
+        } else {
+          // Browser File upload via FormData (used in dev/web mode)
+          await sourceService.uploadWithProgress(notebookId, item.file, onProgress);
+        }
         successCount++;
 
         setUploadStatuses(prev => prev.map((s, idx) =>
@@ -109,7 +140,7 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
             : s
         ));
       } catch (err: any) {
-        console.error('Upload failed:', file.name, err);
+        console.error('Upload failed:', item.name, err);
         const errorMessage = err?.message || 'Upload failed';
         errorCount++;
 
@@ -124,7 +155,7 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
     if (fileInputRef.current) fileInputRef.current.value = '';
 
     if (errorCount > 0) {
-      setError(`Uploaded ${successCount} of ${fileArray.length} files. ${errorCount} failed.`);
+      setError(`Uploaded ${successCount} of ${items.length} files. ${errorCount} failed.`);
     }
 
     // Notify completion after a short delay so the final status is visible
@@ -138,12 +169,68 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
     }, 800);
   };
 
+  // ── File-to-Item conversion helpers ───────────────────────────────────
+  const filesToItems = (files: FileList | File[]): UploadItem[] =>
+    Array.from(files).map(file => ({
+      kind: 'file' as const,
+      file,
+      name: file.name,
+      size: file.size,
+    }));
+
+  const pathsToItems = async (paths: string[]): Promise<UploadItem[]> => {
+    // Try to stat each file for size; gracefully fall back to 0 if fs plugin
+    // isn't available or read fails.
+    const items: UploadItem[] = [];
+    for (const p of paths) {
+      let size = 0;
+      try {
+        const fs = await import('@tauri-apps/plugin-fs');
+        const meta = await fs.stat(p);
+        size = Number(meta.size) || 0;
+      } catch {
+        // Non-fatal — UI just won't show the size badge accurately
+      }
+      items.push({ kind: 'path', path: p, name: basename(p), size });
+    }
+    return items;
+  };
+
+  // ── Browse handler — Tauri dialog when available, HTML input otherwise ──
+  const handleBrowseClick = async () => {
+    if (uploading || !notebookId) return;
+    if (!inTauri) {
+      fileInputRef.current?.click();
+      return;
+    }
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({
+        multiple: true,
+        directory: false,
+        filters: [
+          { name: 'Documents', extensions: ACCEPTED_EXTENSIONS },
+        ],
+      });
+      if (!selected) return; // user cancelled
+      const paths = Array.isArray(selected) ? selected : [selected];
+      if (paths.length === 0) return;
+      const items = await pathsToItems(paths);
+      await processItems(items);
+    } catch (err: any) {
+      console.error('Tauri dialog failed:', err);
+      setError(`File picker failed: ${err?.message || 'unknown error'}`);
+    }
+  };
+
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
-    await processFiles(files);
+    await processItems(filesToItems(files));
   };
 
+  // ── HTML drag-drop handlers (used in browser/dev mode only) ───────────
+  // In Tauri, drops on the WebView are intercepted natively (see useEffect below).
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -166,9 +253,75 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
     e.stopPropagation();
     setIsDragging(false);
     if (uploading || !notebookId) return;
+    if (inTauri) return; // Tauri handles drops via its window event
     const files = e.dataTransfer.files;
-    if (files && files.length > 0) await processFiles(files);
+    if (files && files.length > 0) await processItems(filesToItems(files));
   };
+
+  // ── Tauri window-level drag-drop listener ─────────────────────────────
+  // Tauri 2 captures file drops at the window level (HTML drop events don't
+  // fire for files when dragDropEnabled=true, the default). We hit-test the
+  // drop position against our dropzone bounding rect so files dropped
+  // elsewhere in the window are ignored.
+  useEffect(() => {
+    if (!inTauri || !notebookId) return;
+
+    let unlistenFn: (() => void) | undefined;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+        const webview = getCurrentWebview();
+        const unlisten = await webview.onDragDropEvent((event) => {
+          // event.payload.type: 'enter' | 'over' | 'drop' | 'leave'
+          const payload: any = event.payload;
+          const type = payload?.type;
+          // payload.position is in physical pixels; convert to logical via DPR
+          const dpr = window.devicePixelRatio || 1;
+          const x = (payload?.position?.x ?? 0) / dpr;
+          const y = (payload?.position?.y ?? 0) / dpr;
+
+          const dropZone = dropZoneRef.current;
+          if (!dropZone) return;
+          const rect = dropZone.getBoundingClientRect();
+          const inside = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+
+          if (type === 'enter' || type === 'over') {
+            if (!uploading && inside) setIsDragging(true);
+            else if (!inside) setIsDragging(false);
+            return;
+          }
+          if (type === 'leave') {
+            setIsDragging(false);
+            return;
+          }
+          if (type === 'drop') {
+            setIsDragging(false);
+            if (uploading || !inside) return;
+            const paths: string[] = Array.isArray(payload?.paths) ? payload.paths : [];
+            if (paths.length === 0) return;
+            (async () => {
+              const items = await pathsToItems(paths);
+              await processItems(items);
+            })();
+          }
+        });
+        if (cancelled) {
+          unlisten();
+        } else {
+          unlistenFn = unlisten;
+        }
+      } catch (err) {
+        console.warn('[SourceUpload] Tauri drag-drop listener failed:', err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      try { unlistenFn?.(); } catch { /* ignore */ }
+    };
+  }, [inTauri, notebookId, uploading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const getStatusIcon = (status: FileUploadStatus['status']) => {
     switch (status) {
@@ -225,7 +378,7 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
           }
           ${(!notebookId || uploading) ? 'opacity-50 cursor-not-allowed' : ''}
         `}
-        onClick={() => !uploading && notebookId && fileInputRef.current?.click()}
+        onClick={handleBrowseClick}
       >
         <div className="flex flex-col gap-1">
           <p className="text-sm font-medium text-gray-700 dark:text-gray-300 text-left">
@@ -292,7 +445,7 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
                   <div className="flex-shrink-0">{getStatusIcon(status.status)}</div>
                   <div className="flex-1 min-w-0">
                     <p className="truncate text-gray-700 dark:text-gray-300 font-medium">
-                      {status.file.name}
+                      {status.name}
                     </p>
                   </div>
                   <div className="flex-shrink-0 text-gray-500 dark:text-gray-400 tabular-nums">

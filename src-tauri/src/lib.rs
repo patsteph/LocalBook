@@ -1015,6 +1015,141 @@ async fn list_continuity_cameras(
     }
 }
 
+// ─── Streaming file upload to backend ──────────────────────────────────
+// Bypasses the WebView entirely so 40MB+ files don't cause WKWebView OOM.
+// The file is streamed from disk via Rust's reqwest, multipart-encoded
+// without buffering, and SSE progress events are forwarded to the frontend
+// via window.emit on a per-channel topic.
+#[tauri::command]
+async fn upload_file_streaming(
+    window: tauri::Window,
+    path: String,
+    notebook_id: String,
+    channel_id: String,
+) -> Result<serde_json::Value, String> {
+    use std::path::PathBuf;
+    use tokio::fs::File as TokioFile;
+    use tokio_util::io::ReaderStream;
+    use reqwest::multipart;
+
+    let path_buf = PathBuf::from(&path);
+    let filename = path_buf
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Invalid file path (no filename)".to_string())?;
+
+    println!(
+        "[upload-stream] Starting upload: {} (channel={})",
+        filename, channel_id
+    );
+
+    // Open the file as a streaming body — bytes never sit in memory at once
+    let file = TokioFile::open(&path)
+        .await
+        .map_err(|e| format!("Failed to open file '{}': {}", path, e))?;
+    let stream = ReaderStream::new(file);
+    let body = reqwest::Body::wrap_stream(stream);
+
+    let part = multipart::Part::stream(body).file_name(filename.clone());
+    let form = multipart::Form::new()
+        .text("notebook_id", notebook_id)
+        .part("file", part);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3600)) // 1 hour for very large files
+        .build()
+        .map_err(|e| format!("HTTP client build failed: {}", e))?;
+
+    let resp = client
+        .post("http://localhost:8000/sources/upload/stream")
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("Upload request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "Upload failed: HTTP {} - {}",
+            status,
+            body_text.chars().take(300).collect::<String>()
+        ));
+    }
+
+    // Read SSE stream chunk by chunk, forward events to the frontend.
+    // The backend emits frames separated by "\n\n", each with a "data: {json}" line.
+    let mut resp = resp;
+    let mut buffer = String::new();
+    let mut final_result: Option<serde_json::Value> = None;
+    let event_topic = format!("upload-progress-{}", channel_id);
+
+    loop {
+        match resp.chunk().await {
+            Ok(Some(bytes)) => {
+                if let Ok(s) = std::str::from_utf8(&bytes) {
+                    buffer.push_str(s);
+                } else {
+                    // Non-UTF8 bytes shouldn't appear in SSE, skip safely
+                    continue;
+                }
+
+                // Drain any complete SSE frames in the buffer
+                while let Some(idx) = buffer.find("\n\n") {
+                    let raw_event = buffer[..idx].to_string();
+                    buffer.replace_range(..idx + 2, "");
+
+                    for line in raw_event.lines() {
+                        // Skip comments (": ping") and non-data lines
+                        if line.starts_with(':') {
+                            continue;
+                        }
+                        let payload = match line.strip_prefix("data:") {
+                            Some(p) => p.trim(),
+                            None => continue,
+                        };
+                        if payload.is_empty() || payload == "{}" {
+                            continue;
+                        }
+                        let evt: serde_json::Value = match serde_json::from_str(payload) {
+                            Ok(v) => v,
+                            Err(_) => continue, // skip malformed frames
+                        };
+
+                        let stage = evt
+                            .get("stage")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("");
+
+                        if stage == "complete" {
+                            final_result = evt.get("details").cloned();
+                            // Don't return yet — continue draining stream until backend closes
+                        } else if stage == "error" {
+                            let msg = evt
+                                .get("message")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("Upload failed")
+                                .to_string();
+                            return Err(msg);
+                        } else {
+                            // Forward to frontend
+                            let _ = window.emit(&event_topic, &evt);
+                        }
+                    }
+                }
+            }
+            Ok(None) => break, // End of stream
+            Err(e) => {
+                return Err(format!("Stream read error: {}", e));
+            }
+        }
+    }
+
+    println!("[upload-stream] Upload complete for {}", filename);
+    Ok(final_result.unwrap_or(serde_json::json!({})))
+}
+
 #[tauri::command]
 async fn trigger_continuity_camera(
     app: AppHandle,
@@ -1160,7 +1295,8 @@ pub fn run() {
             check_backend_health,
             get_backend_status,
             trigger_continuity_camera,
-            list_continuity_cameras
+            list_continuity_cameras,
+            upload_file_streaming
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

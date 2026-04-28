@@ -264,16 +264,54 @@ class DocumentProcessor:
         
         This runs after text is indexed so user can start chatting immediately.
         Image descriptions are appended to the source's indexed content.
+
+        Memory-aware throttling (added to prevent system OOM on 16-18GB Macs):
+        - PDFs > 40MB: skip image processing entirely (text-only ingestion)
+        - PDFs > 10MB: reduce parallel vision workers to 1 and image cap to 25
+        - PDFs > 25MB: also lower image cap to 10
+        These limits keep peak memory in check when Ollama main+fast models are loaded.
         """
         try:
             from services.multimodal_extractor import multimodal_extractor
-            
-            print(f"[DocProcessor] Starting background image processing for {filename}")
-            
-            # Extract and describe images with parallel processing
-            image_descriptions = await multimodal_extractor.extract_and_describe(
-                content, source_id, filename
-            )
+
+            size_mb = len(content) / (1024 * 1024)
+
+            # Hard skip for very large PDFs — image OCR would push the system to OOM
+            if size_mb > 40:
+                print(
+                    f"[DocProcessor] Skipping image processing for {filename} "
+                    f"({size_mb:.1f}MB > 40MB) — text-only ingestion to protect system memory"
+                )
+                await source_store.update(notebook_id, source_id, {
+                    "images_processed": 0,
+                    "has_visual_content": False,
+                    "images_skipped_reason": f"PDF too large ({size_mb:.0f}MB) for vision processing on this system",
+                })
+                return
+
+            # Throttle parallelism + image cap for medium-large PDFs
+            saved_workers = multimodal_extractor.max_parallel_workers
+            saved_max_images = multimodal_extractor.max_images_per_doc
+            try:
+                if size_mb > 25:
+                    multimodal_extractor.max_parallel_workers = 1
+                    multimodal_extractor.max_images_per_doc = 10
+                    print(f"[DocProcessor] Throttled: 1 worker, 10 max images for {size_mb:.1f}MB PDF")
+                elif size_mb > 10:
+                    multimodal_extractor.max_parallel_workers = 1
+                    multimodal_extractor.max_images_per_doc = 25
+                    print(f"[DocProcessor] Throttled: 1 worker, 25 max images for {size_mb:.1f}MB PDF")
+
+                print(f"[DocProcessor] Starting background image processing for {filename}")
+
+                # Extract and describe images with parallel processing
+                image_descriptions = await multimodal_extractor.extract_and_describe(
+                    content, source_id, filename
+                )
+            finally:
+                # Always restore extractor defaults so other uploads aren't affected
+                multimodal_extractor.max_parallel_workers = saved_workers
+                multimodal_extractor.max_images_per_doc = saved_max_images
             
             if not image_descriptions:
                 print(f"[DocProcessor] No images found in {filename}")
