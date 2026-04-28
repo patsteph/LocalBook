@@ -15,6 +15,7 @@ import { voiceService } from '../services/voice';
 import { settingsService } from '../services/settings';
 import { noteService } from '../services/noteService';
 import { API_BASE_URL } from '../services/api';
+import { scanService } from '../services/scanService';
 import { ScanSessionPanel } from './ScanSessionPanel';
 import {
   ScanSessionState,
@@ -595,26 +596,52 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
       return;
     }
 
+    // Use the streaming /scan/process-batch endpoint so the user gets live
+    // per-stage feedback ("Processing page 1 of 1…", "Cleanup pass…", etc.)
+    // instead of staring at an empty editor for 30-60s with nothing
+    // happening. Single-image capture is just a 1-element batch.
     ctx.addToast({
       type: 'info',
-      title: 'Processing Scan',
-      message: mode === 'photo' ? 'Deconstructing scene...' : 'Analyzing document...',
-      duration: 3000,
+      title: mode === 'photo' ? 'Deconstructing scene…' : 'Analyzing document…',
+      message: 'Vision OCR running — this can take 20-60s on first run.',
+      duration: 6000,
     });
 
-    for (const path of result.paths) {
-      const res = await fetch(`${API_BASE_URL}/scan/process`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          file_path: path,
-          notebook_id: ctx.selectedNotebookId,
+    try {
+      const finalResult = await scanService.processBatchWithProgress(
+        result.paths,
+        {
+          notebookId: ctx.selectedNotebookId,
           mode,
-        }),
+          // Progress events are surfaced as transient toasts so the user
+          // can confirm something is in fact happening. We throttle by
+          // only toasting on stage changes, not every percent tick.
+          onProgress: (() => {
+            let lastStage = '';
+            return (evt) => {
+              if (evt.stage === lastStage) return;
+              lastStage = evt.stage;
+              ctx.addToast({
+                type: 'info',
+                title: 'Scanning…',
+                message: `${evt.message} (${evt.percent}%)`,
+                duration: 2500,
+              });
+            };
+          })(),
+        },
+      );
+      ctx.addToast({
+        type: 'success',
+        title: 'Scan Complete',
+        message: finalResult.title
+          ? `Created note: ${finalResult.title}`
+          : 'New scan note added to canvas.',
+        duration: 4000,
       });
-      if (!res.ok) {
-        throw new Error(`Scan API returned ${res.status}`);
-      }
+    } catch (err) {
+      // Re-throw so the outer handler in handleContinuityScan reports it.
+      throw err;
     }
   };
 
@@ -695,7 +722,20 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
         />
         <div className="relative" ref={scanMenuRef}>
           <button 
-            onClick={() => setShowScanMenu(!showScanMenu)}
+            onClick={() => {
+              const next = !showScanMenu;
+              setShowScanMenu(next);
+              // Pre-warm the vision model the moment the menu opens. By the
+              // time the user picks a mode and finishes capturing (~5-15s
+              // minimum), Granite-Vision is already resident in Ollama, so
+              // OCR starts emitting progress within ~1s instead of waiting
+              // 5-15s for a cold load. Fire-and-forget — failures are logged
+              // server-side and never affect the UI.
+              if (next) {
+                fetch(`${API_BASE_URL}/scan/warmup`, { method: 'POST' })
+                  .catch(err => console.debug('[scan] vision warmup ping failed (non-fatal):', err));
+              }
+            }}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:border-gray-600 dark:hover:bg-gray-700 transition-colors shadow-sm whitespace-nowrap"
           >
             <Camera className="w-4 h-4" />

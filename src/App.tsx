@@ -110,7 +110,21 @@ function App() {
   }, []);
 
   const removeCanvasItem = useCallback((id: string) => {
-    setCanvasItems(prev => prev.filter(item => item.id !== id));
+    setCanvasItems(prev => {
+      const removed = prev.find(item => item.id === id);
+      // If this is a note that was persisted to the backend, delete the row too —
+      // otherwise it will be re-restored on the next notebook switch / app restart.
+      if (removed && removed.type === 'note') {
+        const backendId = removed.metadata?.persistedNoteId || removed.id;
+        noteService.delete(backendId).catch(err => {
+          // 404 is fine (note never made it to backend); other errors are logged but non-fatal
+          if (err?.response?.status !== 404) {
+            console.warn('[App] Failed to delete backend note row:', err);
+          }
+        });
+      }
+      return prev.filter(item => item.id !== id);
+    });
   }, []);
 
   const updateCanvasItem = useCallback((id: string, updates: Partial<Pick<CanvasItem, 'title' | 'content' | 'status' | 'metadata'>>) => {

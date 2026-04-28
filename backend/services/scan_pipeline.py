@@ -17,6 +17,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from config import settings
 from services.ollama_client import ollama_client
 from services.progress_reporter import ProgressReporter, get_noop_reporter
 from services.rag_engine import rag_engine
@@ -57,7 +58,13 @@ _PHOTO_ENRICH_PROMPT_TMPL = (
     "RAW SCENE:\n{raw}"
 )
 
-VISION_MODEL = "granite3.1-vision:2b"
+# Vision model is read dynamically from settings on each call so a runtime
+# Locker swap (or LOCALBOOK_VISION_MODEL env override) takes effect without
+# a backend restart. Was previously hardcoded to "granite3.1-vision:2b" which
+# silently broke scans for any user that didn't have that exact tag pulled.
+def _vision_model() -> str:
+    return os.getenv("LOCALBOOK_VISION_MODEL") or settings.vision_model
+
 DOC_CLEANUP_MODEL = "phi4-mini:latest"
 PHOTO_ENRICH_MODEL = "olmo2:7b"
 
@@ -211,7 +218,7 @@ class ScanPipeline:
             raw = await ollama_client.vision_describe(
                 image_b64=b64_image,
                 prompt=_PHOTO_VISION_PROMPT,
-                model=VISION_MODEL,
+                model=_vision_model(),
                 api_style="generate",
             )
             logger.info("[scan] OLMo enrichment pass")
@@ -228,7 +235,7 @@ class ScanPipeline:
         raw = await ollama_client.vision_describe(
             image_b64=b64_image,
             prompt=_DOC_VISION_PROMPT,
-            model=VISION_MODEL,
+            model=_vision_model(),
             api_style="generate",
         )
         logger.info("[scan] Phi-4-mini cleanup pass")

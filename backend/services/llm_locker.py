@@ -12,6 +12,20 @@ from evaluator.model_registry import ModelRegistry
 logger = logging.getLogger(__name__)
 registry = ModelRegistry()
 
+
+def _get_default_vision_model() -> str:
+    """
+    Return the best available standalone vision model from the registry.
+    Prefers highest Granite 3.x Vision version, falls back to granite3.2-vision:2b.
+    """
+    # Prefer Granite 3.3 if available, fall back to 3.2
+    for model_name in ["granite3.3-vision:2b", "granite3.2-vision:2b"]:
+        if registry.get_model(model_name):
+            return model_name
+    # Fallback for safety — should never hit this if registry is current
+    return "granite3.2-vision:2b"
+
+
 class ModelSwapError(Exception):
     """Raised when a model swap request violates safety bounds."""
     pass
@@ -147,9 +161,10 @@ class LLMLocker:
                 current_main = settings.ollama_model
                 # If vision was previously collapsed to the old main model, restore default
                 if current_vision == current_main:
-                    changes["vision_model"] = "granite3.2-vision:2b"
+                    default_vision = _get_default_vision_model()
+                    changes["vision_model"] = default_vision
                     msg = (f"Safe to swap to {target_ollama_name}. NOTE: Restoring standalone vision model "
-                           f"(granite3.2-vision:2b) since this model does not support vision natively.")
+                           f"({default_vision}) since this model does not support vision natively.")
                 else:
                     msg = f"Safe to swap to {target_ollama_name}."
         else:

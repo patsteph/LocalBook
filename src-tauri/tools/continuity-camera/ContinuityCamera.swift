@@ -390,7 +390,15 @@ final class CaptureController: NSObject {
         cancelButton.action = #selector(cancelPressed)
         content.addSubview(cancelButton)
 
-        // Capture button
+        // Capture button. Both Return and Space trigger it — Space is much
+        // easier to hit one-handed while bracing the iPhone over a doc with
+        // the other hand. (Note: AVFoundation does NOT currently expose the
+        // iPhone's hardware shutter button as a remote-trigger event when
+        // the phone is acting as a Continuity Camera; the volume-up press
+        // that works in iPhone-native Camera.app is intercepted by iOS and
+        // never reaches the Mac. Investigating proper API support is
+        // tracked separately — for now Space + click are the supported
+        // shutters, and we surface that hint in the status label.)
         captureButton = NSButton(frame: NSRect(x: 518, y: 8, width: 110, height: 32))
         captureButton.title = "Capture"
         captureButton.bezelStyle = .rounded
@@ -398,6 +406,19 @@ final class CaptureController: NSObject {
         captureButton.target = self
         captureButton.action = #selector(capturePressed)
         content.addSubview(captureButton)
+
+        // Space-key fallback shortcut, installed via local NSEvent monitor so
+        // we don't have to subclass NSWindow. Removed automatically when the
+        // window closes (the monitor token is held weakly via [weak self]).
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return event }
+            if event.keyCode == 49 /* space */ {
+                self.capturePressed()
+                return nil // swallow so it doesn't beep / scroll
+            }
+            return event
+        }
+        statusLabel.stringValue = "Press Space or click Capture. (iPhone shutter not yet supported.)"
 
         window.contentView = content
         NSApp.setActivationPolicy(.regular)
@@ -458,16 +479,101 @@ extension CaptureController: AVCapturePhotoCaptureDelegate {
             return
         }
 
+        // Continuity Camera embeds an EXIF orientation tag rather than
+        // rotating the pixel buffer — when the iPhone is held flat over a
+        // document the tag often ends up reporting "left", which makes
+        // downstream consumers (Granite Vision, Preview's rotated thumbnail)
+        // see a 90°-rotated image. Re-encode the JPEG with the orientation
+        // baked into the pixels and the tag set to .up so every consumer
+        // gets an upright image regardless of EXIF support.
+        let normalized = normalizeOrientation(jpegData: data) ?? data
+        if normalized.count != data.count {
+            debug("normalized EXIF orientation → upright pixel data (\(data.count) → \(normalized.count) bytes)")
+        }
+
         let name = "continuity_\(UUID().uuidString).jpg"
         let dst = outputDir.appendingPathComponent(name, isDirectory: false)
         do {
-            try data.write(to: dst)
+            try normalized.write(to: dst)
             debug("saved → \(dst.path)")
             finish(paths: [dst.path])
         } catch {
             finish(error: "Failed to write image: \(error.localizedDescription)")
         }
     }
+}
+
+/// Re-encode a JPEG so its pixel data is upright and its EXIF orientation
+/// tag is .up. Returns nil on any failure — caller falls back to original
+/// bytes so a normalization bug never blocks a capture.
+fileprivate func normalizeOrientation(jpegData: Data) -> Data? {
+    guard let src = CGImageSourceCreateWithData(jpegData as CFData, nil),
+          let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else {
+        return nil
+    }
+    // CGImagePropertyOrientation: 1 = up, 3 = 180, 6 = 90 CW, 8 = 90 CCW, etc.
+    let exifOrientation = (props[kCGImagePropertyOrientation] as? UInt32) ?? 1
+    if exifOrientation == 1 {
+        return jpegData  // already upright — no work to do
+    }
+    guard let cgImage = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+
+    // Map EXIF orientation → CGAffineTransform that brings pixels upright.
+    let w = CGFloat(cgImage.width)
+    let h = CGFloat(cgImage.height)
+    var transform = CGAffineTransform.identity
+    var size = CGSize(width: w, height: h)
+    switch exifOrientation {
+    case 2: // mirror horizontal
+        transform = CGAffineTransform(translationX: w, y: 0).scaledBy(x: -1, y: 1)
+    case 3: // 180°
+        transform = CGAffineTransform(translationX: w, y: h).rotated(by: .pi)
+    case 4: // mirror vertical
+        transform = CGAffineTransform(translationX: 0, y: h).scaledBy(x: 1, y: -1)
+    case 5: // mirror horizontal + 90 CCW
+        size = CGSize(width: h, height: w)
+        transform = CGAffineTransform(translationX: h, y: w).scaledBy(x: -1, y: 1).rotated(by: -.pi / 2)
+    case 6: // 90° CW
+        size = CGSize(width: h, height: w)
+        transform = CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
+    case 7: // mirror horizontal + 90 CW
+        size = CGSize(width: h, height: w)
+        transform = CGAffineTransform(translationX: 0, y: 0).scaledBy(x: -1, y: 1).rotated(by: .pi / 2)
+    case 8: // 90° CCW
+        size = CGSize(width: h, height: w)
+        transform = CGAffineTransform(translationX: 0, y: w).rotated(by: -.pi / 2)
+    default:
+        return jpegData
+    }
+
+    guard let colorSpace = cgImage.colorSpace,
+          let ctx = CGContext(
+            data: nil,
+            width: Int(size.width),
+            height: Int(size.height),
+            bitsPerComponent: cgImage.bitsPerComponent,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: cgImage.bitmapInfo.rawValue
+          ) else {
+        return nil
+    }
+    ctx.concatenate(transform)
+    ctx.draw(cgImage, in: CGRect(origin: .zero, size: CGSize(width: w, height: h)))
+    guard let upright = ctx.makeImage() else { return nil }
+
+    // Re-encode as JPEG with orientation = up.
+    let outData = NSMutableData()
+    guard let dst = CGImageDestinationCreateWithData(outData, UTType.jpeg.identifier as CFString, 1, nil) else {
+        return nil
+    }
+    let outProps: [CFString: Any] = [
+        kCGImagePropertyOrientation: 1,
+        kCGImageDestinationLossyCompressionQuality: 0.92,
+    ]
+    CGImageDestinationAddImage(dst, upright, outProps as CFDictionary)
+    if !CGImageDestinationFinalize(dst) { return nil }
+    return outData as Data
 }
 
 // ─── NSWindowDelegate ────────────────────────────────────────────────────────

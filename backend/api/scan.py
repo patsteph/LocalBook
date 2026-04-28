@@ -128,3 +128,41 @@ async def process_scan_batch(request: ScanBatchRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── Vision-model warmup ──────────────────────────────────────────────────────
+#
+# Called by the frontend the moment the user opens the Scan menu so that, by
+# the time the camera capture window closes and the image is POSTed, the
+# vision model is already resident in Ollama (a cold load on Granite-3.3-2B
+# can take 5-15 s on a Mac mini and 2-4 s on M-series laptops, which is the
+# difference between "instant feedback" and "I think something is broken").
+@router.post("/warmup")
+async def warmup_vision_model():
+    """Best-effort: send a no-op generate to the vision model so Ollama loads it.
+
+    Returns immediately on success or after a short timeout — the frontend
+    fires this fire-and-forget, so we never want to block the UI on it.
+    """
+    import os as _os
+    from config import settings as _settings
+    import httpx
+
+    model = _os.getenv("LOCALBOOK_VISION_MODEL") or _settings.vision_model
+    base = _settings.ollama_base_url.rstrip("/")
+    try:
+        # /api/generate with empty prompt is the cheapest way to force a load.
+        # keep_alive matches the rest of the codebase (5m).
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{base}/api/generate",
+                json={"model": model, "prompt": "", "keep_alive": "5m"},
+            )
+        if resp.status_code != 200:
+            logger.warning(f"[scan] vision warmup non-200: {resp.status_code} {resp.text[:200]}")
+            return {"status": "warning", "model": model, "code": resp.status_code}
+        return {"status": "ok", "model": model}
+    except Exception as e:
+        # Never raise — warmup is purely an optimization.
+        logger.warning(f"[scan] vision warmup failed: {e}")
+        return {"status": "error", "model": model, "message": str(e)[:200]}

@@ -265,7 +265,7 @@ async def stream_ollama(
             estimated_prompt_tokens = len(prompt_text) // 3
             effective_num_ctx = max(8192, estimated_prompt_tokens + effective_num_predict + 512)
         else:
-            effective_num_ctx = 4096
+            effective_num_ctx = 8192
         
         # Repetition / coherence control — same strategy as non-streaming path
         # Start with model-specific base options, then layer on call-specific params

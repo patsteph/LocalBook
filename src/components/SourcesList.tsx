@@ -465,7 +465,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                     {moveNotebooks.length === 0 ? (
                       <p className="text-[10px] text-gray-500">No other notebooks</p>
                     ) : (
-                      <div className="flex flex-col gap-0.5 max-h-32 overflow-y-auto">
+                      <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto py-0.5">
                         {moveNotebooks.map(nb => {
                           const isThisTarget = movingToId === nb.id;
                           // While a move is running we disable every option,
@@ -494,7 +494,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                                   setMovingToId(null);
                                 }
                               }}
-                              className={`relative overflow-hidden text-left px-2 py-1 text-[11px] rounded transition-colors truncate ${
+                              className={`relative overflow-hidden text-left px-2.5 py-1.5 text-[11px] rounded-md transition-colors truncate ${
                                 isThisTarget
                                   ? 'bg-indigo-200 dark:bg-indigo-700/60 text-indigo-900 dark:text-indigo-100 ring-1 ring-indigo-400 dark:ring-indigo-500'
                                   : moving
