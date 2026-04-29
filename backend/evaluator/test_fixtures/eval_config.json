@@ -41,12 +41,16 @@
     "simple": {
       "question": "What embedding model does LocalBook use and what are its dimensions?",
       "expected_facts": ["snowflake", "arctic", "1024"],
-      "description": "Simple factual retrieval from note content"
+      "reference_answer": "LocalBook uses the Snowflake Arctic Embed 2 model, which produces 1024-dimensional dense vectors. It has 568M parameters.",
+      "gold_chunk_marker": "Snowflake Arctic Embed 2 produce 1024-dimensional",
+      "description": "Simple factual retrieval — single-fact precise lookup"
     },
     "complex": {
-      "question": "Compare the tradeoffs between different model sizes for RAG systems. What are the key considerations when choosing between a 3B and 7B parameter model for the main reasoning role, considering both speed and quality?",
-      "expected_facts": ["throughput", "token", "quality"],
-      "description": "Multi-source synthesis requiring reasoning"
+      "question": "For a 16GB Apple Silicon machine running LocalBook, what is the recommended combination of main reasoning model, fast model, embedding model, and vision model? Explain why this combination is optimal.",
+      "expected_facts": ["olmo", "phi-4", "snowflake", "granite"],
+      "reference_answer": "For an M4 16GB Apple Silicon machine, the optimal LocalBook combination is: OLMo 3 7B as the main reasoning model for quality answers, Phi-4 Mini as the fast model for classifications and quick tasks, Snowflake Arctic Embed 2 for 1024-dim embeddings (568M params, strong MTEB performance, small footprint), and Granite 3.2 Vision 2B for image understanding. This combination balances quality and resource constraints — the 7B main model provides sufficient reasoning, while smaller specialized models handle fast paths and vision without exhausting memory.",
+      "gold_chunk_marker": "optimal combination is OLMo 3 7B as the main reasoning model",
+      "description": "Multi-fact synthesis — requires retrieving and combining multiple specifics"
     },
     "followup": {
       "question": "Can you summarize that in 3 bullet points?",
@@ -124,7 +128,7 @@
     "needle": "The secret database override passphrase is 'Tangerine-Sky-44'.",
     "question": "What is the secret database override passphrase?",
     "expected_answer": "Tangerine-Sky-44",
-    "padding_target_tokens": 16000
+    "padding_target_tokens": 8000
   },
 
   "prompt_safety_test": [

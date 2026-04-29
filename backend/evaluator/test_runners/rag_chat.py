@@ -43,43 +43,53 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         result.input_chars = len(q["question"])
         result.actual_output_preview = answer[:500]
 
-        # Score
-        fact_score = scoring.score_must_contain(answer, q.get("expected_facts", []))
-        citation_score = scoring.score_has_citations(answer, min_citations=1)
-
-        # Retrieval score (did we fetch the right chunks?)
-        retrieved_text = " ".join([c.get("text", "") for c in citations]) if citations else ""
-        retrieval_score = scoring.score_must_contain(retrieved_text, q.get("expected_facts", []))
-
-        # LLM judge (use fast model to judge main model)
-        judge_model = getattr(settings, 'fast_model', settings.ollama_model)
-        if judge_model != settings.ollama_model:
-            judge_score = await scoring.llm_judge_score(q["question"], answer, judge_model)
+        # ── Industry-standard RAG metrics (RAGAS-style) ────────────────
+        # 1. Context Recall: did retrieval find the gold chunk?
+        context_recall = scoring.score_context_recall(citations, q.get("gold_chunk_marker", ""))
+        
+        # 2. Answer Correctness: semantic similarity to reference answer
+        ref_answer = q.get("reference_answer", "")
+        if ref_answer:
+            answer_correctness = await scoring.score_semantic_similarity(answer, ref_answer)
         else:
-            judge_score = 60  # Default if can't use separate judge
-
+            answer_correctness = scoring.score_must_contain(answer, q.get("expected_facts", []))
+        
+        # 3. Faithfulness: does answer use only retrieved context (no hallucination)?
+        judge_model = getattr(settings, 'ollama_fast_model', settings.ollama_model)
+        if judge_model != settings.ollama_model and citations:
+            faithfulness = await scoring.score_faithfulness(answer, citations, judge_model)
+        else:
+            faithfulness = 60
+        
+        # 4. Citation presence (lightweight format check, deweighted)
+        citation_score = scoring.score_has_citations(answer, min_citations=1)
+        
+        # 5. Speed (separate quality axis)
         speed_score = 100 if elapsed < 15000 else max(0, int(100 - (elapsed - 15000) / 500))
 
-        result.accuracy_score = fact_score
-        result.completeness_score = judge_score
+        result.accuracy_score = answer_correctness
+        result.completeness_score = faithfulness
         result.format_score = citation_score
+        # Weighted: correctness (35%) + recall (25%) + faithfulness (20%) + citations (10%) + speed (10%)
         result.overall_score = int(
-            fact_score * 0.40 + citation_score * 0.20 + judge_score * 0.25 + speed_score * 0.15
+            answer_correctness * 0.35 + context_recall * 0.25 + faithfulness * 0.20 +
+            citation_score * 0.10 + speed_score * 0.10
         )
         
         result.sub_scores = {
-            "retrieval": retrieval_score,
-            "facts": fact_score,
+            "context_recall": context_recall,
+            "answer_correctness": answer_correctness,
+            "faithfulness": faithfulness,
             "citations": citation_score,
-            "judge": judge_score,
-            "speed": speed_score
+            "speed": speed_score,
         }
         result.passed = result.overall_score >= 40
         if not result.passed:
             result.failure_reason = f"Score {result.overall_score} < 40"
 
         print(f"[EVAL-RAG] Simple query: score={result.overall_score} "
-              f"(facts={fact_score}, citations={citation_score}, judge={judge_score}, speed={speed_score}) "
+              f"(recall={context_recall}, correctness={answer_correctness}, "
+              f"faithful={faithfulness}, citations={citation_score}, speed={speed_score}) "
               f"{elapsed:.0f}ms")
 
     except Exception as e:
@@ -117,38 +127,46 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         result.input_chars = len(q["question"])
         result.actual_output_preview = answer[:500]
 
-        fact_score = scoring.score_must_contain(answer, q.get("expected_facts", []))
-        citation_score = scoring.score_has_citations(answer, min_citations=2)
-
         citations = response.citations if hasattr(response, 'citations') else response.get("citations", [])
-        retrieved_text = " ".join([c.get("text", "") for c in citations]) if citations else ""
-        retrieval_score = scoring.score_must_contain(retrieved_text, q.get("expected_facts", []))
-
-        judge_model = getattr(settings, 'fast_model', settings.ollama_model)
-        if judge_model != settings.ollama_model:
-            judge_score = await scoring.llm_judge_score(q["question"], answer, judge_model)
+        
+        # ── Industry-standard RAG metrics (RAGAS-style) ────────────────
+        context_recall = scoring.score_context_recall(citations, q.get("gold_chunk_marker", ""))
+        
+        ref_answer = q.get("reference_answer", "")
+        if ref_answer:
+            answer_correctness = await scoring.score_semantic_similarity(answer, ref_answer)
         else:
-            judge_score = 60
-
+            answer_correctness = scoring.score_must_contain(answer, q.get("expected_facts", []))
+        
+        judge_model = getattr(settings, 'ollama_fast_model', settings.ollama_model)
+        if judge_model != settings.ollama_model and citations:
+            faithfulness = await scoring.score_faithfulness(answer, citations, judge_model)
+        else:
+            faithfulness = 60
+        
+        citation_score = scoring.score_has_citations(answer, min_citations=2)
         speed_score = 100 if elapsed < 25000 else max(0, int(100 - (elapsed - 25000) / 500))
 
-        result.accuracy_score = fact_score
-        result.completeness_score = judge_score
+        result.accuracy_score = answer_correctness
+        result.completeness_score = faithfulness
         result.format_score = citation_score
         result.overall_score = int(
-            fact_score * 0.35 + citation_score * 0.20 + judge_score * 0.30 + speed_score * 0.15
+            answer_correctness * 0.35 + context_recall * 0.25 + faithfulness * 0.20 +
+            citation_score * 0.10 + speed_score * 0.10
         )
         
         result.sub_scores = {
-            "retrieval": retrieval_score,
-            "facts": fact_score,
+            "context_recall": context_recall,
+            "answer_correctness": answer_correctness,
+            "faithfulness": faithfulness,
             "citations": citation_score,
-            "judge": judge_score,
-            "speed": speed_score
+            "speed": speed_score,
         }
         result.passed = result.overall_score >= 40
 
-        print(f"[EVAL-RAG] Complex query: score={result.overall_score} ({elapsed:.0f}ms)")
+        print(f"[EVAL-RAG] Complex query: score={result.overall_score} "
+              f"(recall={context_recall}, correctness={answer_correctness}, "
+              f"faithful={faithfulness}) {elapsed:.0f}ms")
 
     except Exception as e:
         result.passed = False

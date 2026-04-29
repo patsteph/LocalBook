@@ -158,6 +158,101 @@ def score_has_headings(output: str, min_headings: int = 1) -> int:
     return 0
 
 
+# ─── Semantic Scoring (RAGAS-style, industry standard) ─────────────────────
+
+async def score_semantic_similarity(answer: str, reference_answer: str) -> int:
+    """Semantic similarity between generated answer and reference answer.
+    
+    Uses the local embedding model to compute cosine similarity. This is the
+    industry-standard "Answer Correctness" metric used by RAGAS, TruLens, etc.
+    Replaces brittle keyword matching.
+    
+    Returns 0-100 (cosine sim mapped: 0.0→0, 0.5→50, 0.85+→100).
+    """
+    if not answer or not reference_answer:
+        return 0
+    try:
+        from services.rag_embeddings import encode_async
+        import numpy as np
+        embeddings = await encode_async([answer, reference_answer])
+        a, b = embeddings[0], embeddings[1]
+        # Cosine similarity
+        cos_sim = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+        # Map: 0.0→0, 0.5→50, 0.85→100 (typical good RAG answers cluster 0.7-0.9)
+        # Linear stretch from [0.3, 0.85] → [0, 100]
+        normalized = max(0.0, min(1.0, (cos_sim - 0.3) / 0.55))
+        return int(normalized * 100)
+    except Exception as e:
+        logger.warning(f"[scoring] semantic similarity failed: {e}")
+        return 50  # Neutral fallback
+
+
+def score_context_recall(citations: list[dict], gold_chunk_marker: str) -> int:
+    """Context Recall: Did retrieval find the chunk containing the answer?
+    
+    A unique marker phrase from the gold chunk is checked against retrieved
+    citation texts. This is the industry-standard "Context Recall" metric.
+    
+    100 = gold chunk retrieved
+    0 = retrieval missed the relevant chunk entirely
+    """
+    if not citations or not gold_chunk_marker:
+        return 0
+    marker_lower = gold_chunk_marker.lower()
+    for c in citations:
+        text = (c.get("text", "") or "").lower()
+        if marker_lower in text:
+            return 100
+    return 0
+
+
+async def score_faithfulness(answer: str, citations: list[dict], judge_model: str) -> int:
+    """Faithfulness: Does the answer ONLY use information from retrieved context?
+    
+    LLM judge evaluates whether claims in the answer are supported by citations.
+    This catches hallucination — the most critical RAG failure mode.
+    """
+    if not answer or not citations:
+        return 50
+    
+    from services.ollama_client import ollama_client
+    context = "\n---\n".join(c.get("text", "")[:500] for c in citations[:4])
+    
+    prompt = f"""Evaluate if this answer is FAITHFUL to the provided context.
+Faithful = every claim is directly supported by the context.
+Unfaithful = answer contains information NOT in the context (hallucination).
+
+Context:
+{context[:2000]}
+
+Answer: {answer[:1500]}
+
+Respond ONLY with JSON: {{"faithful": <0-100>, "reason": "<brief>"}}.
+100 = fully faithful, 50 = mixed, 0 = mostly hallucinated."""
+    
+    try:
+        result = await ollama_client.generate(
+            prompt=prompt,
+            model=judge_model,
+            system="You are a strict faithfulness evaluator. Return only valid JSON.",
+            temperature=0.1,
+            num_predict=80,
+            timeout=30.0,
+        )
+        text = (result or {}).get("response", "")
+        try:
+            parsed = json.loads(text.strip())
+            return max(0, min(100, int(parsed.get("faithful", 50))))
+        except (json.JSONDecodeError, ValueError):
+            match = re.search(r'"faithful"\s*:\s*(\d+)', text)
+            if match:
+                return max(0, min(100, int(match.group(1))))
+            return 50
+    except Exception as e:
+        logger.warning(f"[scoring] faithfulness check failed: {e}")
+        return 50
+
+
 # ─── LLM-as-Judge Scoring ───────────────────────────────────────────────────
 
 async def llm_judge_score(

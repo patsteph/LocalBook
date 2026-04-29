@@ -1962,9 +1962,13 @@
                             const isDegraded = hasSubScores && test.sub_scores.degraded === true;
                             const degradedNotes = (hasSubScores && Array.isArray(test.sub_scores.degraded_notes))
                                 ? test.sub_scores.degraded_notes : [];
-                            // Only render the subscore strip for RAG-Chat-shaped tests (with retrieval/facts/…)
+                            // Only render the subscore strip for RAG-Chat-shaped tests
+                            // Supports both new RAGAS-style names and legacy names for back-compat
                             const hasRagShape = hasSubScores && (
-                                'retrieval' in test.sub_scores || 'facts' in test.sub_scores
+                                'context_recall' in test.sub_scores ||
+                                'answer_correctness' in test.sub_scores ||
+                                'retrieval' in test.sub_scores ||
+                                'facts' in test.sub_scores
                             );
                             const providerBadge = test.provider
                                 ? `<span style="display: inline-block; padding: 1px 6px; border-radius: 4px; background: ${test.provider === 'llama_server' ? 'rgba(168,85,247,0.15)' : 'rgba(59,130,246,0.12)'}; color: ${test.provider === 'llama_server' ? '#a855f7' : '#3b82f6'}; font-size: 10px; font-weight: 600;">${test.provider}</span>`
@@ -1979,11 +1983,30 @@
                                                 ${isDegraded ? '<span style="padding: 1px 6px; border-radius: 4px; background: rgba(234,179,8,0.18); color: #ca8a04; font-size: 10px; font-weight: 600;">DEGRADED</span>' : ''}
                                             </div>
                                             <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-                                                <span>Retrieval: <b class="${test.sub_scores.retrieval < 70 ? 'grade-f' : ''}">${test.sub_scores.retrieval || 0}</b></span>
-                                                <span>Facts: <b class="${test.sub_scores.facts < 70 ? 'grade-f' : ''}">${test.sub_scores.facts || 0}</b></span>
-                                                <span>Citations: <b class="${test.sub_scores.citations < 70 ? 'grade-f' : ''}">${test.sub_scores.citations || 0}</b></span>
-                                                <span>Judge: <b class="${test.sub_scores.judge < 70 ? 'grade-f' : ''}">${test.sub_scores.judge || 0}</b></span>
-                                                <span>Speed: <b class="${test.sub_scores.speed < 70 ? 'grade-f' : ''}">${test.sub_scores.speed || 0}</b></span>
+                                                ${(() => {
+                                                    const s = test.sub_scores;
+                                                    // RAGAS-style sub-scores (industry standard)
+                                                    if ('context_recall' in s || 'answer_correctness' in s) {
+                                                        const cells = [
+                                                            ['Recall', s.context_recall],
+                                                            ['Correctness', s.answer_correctness],
+                                                            ['Faithful', s.faithfulness],
+                                                            ['Citations', s.citations],
+                                                            ['Speed', s.speed],
+                                                        ];
+                                                        return cells.map(([label, v]) =>
+                                                            `<span>${label}: <b class="${(v||0) < 70 ? 'grade-f' : ''}">${v || 0}</b></span>`
+                                                        ).join('');
+                                                    }
+                                                    // Legacy keyword-matching sub-scores (backward compat)
+                                                    return `
+                                                        <span>Retrieval: <b class="${(s.retrieval||0) < 70 ? 'grade-f' : ''}">${s.retrieval || 0}</b></span>
+                                                        <span>Facts: <b class="${(s.facts||0) < 70 ? 'grade-f' : ''}">${s.facts || 0}</b></span>
+                                                        <span>Citations: <b class="${(s.citations||0) < 70 ? 'grade-f' : ''}">${s.citations || 0}</b></span>
+                                                        <span>Judge: <b class="${(s.judge||0) < 70 ? 'grade-f' : ''}">${s.judge || 0}</b></span>
+                                                        <span>Speed: <b class="${(s.speed||0) < 70 ? 'grade-f' : ''}">${s.speed || 0}</b></span>
+                                                    `;
+                                                })()}
                                             </div>
                                             ${degradedNotes.length ? `<div style="margin-top: 4px; color: #ca8a04;">⚠️ ${escapeHtml(degradedNotes[0])}</div>` : ''}
                                         </td>
