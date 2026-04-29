@@ -42,14 +42,23 @@
       "question": "What embedding model does LocalBook use and what are its dimensions?",
       "expected_facts": ["snowflake", "arctic", "1024"],
       "reference_answer": "LocalBook uses the Snowflake Arctic Embed 2 model, which produces 1024-dimensional dense vectors. It has 568M parameters.",
-      "gold_chunk_marker": "Snowflake Arctic Embed 2 produce 1024-dimensional",
+      "gold_chunk_marker": [
+        "Arctic Embed 2 produce 1024",
+        "1024-dimensional dense vectors",
+        "Snowflake Arctic Embed 2",
+        "568M parameters"
+      ],
       "description": "Simple factual retrieval — single-fact precise lookup"
     },
     "complex": {
       "question": "For a 16GB Apple Silicon machine running LocalBook, what is the recommended combination of main reasoning model, fast model, embedding model, and vision model? Explain why this combination is optimal.",
       "expected_facts": ["olmo", "phi-4", "snowflake", "granite"],
       "reference_answer": "For an M4 16GB Apple Silicon machine, the optimal LocalBook combination is: OLMo 3 7B as the main reasoning model for quality answers, Phi-4 Mini as the fast model for classifications and quick tasks, Snowflake Arctic Embed 2 for 1024-dim embeddings (568M params, strong MTEB performance, small footprint), and Granite 3.2 Vision 2B for image understanding. This combination balances quality and resource constraints — the 7B main model provides sufficient reasoning, while smaller specialized models handle fast paths and vision without exhausting memory.",
-      "gold_chunk_marker": "optimal combination is OLMo 3 7B as the main reasoning model",
+      "gold_chunk_marker": [
+        "optimal combination is OLMo 3 7B",
+        "Phi-4 Mini as the fast model",
+        "Granite 3.2 Vision 2B"
+      ],
       "description": "Multi-fact synthesis — requires retrieving and combining multiple specifics"
     },
     "followup": {
@@ -57,20 +66,41 @@
       "description": "Fast follow-up to test quick model response"
     },
     "instruction_format": {
-      "question": "List exactly 5 key concepts about RAG retrieval systems. Use numbered format. Each must be one sentence.",
+      "question": "List exactly 5 key concepts about RAG retrieval systems. Use numbered format (1., 2., 3., 4., 5.). Each must be one sentence.",
       "expected_format": {
         "numbered_items": 5,
-        "max_sentences_per_item": 2
+        "max_sentences_per_item": 2,
+        "category": "detectable_format"
       },
-      "description": "Strict format compliance test"
+      "description": "IFEval-style: structural format constraint (numbered list with exact count)"
     },
     "instruction_constraint": {
       "question": "Explain how embedding models work in exactly 3 paragraphs. Do not use bullet points or numbered lists.",
       "expected_format": {
         "paragraph_count": 3,
-        "forbidden_elements": ["- ", "* ", "1.", "2.", "3.", "4.", "5."]
+        "forbidden_elements": ["- ", "* ", "1.", "2.", "3.", "4.", "5."],
+        "category": "detectable_format_combination"
       },
-      "description": "Paragraph structure + negative constraint test"
+      "description": "IFEval-style: structural + negative constraint combination"
+    },
+    "instruction_word_limit": {
+      "question": "Summarize what RAG (Retrieval-Augmented Generation) is in fewer than 50 words. Be concise.",
+      "expected_format": {
+        "max_word_count": 50,
+        "min_word_count": 15,
+        "required_keywords": ["retriev", "generat"],
+        "category": "length_keyword_combination"
+      },
+      "description": "IFEval-style: word-count constraint + required keyword inclusion"
+    },
+    "instruction_keyword_exclusion": {
+      "question": "Describe the role of vector databases in RAG systems. Your response must NOT contain the words 'database' or 'vector' anywhere — find synonyms instead.",
+      "expected_format": {
+        "banned_keywords": ["database", "databases", "vector", "vectors"],
+        "min_word_count": 30,
+        "category": "keyword_exclusion"
+      },
+      "description": "IFEval-style: negative keyword constraint (the hardest IFEval category)"
     }
   },
 

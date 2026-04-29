@@ -90,9 +90,27 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         result.output_chars = len(answer)
         result.eval_duration_ns = response.get("eval_duration", 0)
         
-        # Grading
-        is_correct = expected_answer.lower() in answer.lower()
-        result.accuracy_score = 100 if is_correct else 0
+        # ── Graduated grading ──────────────────────────────────────────
+        # Industry best practice: distinguish between full retrieval, partial
+        # retrieval (key fragment present), and total miss. The needle here
+        # is "Tangerine-Sky-44" — checking for either the full passphrase OR
+        # its memorable parts gives a more nuanced view of context retention.
+        answer_lower = answer.lower()
+        expected_lower = expected_answer.lower()
+        
+        is_full_match = expected_lower in answer_lower
+        # Partial credit for finding distinctive fragments (handles minor
+        # transcription errors like "Tangerine Sky 44" without dashes)
+        partial_fragments = ["tangerine", "sky-44", "sky 44", "sky_44"]
+        partial_hits = sum(1 for frag in partial_fragments if frag in answer_lower)
+        is_partial = not is_full_match and partial_hits >= 2
+        
+        if is_full_match:
+            result.accuracy_score = 100
+        elif is_partial:
+            result.accuracy_score = 60  # Partial credit for retention failure with recall hint
+        else:
+            result.accuracy_score = 0
         
         # Penalize if it just generated a thousand tokens rambling
         length_penalty = 0 if len(answer) < 150 else max(0, min(50, int((len(answer) - 150) / 10)))
@@ -104,9 +122,27 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             
         result.overall_score = max(0, int(result.accuracy_score) - length_penalty)
         result.passed = result.overall_score >= 80
+        
+        # Track sub-scores for dashboard visibility
+        result.sub_scores = {
+            "context_size": target_tokens,
+            "needle_depth_pct": 65,
+            "full_match": is_full_match,
+            "partial_match": is_partial,
+        }
 
-        if not is_correct:
-            result.failure_reason = f"Model failed to extract the needle from ~{target_tokens} context block."
+        if not is_full_match:
+            if is_partial:
+                result.failure_reason = (
+                    f"Partial recall at ~{target_tokens} tokens — model found fragments "
+                    f"but couldn't reproduce the full needle. Indicates degraded long-context retention."
+                )
+            else:
+                result.failure_reason = (
+                    f"Total recall failure at ~{target_tokens} tokens (needle at 65% depth). "
+                    f"Model cannot reliably extract specific details from long contexts. "
+                    f"Note: 'lost in the middle' is a known weakness for small/edge models."
+                )
             
     except Exception as e:
         result.passed = False

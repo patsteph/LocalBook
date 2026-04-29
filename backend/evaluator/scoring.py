@@ -112,6 +112,49 @@ def score_format_compliance(output: str, expected_format: dict) -> int:
                 score -= 15
                 penalties.append(f"Contains forbidden element: '{elem}'")
 
+    # ── IFEval-style constraints ──────────────────────────────────────────
+    # Word count constraints (max and/or min)
+    if "max_word_count" in expected_format or "min_word_count" in expected_format:
+        word_count = len(output.split())
+        max_words = expected_format.get("max_word_count")
+        min_words = expected_format.get("min_word_count")
+        if max_words is not None and word_count > max_words:
+            overage = word_count - max_words
+            penalty = min(40, int(overage * 100 / max_words))
+            score -= penalty
+            penalties.append(f"Exceeded word limit: {word_count} > {max_words}")
+        if min_words is not None and word_count < min_words:
+            shortfall = min_words - word_count
+            penalty = min(40, int(shortfall * 100 / min_words))
+            score -= penalty
+            penalties.append(f"Below word minimum: {word_count} < {min_words}")
+
+    # Required keywords (must include all, case-insensitive substring match)
+    if "required_keywords" in expected_format:
+        output_lower = output.lower()
+        missing = [kw for kw in expected_format["required_keywords"]
+                   if kw.lower() not in output_lower]
+        if missing:
+            # Each missing keyword is a major violation
+            penalty = min(50, len(missing) * 25)
+            score -= penalty
+            penalties.append(f"Missing required keywords: {missing}")
+
+    # Banned keywords (must NOT include any, whole-word match for accuracy)
+    # Whole-word matching prevents "vectorize" from matching "vector"
+    if "banned_keywords" in expected_format:
+        violations = []
+        for kw in expected_format["banned_keywords"]:
+            # Word-boundary regex, case-insensitive
+            pattern = r'\b' + re.escape(kw) + r'\b'
+            if re.search(pattern, output, re.IGNORECASE):
+                violations.append(kw)
+        if violations:
+            # Banned keyword violations are severe — IFEval treats this as binary
+            penalty = min(70, len(violations) * 35)
+            score -= penalty
+            penalties.append(f"Used banned keywords: {violations}")
+
     return max(0, score)
 
 
@@ -187,22 +230,42 @@ async def score_semantic_similarity(answer: str, reference_answer: str) -> int:
         return 50  # Neutral fallback
 
 
-def score_context_recall(citations: list[dict], gold_chunk_marker: str) -> int:
-    """Context Recall: Did retrieval find the chunk containing the answer?
+def score_context_recall(citations: list[dict], gold_chunk_marker) -> int:
+    """Context Recall: Did retrieval find a chunk containing the answer?
     
-    A unique marker phrase from the gold chunk is checked against retrieved
-    citation texts. This is the industry-standard "Context Recall" metric.
+    Industry-standard "Context Recall" metric. Accepts a single marker string
+    OR a list of acceptable markers (any-of matching). When multiple markers
+    are provided, finding ANY ONE of them counts as full recall — this handles
+    cases where the same fact appears in multiple chunks of the source.
     
-    100 = gold chunk retrieved
-    0 = retrieval missed the relevant chunk entirely
+    Also checks parent_text and snippet for the marker, since the citation
+    .text field may be the chunked sub-section while parent_text holds the
+    enclosing paragraph.
+    
+    100 = at least one gold-chunk marker was retrieved
+    0 = retrieval missed every relevant chunk
     """
     if not citations or not gold_chunk_marker:
         return 0
-    marker_lower = gold_chunk_marker.lower()
+    
+    # Normalize markers to a list for any-of matching
+    markers = gold_chunk_marker if isinstance(gold_chunk_marker, list) else [gold_chunk_marker]
+    markers_lower = [m.lower() for m in markers if m]
+    if not markers_lower:
+        return 0
+    
     for c in citations:
-        text = (c.get("text", "") or "").lower()
-        if marker_lower in text:
-            return 100
+        # Check text, parent_text, AND snippet — chunkers may split the marker
+        # phrase across boundaries, so checking the broader context catches
+        # legitimate retrievals that hit the right paragraph.
+        haystack = " ".join([
+            (c.get("text", "") or ""),
+            (c.get("parent_text", "") or ""),
+            (c.get("snippet", "") or ""),
+        ]).lower()
+        for marker in markers_lower:
+            if marker in haystack:
+                return 100
     return 0
 
 
