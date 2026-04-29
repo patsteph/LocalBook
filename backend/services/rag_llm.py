@@ -246,6 +246,9 @@ async def stream_ollama(
             "\n\n[1]:",
             "\n\n*Note",
             "\n*Note:",
+            # Gemma 4 thinking tokens (prevent thinking-token leak in chat output)
+            "<|channel>thought",
+            "<|channel|>",
         ]
     
     # Determine token limit

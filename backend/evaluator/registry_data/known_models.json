@@ -395,7 +395,7 @@
       "parameter_count": "4B-effective",
       "vendor": "Google DeepMind",
       "origin_country": "US",
-      "license": "Gemma",
+      "license": "Apache-2.0",
       "supported_roles": ["main_model", "vision_model"],
       "context_window": 131072,
       "supports_json_mode": true,

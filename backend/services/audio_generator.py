@@ -775,6 +775,11 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         Runs BEFORE validation. Strips everything that isn't spoken dialogue
         so the section validator sees an accurate word count.
         """
+        # ── Model-specific artifact stripping ──
+        # Gemma 4 thinking tokens (must strip BEFORE other processing)
+        script = re.sub(r'<\|channel\|>.*?<\|channel\|>', '', script, flags=re.DOTALL)
+        script = re.sub(r'<\|channel>thought.*?<\|channel\|>', '', script, flags=re.DOTALL)
+        
         # ── Leaked prompt/context metadata ──
         script = re.sub(r'Research content:.*$', '', script, flags=re.MULTILINE | re.IGNORECASE)
         script = re.sub(r'Use ONLY facts from this research:.*$', '', script, flags=re.MULTILINE | re.IGNORECASE)

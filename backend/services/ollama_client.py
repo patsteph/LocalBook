@@ -28,6 +28,9 @@ class OllamaClient:
         num_predict: Optional[int] = None,
         extra_options: Optional[Dict[str, Any]] = None,
         images: Optional[list] = None,
+        think: Optional[bool] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+        tools: Optional[list] = None,
     ) -> Dict[str, Any]:
         """
         Generate a response from the LLM backend.
@@ -35,6 +38,11 @@ class OllamaClient:
         Resolves the correct provider (Ollama native vs llama-server sidecar)
         per-call via services.llm_provider. Callers get the same return shape
         regardless of backend (`{"response": "...", ...}` with eval_count etc).
+
+        Args:
+            think: Enable/disable thinking mode (Gemma 4). True=thinking on, False=thinking off.
+            response_format: JSON schema for structured output, e.g. {"type": "json_object"}.
+            tools: List of tool definitions for function calling (native Ollama tools).
         """
         model = model or settings.ollama_model
 
@@ -54,6 +62,12 @@ class OllamaClient:
             payload["system"] = system
         if images:
             payload["images"] = images
+        if think is not None:
+            payload["think"] = think
+        if response_format is not None:
+            payload["format"] = response_format
+        if tools is not None:
+            payload["tools"] = tools
 
         # v1.8.0: provider routing — identical semantics for Ollama path.
         from services.llm_provider import (
@@ -96,10 +110,18 @@ class OllamaClient:
         temperature: float = 0.7,
         timeout: float = 300.0,
         images: Optional[list] = None,
+        think: Optional[bool] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+        tools: Optional[list] = None,
     ) -> Dict[str, Any]:
         """
         Chat completion against the resolved backend (Ollama or sidecar).
         Same return shape as Ollama's /api/chat: {"message": {"role": "...", "content": "..."}}.
+
+        Args:
+            think: Enable/disable thinking mode (Gemma 4). True=thinking on, False=thinking off.
+            response_format: JSON schema for structured output, e.g. {"type": "json_object"}.
+            tools: List of tool definitions for function calling (native Ollama tools).
         """
         model = model or settings.ollama_model
 
@@ -110,12 +132,18 @@ class OllamaClient:
                     msg["images"] = images
                     break
 
-        payload = {
+        payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
             "options": {"temperature": temperature},
         }
+        if think is not None:
+            payload["think"] = think
+        if response_format is not None:
+            payload["format"] = response_format
+        if tools is not None:
+            payload["tools"] = tools
 
         # v1.8.0: provider routing
         from services.llm_provider import (

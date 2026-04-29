@@ -59,14 +59,20 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         audio_path = generation.get("audio_file_path", "")
         status = generation.get("status", "")
         duration_seconds = generation.get("duration_seconds", 0)
+        error_message = generation.get("error", "")
 
         result.output_chars = len(script)
-        result.actual_output_preview = f"Status: {status}, Script: {len(script)} chars, Audio: {audio_path}"
+        result.actual_output_preview = f"Status: {status}, Script: {len(script)} chars, Error: {error_message[:100] if error_message else 'None'}"
 
         # Score: Script generated
         script_score = 100 if len(script) > 100 else max(0, int(len(script)))
         if not script:
             script_score = 0
+            # Capture failure details for debugging model-specific issues
+            if error_message:
+                result.failure_reason = f"Script generation failed: {error_message[:150]}"
+            else:
+                result.failure_reason = "No script generated (empty response from LLM)"
 
         # Score: Audio file exists and has content
         audio_exists = False

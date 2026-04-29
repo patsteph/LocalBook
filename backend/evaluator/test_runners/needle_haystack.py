@@ -14,9 +14,9 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     main_model = getattr(settings, 'ollama_model', 'olmo-3:7b-instruct')
     test_config = config.get("needle_haystack_test", {})
 
-    needle = test_config.get("needle", "The secret passcode is Omega-99.")
-    question = test_config.get("question", "What is the secret passcode?")
-    expected_answer = test_config.get("expected_answer", "Omega-99")
+    needle = test_config.get("needle", "The secret database override passphrase is 'Tangerine-Sky-44'.")
+    question = test_config.get("question", "What is the secret database override passphrase?")
+    expected_answer = test_config.get("expected_answer", "Tangerine-Sky-44")
     target_tokens = test_config.get("padding_target_tokens", 8000)
 
     # v1.8.2: adapt the needle test to the model's actual context window so a
