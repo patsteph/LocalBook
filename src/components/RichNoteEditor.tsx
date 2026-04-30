@@ -663,8 +663,8 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
     ctx.addToast({
       type: 'info',
       title: 'Insert from iPhone',
-      message: 'Click “Capture from iPhone” on the launcher window, then pick a mode on your iPhone screen.',
-      duration: 6000,
+      message: 'Pick a capture mode in the popup, then take the photo or scan from your iPhone.',
+      duration: 5000,
     });
 
     // The `cameraId` and `includeNonContinuity` args are accepted by the
@@ -780,13 +780,7 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
                     onClick={() => handleContinuityScan('document')}
                     className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
                   >
-                    📱 Scan Documents
-                  </button>
-                  <button
-                    onClick={() => handleContinuityScan('photo')}
-                    className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                  >
-                    📱 Take Photo
+                    📱 Insert from iPhone…
                   </button>
                   <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
                   <div className="px-4 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">

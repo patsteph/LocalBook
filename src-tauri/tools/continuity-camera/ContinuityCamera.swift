@@ -197,160 +197,33 @@ do {
     emitErrorAndExit("failed to create output dir: \(error.localizedDescription)")
 }
 
-// ─── ImportFromDeviceController ──────────────────────────────────────────────
+// ─── ImportFromDeviceView ────────────────────────────────────────────────────
 //
-// Owns the launcher window, registers itself as the responder that accepts
-// image pasteboard data, and finalises the sidecar run when the iPhone
-// returns image(s) (or the user cancels).
+// NSView that AppKit consults during contextual-menu population to decide
+// whether to insert iPhone capture items. Two things have to be true for
+// the import-from-device flow to work:
+//
+//   (1) The menu must contain at least one NSMenuItem whose identifier is
+//       `NSMenuItem.importFromDeviceIdentifier`. AppKit replaces this
+//       placeholder with one item per available iPhone capture mode
+//       ("Take Photo from iPhone", "Scan Documents from iPhone", etc.)
+//       when the menu opens. Without the placeholder you get an empty
+//       menu that shows generic Services items and never reaches the
+//       iPhone — that was the bug in the first cut of this sidecar.
+//
+//   (2) An object reachable from the key window's first responder must
+//       return a valid requestor for image-typed pasteboard data via
+//       `validRequestor(forSendType:returnType:)`. We make THIS view the
+//       window's first responder so AppKit's responder-chain walk hits
+//       our validRequestor on the first hop.
+//
+// The view is intentionally minimal-visual: it just hosts a status label
+// and exists primarily for its responder-chain role.
 
-final class ImportFromDeviceController: NSResponder, NSWindowDelegate, NSServicesMenuRequestor {
-    private let outputDir: URL
-    private var window: NSWindow!
-    private var statusLabel: NSTextField!
-    private var captureButton: NSButton!
-    private var finalized = false
+final class ImportFromDeviceView: NSView, NSServicesMenuRequestor {
+    weak var controller: ImportFromDeviceController?
 
-    init(outputDir: URL) {
-        self.outputDir = outputDir
-        super.init()
-    }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    func start() {
-        DispatchQueue.main.async { self.show() }
-    }
-
-    private func show() {
-        let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 220),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        win.title = "LocalBook — Insert from iPhone"
-        win.center()
-        win.delegate = self
-        win.isReleasedWhenClosed = false
-
-        let content = NSView(frame: win.contentLayoutRect)
-
-        // Heading
-        let heading = NSTextField(labelWithString: "Capture from your iPhone")
-        heading.font = .systemFont(ofSize: 16, weight: .semibold)
-        heading.frame = NSRect(x: 20, y: 168, width: 400, height: 24)
-        heading.alignment = .center
-        content.addSubview(heading)
-
-        // Instruction
-        statusLabel = NSTextField(wrappingLabelWithString:
-            "Click below, then choose Take Photo, Scan Documents, or Add Sketch on your iPhone screen.")
-        statusLabel.frame = NSRect(x: 24, y: 100, width: 392, height: 60)
-        statusLabel.alignment = .center
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.font = .systemFont(ofSize: 12)
-        content.addSubview(statusLabel)
-
-        // Primary action — pops up the iPhone capture menu.
-        captureButton = NSButton(
-            title: "Capture from iPhone…",
-            target: self,
-            action: #selector(captureClicked(_:))
-        )
-        captureButton.frame = NSRect(x: 140, y: 50, width: 160, height: 32)
-        captureButton.bezelStyle = .rounded
-        captureButton.keyEquivalent = "\r"  // Enter triggers
-        content.addSubview(captureButton)
-
-        // Cancel — Esc shortcut for keyboard users.
-        let cancelButton = NSButton(
-            title: "Cancel",
-            target: self,
-            action: #selector(cancelClicked(_:))
-        )
-        cancelButton.frame = NSRect(x: 20, y: 14, width: 80, height: 24)
-        cancelButton.bezelStyle = .rounded
-        cancelButton.keyEquivalent = "\u{1b}"  // Escape
-        content.addSubview(cancelButton)
-
-        win.contentView = content
-
-        // Hook ourselves into the responder chain. AppKit walks the chain
-        // calling validRequestor(forSendType:returnType:) when populating
-        // the import-from-device menu; without us in the chain it would
-        // never auto-fill the iPhone items.
-        self.nextResponder = content.nextResponder
-        content.nextResponder = self
-
-        // LSUIElement keeps us out of the Dock by default. We need
-        // foreground activation while the launcher window is up so the
-        // window comes to the front and key events route correctly.
-        NSApp.setActivationPolicy(.regular)
-        win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-
-        self.window = win
-    }
-
-    // ── Capture button → contextual menu ─────────────────────────────────
-    //
-    // Builds an empty NSMenu and pops it up at the button. AppKit detects
-    // that an NSResponder in the chain (this controller) accepts image-
-    // type pasteboard data and auto-inserts iPhone capture items. The
-    // user picks one; AppKit shows the iPhone-side UI; the captured
-    // image(s) come back via readSelection(from:) below.
-
-    @objc private func captureClicked(_ sender: NSButton) {
-        let menu = NSMenu(title: "")
-        statusLabel.stringValue = "Look at your iPhone — pick a capture mode."
-
-        // popUpContextMenu requires a real NSEvent. The button's click
-        // event is the most recent NSApp.currentEvent (a left-mouse-up).
-        // Synthesize one if for some reason the runtime didn't surface
-        // one (defensive — should never happen for a button click).
-        let event: NSEvent = NSApp.currentEvent ?? NSEvent.mouseEvent(
-            with: .leftMouseUp,
-            location: sender.convert(
-                NSPoint(x: sender.bounds.midX, y: sender.bounds.midY),
-                to: nil
-            ),
-            modifierFlags: [],
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: window.windowNumber,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 1,
-            pressure: 0
-        )!
-
-        NSMenu.popUpContextMenu(menu, with: event, for: sender)
-
-        // After the popup returns, readSelection(from:) may have already
-        // fired and finalised the run on a different runloop turn. If we
-        // got here without finalising, the user either dismissed the
-        // menu or the menu was empty (no iPhone available). Update the
-        // status label for both cases.
-        if finalized { return }
-        if menu.numberOfItems == 0 {
-            statusLabel.stringValue =
-                "No iPhone detected. Make sure it's unlocked, on the same Apple ID, " +
-                "and within range — then click Capture again."
-        } else {
-            statusLabel.stringValue = "Click Capture to try again, or Cancel to close."
-        }
-    }
-
-    @objc private func cancelClicked(_ sender: NSButton) {
-        finalize(error: "User cancelled.", code: 1)
-    }
-
-    // ── NSResponder: declare we accept image pasteboard data ─────────────
-    //
-    // AppKit calls this on every responder in the chain when populating
-    // the import-from-device menu. Returning `self` for image return-
-    // types tells AppKit "this responder will receive the captured
-    // image" — and AppKit then knows to populate the menu with iPhone
-    // capture items.
+    override var acceptsFirstResponder: Bool { true }
 
     override func validRequestor(
         forSendType sendType: NSPasteboard.PasteboardType?,
@@ -363,29 +236,210 @@ final class ImportFromDeviceController: NSResponder, NSWindowDelegate, NSService
         return super.validRequestor(forSendType: sendType, returnType: returnType)
     }
 
-    // ── NSServicesMenuRequestor: receive the captured image(s) ───────────
-
+    // NSServicesMenuRequestor — AppKit calls this when the user picks an
+    // iPhone capture mode and the iPhone returns image data via the
+    // system pasteboard.
     func readSelection(from pasteboard: NSPasteboard) -> Bool {
+        controller?.handleReadSelection(from: pasteboard) ?? false
+    }
+
+    // Protocol-required but unused — we never send data outward.
+    func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        false
+    }
+}
+
+// ─── ImportFromDeviceController ──────────────────────────────────────────────
+//
+// Owns the launcher window and the lifecycle of one capture session. The
+// flow is intentionally one Mac click long: the user picks Continuity
+// Camera in the LocalBook scan menu → the sidecar launches and shows a
+// small "Connecting to iPhone…" window → the import-from-device menu auto-
+// pops centred on that window → the user taps Take Photo or Scan Documents
+// directly on their iPhone screen → the image flows back via readSelection
+// and the sidecar exits. No extra Mac button to click.
+
+final class ImportFromDeviceController: NSObject, NSWindowDelegate, NSMenuDelegate {
+    private let outputDir: URL
+    private var window: NSWindow!
+    private var view: ImportFromDeviceView!
+    private var statusLabel: NSTextField!
+    private var menu: NSMenu?
+    private var finalized = false
+    private var menuOpened = false
+
+    init(outputDir: URL) {
+        self.outputDir = outputDir
+        super.init()
+    }
+
+    func start() {
+        DispatchQueue.main.async { self.show() }
+    }
+
+    private func show() {
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 180),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        win.title = "LocalBook — Insert from iPhone"
+        win.center()
+        win.delegate = self
+        win.isReleasedWhenClosed = false
+
+        let content = ImportFromDeviceView(frame: win.contentLayoutRect)
+        content.controller = self
+
+        let heading = NSTextField(labelWithString: "Insert from iPhone")
+        heading.font = .systemFont(ofSize: 16, weight: .semibold)
+        heading.frame = NSRect(x: 20, y: 130, width: 380, height: 24)
+        heading.alignment = .center
+        content.addSubview(heading)
+
+        statusLabel = NSTextField(wrappingLabelWithString: "Connecting to your iPhone…")
+        statusLabel.frame = NSRect(x: 24, y: 70, width: 372, height: 50)
+        statusLabel.alignment = .center
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.font = .systemFont(ofSize: 12)
+        content.addSubview(statusLabel)
+
+        let cancelButton = NSButton(
+            title: "Cancel",
+            target: self,
+            action: #selector(cancelClicked(_:))
+        )
+        cancelButton.frame = NSRect(x: 170, y: 16, width: 80, height: 28)
+        cancelButton.bezelStyle = .rounded
+        cancelButton.keyEquivalent = "\u{1b}"  // Escape
+        content.addSubview(cancelButton)
+
+        win.contentView = content
+        self.view = content
+
+        // LSUIElement keeps us out of the Dock by default. We need
+        // foreground activation now so the window comes to the front and
+        // the auto-popped menu actually appears on screen.
+        NSApp.setActivationPolicy(.regular)
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        // CRITICAL: the import-from-device flow walks the key window's
+        // responder chain looking for a valid requestor for image
+        // pasteboard data. Make our view the first responder so the walk
+        // hits ImportFromDeviceView.validRequestor on hop one.
+        win.makeFirstResponder(content)
+
+        self.window = win
+
+        // Auto-pop the iPhone menu — no manual Mac click needed.
+        // 100ms gives AppKit time to finish wiring up the responder chain
+        // and the foreground activation transition.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.popImportFromDeviceMenu()
+        }
+    }
+
+    // ── popImportFromDeviceMenu ──────────────────────────────────────────
+    //
+    // Builds the menu containing the magic placeholder item, then pops it
+    // up at the centre of the launcher window. The placeholder triggers
+    // AppKit's auto-population: each available iPhone capture mode is
+    // inserted as a separate item before display. If no iPhone is
+    // available the menu shows up empty/dismissed, which we report via
+    // the status label.
+
+    private func popImportFromDeviceMenu() {
+        guard !finalized, let window = window, let view = view else { return }
+
+        let menu = NSMenu(title: "Insert from iPhone")
+        menu.delegate = self
+        menu.autoenablesItems = true
+
+        // The placeholder. AppKit identifies it by its
+        // NSUserInterfaceItemIdentifier and replaces it (in place) with
+        // per-device, per-capture-mode items when the menu opens.
+        let placeholder = NSMenuItem()
+        placeholder.title = "Insert from iPhone"
+        placeholder.identifier = NSMenuItem.importFromDeviceIdentifier
+        menu.addItem(placeholder)
+
+        self.menu = menu
+
+        // popUpContextMenu requires a real NSEvent. We synthesise a
+        // mouse event at the centre of our content view.
+        let centre = NSPoint(x: view.bounds.midX, y: view.bounds.midY)
+        let event = NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: view.convert(centre, to: nil),
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 0
+        )
+
+        statusLabel.stringValue = "Pick a capture mode below — the rest happens on your iPhone."
+
+        guard let event = event else {
+            finalize(error: "Failed to synthesise menu event.")
+            return
+        }
+
+        NSMenu.popUpContextMenu(menu, with: event, for: view)
+
+        // popUpContextMenu blocks until the menu closes. By the time we
+        // return here either readSelection() has already fired and
+        // finalised the sidecar, OR the user dismissed the menu. We use
+        // menuOpened (set by NSMenuDelegate.menuWillOpen) to distinguish
+        // "AppKit never even showed the menu" (no iPhone found) from
+        // "menu shown and dismissed without picking".
+        if finalized { return }
+
+        if !menuOpened {
+            statusLabel.stringValue =
+                "No iPhone detected. Make sure it's unlocked, on the same Apple ID, " +
+                "and within range. Close this window and try again."
+        } else {
+            // Menu was shown but user dismissed without picking. Re-pop
+            // automatically so they can try again without an extra click
+            // on a Mac button.
+            statusLabel.stringValue = "Cancelled — pick a mode or click Cancel to close."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard let self, !self.finalized else { return }
+                self.menuOpened = false
+                self.popImportFromDeviceMenu()
+            }
+        }
+    }
+
+    // NSMenuDelegate — used to detect whether AppKit actually opened the
+    // menu (it skips the open if no iPhone is around).
+    func menuWillOpen(_ menu: NSMenu) {
+        menuOpened = true
+        debug("import-from-device menu opening with \(menu.numberOfItems) item(s)")
+    }
+
+    @objc private func cancelClicked(_ sender: NSButton) {
+        finalize(error: "User cancelled.", code: 1)
+    }
+
+    // ── Pasteboard → disk (called by ImportFromDeviceView) ───────────────
+
+    fileprivate func handleReadSelection(from pasteboard: NSPasteboard) -> Bool {
         debug("readSelection: types=\(pasteboard.types?.map(\.rawValue) ?? [])")
         let paths = saveImagesFromPasteboard(pasteboard)
         if paths.isEmpty {
             debug("readSelection: pasteboard had no extractable image data")
-            statusLabel?.stringValue =
-                "No image data was returned. Try a different capture mode on your iPhone."
+            statusLabel?.stringValue = "No image data returned. Try again."
             return false
         }
         debug("readSelection: saved \(paths.count) image(s) to \(outputDir.path)")
         finalize(success: paths)
         return true
-    }
-
-    /// Required by NSServicesMenuRequestor protocol but unused — we never
-    /// send selection data outward.
-    func writeSelection(
-        to pboard: NSPasteboard,
-        types: [NSPasteboard.PasteboardType]
-    ) -> Bool {
-        false
     }
 
     // ── Pasteboard → disk ────────────────────────────────────────────────
