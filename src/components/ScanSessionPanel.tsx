@@ -15,12 +15,38 @@ import { ArrowUp, ArrowDown, X, Loader2, CheckCircle2, AlertCircle, Play } from 
 import { ScanSessionState } from '../services/scanSession';
 import { scanService, ScanProgressEvent } from '../services/scanService';
 
+/**
+ * Result returned by the processBatch callback. Either `noteId` (a fresh
+ * scan note was created — the legacy default) or just a count of inserted
+ * pages (Sprint 9 inline-insert mode where text is appended to the open
+ * note instead of forking a new one). The panel only reads `title` to
+ * craft the success-toast wording.
+ */
+export interface ScanSessionFinishResult {
+  noteId?: string;
+  title?: string;
+  totalPages?: number;
+}
+
+export type ScanSessionProcessBatch = (
+  filePaths: string[],
+  mode: 'document' | 'photo',
+  onProgress: (evt: ScanProgressEvent) => void,
+) => Promise<ScanSessionFinishResult>;
+
 interface Props {
   session: ScanSessionState;
   onReorder: (fromIndex: number, toIndex: number) => void;
   onDelete: (index: number) => void;
   onFinish: (noteId?: string) => void;
   onCancel: () => void;
+  /**
+   * Optional override for the OCR pipeline. When provided, the panel calls
+   * this instead of `scanService.processBatchWithProgress` — used by
+   * RichNoteEditor (Sprint 9) to run inline OCR and append text to the
+   * currently-open note. When omitted, the legacy create-note flow is used.
+   */
+  processBatch?: ScanSessionProcessBatch;
 }
 
 interface ProgressState {
@@ -44,6 +70,7 @@ export const ScanSessionPanel: React.FC<Props> = ({
   onDelete,
   onFinish,
   onCancel,
+  processBatch,
 }) => {
   const [progress, setProgress] = useState<ProgressState>(initialProgress);
 
@@ -53,29 +80,43 @@ export const ScanSessionPanel: React.FC<Props> = ({
     if (!canFinish) return;
     setProgress({ running: true, percent: 0, stage: 'starting', message: 'Starting…' });
 
+    const onProgress = (evt: ScanProgressEvent) => {
+      setProgress({
+        running: true,
+        percent: evt.percent,
+        stage: evt.stage,
+        message: evt.message,
+      });
+    };
+
     try {
-      const result = await scanService.processBatchWithProgress(
-        session.pages.map(p => p.path),
-        {
-          notebookId: session.notebookId,
-          mode: session.mode,
-          onProgress: (evt: ScanProgressEvent) => {
-            setProgress({
-              running: true,
-              percent: evt.percent,
-              stage: evt.stage,
-              message: evt.message,
-            });
+      let finishResult: ScanSessionFinishResult;
+      if (processBatch) {
+        // Sprint 9: parent-supplied pipeline (typically inline-OCR-into-editor).
+        finishResult = await processBatch(
+          session.pages.map(p => p.path),
+          session.mode,
+          onProgress,
+        );
+      } else {
+        // Legacy default: create a fresh scan note via /scan/process-batch.
+        const r = await scanService.processBatchWithProgress(
+          session.pages.map(p => p.path),
+          {
+            notebookId: session.notebookId,
+            mode: session.mode,
+            onProgress,
           },
-        },
-      );
+        );
+        finishResult = { noteId: r.note_id, title: r.title, totalPages: r.total_pages };
+      }
       setProgress({
         running: false,
         percent: 100,
         stage: 'complete',
-        message: result.title ? `Saved "${result.title}"` : 'Saved',
+        message: finishResult.title ? `Saved "${finishResult.title}"` : 'Saved',
       });
-      onFinish(result.note_id);
+      onFinish(finishResult.noteId);
     } catch (err: any) {
       setProgress({
         running: false,

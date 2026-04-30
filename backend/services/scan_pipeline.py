@@ -103,6 +103,72 @@ class ScanPipeline:
         await self._broadcast_created(note, [file_path])
         return note
 
+    # ── Shared OCR+merge core (used by both note-creating and inline paths) ──
+    async def _ocr_pages_and_merge(
+        self,
+        file_paths: List[str],
+        *,
+        mode: str,
+        reporter: ProgressReporter,
+        progress_end_pct: int = 95,
+    ) -> tuple[List[str], str]:
+        """Run OCR over each page, emit progress, and return (page_texts, merged_text).
+
+        progress_end_pct controls how much of the 0-100 progress range this
+        OCR phase consumes. The note-creating path leaves room (95%) for
+        save + broadcast; the inline path can use 100% for OCR alone.
+        """
+        if not file_paths:
+            raise ValueError("file_paths is empty")
+        for p in file_paths:
+            if not os.path.exists(p):
+                raise FileNotFoundError(f"Image not found: {p}")
+
+        total = len(file_paths)
+        await reporter.emit(
+            "received", 2,
+            f"Received {total} page{'s' if total != 1 else ''}",
+            details={"total_pages": total, "mode": mode},
+        )
+
+        page_texts: List[str] = []
+        # Reserve 5% for setup/received and (100 - progress_end_pct)% for the
+        # caller's post-OCR work; the middle range is divided among N pages.
+        ocr_span = max(1, progress_end_pct - 5)
+        per_page_span = max(1, ocr_span // total)
+
+        for idx, path in enumerate(file_paths, start=1):
+            base_pct = 5 + (idx - 1) * per_page_span
+            await reporter.emit(
+                f"page_{idx}_start",
+                base_pct,
+                f"Processing page {idx} of {total}…",
+                details={"page": idx, "total": total, "filename": os.path.basename(path)},
+            )
+            try:
+                text = await self._ocr_one_page(path, mode=mode)
+            except Exception as e:
+                logger.error(f"[scan-batch] Page {idx} failed: {e}")
+                text = f"*[Page {idx} failed to process: {e}]*"
+                await reporter.emit(
+                    f"page_{idx}_error",
+                    base_pct + per_page_span,
+                    f"Page {idx} failed — continuing with remaining pages",
+                    details={"page": idx, "error": str(e)[:200]},
+                )
+            else:
+                await reporter.emit(
+                    f"page_{idx}_done",
+                    base_pct + per_page_span,
+                    f"Page {idx} of {total} complete",
+                    details={"page": idx, "total": total, "chars": len(text)},
+                )
+            page_texts.append(text)
+
+        await reporter.emit("merging", progress_end_pct, "Merging pages…")
+        merged = self._merge_pages(page_texts)
+        return page_texts, merged
+
     # ── Multi-page entry point (Sprint 8 — scanning sessions) ────────────────
     async def process_batch(
         self,
@@ -120,57 +186,11 @@ class ScanPipeline:
         pages plus an error marker for the failed ones — the user can re-run
         or manually edit rather than losing the whole session.
         """
-        if not file_paths:
-            raise ValueError("process_batch: file_paths is empty")
-
-        for p in file_paths:
-            if not os.path.exists(p):
-                raise FileNotFoundError(f"Image not found: {p}")
-
         rep = reporter or get_noop_reporter()
-        total = len(file_paths)
-
-        await rep.emit(
-            "received", 2,
-            f"Received {total} page{'s' if total != 1 else ''}",
-            details={"total_pages": total, "mode": mode},
+        page_texts, merged = await self._ocr_pages_and_merge(
+            file_paths, mode=mode, reporter=rep, progress_end_pct=95,
         )
-
-        page_texts: List[str] = []
-        # Reserve 5% for setup/received and 5% for final merge + save;
-        # the middle 90% is divided among the N pages.
-        per_page_span = max(1, int(90 / total))
-
-        for idx, path in enumerate(file_paths, start=1):
-            base_pct = 5 + (idx - 1) * per_page_span
-            await rep.emit(
-                f"page_{idx}_start",
-                base_pct,
-                f"Processing page {idx} of {total}…",
-                details={"page": idx, "total": total, "filename": os.path.basename(path)},
-            )
-            try:
-                text = await self._ocr_one_page(path, mode=mode)
-            except Exception as e:
-                logger.error(f"[scan-batch] Page {idx} failed: {e}")
-                text = f"*[Page {idx} failed to process: {e}]*"
-                await rep.emit(
-                    f"page_{idx}_error",
-                    base_pct + per_page_span,
-                    f"Page {idx} failed — continuing with remaining pages",
-                    details={"page": idx, "error": str(e)[:200]},
-                )
-            else:
-                await rep.emit(
-                    f"page_{idx}_done",
-                    base_pct + per_page_span,
-                    f"Page {idx} of {total} complete",
-                    details={"page": idx, "total": total, "chars": len(text)},
-                )
-            page_texts.append(text)
-
-        await rep.emit("merging", 95, "Merging pages…")
-        merged = self._merge_pages(page_texts)
+        total = len(file_paths)
 
         # Use the first non-empty page to derive a title — usually the cover
         # or header page has the most useful signal.
@@ -206,6 +226,37 @@ class ScanPipeline:
             },
         )
         return note
+
+    # ── Inline OCR (returns text without creating a note) ────────────────────
+    async def process_batch_inline(
+        self,
+        file_paths: List[str],
+        *,
+        mode: str = "document",
+        reporter: Optional[ProgressReporter] = None,
+    ) -> Dict[str, Any]:
+        """OCR a batch of pages and return the merged markdown WITHOUT creating
+        a note. Used when the frontend wants to insert the OCR result directly
+        into an open editor instead of spawning a separate scan note.
+
+        Returns: {"merged_text": str, "page_texts": list[str], "total_pages": int, "chars": int}
+        """
+        rep = reporter or get_noop_reporter()
+        page_texts, merged = await self._ocr_pages_and_merge(
+            file_paths, mode=mode, reporter=rep, progress_end_pct=98,
+        )
+        total = len(file_paths)
+        result = {
+            "merged_text": merged,
+            "page_texts": page_texts,
+            "total_pages": total,
+            "chars": len(merged),
+        }
+        await rep.complete(
+            f"Ready — {total} page{'s' if total != 1 else ''} ready to insert",
+            details=result,
+        )
+        return result
 
     # ── Core OCR / description of a single page ──────────────────────────────
     async def _ocr_one_page(self, file_path: str, *, mode: str) -> str:

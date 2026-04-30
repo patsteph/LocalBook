@@ -19,6 +19,76 @@ export interface ScanBatchResult {
   title?: string;
 }
 
+export interface ScanOcrBatchResult {
+  merged_text: string;
+  page_texts?: string[];
+  total_pages?: number;
+  chars?: number;
+}
+
+/**
+ * Read a streaming SSE response and dispatch events to onProgress.
+ * Resolves with the terminal `complete` event's details, or rejects on
+ * `error` events / network failures. Used by both /scan/process-batch and
+ * /scan/ocr-batch — same SSE contract, different terminal payload shape.
+ */
+async function readScanSseStream<T>(
+  response: Response,
+  onProgress: (evt: ScanProgressEvent) => void,
+): Promise<T> {
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => '');
+    throw new Error(
+      `Scan request failed (${response.status}): ${text || response.statusText}`,
+    );
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let sepIdx: number;
+      while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, sepIdx);
+        buffer = buffer.slice(sepIdx + 2);
+
+        const lines = rawEvent
+          .split('\n')
+          .filter(l => !l.startsWith(':') && l.trim() !== '');
+        const dataLine = lines.find(l => l.startsWith('data:'));
+        if (!dataLine) continue;
+        const payload = dataLine.slice(5).trim();
+        if (!payload || payload === '{}') continue;
+
+        let evt: ScanProgressEvent;
+        try {
+          evt = JSON.parse(payload) as ScanProgressEvent;
+        } catch {
+          continue;
+        }
+
+        if (evt.stage === 'complete') {
+          return (evt.details || {}) as T;
+        }
+        if (evt.stage === 'error') {
+          throw new Error(evt.message || 'Scan failed');
+        }
+        onProgress(evt);
+      }
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* ignore */ }
+  }
+
+  return {} as T;
+}
+
 export const scanService = {
   /**
    * Submit a batch of image paths for sequential OCR + merged-note creation.
@@ -49,56 +119,32 @@ export const scanService = {
       signal,
     });
 
-    if (!response.ok || !response.body) {
-      const text = await response.text().catch(() => '');
-      throw new Error(
-        `Batch scan failed (${response.status}): ${text || response.statusText}`,
-      );
-    }
+    return readScanSseStream<ScanBatchResult>(response, onProgress);
+  },
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+  /**
+   * Inline OCR — same per-page progress as processBatchWithProgress, but
+   * returns the merged markdown WITHOUT creating a new note. Used when the
+   * user is editing a note and wants the scan content inserted at the
+   * cursor (Sprint 9 — append-to-open-note flow).
+   */
+  async ocrBatchWithProgress(
+    filePaths: string[],
+    opts: {
+      mode?: 'document' | 'photo';
+      onProgress: (evt: ScanProgressEvent) => void;
+      signal?: AbortSignal;
+    },
+  ): Promise<ScanOcrBatchResult> {
+    const { mode = 'document', onProgress, signal } = opts;
 
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+    const response = await fetch(`${API_BASE_URL}/scan/ocr-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_paths: filePaths, mode }),
+      signal,
+    });
 
-        let sepIdx: number;
-        while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
-          const rawEvent = buffer.slice(0, sepIdx);
-          buffer = buffer.slice(sepIdx + 2);
-
-          const lines = rawEvent
-            .split('\n')
-            .filter(l => !l.startsWith(':') && l.trim() !== '');
-          const dataLine = lines.find(l => l.startsWith('data:'));
-          if (!dataLine) continue;
-          const payload = dataLine.slice(5).trim();
-          if (!payload || payload === '{}') continue;
-
-          let evt: ScanProgressEvent;
-          try {
-            evt = JSON.parse(payload) as ScanProgressEvent;
-          } catch {
-            continue;
-          }
-
-          if (evt.stage === 'complete') {
-            return (evt.details || {}) as ScanBatchResult;
-          }
-          if (evt.stage === 'error') {
-            throw new Error(evt.message || 'Batch scan failed');
-          }
-          onProgress(evt);
-        }
-      }
-    } finally {
-      try { reader.releaseLock(); } catch { /* ignore */ }
-    }
-
-    return {};
+    return readScanSseStream<ScanOcrBatchResult>(response, onProgress);
   },
 };

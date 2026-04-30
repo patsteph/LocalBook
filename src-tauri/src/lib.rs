@@ -911,19 +911,28 @@ fn setup_scan_watcher(app: &AppHandle) {
     });
 }
 
-// ── Continuity Camera (macOS Sprint 7) ───────────────────────────────────────
+// ── Continuity Camera (macOS) ────────────────────────────────────────
 //
-// Spawns the signed `continuity-camera` sidecar, which triggers the macOS
-// "Import from iPhone" dialog. The sidecar writes captured image(s) into
-// <app_data>/scans/continuity/ and prints a JSON result on stdout:
+// Spawns the signed `continuity-camera` sidecar, which uses Apple's
+// documented Insert-from-iPhone flow (NSMenuItem.importFromDeviceIdentifier).
+// The sidecar shows a small "Capture from iPhone" launcher; the user clicks
+// once, and from then on the iPhone owns the entire capture experience
+// (Take Photo, Scan Documents, Add Sketch). Resulting image(s) are written
+// to <app_data>/scans/continuity/ and the absolute paths are emitted as
+// JSON on stdout:
 //
-//   {"status":"ok","paths":["/abs/path/continuity_<uuid>.jpg"]}
+//   {"status":"ok","paths":["/abs/path/continuity_<uuid>.jpg", …]}
 //   {"status":"error","message":"…"}
 //
 // The continuity/ subdirectory is NOT watched by setup_scan_watcher() (which
 // uses RecursiveMode::NonRecursive on scans/), so there is no race with the
-// watched-folder path. The frontend receives the paths back and posts them
-// directly to POST /scan/process.
+// watched-folder path. The frontend receives the paths back and either
+// accumulates them into a multi-page scan session or runs them through
+// inline OCR via /scan/ocr-batch.
+//
+// The sidecar still accepts a legacy --camera flag for backward
+// compatibility (the old AVCaptureDevice flow); we forward it untouched
+// but it's a no-op in the new import-from-device path.
 
 #[derive(Clone, Serialize)]
 struct ContinuityResult {
@@ -931,88 +940,6 @@ struct ContinuityResult {
     paths: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-struct ContinuityCameraInfo {
-    id: String,
-    name: String,
-    manufacturer: String,
-    #[serde(rename = "modelID")]
-    model_id: String,
-    /// "continuity" | "external" | "builtin" (or raw deviceType id for unknowns)
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(rename = "isContinuity")]
-    is_continuity: bool,
-}
-
-/// Run the sidecar in `--list` mode and return the parsed JSON it emits.
-/// No window is shown and no capture occurs — this is purely for populating
-/// the frontend's camera-picker dropdown.
-#[tauri::command]
-async fn list_continuity_cameras(
-    app: AppHandle,
-) -> Result<Vec<ContinuityCameraInfo>, String> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        return Ok(vec![]);
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let sidecar = app
-            .shell()
-            .sidecar("continuity-camera")
-            .map_err(|e| format!("sidecar lookup failed: {}", e))?
-            .args(["--list".to_string()]);
-
-        let (mut rx, _child) = sidecar
-            .spawn()
-            .map_err(|e| format!("failed to spawn continuity-camera --list: {}", e))?;
-
-        let mut stdout_buf = String::new();
-        let mut stderr_buf = String::new();
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(b) => stdout_buf.push_str(&String::from_utf8_lossy(&b)),
-                CommandEvent::Stderr(b) => stderr_buf.push_str(&String::from_utf8_lossy(&b)),
-                CommandEvent::Terminated(_) => break,
-                _ => {}
-            }
-        }
-        if !stderr_buf.trim().is_empty() {
-            eprintln!("[continuity-camera --list stderr] {}", stderr_buf.trim());
-        }
-
-        let last = stdout_buf
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("")
-            .trim();
-        if last.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let parsed: serde_json::Value = serde_json::from_str(last)
-            .map_err(|e| format!("failed to parse --list output '{}': {}", last, e))?;
-        let cams = parsed.get("cameras").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-
-        let mut out = Vec::with_capacity(cams.len());
-        for c in cams {
-            out.push(ContinuityCameraInfo {
-                id:           c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                name:         c.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                manufacturer: c.get("manufacturer").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                model_id:     c.get("modelID").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                kind:         c.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                is_continuity: c.get("isContinuity").and_then(|v| v.as_bool()).unwrap_or(false),
-            });
-        }
-        Ok(out)
-    }
 }
 
 // ─── Streaming file upload to backend ──────────────────────────────────
@@ -1295,7 +1222,6 @@ pub fn run() {
             check_backend_health,
             get_backend_status,
             trigger_continuity_camera,
-            list_continuity_cameras,
             upload_file_streaming
         ])
         .build(tauri::generate_context!())

@@ -1,38 +1,66 @@
 // ContinuityCamera.swift
 //
-// CLI helper that shows a live iPhone camera preview (via Continuity Camera)
-// and captures a single photo per invocation. The captured image is saved to
-// the directory passed as the first argument. The absolute path is emitted
-// on stdout as a single JSON line:
+// CLI helper that brings iPhone-side capture controls into LocalBook via
+// Apple's documented "Insert from iPhone or iPad" mechanism (a.k.a.
+// NSMenuItem.importFromDeviceIdentifier). The user clicks a single
+// "Capture from iPhone" button on the Mac, and from that point onward the
+// iPhone owns the entire capture experience: tap Take Photo, Scan
+// Documents, or Add Sketch directly on the iPhone screen, and the
+// resulting image(s) flow back to this sidecar via the system pasteboard.
 //
-//     {"status":"ok","paths":["/…/continuity_<uuid>.jpg"]}
+// Two output modes:
 //
-// On cancellation / failure, prints:
+//   continuity-camera --list
+//       Enumerate every camera AVFoundation can see and emit JSON. Used
+//       by the frontend for diagnostics and for distinguishing "iPhone
+//       paired" from "iPhone not detected" before launching capture.
+//       No window. Uses AVFoundation only — does NOT touch the import-
+//       from-device API.
 //
+//   continuity-camera <output_dir> [--camera <id>] [--include-non-continuity]
+//       Capture mode. Shows a small launcher window with one button,
+//       which pops up a contextual menu that AppKit auto-fills with
+//       per-device entries like "Take Photo (My iPhone)" and "Scan
+//       Documents (My iPhone)". The legacy --camera and
+//       --include-non-continuity flags are accepted but ignored — AppKit
+//       picks the device from the iPhone's side, and "Scan Documents"
+//       handles multi-page batches natively (all pages return in one
+//       pasteboard payload, no Mac round-trip per page).
+//
+// Output (stdout, single JSON line, in both success and failure cases):
+//
+//     {"status":"ok","paths":["/…/continuity_<uuid>.jpg", …]}
 //     {"status":"error","message":"…"}
 //
-// Exit codes: 0 on success, 1 on user-cancel, 2 on error.
+// Exit codes:
+//     0   capture succeeded
+//     1   user cancelled (closed window or dismissed menu)
+//     2   error (no iPhone found, save failure, etc.)
 //
-// Usage:
-//     continuity-camera <output_dir>
-//
-// Uses AVCaptureDevice.DiscoverySession with .continuityCamera device type.
-// On macOS 15+/26 Tahoe, Apple removed both the Services-menu pathway
-// (NSPerformService "Capture.ImportImage") and ImageCaptureCore/
-// ICDeviceBrowser visibility for Continuity iPhones. AVFoundation is the
-// only remaining public path. Multi-page accumulation is handled
-// frontend-side in Sprint 8's scan session UI — each sidecar invocation
-// captures exactly one image.
-//
-// Signed with com.apple.security.device.camera entitlement (adhoc OK for
-// local dev, Developer ID for distribution).
+// Architecture notes:
+// - We rely on AppKit's NSMenuItem.importFromDeviceIdentifier mechanism:
+//   adding an empty NSMenu and popping it up causes AppKit to walk the
+//   responder chain looking for any NSResponder that returns a valid
+//   requestor for image-type pasteboard data. We register ourselves as
+//   that requestor, so AppKit auto-inserts the iPhone capture items into
+//   our menu before showing it. When the user picks one, AppKit calls our
+//   readSelection(from:) with the resulting image(s) on the pasteboard.
+// - This path is fully documented (see "Supporting Continuity Camera in
+//   Your Mac App" in the AppKit docs) and works on macOS 12+ including
+//   Tahoe (macOS 26). Unlike the older AVCaptureDevice path it does NOT
+//   require camera TCC on the Mac side — the iPhone owns the camera —
+//   though we keep the entitlement so --list mode keeps working.
+// - Multi-page Scan Documents: the iPhone batches every page into one
+//   pasteboard payload before returning. A single sidecar invocation
+//   therefore yields N image paths in `paths`, matching the existing
+//   contract used by the Tauri Rust caller and the frontend session UI.
 
 import AppKit
 import AVFoundation
 import Foundation
 import UniformTypeIdentifiers
 
-// ─── Output helpers ───────────────────────────────────────────────────────────
+// ─── Output helpers ──────────────────────────────────────────────────────────
 
 func emitJSON(_ dict: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: dict, options: []),
@@ -48,33 +76,23 @@ func emitErrorAndExit(_ message: String, code: Int32 = 2) -> Never {
     exit(code)
 }
 
-/// Write a diagnostic line to stderr so Tauri's stderr sink can log it.
-/// Keeps stdout clean for the final JSON payload the Rust side parses.
+/// Diagnostic line on stderr — Tauri's stderr sink logs these. Keeps stdout
+/// clean for the single JSON line the Rust side parses.
 func debug(_ msg: String) {
     if let data = "[continuity-camera] \(msg)\n".data(using: .utf8) {
         FileHandle.standardError.write(data)
     }
 }
 
-// ─── Argument parsing ─────────────────────────────────────────────────────────
-//
-// Modes:
-//   continuity-camera --list
-//       Enumerate every camera AVFoundation can see and emit the result as
-//       JSON on stdout, then exit. No window is shown, no capture happens.
-//       Used by the frontend to populate a camera picker when more than one
-//       device is available.
-//
-//   continuity-camera <output_dir> [--camera <uniqueID>] [--include-non-continuity]
-//       Original capture mode. If --camera <uid> is given, that specific
-//       device is selected (matched by AVCaptureDevice.uniqueID); otherwise
-//       the first .continuityCamera is used. --include-non-continuity loosens
-//       the strict filter so a built-in / external camera can be used as a
-//       fallback when no iPhone is paired.
-
-let argv = Array(CommandLine.arguments.dropFirst())
-
 // ─── --list mode ─────────────────────────────────────────────────────────────
+//
+// Enumerates AVCaptureDevices and emits them as JSON. Still uses AVFoundation
+// because it's the only API that exposes per-device metadata (uniqueID,
+// modelID, manufacturer) that the frontend's diagnostic UI shows. The
+// --list call also has the side benefit of triggering the camera TCC prompt
+// on first run, so the user grants permission before they hit the capture
+// flow (which itself doesn't require camera permission, but a denied
+// camera grant means --list returns no devices, which is misleading).
 
 func cameraInfoDict(_ d: AVCaptureDevice) -> [String: Any] {
     let typeStr: String = {
@@ -96,10 +114,6 @@ func cameraInfoDict(_ d: AVCaptureDevice) -> [String: Any] {
 }
 
 func runListMode() -> Never {
-    // Camera authorization is required for AVFoundation to surface device
-    // metadata on macOS 14+. We request it here too — same as capture mode —
-    // so a first-time --list call triggers the standard TCC prompt rather
-    // than silently returning an empty list.
     func enumerate() -> Never {
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.continuityCamera, .external, .builtInWideAngleCamera],
@@ -122,8 +136,8 @@ func runListMode() -> Never {
         sema.wait()
         enumerate()
     case .denied, .restricted:
-        // We still emit an empty success rather than an error so the UI can
-        // distinguish "no cameras attached" from "permission denied".
+        // Empty success rather than error — UI can distinguish "no cameras"
+        // from "permission denied" via the warning field.
         emitJSON([
             "status": "ok",
             "cameras": [],
@@ -136,34 +150,36 @@ func runListMode() -> Never {
     }
 }
 
+// ─── Argument parsing ────────────────────────────────────────────────────────
+
+let argv = Array(CommandLine.arguments.dropFirst())
+
 if argv.first == "--list" {
     runListMode()
 }
 
-// ─── Capture mode arg parsing ────────────────────────────────────────────────
-
 guard let outArg = argv.first, !outArg.hasPrefix("--") else {
     emitErrorAndExit(
-        "usage: continuity-camera <output_dir> [--camera <uniqueID>] [--include-non-continuity]\n" +
+        "usage: continuity-camera <output_dir> [--camera <id>] [--include-non-continuity]\n" +
         "       continuity-camera --list"
     )
 }
 
-var preferredCameraID: String? = nil
-var includeNonContinuity = false
+// Legacy flags from the AVCaptureDevice era. We accept them silently for
+// backward compatibility with the bundled Rust caller (lib.rs may pass
+// --camera) but they no longer have any effect: AppKit's import-from-
+// device flow lets the user pick the device on their iPhone screen.
 do {
     var i = 1
     while i < argv.count {
         let a = argv[i]
         if a == "--camera", i + 1 < argv.count {
-            preferredCameraID = argv[i + 1]
+            debug("ignoring legacy --camera \(argv[i + 1]) (iPhone picks the device)")
             i += 2
         } else if a == "--include-non-continuity" {
-            includeNonContinuity = true
+            debug("ignoring legacy --include-non-continuity (not applicable to import-from-device flow)")
             i += 1
         } else {
-            // Unknown flag — log and skip rather than fail, so older callers
-            // passing future args don't break this binary.
             debug("ignoring unknown arg: \(a)")
             i += 1
         }
@@ -171,7 +187,6 @@ do {
 }
 
 let outputDir = URL(fileURLWithPath: outArg, isDirectory: true)
-
 do {
     try FileManager.default.createDirectory(
         at: outputDir,
@@ -182,426 +197,308 @@ do {
     emitErrorAndExit("failed to create output dir: \(error.localizedDescription)")
 }
 
-// ─── AVCaptureDevice-based Continuity Camera flow ─────────────────────────────
+// ─── ImportFromDeviceController ──────────────────────────────────────────────
 //
-// 1. Prompt for camera authorization (TCC) if not yet granted.
-// 2. Discover AVCaptureDevices with type .continuityCamera — the user's
-//    paired iPhone appears here once it's unlocked and nearby.
-// 3. Wire it into an AVCaptureSession with a photo output.
-// 4. Present a small window with a live preview layer + Capture / Cancel.
-// 5. On Capture: take a still photo, write it to outputDir, emit JSON, exit.
-// 6. 5-minute absolute timeout prevents hangs.
+// Owns the launcher window, registers itself as the responder that accepts
+// image pasteboard data, and finalises the sidecar run when the iPhone
+// returns image(s) (or the user cancels).
 
-final class CaptureController: NSObject {
-    private let session = AVCaptureSession()
-    private let photoOutput = AVCapturePhotoOutput()
-    private var previewLayer: AVCaptureVideoPreviewLayer!
+final class ImportFromDeviceController: NSResponder, NSWindowDelegate, NSServicesMenuRequestor {
+    private let outputDir: URL
     private var window: NSWindow!
     private var statusLabel: NSTextField!
     private var captureButton: NSButton!
     private var finalized = false
-    private let outputDir: URL
-    private let preferredCameraID: String?
-    private let includeNonContinuity: Bool
 
-    init(outputDir: URL, preferredCameraID: String? = nil, includeNonContinuity: Bool = false) {
+    init(outputDir: URL) {
         self.outputDir = outputDir
-        self.preferredCameraID = preferredCameraID
-        self.includeNonContinuity = includeNonContinuity
         super.init()
     }
 
+    required init?(coder: NSCoder) { fatalError("not used") }
+
     func start() {
-        requestAuthorization { [weak self] granted in
-            guard let self = self else { return }
-            if !granted {
-                self.finish(error: "Camera permission denied. Grant LocalBook camera access in System Settings → Privacy & Security → Camera.")
-                return
-            }
-            DispatchQueue.main.async {
-                self.discoverAndShow()
-            }
-        }
+        DispatchQueue.main.async { self.show() }
     }
 
-    /// AVCaptureDevice .continuityCamera requires standard camera TCC grant.
-    private func requestAuthorization(_ completion: @escaping (Bool) -> Void) {
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized:
-            completion(true)
-        case .notDetermined:
-            debug("requesting camera authorization")
-            AVCaptureDevice.requestAccess(for: .video) { completion($0) }
-        case .denied, .restricted:
-            completion(false)
-        @unknown default:
-            completion(false)
-        }
-    }
-
-    /// Discover Continuity Camera devices and wire up the session + window.
-    private func discoverAndShow() {
-        // We discover BUILTIN + EXTERNAL + CONTINUITY so the diagnostic log
-        // can show every camera macOS sees (including stranded virtual
-        // cameras like mmhmm). But we ONLY accept .continuityCamera as a
-        // capture target — falling back to "first device" let mmhmm hijack
-        // the session on at least one user machine.
-        let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [
-                .continuityCamera,
-                .external,
-                .builtInWideAngleCamera,
-            ],
-            mediaType: .video,
-            position: .unspecified
-        )
-        let devices = discovery.devices
-        debug("AVCaptureDevice discovery found \(devices.count) device(s):")
-        if devices.isEmpty {
-            debug("  (none — AVFoundation returned an empty device list)")
-        }
-        for d in devices {
-            let isContinuity = d.deviceType == .continuityCamera ? " [CONTINUITY]" : ""
-            debug("  • \(d.localizedName) — type=\(d.deviceType.rawValue) " +
-                  "manufacturer=\(d.manufacturer) modelID=\(d.modelID) " +
-                  "uniqueID=\(d.uniqueID)\(isContinuity)")
-        }
-
-        // Selection priority:
-        //   1. If --camera <uid> was passed, use that exact device (any type).
-        //      The user has explicitly opted in via the picker UI.
-        //   2. Else: first .continuityCamera (the iPhone — preferred default).
-        //   3. Else, only when --include-non-continuity is set: first external,
-        //      then first builtInWideAngleCamera. By default we still refuse
-        //      to fall through to a virtual camera.
-        let chosen: AVCaptureDevice? = {
-            if let uid = preferredCameraID, !uid.isEmpty {
-                if let exact = devices.first(where: { $0.uniqueID == uid }) {
-                    debug("using user-selected camera: \(exact.localizedName) (\(uid))")
-                    return exact
-                }
-                debug("requested --camera \(uid) not found; falling back to default selection")
-            }
-            if let cont = devices.first(where: { $0.deviceType == .continuityCamera }) {
-                return cont
-            }
-            if includeNonContinuity {
-                if let ext = devices.first(where: { $0.deviceType == .external }) {
-                    debug("falling back to external camera: \(ext.localizedName)")
-                    return ext
-                }
-                if let bi = devices.first(where: { $0.deviceType == .builtInWideAngleCamera }) {
-                    debug("falling back to built-in camera: \(bi.localizedName)")
-                    return bi
-                }
-            }
-            return nil
-        }()
-
-        guard let device = chosen else {
-            let nonContinuityCount = devices.count
-            var msg = "No iPhone or iPad found via Continuity Camera.\n\n"
-            msg += "Checklist:\n"
-            msg += "  • iPhone unlocked and within ~30 ft of this Mac\n"
-            msg += "  • Same Apple ID on both, Wi-Fi + Bluetooth on, same network\n"
-            msg += "  • iPhone: Settings → General → AirPlay & Continuity → "
-            msg += "Continuity Camera = ON\n"
-            msg += "  • Mac: System Settings → General → AirDrop & Handoff → "
-            msg += "Allow Handoff = ON\n\n"
-            if nonContinuityCount > 0 {
-                msg += "AVFoundation did see \(nonContinuityCount) other camera(s) "
-                msg += "(see stderr log) but none is a Continuity device.\n"
-                msg += "If a virtual camera (mmhmm, OBS, etc.) is in that list and the "
-                msg += "app is uninstalled, remove its leftover plugin from "
-                msg += "/Library/CoreMediaIO/Plug-Ins/DAL/ and reboot."
-            } else {
-                msg += "AVFoundation returned ZERO cameras. Camera permission is "
-                msg += "likely denied, OR the embedded NSCameraUseContinuityCameraDeviceType "
-                msg += "key isn't being read by this build.\n\n"
-                msg += "Fix — open System Settings → Privacy & Security → Camera, "
-                msg += "and make sure LocalBook is toggled ON.\n"
-                msg += "If LocalBook isn't listed there yet, reset and relaunch:\n"
-                msg += "  tccutil reset Camera com.localbook.desktop\n"
-                msg += "  tccutil reset Camera com.localbook.continuity-camera\n"
-                msg += "  tccutil reset Camera   # nuclear — resets ALL apps\n"
-                msg += "(the first two may report 'no such bundle identifier' if "
-                msg += "TCC has never seen them; that's fine, the reset still clears "
-                msg += "any stale deny-decision.) Then relaunch LocalBook and say "
-                msg += "YES to the camera prompt."
-            }
-            finish(error: msg)
-            return
-        }
-
-        debug("selected Continuity Camera: \(device.localizedName) (\(device.modelID))")
-
-        do {
-            let input = try AVCaptureDeviceInput(device: device)
-            session.beginConfiguration()
-            session.sessionPreset = .photo
-            if session.canAddInput(input) { session.addInput(input) }
-            if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
-            session.commitConfiguration()
-        } catch {
-            finish(error: "Failed to open iPhone camera: \(error.localizedDescription)")
-            return
-        }
-
-        buildWindow()
-        session.startRunning()
-    }
-
-    /// Build a small borderless-titled window with preview + buttons.
-    private func buildWindow() {
-        let frame = NSRect(x: 0, y: 0, width: 640, height: 520)
-        window = NSWindow(
-            contentRect: frame,
+    private func show() {
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 220),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        window.title = "LocalBook: Scan with iPhone"
-        window.center()
-        window.isReleasedWhenClosed = false
-        window.delegate = self
+        win.title = "LocalBook — Insert from iPhone"
+        win.center()
+        win.delegate = self
+        win.isReleasedWhenClosed = false
 
-        let content = NSView(frame: frame)
-        content.wantsLayer = true
-        content.layer?.backgroundColor = NSColor.black.cgColor
+        let content = NSView(frame: win.contentLayoutRect)
 
-        // Preview layer
-        previewLayer = AVCaptureVideoPreviewLayer(session: session)
-        previewLayer.frame = NSRect(x: 0, y: 70, width: 640, height: 450)
-        previewLayer.videoGravity = .resizeAspect
-        content.layer?.addSublayer(previewLayer)
+        // Heading
+        let heading = NSTextField(labelWithString: "Capture from your iPhone")
+        heading.font = .systemFont(ofSize: 16, weight: .semibold)
+        heading.frame = NSRect(x: 20, y: 168, width: 400, height: 24)
+        heading.alignment = .center
+        content.addSubview(heading)
 
-        // Status label
-        statusLabel = NSTextField(labelWithString: "Frame your document on your iPhone, then click Capture.")
-        statusLabel.frame = NSRect(x: 12, y: 44, width: 616, height: 20)
+        // Instruction
+        statusLabel = NSTextField(wrappingLabelWithString:
+            "Click below, then choose Take Photo, Scan Documents, or Add Sketch on your iPhone screen.")
+        statusLabel.frame = NSRect(x: 24, y: 100, width: 392, height: 60)
+        statusLabel.alignment = .center
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 12)
         content.addSubview(statusLabel)
 
-        // Cancel button
-        let cancelButton = NSButton(frame: NSRect(x: 12, y: 8, width: 110, height: 32))
-        cancelButton.title = "Cancel"
-        cancelButton.bezelStyle = .rounded
-        cancelButton.target = self
-        cancelButton.action = #selector(cancelPressed)
-        content.addSubview(cancelButton)
-
-        // Capture button. Both Return and Space trigger it — Space is much
-        // easier to hit one-handed while bracing the iPhone over a doc with
-        // the other hand. (Note: AVFoundation does NOT currently expose the
-        // iPhone's hardware shutter button as a remote-trigger event when
-        // the phone is acting as a Continuity Camera; the volume-up press
-        // that works in iPhone-native Camera.app is intercepted by iOS and
-        // never reaches the Mac. Investigating proper API support is
-        // tracked separately — for now Space + click are the supported
-        // shutters, and we surface that hint in the status label.)
-        captureButton = NSButton(frame: NSRect(x: 518, y: 8, width: 110, height: 32))
-        captureButton.title = "Capture"
+        // Primary action — pops up the iPhone capture menu.
+        captureButton = NSButton(
+            title: "Capture from iPhone…",
+            target: self,
+            action: #selector(captureClicked(_:))
+        )
+        captureButton.frame = NSRect(x: 140, y: 50, width: 160, height: 32)
         captureButton.bezelStyle = .rounded
-        captureButton.keyEquivalent = "\r"
-        captureButton.target = self
-        captureButton.action = #selector(capturePressed)
+        captureButton.keyEquivalent = "\r"  // Enter triggers
         content.addSubview(captureButton)
 
-        // Space-key fallback shortcut, installed via local NSEvent monitor so
-        // we don't have to subclass NSWindow. Removed automatically when the
-        // window closes (the monitor token is held weakly via [weak self]).
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self else { return event }
-            if event.keyCode == 49 /* space */ {
-                self.capturePressed()
-                return nil // swallow so it doesn't beep / scroll
-            }
-            return event
-        }
-        statusLabel.stringValue = "Press Space or click Capture. (iPhone shutter not yet supported.)"
+        // Cancel — Esc shortcut for keyboard users.
+        let cancelButton = NSButton(
+            title: "Cancel",
+            target: self,
+            action: #selector(cancelClicked(_:))
+        )
+        cancelButton.frame = NSRect(x: 20, y: 14, width: 80, height: 24)
+        cancelButton.bezelStyle = .rounded
+        cancelButton.keyEquivalent = "\u{1b}"  // Escape
+        content.addSubview(cancelButton)
 
-        window.contentView = content
+        win.contentView = content
+
+        // Hook ourselves into the responder chain. AppKit walks the chain
+        // calling validRequestor(forSendType:returnType:) when populating
+        // the import-from-device menu; without us in the chain it would
+        // never auto-fill the iPhone items.
+        self.nextResponder = content.nextResponder
+        content.nextResponder = self
+
+        // LSUIElement keeps us out of the Dock by default. We need
+        // foreground activation while the launcher window is up so the
+        // window comes to the front and key events route correctly.
         NSApp.setActivationPolicy(.regular)
-        window.makeKeyAndOrderFront(nil)
+        win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        self.window = win
     }
 
-    @objc private func capturePressed() {
-        captureButton.isEnabled = false
-        statusLabel.stringValue = "Capturing…"
+    // ── Capture button → contextual menu ─────────────────────────────────
+    //
+    // Builds an empty NSMenu and pops it up at the button. AppKit detects
+    // that an NSResponder in the chain (this controller) accepts image-
+    // type pasteboard data and auto-inserts iPhone capture items. The
+    // user picks one; AppKit shows the iPhone-side UI; the captured
+    // image(s) come back via readSelection(from:) below.
 
-        let settings = AVCapturePhotoSettings()
-        if photoOutput.availablePhotoCodecTypes.contains(.jpeg) {
-            // Default codec is fine; leaving settings default produces HEVC/HEIC
-            // on some devices. Force JPEG for pipeline compatibility.
-            let jpegSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
-            photoOutput.capturePhoto(with: jpegSettings, delegate: self)
+    @objc private func captureClicked(_ sender: NSButton) {
+        let menu = NSMenu(title: "")
+        statusLabel.stringValue = "Look at your iPhone — pick a capture mode."
+
+        // popUpContextMenu requires a real NSEvent. The button's click
+        // event is the most recent NSApp.currentEvent (a left-mouse-up).
+        // Synthesize one if for some reason the runtime didn't surface
+        // one (defensive — should never happen for a button click).
+        let event: NSEvent = NSApp.currentEvent ?? NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: sender.convert(
+                NSPoint(x: sender.bounds.midX, y: sender.bounds.midY),
+                to: nil
+            ),
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 0
+        )!
+
+        NSMenu.popUpContextMenu(menu, with: event, for: sender)
+
+        // After the popup returns, readSelection(from:) may have already
+        // fired and finalised the run on a different runloop turn. If we
+        // got here without finalising, the user either dismissed the
+        // menu or the menu was empty (no iPhone available). Update the
+        // status label for both cases.
+        if finalized { return }
+        if menu.numberOfItems == 0 {
+            statusLabel.stringValue =
+                "No iPhone detected. Make sure it's unlocked, on the same Apple ID, " +
+                "and within range — then click Capture again."
         } else {
-            photoOutput.capturePhoto(with: settings, delegate: self)
+            statusLabel.stringValue = "Click Capture to try again, or Cancel to close."
         }
     }
 
-    @objc private func cancelPressed() {
-        finish(error: "User cancelled capture.", code: 1)
+    @objc private func cancelClicked(_ sender: NSButton) {
+        finalize(error: "User cancelled.", code: 1)
     }
 
-    fileprivate func finish(error: String? = nil, code: Int32 = 2, paths: [String] = []) {
+    // ── NSResponder: declare we accept image pasteboard data ─────────────
+    //
+    // AppKit calls this on every responder in the chain when populating
+    // the import-from-device menu. Returning `self` for image return-
+    // types tells AppKit "this responder will receive the captured
+    // image" — and AppKit then knows to populate the menu with iPhone
+    // capture items.
+
+    override func validRequestor(
+        forSendType sendType: NSPasteboard.PasteboardType?,
+        returnType: NSPasteboard.PasteboardType?
+    ) -> Any? {
+        if let returnType = returnType,
+           NSImage.imageTypes.contains(returnType.rawValue) {
+            return self
+        }
+        return super.validRequestor(forSendType: sendType, returnType: returnType)
+    }
+
+    // ── NSServicesMenuRequestor: receive the captured image(s) ───────────
+
+    func readSelection(from pasteboard: NSPasteboard) -> Bool {
+        debug("readSelection: types=\(pasteboard.types?.map(\.rawValue) ?? [])")
+        let paths = saveImagesFromPasteboard(pasteboard)
+        if paths.isEmpty {
+            debug("readSelection: pasteboard had no extractable image data")
+            statusLabel?.stringValue =
+                "No image data was returned. Try a different capture mode on your iPhone."
+            return false
+        }
+        debug("readSelection: saved \(paths.count) image(s) to \(outputDir.path)")
+        finalize(success: paths)
+        return true
+    }
+
+    /// Required by NSServicesMenuRequestor protocol but unused — we never
+    /// send selection data outward.
+    func writeSelection(
+        to pboard: NSPasteboard,
+        types: [NSPasteboard.PasteboardType]
+    ) -> Bool {
+        false
+    }
+
+    // ── Pasteboard → disk ────────────────────────────────────────────────
+    //
+    // Continuity Camera delivers image data in one of two shapes depending
+    // on capture mode and macOS version:
+    //   1. File URLs (NSURL) pointing at temp files — common for Scan
+    //      Documents which can produce N pages and benefits from on-disk
+    //      delivery to avoid carrying N NSImages on the pasteboard.
+    //   2. NSImage instances — common for Take Photo and Add Sketch.
+    // We try (1) first, then fall through to (2). Both paths produce the
+    // same uniform JPEG output that the OCR pipeline expects.
+
+    private func saveImagesFromPasteboard(_ pb: NSPasteboard) -> [String] {
+        var paths: [String] = []
+
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] {
+            for url in urls where url.isFileURL {
+                if let path = copyImageFile(url) { paths.append(path) }
+            }
+            if !paths.isEmpty { return paths }
+        }
+
+        if let images = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage] {
+            for image in images {
+                if let path = saveImageAsJpeg(image) { paths.append(path) }
+            }
+        }
+
+        return paths
+    }
+
+    private func copyImageFile(_ src: URL) -> String? {
+        let ext = src.pathExtension.isEmpty ? "jpg" : src.pathExtension
+        let dst = outputDir.appendingPathComponent("continuity_\(UUID().uuidString).\(ext)")
+        do {
+            try FileManager.default.copyItem(at: src, to: dst)
+            return dst.path
+        } catch {
+            debug("copyImageFile(\(src.path)) failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func saveImageAsJpeg(_ image: NSImage) -> String? {
+        // NSBitmapImageRep handles orientation/colour-space conversion for
+        // us; the resulting bitmap is pixel-upright with no EXIF rotation
+        // tag needed downstream.
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let jpeg = bitmap.representation(
+                using: .jpeg,
+                properties: [.compressionFactor: 0.92]
+              )
+        else {
+            return nil
+        }
+        let dst = outputDir.appendingPathComponent("continuity_\(UUID().uuidString).jpg")
+        do {
+            try jpeg.write(to: dst)
+            return dst.path
+        } catch {
+            debug("saveImageAsJpeg failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    // ── Finalisation ─────────────────────────────────────────────────────
+
+    private func finalize(success paths: [String]) {
         guard !finalized else { return }
         finalized = true
+        emitJSON(["status": "ok", "paths": paths])
+        DispatchQueue.main.async { [weak self] in
+            self?.window?.close()
+            exit(0)
+        }
+    }
 
-        if session.isRunning { session.stopRunning() }
-        window?.orderOut(nil)
-
-        if let err = error {
-            emitJSON(["status": "error", "message": err])
+    private func finalize(error message: String, code: Int32 = 2) {
+        guard !finalized else { return }
+        finalized = true
+        emitJSON(["status": "error", "message": message])
+        DispatchQueue.main.async { [weak self] in
+            self?.window?.close()
             exit(code)
         }
-
-        emitJSON(["status": "ok", "paths": paths])
-        exit(0)
-    }
-}
-
-// ─── AVCapturePhotoCaptureDelegate ───────────────────────────────────────────
-
-extension CaptureController: AVCapturePhotoCaptureDelegate {
-    func photoOutput(
-        _ output: AVCapturePhotoOutput,
-        didFinishProcessingPhoto photo: AVCapturePhoto,
-        error: Error?
-    ) {
-        if let err = error {
-            finish(error: "Capture failed: \(err.localizedDescription)")
-            return
-        }
-        guard let data = photo.fileDataRepresentation() else {
-            finish(error: "Captured photo produced no data.")
-            return
-        }
-
-        // Continuity Camera embeds an EXIF orientation tag rather than
-        // rotating the pixel buffer — when the iPhone is held flat over a
-        // document the tag often ends up reporting "left", which makes
-        // downstream consumers (Granite Vision, Preview's rotated thumbnail)
-        // see a 90°-rotated image. Re-encode the JPEG with the orientation
-        // baked into the pixels and the tag set to .up so every consumer
-        // gets an upright image regardless of EXIF support.
-        let normalized = normalizeOrientation(jpegData: data) ?? data
-        if normalized.count != data.count {
-            debug("normalized EXIF orientation → upright pixel data (\(data.count) → \(normalized.count) bytes)")
-        }
-
-        let name = "continuity_\(UUID().uuidString).jpg"
-        let dst = outputDir.appendingPathComponent(name, isDirectory: false)
-        do {
-            try normalized.write(to: dst)
-            debug("saved → \(dst.path)")
-            finish(paths: [dst.path])
-        } catch {
-            finish(error: "Failed to write image: \(error.localizedDescription)")
-        }
-    }
-}
-
-/// Re-encode a JPEG so its pixel data is upright and its EXIF orientation
-/// tag is .up. Returns nil on any failure — caller falls back to original
-/// bytes so a normalization bug never blocks a capture.
-fileprivate func normalizeOrientation(jpegData: Data) -> Data? {
-    guard let src = CGImageSourceCreateWithData(jpegData as CFData, nil),
-          let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else {
-        return nil
-    }
-    // CGImagePropertyOrientation: 1 = up, 3 = 180, 6 = 90 CW, 8 = 90 CCW, etc.
-    let exifOrientation = (props[kCGImagePropertyOrientation] as? UInt32) ?? 1
-    if exifOrientation == 1 {
-        return jpegData  // already upright — no work to do
-    }
-    guard let cgImage = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
-
-    // Map EXIF orientation → CGAffineTransform that brings pixels upright.
-    let w = CGFloat(cgImage.width)
-    let h = CGFloat(cgImage.height)
-    var transform = CGAffineTransform.identity
-    var size = CGSize(width: w, height: h)
-    switch exifOrientation {
-    case 2: // mirror horizontal
-        transform = CGAffineTransform(translationX: w, y: 0).scaledBy(x: -1, y: 1)
-    case 3: // 180°
-        transform = CGAffineTransform(translationX: w, y: h).rotated(by: .pi)
-    case 4: // mirror vertical
-        transform = CGAffineTransform(translationX: 0, y: h).scaledBy(x: 1, y: -1)
-    case 5: // mirror horizontal + 90 CCW
-        size = CGSize(width: h, height: w)
-        transform = CGAffineTransform(translationX: h, y: w).scaledBy(x: -1, y: 1).rotated(by: -.pi / 2)
-    case 6: // 90° CW
-        size = CGSize(width: h, height: w)
-        transform = CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
-    case 7: // mirror horizontal + 90 CW
-        size = CGSize(width: h, height: w)
-        transform = CGAffineTransform(translationX: 0, y: 0).scaledBy(x: -1, y: 1).rotated(by: .pi / 2)
-    case 8: // 90° CCW
-        size = CGSize(width: h, height: w)
-        transform = CGAffineTransform(translationX: 0, y: w).rotated(by: -.pi / 2)
-    default:
-        return jpegData
     }
 
-    guard let colorSpace = cgImage.colorSpace,
-          let ctx = CGContext(
-            data: nil,
-            width: Int(size.width),
-            height: Int(size.height),
-            bitsPerComponent: cgImage.bitsPerComponent,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: cgImage.bitmapInfo.rawValue
-          ) else {
-        return nil
-    }
-    ctx.concatenate(transform)
-    ctx.draw(cgImage, in: CGRect(origin: .zero, size: CGSize(width: w, height: h)))
-    guard let upright = ctx.makeImage() else { return nil }
+    // ── NSWindowDelegate ─────────────────────────────────────────────────
 
-    // Re-encode as JPEG with orientation = up.
-    let outData = NSMutableData()
-    guard let dst = CGImageDestinationCreateWithData(outData, UTType.jpeg.identifier as CFString, 1, nil) else {
-        return nil
-    }
-    let outProps: [CFString: Any] = [
-        kCGImagePropertyOrientation: 1,
-        kCGImageDestinationLossyCompressionQuality: 0.92,
-    ]
-    CGImageDestinationAddImage(dst, upright, outProps as CFDictionary)
-    if !CGImageDestinationFinalize(dst) { return nil }
-    return outData as Data
-}
-
-// ─── NSWindowDelegate ────────────────────────────────────────────────────────
-
-extension CaptureController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
-        finish(error: "User closed the capture window.", code: 1)
+        if !finalized {
+            finalize(error: "User closed the capture window.", code: 1)
+        }
     }
 }
 
 // ─── AppDelegate ─────────────────────────────────────────────────────────────
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var controller: CaptureController!
+    private var controller: ImportFromDeviceController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        controller = CaptureController(
-            outputDir: outputDir,
-            preferredCameraID: preferredCameraID,
-            includeNonContinuity: includeNonContinuity
-        )
+        controller = ImportFromDeviceController(outputDir: outputDir)
         controller.start()
 
-        // Absolute safety timeout: 5 minutes from launch.
+        // Absolute safety timeout — 5 minutes from launch. Catches stuck
+        // iPhone-side flows where the user walked away mid-capture.
         DispatchQueue.main.asyncAfter(deadline: .now() + 300) {
             emitJSON([
                 "status": "error",
-                "message": "Timed out after 5 minutes waiting for Continuity Camera capture.",
+                "message": "Timed out after 5 minutes waiting for iPhone capture.",
             ])
             exit(1)
         }

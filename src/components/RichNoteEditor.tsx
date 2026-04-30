@@ -15,7 +15,7 @@ import { voiceService } from '../services/voice';
 import { settingsService } from '../services/settings';
 import { noteService } from '../services/noteService';
 import { API_BASE_URL } from '../services/api';
-import { scanService } from '../services/scanService';
+import { scanService, ScanProgressEvent } from '../services/scanService';
 import { ScanSessionPanel } from './ScanSessionPanel';
 import {
   ScanSessionState,
@@ -25,12 +25,6 @@ import {
   saveSession,
   clearSession,
 } from '../services/scanSession';
-import {
-  CameraPickerModal,
-  ContinuityCameraInfo,
-  loadPreferredCameraId,
-  savePreferredCameraId,
-} from './CameraPickerModal';
 
 // macOS detection for Continuity Camera button (Sprint 7).
 // Uses userAgent instead of Tauri's async platform() so we can render
@@ -405,16 +399,47 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
     handleEditorChange();
   }, [editor, handleEditorChange]);
 
+  // Sprint 9: insert OCR'd markdown from a scan into the open editor at the
+  // current cursor position. Parses the markdown into BlockNote blocks (so
+  // headings, lists, tables etc. survive the round-trip) and inserts AFTER
+  // the cursor's block — this matches Notion-style "slash command" UX where
+  // new content lands right where the user was working, not at the bottom
+  // of the doc.
+  //
+  // Scans are additive: existing content is never replaced. Falls back to a
+  // single paragraph block if markdown parsing fails (rare, but possible
+  // for very malformed OCR output).
+  const insertScannedMarkdown = useCallback(async (markdown: string) => {
+    if (!editor || !markdown || !markdown.trim()) return;
+    const trimmed = markdown.trim();
+
+    // Anchor at the cursor's current block; fall back to the last block if
+    // the cursor isn't placed (e.g. editor was never focused after open).
+    let anchor: any;
+    try {
+      anchor = editor.getTextCursorPosition()?.block;
+    } catch { /* ignore */ }
+    if (!anchor) {
+      anchor = editor.document[editor.document.length - 1];
+    }
+
+    let blocksToInsert: any[];
+    try {
+      const parsed = await editor.tryParseMarkdownToBlocks(trimmed);
+      blocksToInsert = (parsed && parsed.length > 0)
+        ? parsed
+        : [{ type: 'paragraph' as const, content: trimmed }];
+    } catch (e) {
+      console.warn('[scan-insert] markdown parse failed, inserting as paragraph:', e);
+      blocksToInsert = [{ type: 'paragraph' as const, content: trimmed }];
+    }
+
+    editor.insertBlocks(blocksToInsert, anchor, 'after');
+    handleEditorChange();
+  }, [editor, handleEditorChange]);
+
   const [showScanMenu, setShowScanMenu] = useState(false);
   const scanMenuRef = useRef<HTMLDivElement>(null);
-
-  // ── Continuity Camera picker state ──────────────────────────────────────
-  // When more than one camera is available we show a modal so the user can
-  // choose. The chosen camera id (and the scan mode that triggered the
-  // picker) is held here so handleContinuityScan can resume after selection.
-  const [pickerOpen, setPickerOpen]       = useState(false);
-  const [pickerCameras, setPickerCameras] = useState<ContinuityCameraInfo[]>([]);
-  const [pickerMode, setPickerMode]       = useState<'document' | 'photo'>('document');
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
@@ -500,17 +525,16 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
   }, []);
 
   const finishSession = useCallback(() => {
-    // Backend has already created the merged note + broadcast canvas_item_created
-    // via WebSocket. Just clear the session locally.
+    // Sprint 9: the inline processBatch callback (handleSessionInline) has
+    // already inserted the merged markdown into the open editor and shown a
+    // success toast. We just clear the session here so the panel collapses
+    // and the user is back to a single-page editor.
     setSession(null);
-    ctx.addToast({
-      type: 'success',
-      title: 'Scan Complete',
-      message: 'Pages merged into a new note.',
-      duration: 3000,
-    });
-  }, [ctx]);
+  }, []);
 
+  // File-picker scan path. Sprint 9: when a note is open we run inline OCR
+  // and append the result to the current note instead of forking a new one.
+  // Session mode still accumulates pages and defers OCR to handleSessionInline.
   const handleScan = async (mode: 'document' | 'photo') => {
     setShowScanMenu(false);
     try {
@@ -521,23 +545,14 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
           extensions: ['png', 'jpeg', 'jpg', 'webp']
         }]
       });
-      
+
       if (selected && typeof selected === 'string') {
         // Session mode: accumulate into the batch instead of processing now.
         if (sessionMode) {
           addPageToSession(selected, 'file');
           return;
         }
-        ctx.addToast({ type: 'info', title: 'Processing Scan', message: mode === 'photo' ? 'Deconstructing scene...' : 'Analyzing document...', duration: 3000 });
-        const res = await fetch(`${API_BASE_URL}/scan/process`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file_path: selected, notebook_id: ctx.selectedNotebookId, mode })
-        });
-        
-        if (!res.ok) {
-          throw new Error('Failed to start scan processing');
-        }
+        await runInlineOcr([selected], mode);
       }
     } catch (err) {
       console.error("Scan error", err);
@@ -545,32 +560,120 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
     }
   };
 
-  // Sprint 7+ : Continuity Camera (macOS only). Flow:
-  //   1. Enumerate cameras via `list_continuity_cameras` (sidecar --list).
-  //   2. If no preferred camera is remembered AND there's >1 camera, open
-  //      the picker. Otherwise skip straight to capture.
-  //   3. Capture invokes `trigger_continuity_camera` with the chosen id;
-  //      the sidecar uses that exact device or, if missing, falls back to
-  //      first .continuityCamera.
-  //   4. Resulting image paths are either added to the active scan session
-  //      (multi-page accumulation) or POSTed to /scan/process directly.
+  // Single source of truth for "OCR these images and insert the result into
+  // the open note." Used by every scan trigger:
+  //   • file picker (handleScan)
+  //   • Continuity Camera single capture (runCapture)
+  //   • multi-page session finish (ScanSessionPanel processBatch callback)
   //
-  // Picker preference is persisted to localStorage (CAMERA_PREF_STORAGE_KEY)
-  // so subsequent scans skip the modal until the user clears it.
-  const runCapture = async (mode: 'document' | 'photo', cameraId: string | null) => {
+  // Document mode and photo mode both flow through here — the only
+  // difference is which Ollama prompt the backend uses (set via `mode`).
+  // The note is NEVER closed by this function: insertScannedMarkdown
+  // appends the parsed blocks and flags the autosave timer; the user
+  // remains in the editor with the new content visible and editable.
+  //
+  // Progress UI: callers that own a progress panel (the session panel)
+  // pass their own onProgress handler. Otherwise we fall back to throttled
+  // toast notifications so single-capture flows still get feedback.
+  const runInlineOcr = useCallback(async (
+    filePaths: string[],
+    mode: 'document' | 'photo',
+    opts?: { onProgress?: (evt: ScanProgressEvent) => void },
+  ): Promise<{ totalPages: number; chars: number } | null> => {
+    if (filePaths.length === 0) return null;
+
+    // Only show the "OCR running…" toast when no caller-supplied progress
+    // handler is in play — otherwise the panel's progress bar is the
+    // source of truth and toasts would be redundant noise.
+    if (!opts?.onProgress) {
+      ctx.addToast({
+        type: 'info',
+        title: mode === 'photo' ? 'Deconstructing scene…' : 'Analyzing document…',
+        message: 'Vision OCR running — this can take 20-60s on first run.',
+        duration: 6000,
+      });
+    }
+
+    // Throttled stage-change toasts for the single-capture path.
+    let lastStage = '';
+    const toastProgress = (evt: ScanProgressEvent) => {
+      if (evt.stage === lastStage) return;
+      lastStage = evt.stage;
+      ctx.addToast({
+        type: 'info',
+        title: 'Scanning…',
+        message: `${evt.message} (${evt.percent}%)`,
+        duration: 2500,
+      });
+    };
+    const onProgress = opts?.onProgress ?? toastProgress;
+
+    let result: Awaited<ReturnType<typeof scanService.ocrBatchWithProgress>>;
+    try {
+      result = await scanService.ocrBatchWithProgress(filePaths, { mode, onProgress });
+    } catch (err: any) {
+      ctx.addToast({
+        type: 'error',
+        title: 'Scan Error',
+        message: err?.message || String(err),
+        duration: 5000,
+      });
+      throw err;
+    }
+
+    if (!result.merged_text || !result.merged_text.trim()) {
+      ctx.addToast({
+        type: 'error',
+        title: 'No text found',
+        message: 'OCR returned no usable text from the captured image(s).',
+        duration: 4000,
+      });
+      return null;
+    }
+
+    await insertScannedMarkdown(result.merged_text);
+    const totalPages = result.total_pages ?? filePaths.length;
+    const chars = result.chars ?? result.merged_text.length;
+    ctx.addToast({
+      type: 'success',
+      title: 'Inserted into note',
+      message: `Added ${chars} characters from ${totalPages} page${totalPages !== 1 ? 's' : ''}.`,
+      duration: 4000,
+    });
+    return { totalPages, chars };
+  }, [ctx, insertScannedMarkdown]);
+
+  // Continuity Camera capture (macOS only). Sprint 9 architecture:
+  //   1. Tauri spawns the signed `continuity-camera` sidecar.
+  //   2. The sidecar shows a small "Insert from iPhone" launcher window.
+  //      The user clicks Capture; AppKit pops up a contextual menu that's
+  //      auto-populated with iPhone-side options (Take Photo, Scan
+  //      Documents, Add Sketch).
+  //   3. The user picks a mode on the iPhone screen and captures — multi-
+  //      page "Scan Documents" returns N images in one batch with no Mac
+  //      round-trip per page.
+  //   4. The sidecar saves the image(s) and returns paths via JSON on
+  //      stdout; we either accumulate them into an active scan session or
+  //      OCR them inline and insert the result at the cursor.
+  //
+  // The `mode` parameter only controls how the OCR pipeline interprets the
+  // result — it does NOT pre-select an iPhone capture mode. That choice
+  // lives entirely on the iPhone now.
+  const runCapture = async (mode: 'document' | 'photo') => {
     ctx.addToast({
       type: 'info',
-      title: 'Waiting for iPhone',
-      message: 'Tap Take Photo or Scan Documents on your iPhone to capture.',
-      duration: 5000,
+      title: 'Insert from iPhone',
+      message: 'Click “Capture from iPhone” on the launcher window, then pick a mode on your iPhone screen.',
+      duration: 6000,
     });
 
-    // include_non_continuity = true when the user has explicitly picked a
-    // non-iPhone camera, so the sidecar is allowed to use it. When no
-    // preferred id is set we keep the strict iPhone-only behaviour.
+    // The `cameraId` and `includeNonContinuity` args are accepted by the
+    // Rust command for backward compatibility, but the new import-from-
+    // device sidecar ignores them — AppKit and the iPhone handle device
+    // selection automatically.
     const result = await invoke<{ status: string; paths: string[]; message?: string }>(
       'trigger_continuity_camera',
-      { cameraId, includeNonContinuity: !!cameraId }
+      { cameraId: null, includeNonContinuity: false }
     );
 
     if (result.status !== 'ok' || result.paths.length === 0) {
@@ -596,55 +699,14 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
       return;
     }
 
-    // Use the streaming /scan/process-batch endpoint so the user gets live
-    // per-stage feedback ("Processing page 1 of 1…", "Cleanup pass…", etc.)
-    // instead of staring at an empty editor for 30-60s with nothing
-    // happening. Single-image capture is just a 1-element batch.
-    ctx.addToast({
-      type: 'info',
-      title: mode === 'photo' ? 'Deconstructing scene…' : 'Analyzing document…',
-      message: 'Vision OCR running — this can take 20-60s on first run.',
-      duration: 6000,
-    });
-
-    try {
-      const finalResult = await scanService.processBatchWithProgress(
-        result.paths,
-        {
-          notebookId: ctx.selectedNotebookId,
-          mode,
-          // Progress events are surfaced as transient toasts so the user
-          // can confirm something is in fact happening. We throttle by
-          // only toasting on stage changes, not every percent tick.
-          onProgress: (() => {
-            let lastStage = '';
-            return (evt) => {
-              if (evt.stage === lastStage) return;
-              lastStage = evt.stage;
-              ctx.addToast({
-                type: 'info',
-                title: 'Scanning…',
-                message: `${evt.message} (${evt.percent}%)`,
-                duration: 2500,
-              });
-            };
-          })(),
-        },
-      );
-      ctx.addToast({
-        type: 'success',
-        title: 'Scan Complete',
-        message: finalResult.title
-          ? `Created note: ${finalResult.title}`
-          : 'New scan note added to canvas.',
-        duration: 4000,
-      });
-    } catch (err) {
-      // Re-throw so the outer handler in handleContinuityScan reports it.
-      throw err;
-    }
+    // Single-shot capture: OCR and insert at cursor in the open note.
+    await runInlineOcr(result.paths, mode);
   };
 
+  // Entry point invoked from the Scan menu's Continuity Camera options.
+  // No camera picker, no list_continuity_cameras call: AppKit's import-
+  // from-device flow shows the user every paired iPhone in its own popup
+  // menu, so duplicating that on the Mac side would just add friction.
   const handleContinuityScan = async (mode: 'document' | 'photo') => {
     setShowScanMenu(false);
     if (!IS_MACOS) {
@@ -658,44 +720,9 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
     }
 
     try {
-      // Quick non-blocking enumerate. Returns [] if perms are denied or no
-      // camera is attached — we fall through to the legacy "capture and let
-      // the sidecar produce the friendly error" path in that case.
-      const cameras = await invoke<ContinuityCameraInfo[]>('list_continuity_cameras');
-      const remembered = loadPreferredCameraId();
-      const rememberedExists = remembered && cameras.some(c => c.id === remembered);
-
-      // Decide whether to show the picker.
-      //   • 0 or 1 camera → no picker (sidecar handles missing-iphone case)
-      //   • multiple AND no remembered choice → show picker
-      //   • multiple AND remembered choice still present → use it silently
-      if (cameras.length > 1 && !rememberedExists) {
-        setPickerCameras(cameras);
-        setPickerMode(mode);
-        setPickerOpen(true);
-        return;
-      }
-
-      const cameraId = rememberedExists ? remembered : null;
-      await runCapture(mode, cameraId);
+      await runCapture(mode);
     } catch (err) {
       console.error('Continuity scan error', err);
-      ctx.addToast({
-        type: 'error',
-        title: 'Scan Error',
-        message: String(err),
-        duration: 4000,
-      });
-    }
-  };
-
-  const handlePickerSelect = async (cam: ContinuityCameraInfo, remember: boolean) => {
-    setPickerOpen(false);
-    if (remember) savePreferredCameraId(cam.id);
-    try {
-      await runCapture(pickerMode, cam.id);
-    } catch (err) {
-      console.error('Continuity scan (post-picker) error', err);
       ctx.addToast({
         type: 'error',
         title: 'Scan Error',
@@ -812,7 +839,14 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
         </div>
       </div>
 
-      {/* Sprint 8: Scan Session Panel (thumbnail grid + finish button) */}
+      {/* Sprint 8: Scan Session Panel (thumbnail grid + finish button).
+          Sprint 9: the processBatch callback delegates to runInlineOcr so
+          single-capture and multi-page session flows share one code path —
+          OCR runs against /scan/ocr-batch and the merged markdown is
+          inserted into the open note at the cursor (no fork-a-new-note).
+          The panel suppresses runInlineOcr's own progress toasts by
+          providing its own onProgress handler that drives the panel's
+          progress bar. */}
       {session && (
         <ScanSessionPanel
           session={session}
@@ -820,6 +854,10 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
           onDelete={deleteSessionPage}
           onFinish={finishSession}
           onCancel={cancelSession}
+          processBatch={async (filePaths, mode, onProgress) => {
+            const r = await runInlineOcr(filePaths, mode, { onProgress });
+            return { totalPages: r?.totalPages };
+          }}
         />
       )}
 
@@ -929,14 +967,6 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
         </button>
       </div>
 
-      {/* Camera picker — only shown when multiple cameras are available and no
-          remembered choice. handlePickerSelect resumes the capture flow. */}
-      <CameraPickerModal
-        isOpen={pickerOpen}
-        cameras={pickerCameras}
-        onSelect={handlePickerSelect}
-        onCancel={() => setPickerOpen(false)}
-      />
     </div>
   );
 };

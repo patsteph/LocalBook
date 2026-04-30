@@ -130,6 +130,88 @@ async def process_scan_batch(request: ScanBatchRequest):
     )
 
 
+# ── Inline OCR (no note created — used to insert into the open editor) ───────
+class ScanOcrBatchRequest(BaseModel):
+    """Body for POST /scan/ocr-batch.
+
+    Same shape as /scan/process-batch but returns the OCR'd markdown inline
+    via SSE instead of creating a new note. The frontend uses this when the
+    user is mid-edit in a note and wants the scan content inserted at the
+    cursor (Sprint 9 — append-to-open-note flow).
+    """
+    file_paths: List[str] = Field(..., min_length=1)
+    mode: str = "document"
+
+
+async def _run_ocr_inline_with_reporter(
+    *,
+    file_paths: List[str],
+    mode: str,
+    reporter: ProgressReporter,
+) -> None:
+    """Background task: run inline OCR pipeline, always closing the reporter."""
+    try:
+        await scan_pipeline.process_batch_inline(
+            file_paths=file_paths,
+            mode=mode,
+            reporter=reporter,
+        )
+    except FileNotFoundError as e:
+        logger.warning(f"[scan-ocr] file missing: {e}")
+        await reporter.error(f"File not found: {e}")
+    except Exception as e:
+        logger.exception(f"[scan-ocr] failed: {e}")
+        await reporter.error(str(e)[:300])
+    finally:
+        await reporter.close()
+
+
+@router.post("/ocr-batch")
+async def ocr_scan_batch(request: ScanOcrBatchRequest):
+    """OCR multiple scanned pages and stream progress + merged text via SSE.
+
+    Unlike /process-batch, this does NOT create a new note. The terminal
+    `complete` event's `details` carries the merged markdown so the frontend
+    can insert it directly into the currently-open editor.
+
+    Terminal event shape:
+        {"stage": "complete", "percent": 100, "message": "...",
+         "details": {"merged_text": "...", "page_texts": [...],
+                     "total_pages": N, "chars": M}}
+    """
+    logger.info(
+        f"[scan] /ocr-batch: {len(request.file_paths)} pages (mode={request.mode})"
+    )
+
+    reporter = ProgressReporter()
+    asyncio.create_task(
+        _run_ocr_inline_with_reporter(
+            file_paths=list(request.file_paths),
+            mode=request.mode,
+            reporter=reporter,
+        )
+    )
+
+    async def _sse_generator():
+        yield ": ping\n\n"
+        while True:
+            evt = await reporter.queue.get()
+            if evt is None:
+                yield "event: done\ndata: {}\n\n"
+                return
+            yield evt.to_sse()
+
+    return StreamingResponse(
+        _sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ── Vision-model warmup ──────────────────────────────────────────────────────
 #
 # Called by the frontend the moment the user opens the Scan menu so that, by
