@@ -57,9 +57,10 @@ use objc2::{
     define_class, msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSEventModifierFlags, NSEventType, NSImage,
-    NSMenu, NSMenuItem, NSMenuItemImportFromDeviceIdentifier, NSPasteboard, NSResponder,
-    NSUserInterfaceItemIdentification, NSUserInterfaceItemIdentifier, NSView, NSWindow,
+    NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSEventModifierFlags,
+    NSEventType, NSImage, NSMenu, NSMenuItem, NSMenuItemImportFromDeviceIdentifier, NSPasteboard,
+    NSResponder, NSUserInterfaceItemIdentification, NSUserInterfaceItemIdentifier, NSView,
+    NSWindow,
 };
 use objc2_foundation::{NSArray, NSData, NSDictionary, NSPoint, NSRect, NSSize, NSString, NSURL};
 use serde::Serialize;
@@ -499,23 +500,22 @@ unsafe fn install_and_pop(
 
     let responder = ContinuityResponder::new(mtm, output_dir, tx);
 
-    // Place a 1×1 hidden subview at the centre of contentView. addSubview
-    // retains us, so even after this function's local Retained drops, the
-    // contentView keeps us alive until finalize() removeFromSuperview's.
+    // Sprint 9.5: cover the ENTIRE contentView so the synthesised right-
+    // click hit-tests to our view (AppKit routes mouse events to the
+    // topmost subview under the cursor).
     let bounds = content_view.bounds();
-    let cx = bounds.origin.x + bounds.size.width / 2.0;
-    let cy = bounds.origin.y + bounds.size.height / 2.0;
-    let frame = NSRect {
-        origin: NSPoint { x: cx - 0.5, y: cy - 0.5 },
-        size: NSSize { width: 1.0, height: 1.0 },
-    };
-    responder.setFrame(frame);
-    responder.setHidden(true);
+    responder.setFrame(bounds);
+    // Transparent so the user doesn't see it, but NOT hidden (hidden
+    // views don't receive mouse events).
+    let _: () = unsafe { msg_send![&*responder, setAlphaValue: 0.01_f64] };
     content_view.addSubview(&responder);
-    clog!("[continuity] subview added at ({}, {})", cx, cy);
+    clog!(
+        "[continuity] overlay subview added ({}×{})",
+        bounds.size.width, bounds.size.height
+    );
 
-    // Make our view the firstResponder so AppKit's chain walk for menu
-    // validation starts here. This is the critical fix vs. Sprint 9.1.
+    // Make our view the firstResponder so AppKit's responder-chain walk
+    // for menu validation starts here.
     let prev_first: Option<Retained<NSResponder>> = window.firstResponder();
     let became_first: bool = window.makeFirstResponder(Some(&responder));
     clog!(
@@ -527,48 +527,44 @@ unsafe fn install_and_pop(
         state.prev_first_responder = prev_first;
     }
 
-    // Build the menu. The single placeholder item is replaced by AppKit
-    // with per-capture-mode items when the menu opens.
+    // Build the menu with the magic placeholder. Set it as the view's
+    // context menu so that the default `menuForEvent:` returns it when
+    // AppKit processes the right-click.
     let menu: Retained<NSMenu> = NSMenu::new(mtm);
     let placeholder: Retained<NSMenuItem> = NSMenuItem::new(mtm);
-    let title = NSString::from_str("Insert from iPhone");
+    let title = NSString::from_str("Import from Device");
     placeholder.setTitle(&title);
-    // Use the actual AppKit extern constant — its runtime string value
-    // is an opaque implementation detail and does NOT equal the symbol
-    // name.  Hardcoding the symbol name was the Sprint 9.2 bug.
     let ident: &NSUserInterfaceItemIdentifier = NSMenuItemImportFromDeviceIdentifier;
     clog!("[continuity] placeholder identifier = {:?}", ident.to_string());
     placeholder.setIdentifier(Some(ident));
     menu.addItem(&placeholder);
+    let _: () = unsafe { msg_send![&*responder, setMenu: &*menu] };
+    clog!("[continuity] menu set on responder view");
 
-    // Use the *static* +[NSMenu popUpContextMenu:withEvent:forView:] API.
+    // Sprint 9.5 — THE KEY FIX: send a real RightMouseDown through
+    // [NSApp sendEvent:] so AppKit runs the full context-menu path:
     //
-    // Why: this is the only NSMenu pop-up entry point that triggers
-    // AppKit's responder-chain walk for `NSMenuItemImportFromDeviceIdentifier`
-    // placeholder substitution. The instance-method
-    // `popUpMenuPositioningItem:atLocation:inView:` opens a menu but does
-    // NOT engage the import-from-iPhone substitution machinery — the
-    // placeholder stays greyed out and `validRequestor` is never called.
-    // Confirmed by Sprint 9.2 logs (validRequestor never fired) and by
-    // every working Apple sample using popUpContextMenu.
+    //   NSApp sendEvent:  →  NSWindow sendEvent:
+    //     →  hit-test finds our overlay view
+    //     →  [view rightMouseDown:]
+    //     →  [view menuForEvent:]  (returns our menu with placeholder)
+    //     →  AppKit performs importFromDeviceIdentifier substitution
+    //     →  [NSMenu popUpContextMenu:withEvent:forView:] (blocks)
     //
-    // popUpContextMenu requires an NSEvent; since we're not in an event
-    // handler (the JS button click crosses the Tauri IPC boundary), we
-    // synthesise a left-mouse-down at the centre of the window.
-    let win_frame = window.frame();
-    let event_loc = NSPoint {
-        x: win_frame.size.width / 2.0,
-        y: win_frame.size.height / 2.0,
-    };
+    // This is the exact same code path TextEdit / Notes use for their
+    // right-click "Insert from iPhone" submenu. Our previous approach
+    // called popUpContextMenu directly, which SKIPPED the substitution.
+    let cx = bounds.origin.x + bounds.size.width / 2.0;
+    let cy = bounds.origin.y + bounds.size.height / 2.0;
     let window_number: isize = window.windowNumber();
     clog!(
-        "[continuity] synthesising NSEvent at window-coord ({}, {}), windowNumber={}",
-        event_loc.x, event_loc.y, window_number
+        "[continuity] synthesising RightMouseDown at window-coord ({}, {}), windowNumber={}",
+        cx, cy, window_number
     );
     let event_opt: Option<Retained<NSEvent>> =
         NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-            NSEventType::LeftMouseDown,
-            event_loc,
+            NSEventType::RightMouseDown,
+            NSPoint { x: cx, y: cy },
             NSEventModifierFlags::empty(),
             0.0,
             window_number,
@@ -581,39 +577,64 @@ unsafe fn install_and_pop(
         Some(e) => e,
         None => {
             clog!("[continuity] FAILED to synthesise NSEvent");
-            responder.finalize(Err("failed to synthesise NSEvent for popUpContextMenu".into()));
+            responder.finalize(Err("failed to synthesise RightMouseDown event".into()));
             return;
         }
     };
 
-    clog!("[continuity] popping menu via popUpContextMenu");
-    NSMenu::popUpContextMenu_withEvent_forView(&menu, &event, &responder);
+    let app = NSApplication::sharedApplication(mtm);
+    clog!("[continuity] sending RightMouseDown via [NSApp sendEvent:]");
+    app.sendEvent(&event);
+    clog!("[continuity] sendEvent returned");
+
+    // After the context menu closes, dump menu state for diagnostics.
     let validated = responder.ivars().validate_called.load(Ordering::Relaxed);
     clog!(
-        "[continuity] popUpContextMenu returned (validRequestor was called: {})",
+        "[continuity] validRequestor was called: {}",
         validated
     );
+    let item_count: isize = unsafe { msg_send![&*menu, numberOfItems] };
+    clog!("[continuity] menu now has {} item(s):", item_count);
+    for i in 0..item_count {
+        let item: *mut AnyObject = unsafe { msg_send![&*menu, itemAtIndex: i] };
+        if !item.is_null() {
+            let t: Option<Retained<NSString>> = unsafe { msg_send![item, title] };
+            let enabled: bool = unsafe { msg_send![item, isEnabled] };
+            let has_sub: bool = unsafe { msg_send![item, hasSubmenu] };
+            clog!(
+                "[continuity]   [{}] title={:?} enabled={} hasSubmenu={}",
+                i,
+                t.as_ref().map(|s| s.to_string()),
+                enabled,
+                has_sub,
+            );
+            if has_sub {
+                let sub: *mut AnyObject = unsafe { msg_send![item, submenu] };
+                if !sub.is_null() {
+                    let sub_count: isize = unsafe { msg_send![sub, numberOfItems] };
+                    for j in 0..sub_count {
+                        let si: *mut AnyObject = unsafe { msg_send![sub, itemAtIndex: j] };
+                        if !si.is_null() {
+                            let st: Option<Retained<NSString>> = unsafe { msg_send![si, title] };
+                            let se: bool = unsafe { msg_send![si, isEnabled] };
+                            clog!(
+                                "[continuity]     [{}.{}] title={:?} enabled={}",
+                                i, j,
+                                st.as_ref().map(|s| s.to_string()),
+                                se,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     if !validated {
-        // AppKit never walked through us — the placeholder substitution
-        // machinery didn't engage at all. Most likely cause on a healthy
-        // setup is that no nearby iPhone is signed in to the same Apple ID
-        // / has Continuity Camera enabled, so AppKit's pre-walk shortcuts
-        // out. (If validRequestor IS called but no iPhone items appear,
-        // that's a different failure mode and we'll still time out below.)
         responder.finalize(Err(
-            "AppKit did not engage the import-from-iPhone flow — either no nearby iPhone is signed in to the same Apple ID, iPhone is locked, or Continuity Camera is disabled in iPhone Settings → General → AirPlay & Handoff".to_string(),
+            "AppKit did not call validRequestor — device substitution did not engage".to_string(),
         ));
         return;
     }
-    // validRequestor was called → menu was populated with iPhone items.
-    // The menu has now closed (popUpContextMenu blocks until close). One
-    // of two things happened:
-    //   (a) User picked an iPhone item → readSelection will fire async
-    //       when the iPhone finishes capturing.
-    //   (b) User cancelled → readSelection never fires; the 3-min
-    //       timeout in `trigger()` will eventually resolve as cancel.
-    // contentView retains the responder via the subview slot, so the
-    // local Retained dropping here is fine.
     clog!("[continuity] menu closed; awaiting readSelection or timeout");
 }
