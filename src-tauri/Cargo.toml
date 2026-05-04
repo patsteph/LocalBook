@@ -31,3 +31,30 @@ tauri-plugin-process = "2"
 notify = "6.1.1"
 tokio-util = { version = "0.7", features = ["io"] }
 
+# macOS-only: in-process Continuity Camera (Insert-from-iPhone) via AppKit.
+# Versions match what tauri/window-vibrancy already pull transitively, so no
+# new top-level crate graph nodes — Cargo will dedupe.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+    "NSMenu",
+    "NSMenuItem",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+    "NSApplication",
+    "NSImage",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSBitmapImageRep",
+    "NSImageRep",
+    "NSUserInterfaceItemIdentification",
+] }
+objc2-foundation = { version = "0.3", features = [
+    "NSArray",
+    "NSString",
+    "NSURL",
+    "NSDictionary",
+    "NSGeometry",
+] }
+

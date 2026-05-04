@@ -5,8 +5,9 @@ use std::path::PathBuf;
 use serde::Serialize;
 use notify::{Watcher, RecursiveMode, EventKind};
 use std::sync::mpsc::channel;
-use tauri_plugin_shell::ShellExt;
-use tauri_plugin_shell::process::CommandEvent;
+
+#[cfg(target_os = "macos")]
+mod continuity;
 
 // State to track the backend process
 struct BackendState {
@@ -913,34 +914,17 @@ fn setup_scan_watcher(app: &AppHandle) {
 
 // ── Continuity Camera (macOS) ────────────────────────────────────────
 //
-// Spawns the signed `continuity-camera` sidecar, which uses Apple's
-// documented Insert-from-iPhone flow (NSMenuItem.importFromDeviceIdentifier).
-// The sidecar shows a small "Capture from iPhone" launcher; the user clicks
-// once, and from then on the iPhone owns the entire capture experience
-// (Take Photo, Scan Documents, Add Sketch). Resulting image(s) are written
-// to <app_data>/scans/continuity/ and the absolute paths are emitted as
-// JSON on stdout:
+// v1.9.0 Sprint 9 (second iteration): the Continuity Camera flow now runs
+// *in-process* inside LocalBook.app via objc2 + AppKit bindings. See
+// `continuity.rs` for the full rationale — briefly: Apple's Insert-from-
+// iPhone routing only works for Launch Services-registered .app bundles,
+// and a single-file sidecar isn't one, so the old sidecar approach silently
+// dropped iPhone data on the floor even when the menu populated correctly.
+// The new impl installs an NSResponder on LocalBook's own main window.
 //
-//   {"status":"ok","paths":["/abs/path/continuity_<uuid>.jpg", …]}
-//   {"status":"error","message":"…"}
-//
-// The continuity/ subdirectory is NOT watched by setup_scan_watcher() (which
-// uses RecursiveMode::NonRecursive on scans/), so there is no race with the
-// watched-folder path. The frontend receives the paths back and either
-// accumulates them into a multi-page scan session or runs them through
-// inline OCR via /scan/ocr-batch.
-//
-// The sidecar still accepts a legacy --camera flag for backward
-// compatibility (the old AVCaptureDevice flow); we forward it untouched
-// but it's a no-op in the new import-from-device path.
-
-#[derive(Clone, Serialize)]
-struct ContinuityResult {
-    status: String,
-    paths: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-}
+// The Tauri command signature is kept backward-compatible (accepts the
+// unused `camera_id` / `include_non_continuity` params) so the frontend
+// doesn't need to change.
 
 // ─── Streaming file upload to backend ──────────────────────────────────
 // Bypasses the WebView entirely so 40MB+ files don't cause WKWebView OOM.
@@ -1077,129 +1061,46 @@ async fn upload_file_streaming(
     Ok(final_result.unwrap_or(serde_json::json!({})))
 }
 
+// Serde shape the frontend already consumes. Shared between the macOS path
+// (delegated to `continuity::trigger`) and the non-macOS error path.
+#[derive(Clone, Serialize)]
+struct ContinuityResult {
+    status: String,
+    paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+impl From<continuity::ContinuityResult> for ContinuityResult {
+    fn from(r: continuity::ContinuityResult) -> Self {
+        Self {
+            status: r.status,
+            paths: r.paths,
+            message: r.message,
+        }
+    }
+}
+
 #[tauri::command]
 async fn trigger_continuity_camera(
     app: AppHandle,
     camera_id: Option<String>,
     include_non_continuity: Option<bool>,
 ) -> Result<ContinuityResult, String> {
+    // Legacy params are accepted for frontend-compat but ignored: device
+    // selection is handled by AppKit/iPhone in the in-process path.
+    let _ = (camera_id, include_non_continuity);
+
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, camera_id, include_non_continuity);
+        let _ = app;
         return Err("Continuity Camera is only available on macOS".to_string());
     }
 
     #[cfg(target_os = "macos")]
     {
-        // Ensure the output directory exists (sidecar also creates it, but we
-        // want deterministic behaviour from the Rust side).
-        let data_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("failed to get app data dir: {}", e))?;
-        let out_dir = data_dir.join("scans").join("continuity");
-        std::fs::create_dir_all(&out_dir)
-            .map_err(|e| format!("failed to create output dir: {}", e))?;
-        let out_dir_str = out_dir.to_string_lossy().to_string();
-
-        // Build argv: <out_dir> [--camera <uid>] [--include-non-continuity]
-        let mut argv: Vec<String> = vec![out_dir_str];
-        if let Some(uid) = camera_id.as_deref() {
-            if !uid.is_empty() {
-                argv.push("--camera".to_string());
-                argv.push(uid.to_string());
-            }
-        }
-        if include_non_continuity.unwrap_or(false) {
-            argv.push("--include-non-continuity".to_string());
-        }
-
-        let sidecar = app
-            .shell()
-            .sidecar("continuity-camera")
-            .map_err(|e| format!("sidecar lookup failed: {}", e))?
-            .args(argv);
-
-        let (mut rx, _child) = sidecar
-            .spawn()
-            .map_err(|e| format!("failed to spawn continuity-camera: {}", e))?;
-
-        let mut stdout_buf = String::new();
-        let mut stderr_buf = String::new();
-        let mut exit_code: Option<i32> = None;
-
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(bytes) => {
-                    stdout_buf.push_str(&String::from_utf8_lossy(&bytes));
-                }
-                CommandEvent::Stderr(bytes) => {
-                    stderr_buf.push_str(&String::from_utf8_lossy(&bytes));
-                }
-                CommandEvent::Terminated(payload) => {
-                    exit_code = payload.code;
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        if !stderr_buf.trim().is_empty() {
-            eprintln!("[continuity-camera stderr] {}", stderr_buf.trim());
-        }
-
-        // Parse the last JSON line from stdout.
-        let last_line = stdout_buf
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("")
-            .trim();
-
-        if last_line.is_empty() {
-            return Err(format!(
-                "continuity-camera produced no output (exit {:?})",
-                exit_code
-            ));
-        }
-
-        let parsed: serde_json::Value = serde_json::from_str(last_line)
-            .map_err(|e| format!("failed to parse sidecar output '{}': {}", last_line, e))?;
-
-        let status = parsed
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("error")
-            .to_string();
-
-        if status != "ok" {
-            let msg = parsed
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error")
-                .to_string();
-            return Ok(ContinuityResult {
-                status,
-                paths: vec![],
-                message: Some(msg),
-            });
-        }
-
-        let paths = parsed
-            .get("paths")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|p| p.as_str().map(String::from))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        Ok(ContinuityResult {
-            status,
-            paths,
-            message: None,
-        })
+        continuity::trigger(app).await.map(Into::into)
     }
 }
 
