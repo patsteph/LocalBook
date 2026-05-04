@@ -6,7 +6,6 @@ import '@blocknote/mantine/style.css';
 import { useCreateBlockNote, SuggestionMenuController, createReactInlineContentSpec } from '@blocknote/react';
 import { Save, Mic, Loader2, Camera } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { invoke } from '@tauri-apps/api/core';
 import { WritingAssistBar } from './WritingAssistBar';
 import { useCanvas } from './canvas/CanvasContext';
 import { CanvasItem } from './canvas/types';
@@ -16,22 +15,8 @@ import { settingsService } from '../services/settings';
 import { noteService } from '../services/noteService';
 import { API_BASE_URL } from '../services/api';
 import { scanService, ScanProgressEvent } from '../services/scanService';
-import { ScanSessionPanel } from './ScanSessionPanel';
-import {
-  ScanSessionState,
-  ScanSessionPage,
-  newSessionId,
-  loadSession,
-  saveSession,
-  clearSession,
-} from '../services/scanSession';
+import { QRCaptureDropdown } from './QRCaptureDropdown';
 
-// macOS detection for Continuity Camera button (Sprint 7).
-// Uses userAgent instead of Tauri's async platform() so we can render
-// conditionally on first paint without a loading flicker.
-const IS_MACOS = typeof navigator !== 'undefined'
-  && /mac/i.test(navigator.userAgent)
-  && !/iphone|ipad|ipod/i.test(navigator.userAgent);
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface RichNoteEditorProps {
@@ -439,6 +424,7 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
   }, [editor, handleEditorChange]);
 
   const [showScanMenu, setShowScanMenu] = useState(false);
+  const [showQRCapture, setShowQRCapture] = useState(false);
   const scanMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -451,90 +437,8 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
     return () => document.removeEventListener('mousedown', handleClick);
   }, [showScanMenu]);
 
-  // ── Sprint 8: Scan Session state ──────────────────────────────────────────
-  // sessionMode is the user's toggle; session is the active batch being
-  // accumulated. Both persist: sessionMode just follows `session` existence,
-  // `session` mirrors to localStorage on every mutation so reloads recover.
-  //
-  // CRITICAL: only restore a persisted session if it belongs to THIS note.
-  // Without the noteId scope filter, every freshly-created note would
-  // resurrect a lingering session from some prior abandoned note.
-  const [session, setSession] = useState<ScanSessionState | null>(
-    () => loadSession(item.id)
-  );
-  const sessionMode = session !== null;
-
-  // Persist any session change so an accidental reload or app crash doesn't
-  // lose the user's accumulated captures.
-  useEffect(() => {
-    if (session) saveSession(session);
-    else clearSession();
-  }, [session]);
-
-  const startSession = useCallback((mode: 'document' | 'photo') => {
-    setSession({
-      sessionId: newSessionId(),
-      noteId: item.id,
-      notebookId: ctx.selectedNotebookId || null,
-      mode,
-      pages: [],
-      createdAt: new Date().toISOString(),
-    });
-    setShowScanMenu(false);
-  }, [ctx.selectedNotebookId, item.id]);
-
-  const cancelSession = useCallback(() => {
-    setSession(null);
-  }, []);
-
-  const addPageToSession = useCallback(
-    (path: string, source: ScanSessionPage['source']) => {
-      setSession(prev => {
-        if (!prev) return prev;
-        const label = path.split('/').pop() || `Page ${prev.pages.length + 1}`;
-        return {
-          ...prev,
-          pages: [
-            ...prev.pages,
-            { path, label, addedAt: new Date().toISOString(), source },
-          ],
-        };
-      });
-    },
-    [],
-  );
-
-  const reorderSessionPage = useCallback((from: number, to: number) => {
-    setSession(prev => {
-      if (!prev) return prev;
-      if (to < 0 || to >= prev.pages.length || from === to) return prev;
-      const next = prev.pages.slice();
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return { ...prev, pages: next };
-    });
-  }, []);
-
-  const deleteSessionPage = useCallback((index: number) => {
-    setSession(prev => {
-      if (!prev) return prev;
-      const next = prev.pages.slice();
-      next.splice(index, 1);
-      return { ...prev, pages: next };
-    });
-  }, []);
-
-  const finishSession = useCallback(() => {
-    // Sprint 9: the inline processBatch callback (handleSessionInline) has
-    // already inserted the merged markdown into the open editor and shown a
-    // success toast. We just clear the session here so the panel collapses
-    // and the user is back to a single-page editor.
-    setSession(null);
-  }, []);
-
-  // File-picker scan path. Sprint 9: when a note is open we run inline OCR
-  // and append the result to the current note instead of forking a new one.
-  // Session mode still accumulates pages and defers OCR to handleSessionInline.
+  // File-picker scan path. Opens a file dialog, then OCRs the selected
+  // image and inserts the result into the current note.
   const handleScan = async (mode: 'document' | 'photo') => {
     setShowScanMenu(false);
     try {
@@ -547,11 +451,6 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
       });
 
       if (selected && typeof selected === 'string') {
-        // Session mode: accumulate into the batch instead of processing now.
-        if (sessionMode) {
-          addPageToSession(selected, 'file');
-          return;
-        }
         await runInlineOcr([selected], mode);
       }
     } catch (err) {
@@ -561,10 +460,9 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
   };
 
   // Single source of truth for "OCR these images and insert the result into
-  // the open note." Used by every scan trigger:
+  // the open note." Used by:
   //   • file picker (handleScan)
-  //   • Continuity Camera single capture (runCapture)
-  //   • multi-page session finish (ScanSessionPanel processBatch callback)
+  //   • QR phone capture (QRCaptureDropdown via onCaptureReceived)
   //
   // Document mode and photo mode both flow through here — the only
   // difference is which Ollama prompt the backend uses (set via `mode`).
@@ -643,94 +541,7 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
     return { totalPages, chars };
   }, [ctx, insertScannedMarkdown]);
 
-  // Continuity Camera capture (macOS only). Sprint 9 architecture:
-  //   1. Tauri spawns the signed `continuity-camera` sidecar.
-  //   2. The sidecar shows a small "Insert from iPhone" launcher window.
-  //      The user clicks Capture; AppKit pops up a contextual menu that's
-  //      auto-populated with iPhone-side options (Take Photo, Scan
-  //      Documents, Add Sketch).
-  //   3. The user picks a mode on the iPhone screen and captures — multi-
-  //      page "Scan Documents" returns N images in one batch with no Mac
-  //      round-trip per page.
-  //   4. The sidecar saves the image(s) and returns paths via JSON on
-  //      stdout; we either accumulate them into an active scan session or
-  //      OCR them inline and insert the result at the cursor.
-  //
-  // The `mode` parameter only controls how the OCR pipeline interprets the
-  // result — it does NOT pre-select an iPhone capture mode. That choice
-  // lives entirely on the iPhone now.
-  const runCapture = async (mode: 'document' | 'photo') => {
-    ctx.addToast({
-      type: 'info',
-      title: 'Insert from iPhone',
-      message: 'Opening capture window… frame the page on your iPhone, then click Capture.',
-      duration: 4000,
-    });
 
-    // The `cameraId` and `includeNonContinuity` args are accepted by the
-    // Rust command for backward compatibility, but the new import-from-
-    // device sidecar ignores them — AppKit and the iPhone handle device
-    // selection automatically.
-    const result = await invoke<{ status: string; paths: string[]; message?: string }>(
-      'trigger_continuity_camera',
-      { cameraId: null, includeNonContinuity: false }
-    );
-
-    if (result.status !== 'ok' || result.paths.length === 0) {
-      ctx.addToast({
-        type: 'error',
-        title: 'Capture Failed',
-        message: result.message || 'No image was captured.',
-        duration: 6000,
-      });
-      return;
-    }
-
-    if (sessionMode) {
-      for (const path of result.paths) {
-        addPageToSession(path, 'continuity');
-      }
-      ctx.addToast({
-        type: 'info',
-        title: 'Pages Added',
-        message: `${result.paths.length} page${result.paths.length !== 1 ? 's' : ''} added to session.`,
-        duration: 2500,
-      });
-      return;
-    }
-
-    // Single-shot capture: OCR and insert at cursor in the open note.
-    await runInlineOcr(result.paths, mode);
-  };
-
-  // Entry point invoked from the Scan menu's Continuity Camera options.
-  // No camera picker, no list_continuity_cameras call: AppKit's import-
-  // from-device flow shows the user every paired iPhone in its own popup
-  // menu, so duplicating that on the Mac side would just add friction.
-  const handleContinuityScan = async (mode: 'document' | 'photo') => {
-    setShowScanMenu(false);
-    if (!IS_MACOS) {
-      ctx.addToast({
-        type: 'error',
-        title: 'Not Available',
-        message: 'Continuity Camera requires macOS 12+ with a paired iPhone or iPad.',
-        duration: 4000,
-      });
-      return;
-    }
-
-    try {
-      await runCapture(mode);
-    } catch (err) {
-      console.error('Continuity scan error', err);
-      ctx.addToast({
-        type: 'error',
-        title: 'Scan Error',
-        message: String(err),
-        duration: 4000,
-      });
-    }
-  };
 
   return (
     <div className={`rich-note-editor flex flex-col ${compact ? 'px-3 py-2' : 'flex-1 min-h-0 px-5 py-4'}`}>
@@ -769,25 +580,18 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
             Scan
           </button>
           
-          {showScanMenu && (
+          {showScanMenu && !showQRCapture && (
             <div className="absolute right-0 mt-2 w-60 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
-              {IS_MACOS && (
-                <>
-                  <div className="px-4 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
-                    From iPhone
-                  </div>
-                  <button
-                    onClick={() => handleContinuityScan('document')}
-                    className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                  >
-                    📱 Insert from iPhone…
-                  </button>
-                  <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-                  <div className="px-4 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
-                    From File
-                  </div>
-                </>
-              )}
+              <button
+                onClick={() => { setShowScanMenu(false); setShowQRCapture(true); }}
+                className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 font-medium"
+              >
+                📱 Scan with Phone…
+              </button>
+              <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+              <div className="px-4 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                From File
+              </div>
               <button
                 onClick={() => handleScan('document')}
                 className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -800,60 +604,17 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
               >
                 Scan Photo (Scene)
               </button>
-              {/* Sprint 8: Multi-page session mode */}
-              <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-              <div className="px-4 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
-                Multi-page Session
-              </div>
-              {sessionMode ? (
-                <button
-                  onClick={() => { cancelSession(); setShowScanMenu(false); }}
-                  className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700"
-                >
-                  Cancel Session ({session!.pages.length} pages)
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={() => startSession('document')}
-                    className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                  >
-                    Start Document Session
-                  </button>
-                  <button
-                    onClick={() => startSession('photo')}
-                    className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                  >
-                    Start Photo Session
-                  </button>
-                </>
-              )}
             </div>
+          )}
+
+          {showQRCapture && (
+            <QRCaptureDropdown
+              onCaptureReceived={insertScannedMarkdown}
+              onClose={() => setShowQRCapture(false)}
+            />
           )}
         </div>
       </div>
-
-      {/* Sprint 8: Scan Session Panel (thumbnail grid + finish button).
-          Sprint 9: the processBatch callback delegates to runInlineOcr so
-          single-capture and multi-page session flows share one code path —
-          OCR runs against /scan/ocr-batch and the merged markdown is
-          inserted into the open note at the cursor (no fork-a-new-note).
-          The panel suppresses runInlineOcr's own progress toasts by
-          providing its own onProgress handler that drives the panel's
-          progress bar. */}
-      {session && (
-        <ScanSessionPanel
-          session={session}
-          onReorder={reorderSessionPage}
-          onDelete={deleteSessionPage}
-          onFinish={finishSession}
-          onCancel={cancelSession}
-          processBatch={async (filePaths, mode, onProgress) => {
-            const r = await runInlineOcr(filePaths, mode, { onProgress });
-            return { totalPages: r?.totalPages };
-          }}
-        />
-      )}
 
       {/* BlockNote Editor */}
       <div

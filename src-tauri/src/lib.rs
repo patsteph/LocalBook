@@ -3,11 +3,6 @@ use tauri::{AppHandle, Emitter, Manager};
 use std::time::Duration;
 use std::path::PathBuf;
 use serde::Serialize;
-use notify::{Watcher, RecursiveMode, EventKind};
-use std::sync::mpsc::channel;
-
-#[cfg(target_os = "macos")]
-mod continuity;
 
 // State to track the backend process
 struct BackendState {
@@ -838,93 +833,9 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
     Ok(state)
 }
 
-fn setup_scan_watcher(app: &AppHandle) {
-    let app_handle = app.clone();
-    
-    std::thread::spawn(move || {
-        let data_dir = match app_handle.path().app_data_dir() {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-        
-        let scans_dir = data_dir.join("scans");
-        if let Err(e) = std::fs::create_dir_all(&scans_dir) {
-            eprintln!("Failed to create scans directory: {}", e);
-            return;
-        }
-        
-        println!("Setting up scan watcher on {:?}", scans_dir);
-        
-        let (tx, rx) = channel();
-        
-        let mut watcher = match notify::recommended_watcher(tx) {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("Failed to create watcher: {}", e);
-                return;
-            }
-        };
-        
-        if let Err(e) = watcher.watch(&scans_dir, RecursiveMode::NonRecursive) {
-            eprintln!("Failed to watch directory: {}", e);
-            return;
-        }
-        
-        for res in rx {
-            match res {
-                Ok(event) => {
-                    if let EventKind::Create(_) | EventKind::Modify(_) = event.kind {
-                        for path in event.paths {
-                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                let ext_lower = ext.to_lowercase();
-                                if ["jpg", "jpeg", "png", "webp"].contains(&ext_lower.as_str()) {
-                                    println!("New scan detected: {:?}", path);
-                                    
-                                    let path_str = path.to_string_lossy().to_string();
-                                    
-                                    tokio::spawn(async move {
-                                        tokio::time::sleep(Duration::from_millis(500)).await;
-                                        
-                                        let client = reqwest::Client::new();
-                                        match client.post("http://localhost:8000/scan/process")
-                                            .json(&serde_json::json!({
-                                                "file_path": path_str
-                                            }))
-                                            .send()
-                                            .await 
-                                        {
-                                            Ok(res) => {
-                                                if !res.status().is_success() {
-                                                    eprintln!("Scan API error: {}", res.status());
-                                                }
-                                            },
-                                            Err(e) => eprintln!("Failed to call Scan API: {}", e),
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                    }
-                },
-                Err(e) => eprintln!("watch error: {:?}", e),
-            }
-        }
-    });
-}
 
-// ── Continuity Camera (macOS) ────────────────────────────────────────
-//
-// v1.9.0 Sprint 9 (second iteration): the Continuity Camera flow now runs
-// *in-process* inside LocalBook.app via objc2 + AppKit bindings. See
-// `continuity.rs` for the full rationale — briefly: Apple's Insert-from-
-// iPhone routing only works for Launch Services-registered .app bundles,
-// and a single-file sidecar isn't one, so the old sidecar approach silently
-// dropped iPhone data on the floor even when the menu populated correctly.
-// The new impl installs an NSResponder on LocalBook's own main window.
-//
-// The Tauri command signature is kept backward-compatible (accepts the
-// unused `camera_id` / `include_non_continuity` params) so the frontend
-// doesn't need to change.
+
+
 
 // ─── Streaming file upload to backend ──────────────────────────────────
 // Bypasses the WebView entirely so 40MB+ files don't cause WKWebView OOM.
@@ -1061,48 +972,7 @@ async fn upload_file_streaming(
     Ok(final_result.unwrap_or(serde_json::json!({})))
 }
 
-// Serde shape the frontend already consumes. Shared between the macOS path
-// (delegated to `continuity::trigger`) and the non-macOS error path.
-#[derive(Clone, Serialize)]
-struct ContinuityResult {
-    status: String,
-    paths: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-}
 
-#[cfg(target_os = "macos")]
-impl From<continuity::ContinuityResult> for ContinuityResult {
-    fn from(r: continuity::ContinuityResult) -> Self {
-        Self {
-            status: r.status,
-            paths: r.paths,
-            message: r.message,
-        }
-    }
-}
-
-#[tauri::command]
-async fn trigger_continuity_camera(
-    app: AppHandle,
-    camera_id: Option<String>,
-    include_non_continuity: Option<bool>,
-) -> Result<ContinuityResult, String> {
-    // Legacy params are accepted for frontend-compat but ignored: device
-    // selection is handled by AppKit/iPhone in the in-process path.
-    let _ = (camera_id, include_non_continuity);
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        return Err("Continuity Camera is only available on macOS".to_string());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        continuity::trigger(app).await.map(Into::into)
-    }
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -1115,14 +985,13 @@ pub fn run() {
         .setup(|app| {
             let backend_state = setup_backend(&app.handle())?;
             app.manage(backend_state);
-            setup_scan_watcher(&app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             is_backend_ready,
             check_backend_health,
             get_backend_status,
-            trigger_continuity_camera,
             upload_file_streaming
         ])
         .build(tauri::generate_context!())

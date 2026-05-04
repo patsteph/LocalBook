@@ -109,6 +109,7 @@ init_findings_store(settings.data_dir)
 
 # NOW import API modules — stores will read the (possibly corrected) use_sqlite flag
 from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api
+from api.capture import capture_router
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
 from services.startup_checks import run_all_startup_checks
@@ -429,6 +430,7 @@ app.include_router(people.router, tags=["people"])
 app.include_router(evaluator.router, tags=["evaluator"])
 app.include_router(flashcards.router, tags=["flashcards"])
 app.include_router(scan_api.router, prefix="/scan", tags=["scan"])
+app.include_router(capture_router, prefix="/capture", tags=["capture"])
 
 @app.get("/")
 async def root():

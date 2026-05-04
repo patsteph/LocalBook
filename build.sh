@@ -189,9 +189,6 @@ else
 fi
 
 # Step 2: Install frontend dependencies
-# (The old Continuity Camera sidecar build step lived here; it was removed
-# in v1.9.0 when the iPhone-scan flow moved in-process via objc2 — no
-# separate signed helper binary is needed any more.)
 echo -e "\n${YELLOW}Step 2/3: Installing frontend dependencies...${NC}"
 npm install --silent
 echo -e "${GREEN}✓ Frontend dependencies ready${NC}"

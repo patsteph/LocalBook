@@ -4,14 +4,5 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>LocalBook needs microphone access for voice-to-text transcription using Whisper</string>
-    <key>NSCameraUsageDescription</key>
-    <string>LocalBook uses your camera for Continuity Camera — scanning documents and taking photos with your iPhone.</string>
-
-    <!-- Required by macOS 14+ for AVCaptureDevice.DiscoverySession to surface
-         iPhones / iPads as .continuityCamera devices. Without this key the
-         discovery session silently returns zero Continuity devices even when
-         the iPhone is paired and visible in Finder / Notes. -->
-    <key>NSCameraUseContinuityCameraDeviceType</key>
-    <true/>
 </dict>
 </plist>

@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>LocalBook Capture</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #16161d;
+    --surface-2: #1e1e28;
+    --border: #2a2a38;
+    --text: #e8e8f0;
+    --text-dim: #8888a0;
+    --accent: #6366f1;
+    --accent-glow: rgba(99, 102, 241, 0.3);
+    --success: #22c55e;
+    --error: #ef4444;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100dvh;
+    overflow: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    padding-top: var(--safe-top);
+    padding-bottom: var(--safe-bottom);
+  }
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(20px);
+    background: rgba(10, 10, 15, 0.85);
+    flex-shrink: 0;
+  }
+
+  .header-title {
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.3px;
+  }
+
+  .header-title span {
+    color: var(--accent);
+  }
+
+  .btn-done {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 20px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .btn-done:active { transform: scale(0.95); opacity: 0.9; }
+
+  /* ── Preview area ── */
+  .preview-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .preview-empty {
+    text-align: center;
+    color: var(--text-dim);
+  }
+
+  .preview-empty .icon {
+    font-size: 64px;
+    margin-bottom: 16px;
+    opacity: 0.5;
+  }
+
+  .preview-empty h2 {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text);
+  }
+
+  .preview-empty p {
+    font-size: 14px;
+    line-height: 1.5;
+    max-width: 280px;
+    margin: 0 auto;
+  }
+
+  .preview-image {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    display: none;
+  }
+
+  .preview-image.active { display: block; }
+
+  /* ── Thumbnail strip ── */
+  .thumb-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 20px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex-shrink: 0;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    min-height: 88px;
+  }
+
+  .thumb-strip::-webkit-scrollbar { display: none; }
+
+  .thumb-strip:empty { display: none; }
+
+  .thumb-item {
+    position: relative;
+    width: 56px;
+    height: 56px;
+    border-radius: 10px;
+    overflow: hidden;
+    flex-shrink: 0;
+    border: 2px solid var(--border);
+    cursor: pointer;
+    transition: border-color 0.2s;
+  }
+
+  .thumb-item.selected { border-color: var(--accent); }
+
+  .thumb-item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .thumb-status {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    background: var(--bg);
+  }
+
+  .thumb-status.processing {
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+
+  .thumb-counter {
+    font-size: 12px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* ── Controls ── */
+  .controls {
+    padding: 16px 20px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
+
+  .capture-btn {
+    width: 100%;
+    max-width: 320px;
+    padding: 18px 32px;
+    border: none;
+    border-radius: 16px;
+    background: linear-gradient(135deg, var(--accent), #818cf8);
+    color: white;
+    font-size: 18px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+    box-shadow: 0 4px 24px var(--accent-glow);
+    letter-spacing: -0.3px;
+  }
+
+  .capture-btn:active {
+    transform: scale(0.97);
+    box-shadow: 0 2px 12px var(--accent-glow);
+  }
+
+  .capture-btn:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  /* ── Toast ── */
+  .toast {
+    position: fixed;
+    top: calc(var(--safe-top) + 60px);
+    left: 50%;
+    transform: translateX(-50%) translateY(-20px);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 20px;
+    font-size: 14px;
+    font-weight: 500;
+    opacity: 0;
+    transition: all 0.3s ease;
+    pointer-events: none;
+    z-index: 100;
+    max-width: 90%;
+    text-align: center;
+  }
+
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  .toast.success { border-color: var(--success); color: var(--success); }
+  .toast.error { border-color: var(--error); color: var(--error); }
+
+  /* ── Done state ── */
+  .done-screen {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 40px;
+    gap: 16px;
+  }
+
+  .done-screen.active { display: flex; flex: 1; }
+
+  .done-screen .check {
+    font-size: 64px;
+    animation: scaleIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  @keyframes scaleIn {
+    0% { transform: scale(0); }
+    100% { transform: scale(1); }
+  }
+
+  .done-screen h2 {
+    font-size: 22px;
+    font-weight: 700;
+  }
+
+  .done-screen p {
+    color: var(--text-dim);
+    font-size: 15px;
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <!-- Header -->
+  <div class="header">
+    <div class="header-title">Local<span>Book</span> Capture</div>
+    <button class="btn-done" id="btn-done" onclick="finishSession()">Done</button>
+  </div>
+
+  <!-- Preview -->
+  <div class="preview-area" id="preview-area">
+    <div class="preview-empty" id="preview-empty">
+      <div class="icon">📸</div>
+      <h2>Ready to Capture</h2>
+      <p>Tap the button below to open your camera and capture a page, document, or whiteboard.</p>
+    </div>
+    <img class="preview-image" id="preview-image" alt="Last capture">
+  </div>
+
+  <!-- Thumbnail strip -->
+  <div class="thumb-strip" id="thumb-strip"></div>
+
+  <!-- Controls -->
+  <div class="controls" id="controls">
+    <button class="capture-btn" id="capture-btn" onclick="triggerCapture()">
+      📸 Capture Page
+    </button>
+  </div>
+
+  <!-- Done screen (replaces main UI) -->
+  <div class="done-screen" id="done-screen">
+    <div class="check">✅</div>
+    <h2>All Done!</h2>
+    <p id="done-summary">Your pages are being processed on your Mac.</p>
+    <p style="color: var(--text-dim); font-size: 13px; margin-top: 8px;">
+      You can close this tab.
+    </p>
+  </div>
+
+  <!-- Hidden file input -->
+  <input type="file" id="file-input" accept="image/*" capture="environment"
+         style="display:none" onchange="handleCapture(event)">
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+</div>
+
+<script>
+// ── Config injected by server ──
+const CONFIG = __CAPTURE_CONFIG__;
+
+// ── State ──
+const pages = [];       // {file, thumbUrl, status, ocrText}
+let selectedIndex = -1;
+
+// ── DOM ──
+const fileInput     = document.getElementById('file-input');
+const previewEmpty  = document.getElementById('preview-empty');
+const previewImage  = document.getElementById('preview-image');
+const thumbStrip    = document.getElementById('thumb-strip');
+const captureBtn    = document.getElementById('capture-btn');
+const doneScreen    = document.getElementById('done-screen');
+const doneSummary   = document.getElementById('done-summary');
+const toastEl       = document.getElementById('toast');
+
+// ── Capture ──
+function triggerCapture() {
+  fileInput.click();
+}
+
+async function handleCapture(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  // Reset input so same file can be recaptured
+  event.target.value = '';
+
+  // Create thumbnail
+  const thumbUrl = URL.createObjectURL(file);
+
+  const pageIndex = pages.length;
+  pages.push({
+    file,
+    thumbUrl,
+    status: 'uploading',
+    ocrText: '',
+    contentType: '',
+  });
+
+  // Update UI
+  addThumbnail(pageIndex, thumbUrl);
+  showPreview(thumbUrl);
+  updateButtonText();
+
+  // Upload
+  try {
+    const formData = new FormData();
+    formData.append('image', file, file.name);
+
+    const resp = await fetch(CONFIG.uploadUrl + '?t=' + CONFIG.token, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `Upload failed (${resp.status})`);
+    }
+
+    pages[pageIndex].status = 'processing';
+    updateThumbnailStatus(pageIndex);
+    showToast(`Page ${pageIndex + 1} uploaded — processing…`, 'info');
+  } catch (err) {
+    pages[pageIndex].status = 'error';
+    updateThumbnailStatus(pageIndex);
+    showToast(err.message, 'error');
+  }
+}
+
+// ── WebSocket (connects to Mac backend on localhost:8000) ──
+// We don't connect from the phone — the phone only uploads.
+// The Mac frontend connects to the WS to receive results.
+
+// ── UI Helpers ──
+function addThumbnail(index, url) {
+  const item = document.createElement('div');
+  item.className = 'thumb-item';
+  item.dataset.index = index;
+  item.onclick = () => selectPage(index);
+
+  const img = document.createElement('img');
+  img.src = url;
+  item.appendChild(img);
+
+  const status = document.createElement('div');
+  status.className = 'thumb-status processing';
+  status.textContent = '⏳';
+  status.id = `thumb-status-${index}`;
+  item.appendChild(status);
+
+  thumbStrip.appendChild(item);
+  thumbStrip.scrollLeft = thumbStrip.scrollWidth;
+
+  selectPage(index);
+}
+
+function updateThumbnailStatus(index) {
+  const el = document.getElementById(`thumb-status-${index}`);
+  if (!el) return;
+
+  const page = pages[index];
+  el.className = 'thumb-status';
+
+  switch (page.status) {
+    case 'uploading':
+      el.textContent = '⬆️';
+      el.classList.add('processing');
+      break;
+    case 'processing':
+      el.textContent = '🔄';
+      el.classList.add('processing');
+      break;
+    case 'complete':
+      el.textContent = '✅';
+      break;
+    case 'error':
+      el.textContent = '❌';
+      break;
+  }
+}
+
+function selectPage(index) {
+  selectedIndex = index;
+  document.querySelectorAll('.thumb-item').forEach((el, i) => {
+    el.classList.toggle('selected', i === index);
+  });
+  if (pages[index]) {
+    showPreview(pages[index].thumbUrl);
+  }
+}
+
+function showPreview(url) {
+  previewEmpty.style.display = 'none';
+  previewImage.src = url;
+  previewImage.classList.add('active');
+}
+
+function updateButtonText() {
+  const count = pages.length;
+  captureBtn.textContent = count === 0
+    ? '📸 Capture Page'
+    : `📸 Capture Next Page (${count} done)`;
+}
+
+// ── Toast ──
+let toastTimer = null;
+function showToast(message, type = 'info') {
+  toastEl.textContent = message;
+  toastEl.className = `toast show ${type}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toastEl.className = 'toast';
+  }, 3000);
+}
+
+// ── Done ──
+function finishSession() {
+  const count = pages.length;
+  if (count === 0) {
+    showToast('No pages captured yet', 'error');
+    return;
+  }
+
+  const processing = pages.filter(p => p.status === 'uploading' || p.status === 'processing').length;
+  const complete = pages.filter(p => p.status === 'complete').length;
+
+  doneSummary.textContent = processing > 0
+    ? `${count} page${count !== 1 ? 's' : ''} captured. ${processing} still processing on your Mac.`
+    : `${count} page${count !== 1 ? 's' : ''} captured and processed.`;
+
+  // Hide main UI, show done screen
+  document.getElementById('preview-area').style.display = 'none';
+  document.getElementById('thumb-strip').style.display = 'none';
+  document.getElementById('controls').style.display = 'none';
+  document.getElementById('btn-done').style.display = 'none';
+  doneScreen.classList.add('active');
+}
+
+// ── Polling for status updates ──
+// Since the phone can't connect to the Mac's WebSocket (different host),
+// we poll the session status endpoint periodically.
+let pollTimer = null;
+
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(async () => {
+    try {
+      const resp = await fetch(
+        `/capture/session/${CONFIG.sessionId}`,
+        { headers: { 'Authorization': `Bearer ${CONFIG.token}` } }
+      );
+      if (!resp.ok) return;
+      const data = await resp.json();
+
+      // Update page statuses
+      for (const page of (data.pages || [])) {
+        if (page.index < pages.length && pages[page.index].status !== page.status) {
+          pages[page.index].status = page.status;
+          pages[page.index].contentType = page.content_type || '';
+          updateThumbnailStatus(page.index);
+        }
+      }
+    } catch (err) {
+      // Silently ignore — we're on a phone, network may be flaky
+    }
+  }, 3000);
+}
+
+// Start polling after first capture
+const origHandleCapture = handleCapture;
+handleCapture = async function(event) {
+  await origHandleCapture(event);
+  startPolling();
+};
+</script>
+</body>
+</html>

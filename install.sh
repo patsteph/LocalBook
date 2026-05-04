@@ -480,10 +480,6 @@ main() {
 
         cd "$INSTALL_DIR"
 
-        # (v1.9.0: the Continuity Camera helper sidecar that used to be
-        # built here was replaced by an in-process objc2 + AppKit impl.
-        # No separate signed binary is required any more.)
-
         # Install frontend dependencies (npm ci = exact versions from lock file)
         info "Installing frontend dependencies..."
         npm ci --silent || { fail "Failed to install frontend dependencies"; exit 1; }
@@ -1024,10 +1020,6 @@ print(f'Whisper model cached at: {local_dir}')
         step 4 "Rebuilding application"
         cd "$INSTALL_DIR"
 
-        # (v1.9.0: removed the Continuity Camera sidecar rebuild step.
-        # iPhone scanning now runs in-process via objc2 + AppKit, so no
-        # separate signed helper binary or externalBin pre-flight is needed.)
-
         npm ci --silent 2>&1 | tail -1 || true
         rm -rf dist/
         info "Building Tauri application (this may take several minutes)..."
@@ -1041,7 +1033,7 @@ print(f'Whisper model cached at: {local_dir}')
             fail "Tauri build failed. See log above. Common causes:"
             fail "  • Frontend bundle errors (vite build)"
             fail "  • Code signing / entitlements mismatch"
-            fail "  • Rust/objc2 compile error in src-tauri/src/continuity.rs (macOS Continuity Camera module)"
+            fail "  • Rust compile error in src-tauri/src/"
             exit 1
         fi
         local app_path="src-tauri/target/release/bundle/macos/$APP_BUNDLE"

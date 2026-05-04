@@ -29,17 +29,75 @@ logger = logging.getLogger(__name__)
 
 # ── Prompts ─────────────────────────────────────────────────────────────────
 
+# Auto-classification (fast, ~0.5s) — determines which OCR prompt to use.
+_CLASSIFY_PROMPT = (
+    "Classify this image into ONE category. Reply with only the word:\n"
+    "document — printed or handwritten text, forms, letters, articles\n"
+    "math — equations, formulas, mathematical notation\n"
+    "whiteboard — whiteboard or blackboard with diagrams/text\n"
+    "drawing — hand-drawn illustration, sketch, diagram\n"
+    "photo — photograph of a scene, object, or person"
+)
+
+# Enhanced document OCR — handles math, color, structure
 _DOC_VISION_PROMPT = (
-    "Extract all text, diagrams, and structure from this image. "
-    "Output in markdown format."
+    "Extract ALL content from this image with high fidelity:\n"
+    "• Transcribe all text exactly, preserving structure and formatting\n"
+    "• Mathematical equations → LaTeX notation ($inline$ or $$display$$)\n"
+    "• Tables → markdown table format with alignment\n"
+    "• Handwritten text → best transcription, [unclear] for illegible parts\n"
+    "• Color annotations → note in [brackets] when meaningful "
+    "(e.g. [red underline], [highlighted in yellow])\n"
+    "• Diagrams → describe structure and labels\n"
+    "Output clean markdown. No commentary."
 )
 
 _DOC_CLEANUP_SYSTEM = "You only output the cleaned text in markdown, no preamble."
 _DOC_CLEANUP_PROMPT_TMPL = (
-    "You are an expert editor. Clean up the following OCR text. "
-    "Fix obvious typos, restore proper formatting, and remove weird artifacts. "
-    "DO NOT change the meaning or add new information.\n\n"
+    "Clean up the following OCR text. Rules:\n"
+    "• Fix typos and restore formatting\n"
+    "• PRESERVE all LaTeX math ($...$ and $$...$$) exactly\n"
+    "• PRESERVE color annotations in [brackets]\n"
+    "• PRESERVE table formatting\n"
+    "• PRESERVE [unclear] markers\n"
+    "• DO NOT add information or change meaning\n\n"
     "OCR TEXT:\n{raw}"
+)
+
+# Math-focused prompt
+_MATH_VISION_PROMPT = (
+    "This image contains mathematical content. Extract with precision:\n"
+    "• All equations in LaTeX: inline $...$ and display $$...$$\n"
+    "• Variable definitions and notation\n"
+    "• Step-by-step derivations (preserve numbered steps)\n"
+    "• Matrices and vectors in LaTeX: \\begin{pmatrix}...\\end{pmatrix}\n"
+    "• Greek letters: \\alpha, \\beta, \\gamma, etc.\n"
+    "• Surrounding explanatory text verbatim\n"
+    "Output in markdown with LaTeX math blocks."
+)
+
+# Whiteboard/blackboard prompt
+_WHITEBOARD_VISION_PROMPT = (
+    "This is a whiteboard or blackboard. Extract:\n"
+    "• All text, labels, and annotations verbatim\n"
+    "• Diagrams → describe as structured lists with relationships\n"
+    "• Arrows and connections: 'A → B', 'X connects to Y'\n"
+    "• Boxes, circles, groupings: describe containment\n"
+    "• Mathematical expressions in LaTeX\n"
+    "• Color coding: note colors when they distinguish elements\n"
+    "Output in organized markdown with sections."
+)
+
+# Drawing/sketch prompt
+_DRAWING_VISION_PROMPT = (
+    "This is a hand-drawn illustration or sketch. Describe:\n"
+    "• Overall composition and layout\n"
+    "• Individual elements with spatial relationships\n"
+    "• Labels and annotations verbatim\n"
+    "• Colors used and their significance\n"
+    "• Artistic technique observations\n"
+    "• Any text or writing present\n"
+    "Output as structured markdown description."
 )
 
 _PHOTO_VISION_PROMPT = (
@@ -57,6 +115,15 @@ _PHOTO_ENRICH_PROMPT_TMPL = (
     "Also extract 5-10 comma-separated keywords/tags.\n\n"
     "RAW SCENE:\n{raw}"
 )
+
+# Map content type → vision prompt
+_MODE_PROMPTS = {
+    "document": _DOC_VISION_PROMPT,
+    "math": _MATH_VISION_PROMPT,
+    "whiteboard": _WHITEBOARD_VISION_PROMPT,
+    "drawing": _DRAWING_VISION_PROMPT,
+    "photo": _PHOTO_VISION_PROMPT,
+}
 
 # Vision model is read dynamically from settings on each call so a runtime
 # Locker swap (or LOCALBOOK_VISION_MODEL env override) takes effect without
@@ -281,11 +348,12 @@ class ScanPipeline:
             )
             return (result.get("response", raw) or raw).strip()
 
-        # Default: document OCR
-        logger.info(f"[scan] Granite Vision (document) on {file_path}")
+        # Document / math / whiteboard / drawing — select prompt by mode
+        prompt = _MODE_PROMPTS.get(mode, _DOC_VISION_PROMPT)
+        logger.info(f"[scan] Vision ({mode}) on {file_path}")
         raw = await ollama_client.vision_describe(
             image_b64=b64_image,
-            prompt=_DOC_VISION_PROMPT,
+            prompt=prompt,
             model=_vision_model(),
             api_style="generate",
         )
@@ -297,6 +365,37 @@ class ScanPipeline:
             temperature=0.1,
         )
         return (result.get("response", raw) or raw).strip()
+
+    # ── Auto-classify + OCR (used by QR capture flow) ────────────────────────
+    async def classify_and_ocr(self, file_path: str) -> tuple:
+        """Auto-classify content type, then OCR with the right prompt.
+
+        Returns (content_type: str, ocr_text: str).
+        The vision model classifies each page (~0.5s), then the appropriate
+        mode-specific prompt is used for extraction.
+        """
+        with open(file_path, "rb") as f:
+            img_data = f.read()
+        b64_image = base64.b64encode(img_data).decode("utf-8")
+
+        # Step 1: Classify content type
+        logger.info(f"[scan] Classifying {file_path}")
+        classification = await ollama_client.vision_describe(
+            image_b64=b64_image,
+            prompt=_CLASSIFY_PROMPT,
+            model=_vision_model(),
+            api_style="generate",
+            num_predict=20,
+        )
+        content_type = classification.strip().lower().split()[0] if classification else "document"
+        if content_type not in _MODE_PROMPTS:
+            content_type = "document"
+        logger.info(f"[scan] Classified as: {content_type}")
+
+        # Step 2: OCR with mode-specific prompt
+        ocr_text = await self._ocr_one_page(file_path, mode=content_type)
+        return (content_type, ocr_text)
+
 
     # ── Helpers ──────────────────────────────────────────────────────────────
     @staticmethod
