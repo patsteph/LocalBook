@@ -1885,9 +1885,9 @@ Write the weekly wrap up now:"""
         # --- Phase 1A: Temporal block prepended to prompt ---
         # If a temporal_block was provided (from generate_morning_brief), use it.
         # Fallback: build one now so this function remains independently callable.
+        from zoneinfo import ZoneInfo
         if not temporal_block:
             from services.temporal import TemporalContext
-            from zoneinfo import ZoneInfo
             temporal_block = TemporalContext(self._get_user_timezone()).for_prompt(
                 datetime.utcnow()  # best-effort fallback
             )
