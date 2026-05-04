@@ -58,8 +58,8 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSEventModifierFlags, NSEventType, NSImage,
-    NSMenu, NSMenuItem, NSPasteboard, NSResponder, NSUserInterfaceItemIdentification,
-    NSUserInterfaceItemIdentifier, NSView, NSWindow,
+    NSMenu, NSMenuItem, NSMenuItemImportFromDeviceIdentifier, NSPasteboard, NSResponder,
+    NSUserInterfaceItemIdentification, NSUserInterfaceItemIdentifier, NSView, NSWindow,
 };
 use objc2_foundation::{NSArray, NSData, NSDictionary, NSPoint, NSRect, NSSize, NSString, NSURL};
 use serde::Serialize;
@@ -142,14 +142,21 @@ pub struct Ivars {
 // ─── ContinuityResponder — NSResponder + NSServicesMenuRequestor ─────────────
 
 define_class!(
-    // Sprint 9.2: subclass NSView (not NSResponder) so we can be a
-    // subview of contentView AND be the window's firstResponder. This
-    // guarantees AppKit's chain walk for import-from-iPhone validation
-    // reaches our `validRequestor` regardless of how Wry/WebKit wires
-    // up the WKWebView's responder chain. (Sprint 9.1 patched the chain
-    // via `contentView.setNextResponder` and that DID NOT WORK — the
-    // menu opened with a greyed-out placeholder, indicating AppKit
-    // never found a valid requestor.)
+    //   v1.9.0 Sprint 9.2: subclass NSView instead of NSResponder, add
+    //     ourselves as a 1×1 hidden subview of contentView, and call
+    //     `[window makeFirstResponder:self]` so we're the very first hop
+    //     AppKit walks. Switched to `popUpContextMenu:withEvent:forView:`.
+    //     validRequestor WAS called, but only for text services — the
+    //     Continuity Camera substitution never engaged because of the bug
+    //     fixed in Sprint 9.3.
+    //
+    //   v1.9.0 Sprint 9.3 (this revision): the placeholder identifier was
+    //     hardcoded as the literal string "NSMenuItemImportFromDeviceIdentifier"
+    //     but the actual runtime value of that AppKit extern constant is an
+    //     opaque string (NOT the symbol name). Now we import the real
+    //     `NSMenuItemImportFromDeviceIdentifier` constant from objc2-app-kit.
+    //     Also broadened `validRequestor` to return self for ANY non-nil
+    //     returnType when sendType is nil (covers images, PDFs, sketches).
     #[unsafe(super(NSView))]
     #[name = "LBContinuityResponder"]
     #[ivars = Ivars]
@@ -185,17 +192,17 @@ define_class!(
             self.ivars().validate_called.store(true, Ordering::Relaxed);
             clog!("[continuity] validRequestor sendType={} returnType={}", st_dbg, rt_dbg);
 
-            if !return_type.is_null() {
-                let image_types: Retained<NSArray<NSString>> = NSImage::imageTypes();
-                let rt: &NSString = unsafe { &*return_type };
-                let contains: bool =
-                    unsafe { msg_send![&*image_types, containsObject: rt] };
-                if contains {
-                    clog!("[continuity]   → image type matched, returning self");
-                    return self as *const _ as *mut AnyObject;
-                }
+            // Continuity Camera pattern: sendType is nil (we don't send
+            // anything TO the iPhone), returnType is non-nil (we accept
+            // the captured image/PDF back).  Return self for ANY non-nil
+            // returnType when sendType is nil — this covers Take Photo
+            // (image types), Scan Documents (PDF), and Add Sketch.
+            if send_type.is_null() && !return_type.is_null() {
+                clog!("[continuity]   → sendType=nil + returnType present → returning self");
+                return self as *const _ as *mut AnyObject;
             }
-            // Fall through to super for everything else.
+            // For text services etc. (non-nil sendType), fall through to
+            // super so the responder chain keeps walking normally.
             unsafe {
                 msg_send![
                     super(self),
@@ -526,10 +533,12 @@ unsafe fn install_and_pop(
     let placeholder: Retained<NSMenuItem> = NSMenuItem::new(mtm);
     let title = NSString::from_str("Insert from iPhone");
     placeholder.setTitle(&title);
-    // NSUserInterfaceItemIdentifier is a type alias for NSString.
-    let ident: Retained<NSUserInterfaceItemIdentifier> =
-        NSString::from_str("NSMenuItemImportFromDeviceIdentifier");
-    placeholder.setIdentifier(Some(&ident));
+    // Use the actual AppKit extern constant — its runtime string value
+    // is an opaque implementation detail and does NOT equal the symbol
+    // name.  Hardcoding the symbol name was the Sprint 9.2 bug.
+    let ident: &NSUserInterfaceItemIdentifier = NSMenuItemImportFromDeviceIdentifier;
+    clog!("[continuity] placeholder identifier = {:?}", ident.to_string());
+    placeholder.setIdentifier(Some(ident));
     menu.addItem(&placeholder);
 
     // Use the *static* +[NSMenu popUpContextMenu:withEvent:forView:] API.
