@@ -60,10 +60,50 @@ use objc2_app_kit::{
     NSResponder, NSUserInterfaceItemIdentification, NSUserInterfaceItemIdentifier, NSView,
     NSWindow,
 };
-use objc2_foundation::{NSArray, NSData, NSDictionary, NSPoint, NSString, NSURL};
+use objc2_foundation::{NSArray, NSData, NSDictionary, NSPoint, NSRect, NSSize, NSString, NSURL};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::oneshot;
+
+// ─── Diagnostic logger ───────────────────────────────────────────────────────
+//
+// Every `[continuity]` line goes both to stderr (visible in `npm run tauri
+// dev` console) AND appended to ~/Library/Logs/LocalBook/continuity.log
+// with a timestamp prefix, so the user can copy/paste it for bug reports
+// even from a release build where stderr isn't visible.
+//
+// Path follows the macOS convention for user-level app logs (same place
+// Console.app surfaces under "Log Reports").
+
+fn continuity_log_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home).join("Library/Logs/LocalBook/continuity.log")
+}
+
+fn log_line(s: &str) {
+    eprintln!("{}", s);
+    let path = continuity_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        // RFC-3339-ish timestamp without external chrono dep.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let _ = writeln!(f, "{:.3} {}", now, s);
+    }
+}
+
+macro_rules! clog {
+    ($($arg:tt)*) => { $crate::continuity::log_line(&format!($($arg)*)) };
+}
 
 #[derive(Clone, Serialize)]
 pub struct ContinuityResult {
@@ -83,11 +123,9 @@ pub struct ContinuityResult {
 pub struct ResponderState {
     /// Completion channel. `Some` until `finalize` takes it; `None` afterwards.
     sender: Option<oneshot::Sender<Result<Vec<String>, String>>>,
-    /// The responder that was content_view.nextResponder BEFORE we inserted
-    /// ourselves. Restored on finalize so we don't leak a dangling pointer.
-    prev_next: Option<Retained<NSResponder>>,
-    /// The view we patched. Held strongly so it outlives the iPhone capture.
-    content_view: Option<Retained<NSView>>,
+    /// The firstResponder that was active before we took over. Restored
+    /// in `finalize` so the WKWebView regains keyboard focus.
+    prev_first_responder: Option<Retained<NSResponder>>,
 }
 
 pub struct Ivars {
@@ -98,7 +136,15 @@ pub struct Ivars {
 // ─── ContinuityResponder — NSResponder + NSServicesMenuRequestor ─────────────
 
 define_class!(
-    #[unsafe(super(NSResponder))]
+    // Sprint 9.2: subclass NSView (not NSResponder) so we can be a
+    // subview of contentView AND be the window's firstResponder. This
+    // guarantees AppKit's chain walk for import-from-iPhone validation
+    // reaches our `validRequestor` regardless of how Wry/WebKit wires
+    // up the WKWebView's responder chain. (Sprint 9.1 patched the chain
+    // via `contentView.setNextResponder` and that DID NOT WORK — the
+    // menu opened with a greyed-out placeholder, indicating AppKit
+    // never found a valid requestor.)
+    #[unsafe(super(NSView))]
     #[name = "LBContinuityResponder"]
     #[ivars = Ivars]
     pub struct ContinuityResponder;
@@ -106,6 +152,11 @@ define_class!(
     unsafe impl NSObjectProtocol for ContinuityResponder {}
 
     impl ContinuityResponder {
+        // Required for `[window makeFirstResponder:self]` to succeed;
+        // NSView's default is NO.
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool { true }
+
         // AppKit walks the responder chain calling this when populating
         // the import-from-device menu. Returning `self` for an image return
         // type tells AppKit "this responder will receive the capture", and
@@ -114,16 +165,26 @@ define_class!(
         #[unsafe(method(validRequestorForSendType:returnType:))]
         fn valid_requestor(
             &self,
-            _send_type: *const NSString,
+            send_type: *const NSString,
             return_type: *const NSString,
         ) -> *mut AnyObject {
+            // Diagnostic: every chain-walk hit lands here. If menu still
+            // shows greyed placeholder after this prints, AppKit got our
+            // self-return but the iPhone isn't reachable; if it never
+            // prints, AppKit isn't walking through us at all.
+            let st_dbg = if send_type.is_null() { "nil".into() }
+                         else { unsafe { (*send_type).to_string() } };
+            let rt_dbg = if return_type.is_null() { "nil".into() }
+                         else { unsafe { (*return_type).to_string() } };
+            clog!("[continuity] validRequestor sendType={} returnType={}", st_dbg, rt_dbg);
+
             if !return_type.is_null() {
-                // Check whether the requested return type is an image type.
                 let image_types: Retained<NSArray<NSString>> = NSImage::imageTypes();
                 let rt: &NSString = unsafe { &*return_type };
                 let contains: bool =
                     unsafe { msg_send![&*image_types, containsObject: rt] };
                 if contains {
+                    clog!("[continuity]   → image type matched, returning self");
                     return self as *const _ as *mut AnyObject;
                 }
             }
@@ -131,7 +192,7 @@ define_class!(
             unsafe {
                 msg_send![
                     super(self),
-                    validRequestorForSendType: _send_type,
+                    validRequestorForSendType: send_type,
                     returnType: return_type
                 ]
             }
@@ -142,7 +203,9 @@ define_class!(
         // UI completes.
         #[unsafe(method(readSelectionFromPasteboard:))]
         fn read_selection(&self, pb: &NSPasteboard) -> bool {
+            clog!("[continuity] readSelection fired");
             let paths = extract_images(pb, &self.ivars().output_dir);
+            clog!("[continuity]   extracted {} path(s)", paths.len());
             let result = if paths.is_empty() {
                 Err("no image data returned from iPhone".to_string())
             } else {
@@ -166,7 +229,7 @@ define_class!(
 
 impl ContinuityResponder {
     fn new(
-        _mtm: MainThreadMarker,
+        mtm: MainThreadMarker,
         output_dir: PathBuf,
         sender: oneshot::Sender<Result<Vec<String>, String>>,
     ) -> Retained<Self> {
@@ -174,28 +237,40 @@ impl ContinuityResponder {
             output_dir,
             state: Mutex::new(ResponderState {
                 sender: Some(sender),
-                prev_next: None,
-                content_view: None,
+                prev_first_responder: None,
             }),
         };
-        let this = Self::alloc(_mtm).set_ivars(ivars);
-        unsafe { msg_send![super(this), init] }
+        let this = Self::alloc(mtm).set_ivars(ivars);
+        // NSView is initialised with -initWithFrame: (not bare init).
+        let frame = NSRect {
+            origin: NSPoint { x: 0.0, y: 0.0 },
+            size: NSSize { width: 1.0, height: 1.0 },
+        };
+        unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 
-    /// Send the result over the oneshot (if not already sent) and restore
-    /// the responder chain. Safe to call from the main thread only.
+    /// Send the result, restore firstResponder, and detach from the view
+    /// hierarchy. Main-thread only. After this returns, `self` may be
+    /// deallocated, so callers must not touch `self` afterwards.
     fn finalize(&self, result: Result<Vec<String>, String>) {
-        let mut state = self.ivars().state.lock().unwrap();
-        // Restore previous nextResponder on content view.
-        if let Some(cv) = state.content_view.take() {
-            unsafe {
-                let prev: Option<&NSResponder> = state.prev_next.as_deref();
-                cv.setNextResponder(prev);
+        let (sender, prev_first) = {
+            let mut state = self.ivars().state.lock().unwrap();
+            (state.sender.take(), state.prev_first_responder.take())
+        };
+
+        if let Some(prev) = prev_first {
+            if let Some(window) = self.window() {
+                let _ = window.makeFirstResponder(Some(&prev));
             }
         }
-        if let Some(tx) = state.sender.take() {
+
+        if let Some(tx) = sender {
             let _ = tx.send(result);
         }
+
+        // LAST. After this contentView's strong ref is dropped; if no other
+        // strong ref remains, self deallocates immediately.
+        self.removeFromSuperview();
     }
 }
 
@@ -404,21 +479,37 @@ unsafe fn install_and_pop(
             return;
         }
     };
+    clog!("[continuity] ── new session ── install_and_pop entered");
+    clog!("[continuity] log file: {}", continuity_log_path().display());
 
     let responder = ContinuityResponder::new(mtm, output_dir, tx);
 
-    // Patch the responder chain: contentView → us → (original nextResponder).
-    // Save the original so finalize() can restore it.
-    let prev_next: Option<Retained<NSResponder>> = content_view.nextResponder();
-    responder.setNextResponder(prev_next.as_deref());
-    {
-        let super_responder: &NSResponder = &*responder;
-        content_view.setNextResponder(Some(super_responder));
-    }
+    // Place a 1×1 hidden subview at the centre of contentView. addSubview
+    // retains us, so even after this function's local Retained drops, the
+    // contentView keeps us alive until finalize() removeFromSuperview's.
+    let bounds = content_view.bounds();
+    let cx = bounds.origin.x + bounds.size.width / 2.0;
+    let cy = bounds.origin.y + bounds.size.height / 2.0;
+    let frame = NSRect {
+        origin: NSPoint { x: cx - 0.5, y: cy - 0.5 },
+        size: NSSize { width: 1.0, height: 1.0 },
+    };
+    responder.setFrame(frame);
+    responder.setHidden(true);
+    content_view.addSubview(&responder);
+    clog!("[continuity] subview added at ({}, {})", cx, cy);
+
+    // Make our view the firstResponder so AppKit's chain walk for menu
+    // validation starts here. This is the critical fix vs. Sprint 9.1.
+    let prev_first: Option<Retained<NSResponder>> = window.firstResponder();
+    let became_first: bool = window.makeFirstResponder(Some(&responder));
+    clog!(
+        "[continuity] makeFirstResponder result={} (had_prev={})",
+        became_first, prev_first.is_some()
+    );
     {
         let mut state = responder.ivars().state.lock().unwrap();
-        state.content_view = Some(content_view.clone());
-        state.prev_next = prev_next;
+        state.prev_first_responder = prev_first;
     }
 
     // Build the menu. The single placeholder item is replaced by AppKit
@@ -433,27 +524,23 @@ unsafe fn install_and_pop(
     placeholder.setIdentifier(Some(&ident));
     menu.addItem(&placeholder);
 
-    // Anchor the menu at the centre of the main window's content view.
-    let bounds = content_view.bounds();
-    let point = NSPoint {
-        x: bounds.origin.x + bounds.size.width / 2.0,
-        y: bounds.origin.y + bounds.size.height / 2.0,
-    };
-    // Returns true iff the user picked an item (vs. dismissed the menu).
-    // popUpMenuPositioningItem_atLocation_inView blocks until menu close.
+    // Anchor the menu at our (centre) view's local origin. inView=our view
+    // also establishes the popup's responder context.
+    clog!("[continuity] popping menu");
+    let point = NSPoint { x: 0.0, y: 0.0 };
     let picked: bool = menu.popUpMenuPositioningItem_atLocation_inView(
         None,
         point,
-        Some(&content_view),
+        Some(&responder),
     );
+    clog!("[continuity] popUp returned picked={}", picked);
 
     if !picked {
-        // Cancelled — finalize now (also restores the responder chain).
-        responder.finalize(Err("user cancelled".to_string()));
+        responder.finalize(Err(
+            "menu had no available items — either no nearby iPhone signed in to the same Apple ID, iPhone is locked, or Continuity Camera is disabled in iPhone Settings → General → AirPlay & Handoff".to_string(),
+        ));
     }
-    // If picked, readSelection will fire asynchronously on `responder` when
-    // the iPhone returns image data. `Retained<ContinuityResponder>` dropping
-    // at function end is fine: the responder chain (window → contentView →
-    // responder) holds strong references via nextResponder retention, so the
-    // object stays alive until finalize() detaches it.
+    // If picked, contentView retains the responder via the subview slot,
+    // so the local Retained dropping here is fine. readSelection will fire
+    // asynchronously when iPhone-side capture completes.
 }
