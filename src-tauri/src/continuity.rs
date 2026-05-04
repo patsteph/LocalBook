@@ -1,419 +1,319 @@
-// ─── In-process Continuity Camera (macOS) ───────────────────────────────────
+// In-process Continuity Camera capture via AVCaptureDevice.
 //
-// This module replaces the old external `continuity-camera` Swift sidecar
-// with an in-process implementation hosted inside LocalBook.app itself.
+// REVISION HISTORY
 //
-// WHY IN-PROCESS
-// ──────────────
-// Apple's Insert-from-iPhone flow (NSMenuItem.importFromDeviceIdentifier)
-// routes captured image data back to the initiating Mac process via the
-// pasteboard-services registry. That registry keys off Launch Services-
-// registered `.app` bundles. A single-file adhoc-signed CLI sidecar is NOT
-// registered with Launch Services, so even when AppKit correctly populates
-// the menu with iPhone capture items, clicking one silently drops the data
-// on the floor. LocalBook.app, by contrast, is a proper registered bundle —
-// running the responder inside LocalBook makes routing unambiguous.
+//   v1.9.0 Sprints 9.1–9.8 (DEAD-END): tried to make
+//     NSMenuItemImportFromDeviceIdentifier work programmatically. Apple's
+//     menu-substitution machinery only fires from the menu-bar tracking
+//     loop (user physically clicks a menu bar item). Every native macOS
+//     app (TextEdit, Notes, Pages, Keynote, Finder) accepts that
+//     constraint. No popUpContextMenu, sendEvent, or popUpMenuPositioning-
+//     Item path triggers the substitution.
 //
-// FLOW
-// ────
-//   1. JS invokes `trigger_continuity_camera` (see lib.rs).
-//   2. We hop to the main thread via `AppHandle::run_on_main_thread`.
-//   3. We install a `ContinuityResponder` (NSResponder subclass conforming
-//      to NSServicesMenuRequestor) into the main window's responder chain.
-//      The responder sits between the window's contentView (typically the
-//      Tauri WKWebView) and the window itself, so AppKit's responder-chain
-//      walk from firstResponder reaches it.
-//   4. We build an NSMenu containing a single placeholder NSMenuItem whose
-//      identifier is `NSMenuItemImportFromDeviceIdentifier`. AppKit replaces
-//      this placeholder at menu-open time with one item per iPhone capture
-//      mode (Take Photo, Scan Documents, Add Sketch).
-//   5. `popUpMenuPositioningItem` pops the menu at the centre of the window
-//      and blocks the main thread until the menu closes. Return value tells
-//      us whether the user picked an item or dismissed the menu.
-//   6a. If dismissed: cleanup (restore responder chain), signal Err via the
-//       oneshot, command returns.
-//   6b. If picked: the iPhone runs its own capture UI. Eventually (seconds
-//       to minutes later) AppKit sends `readSelection:` to our responder
-//       with a pasteboard containing the captured image(s). We save to disk,
-//       restore the responder chain, and signal Ok via the oneshot.
-//   7. The tokio side of the command awaits the oneshot with a 3-minute
-//       timeout and serialises the result back to JS.
-//
-// THREAD SAFETY
-// ─────────────
-// All AppKit manipulation happens on the main thread. The oneshot sender
-// bridges to the tokio runtime — `oneshot::Sender::send` is synchronous and
-// can be called from any thread, including the AppKit main thread.
-
-#![cfg(target_os = "macos")]
+//   v1.9.0 Sprint 9.9 (this revision): pivot to AVCaptureDevice.
+//     Continuity Camera also exposes the iPhone as a regular external
+//     camera (since macOS Ventura 13). We enumerate AVCaptureDevices of
+//     type AVCaptureDeviceTypeContinuityCamera, build an AVCaptureSession
+//     with an AVCapturePhotoOutput, show our own native NSWindow with a
+//     live preview layer, and a Capture / Cancel button pair on the Mac
+//     side. This is the same mechanism browser WebRTC code uses (the
+//     iPhone is just a webcam from the OS's perspective). No menu bar
+//     hacks, no responder chain, no NSServicesMenuRequestor — just a
+//     plain capture session we drive ourselves. Required Info.plist key
+//     `NSCameraUseContinuityCameraDeviceType` is already present.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{
-    define_class, msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly,
+    define_class, msg_send, sel, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
+
 use objc2_app_kit::{
-    NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSEventModifierFlags,
-    NSEventType, NSImage, NSMenu, NSMenuItem, NSMenuItemImportFromDeviceIdentifier, NSPasteboard,
-    NSResponder, NSUserInterfaceItemIdentification, NSUserInterfaceItemIdentifier, NSView,
-    NSWindow,
+    NSBackingStoreType, NSBezelStyle, NSButton, NSColor, NSScreen, NSTextAlignment, NSTextField,
+    NSView, NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{NSArray, NSData, NSDictionary, NSPoint, NSRect, NSSize, NSString, NSURL};
+use objc2_av_foundation::{
+    AVCaptureDevice, AVCaptureDeviceDiscoverySession, AVCaptureDeviceInput,
+    AVCaptureDeviceType, AVCaptureDeviceTypeContinuityCamera, AVCapturePhoto,
+    AVCapturePhotoCaptureDelegate, AVCapturePhotoOutput, AVCapturePhotoSettings, AVCaptureSession,
+    AVCaptureSessionPresetPhoto, AVCaptureVideoPreviewLayer, AVMediaTypeVideo,
+};
+use objc2_foundation::{NSArray, NSData, NSError, NSPoint, NSRect, NSSize, NSString};
+use objc2_quartz_core::CALayer;
+
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::oneshot;
 
 // ─── Diagnostic logger ───────────────────────────────────────────────────────
 //
-// Every `[continuity]` line goes both to stderr (visible in `npm run tauri
-// dev` console) AND appended to ~/Library/Logs/LocalBook/continuity.log
-// with a timestamp prefix, so the user can copy/paste it for bug reports
-// even from a release build where stderr isn't visible.
-//
-// Path follows the macOS convention for user-level app logs (same place
-// Console.app surfaces under "Log Reports").
+// Every `[continuity]` line goes both to stderr AND appended to
+// ~/Library/Logs/LocalBook/continuity.log so multi-step issues stay
+// post-mortem-able.
 
 fn continuity_log_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join("Library/Logs/LocalBook/continuity.log")
+    if let Some(home) = dirs_home() {
+        let dir = home.join("Library").join("Logs").join("LocalBook");
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("continuity.log")
+    } else {
+        PathBuf::from("/tmp/localbook-continuity.log")
+    }
 }
 
-fn log_line(s: &str) {
-    eprintln!("{}", s);
-    let path = continuity_log_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+fn log_line(line: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| format!("{}.{:03}", d.as_secs(), d.subsec_millis()))
+        .unwrap_or_else(|_| "?".to_string());
+    let stamped = format!("{ts} {line}\n");
+    eprint!("{stamped}");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&path)
+        .open(continuity_log_path())
     {
         use std::io::Write;
-        // RFC-3339-ish timestamp without external chrono dep.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
-        let _ = writeln!(f, "{:.3} {}", now, s);
+        let _ = f.write_all(stamped.as_bytes());
     }
 }
 
 macro_rules! clog {
-    ($($arg:tt)*) => { $crate::continuity::log_line(&format!($($arg)*)) };
+    ($($arg:tt)*) => {{
+        log_line(&format!($($arg)*));
+    }};
 }
 
-#[derive(Clone, Serialize)]
+// ─── Result type returned to JS via Tauri command ────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ContinuityResult {
     pub status: String,
     pub paths: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
 
-// ─── Responder ivars ─────────────────────────────────────────────────────────
-//
-// All fields are only touched on the main thread (AppKit callbacks) or via
-// the main-thread install/finalize helpers. We use Mutex for interior
-// mutability because `Retained<NSView>` is !Send but the mutex still gives
-// us a clean borrow API; the lock is uncontested in practice.
+// ─── CapturePhotoDelegate — receives the JPEG bytes after capturePhoto: ──────
 
-pub struct ResponderState {
-    /// Completion channel. `Some` until `finalize` takes it; `None` afterwards.
-    sender: Option<oneshot::Sender<Result<Vec<String>, String>>>,
-    /// The firstResponder that was active before we took over. Restored
-    /// in `finalize` so the WKWebView regains keyboard focus.
-    prev_first_responder: Option<Retained<NSResponder>>,
-}
-
-pub struct Ivars {
+pub struct DelegateIvars {
     output_dir: PathBuf,
-    state: Mutex<ResponderState>,
-    /// Flipped to true the first time AppKit calls validRequestor on us.
-    /// If this stays false after the menu closes, AppKit never asked the
-    /// responder chain whether we can accept image data — i.e. the
-    /// import-from-iPhone substitution machinery never engaged.
-    validate_called: AtomicBool,
+    controller: Mutex<Option<Retained<CaptureController>>>,
 }
-
-// ─── ContinuityResponder — NSResponder + NSServicesMenuRequestor ─────────────
 
 define_class!(
-    //   v1.9.0 Sprint 9.2: subclass NSView instead of NSResponder, add
-    //     ourselves as a 1×1 hidden subview of contentView, and call
-    //     `[window makeFirstResponder:self]` so we're the very first hop
-    //     AppKit walks. Switched to `popUpContextMenu:withEvent:forView:`.
-    //     validRequestor WAS called, but only for text services — the
-    //     Continuity Camera substitution never engaged because of the bug
-    //     fixed in Sprint 9.3.
-    //
-    //   v1.9.0 Sprint 9.3 (this revision): the placeholder identifier was
-    //     hardcoded as the literal string "NSMenuItemImportFromDeviceIdentifier"
-    //     but the actual runtime value of that AppKit extern constant is an
-    //     opaque string (NOT the symbol name). Now we import the real
-    //     `NSMenuItemImportFromDeviceIdentifier` constant from objc2-app-kit.
-    //     Also broadened `validRequestor` to return self for ANY non-nil
-    //     returnType when sendType is nil (covers images, PDFs, sketches).
-    #[unsafe(super(NSView))]
-    #[name = "LBContinuityResponder"]
-    #[ivars = Ivars]
-    pub struct ContinuityResponder;
+    #[unsafe(super(NSObject))]
+    #[name = "LBCapturePhotoDelegate"]
+    #[ivars = DelegateIvars]
+    pub struct CapturePhotoDelegate;
 
-    unsafe impl NSObjectProtocol for ContinuityResponder {}
+    unsafe impl NSObjectProtocol for CapturePhotoDelegate {}
 
-    impl ContinuityResponder {
-        // Required for `[window makeFirstResponder:self]` to succeed;
-        // NSView's default is NO.
-        #[unsafe(method(acceptsFirstResponder))]
-        fn accepts_first_responder(&self) -> bool { true }
-
-        // AppKit walks the responder chain calling this when populating
-        // the import-from-device menu. Returning `self` for an image return
-        // type tells AppKit "this responder will receive the capture", and
-        // AppKit then inserts iPhone capture items in place of the
-        // NSMenuItemImportFromDeviceIdentifier placeholder.
-        #[unsafe(method(validRequestorForSendType:returnType:))]
-        fn valid_requestor(
+    unsafe impl AVCapturePhotoCaptureDelegate for CapturePhotoDelegate {
+        // Called on a "common" (non-main) dispatch queue once the photo is
+        // ready. We grab the JPEG bytes, write to disk, and tell the
+        // controller (on the main thread) to finalize.
+        #[unsafe(method(captureOutput:didFinishProcessingPhoto:error:))]
+        unsafe fn did_finish_processing_photo(
             &self,
-            send_type: *const NSString,
-            return_type: *const NSString,
-        ) -> *mut AnyObject {
-            // Diagnostic: every chain-walk hit lands here. If menu still
-            // shows greyed placeholder after this prints, AppKit got our
-            // self-return but the iPhone isn't reachable; if it never
-            // prints, AppKit isn't walking through us at all.
-            let st_dbg = if send_type.is_null() { "nil".into() }
-                         else { unsafe { (*send_type).to_string() } };
-            let rt_dbg = if return_type.is_null() { "nil".into() }
-                         else { unsafe { (*return_type).to_string() } };
-            self.ivars().validate_called.store(true, Ordering::Relaxed);
-            clog!("[continuity] validRequestor sendType={} returnType={}", st_dbg, rt_dbg);
-
-            // Continuity Camera pattern: sendType is nil (we don't send
-            // anything TO the iPhone), returnType is non-nil (we accept
-            // the captured image/PDF back).  Return self for ANY non-nil
-            // returnType when sendType is nil — this covers Take Photo
-            // (image types), Scan Documents (PDF), and Add Sketch.
-            if send_type.is_null() && !return_type.is_null() {
-                clog!("[continuity]   → sendType=nil + returnType present → returning self");
-                return self as *const _ as *mut AnyObject;
+            _output: &AVCapturePhotoOutput,
+            photo: &AVCapturePhoto,
+            error: Option<&NSError>,
+        ) {
+            if let Some(err) = error {
+                let msg = err.localizedDescription().to_string();
+                clog!("[continuity] capture error: {msg}");
+                self.report_failure(format!("capture error: {msg}"));
+                return;
             }
-            // For text services etc. (non-nil sendType), fall through to
-            // super so the responder chain keeps walking normally.
-            unsafe {
-                msg_send![
-                    super(self),
-                    validRequestorForSendType: send_type,
-                    returnType: return_type
-                ]
-            }
-        }
 
-        // NSServicesMenuRequestor — AppKit calls this with a pasteboard
-        // containing the iPhone's captured image(s) once the iPhone-side
-        // UI completes.
-        #[unsafe(method(readSelectionFromPasteboard:))]
-        fn read_selection(&self, pb: &NSPasteboard) -> bool {
-            clog!("[continuity] readSelection fired");
-            let paths = extract_images(pb, &self.ivars().output_dir);
-            clog!("[continuity]   extracted {} path(s)", paths.len());
-            let result = if paths.is_empty() {
-                Err("no image data returned from iPhone".to_string())
-            } else {
-                Ok(paths)
+            let data: Option<Retained<NSData>> = unsafe { photo.fileDataRepresentation() };
+            let Some(data) = data else {
+                clog!("[continuity] photo has no fileDataRepresentation");
+                self.report_failure("photo has no file representation".into());
+                return;
             };
-            self.finalize(result);
-            true
-        }
 
-        // Protocol-required but unused — we never send selection data out.
-        #[unsafe(method(writeSelectionToPasteboard:types:))]
-        fn write_selection(
-            &self,
-            _pb: &NSPasteboard,
-            _types: &NSArray<NSString>,
-        ) -> bool {
-            false
+            let dir = self.ivars().output_dir.clone();
+            let path = next_filename(&dir, "jpg");
+            match write_nsdata_to_disk(&data, &path) {
+                Ok(()) => {
+                    clog!("[continuity] saved {} bytes to {}", data.length(), path.display());
+                    let path_str = path.to_string_lossy().to_string();
+                    self.report_success(vec![path_str]);
+                }
+                Err(e) => {
+                    clog!("[continuity] write failed: {e}");
+                    self.report_failure(format!("failed to write capture: {e}"));
+                }
+            }
         }
     }
 );
 
-impl ContinuityResponder {
-    fn new(
-        mtm: MainThreadMarker,
-        output_dir: PathBuf,
-        sender: oneshot::Sender<Result<Vec<String>, String>>,
-    ) -> Retained<Self> {
-        let ivars = Ivars {
+impl CapturePhotoDelegate {
+    fn new(mtm: MainThreadMarker, output_dir: PathBuf) -> Retained<Self> {
+        let _ = mtm; // delegate itself is not main-thread-only
+        let ivars = DelegateIvars {
             output_dir,
-            state: Mutex::new(ResponderState {
-                sender: Some(sender),
-                prev_first_responder: None,
-            }),
-            validate_called: AtomicBool::new(false),
+            controller: Mutex::new(None),
         };
-        let this = Self::alloc(mtm).set_ivars(ivars);
-        // NSView is initialised with -initWithFrame: (not bare init).
-        let frame = NSRect {
-            origin: NSPoint { x: 0.0, y: 0.0 },
-            size: NSSize { width: 1.0, height: 1.0 },
-        };
-        unsafe { msg_send![super(this), initWithFrame: frame] }
+        let this = Self::alloc().set_ivars(ivars);
+        unsafe { msg_send![super(this), init] }
     }
 
-    /// Send the result, restore firstResponder, and detach from the view
-    /// hierarchy. Main-thread only. After this returns, `self` may be
-    /// deallocated, so callers must not touch `self` afterwards.
-    fn finalize(&self, result: Result<Vec<String>, String>) {
-        let (sender, prev_first) = {
-            let mut state = self.ivars().state.lock().unwrap();
-            (state.sender.take(), state.prev_first_responder.take())
-        };
+    fn set_controller(&self, controller: Retained<CaptureController>) {
+        *self.ivars().controller.lock().unwrap() = Some(controller);
+    }
 
-        if let Some(prev) = prev_first {
-            if let Some(window) = self.window() {
-                let _ = window.makeFirstResponder(Some(&prev));
-            }
+    fn report_success(&self, paths: Vec<String>) {
+        if let Some(ctrl) = self.ivars().controller.lock().unwrap().as_ref() {
+            ctrl.dispatch_finalize(Ok(paths));
+        }
+    }
+
+    fn report_failure(&self, msg: String) {
+        if let Some(ctrl) = self.ivars().controller.lock().unwrap().as_ref() {
+            ctrl.dispatch_finalize(Err(msg));
+        }
+    }
+}
+
+// ─── CaptureController — owns NSWindow, session, button targets ──────────────
+
+pub struct ControllerIvars {
+    window: Mutex<Option<Retained<NSWindow>>>,
+    session: Mutex<Option<Retained<AVCaptureSession>>>,
+    photo_output: Mutex<Option<Retained<AVCapturePhotoOutput>>>,
+    delegate: Mutex<Option<Retained<CapturePhotoDelegate>>>,
+    sender: Mutex<Option<oneshot::Sender<Result<Vec<String>, String>>>>,
+    finalized: AtomicBool,
+    // Holds the pending result while we hop from a background queue back
+    // onto the main thread via `performSelectorOnMainThread:`.
+    pending_result: Mutex<Option<Result<Vec<String>, String>>>,
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[name = "LBCaptureController"]
+    #[ivars = ControllerIvars]
+    #[thread_kind = MainThreadOnly]
+    pub struct CaptureController;
+
+    unsafe impl NSObjectProtocol for CaptureController {}
+
+    impl CaptureController {
+        // Capture button action (main thread).
+        #[unsafe(method(capturePressed:))]
+        fn capture_pressed(&self, _sender: *mut AnyObject) {
+            clog!("[continuity] Capture button pressed");
+            self.do_capture();
         }
 
+        // Cancel button action (main thread).
+        #[unsafe(method(cancelPressed:))]
+        fn cancel_pressed(&self, _sender: *mut AnyObject) {
+            clog!("[continuity] Cancel button pressed");
+            self.finalize(Err("capture cancelled".into()));
+        }
+
+        // Hop-target for `performSelectorOnMainThread:`. Called by the
+        // photo-capture delegate from a background queue; we run the
+        // actual finalize on the main thread.
+        #[unsafe(method(applyPendingResult))]
+        fn apply_pending_result(&self) {
+            let pending = self.ivars().pending_result.lock().unwrap().take();
+            if let Some(result) = pending {
+                self.finalize(result);
+            }
+        }
+    }
+);
+
+impl CaptureController {
+    fn new(mtm: MainThreadMarker, sender: oneshot::Sender<Result<Vec<String>, String>>) -> Retained<Self> {
+        let ivars = ControllerIvars {
+            window: Mutex::new(None),
+            session: Mutex::new(None),
+            photo_output: Mutex::new(None),
+            delegate: Mutex::new(None),
+            sender: Mutex::new(Some(sender)),
+            finalized: AtomicBool::new(false),
+            pending_result: Mutex::new(None),
+        };
+        let this = Self::alloc(mtm).set_ivars(ivars);
+        unsafe { msg_send![super(this), init] }
+    }
+
+    /// Trigger the actual photo capture. Main thread.
+    fn do_capture(&self) {
+        let photo_output = self.ivars().photo_output.lock().unwrap().clone();
+        let delegate = self.ivars().delegate.lock().unwrap().clone();
+        let (Some(output), Some(delegate)) = (photo_output, delegate) else {
+            clog!("[continuity] do_capture: missing output or delegate");
+            self.finalize(Err("internal: missing capture pipeline".into()));
+            return;
+        };
+
+        // Default settings = JPEG / HEIF baseline.
+        let settings: Retained<AVCapturePhotoSettings> =
+            unsafe { AVCapturePhotoSettings::photoSettings() };
+        let proto: &ProtocolObject<dyn AVCapturePhotoCaptureDelegate> =
+            ProtocolObject::from_ref(&*delegate);
+        clog!("[continuity] dispatching capturePhotoWithSettings:delegate:");
+        unsafe { output.capturePhotoWithSettings_delegate(&settings, proto) };
+    }
+
+    /// Called from any thread; if we're not on main, marshal via
+    /// `performSelectorOnMainThread:`.
+    fn dispatch_finalize(&self, result: Result<Vec<String>, String>) {
+        // Stash the result so the main-thread method can pick it up.
+        *self.ivars().pending_result.lock().unwrap() = Some(result);
+        let sel = sel!(applyPendingResult);
+        unsafe {
+            let _: () = msg_send![
+                self,
+                performSelectorOnMainThread: sel,
+                withObject: std::ptr::null::<AnyObject>(),
+                waitUntilDone: false
+            ];
+        }
+    }
+
+    /// Tear down the session, close the window, send the result. Main thread.
+    fn finalize(&self, result: Result<Vec<String>, String>) {
+        if self.ivars().finalized.swap(true, Ordering::SeqCst) {
+            // Already finalized; ignore double-cancel etc.
+            return;
+        }
+        clog!(
+            "[continuity] finalize: {}",
+            match &result {
+                Ok(p) => format!("ok ({} path(s))", p.len()),
+                Err(e) => format!("err: {e}"),
+            }
+        );
+
+        if let Some(session) = self.ivars().session.lock().unwrap().take() {
+            unsafe { session.stopRunning() };
+        }
+        if let Some(window) = self.ivars().window.lock().unwrap().take() {
+            window.orderOut(None);
+            window.close();
+        }
+
+        let sender = self.ivars().sender.lock().unwrap().take();
         if let Some(tx) = sender {
             let _ = tx.send(result);
         }
-
-        // LAST. After this contentView's strong ref is dropped; if no other
-        // strong ref remains, self deallocates immediately.
-        self.removeFromSuperview();
     }
-}
-
-// ─── Pasteboard → disk ───────────────────────────────────────────────────────
-//
-// Continuity Camera delivers captured images as either:
-//   (a) NSURL file references (common for Scan Documents — returns one
-//       NSURL per page), or
-//   (b) NSImage objects (common for Take Photo and Add Sketch).
-// We try (a) first and fall back to (b). Both paths produce JPEG files in
-// the output directory; the OCR pipeline accepts either.
-
-fn extract_images(pb: &NSPasteboard, output_dir: &Path) -> Vec<String> {
-    let mut paths = Vec::new();
-
-    // --- Attempt 1: file URLs
-    let url_class: &AnyObject = unsafe { &*(NSURL::class() as *const _ as *const AnyObject) };
-    let url_classes: Retained<NSArray<AnyObject>> = NSArray::from_retained_slice(&[
-        unsafe { Retained::retain(url_class as *const AnyObject as *mut AnyObject).unwrap() },
-    ]);
-    let url_objects: Option<Retained<NSArray<AnyObject>>> = unsafe {
-        msg_send![
-            pb,
-            readObjectsForClasses: &*url_classes,
-            options: std::ptr::null::<NSDictionary<NSString, AnyObject>>()
-        ]
-    };
-    if let Some(arr) = url_objects {
-        let count: usize = unsafe { msg_send![&*arr, count] };
-        for i in 0..count {
-            let obj: *mut AnyObject = unsafe { msg_send![&*arr, objectAtIndex: i] };
-            if obj.is_null() {
-                continue;
-            }
-            let url: &NSURL = unsafe { &*(obj as *const NSURL) };
-            if let Some(path) = copy_file_url(url, output_dir) {
-                paths.push(path);
-            }
-        }
-    }
-    if !paths.is_empty() {
-        return paths;
-    }
-
-    // --- Attempt 2: NSImage objects
-    let img_class: &AnyObject = unsafe { &*(NSImage::class() as *const _ as *const AnyObject) };
-    let img_classes: Retained<NSArray<AnyObject>> = NSArray::from_retained_slice(&[
-        unsafe { Retained::retain(img_class as *const AnyObject as *mut AnyObject).unwrap() },
-    ]);
-    let img_objects: Option<Retained<NSArray<AnyObject>>> = unsafe {
-        msg_send![
-            pb,
-            readObjectsForClasses: &*img_classes,
-            options: std::ptr::null::<NSDictionary<NSString, AnyObject>>()
-        ]
-    };
-    if let Some(arr) = img_objects {
-        let count: usize = unsafe { msg_send![&*arr, count] };
-        for i in 0..count {
-            let obj: *mut AnyObject = unsafe { msg_send![&*arr, objectAtIndex: i] };
-            if obj.is_null() {
-                continue;
-            }
-            let image: &NSImage = unsafe { &*(obj as *const NSImage) };
-            if let Some(path) = save_image_as_jpeg(image, output_dir) {
-                paths.push(path);
-            }
-        }
-    }
-
-    paths
-}
-
-/// Unique per-capture filename. We don't depend on `uuid`, so we synth from
-/// wall-clock ns plus an atomic counter to avoid collisions within a single
-/// multi-page Scan Documents result.
-fn next_filename(output_dir: &Path, ext: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    output_dir.join(format!("continuity_{}_{:04}.{}", ns, seq, ext))
-}
-
-fn copy_file_url(url: &NSURL, output_dir: &Path) -> Option<String> {
-    let src_path_ns: Option<Retained<NSString>> = unsafe { msg_send![url, path] };
-    let src_path = src_path_ns?.to_string();
-    let ext = Path::new(&src_path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("jpg")
-        .to_string();
-    let dst = next_filename(output_dir, &ext);
-    std::fs::copy(&src_path, &dst).ok()?;
-    Some(dst.to_string_lossy().to_string())
-}
-
-fn save_image_as_jpeg(image: &NSImage, output_dir: &Path) -> Option<String> {
-    // NSImage → TIFF bytes → NSBitmapImageRep → JPEG bytes → disk.
-    let tiff: Option<Retained<NSData>> = unsafe { msg_send![image, TIFFRepresentation] };
-    let tiff = tiff?;
-    let bitmap: Option<Retained<NSBitmapImageRep>> = unsafe {
-        msg_send![NSBitmapImageRep::class(), imageRepWithData: &*tiff]
-    };
-    let bitmap = bitmap?;
-    let props: Retained<NSDictionary<NSString, AnyObject>> = NSDictionary::new();
-    let jpeg_type: usize = NSBitmapImageFileType::JPEG.0 as usize;
-    let jpeg: Option<Retained<NSData>> = unsafe {
-        msg_send![
-            &*bitmap,
-            representationUsingType: jpeg_type,
-            properties: &*props
-        ]
-    };
-    let jpeg = jpeg?;
-    let bytes_ptr: *const u8 = unsafe { msg_send![&*jpeg, bytes] };
-    let length: usize = unsafe { msg_send![&*jpeg, length] };
-    if bytes_ptr.is_null() || length == 0 {
-        return None;
-    }
-    let slice = unsafe { std::slice::from_raw_parts(bytes_ptr, length) };
-    let dst = next_filename(output_dir, "jpg");
-    std::fs::write(&dst, slice).ok()?;
-    Some(dst.to_string_lossy().to_string())
 }
 
 // ─── Public entry point ──────────────────────────────────────────────────────
@@ -426,33 +326,19 @@ pub async fn trigger<R: Runtime>(app: AppHandle<R>) -> Result<ContinuityResult, 
     let output_dir = data_dir.join("scans").join("continuity");
     std::fs::create_dir_all(&output_dir).map_err(|e| format!("mkdir: {e}"))?;
 
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window not found".to_string())?;
-    // Tauri returns a *mut c_void that is actually a *mut NSWindow. We pass
-    // it to the main-thread closure as `usize` (Send) and cast back there.
-    let ns_window_addr = window.ns_window().map_err(|e| format!("ns_window: {e}"))? as usize;
-
     let (tx, rx) = oneshot::channel::<Result<Vec<String>, String>>();
+    let output_dir_cloned = output_dir.clone();
 
-    let output_dir_clone = output_dir.clone();
     app.run_on_main_thread(move || {
-        // SAFETY: run_on_main_thread contract guarantees main-thread execution.
+        // SAFETY: run_on_main_thread guarantees main-thread execution.
         unsafe {
             let mtm = MainThreadMarker::new_unchecked();
-            if ns_window_addr == 0 {
-                let _ = tx.send(Err("null ns_window".into()));
-                return;
-            }
-            let window_ptr = ns_window_addr as *mut NSWindow;
-            let window: &NSWindow = &*window_ptr;
-            install_and_pop(mtm, window, output_dir_clone, tx);
+            install_capture_window(mtm, output_dir_cloned, tx);
         }
     })
     .map_err(|e| format!("run_on_main_thread: {e}"))?;
 
-    // 3 min budget is generous but bounded — covers slow iPhone auth / capture
-    // without leaking a forever-pending command if the iPhone never responds.
+    // 3-min budget — covers slow iPhone wake-up + auth + framing.
     match tokio::time::timeout(std::time::Duration::from_secs(180), rx).await {
         Ok(Ok(Ok(paths))) => Ok(ContinuityResult {
             status: "ok".into(),
@@ -472,169 +358,294 @@ pub async fn trigger<R: Runtime>(app: AppHandle<R>) -> Result<ContinuityResult, 
         Err(_) => Ok(ContinuityResult {
             status: "error".into(),
             paths: vec![],
-            message: Some(
-                "capture timed out — no iPhone response within 3 minutes".into(),
-            ),
+            message: Some("capture timed out — no iPhone response within 3 minutes".into()),
         }),
     }
 }
 
-/// Must be called on the main thread. Installs the responder, pops the menu,
-/// and either finalises immediately (user dismissed) or leaves the responder
-/// in place to receive readSelection asynchronously.
-unsafe fn install_and_pop(
+// ─── Setup: discover device, build session, show window ──────────────────────
+
+unsafe fn install_capture_window(
     mtm: MainThreadMarker,
-    window: &NSWindow,
     output_dir: PathBuf,
     tx: oneshot::Sender<Result<Vec<String>, String>>,
 ) {
-    let content_view: Retained<NSView> = match window.contentView() {
-        Some(v) => v,
-        None => {
-            let _ = tx.send(Err("window has no contentView".into()));
-            return;
-        }
-    };
-    clog!("[continuity] ── new session ── install_and_pop entered");
+    clog!("[continuity] ── new session ── install_capture_window entered");
     clog!("[continuity] log file: {}", continuity_log_path().display());
 
-    let responder = ContinuityResponder::new(mtm, output_dir, tx);
+    let controller = CaptureController::new(mtm, tx);
 
-    // Sprint 9.5: cover the ENTIRE contentView so the synthesised right-
-    // click hit-tests to our view (AppKit routes mouse events to the
-    // topmost subview under the cursor).
-    let bounds = content_view.bounds();
-    responder.setFrame(bounds);
-    // Transparent so the user doesn't see it, but NOT hidden (hidden
-    // views don't receive mouse events).
-    let _: () = unsafe { msg_send![&*responder, setAlphaValue: 0.01_f64] };
-    content_view.addSubview(&responder);
-    clog!(
-        "[continuity] overlay subview added ({}×{})",
-        bounds.size.width, bounds.size.height
-    );
-
-    // Make our view the firstResponder so AppKit's responder-chain walk
-    // for menu validation starts here.
-    let prev_first: Option<Retained<NSResponder>> = window.firstResponder();
-    let became_first: bool = window.makeFirstResponder(Some(&responder));
-    clog!(
-        "[continuity] makeFirstResponder result={} (had_prev={})",
-        became_first, prev_first.is_some()
-    );
-    {
-        let mut state = responder.ivars().state.lock().unwrap();
-        state.prev_first_responder = prev_first;
-    }
-
-    // Build the menu with the magic placeholder. Set it as the view's
-    // context menu so that the default `menuForEvent:` returns it when
-    // AppKit processes the right-click.
-    let menu: Retained<NSMenu> = NSMenu::new(mtm);
-    let placeholder: Retained<NSMenuItem> = NSMenuItem::new(mtm);
-    let title = NSString::from_str("Import from Device");
-    placeholder.setTitle(&title);
-    let ident: &NSUserInterfaceItemIdentifier = NSMenuItemImportFromDeviceIdentifier;
-    clog!("[continuity] placeholder identifier = {:?}", ident.to_string());
-    placeholder.setIdentifier(Some(ident));
-    menu.addItem(&placeholder);
-    let _: () = unsafe { msg_send![&*responder, setMenu: &*menu] };
-    clog!("[continuity] menu set on responder view");
-
-    // Sprint 9.5 — THE KEY FIX: send a real RightMouseDown through
-    // [NSApp sendEvent:] so AppKit runs the full context-menu path:
-    //
-    //   NSApp sendEvent:  →  NSWindow sendEvent:
-    //     →  hit-test finds our overlay view
-    //     →  [view rightMouseDown:]
-    //     →  [view menuForEvent:]  (returns our menu with placeholder)
-    //     →  AppKit performs importFromDeviceIdentifier substitution
-    //     →  [NSMenu popUpContextMenu:withEvent:forView:] (blocks)
-    //
-    // This is the exact same code path TextEdit / Notes use for their
-    // right-click "Insert from iPhone" submenu. Our previous approach
-    // called popUpContextMenu directly, which SKIPPED the substitution.
-    let cx = bounds.origin.x + bounds.size.width / 2.0;
-    let cy = bounds.origin.y + bounds.size.height / 2.0;
-    let window_number: isize = window.windowNumber();
-    clog!(
-        "[continuity] synthesising RightMouseDown at window-coord ({}, {}), windowNumber={}",
-        cx, cy, window_number
-    );
-    let event_opt: Option<Retained<NSEvent>> =
-        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-            NSEventType::RightMouseDown,
-            NSPoint { x: cx, y: cy },
-            NSEventModifierFlags::empty(),
-            0.0,
-            window_number,
-            None,
-            0,
-            1,
-            1.0,
-        );
-    let event = match event_opt {
-        Some(e) => e,
-        None => {
-            clog!("[continuity] FAILED to synthesise NSEvent");
-            responder.finalize(Err("failed to synthesise RightMouseDown event".into()));
-            return;
-        }
+    // 1. Discover Continuity Camera devices.
+    let continuity_type: &AVCaptureDeviceType = unsafe { AVCaptureDeviceTypeContinuityCamera };
+    let device_types: Retained<NSArray<AVCaptureDeviceType>> =
+        NSArray::from_slice(&[continuity_type]);
+    let media_type: Option<&NSString> = unsafe { AVMediaTypeVideo };
+    let session_d: Retained<AVCaptureDeviceDiscoverySession> = unsafe {
+        AVCaptureDeviceDiscoverySession::discoverySessionWithDeviceTypes_mediaType_position(
+            &device_types,
+            media_type,
+            objc2_av_foundation::AVCaptureDevicePosition::Unspecified,
+        )
     };
+    let devices: Retained<NSArray<AVCaptureDevice>> = unsafe { session_d.devices() };
+    let count = devices.count();
+    clog!("[continuity] found {count} Continuity Camera device(s)");
 
-    let app = NSApplication::sharedApplication(mtm);
-    clog!("[continuity] sending RightMouseDown via [NSApp sendEvent:]");
-    app.sendEvent(&event);
-    clog!("[continuity] sendEvent returned");
-
-    // After the context menu closes, dump menu state for diagnostics.
-    let validated = responder.ivars().validate_called.load(Ordering::Relaxed);
-    clog!(
-        "[continuity] validRequestor was called: {}",
-        validated
-    );
-    let item_count: isize = unsafe { msg_send![&*menu, numberOfItems] };
-    clog!("[continuity] menu now has {} item(s):", item_count);
-    for i in 0..item_count {
-        let item: *mut AnyObject = unsafe { msg_send![&*menu, itemAtIndex: i] };
-        if !item.is_null() {
-            let t: Option<Retained<NSString>> = unsafe { msg_send![item, title] };
-            let enabled: bool = unsafe { msg_send![item, isEnabled] };
-            let has_sub: bool = unsafe { msg_send![item, hasSubmenu] };
-            clog!(
-                "[continuity]   [{}] title={:?} enabled={} hasSubmenu={}",
-                i,
-                t.as_ref().map(|s| s.to_string()),
-                enabled,
-                has_sub,
-            );
-            if has_sub {
-                let sub: *mut AnyObject = unsafe { msg_send![item, submenu] };
-                if !sub.is_null() {
-                    let sub_count: isize = unsafe { msg_send![sub, numberOfItems] };
-                    for j in 0..sub_count {
-                        let si: *mut AnyObject = unsafe { msg_send![sub, itemAtIndex: j] };
-                        if !si.is_null() {
-                            let st: Option<Retained<NSString>> = unsafe { msg_send![si, title] };
-                            let se: bool = unsafe { msg_send![si, isEnabled] };
-                            clog!(
-                                "[continuity]     [{}.{}] title={:?} enabled={}",
-                                i, j,
-                                st.as_ref().map(|s| s.to_string()),
-                                se,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if !validated {
-        responder.finalize(Err(
-            "AppKit did not call validRequestor — device substitution did not engage".to_string(),
+    if count == 0 {
+        controller.finalize(Err(
+            "no iPhone or iPad found — make sure your device is unlocked, on the same Apple ID, \
+             and Wi-Fi + Bluetooth are on for both"
+                .into(),
         ));
         return;
     }
-    clog!("[continuity] menu closed; awaiting readSelection or timeout");
+
+    let device: Retained<AVCaptureDevice> = devices.objectAtIndex(0);
+    let device_name: String = unsafe { device.localizedName() }.to_string();
+    clog!("[continuity] using device: {device_name}");
+
+    // 2. Build AVCaptureSession with input + photo output.
+    let session: Retained<AVCaptureSession> = unsafe { AVCaptureSession::new() };
+    if unsafe { session.canSetSessionPreset(AVCaptureSessionPresetPhoto) } {
+        unsafe { session.setSessionPreset(AVCaptureSessionPresetPhoto) };
+    }
+
+    let input: Retained<AVCaptureDeviceInput> = match unsafe {
+        AVCaptureDeviceInput::initWithDevice_error(AVCaptureDeviceInput::alloc(), &device)
+    } {
+        Ok(i) => i,
+        Err(e) => {
+            let msg = unsafe { e.localizedDescription() }.to_string();
+            clog!("[continuity] AVCaptureDeviceInput error: {msg}");
+            controller.finalize(Err(format!("camera input error: {msg}")));
+            return;
+        }
+    };
+    if unsafe { session.canAddInput(&input) } {
+        unsafe { session.addInput(&input) };
+    } else {
+        controller.finalize(Err("session refused camera input".into()));
+        return;
+    }
+
+    let photo_output: Retained<AVCapturePhotoOutput> = unsafe { AVCapturePhotoOutput::new() };
+    if unsafe { session.canAddOutput(&photo_output) } {
+        unsafe { session.addOutput(&photo_output) };
+    } else {
+        controller.finalize(Err("session refused photo output".into()));
+        return;
+    }
+
+    // 3. Photo capture delegate.
+    let delegate = CapturePhotoDelegate::new(mtm, output_dir.clone());
+    delegate.set_controller(controller.clone());
+
+    *controller.ivars().session.lock().unwrap() = Some(session.clone());
+    *controller.ivars().photo_output.lock().unwrap() = Some(photo_output.clone());
+    *controller.ivars().delegate.lock().unwrap() = Some(delegate.clone());
+
+    // 4. Build the NSWindow with a layer-backed content view.
+    let win_w: f64 = 720.0;
+    let win_h: f64 = 540.0;
+
+    // Centre on screen.
+    let screen = NSScreen::mainScreen(mtm);
+    let screen_frame = screen
+        .as_deref()
+        .map(|s| s.frame())
+        .unwrap_or(NSRect {
+            origin: NSPoint { x: 0.0, y: 0.0 },
+            size: NSSize {
+                width: 1440.0,
+                height: 900.0,
+            },
+        });
+    let win_origin_x = screen_frame.origin.x + (screen_frame.size.width - win_w) / 2.0;
+    let win_origin_y = screen_frame.origin.y + (screen_frame.size.height - win_h) / 2.0;
+    let frame = NSRect {
+        origin: NSPoint {
+            x: win_origin_x,
+            y: win_origin_y,
+        },
+        size: NSSize {
+            width: win_w,
+            height: win_h,
+        },
+    };
+
+    let style = NSWindowStyleMask::Titled
+        | NSWindowStyleMask::Closable
+        | NSWindowStyleMask::Resizable;
+    let window: Retained<NSWindow> = {
+        let alloc = NSWindow::alloc(mtm);
+        unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                alloc,
+                frame,
+                style,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        }
+    };
+    let title = NSString::from_str(&format!("Capture from {device_name}"));
+    window.setTitle(&title);
+    window.setReleasedWhenClosed(false);
+
+    let content_view: Retained<NSView> = window.contentView().expect("new window has contentView");
+    content_view.setWantsLayer(true);
+    let bg_layer: Retained<CALayer> = unsafe { CALayer::new() };
+    let black: Retained<NSColor> = NSColor::blackColor();
+    let bg_cg = unsafe { black.CGColor() };
+    unsafe { bg_layer.setBackgroundColor(Some(&bg_cg)) };
+    content_view.setLayer(Some(&bg_layer));
+
+    // 5. Live preview layer = top portion of the window.
+    let preview_h = win_h - 80.0;
+    let preview_frame = NSRect {
+        origin: NSPoint { x: 0.0, y: 80.0 },
+        size: NSSize {
+            width: win_w,
+            height: preview_h,
+        },
+    };
+    let preview_layer: Retained<AVCaptureVideoPreviewLayer> = unsafe {
+        let alloc = AVCaptureVideoPreviewLayer::alloc();
+        AVCaptureVideoPreviewLayer::initWithSession(alloc, &session)
+    };
+    unsafe {
+        preview_layer.setFrame(preview_frame);
+        // Resize-aspect = full preview, letterboxed.
+        let mode = NSString::from_str("AVLayerVideoGravityResizeAspect");
+        preview_layer.setVideoGravity(&mode);
+        bg_layer.addSublayer(&preview_layer);
+    }
+
+    // 6. Capture + Cancel buttons (main thread; targeted at controller).
+    let btn_w: f64 = 140.0;
+    let btn_h: f64 = 36.0;
+    let btn_y: f64 = 20.0;
+    let cancel_x = (win_w / 2.0) - btn_w - 10.0;
+    let capture_x = (win_w / 2.0) + 10.0;
+
+    let cancel_btn = make_button(
+        mtm,
+        "Cancel",
+        NSRect {
+            origin: NSPoint {
+                x: cancel_x,
+                y: btn_y,
+            },
+            size: NSSize {
+                width: btn_w,
+                height: btn_h,
+            },
+        },
+        &controller,
+        sel!(cancelPressed:),
+    );
+    let capture_btn = make_button(
+        mtm,
+        "Capture",
+        NSRect {
+            origin: NSPoint {
+                x: capture_x,
+                y: btn_y,
+            },
+            size: NSSize {
+                width: btn_w,
+                height: btn_h,
+            },
+        },
+        &controller,
+        sel!(capturePressed:),
+    );
+    unsafe {
+        capture_btn.setKeyEquivalent(&NSString::from_str("\r"));
+    }
+
+    content_view.addSubview(&cancel_btn);
+    content_view.addSubview(&capture_btn);
+
+    // Optional helper text under the preview.
+    let label_y = btn_y + btn_h + 8.0;
+    let label_frame = NSRect {
+        origin: NSPoint { x: 16.0, y: label_y },
+        size: NSSize {
+            width: win_w - 32.0,
+            height: 20.0,
+        },
+    };
+    let label: Retained<NSTextField> = unsafe {
+        let f: Retained<NSTextField> = msg_send![NSTextField::alloc(mtm), init];
+        f.setFrame(label_frame);
+        f.setStringValue(&NSString::from_str(
+            "Frame the page on your iPhone, then click Capture.",
+        ));
+        f.setEditable(false);
+        f.setBezeled(false);
+        f.setDrawsBackground(false);
+        f.setAlignment(NSTextAlignment::Center);
+        f.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        f
+    };
+    content_view.addSubview(&label);
+
+    *controller.ivars().window.lock().unwrap() = Some(window.clone());
+
+    // 7. Show the window.
+    window.makeKeyAndOrderFront(None);
+    clog!("[continuity] window shown ({}×{})", win_w, win_h);
+
+    // 8. Start the capture session — this can briefly block, but only
+    //    a few ms in practice on already-paired Continuity devices.
+    unsafe { session.startRunning() };
+    clog!("[continuity] AVCaptureSession startRunning returned");
+}
+
+// ─── Small helpers ───────────────────────────────────────────────────────────
+
+fn make_button(
+    mtm: MainThreadMarker,
+    title: &str,
+    frame: NSRect,
+    target: &CaptureController,
+    action: Sel,
+) -> Retained<NSButton> {
+    let b: Retained<NSButton> = unsafe { msg_send![NSButton::alloc(mtm), init] };
+    unsafe {
+        b.setFrame(frame);
+        b.setTitle(&NSString::from_str(title));
+        b.setBezelStyle(NSBezelStyle::Rounded);
+        b.setTarget(Some(target));
+        b.setAction(Some(action));
+    }
+    b
+}
+
+fn next_filename(output_dir: &Path, ext: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    output_dir.join(format!("continuity_{}_{:04}.{}", ns, seq, ext))
+}
+
+fn write_nsdata_to_disk(data: &NSData, path: &Path) -> Result<(), String> {
+    if data.length() == 0 {
+        return Err("empty NSData".into());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let path_str = NSString::from_str(&path.to_string_lossy());
+    let ok = data.writeToFile_atomically(&path_str, true);
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("NSData writeToFile failed for {}", path.display()))
+    }
 }

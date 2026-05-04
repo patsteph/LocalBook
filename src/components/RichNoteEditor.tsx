@@ -663,8 +663,8 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
     ctx.addToast({
       type: 'info',
       title: 'Insert from iPhone',
-      message: 'Pick a capture mode in the popup, then take the photo or scan from your iPhone.',
-      duration: 5000,
+      message: 'Opening capture window… frame the page on your iPhone, then click Capture.',
+      duration: 4000,
     });
 
     // The `cameraId` and `includeNonContinuity` args are accepted by the

@@ -37,19 +37,18 @@ tokio-util = { version = "0.7", features = ["io"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = [
-    "NSMenu",
-    "NSMenuItem",
-    "NSResponder",
     "NSView",
     "NSWindow",
     "NSApplication",
     "NSImage",
-    "NSPasteboard",
-    "NSPasteboardItem",
     "NSBitmapImageRep",
     "NSImageRep",
-    "NSUserInterfaceItemIdentification",
-    "NSEvent",
+    "NSButton",
+    "NSControl",
+    "NSTextField",
+    "NSColor",
+    "NSGraphics",
+    "NSScreen",
 ] }
 objc2-foundation = { version = "0.3", features = [
     "NSArray",
@@ -57,5 +56,24 @@ objc2-foundation = { version = "0.3", features = [
     "NSURL",
     "NSDictionary",
     "NSGeometry",
+    "NSError",
+    "NSData",
+] }
+objc2-av-foundation = { version = "0.3", features = [
+    "AVCaptureDevice",
+    "AVCaptureInput",
+    "AVCaptureOutputBase",
+    "AVCapturePhotoOutput",
+    "AVCaptureSession",
+    "AVCaptureVideoPreviewLayer",
+    "AVMediaFormat",
+    "AVCaptureSessionPreset",
+] }
+objc2-core-media = { version = "0.3", features = [
+    "CMFormatDescription",
+] }
+objc2-quartz-core = { version = "0.3", features = [
+    "CALayer",
+    "CAMediaTiming",
 ] }
 
