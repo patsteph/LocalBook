@@ -48,6 +48,7 @@
 #![cfg(target_os = "macos")]
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use objc2::rc::Retained;
@@ -56,9 +57,9 @@ use objc2::{
     define_class, msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSMenu, NSMenuItem, NSPasteboard,
-    NSResponder, NSUserInterfaceItemIdentification, NSUserInterfaceItemIdentifier, NSView,
-    NSWindow,
+    NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSEventModifierFlags, NSEventType, NSImage,
+    NSMenu, NSMenuItem, NSPasteboard, NSResponder, NSUserInterfaceItemIdentification,
+    NSUserInterfaceItemIdentifier, NSView, NSWindow,
 };
 use objc2_foundation::{NSArray, NSData, NSDictionary, NSPoint, NSRect, NSSize, NSString, NSURL};
 use serde::Serialize;
@@ -131,6 +132,11 @@ pub struct ResponderState {
 pub struct Ivars {
     output_dir: PathBuf,
     state: Mutex<ResponderState>,
+    /// Flipped to true the first time AppKit calls validRequestor on us.
+    /// If this stays false after the menu closes, AppKit never asked the
+    /// responder chain whether we can accept image data — i.e. the
+    /// import-from-iPhone substitution machinery never engaged.
+    validate_called: AtomicBool,
 }
 
 // ─── ContinuityResponder — NSResponder + NSServicesMenuRequestor ─────────────
@@ -176,6 +182,7 @@ define_class!(
                          else { unsafe { (*send_type).to_string() } };
             let rt_dbg = if return_type.is_null() { "nil".into() }
                          else { unsafe { (*return_type).to_string() } };
+            self.ivars().validate_called.store(true, Ordering::Relaxed);
             clog!("[continuity] validRequestor sendType={} returnType={}", st_dbg, rt_dbg);
 
             if !return_type.is_null() {
@@ -239,6 +246,7 @@ impl ContinuityResponder {
                 sender: Some(sender),
                 prev_first_responder: None,
             }),
+            validate_called: AtomicBool::new(false),
         };
         let this = Self::alloc(mtm).set_ivars(ivars);
         // NSView is initialised with -initWithFrame: (not bare init).
@@ -524,23 +532,79 @@ unsafe fn install_and_pop(
     placeholder.setIdentifier(Some(&ident));
     menu.addItem(&placeholder);
 
-    // Anchor the menu at our (centre) view's local origin. inView=our view
-    // also establishes the popup's responder context.
-    clog!("[continuity] popping menu");
-    let point = NSPoint { x: 0.0, y: 0.0 };
-    let picked: bool = menu.popUpMenuPositioningItem_atLocation_inView(
-        None,
-        point,
-        Some(&responder),
+    // Use the *static* +[NSMenu popUpContextMenu:withEvent:forView:] API.
+    //
+    // Why: this is the only NSMenu pop-up entry point that triggers
+    // AppKit's responder-chain walk for `NSMenuItemImportFromDeviceIdentifier`
+    // placeholder substitution. The instance-method
+    // `popUpMenuPositioningItem:atLocation:inView:` opens a menu but does
+    // NOT engage the import-from-iPhone substitution machinery — the
+    // placeholder stays greyed out and `validRequestor` is never called.
+    // Confirmed by Sprint 9.2 logs (validRequestor never fired) and by
+    // every working Apple sample using popUpContextMenu.
+    //
+    // popUpContextMenu requires an NSEvent; since we're not in an event
+    // handler (the JS button click crosses the Tauri IPC boundary), we
+    // synthesise a left-mouse-down at the centre of the window.
+    let win_frame = window.frame();
+    let event_loc = NSPoint {
+        x: win_frame.size.width / 2.0,
+        y: win_frame.size.height / 2.0,
+    };
+    let window_number: isize = window.windowNumber();
+    clog!(
+        "[continuity] synthesising NSEvent at window-coord ({}, {}), windowNumber={}",
+        event_loc.x, event_loc.y, window_number
     );
-    clog!("[continuity] popUp returned picked={}", picked);
+    let event_opt: Option<Retained<NSEvent>> =
+        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            NSEventType::LeftMouseDown,
+            event_loc,
+            NSEventModifierFlags::empty(),
+            0.0,
+            window_number,
+            None,
+            0,
+            1,
+            1.0,
+        );
+    let event = match event_opt {
+        Some(e) => e,
+        None => {
+            clog!("[continuity] FAILED to synthesise NSEvent");
+            responder.finalize(Err("failed to synthesise NSEvent for popUpContextMenu".into()));
+            return;
+        }
+    };
 
-    if !picked {
+    clog!("[continuity] popping menu via popUpContextMenu");
+    NSMenu::popUpContextMenu_withEvent_forView(&menu, &event, &responder);
+    let validated = responder.ivars().validate_called.load(Ordering::Relaxed);
+    clog!(
+        "[continuity] popUpContextMenu returned (validRequestor was called: {})",
+        validated
+    );
+
+    if !validated {
+        // AppKit never walked through us — the placeholder substitution
+        // machinery didn't engage at all. Most likely cause on a healthy
+        // setup is that no nearby iPhone is signed in to the same Apple ID
+        // / has Continuity Camera enabled, so AppKit's pre-walk shortcuts
+        // out. (If validRequestor IS called but no iPhone items appear,
+        // that's a different failure mode and we'll still time out below.)
         responder.finalize(Err(
-            "menu had no available items — either no nearby iPhone signed in to the same Apple ID, iPhone is locked, or Continuity Camera is disabled in iPhone Settings → General → AirPlay & Handoff".to_string(),
+            "AppKit did not engage the import-from-iPhone flow — either no nearby iPhone is signed in to the same Apple ID, iPhone is locked, or Continuity Camera is disabled in iPhone Settings → General → AirPlay & Handoff".to_string(),
         ));
+        return;
     }
-    // If picked, contentView retains the responder via the subview slot,
-    // so the local Retained dropping here is fine. readSelection will fire
-    // asynchronously when iPhone-side capture completes.
+    // validRequestor was called → menu was populated with iPhone items.
+    // The menu has now closed (popUpContextMenu blocks until close). One
+    // of two things happened:
+    //   (a) User picked an iPhone item → readSelection will fire async
+    //       when the iPhone finishes capturing.
+    //   (b) User cancelled → readSelection never fires; the 3-min
+    //       timeout in `trigger()` will eventually resolve as cancel.
+    // contentView retains the responder via the subview slot, so the
+    // local Retained dropping here is fine.
+    clog!("[continuity] menu closed; awaiting readSelection or timeout");
 }
