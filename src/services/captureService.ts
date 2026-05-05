@@ -10,6 +10,8 @@ export interface CaptureSession {
   session_id: string;
   token: string;
   capture_url: string;    // http://<mac-ip>:8443/capture/page/{id}?t={token}
+  short_url: string;      // http://<mac-ip>:8443/c/A1B2C3 (for compact QR)
+  short_code: string;     // 6-char code
   ws_url: string;         // ws://localhost:8000/capture/ws/{id}
 }
 
@@ -74,7 +76,7 @@ export const captureService = {
   ): () => void {
     const wsUrl = `${API_BASE_URL.replace('http', 'ws')}/capture/ws/${session.session_id}?t=${session.token}`;
 
-    let ws: WebSocket | null = new WebSocket(wsUrl);
+    let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
 

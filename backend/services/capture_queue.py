@@ -84,12 +84,25 @@ class CaptureQueue:
                     file_path=file_path,
                 )
                 try:
-                    content_type, ocr_text = await process_fn(file_path)
+                    # 3-minute timeout per page — prevents one stuck model
+                    # call from blocking the entire queue forever.
+                    content_type, ocr_text = await asyncio.wait_for(
+                        process_fn(file_path),
+                        timeout=180.0,
+                    )
                     result.status = "complete"
                     result.content_type = content_type
                     result.ocr_text = ocr_text
                     self.pages_processed += 1
                     self.total_chars += len(ocr_text)
+                except asyncio.TimeoutError:
+                    logger.error(
+                        f"[capture-queue:{self.session_id}] Page {page_index} "
+                        f"timed out after 180s"
+                    )
+                    result.status = "error"
+                    result.error = "Processing timed out (3 minutes). Try recapturing this page."
+                    self.errors += 1
                 except Exception as e:
                     logger.error(
                         f"[capture-queue:{self.session_id}] Page {page_index} "

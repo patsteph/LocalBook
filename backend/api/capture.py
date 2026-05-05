@@ -16,6 +16,7 @@ import logging
 import os
 import secrets
 import shutil
+import string
 import tempfile
 import time
 import uuid
@@ -39,6 +40,39 @@ from services.capture_queue import CapturePageResult, CaptureQueue
 
 logger = logging.getLogger(__name__)
 capture_router = APIRouter()
+
+# Max dimension for images sent to the vision model. iPhone photos are
+# 12MP (4032×3024) which is massive overkill for OCR. Downscaling to
+# 2048px max cuts base64 payload from ~7MB to ~600KB and processing
+# time from 2+ min to ~30s.
+VISION_MAX_DIM = 2048
+
+
+def _downscale_image(file_path: str) -> str:
+    """Downscale an image if it exceeds VISION_MAX_DIM on any side.
+
+    Overwrites the file in-place. Returns the path unchanged.
+    """
+    try:
+        from PIL import Image
+        img = Image.open(file_path)
+        w, h = img.size
+        if max(w, h) <= VISION_MAX_DIM:
+            return file_path
+
+        ratio = VISION_MAX_DIM / max(w, h)
+        new_w, new_h = int(w * ratio), int(h * ratio)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+
+        # Preserve EXIF orientation but drop the rest
+        img.save(file_path, quality=85, optimize=True)
+        logger.info(
+            f"[capture] Downscaled {w}×{h} → {new_w}×{new_h} "
+            f"({os.path.getsize(file_path) / 1024:.0f}KB)"
+        )
+    except Exception as e:
+        logger.warning(f"[capture] Image downscale failed (proceeding with original): {e}")
+    return file_path
 
 # ── Session storage (in-memory, lives for the process lifetime) ──────────────
 
@@ -81,6 +115,20 @@ class CaptureSession:
 
 
 _sessions: Dict[str, CaptureSession] = {}
+_short_codes: Dict[str, str] = {}  # short_code → session_id
+
+
+def _generate_short_code() -> str:
+    """Generate a unique 6-character alphanumeric code for QR URLs.
+
+    Uses uppercase + digits only (no ambiguous chars: 0/O, 1/I/L) for
+    maximum QR density reduction. 30^6 = ~729M combinations.
+    """
+    alphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"  # 30 chars, no ambiguous
+    while True:
+        code = "".join(secrets.choice(alphabet) for _ in range(6))
+        if code not in _short_codes:
+            return code
 
 
 def _get_session(session_id: str, token: Optional[str] = None) -> CaptureSession:
@@ -105,6 +153,10 @@ def _cleanup_session(session_id: str):
             asyncio.create_task(session.queue.stop())
         if session.temp_dir and os.path.isdir(session.temp_dir):
             shutil.rmtree(session.temp_dir, ignore_errors=True)
+        # Clean up short code mapping
+        codes_to_remove = [c for c, sid in _short_codes.items() if sid == session_id]
+        for c in codes_to_remove:
+            _short_codes.pop(c, None)
         logger.info(f"[capture] Session {session_id[:8]} cleaned up")
 
 
@@ -113,13 +165,14 @@ def _cleanup_session(session_id: str):
 async def _process_capture(file_path: str) -> tuple[str, str]:
     """OCR a single captured image. Returns (content_type, ocr_text).
 
-    Uses the scan_pipeline's classify_and_ocr to auto-detect content type
-    (document, math, whiteboard, drawing, photo) and route to the
-    appropriate mode-specific prompt.
+    Uses the enhanced document prompt directly (it handles math, tables,
+    diagrams, color annotations in a single pass). Skipping the classification
+    step cuts processing from 3 LLM calls to 2 per page.
     """
     from services.scan_pipeline import scan_pipeline
 
-    return await scan_pipeline.classify_and_ocr(file_path)
+    ocr_text = await scan_pipeline._ocr_one_page(file_path, mode="document")
+    return ("document", ocr_text)
 
 
 # ── API Routes ───────────────────────────────────────────────────────────────
@@ -135,6 +188,7 @@ async def create_session():
 
     session_id = str(uuid.uuid4())
     token = secrets.token_urlsafe(32)
+    short_code = _generate_short_code()
 
     # Create temp directory for captured images
     temp_dir = tempfile.mkdtemp(prefix=f"localbook_capture_{session_id[:8]}_")
@@ -176,22 +230,26 @@ async def create_session():
     queue.start(_process_capture)
     session.queue = queue
     _sessions[session_id] = session
+    _short_codes[short_code] = session_id
 
     # Start capture server if not running
     if not is_running():
         await start_capture_server()
 
     capture_url = get_capture_url(session_id, token)
+    short_url = get_short_url(short_code)
 
     logger.info(
         f"[capture] Session {session_id[:8]} created — "
-        f"capture URL: {capture_url}"
+        f"short code: {short_code}, URL: {short_url}"
     )
 
     return {
         "session_id": session_id,
         "token": token,
         "capture_url": capture_url,
+        "short_url": short_url,
+        "short_code": short_code,
         "ws_url": f"ws://localhost:8000/capture/ws/{session_id}",
     }
 
@@ -247,6 +305,9 @@ async def upload_capture(
     contents = await image.read()
     with open(file_path, "wb") as f:
         f.write(contents)
+
+    # Downscale large images before OCR (iPhone photos are 12MP → ~7MB base64)
+    _downscale_image(file_path)
 
     page = CapturePageInfo(path=file_path, status="received")
     session.pages.append(page)
@@ -334,23 +395,35 @@ async def capture_websocket(
                     "error": result.error,
                 })
 
-        # Keep connection alive, listen for commands
+        # Keep connection alive — the Mac frontend only listens, it never
+        # sends JSON commands.  We use receive_text() instead of
+        # receive_json() so that WebSocket pings/pongs and close frames
+        # are handled correctly without raising JSONDecodeError.
         while True:
-            data = await websocket.receive_json()
-            if data.get("type") == "session_complete":
-                # Phone signals it's done capturing
-                msg = {
-                    "type": "session_complete",
-                    "stats": session.queue.stats if session.queue else {},
-                }
-                for ws in session.ws_connections:
-                    try:
-                        await ws.send_json(msg)
-                    except Exception:
-                        pass
+            try:
+                msg = await websocket.receive_text()
+                # Try to parse as JSON command (future-proofing)
+                try:
+                    data = json.loads(msg)
+                    if data.get("type") == "session_complete":
+                        notify_msg = {
+                            "type": "session_complete",
+                            "stats": session.queue.stats if session.queue else {},
+                        }
+                        for ws in session.ws_connections:
+                            try:
+                                await ws.send_json(notify_msg)
+                            except Exception:
+                                pass
+                        break
+                except (json.JSONDecodeError, ValueError):
+                    pass  # Non-JSON frame (ping response, etc.)
+            except WebSocketDisconnect:
                 break
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        logger.debug(f"[capture] WS error for {session_id[:8]}: {e}")
     finally:
         if websocket in session.ws_connections:
             session.ws_connections.remove(websocket)

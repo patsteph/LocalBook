@@ -60,6 +60,27 @@ def _build_capture_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(capture_router, prefix="/capture")
+
+    # Short-code redirect: /c/{code} → /capture/page/{session_id}?t={token}
+    # Keeps QR code URLs at ~38 chars for compact Version 2 QR codes.
+    @app.get("/c/{code}")
+    async def short_code_redirect(code: str):
+        from api.capture import _short_codes, _sessions
+        from fastapi.responses import RedirectResponse
+
+        session_id = _short_codes.get(code.upper())
+        if not session_id:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Invalid or expired capture code")
+        session = _sessions.get(session_id)
+        if not session or session.is_expired:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=410, detail="Session expired")
+        return RedirectResponse(
+            url=f"/capture/page/{session.session_id}?t={session.token}",
+            status_code=302,
+        )
+
     return app
 
 
@@ -117,3 +138,13 @@ def get_capture_url(session_id: str, token: str) -> str:
     """Generate the full capture URL for a session."""
     local_ip = get_local_ip()
     return f"http://{local_ip}:{CAPTURE_PORT}/capture/page/{session_id}?t={token}"
+
+
+def get_short_url(short_code: str) -> str:
+    """Generate a compact capture URL using the 6-char short code.
+
+    These short URLs produce Version 2 QR codes (25×25 grid) instead of
+    Version 5 (37×37), making 80px inline QR codes reliably scannable.
+    """
+    local_ip = get_local_ip()
+    return f"http://{local_ip}:{CAPTURE_PORT}/c/{short_code}"

@@ -15,7 +15,7 @@ import { settingsService } from '../services/settings';
 import { noteService } from '../services/noteService';
 import { API_BASE_URL } from '../services/api';
 import { scanService, ScanProgressEvent } from '../services/scanService';
-import { QRCaptureDropdown } from './QRCaptureDropdown';
+import { ScanQRBadge } from './ScanQRBadge';
 
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -423,24 +423,10 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
     handleEditorChange();
   }, [editor, handleEditorChange]);
 
-  const [showScanMenu, setShowScanMenu] = useState(false);
-  const [showQRCapture, setShowQRCapture] = useState(false);
-  const scanMenuRef = useRef<HTMLDivElement>(null);
+  // handleScan is used by ScanQRBadge's file-scan menu.
+  // showScanMenu/showQRCapture state is now inside ScanQRBadge.
 
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (scanMenuRef.current && !scanMenuRef.current.contains(e.target as Node)) {
-        setShowScanMenu(false);
-      }
-    };
-    if (showScanMenu) document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [showScanMenu]);
-
-  // File-picker scan path. Opens a file dialog, then OCRs the selected
-  // image and inserts the result into the current note.
   const handleScan = async (mode: 'document' | 'photo') => {
-    setShowScanMenu(false);
     try {
       const selected = await open({
         multiple: false,
@@ -558,62 +544,11 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
             compact ? 'text-sm font-semibold' : 'text-xl font-bold'
           }`}
         />
-        <div className="relative" ref={scanMenuRef}>
-          <button 
-            onClick={() => {
-              const next = !showScanMenu;
-              setShowScanMenu(next);
-              // Pre-warm the vision model the moment the menu opens. By the
-              // time the user picks a mode and finishes capturing (~5-15s
-              // minimum), Granite-Vision is already resident in Ollama, so
-              // OCR starts emitting progress within ~1s instead of waiting
-              // 5-15s for a cold load. Fire-and-forget — failures are logged
-              // server-side and never affect the UI.
-              if (next) {
-                fetch(`${API_BASE_URL}/scan/warmup`, { method: 'POST' })
-                  .catch(err => console.debug('[scan] vision warmup ping failed (non-fatal):', err));
-              }
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-200 dark:border-gray-600 dark:hover:bg-gray-700 transition-colors shadow-sm whitespace-nowrap"
-          >
-            <Camera className="w-4 h-4" />
-            Scan
-          </button>
-          
-          {showScanMenu && !showQRCapture && (
-            <div className="absolute right-0 mt-2 w-60 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
-              <button
-                onClick={() => { setShowScanMenu(false); setShowQRCapture(true); }}
-                className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 font-medium"
-              >
-                📱 Scan with Phone…
-              </button>
-              <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-              <div className="px-4 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
-                From File
-              </div>
-              <button
-                onClick={() => handleScan('document')}
-                className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-              >
-                Scan Document (OCR)
-              </button>
-              <button
-                onClick={() => handleScan('photo')}
-                className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-              >
-                Scan Photo (Scene)
-              </button>
-            </div>
-          )}
-
-          {showQRCapture && (
-            <QRCaptureDropdown
-              onCaptureReceived={insertScannedMarkdown}
-              onClose={() => setShowQRCapture(false)}
-            />
-          )}
-        </div>
+        <ScanQRBadge
+          onCaptureReceived={insertScannedMarkdown}
+          onFileScan={handleScan}
+          compact={compact}
+        />
       </div>
 
       {/* BlockNote Editor */}
