@@ -1,7 +1,10 @@
 // API service for backend communication
 import axios from 'axios';
 
-export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// If VITE_API_URL is not set, dynamically determine the backend IP
+// based on where the frontend was loaded from (so it works across the network)
+const defaultHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+export const API_BASE_URL = import.meta.env.VITE_API_URL || `http://${defaultHost}:8000`;
 
 export const WS_BASE_URL = (() => {
   try {
