@@ -326,19 +326,35 @@ class ScanPipeline:
         return result
 
     # ── Core OCR / description of a single page ──────────────────────────────
+    def _get_api_style(self, model_name: str) -> str:
+        """Determine the API style for the current vision model from the registry."""
+        try:
+            from evaluator.model_registry import model_registry
+            info = model_registry.get_model(model_name)
+            if info:
+                return info.vision_api_style
+        except Exception as _e:
+            logger.debug(f"[scan] api_style lookup failed: {_e}")
+        return "generate"
+
     async def _ocr_one_page(self, file_path: str, *, mode: str) -> str:
         with open(file_path, "rb") as f:
             img_data = f.read()
         b64_image = base64.b64encode(img_data).decode("utf-8")
+        vision_model_name = _vision_model()
+        api_style = self._get_api_style(vision_model_name)
 
         if mode == "photo":
             logger.info(f"[scan] Granite Vision (photo) on {file_path}")
             raw = await ollama_client.vision_describe(
                 image_b64=b64_image,
                 prompt=_PHOTO_VISION_PROMPT,
-                model=_vision_model(),
-                api_style="generate",
+                model=vision_model_name,
+                api_style=api_style,
             )
+            if raw.startswith("Error:"):
+                raise RuntimeError(f"Vision model failed: {raw}")
+
             logger.info("[scan] OLMo enrichment pass")
             result = await ollama_client.generate(
                 prompt=_PHOTO_ENRICH_PROMPT_TMPL.format(raw=raw),
@@ -346,7 +362,10 @@ class ScanPipeline:
                 system=_PHOTO_ENRICH_SYSTEM,
                 temperature=0.3,
             )
-            return (result.get("response", raw) or raw).strip()
+            response = result.get("response", raw) or raw
+            if isinstance(response, str) and response.startswith("Error:"):
+                raise RuntimeError(f"Cleanup model failed: {response}")
+            return response.strip()
 
         # Document / math / whiteboard / drawing — select prompt by mode
         prompt = _MODE_PROMPTS.get(mode, _DOC_VISION_PROMPT)
@@ -354,9 +373,12 @@ class ScanPipeline:
         raw = await ollama_client.vision_describe(
             image_b64=b64_image,
             prompt=prompt,
-            model=_vision_model(),
-            api_style="generate",
+            model=vision_model_name,
+            api_style=api_style,
         )
+        if raw.startswith("Error:"):
+            raise RuntimeError(f"Vision model failed: {raw}")
+
         logger.info("[scan] Phi-4-mini cleanup pass")
         result = await ollama_client.generate(
             prompt=_DOC_CLEANUP_PROMPT_TMPL.format(raw=raw),
@@ -364,7 +386,10 @@ class ScanPipeline:
             system=_DOC_CLEANUP_SYSTEM,
             temperature=0.1,
         )
-        return (result.get("response", raw) or raw).strip()
+        response = result.get("response", raw) or raw
+        if isinstance(response, str) and response.startswith("Error:"):
+            raise RuntimeError(f"Cleanup model failed: {response}")
+        return response.strip()
 
     # ── Auto-classify + OCR (used by QR capture flow) ────────────────────────
     async def classify_and_ocr(self, file_path: str) -> tuple:
@@ -377,16 +402,21 @@ class ScanPipeline:
         with open(file_path, "rb") as f:
             img_data = f.read()
         b64_image = base64.b64encode(img_data).decode("utf-8")
+        vision_model_name = _vision_model()
+        api_style = self._get_api_style(vision_model_name)
 
         # Step 1: Classify content type
         logger.info(f"[scan] Classifying {file_path}")
         classification = await ollama_client.vision_describe(
             image_b64=b64_image,
             prompt=_CLASSIFY_PROMPT,
-            model=_vision_model(),
-            api_style="generate",
+            model=vision_model_name,
+            api_style=api_style,
             num_predict=20,
         )
+        if classification.startswith("Error:"):
+            raise RuntimeError(f"Vision model failed during classification: {classification}")
+
         content_type = classification.strip().lower().split()[0] if classification else "document"
         if content_type not in _MODE_PROMPTS:
             content_type = "document"

@@ -165,14 +165,13 @@ def _cleanup_session(session_id: str):
 async def _process_capture(file_path: str) -> tuple[str, str]:
     """OCR a single captured image. Returns (content_type, ocr_text).
 
-    Uses the enhanced document prompt directly (it handles math, tables,
-    diagrams, color annotations in a single pass). Skipping the classification
-    step cuts processing from 3 LLM calls to 2 per page.
+    Uses the scan_pipeline to classify the image (document, math, photo, etc.)
+    and then performs OCR using the appropriate prompt.
     """
     from services.scan_pipeline import scan_pipeline
 
-    ocr_text = await scan_pipeline._ocr_one_page(file_path, mode="document")
-    return ("document", ocr_text)
+    content_type, ocr_text = await scan_pipeline.classify_and_ocr(file_path)
+    return (content_type, ocr_text)
 
 
 # ── API Routes ───────────────────────────────────────────────────────────────
