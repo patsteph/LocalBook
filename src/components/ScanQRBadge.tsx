@@ -52,6 +52,9 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
         setSession(sess);
       } catch (err) {
         console.warn('[ScanQRBadge] Failed to create session:', err);
+        if (!cancelled) {
+          setPages([{ index: -1, status: 'error' }]); // Use error state to stop spinner
+        }
       }
     })();
 
@@ -137,18 +140,6 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
     return () => document.removeEventListener('mousedown', handler);
   }, [expanded]);
 
-  // ── Close file menu on outside click ───────────────────────────────────────
-  useEffect(() => {
-    if (!showFileMenu) return;
-    const handler = (e: MouseEvent) => {
-      if (fileMenuRef.current && !fileMenuRef.current.contains(e.target as Node)) {
-        setShowFileMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [showFileMenu]);
-
   const completedCount = pages.filter(p => p.status === 'complete').length;
   const processingCount = pages.filter(p => p.status === 'received' || p.status === 'processing').length;
   const errorCount = pages.filter(p => p.status === 'error').length;
@@ -176,6 +167,10 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
                   level="L"
                   includeMargin={false}
                 />
+              </div>
+            ) : pages.some(p => p.status === 'error') ? (
+              <div className={`flex items-center justify-center bg-red-50 dark:bg-red-900/20 ${compact ? 'w-[64px] h-[64px]' : 'w-[80px] h-[80px]'}`}>
+                <span className="text-[10px] text-red-500 font-bold px-2 text-center leading-tight">Backend Error</span>
               </div>
             ) : (
               <div className={`flex items-center justify-center ${compact ? 'w-[64px] h-[64px]' : 'w-[80px] h-[80px]'}`}>
@@ -274,45 +269,30 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
                 )}
               </div>
             )}
-          </div>
-        )}
-      </div>
-
-      {/* ── File scan menu (separate small button) ── */}
-      <div className="relative" ref={fileMenuRef}>
-        <button
-          onClick={() => {
-            setShowFileMenu(!showFileMenu);
-            if (!showFileMenu) {
-              // Pre-warm vision model
-              fetch(`${API_BASE_URL}/scan/warmup`, { method: 'POST' })
-                .catch(() => {});
-            }
-          }}
-          className="flex items-center gap-1 px-2 py-1.5 text-xs font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600 dark:hover:bg-gray-700 transition-colors"
-          title="Scan from file"
-        >
-          <Camera className="w-3.5 h-3.5" />
-          <ChevronDown className="w-3 h-3" />
-        </button>
-
-        {showFileMenu && (
-          <div className="absolute right-0 mt-1 w-52 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
-            <div className="px-3 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
-              From File
+            {/* File Scan Options integrated into panel */}
+            <div className="bg-gray-50 dark:bg-gray-800/80 px-4 py-2 border-t border-gray-100 dark:border-gray-700 flex justify-between items-center">
+              <span className="text-[10px] font-medium text-gray-500">Scan from file:</span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setExpanded(false);
+                    onFileScan('document');
+                  }}
+                  className="px-2 py-1 text-[10px] font-semibold bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded hover:bg-gray-50 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 transition-colors"
+                >
+                  Document
+                </button>
+                <button
+                  onClick={() => {
+                    setExpanded(false);
+                    onFileScan('photo');
+                  }}
+                  className="px-2 py-1 text-[10px] font-semibold bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded hover:bg-gray-50 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 transition-colors"
+                >
+                  Photo
+                </button>
+              </div>
             </div>
-            <button
-              onClick={() => { setShowFileMenu(false); onFileScan('document'); }}
-              className="w-full text-left px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-            >
-              Scan Document (OCR)
-            </button>
-            <button
-              onClick={() => { setShowFileMenu(false); onFileScan('photo'); }}
-              className="w-full text-left px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-            >
-              Scan Photo (Scene)
-            </button>
           </div>
         )}
       </div>

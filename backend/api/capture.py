@@ -182,6 +182,7 @@ async def create_session():
     """Create a new capture session and start the capture server."""
     from services.capture_server import (
         get_capture_url,
+        get_short_url,
         start_capture_server,
         is_running,
     )
