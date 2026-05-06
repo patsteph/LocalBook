@@ -41,6 +41,21 @@ from services.capture_queue import CapturePageResult, CaptureQueue
 logger = logging.getLogger(__name__)
 capture_router = APIRouter()
 
+# Register the HEIF/HEIC opener so PIL can decode iPhone Camera uploads.
+# iOS Safari uploads HEIC by default for `<input type=file accept="image/*">`,
+# and feeding HEIC bytes straight to Ollama crashes the vision runner
+# (granite's libpng-based decoder doesn't recognise HEIC magic) — that
+# was the root cause of capture flow getting stuck on "processing"
+# while PDF ingestion (which never sees HEIC) worked fine. Best-effort:
+# if the package is missing we still register Pillow's built-in formats
+# and rely on the JPEG fallback below.
+try:
+    import pillow_heif  # type: ignore
+
+    pillow_heif.register_heif_opener()
+except Exception as _e:  # pragma: no cover — pillow-heif missing or broken
+    logger.warning(f"[capture] pillow-heif unavailable; HEIC uploads will fail to normalize: {_e}")
+
 # Max dimension for images sent to the vision model. iPhone photos are
 # 12MP (4032×3024) which is massive overkill for OCR. Downscaling to
 # 2048px max cuts base64 payload from ~7MB to ~600KB and processing
@@ -48,31 +63,60 @@ capture_router = APIRouter()
 VISION_MAX_DIM = 2048
 
 
-def _downscale_image(file_path: str) -> str:
-    """Downscale an image if it exceeds VISION_MAX_DIM on any side.
+def _normalize_image_for_vision(file_path: str) -> str:
+    """Make an uploaded capture image safe for the Ollama vision runner.
 
-    Overwrites the file in-place. Returns the path unchanged.
+    Steps, in order:
+      1. Open with PIL (HEIC/HEIF supported via pillow-heif registration above).
+      2. Apply EXIF orientation (iPhone photos are rotation-flagged, not
+         physically rotated; the vision model has no EXIF parser).
+      3. Convert to RGB (drops alpha, normalises CMYK / palette modes).
+      4. Downscale so the longer side ≤ VISION_MAX_DIM.
+      5. Re-encode in place as **JPEG** regardless of the source format.
+         The on-disk extension (.heic/.png/.jpg) is irrelevant — Ollama
+         sniffs magic bytes — so we don't bother renaming.
+
+    Overwriting in-place is intentional: every other downstream consumer
+    (capture_queue, scan_pipeline) reads the same path, and we want them
+    to see the normalised bytes.
+
+    Returns the (unchanged) file path. On any failure we log and leave
+    the original file alone so the queue still produces a typed error
+    instead of silently dropping the page.
     """
     try:
-        from PIL import Image
-        img = Image.open(file_path)
-        w, h = img.size
-        if max(w, h) <= VISION_MAX_DIM:
-            return file_path
+        from PIL import Image, ImageOps
+        with Image.open(file_path) as src:
+            img = ImageOps.exif_transpose(src) or src
+            if img.mode != "RGB":
+                img = img.convert("RGB")
 
-        ratio = VISION_MAX_DIM / max(w, h)
-        new_w, new_h = int(w * ratio), int(h * ratio)
-        img = img.resize((new_w, new_h), Image.LANCZOS)
+            w, h = img.size
+            if max(w, h) > VISION_MAX_DIM:
+                ratio = VISION_MAX_DIM / max(w, h)
+                new_w, new_h = max(1, int(w * ratio)), max(1, int(h * ratio))
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+            else:
+                new_w, new_h = w, h
 
-        # Preserve EXIF orientation but drop the rest
-        img.save(file_path, quality=85, optimize=True)
+            # Force JPEG output — granite/llava/etc. all decode JPEG via
+            # stb_image inside Ollama; HEIC/AVIF/WebP do not work.
+            img.save(file_path, format="JPEG", quality=85, optimize=True)
+
         logger.info(
-            f"[capture] Downscaled {w}×{h} → {new_w}×{new_h} "
-            f"({os.path.getsize(file_path) / 1024:.0f}KB)"
+            f"[capture] Normalized {w}×{h} → {new_w}×{new_h} JPEG "
+            f"({os.path.getsize(file_path) / 1024:.0f}KB) src={file_path}"
         )
     except Exception as e:
-        logger.warning(f"[capture] Image downscale failed (proceeding with original): {e}")
+        logger.warning(
+            f"[capture] Image normalization failed; sending raw bytes "
+            f"(vision model may reject): {e}"
+        )
     return file_path
+
+
+# Back-compat alias for any external imports of the prior name.
+_downscale_image = _normalize_image_for_vision
 
 # ── Session storage (in-memory, lives for the process lifetime) ──────────────
 
@@ -311,8 +355,12 @@ async def upload_capture(
     with open(file_path, "wb") as f:
         f.write(contents)
 
-    # Downscale large images before OCR (iPhone photos are 12MP → ~7MB base64)
-    _downscale_image(file_path)
+    # Normalize: HEIC→JPEG, EXIF rotation, RGB, downscale. Without this an
+    # iOS HEIC upload would crash the Ollama vision runner with the unhelpful
+    # "model runner has unexpectedly stopped" error and the page would hang
+    # in "processing" forever (PDF ingestion was unaffected because PDFs
+    # never carry HEIC payloads).
+    _normalize_image_for_vision(file_path)
 
     page = CapturePageInfo(path=file_path, status="received")
     session.pages.append(page)
