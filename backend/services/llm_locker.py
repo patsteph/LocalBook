@@ -16,20 +16,30 @@ registry = ModelRegistry()
 def _get_default_vision_model() -> str:
     """
     Return the best available standalone vision model from the registry.
-    Prefers Granite 3.3 Vision (current production target). 3.2 is kept
-    as a fallback only — it produces noticeably worse OCR (spurious
-    tables, hallucinated structure) and is being phased out.
+
+    Selection order is conservative on purpose: we pick a model that we
+    KNOW the current Ollama runner can serve, and treat newer-but-flaky
+    models as opt-in via Settings → Models.
+
+    History: we briefly defaulted to ibm/granite3.3-vision:2b, but the
+    Ollama 0.23.x llama-runner segfaults loading it on Apple Silicon
+    (native crash with `fault 0x...` and `llama runner terminated`).
+    Defaulting users into a model that can't load left them staring at
+    red "VISION MODEL FAILED" banners with no captures working. Until
+    Ollama upstream fixes that, 3.2 is the floor — homely OCR is much
+    better than no OCR.
+
+    Users on a working Ollama / 3.3 combo can still select it from the
+    Settings → Models picker; the registry entry is preserved so the UI
+    surfaces it as an option.
     """
-    # Order: IBM-namespaced 3.3 (the user's pinned target) → plain 3.3 →
-    # legacy 3.2. Whichever the user has pulled wins.
     for model_name in [
-        "ibm/granite3.3-vision:2b",
-        "granite3.3-vision:2b",
         "granite3.2-vision:2b",
+        "ibm/granite3.3-vision:2b",
     ]:
         if registry.get_model(model_name):
             return model_name
-    return "ibm/granite3.3-vision:2b"
+    return "granite3.2-vision:2b"
 
 
 class ModelSwapError(Exception):

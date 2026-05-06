@@ -118,6 +118,24 @@
       "policy_tags": ["us-origin", "open-source", "enterprise-ok"]
     },
     {
+      "ollama_name": "gemma3:4b",
+      "display_name": "Gemma 3 4B (Vision)",
+      "family": "gemma",
+      "parameter_count": "4B",
+      "vendor": "Google",
+      "origin_country": "US",
+      "license": "Gemma Terms of Use",
+      "supported_roles": ["vision_model"],
+      "context_window": 131072,
+      "supports_vision": true,
+      "vision_api_style": "generate",
+      "disk_size_gb": 3.3,
+      "min_ram_gb": 6,
+      "recommended_ram_gb": 12,
+      "policy_tags": ["us-origin", "open-source"],
+      "ollama_options": {"temperature": 0.2, "top_p": 0.9}
+    },
+    {
       "ollama_name": "llama3.1:8b",
       "display_name": "Llama 3.1 8B",
       "family": "llama",
