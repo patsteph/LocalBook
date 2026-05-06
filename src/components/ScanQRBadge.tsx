@@ -10,7 +10,7 @@
  */
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { Camera, ChevronDown, Loader2, X } from 'lucide-react';
+import { AlertCircle, Camera, ChevronDown, Loader2, X } from 'lucide-react';
 import { captureService, CaptureSession, CapturePageEvent } from '../services/captureService';
 import { API_BASE_URL } from '../services/api';
 
@@ -26,6 +26,7 @@ interface ScanQRBadgeProps {
 interface PageStatus {
   index: number;
   status: 'received' | 'processing' | 'complete' | 'error';
+  error?: string;
 }
 
 export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBadgeProps) {
@@ -34,6 +35,14 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
   const [pages, setPages] = useState<PageStatus[]>([]);
   const [showFileMenu, setShowFileMenu] = useState(false);
   const [totalChars, setTotalChars] = useState(0);
+  // Latest backend error — typed so the banner can render category-
+  // specific guidance ("Vision model X failed" vs. a generic message)
+  // instead of leaving the user staring at a silent "processing" state.
+  const [lastError, setLastError] = useState<{
+    message: string;
+    type: CapturePageEvent['error_type'];
+    model: string;
+  } | null>(null);
   const wsCleanupRef = useRef<(() => void) | null>(null);
   const badgeRef = useRef<HTMLDivElement>(null);
   const fileMenuRef = useRef<HTMLDivElement>(null);
@@ -109,13 +118,23 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
           }
           break;
 
-        case 'page_error':
+        case 'page_error': {
+          const errMsg = event.error || 'Unknown error';
+          const errType = event.error_type || 'generic';
+          const errModel = event.error_model || '';
           setPages(prev =>
             prev.map(p =>
-              p.index === event.page_index ? { ...p, status: 'error' } : p
+              p.index === event.page_index
+                ? { ...p, status: 'error', error: errMsg }
+                : p
             )
           );
+          setLastError({ message: errMsg, type: errType, model: errModel });
+          // Pop the dropdown so the user notices. They can dismiss it.
+          setExpanded(true);
+          console.warn('[ScanQRBadge] page_error:', { errType, errModel, errMsg });
           break;
+        }
       }
     };
 
@@ -269,6 +288,64 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
                 )}
               </div>
             )}
+            {/* Error banner — only when the most recent capture failed.
+                Renders category-specific guidance: vision-model failures
+                point at the configured model + Settings, cleanup-model
+                failures explain partial success, timeouts suggest retry,
+                generic falls through to the raw backend message. */}
+            {lastError && (() => {
+              const isVision = lastError.type === 'vision_model';
+              const isCleanup = lastError.type === 'cleanup_model';
+              const isTimeout = lastError.type === 'timeout';
+              const headline =
+                isVision  ? 'Vision model failed'
+                : isCleanup ? 'Cleanup model failed'
+                : isTimeout ? 'Capture timed out'
+                : 'Capture failed';
+              return (
+                <div className="px-4 py-2 bg-red-50 dark:bg-red-900/20 border-t border-red-200 dark:border-red-800/40">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[10px] font-semibold text-red-700 dark:text-red-300 uppercase tracking-wide">
+                        {headline}
+                        {lastError.model && (
+                          <span className="ml-1 font-mono normal-case text-red-600 dark:text-red-400">
+                            · {lastError.model}
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-[11px] text-red-600 dark:text-red-400 mt-0.5 break-words">
+                        {lastError.message}
+                      </p>
+                      {isVision && (
+                        <p className="text-[10px] text-red-500 dark:text-red-400 mt-1">
+                          Try a different vision model in <span className="font-semibold">Settings → Models</span>. Common working choices: <code className="font-mono">granite3.2-vision:2b</code>, <code className="font-mono">llava:7b</code>, <code className="font-mono">moondream:1.8b</code>.
+                        </p>
+                      )}
+                      {isCleanup && (
+                        <p className="text-[10px] text-red-500 dark:text-red-400 mt-1 italic">
+                          Vision OCR succeeded but the text-cleanup pass failed. The page may still be partly recoverable from the backend logs.
+                        </p>
+                      )}
+                      {isTimeout && (
+                        <p className="text-[10px] text-red-500 dark:text-red-400 mt-1 italic">
+                          The model took longer than 3 minutes. Try recapturing or use a faster vision model.
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => setLastError(null)}
+                      className="p-0.5 rounded hover:bg-red-100 dark:hover:bg-red-900/40 flex-shrink-0"
+                      aria-label="Dismiss error"
+                    >
+                      <X className="w-3 h-3 text-red-500" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* File Scan Options integrated into panel */}
             <div className="bg-gray-50 dark:bg-gray-800/80 px-4 py-2 border-t border-gray-100 dark:border-gray-700 flex justify-between items-center">
               <span className="text-[10px] font-medium text-gray-500">Scan from file:</span>

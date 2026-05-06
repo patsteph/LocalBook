@@ -210,6 +210,11 @@ async def create_session():
             "content_type": result.content_type,
             "ocr_text": result.ocr_text,
             "error": result.error,
+            # Typed-error metadata so the frontend can render targeted
+            # guidance ("vision model X failed — pick a different one in
+            # Settings") instead of a generic backend error toast.
+            "error_type": result.error_type,
+            "error_model": result.error_model,
         }
         dead = []
         for ws in session.ws_connections:
@@ -393,6 +398,8 @@ async def capture_websocket(
                     "content_type": result.content_type,
                     "ocr_text": result.ocr_text,
                     "error": result.error,
+                    "error_type": result.error_type,
+                    "error_model": result.error_model,
                 })
 
         # Keep connection alive — the Mac frontend only listens, it never

@@ -18,6 +18,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from config import settings
+from services.memory_steward import free_for_pipeline
 from services.ollama_client import ollama_client
 from services.progress_reporter import ProgressReporter, get_noop_reporter
 from services.rag_engine import rag_engine
@@ -27,7 +28,50 @@ from api.constellation_ws import broadcast_update
 logger = logging.getLogger(__name__)
 
 
-# ── Prompts ─────────────────────────────────────────────────────────────────
+# ── Typed errors ─────────────────────────────────────────────────────────────────────────
+# These are RuntimeError subclasses so existing `except Exception` paths
+# keep working, but the capture queue inspects them with `isinstance` to
+# label the failure precisely ("vision_model" vs "cleanup_model" vs
+# generic) and the frontend then renders model-specific guidance.
+# Carrying the model name lets users see *which* model failed regardless
+# of which slot in their config they had it pointed at.
+class PipelineModelError(RuntimeError):
+    """Base for model-specific failures inside the scan pipeline."""
+    error_type: str = "pipeline"
+
+    def __init__(self, model: str, detail: str):
+        self.model = model
+        self.detail = detail
+        super().__init__(f"{self.error_type} '{model}' failed: {detail}")
+
+
+class VisionModelError(PipelineModelError):
+    """The vision model failed to load, crashed, or returned an error.
+
+    Most common causes (in observed frequency order):
+      1. Model file is corrupt / incompatible with current Ollama runner
+         (manifests as "model runner has unexpectedly stopped").
+      2. Model is not pulled at all on this machine.
+      3. OOM at load time — too many models resident.
+      4. Model returned a vision-incapable response (rare; usually means
+         the user pointed `vision_model` at a text-only model).
+    """
+    error_type = "vision_model"
+
+
+class CleanupModelError(PipelineModelError):
+    """The downstream cleanup / enrichment text model failed.
+
+    Vision succeeded and produced raw OCR but the polish-pass model
+    (phi4-mini for documents, olmo2 for photos) errored. Less critical
+    than a vision failure — in principle we could fall back to the raw
+    OCR text, but for now we surface the error so the user knows the
+    output is unpolished.
+    """
+    error_type = "cleanup_model"
+
+
+# ── Prompts ───────────────────────────────────────────────────────────────────────────
 
 # Auto-classification (fast, ~0.5s) — determines which OCR prompt to use.
 _CLASSIFY_PROMPT = (
@@ -353,7 +397,7 @@ class ScanPipeline:
                 api_style=api_style,
             )
             if raw.startswith("Error:"):
-                raise RuntimeError(f"Vision model failed: {raw}")
+                raise VisionModelError(vision_model_name, raw[len('Error:'):].strip() or raw)
 
             logger.info("[scan] OLMo enrichment pass")
             result = await ollama_client.generate(
@@ -364,7 +408,7 @@ class ScanPipeline:
             )
             response = result.get("response", raw) or raw
             if isinstance(response, str) and response.startswith("Error:"):
-                raise RuntimeError(f"Cleanup model failed: {response}")
+                raise CleanupModelError(PHOTO_ENRICH_MODEL, response[len('Error:'):].strip() or response)
             return response.strip()
 
         # Document / math / whiteboard / drawing — select prompt by mode
@@ -377,7 +421,7 @@ class ScanPipeline:
             api_style=api_style,
         )
         if raw.startswith("Error:"):
-            raise RuntimeError(f"Vision model failed: {raw}")
+            raise VisionModelError(vision_model_name, raw[len('Error:'):].strip() or raw)
 
         logger.info("[scan] Phi-4-mini cleanup pass")
         result = await ollama_client.generate(
@@ -388,8 +432,23 @@ class ScanPipeline:
         )
         response = result.get("response", raw) or raw
         if isinstance(response, str) and response.startswith("Error:"):
-            raise RuntimeError(f"Cleanup model failed: {response}")
+            raise CleanupModelError(DOC_CLEANUP_MODEL, response[len('Error:'):].strip() or response)
         return response.strip()
+
+    def _ocr_working_set(self, vision_model: str) -> set:
+        """The set of Ollama models the OCR pipeline needs resident.
+
+        Anything loaded outside this set is fair game for memory_steward to
+        evict before the vision call runs. Computed dynamically so a future
+        config where the *main* model also has vision support (e.g.
+        gemma4:e4b) collapses to a single-model working set automatically.
+        """
+        keep = {vision_model, DOC_CLEANUP_MODEL, settings.embedding_model}
+        # Photo enrichment uses a different downstream model; include it so
+        # back-to-back photo captures don't churn the cache.
+        keep.add(PHOTO_ENRICH_MODEL)
+        # Drop empties (defensive — in case a setting is unset).
+        return {m for m in keep if m}
 
     # ── Auto-classify + OCR (used by QR capture flow) ────────────────────────
     async def classify_and_ocr(self, file_path: str) -> tuple:
@@ -405,6 +464,21 @@ class ScanPipeline:
         vision_model_name = _vision_model()
         api_style = self._get_api_style(vision_model_name)
 
+        # Free RAM for the vision model. On a 16-18 GB box the chat main
+        # model (~6 GB) will OOM-crash Ollama's runner when vision (~4.6 GB)
+        # tries to load alongside it. Evicting models that aren't part of
+        # the OCR pipeline working set guarantees the vision call has room.
+        # Best-effort: any failure here is logged and the call proceeds.
+        try:
+            evicted = await free_for_pipeline(
+                self._ocr_working_set(vision_model_name),
+                reason="classify_and_ocr",
+            )
+            if evicted:
+                logger.info(f"[scan] freed RAM by unloading: {evicted}")
+        except Exception as _e:
+            logger.warning(f"[scan] memory_steward free_for_pipeline failed: {_e}")
+
         # Step 1: Classify content type
         logger.info(f"[scan] Classifying {file_path}")
         classification = await ollama_client.vision_describe(
@@ -415,7 +489,10 @@ class ScanPipeline:
             num_predict=20,
         )
         if classification.startswith("Error:"):
-            raise RuntimeError(f"Vision model failed during classification: {classification}")
+            raise VisionModelError(
+                vision_model_name,
+                classification[len('Error:'):].strip() or classification,
+            )
 
         content_type = classification.strip().lower().split()[0] if classification else "document"
         if content_type not in _MODE_PROMPTS:

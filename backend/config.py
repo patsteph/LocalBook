@@ -61,9 +61,17 @@ class Settings(BaseSettings):
     ollama_model: str = "olmo-3:7b-instruct"  # System 2: Main model - 64K context, chat/synthesis, streams properly
     ollama_fast_model: str = "phi4-mini:latest"  # System 1: Fast model - Microsoft Phi-4 mini, better than llama3.2:3b
     # Vision model used by scan pipeline + multimodal PDF extraction.
-    # Default bumped to IBM Granite 3.3 (2026-04) — better accuracy on
-    # handwritten + skewed-document OCR. Override via LOCALBOOK_VISION_MODEL.
-    vision_model: str = "ibm/granite3.3-vision:2b"
+    # The pipeline is model-agnostic: it loads whatever name is
+    # configured here (or via LOCALBOOK_VISION_MODEL env / the Settings
+    # → Models combo picker) and uses the registry entry's
+    # `vision_api_style` to route through /api/generate or /api/chat.
+    # When the configured model fails the user gets a typed
+    # `VisionModelError` surfaced as a clear "Vision model X failed"
+    # banner with a hint to swap models — no need to ship a code change
+    # to react to a broken upstream model file. The default below is
+    # just a known-good starting point; users are expected to swap it
+    # to whatever they prefer (gemma4:e4b, llava, moondream, etc.).
+    vision_model: str = "granite3.2-vision:2b"
     openai_api_key: str = ""
     anthropic_api_key: str = ""
 

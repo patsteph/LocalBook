@@ -22,6 +22,17 @@ class CapturePageResult:
     content_type: str = ""   # "document" | "math" | "whiteboard" | "drawing" | "photo"
     ocr_text: str = ""
     error: str = ""
+    # Failure category — lets the frontend surface model-specific guidance
+    # instead of a generic "backend error". Populated by _process_loop
+    # from PipelineModelError subclasses raised by scan_pipeline.
+    #   ""             — success / no error
+    #   "vision_model" — the vision model itself failed (load/inference)
+    #   "cleanup_model"— the downstream text cleanup model failed
+    #   "timeout"      — hit the 180s per-page wall clock
+    #   "generic"      — anything else (file I/O, unexpected exception)
+    error_type: str = ""
+    # Name of the model that failed, when known. Empty otherwise.
+    error_model: str = ""
     file_path: str = ""
 
 
@@ -102,6 +113,7 @@ class CaptureQueue:
                     )
                     result.status = "error"
                     result.error = "Processing timed out (3 minutes). Try recapturing this page."
+                    result.error_type = "timeout"
                     self.errors += 1
                 except Exception as e:
                     logger.error(
@@ -110,6 +122,18 @@ class CaptureQueue:
                     )
                     result.status = "error"
                     result.error = str(e)[:300]
+                    # Lift typed-error metadata out of scan_pipeline's
+                    # PipelineModelError subclasses so the frontend can
+                    # render "Vision model X failed — try a different one"
+                    # instead of a generic message. Imported lazily to
+                    # avoid a circular import at module load.
+                    err_type = getattr(e, "error_type", None)
+                    err_model = getattr(e, "model", None)
+                    if err_type and err_model:
+                        result.error_type = err_type
+                        result.error_model = err_model
+                    else:
+                        result.error_type = "generic"
                     self.errors += 1
 
                 self._results.append(result)

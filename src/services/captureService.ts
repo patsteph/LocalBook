@@ -27,6 +27,19 @@ export interface CapturePageEvent {
   content_type?: string;  // 'document' | 'whiteboard' | 'drawing' | 'photo' | 'math'
   ocr_text?: string;
   error?: string;
+  // Failure category set by the backend so the UI can render targeted
+  // guidance instead of a generic message. See backend/services/
+  // capture_queue.py CapturePageResult for the canonical definitions.
+  error_type?:
+    | ''
+    | 'vision_model'
+    | 'cleanup_model'
+    | 'timeout'
+    | 'generic';
+  // Name of the model that failed (only set when error_type is a model
+  // category). Lets the UI say "Granite 3.3 Vision crashed" instead of
+  // a generic "vision model failed".
+  error_model?: string;
   file_name?: string;
   stats?: {
     pages_received: number;
