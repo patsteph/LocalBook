@@ -72,8 +72,36 @@ class CaptureQueue:
     def start(self, process_fn: Callable):
         """Start the background processing loop."""
         if self._task and not self._task.done():
+            logger.info(
+                f"[capture-queue:{self.session_id}] start() called but worker "
+                f"already running (task={self._task!r})"
+            )
             return
         self._task = asyncio.create_task(self._process_loop(process_fn))
+        # Add a done-callback so we can see if the worker dies silently
+        # for any reason — without this, a crashed worker leaves no trace
+        # and the queue silently swallows every uploaded page forever.
+        def _on_worker_exit(task: asyncio.Task):
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                logger.info(f"[capture-queue:{self.session_id}] worker cancelled")
+                return
+            except Exception as e:  # task wasn't done yet, etc.
+                logger.warning(f"[capture-queue:{self.session_id}] worker exit-callback error: {e}")
+                return
+            if exc is None:
+                logger.info(f"[capture-queue:{self.session_id}] worker exited cleanly")
+            else:
+                logger.error(
+                    f"[capture-queue:{self.session_id}] worker DIED with unhandled exception: "
+                    f"{type(exc).__name__}: {exc}",
+                    exc_info=exc,
+                )
+        self._task.add_done_callback(_on_worker_exit)
+        logger.info(
+            f"[capture-queue:{self.session_id}] worker started (task={self._task!r})"
+        )
 
     async def stop(self):
         """Stop the processing loop (waits for current item to finish)."""
@@ -87,9 +115,14 @@ class CaptureQueue:
 
     async def _process_loop(self, process_fn: Callable):
         """Process items from the queue in FIFO order."""
+        logger.info(f"[capture-queue:{self.session_id}] worker loop entered, awaiting first item")
         try:
             while True:
                 file_path, page_index = await self._queue.get()
+                logger.info(
+                    f"[capture-queue:{self.session_id}] dequeued page {page_index} "
+                    f"({file_path}) — invoking process_fn"
+                )
                 result = CapturePageResult(
                     page_index=page_index,
                     file_path=file_path,

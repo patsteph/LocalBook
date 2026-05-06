@@ -212,9 +212,19 @@ async def _process_capture(file_path: str) -> tuple[str, str]:
     Uses the scan_pipeline to classify the image (document, math, photo, etc.)
     and then performs OCR using the appropriate prompt.
     """
+    logger.info(f"[capture] _process_capture entered for {file_path}")
+    # Lazy import — first call may take a few seconds while scan_pipeline
+    # and its transitive deps load (granite/ollama clients, embeddings, …).
+    # We log on either side so a slow first-import is visible instead of
+    # looking like the queue is hung.
     from services.scan_pipeline import scan_pipeline
+    logger.info(f"[capture] scan_pipeline imported, calling classify_and_ocr")
 
     content_type, ocr_text = await scan_pipeline.classify_and_ocr(file_path)
+    logger.info(
+        f"[capture] classify_and_ocr returned: "
+        f"content_type={content_type!r}, ocr_chars={len(ocr_text)}"
+    )
     return (content_type, ocr_text)
 
 
