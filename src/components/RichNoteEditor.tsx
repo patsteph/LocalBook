@@ -16,6 +16,7 @@ import { noteService } from '../services/noteService';
 import { API_BASE_URL } from '../services/api';
 import { scanService, ScanProgressEvent } from '../services/scanService';
 import { ScanQRBadge } from './ScanQRBadge';
+import { sanitizeOcrMarkdown } from '../lib/sanitizeOcrMarkdown';
 
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -396,7 +397,8 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
   // for very malformed OCR output).
   const insertScannedMarkdown = useCallback(async (markdown: string) => {
     if (!editor || !markdown || !markdown.trim()) return;
-    const trimmed = markdown.trim();
+    const cleaned = sanitizeOcrMarkdown(markdown);
+    if (!cleaned) return;
 
     // Anchor at the cursor's current block; fall back to the last block if
     // the cursor isn't placed (e.g. editor was never focused after open).
@@ -410,13 +412,29 @@ export const RichNoteEditor: React.FC<RichNoteEditorProps> = ({ item, compact = 
 
     let blocksToInsert: any[];
     try {
-      const parsed = await editor.tryParseMarkdownToBlocks(trimmed);
+      const parsed = await editor.tryParseMarkdownToBlocks(cleaned);
       blocksToInsert = (parsed && parsed.length > 0)
         ? parsed
-        : [{ type: 'paragraph' as const, content: trimmed }];
+        : [{ type: 'paragraph' as const, content: cleaned }];
     } catch (e) {
       console.warn('[scan-insert] markdown parse failed, inserting as paragraph:', e);
-      blocksToInsert = [{ type: 'paragraph' as const, content: trimmed }];
+      blocksToInsert = [{ type: 'paragraph' as const, content: cleaned }];
+    }
+
+    // Soft visual divider before scanned content so successive captures
+    // don't blur into each other or into existing prose. Skipped when the
+    // anchor block is the very first block of an empty doc (avoids a
+    // leading "---" on a brand-new note).
+    const anchorIsEmpty =
+      !!anchor &&
+      Array.isArray(editor.document) &&
+      editor.document.length === 1 &&
+      (Array.isArray(anchor.content) ? anchor.content.length === 0 : !anchor.content);
+    if (!anchorIsEmpty) {
+      blocksToInsert = [
+        { type: 'paragraph' as const, content: '' },
+        ...blocksToInsert,
+      ];
     }
 
     editor.insertBlocks(blocksToInsert, anchor, 'after');

@@ -447,7 +447,13 @@ async def capture_websocket(
     )
 
     try:
-        # Send any existing results (in case of reconnection)
+        # Send any existing results (in case of reconnection). The `replay`
+        # flag lets the receiver tell a recovery message apart from a fresh
+        # one — important because the side-effect of `page_complete` is
+        # "insert OCR text into the note", and replaying that side-effect
+        # turns a flapping WS into a runaway insertion loop. Receivers
+        # SHOULD use the flag (or their own per-page-index dedup) to update
+        # status without re-running side-effects.
         if session.queue:
             for result in session.queue.results:
                 await websocket.send_json({
@@ -458,6 +464,7 @@ async def capture_websocket(
                     "error": result.error,
                     "error_type": result.error_type,
                     "error_model": result.error_model,
+                    "replay": True,
                 })
 
         # Keep connection alive — the Mac frontend only listens, it never

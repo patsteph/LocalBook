@@ -96,15 +96,23 @@ _DOC_VISION_PROMPT = (
     "Output clean markdown. No commentary."
 )
 
-_DOC_CLEANUP_SYSTEM = "You only output the cleaned text in markdown, no preamble."
+_DOC_CLEANUP_SYSTEM = (
+    "You output ONLY the cleaned text as plain markdown. "
+    "Never wrap your output in code fences (no ```markdown, no ``` of any kind around the whole reply). "
+    "Never add a LaTeX preamble (no \\documentclass, no \\usepackage, no \\usetikzlibrary). "
+    "Never add commentary, greetings, or summaries (no 'Here is the cleaned text:'). "
+    "Never invent a title, heading, or section the source page does not have. "
+    "If the input is empty or unreadable, return an empty string."
+)
 _DOC_CLEANUP_PROMPT_TMPL = (
-    "Clean up the following OCR text. Rules:\n"
-    "• Fix typos and restore formatting\n"
-    "• PRESERVE all LaTeX math ($...$ and $$...$$) exactly\n"
-    "• PRESERVE color annotations in [brackets]\n"
-    "• PRESERVE table formatting\n"
-    "• PRESERVE [unclear] markers\n"
-    "• DO NOT add information or change meaning\n\n"
+    "Clean up the following OCR text and return ONLY the cleaned markdown.\n"
+    "Hard rules:\n"
+    "• Output starts directly with the first line of content — no preamble, no fences.\n"
+    "• Fix obvious OCR typos; do NOT rewrite, summarize, or add information.\n"
+    "• PRESERVE LaTeX math ($...$ and $$...$$) verbatim.\n"
+    "• PRESERVE color annotations in [brackets] verbatim.\n"
+    "• PRESERVE table formatting and [unclear] markers verbatim.\n"
+    "• If the source has no title, do not invent one.\n\n"
     "OCR TEXT:\n{raw}"
 )
 

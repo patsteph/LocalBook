@@ -47,6 +47,25 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
   const badgeRef = useRef<HTMLDivElement>(null);
   const fileMenuRef = useRef<HTMLDivElement>(null);
 
+  // Stable ref for the parent-supplied insert callback. We deliberately do
+  // NOT depend on `onCaptureReceived` in the WebSocket effect: the parent
+  // typically passes a fresh closure each render, which would tear down
+  // and reopen the WS on every keystroke / autosave. The backend replays
+  // every prior `page_complete` event on reconnect (for legitimate recovery),
+  // so a flapping WS turns into a runaway insertion loop where the same
+  // OCR text is appended ~2x/sec until the editor is full of duplicates.
+  // Holding the latest callback in a ref keeps the WS effect deps tight
+  // while still calling whatever the parent passed on the most recent render.
+  const onCaptureReceivedRef = useRef(onCaptureReceived);
+  useEffect(() => {
+    onCaptureReceivedRef.current = onCaptureReceived;
+  }, [onCaptureReceived]);
+
+  // Per-session set of page_indices we have already inserted into the note.
+  // Backend replays results on reconnect; without this dedup, every replay
+  // would trigger another insert. Cleared when the session changes.
+  const deliveredPagesRef = useRef<Set<number>>(new Set());
+
   // ── Create session on mount ────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -112,9 +131,14 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
               p.index === event.page_index ? { ...p, status: 'complete' } : p
             )
           );
-          if (event.ocr_text) {
+          // Insert OCR text exactly once per page_index. Backend replays
+          // completed results to any reconnecting WebSocket so the receiver
+          // can recover state — but we only want the side-effect (insert
+          // into the note) the first time we see each index.
+          if (event.ocr_text && !deliveredPagesRef.current.has(event.page_index)) {
+            deliveredPagesRef.current.add(event.page_index);
             setTotalChars(prev => prev + event.ocr_text!.length);
-            onCaptureReceived(event.ocr_text);
+            onCaptureReceivedRef.current(event.ocr_text);
           }
           break;
 
@@ -138,6 +162,11 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
       }
     };
 
+    // Reset the delivered-pages dedup whenever the session changes, otherwise
+    // a fresh session would refuse to insert page 0 because we saw a page 0
+    // for the previous session.
+    deliveredPagesRef.current = new Set();
+
     const cleanup = captureService.connectWebSocket(session, handleEvent);
     wsCleanupRef.current = cleanup;
 
@@ -145,7 +174,10 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
       cleanup();
       wsCleanupRef.current = null;
     };
-  }, [session, onCaptureReceived]);
+    // IMPORTANT: do NOT add `onCaptureReceived` here. The callback is read
+    // through `onCaptureReceivedRef` so changes to the parent's render
+    // identity don't reopen the WebSocket. See the ref declaration above.
+  }, [session]);
 
   // ── Close expanded view on outside click ───────────────────────────────────
   useEffect(() => {
