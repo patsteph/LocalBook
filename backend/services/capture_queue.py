@@ -18,7 +18,14 @@ logger = logging.getLogger(__name__)
 class CapturePageResult:
     """Result of OCR processing for a single captured page."""
     page_index: int
-    status: str              # "complete" | "error"
+    # Lifecycle state. Starts as "processing" when the worker dequeues
+    # the page; flipped to "complete" or "error" once OCR finishes.
+    # Defaulted because the worker constructs the result BEFORE the OCR
+    # call so it has somewhere to attach error metadata if process_fn
+    # raises — making this required would (and did, for hours) crash
+    # the worker on the very first dequeue with TypeError, silently
+    # killing the entire capture pipeline.
+    status: str = "processing"   # "processing" | "complete" | "error"
     content_type: str = ""   # "document" | "math" | "whiteboard" | "drawing" | "photo"
     ocr_text: str = ""
     error: str = ""
