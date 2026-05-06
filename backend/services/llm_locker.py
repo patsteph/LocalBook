@@ -16,14 +16,20 @@ registry = ModelRegistry()
 def _get_default_vision_model() -> str:
     """
     Return the best available standalone vision model from the registry.
-    Prefers highest Granite 3.x Vision version, falls back to granite3.2-vision:2b.
+    Prefers Granite 3.3 Vision (current production target). 3.2 is kept
+    as a fallback only — it produces noticeably worse OCR (spurious
+    tables, hallucinated structure) and is being phased out.
     """
-    # Prefer Granite 3.3 if available, fall back to 3.2
-    for model_name in ["granite3.3-vision:2b", "granite3.2-vision:2b"]:
+    # Order: IBM-namespaced 3.3 (the user's pinned target) → plain 3.3 →
+    # legacy 3.2. Whichever the user has pulled wins.
+    for model_name in [
+        "ibm/granite3.3-vision:2b",
+        "granite3.3-vision:2b",
+        "granite3.2-vision:2b",
+    ]:
         if registry.get_model(model_name):
             return model_name
-    # Fallback for safety — should never hit this if registry is current
-    return "granite3.2-vision:2b"
+    return "ibm/granite3.3-vision:2b"
 
 
 class ModelSwapError(Exception):

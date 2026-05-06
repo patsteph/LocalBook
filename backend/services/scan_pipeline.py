@@ -83,17 +83,28 @@ _CLASSIFY_PROMPT = (
     "photo — photograph of a scene, object, or person"
 )
 
-# Enhanced document OCR — handles math, color, structure
+# Document OCR prompt — INTENTIONALLY SHORT.
+#
+# Small vision models (granite3.3-vision:2b) follow short, blunt prompts
+# far more reliably than long itemised ones. The previous prompt listed
+# "Tables → markdown table format with alignment" as a bullet, which
+# repeatedly caused the model to wrap five prose testimonials into a
+# five-row markdown table because the layout was visually list-like.
+# Lesson: prompts that describe many possible features invite the model
+# to apply ALL of them, even when the source has none.
+#
+# The contract here is:
+#   1. Transcribe what's on the page, preserving its actual structure.
+#   2. Paragraphs stay paragraphs. Lists stay lists. Tables stay tables.
+#   3. Math stays as LaTeX. That's it.
 _DOC_VISION_PROMPT = (
-    "Extract ALL content from this image with high fidelity:\n"
-    "• Transcribe all text exactly, preserving structure and formatting\n"
-    "• Mathematical equations → LaTeX notation ($inline$ or $$display$$)\n"
-    "• Tables → markdown table format with alignment\n"
-    "• Handwritten text → best transcription, [unclear] for illegible parts\n"
-    "• Color annotations → note in [brackets] when meaningful "
-    "(e.g. [red underline], [highlighted in yellow])\n"
-    "• Diagrams → describe structure and labels\n"
-    "Output clean markdown. No commentary."
+    "Transcribe the text in this image as plain markdown.\n"
+    "Preserve the source structure exactly:\n"
+    "• Paragraphs stay paragraphs (do not convert prose into tables or lists).\n"
+    "• Lists stay lists. Tables stay tables. Headings stay headings.\n"
+    "• Math equations → LaTeX ($inline$ or $$display$$).\n"
+    "• Mark illegible spans as [unclear].\n"
+    "Output ONLY the transcription. No commentary, no code fences, no preamble."
 )
 
 _DOC_CLEANUP_SYSTEM = (
@@ -102,6 +113,7 @@ _DOC_CLEANUP_SYSTEM = (
     "Never add a LaTeX preamble (no \\documentclass, no \\usepackage, no \\usetikzlibrary). "
     "Never add commentary, greetings, or summaries (no 'Here is the cleaned text:'). "
     "Never invent a title, heading, or section the source page does not have. "
+    "Never restructure prose into a table or table into prose — keep the same block types. "
     "If the input is empty or unreadable, return an empty string."
 )
 _DOC_CLEANUP_PROMPT_TMPL = (
@@ -109,9 +121,10 @@ _DOC_CLEANUP_PROMPT_TMPL = (
     "Hard rules:\n"
     "• Output starts directly with the first line of content — no preamble, no fences.\n"
     "• Fix obvious OCR typos; do NOT rewrite, summarize, or add information.\n"
+    "• PRESERVE the block structure: paragraphs stay paragraphs, lists stay lists, tables stay tables.\n"
+    "• Do NOT convert a sequence of paragraphs into a markdown table.\n"
     "• PRESERVE LaTeX math ($...$ and $$...$$) verbatim.\n"
-    "• PRESERVE color annotations in [brackets] verbatim.\n"
-    "• PRESERVE table formatting and [unclear] markers verbatim.\n"
+    "• PRESERVE [unclear] markers verbatim.\n"
     "• If the source has no title, do not invent one.\n\n"
     "OCR TEXT:\n{raw}"
 )

@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     # to react to a broken upstream model file. The default below is
     # just a known-good starting point; users are expected to swap it
     # to whatever they prefer (gemma4:e4b, llava, moondream, etc.).
-    vision_model: str = "granite3.2-vision:2b"
+    vision_model: str = "ibm/granite3.3-vision:2b"
     openai_api_key: str = ""
     anthropic_api_key: str = ""
 
