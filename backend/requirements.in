@@ -35,6 +35,7 @@ ebooklib>=0.18  # EPUB support
 pytesseract>=0.3.10  # OCR for images
 Pillow>=10.0.0  # Image processing
 pillow-heif>=0.18.0  # HEIC/HEIF image support (Apple Photos)
+opencv-python-headless>=4.10.0  # OCR preprocessing: deskew, perspective, CLAHE, blur detection
 nbformat>=5.9.0  # Jupyter notebook support
 odfpy>=1.4.1  # OpenDocument (ODT/ODS) support
 striprtf>=0.0.26  # RTF text extraction

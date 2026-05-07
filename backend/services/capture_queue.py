@@ -169,9 +169,13 @@ class CaptureQueue:
                     # avoid a circular import at module load.
                     err_type = getattr(e, "error_type", None)
                     err_model = getattr(e, "model", None)
-                    if err_type and err_model:
+                    if err_type:
+                        # err_type alone is enough — covers BlurryImageError
+                        # (no model involved) as well as the model-specific
+                        # PipelineModelError subclasses.
                         result.error_type = err_type
-                        result.error_model = err_model
+                        if err_model:
+                            result.error_model = err_model
                     else:
                         result.error_type = "generic"
                     self.errors += 1

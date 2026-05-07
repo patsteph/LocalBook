@@ -57,10 +57,17 @@ except Exception as _e:  # pragma: no cover — pillow-heif missing or broken
     logger.warning(f"[capture] pillow-heif unavailable; HEIC uploads will fail to normalize: {_e}")
 
 # Max dimension for images sent to the vision model. iPhone photos are
-# 12MP (4032×3024) which is massive overkill for OCR. Downscaling to
-# 2048px max cuts base64 payload from ~7MB to ~600KB and processing
-# time from 2+ min to ~30s.
-VISION_MAX_DIM = 2048
+# 12MP (4032×3024) which is massive overkill for OCR. 2560 px on the
+# longer side is the sweet spot for current vision models — enough
+# resolution for dense table cells and footnotes, while keeping the
+# base64 payload well under 1 MB.
+VISION_MAX_DIM = 2560
+
+# JPEG quality for the persisted vision-ready image. 92 keeps small-text
+# detail intact (quality 85 introduces ringing artifacts that blur
+# characters and cost OCR accuracy). The file-size delta vs 85 is
+# ~30% but accuracy gain on dense documents is much larger.
+VISION_JPEG_QUALITY = 92
 
 
 def _normalize_image_for_vision(file_path: str) -> str:
@@ -101,7 +108,7 @@ def _normalize_image_for_vision(file_path: str) -> str:
 
             # Force JPEG output — granite/llava/etc. all decode JPEG via
             # stb_image inside Ollama; HEIC/AVIF/WebP do not work.
-            img.save(file_path, format="JPEG", quality=85, optimize=True)
+            img.save(file_path, format="JPEG", quality=VISION_JPEG_QUALITY, optimize=True)
 
         logger.info(
             f"[capture] Normalized {w}×{h} → {new_w}×{new_h} JPEG "

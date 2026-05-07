@@ -18,10 +18,22 @@ import os
 from typing import Any, Dict, List, Optional
 
 from config import settings
+from services.image_preprocessor import check_blur, enhance_for_ocr
 from services.memory_steward import free_for_pipeline
 from services.ollama_client import ollama_client
+from services.page_classifier import classify_page
 from services.progress_reporter import ProgressReporter, get_noop_reporter
 from services.rag_engine import rag_engine
+from services.vision_prompts import (
+    CLASSIFY_PROMPT,
+    CLEANUP_PROMPT_TMPL,
+    CLEANUP_SYSTEM,
+    DOC_VISION_PROMPT,
+    MODE_PROMPTS,
+    PHOTO_ENRICH_PROMPT_TMPL,
+    PHOTO_ENRICH_SYSTEM,
+    PHOTO_KEYWORDS_PROMPT_TMPL,
+)
 from storage.note_store import note_store
 from api.constellation_ws import broadcast_update
 
@@ -62,142 +74,55 @@ class VisionModelError(PipelineModelError):
 class CleanupModelError(PipelineModelError):
     """The downstream cleanup / enrichment text model failed.
 
-    Vision succeeded and produced raw OCR but the polish-pass model
-    (phi4-mini for documents, olmo2 for photos) errored. Less critical
-    than a vision failure — in principle we could fall back to the raw
-    OCR text, but for now we surface the error so the user knows the
-    output is unpolished.
+    The document path now falls back to the raw vision output so a
+    transient cleanup failure doesn't discard a valid OCR pass — only
+    the photo enrichment path still raises this, since photo output
+    isn't useful without enrichment.
     """
     error_type = "cleanup_model"
 
 
-# ── Prompts ───────────────────────────────────────────────────────────────────────────
+class BlurryImageError(RuntimeError):
+    """The captured image is too blurry for OCR.
 
-# Auto-classification (fast, ~0.5s) — determines which OCR prompt to use.
-_CLASSIFY_PROMPT = (
-    "Classify this image into ONE category. Reply with only the word:\n"
-    "document — printed or handwritten text, forms, letters, articles\n"
-    "math — equations, formulas, mathematical notation\n"
-    "whiteboard — whiteboard or blackboard with diagrams/text\n"
-    "drawing — hand-drawn illustration, sketch, diagram\n"
-    "photo — photograph of a scene, object, or person"
-)
+    Surfaced before any LLM call so the user gets fast feedback to
+    retake the photo. The capture queue maps this to error_type
+    'blurry' for frontend-side guidance.
+    """
+    error_type = "blurry"
 
-# Document OCR prompt — INTENTIONALLY SHORT.
-#
-# Small vision models follow short, blunt prompts far more reliably than
-# long itemised ones. The previous prompt listed
-# "Tables → markdown table format with alignment" as a bullet, which
-# repeatedly caused the model to wrap five prose testimonials into a
-# five-row markdown table because the layout was visually list-like.
-# Lesson: prompts that describe many possible features invite the model
-# to apply ALL of them, even when the source has none.
-#
-# The contract here is:
-#   1. Transcribe what's on the page, preserving its actual structure.
-#   2. Paragraphs stay paragraphs. Lists stay lists. Tables stay tables.
-#   3. Math stays as LaTeX. That's it.
-_DOC_VISION_PROMPT = (
-    "Transcribe the text in this image as plain markdown.\n"
-    "Preserve the source structure exactly:\n"
-    "• Paragraphs stay paragraphs (do not convert prose into tables or lists).\n"
-    "• Lists stay lists. Tables stay tables. Headings stay headings.\n"
-    "• Math equations → LaTeX ($inline$ or $$display$$).\n"
-    "• Mark illegible spans as [unclear].\n"
-    "Output ONLY the transcription. No commentary, no code fences, no preamble."
-)
+    def __init__(self, score: float):
+        self.score = score
+        super().__init__(f"Image too blurry to process (laplacian variance: {score:.1f})")
 
-_DOC_CLEANUP_SYSTEM = (
-    "You output ONLY the cleaned text as plain markdown. "
-    "Never wrap your output in code fences (no ```markdown, no ``` of any kind around the whole reply). "
-    "Never add a LaTeX preamble (no \\documentclass, no \\usepackage, no \\usetikzlibrary). "
-    "Never add commentary, greetings, or summaries (no 'Here is the cleaned text:'). "
-    "Never invent a title, heading, or section the source page does not have. "
-    "Never restructure prose into a table or table into prose — keep the same block types. "
-    "If the input is empty or unreadable, return an empty string."
-)
-_DOC_CLEANUP_PROMPT_TMPL = (
-    "Clean up the following OCR text and return ONLY the cleaned markdown.\n"
-    "Hard rules:\n"
-    "• Output starts directly with the first line of content — no preamble, no fences.\n"
-    "• Fix obvious OCR typos; do NOT rewrite, summarize, or add information.\n"
-    "• PRESERVE the block structure: paragraphs stay paragraphs, lists stay lists, tables stay tables.\n"
-    "• Do NOT convert a sequence of paragraphs into a markdown table.\n"
-    "• PRESERVE LaTeX math ($...$ and $$...$$) verbatim.\n"
-    "• PRESERVE [unclear] markers verbatim.\n"
-    "• If the source has no title, do not invent one.\n\n"
-    "OCR TEXT:\n{raw}"
-)
 
-# Math-focused prompt
-_MATH_VISION_PROMPT = (
-    "This image contains mathematical content. Extract with precision:\n"
-    "• All equations in LaTeX: inline $...$ and display $$...$$\n"
-    "• Variable definitions and notation\n"
-    "• Step-by-step derivations (preserve numbered steps)\n"
-    "• Matrices and vectors in LaTeX: \\begin{pmatrix}...\\end{pmatrix}\n"
-    "• Greek letters: \\alpha, \\beta, \\gamma, etc.\n"
-    "• Surrounding explanatory text verbatim\n"
-    "Output in markdown with LaTeX math blocks."
-)
+# ── Model resolution (dynamic — follows LLM Locker selections) ──────────
 
-# Whiteboard/blackboard prompt
-_WHITEBOARD_VISION_PROMPT = (
-    "This is a whiteboard or blackboard. Extract:\n"
-    "• All text, labels, and annotations verbatim\n"
-    "• Diagrams → describe as structured lists with relationships\n"
-    "• Arrows and connections: 'A → B', 'X connects to Y'\n"
-    "• Boxes, circles, groupings: describe containment\n"
-    "• Mathematical expressions in LaTeX\n"
-    "• Color coding: note colors when they distinguish elements\n"
-    "Output in organized markdown with sections."
-)
-
-# Drawing/sketch prompt
-_DRAWING_VISION_PROMPT = (
-    "This is a hand-drawn illustration or sketch. Describe:\n"
-    "• Overall composition and layout\n"
-    "• Individual elements with spatial relationships\n"
-    "• Labels and annotations verbatim\n"
-    "• Colors used and their significance\n"
-    "• Artistic technique observations\n"
-    "• Any text or writing present\n"
-    "Output as structured markdown description."
-)
-
-_PHOTO_VISION_PROMPT = (
-    "Describe this photo in rich detail. Include the overall composition, "
-    "key objects, colors, lighting, atmosphere, and any text visible in the scene. "
-    "Focus on creating a vivid textual representation of the image."
-)
-
-_PHOTO_ENRICH_SYSTEM = "You output beautifully formatted markdown descriptions."
-_PHOTO_ENRICH_PROMPT_TMPL = (
-    "You are an expert descriptive writer and image analyst. "
-    "Enhance the following raw scene description into a highly structured, "
-    "richly detailed markdown summary. Include a 'Reconstruction Prompt' section "
-    "that could be used by an AI image generator to recreate this scene. "
-    "Also extract 5-10 comma-separated keywords/tags.\n\n"
-    "RAW SCENE:\n{raw}"
-)
-
-# Map content type → vision prompt
-_MODE_PROMPTS = {
-    "document": _DOC_VISION_PROMPT,
-    "math": _MATH_VISION_PROMPT,
-    "whiteboard": _WHITEBOARD_VISION_PROMPT,
-    "drawing": _DRAWING_VISION_PROMPT,
-    "photo": _PHOTO_VISION_PROMPT,
-}
-
-# Vision model is read dynamically from settings on each call so a runtime
-# Locker swap (or LOCALBOOK_VISION_MODEL env override) takes effect without
-# a backend restart.
 def _vision_model() -> str:
+    """Vision model — env override > settings.vision_model.
+
+    Read on every call so a runtime Locker swap takes effect without
+    a backend restart.
+    """
     return os.getenv("LOCALBOOK_VISION_MODEL") or settings.vision_model
 
-DOC_CLEANUP_MODEL = "phi4-mini:latest"
-PHOTO_ENRICH_MODEL = "olmo2:7b"
+
+def _cleanup_model() -> str:
+    """Document OCR cleanup model — follows the active fast model.
+
+    When the user swaps their fast model in the LLM Locker, cleanup
+    follows automatically. Was previously hardcoded to phi4-mini.
+    """
+    return settings.ollama_fast_model
+
+
+def _photo_enrich_model() -> str:
+    """Photo enrichment model — follows the active main model.
+
+    Photo enrichment benefits from the larger reasoning model since
+    it produces structured prose, not just typo cleanup.
+    """
+    return settings.ollama_model
 
 # Page separator used when merging multi-page scans into one note.
 # Kept as a literal markdown horizontal rule so it renders cleanly in BlockNote
@@ -277,7 +202,16 @@ class ScanPipeline:
                 details={"page": idx, "total": total, "filename": os.path.basename(path)},
             )
             try:
-                text = await self._ocr_one_page(path, mode=mode)
+                # Cross-page context: pass the tail of the prior successful
+                # page so the model handles paragraphs spanning page breaks.
+                prev_tail = None
+                for prev in reversed(page_texts):
+                    if prev and not prev.startswith("*[Page"):
+                        prev_tail = prev[-200:]
+                        break
+                text = await self._ocr_one_page(
+                    path, mode=mode, prev_page_tail=prev_tail
+                )
             except Exception as e:
                 logger.error(f"[scan-batch] Page {idx} failed: {e}")
                 text = f"*[Page {idx} failed to process: {e}]*"
@@ -401,38 +335,52 @@ class ScanPipeline:
             logger.debug(f"[scan] api_style lookup failed: {_e}")
         return "generate"
 
-    async def _ocr_one_page(self, file_path: str, *, mode: str) -> str:
+    async def _ocr_one_page(
+        self,
+        file_path: str,
+        *,
+        mode: str,
+        prev_page_tail: Optional[str] = None,
+    ) -> str:
+        """Run OCR on a single page.
+
+        Args:
+            file_path: path to the image
+            mode: content type (document/math/whiteboard/drawing/photo)
+            prev_page_tail: optional last ~200 chars of the prior page,
+                injected as continuation context. Helps the vision model
+                handle paragraphs that span page boundaries.
+        """
         with open(file_path, "rb") as f:
             img_data = f.read()
+
+        # Blur gate — fast feedback for unreadable captures, before any
+        # LLM call. Saves 2-5 seconds and gives the user clear guidance.
+        too_blurry, blur_score = check_blur(img_data)
+        if too_blurry:
+            logger.info(f"[scan] Blur gate rejected {file_path} (score={blur_score:.1f})")
+            raise BlurryImageError(blur_score)
+
+        # Mode-aware preprocessing: deskew, perspective-correct, CLAHE
+        # for document modes; pass-through for photo/drawing.
+        # Failure-safe — returns original bytes on any internal error.
+        img_data = enhance_for_ocr(img_data, mode)
         b64_image = base64.b64encode(img_data).decode("utf-8")
+
         vision_model_name = _vision_model()
         api_style = self._get_api_style(vision_model_name)
 
         if mode == "photo":
-            logger.info(f"[scan] Granite Vision (photo) on {file_path}")
-            raw = await ollama_client.vision_describe(
-                image_b64=b64_image,
-                prompt=_PHOTO_VISION_PROMPT,
-                model=vision_model_name,
-                api_style=api_style,
-            )
-            if raw.startswith("Error:"):
-                raise VisionModelError(vision_model_name, raw[len('Error:'):].strip() or raw)
-
-            logger.info("[scan] OLMo enrichment pass")
-            result = await ollama_client.generate(
-                prompt=_PHOTO_ENRICH_PROMPT_TMPL.format(raw=raw),
-                model=PHOTO_ENRICH_MODEL,
-                system=_PHOTO_ENRICH_SYSTEM,
-                temperature=0.3,
-            )
-            response = result.get("response", raw) or raw
-            if isinstance(response, str) and response.startswith("Error:"):
-                raise CleanupModelError(PHOTO_ENRICH_MODEL, response[len('Error:'):].strip() or response)
-            return response.strip()
+            return await self._ocr_photo(b64_image, vision_model_name, api_style)
 
         # Document / math / whiteboard / drawing — select prompt by mode
-        prompt = _MODE_PROMPTS.get(mode, _DOC_VISION_PROMPT)
+        prompt = MODE_PROMPTS.get(mode, DOC_VISION_PROMPT)
+        if prev_page_tail:
+            prompt = (
+                "This page continues from a previous page. The previous page ended with:\n"
+                f"\"{prev_page_tail}\"\n\n"
+                f"{prompt}"
+            )
         logger.info(f"[scan] Vision ({mode}) on {file_path}")
         raw = await ollama_client.vision_describe(
             image_b64=b64_image,
@@ -443,17 +391,90 @@ class ScanPipeline:
         if raw.startswith("Error:"):
             raise VisionModelError(vision_model_name, raw[len('Error:'):].strip() or raw)
 
-        logger.info("[scan] Phi-4-mini cleanup pass")
-        result = await ollama_client.generate(
-            prompt=_DOC_CLEANUP_PROMPT_TMPL.format(raw=raw),
-            model=DOC_CLEANUP_MODEL,
-            system=_DOC_CLEANUP_SYSTEM,
-            temperature=0.1,
+        # Cleanup pass — follows the active fast model. Falls back to
+        # raw OCR if cleanup fails so a transient cleanup error doesn't
+        # discard a valid vision pass.
+        cleanup_model = _cleanup_model()
+        logger.info(f"[scan] Cleanup pass with model={cleanup_model}")
+        try:
+            result = await ollama_client.generate(
+                prompt=CLEANUP_PROMPT_TMPL.format(raw=raw),
+                model=cleanup_model,
+                system=CLEANUP_SYSTEM,
+                temperature=0.1,
+            )
+            response = result.get("response", "") or ""
+            if not response or (isinstance(response, str) and response.startswith("Error:")):
+                logger.warning(f"[scan] Cleanup empty/error from {cleanup_model}; using raw OCR")
+                return raw.strip() + "\n\n*[cleanup skipped]*"
+            return response.strip()
+        except Exception as e:
+            logger.warning(f"[scan] Cleanup exception from {cleanup_model}: {e}; using raw OCR")
+            return raw.strip() + "\n\n*[cleanup skipped]*"
+
+    async def _ocr_photo(
+        self,
+        b64_image: str,
+        vision_model_name: str,
+        api_style: str,
+    ) -> str:
+        """Photo path: scene → enrichment markdown → keywords → merge.
+
+        Split into two narrow enrichment calls (markdown + keywords) so
+        each has a single, simple format requirement that small models
+        can follow reliably. Previously a single call asked for three
+        outputs and small models scrambled the format.
+        """
+        logger.info("[scan] Vision (photo)")
+        raw = await ollama_client.vision_describe(
+            image_b64=b64_image,
+            prompt=MODE_PROMPTS["photo"],
+            model=vision_model_name,
+            api_style=api_style,
         )
-        response = result.get("response", raw) or raw
-        if isinstance(response, str) and response.startswith("Error:"):
-            raise CleanupModelError(DOC_CLEANUP_MODEL, response[len('Error:'):].strip() or response)
-        return response.strip()
+        if raw.startswith("Error:"):
+            raise VisionModelError(vision_model_name, raw[len('Error:'):].strip() or raw)
+
+        enrich_model = _photo_enrich_model()
+        logger.info(f"[scan] Photo enrichment with model={enrich_model}")
+
+        # Call 1: structured markdown summary + reconstruction prompt
+        try:
+            result = await ollama_client.generate(
+                prompt=PHOTO_ENRICH_PROMPT_TMPL.format(raw=raw),
+                model=enrich_model,
+                system=PHOTO_ENRICH_SYSTEM,
+                temperature=0.3,
+            )
+            enriched = (result.get("response") or "").strip()
+            if not enriched or enriched.startswith("Error:"):
+                # Fall back to raw description rather than failing the page
+                logger.warning(f"[scan] Photo enrich empty/error; using raw scene")
+                enriched = raw.strip()
+        except Exception as e:
+            logger.warning(f"[scan] Photo enrich exception: {e}; using raw scene")
+            enriched = raw.strip()
+
+        # Call 2: keywords (separate call so the format is enforceable)
+        try:
+            kw_result = await ollama_client.generate(
+                prompt=PHOTO_KEYWORDS_PROMPT_TMPL.format(raw=raw),
+                model=enrich_model,
+                system=PHOTO_ENRICH_SYSTEM,
+                temperature=0.3,
+                num_predict=60,
+            )
+            kw_text = (kw_result.get("response") or "").strip()
+            # Sanity: keep the line only if it looks like a comma-separated list
+            # and not a stray paragraph or LLM apology.
+            if kw_text and "," in kw_text and len(kw_text) < 400 and not kw_text.startswith("Error:"):
+                # Take first line only — defends against trailing commentary
+                first_line = kw_text.splitlines()[0].strip()
+                enriched = enriched.rstrip() + f"\n\n**Tags:** {first_line}"
+        except Exception as e:
+            logger.debug(f"[scan] Photo keywords skipped: {e}")
+
+        return enriched
 
     def _ocr_working_set(self, vision_model: str) -> set:
         """The set of Ollama models the OCR pipeline needs resident.
@@ -463,10 +484,12 @@ class ScanPipeline:
         config where the *main* model also has vision support (e.g.
         gemma4:e4b) collapses to a single-model working set automatically.
         """
-        keep = {vision_model, DOC_CLEANUP_MODEL, settings.embedding_model}
-        # Photo enrichment uses a different downstream model; include it so
-        # back-to-back photo captures don't churn the cache.
-        keep.add(PHOTO_ENRICH_MODEL)
+        keep = {
+            vision_model,
+            _cleanup_model(),       # follows settings.ollama_fast_model
+            _photo_enrich_model(),  # follows settings.ollama_model
+            settings.embedding_model,
+        }
         # Drop empties (defensive — in case a setting is unset).
         return {m for m in keep if m}
 
@@ -475,12 +498,13 @@ class ScanPipeline:
         """Auto-classify content type, then OCR with the right prompt.
 
         Returns (content_type: str, ocr_text: str).
-        The vision model classifies each page (~0.5s), then the appropriate
-        mode-specific prompt is used for extraction.
+
+        Classification runs heuristic-first (cheap image stats, ~50ms) and
+        only invokes the LLM for ambiguous pages. For ~80% of typical scans
+        this saves the 1-2s the LLM classification used to cost.
         """
         with open(file_path, "rb") as f:
             img_data = f.read()
-        b64_image = base64.b64encode(img_data).decode("utf-8")
         vision_model_name = _vision_model()
         api_style = self._get_api_style(vision_model_name)
 
@@ -499,27 +523,27 @@ class ScanPipeline:
         except Exception as _e:
             logger.warning(f"[scan] memory_steward free_for_pipeline failed: {_e}")
 
-        # Step 1: Classify content type
-        logger.info(f"[scan] Classifying {file_path}")
-        classification = await ollama_client.vision_describe(
-            image_b64=b64_image,
-            prompt=_CLASSIFY_PROMPT,
-            model=vision_model_name,
-            api_style=api_style,
-            num_predict=20,
-        )
-        if classification.startswith("Error:"):
-            raise VisionModelError(
-                vision_model_name,
-                classification[len('Error:'):].strip() or classification,
+        # Step 1: Heuristic-first classification with LLM fallback
+        async def _llm_classify(bytes_in: bytes) -> str:
+            b64 = base64.b64encode(bytes_in).decode("utf-8")
+            classification = await ollama_client.vision_describe(
+                image_b64=b64,
+                prompt=CLASSIFY_PROMPT,
+                model=vision_model_name,
+                api_style=api_style,
+                num_predict=20,
             )
+            if classification.startswith("Error:"):
+                raise VisionModelError(
+                    vision_model_name,
+                    classification[len('Error:'):].strip() or classification,
+                )
+            return classification
 
-        content_type = classification.strip().lower().split()[0] if classification else "document"
-        if content_type not in _MODE_PROMPTS:
-            content_type = "document"
-        logger.info(f"[scan] Classified as: {content_type}")
+        content_type = await classify_page(img_data, _llm_classify)
+        logger.info(f"[scan] Classified {file_path} as: {content_type}")
 
-        # Step 2: OCR with mode-specific prompt
+        # Step 2: OCR with mode-specific prompt (preprocessing happens inside)
         ocr_text = await self._ocr_one_page(file_path, mode=content_type)
         return (content_type, ocr_text)
 

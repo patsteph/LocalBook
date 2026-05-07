@@ -95,7 +95,7 @@
       "supported_roles": ["fast_model", "vision_model"],
       "context_window": 131072,
       "supports_vision": true,
-      "vision_api_style": "generate",
+      "vision_api_style": "chat",
       "disk_size_gb": 3.3,
       "min_ram_gb": 6,
       "recommended_ram_gb": 12,
