@@ -92,7 +92,7 @@ async def get_ollama_models():
     Return all locally installed Ollama models enriched with live metadata.
 
     Calls GET /api/tags (model list) then POST /api/show (per-model details)
-    in parallel, classifies each model into main / fast / embeddings / specialty,
+    in parallel, classifies each model into main / fast / vision / embeddings,
     and appends current-active state from settings.  Cached in-process for 30 s.
     """
     import asyncio
@@ -144,13 +144,13 @@ async def get_ollama_models():
 
     def _classify_model(name: str, show: dict, size_bytes: int, reg) -> str:
         """
-        Classify an installed model into main / fast / embeddings / specialty.
+        Classify an installed model into main / fast / vision / embeddings.
 
         Waterfall (checked in order):
         1. Embedding keyword or architecture       → "embeddings"
-        2. Registry: ONLY vision_model (no main/fast) → "specialty"
+        2. Registry: ONLY vision_model (no main/fast) → "vision"
         3. Registry: has main_model or fast_model   → use that role
-        4. No registry + has vision + disk < 4 GB   → "specialty"
+        4. No registry + has vision + disk < 4 GB   → "vision"
         5. Disk size >= 4 GB                        → "main"
         6. Disk size < 4 GB                         → "fast"
         """
@@ -181,10 +181,12 @@ async def get_ollama_models():
             if has_fast:
                 return "fast"
 
-        # Step 4: Non-registry vision model (small)
+        # Step 4: Non-registry vision model (small) — surface in the Vision column
+        # (frontend Role type is main|fast|vision|embeddings; "specialty" silently
+        # filters out of every column)
         size_gb = size_bytes / (1024 ** 3)
         if not reg and _is_vision_model(name, show) and size_gb < 4.0:
-            return "specialty"
+            return "vision"
 
         # Step 5 & 6: Disk-size threshold
         if size_gb >= 4.0:

@@ -26,6 +26,7 @@ class OllamaClient:
         temperature: float = 0.7,
         timeout: float = 300.0,
         num_predict: Optional[int] = None,
+        num_ctx: Optional[int] = None,
         extra_options: Optional[Dict[str, Any]] = None,
         images: Optional[list] = None,
         think: Optional[bool] = None,
@@ -40,6 +41,8 @@ class OllamaClient:
         regardless of backend (`{"response": "...", ...}` with eval_count etc).
 
         Args:
+            num_ctx: Context window size. None = Ollama default (~2048). Vision models
+                     and dense documents typically need 8192+.
             think: Enable/disable thinking mode (Gemma 4). True=thinking on, False=thinking off.
             response_format: JSON schema for structured output, e.g. {"type": "json_object"}.
             tools: List of tool definitions for function calling (native Ollama tools).
@@ -49,6 +52,8 @@ class OllamaClient:
         options: Dict[str, Any] = {"temperature": temperature}
         if num_predict is not None:
             options["num_predict"] = num_predict
+        if num_ctx is not None:
+            options["num_ctx"] = num_ctx
         if extra_options:
             options.update(extra_options)
 
@@ -109,6 +114,8 @@ class OllamaClient:
         model: Optional[str] = None,
         temperature: float = 0.7,
         timeout: float = 300.0,
+        num_predict: Optional[int] = None,
+        num_ctx: Optional[int] = None,
         images: Optional[list] = None,
         think: Optional[bool] = None,
         response_format: Optional[Dict[str, Any]] = None,
@@ -119,6 +126,8 @@ class OllamaClient:
         Same return shape as Ollama's /api/chat: {"message": {"role": "...", "content": "..."}}.
 
         Args:
+            num_predict: Max tokens to generate. Important for vision/long outputs.
+            num_ctx: Context window size. Vision models with images often need 8192+.
             think: Enable/disable thinking mode (Gemma 4). True=thinking on, False=thinking off.
             response_format: JSON schema for structured output, e.g. {"type": "json_object"}.
             tools: List of tool definitions for function calling (native Ollama tools).
@@ -132,11 +141,17 @@ class OllamaClient:
                     msg["images"] = images
                     break
 
+        chat_options: Dict[str, Any] = {"temperature": temperature}
+        if num_predict is not None:
+            chat_options["num_predict"] = num_predict
+        if num_ctx is not None:
+            chat_options["num_ctx"] = num_ctx
+
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": chat_options,
         }
         if think is not None:
             payload["think"] = think
@@ -181,33 +196,58 @@ class OllamaClient:
         model: Optional[str] = None,
         api_style: str = "generate",
         timeout: float = 90.0,
-        num_predict: int = 400,
+        num_predict: Optional[int] = None,
+        num_ctx: Optional[int] = None,
+        temperature: Optional[float] = None,
     ) -> str:
         """
         Universal vision dispatcher — routes to /api/generate or /api/chat
         depending on which API style the vision model requires.
-        
+
+        Parameter resolution priority (per param): explicit arg > vision_profile > global default.
+        Global defaults: num_predict=1500, num_ctx=8192, temperature=0.3.
+        Vision profile is per-model — see ModelInfo.vision_profile.
+
         Args:
             image_b64: Base64-encoded image data
             prompt: Text prompt to describe the image
             model: Vision model to use (defaults to settings.vision_model)
             api_style: "generate" for LLaVA/Granite, "chat" for Gemma4/Llama3.2
             timeout: Request timeout
-            num_predict: Max tokens for the response
-            
+            num_predict: Max tokens for the response. None = profile/global default.
+            num_ctx: Context window size. None = profile/global default. Vision needs ≥4096.
+            temperature: Sampling temperature. None = profile/global default (0.3).
+
         Returns:
             The model's text description of the image
         """
         model = model or settings.vision_model
-        
+
+        # Per-model vision_profile from registry (empty dict if none / lookup fails)
+        profile: Dict[str, Any] = {}
+        try:
+            from evaluator.model_registry import model_registry
+            info = model_registry.get_model(model)
+            if info and getattr(info, "vision_profile", None):
+                profile = dict(info.vision_profile)
+        except Exception as _e:
+            logger.debug(f"[vision] profile lookup failed: {_e}")
+
+        # Resolve final params: explicit arg wins > profile > global default
+        final_num_predict = num_predict if num_predict is not None else profile.get("num_predict", 1500)
+        final_num_ctx = num_ctx if num_ctx is not None else profile.get("num_ctx", 8192)
+        final_temp = temperature if temperature is not None else profile.get("temperature", 0.3)
+
         try:
             if api_style == "chat":
                 # Gemma 4 / Llama 3.2 style — images go inside chat messages
                 result = await self.chat(
                     messages=[{"role": "user", "content": prompt}],
                     model=model,
-                    temperature=0.3,
+                    temperature=final_temp,
                     timeout=timeout,
+                    num_predict=final_num_predict,
+                    num_ctx=final_num_ctx,
                     images=[image_b64],
                 )
                 return result.get("message", {}).get("content", "")
@@ -216,9 +256,10 @@ class OllamaClient:
                 result = await self.generate(
                     prompt=prompt,
                     model=model,
-                    temperature=0.3,
+                    temperature=final_temp,
                     timeout=timeout,
-                    num_predict=num_predict,
+                    num_predict=final_num_predict,
+                    num_ctx=final_num_ctx,
                     images=[image_b64],
                 )
                 return result.get("response", "")

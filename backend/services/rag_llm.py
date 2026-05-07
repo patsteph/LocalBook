@@ -18,6 +18,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _get_rag_profile(model_name: str) -> dict:
+    """Return the model's RAG-specific tuning profile from the registry.
+
+    Empty dict means: apply no overrides — global defaults stay intact.
+    Only Gemma-family models currently carry a non-empty profile.
+    """
+    try:
+        from evaluator.model_registry import model_registry
+        info = model_registry.get_model(model_name)
+        if info and info.rag_profile:
+            return dict(info.rag_profile)
+    except Exception as _e:
+        logger.debug(f"[rag-llm] rag_profile lookup failed: {_e}")
+    return {}
+
+
 def _get_model_options(model_name: str) -> dict:
     """Look up per-model optimal Ollama generation parameters from the registry.
     
@@ -78,6 +94,7 @@ async def call_ollama(
     use_model = model or settings.ollama_fast_model
     # Start with model-specific defaults from registry (temperature, top_p, top_k)
     model_defaults = _get_model_options(use_model)
+    rag_profile = _get_rag_profile(use_model)
     options = {**model_defaults, "num_predict": num_predict}
     if num_ctx is not None:
         options["num_ctx"] = num_ctx
@@ -87,8 +104,14 @@ async def call_ollama(
         prompt_text = f"{system_prompt}\n\n{prompt}"
         estimated_prompt_tokens = len(prompt_text) // 3  # conservative estimate
         options["num_ctx"] = max(8192, estimated_prompt_tokens + num_predict + 512)
+    # Apply num_ctx hard cap from rag_profile (e.g. Gemma4 perf cliff at 16K)
+    if rag_profile.get("num_ctx_cap") and "num_ctx" in options:
+        options["num_ctx"] = min(options["num_ctx"], rag_profile["num_ctx_cap"])
+    # Temperature priority: explicit arg > rag_profile > ollama_options
     if temperature is not None:
         options["temperature"] = temperature
+    elif "temperature" in rag_profile:
+        options["temperature"] = rag_profile["temperature"]
     # Repetition / coherence control — strategy varies by output length:
     #
     # Long-form (>3000 tokens): Use Mirostat 2.0 adaptive sampling.
@@ -98,6 +121,9 @@ async def call_ollama(
     #
     # Medium docs / Chat: Use repeat_penalty (simpler, sufficient for shorter output).
     # Dialogue/scripts should pass repeat_penalty=1.1 explicitly.
+    # rag_profile.repeat_penalty overrides the per-tier hardcoded defaults without
+    # disabling Mirostat for long-form — profile value replaces the secondary penalty.
+    _profile_penalty = rag_profile.get("repeat_penalty")
     if repeat_penalty is not None:
         # Caller explicitly set penalty — respect it (e.g. dialogue scripts)
         options["repeat_penalty"] = repeat_penalty
@@ -107,13 +133,13 @@ async def call_ollama(
         options["mirostat"] = 2
         options["mirostat_tau"] = 4.0     # Target perplexity (coherent but diverse)
         options["mirostat_eta"] = 0.1     # Learning rate (stable adaptation)
-        options["repeat_penalty"] = 1.15  # Light penalty as secondary safety net
+        options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.15
         options["repeat_last_n"] = 512
     elif num_predict > 500:
-        options["repeat_penalty"] = 1.3   # Medium docs
+        options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.3
         options["repeat_last_n"] = 256
     else:
-        options["repeat_penalty"] = 1.1   # Chat Q&A
+        options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.1
         options["repeat_last_n"] = 64
     # Merge caller-supplied overrides LAST (e.g., Mirostat for outline-first sections)
     if extra_options:
@@ -122,13 +148,6 @@ async def call_ollama(
         print(f"Calling LLM with model: {use_model}, num_predict: {num_predict}, num_ctx: {num_ctx or 'default'}")
         # Short keep_alive — warmup loop re-pings active models every 4 min
         _keep_alive = "5m"
-        payload = {
-            "model": use_model,
-            "prompt": f"{system_prompt}\n\n{prompt}",
-            "stream": False,
-            "keep_alive": _keep_alive,
-            "options": options,
-        }
 
         # v1.8.0: provider routing (identical Ollama path + translated OpenAI path)
         from services.llm_provider import (
@@ -138,13 +157,45 @@ async def call_ollama(
         )
         _route = _resolve_provider(use_model)
 
-        if _route.api_style == "ollama":
-            response = await client.post(
-                f"{_route.base_url}/api/generate",
-                json=payload,
-            )
+        # Gemma-family models use /api/chat for proper system+user message structure.
+        # All other Ollama models keep the /api/generate path unchanged.
+        _use_chat = rag_profile.get("use_chat_endpoint", False) and _route.api_style == "ollama"
+
+        if _use_chat:
+            payload = {
+                "model": use_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                "stream": False,
+                "keep_alive": _keep_alive,
+                "options": options,
+            }
+            if "think" in rag_profile:
+                payload["think"] = rag_profile["think"]
+            response = await client.post(f"{_route.base_url}/api/chat", json=payload)
+            raw = response.json()
+            # Normalize to the same shape as /api/generate so token tracking works
+            result = {"response": raw.get("message", {}).get("content", ""), **raw}
+        elif _route.api_style == "ollama":
+            payload = {
+                "model": use_model,
+                "prompt": f"{system_prompt}\n\n{prompt}",
+                "stream": False,
+                "keep_alive": _keep_alive,
+                "options": options,
+            }
+            response = await client.post(f"{_route.base_url}/api/generate", json=payload)
             result = response.json()
         else:
+            payload = {
+                "model": use_model,
+                "prompt": f"{system_prompt}\n\n{prompt}",
+                "stream": False,
+                "keep_alive": _keep_alive,
+                "options": options,
+            }
             openai_payload = ollama_to_openai_payload(payload, is_chat=False)
             response = await client.post(
                 f"{_route.base_url}/v1/chat/completions",
@@ -186,7 +237,7 @@ async def stream_ollama(
         extra_options: Additional Ollama options merged last (e.g., Mirostat overrides).
     """
     timeout = httpx.Timeout(10.0, read=600.0)
-    
+
     # Two-tier model selection:
     # - System 1 (phi4-mini): Factual queries, fast responses
     # - System 2 (olmo-3:7b-instruct): Synthesis, complex queries, Deep Think
@@ -194,12 +245,16 @@ async def stream_ollama(
         model = settings.ollama_fast_model
     else:
         model = settings.ollama_model
-    
+
     # Load model-specific defaults from registry (temperature, top_p, top_k)
     model_defaults = _get_model_options(model)
-    base_temp = model_defaults.get("temperature", 0.7)
+    rag_profile = _get_rag_profile(model)
+    # Temperature priority: rag_profile > ollama_options > fallback
+    # rag_profile.temperature is the RAG-tuned override (e.g. 0.3 for Gemma4)
+    _profile_temp = rag_profile.get("temperature")
+    base_temp = _profile_temp if _profile_temp is not None else model_defaults.get("temperature", 0.7)
     top_p = model_defaults.get("top_p", 0.9)
-    
+
     if temperature_override is not None:
         temperature = temperature_override
     elif deep_think:
@@ -269,7 +324,10 @@ async def stream_ollama(
             effective_num_ctx = max(8192, estimated_prompt_tokens + effective_num_predict + 512)
         else:
             effective_num_ctx = 8192
-        
+        # Apply num_ctx hard cap from rag_profile (e.g. Gemma4 perf cliff at 16K)
+        if rag_profile.get("num_ctx_cap"):
+            effective_num_ctx = min(effective_num_ctx, rag_profile["num_ctx_cap"])
+
         # Repetition / coherence control — same strategy as non-streaming path
         # Start with model-specific base options, then layer on call-specific params
         stream_options = {**model_defaults}
@@ -279,18 +337,19 @@ async def stream_ollama(
             "num_predict": effective_num_predict,
             "num_ctx": effective_num_ctx,
         })
+        _profile_penalty = rag_profile.get("repeat_penalty")
         if effective_num_predict > 3000:
             # Long-form: Mirostat 2.0 adaptive sampling
             stream_options["mirostat"] = 2
             stream_options["mirostat_tau"] = 4.0
             stream_options["mirostat_eta"] = 0.1
-            stream_options["repeat_penalty"] = 1.15
+            stream_options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.15
             stream_options["repeat_last_n"] = 512
         elif is_doc_gen:
-            stream_options["repeat_penalty"] = 1.3
+            stream_options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.3
             stream_options["repeat_last_n"] = 256
         else:
-            stream_options["repeat_penalty"] = 1.1
+            stream_options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.1
             stream_options["repeat_last_n"] = 64
         # Merge caller-supplied overrides LAST (e.g., Mirostat for outline-first sections)
         if extra_options:
@@ -298,15 +357,6 @@ async def stream_ollama(
 
         # Short keep_alive — warmup loop re-pings active models every 4 min
         _keep_alive = "5m"
-        request_json = {
-            "model": model,
-            "prompt": f"{system_prompt}\n\n{prompt}",
-            "stream": True,
-            "keep_alive": _keep_alive,
-            "options": stream_options,
-        }
-        if stop_sequences:
-            request_json["stop"] = stop_sequences
 
         # Track model usage for warmup service
         from services.model_warmup import mark_fast_model_used, mark_main_model_used
@@ -319,14 +369,49 @@ async def stream_ollama(
         # Resolve the backend for this model. Ollama-backed models keep the
         # existing /api/generate path byte-for-byte. Sidecar-backed models
         # (Bonsai via llama-server) translate to /v1/chat/completions.
+        # Gemma-family models use /api/chat for proper system+user message structure.
         from services.llm_provider import (
             resolve as _resolve_provider,
             ollama_to_openai_payload,
             openai_stream_chunk_to_ollama,
         )
         _route = _resolve_provider(model)
+        _use_chat = rag_profile.get("use_chat_endpoint", False) and _route.api_style == "ollama"
 
-        if _route.api_style == "ollama":
+        if _use_chat:
+            chat_payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                "stream": True,
+                "keep_alive": _keep_alive,
+                "options": stream_options,
+            }
+            if stop_sequences:
+                chat_payload["stop"] = stop_sequences
+            if "think" in rag_profile:
+                chat_payload["think"] = rag_profile["think"]
+            async with client.stream("POST", f"{_route.base_url}/api/chat", json=chat_payload) as response:
+                async for line in response.aiter_lines():
+                    if line:
+                        data = json.loads(line)
+                        token = data.get("message", {}).get("content", "")
+                        if token:
+                            yield token
+                        if data.get("done"):
+                            _record_ollama_tokens(data)
+        elif _route.api_style == "ollama":
+            request_json = {
+                "model": model,
+                "prompt": f"{system_prompt}\n\n{prompt}",
+                "stream": True,
+                "keep_alive": _keep_alive,
+                "options": stream_options,
+            }
+            if stop_sequences:
+                request_json["stop"] = stop_sequences
             async with client.stream(
                 "POST",
                 f"{_route.base_url}/api/generate",
@@ -335,14 +420,21 @@ async def stream_ollama(
                 async for line in response.aiter_lines():
                     if line:
                         data = json.loads(line)
-                        # Ollama streams response tokens directly
                         if data.get("response"):
                             yield data["response"]
-                        # Final chunk contains token stats
                         if data.get("done"):
                             _record_ollama_tokens(data)
         else:
             # OpenAI-compatible streaming (llama-server sidecar).
+            request_json = {
+                "model": model,
+                "prompt": f"{system_prompt}\n\n{prompt}",
+                "stream": True,
+                "keep_alive": _keep_alive,
+                "options": stream_options,
+            }
+            if stop_sequences:
+                request_json["stop"] = stop_sequences
             openai_payload = ollama_to_openai_payload(request_json, is_chat=False)
             async with client.stream(
                 "POST",

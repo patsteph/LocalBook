@@ -48,6 +48,8 @@ class ModelRegistry:
                     recommended_ram_gb=entry.get("recommended_ram_gb", 0),
                     policy_tags=entry.get("policy_tags", []),
                     ollama_options=entry.get("ollama_options", {}),
+                    rag_profile=entry.get("rag_profile", {}),
+                    vision_profile=entry.get("vision_profile", {}),
                     provider=entry.get("provider", "ollama"),
                 )
                 self._models[info.ollama_name] = info
