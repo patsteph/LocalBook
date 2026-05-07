@@ -175,10 +175,16 @@ html:not(.dark) .focus\:ring-blue-500:focus { --tw-ring-color: #5a8ae0 !importan
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;          /* allow flex child to shrink below content size */
 }
 
+/* The block group is the actual content area — make it scroll when the
+   editor's content is taller than the wrapper. min-height: 0 + overflow-y
+   is the standard idiom for scrolling inside a flex column. */
 .rich-note-editor-wrapper.flex-1 .bn-block-group {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* Compact mode: ensure the editor content area has decent height */
