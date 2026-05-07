@@ -21,24 +21,13 @@ def _get_default_vision_model() -> str:
     KNOW the current Ollama runner can serve, and treat newer-but-flaky
     models as opt-in via Settings → Models.
 
-    History: we briefly defaulted to ibm/granite3.3-vision:2b, but the
-    Ollama 0.23.x llama-runner segfaults loading it on Apple Silicon
-    (native crash with `fault 0x...` and `llama runner terminated`).
-    Defaulting users into a model that can't load left them staring at
-    red "VISION MODEL FAILED" banners with no captures working. Until
-    Ollama upstream fixes that, 3.2 is the floor — homely OCR is much
-    better than no OCR.
-
-    Users on a working Ollama / 3.3 combo can still select it from the
-    Settings → Models picker; the registry entry is preserved so the UI
-    surfaces it as an option.
+    granite3.2-vision:2b is the stable floor. granite3.3 was removed after
+    Ollama 0.23.x llama-runner segfaults on Apple Silicon. Users can select
+    any installed vision model (gemma3:4b, gemma4:e2b, llava, moondream)
+    via the Vision column in the LLM Selector.
     """
-    for model_name in [
-        "granite3.2-vision:2b",
-        "ibm/granite3.3-vision:2b",
-    ]:
-        if registry.get_model(model_name):
-            return model_name
+    if registry.get_model("granite3.2-vision:2b"):
+        return "granite3.2-vision:2b"
     return "granite3.2-vision:2b"
 
 
@@ -164,19 +153,32 @@ class LLMLocker:
         _supports_vision = (model_info.supports_vision if model_info else (_live or {}).get("supports_vision", False))
 
         # Vision Collapse / Restoration Logic
+        # When main or fast model supports vision natively, collapse vision_model to it.
+        # When switching away to a non-vision model, restore the standalone default.
         if role == "main_model":
             if _supports_vision:
-                # Main model handles vision natively — collapse to 2-model setup
-                # Set vision_model to the main model itself so downstream code uses it
                 changes["vision_model"] = target_ollama_name
                 msg = (f"Safe to swap to {target_ollama_name}. NOTE: This model natively supports vision. "
                        f"Vision tasks will now be handled by the main model (no standalone vision model needed).")
             else:
-                # Main model does NOT support vision — ensure standalone vision model is active
                 current_vision = settings.vision_model
                 current_main = settings.ollama_model
-                # If vision was previously collapsed to the old main model, restore default
                 if current_vision == current_main:
+                    default_vision = _get_default_vision_model()
+                    changes["vision_model"] = default_vision
+                    msg = (f"Safe to swap to {target_ollama_name}. NOTE: Restoring standalone vision model "
+                           f"({default_vision}) since this model does not support vision natively.")
+                else:
+                    msg = f"Safe to swap to {target_ollama_name}."
+        elif role == "fast_model":
+            if _supports_vision:
+                changes["vision_model"] = target_ollama_name
+                msg = (f"Safe to swap to {target_ollama_name}. NOTE: This model natively supports vision. "
+                       f"Vision tasks will now be handled by the fast model.")
+            else:
+                current_vision = settings.vision_model
+                current_fast = settings.ollama_fast_model
+                if current_vision == current_fast:
                     default_vision = _get_default_vision_model()
                     changes["vision_model"] = default_vision
                     msg = (f"Safe to swap to {target_ollama_name}. NOTE: Restoring standalone vision model "
@@ -219,8 +221,9 @@ class LLMLocker:
         elif role == "fast_model":
             main_vram = _model_vram(current_main)
             fast_vram = _model_vram(target_ollama_name)
-            # Vision rotates with fast — use the larger of fast/vision as secondary
-            vision_vram = _model_vram(current_vision) if current_vision != current_main else 0
+            # Use post-collapse vision value: if fast model supports vision, vision is now the fast model itself
+            final_vision = changes.get("vision_model", current_vision)
+            vision_vram = _model_vram(final_vision) if final_vision not in (current_main, target_ollama_name) else 0
             combined_vram = main_vram + max(fast_vram, vision_vram)
         else:
             combined_vram = _model_vram(current_main) + max(

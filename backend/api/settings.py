@@ -171,7 +171,7 @@ async def get_ollama_models():
             has_fast = "fast_model" in roles
             has_vision_only = "vision_model" in roles and not has_main and not has_fast
             if has_vision_only:
-                return "specialty"
+                return "vision"
             # If model has both main + fast roles, use whichever is listed first
             # (registry convention: primary role is listed first)
             if has_main and has_fast:
@@ -294,6 +294,9 @@ async def get_ollama_models():
                 else:
                     _vision = _is_vision_model(name, show)
 
+                # also_vision: model should appear in the Vision column in addition to its primary role
+                _also_vision = bool(reg and "vision_model" in (reg.supported_roles or []))
+
                 # Parameter count: registry > Ollama metadata > name parse
                 param_count = (reg.parameter_count if reg else "") or _extract_param_count(name, show)
 
@@ -307,6 +310,7 @@ async def get_ollama_models():
                     "context_window": context_window,
                     "suggested_role": suggested_role,
                     "supports_vision": _vision,
+                    "also_vision": _also_vision,
                     "supports_json_mode": (reg.supports_json_mode if reg else False),
                     "vendor": (reg.vendor if reg else "Community"),
                     "origin_country": (reg.origin_country if reg else ""),
@@ -351,6 +355,7 @@ async def get_ollama_models():
                     "context_window": reg_model.context_window,
                     "suggested_role": _sr,
                     "supports_vision": reg_model.supports_vision,
+                    "also_vision": "vision_model" in (reg_model.supported_roles or []),
                     "supports_json_mode": reg_model.supports_json_mode,
                     "vendor": reg_model.vendor,
                     "origin_country": reg_model.origin_country,

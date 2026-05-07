@@ -85,8 +85,8 @@ _CLASSIFY_PROMPT = (
 
 # Document OCR prompt — INTENTIONALLY SHORT.
 #
-# Small vision models (granite3.3-vision:2b) follow short, blunt prompts
-# far more reliably than long itemised ones. The previous prompt listed
+# Small vision models follow short, blunt prompts far more reliably than
+# long itemised ones. The previous prompt listed
 # "Tables → markdown table format with alignment" as a bullet, which
 # repeatedly caused the model to wrap five prose testimonials into a
 # five-row markdown table because the layout was visually list-like.
@@ -192,8 +192,7 @@ _MODE_PROMPTS = {
 
 # Vision model is read dynamically from settings on each call so a runtime
 # Locker swap (or LOCALBOOK_VISION_MODEL env override) takes effect without
-# a backend restart. Was previously hardcoded to "granite3.1-vision:2b" which
-# silently broke scans for any user that didn't have that exact tag pulled.
+# a backend restart.
 def _vision_model() -> str:
     return os.getenv("LOCALBOOK_VISION_MODEL") or settings.vision_model
 

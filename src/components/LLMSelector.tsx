@@ -13,8 +13,9 @@ interface OllamaModel {
   size_gb: number;
   ram_required_gb: number;
   context_window: number;
-  suggested_role: 'main' | 'fast' | 'embeddings';
+  suggested_role: 'main' | 'fast' | 'vision' | 'embeddings';
   supports_vision: boolean;
+  also_vision?: boolean;
   vendor: string;
   origin_country: string;
   parameter_count: string;
@@ -31,11 +32,12 @@ interface ActiveModels {
   vision: string;
 }
 
-type Role = 'main' | 'fast' | 'embeddings';
+type Role = 'main' | 'fast' | 'vision' | 'embeddings';
 
 const ROLE_META: Record<Role, { label: string; api_role: string; color: string; desc: string }> = {
   main:       { label: 'Main',       api_role: 'main_model',       color: 'blue',   desc: '≥ 5 GB — deep reasoning, synthesis' },
   fast:       { label: 'Fast',       api_role: 'fast_model',       color: 'green',  desc: '< 5 GB — routing, quick tasks' },
+  vision:     { label: 'Vision',     api_role: 'vision_model',     color: 'amber',  desc: 'OCR & image analysis' },
   embeddings: { label: 'Embeddings', api_role: 'embedding_model',  color: 'purple', desc: 'Vector search embeddings' },
 };
 
@@ -105,7 +107,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
       } else {
         setSwitchMsg({ text: data.message ?? `Switched ${role} → ${modelName}`, ok: true });
         await loadModels();
-        if (role !== 'embeddings') onProviderChange('ollama');
+        if (role !== 'embeddings' && role !== 'vision') onProviderChange('ollama');
       }
     } catch (e: any) {
       setSwitchMsg({ text: e.message ?? 'Network error', ok: false });
@@ -121,8 +123,12 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     { id: 'google_ai',   name: 'Google AI',    subtitle: 'Gemini 1.5 Flash',   available: availableProviders.google_ai },
   ];
 
-  const modelsForRole = (role: Role) =>
-    models.filter(m => m.suggested_role === role);
+  const modelsForRole = (role: Role) => {
+    if (role === 'vision') {
+      return models.filter(m => m.suggested_role === 'vision' || m.also_vision);
+    }
+    return models.filter(m => m.suggested_role === role);
+  };
 
   const renderModelRow = (m: OllamaModel, role: Role) => {
     const key = `${m.name}:${role}`;
@@ -198,11 +204,13 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     const colorBorder: Record<string, string> = {
       blue:   'border-blue-200 dark:border-blue-800',
       green:  'border-green-200 dark:border-green-800',
+      amber:  'border-amber-200 dark:border-amber-800',
       purple: 'border-purple-200 dark:border-purple-800',
     };
     const colorHeader: Record<string, string> = {
       blue:   'bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-300',
       green:  'bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300',
+      amber:  'bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300',
       purple: 'bg-purple-50 dark:bg-purple-900/20 text-purple-800 dark:text-purple-300',
     };
     return (
@@ -287,7 +295,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                 </div>
               )}
               <div className="flex gap-3">
-                {(['main', 'fast', 'embeddings'] as Role[]).map(renderRoleColumn)}
+                {(['main', 'fast', 'vision', 'embeddings'] as Role[]).map(renderRoleColumn)}
               </div>
               <div className="flex items-center justify-between pt-1">
                 <p className="text-xs text-gray-400 dark:text-gray-500">
