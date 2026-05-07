@@ -153,3 +153,7 @@ LocalBook-notary.zip
 # Sidecar build outputs (universal binary is regenerated on every build)
 src-tauri/binaries/
 src-tauri/tools/continuity-camera/dist/
+
+# Graphify
+graphify-out/
+

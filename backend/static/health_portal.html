@@ -1115,14 +1115,14 @@
                     </div>
                 </div>
                 <div class="locker-column">
-                    <div class="column-title"><span>🧩</span> Embeddings</div>
-                    <div id="embeddingsList">
+                    <div class="column-title"><span>👁️</span> Vision Models</div>
+                    <div id="visionModelsList">
                         <div style="padding: 20px; color: var(--text-secondary);">Loading registry...</div>
                     </div>
                 </div>
                 <div class="locker-column">
-                    <div class="column-title"><span>🔬</span> Specialty Models</div>
-                    <div id="specialtyModelsList">
+                    <div class="column-title"><span>🧩</span> Embeddings</div>
+                    <div id="embeddingsList">
                         <div style="padding: 20px; color: var(--text-secondary);">Loading registry...</div>
                     </div>
                 </div>
@@ -1250,12 +1250,12 @@
         async function loadLockerRegistry() {
             const mainList = document.getElementById('mainModelsList');
             const fastList = document.getElementById('fastModelsList');
+            const visionList = document.getElementById('visionModelsList');
             const embedList = document.getElementById('embeddingsList');
-            const specList = document.getElementById('specialtyModelsList');
             mainList.innerHTML = '<div style="padding: 20px; color: var(--text-secondary);">Loading...</div>';
             fastList.innerHTML = '';
+            visionList.innerHTML = '';
             embedList.innerHTML = '';
-            specList.innerHTML = '';
             try {
                 const [liveRes, hwRes] = await Promise.all([
                     fetch(`${API_BASE}/settings/ollama/models`),
@@ -1269,8 +1269,8 @@
 
                 mainList.innerHTML = '';
                 fastList.innerHTML = '';
+                visionList.innerHTML = '';
                 embedList.innerHTML = '';
-                specList.innerHTML = '';
 
                 // Live endpoint returns only installed models — sort by display name
                 const models = (liveData.models || []).sort((a, b) =>
@@ -1284,23 +1284,32 @@
                 }
 
                 models.forEach(model => {
-                    const role = model.suggested_role; // 'main' | 'fast' | 'embeddings' | 'specialty'
-                    const card = createModelCard(model, currentCombo, sysRam);
+                    const role = model.suggested_role; // 'main' | 'fast' | 'vision' | 'embeddings'
+                    // Place card in primary role column
+                    const card = createModelCard(model, currentCombo, sysRam, role);
                     if (role === 'main') {
                         mainList.appendChild(card);
                     } else if (role === 'fast') {
                         fastList.appendChild(card);
+                    } else if (role === 'vision') {
+                        visionList.appendChild(card);
                     } else if (role === 'embeddings') {
                         embedList.appendChild(card);
-                    } else if (role === 'specialty') {
-                        specList.appendChild(card);
                     } else {
-                        mainList.appendChild(card); // fallback
+                        mainList.appendChild(card); // fallback for unknown roles
+                    }
+                    // Dual-role models (e.g. gemma3:4b is fast+vision) also surface
+                    // in the Vision column with a "Set as Vision" button so users
+                    // can pick them as the standalone vision model independently
+                    // of their primary role.
+                    if (model.also_vision && role !== 'vision') {
+                        const visionCard = createModelCard(model, currentCombo, sysRam, 'vision');
+                        visionList.appendChild(visionCard);
                     }
                 });
 
                 // Show empty state for columns with no models
-                [mainList, fastList, embedList, specList].forEach(list => {
+                [mainList, fastList, visionList, embedList].forEach(list => {
                     if (list.children.length === 0) {
                         list.innerHTML = '<div style="padding: 16px; color: var(--text-secondary); font-size: 12px;">No models in this category</div>';
                     }
@@ -1326,7 +1335,10 @@
             return ctx.toString();
         }
 
-        function createModelCard(model, currentCombo, sysRam) {
+        function createModelCard(model, currentCombo, sysRam, displayRole) {
+            // displayRole controls which column-specific button label / api role
+            // to render. Defaults to model.suggested_role for backward compat.
+            const role = displayRole || model.suggested_role;
             const card = document.createElement('div');
             card.className = 'model-card is-local';
 
@@ -1335,15 +1347,32 @@
             const isFastActive = model.active_as === 'fast' || currentCombo.fast_model === model.name;
             const isEmbedActive = model.active_as === 'embeddings' || currentCombo.embedding_model === model.name;
             const isVisionActive = model.active_as === 'vision' || currentCombo.vision_model === model.name;
-            const isActive = isMainActive || isFastActive || isEmbedActive;
+            // For the active-card highlight: only highlight the column variant
+            // that matches the model's currently-active role. Otherwise a model
+            // that's active as Fast would also show "active" in its Vision card.
+            let columnIsActive = false;
+            if (role === 'main') columnIsActive = isMainActive;
+            else if (role === 'fast') columnIsActive = isFastActive;
+            else if (role === 'vision') columnIsActive = isVisionActive;
+            else if (role === 'embeddings') columnIsActive = isEmbedActive;
 
-            if (isActive || isVisionActive) card.classList.add('active');
+            if (columnIsActive) card.classList.add('active');
 
             const ramColor = model.ram_required_gb > sysRam ? 'var(--red)' : 'inherit';
             const ramWarning = model.ram_required_gb > sysRam ? ' ⚠️' : '';
-            const role = model.suggested_role;
-            const apiRole = role === 'main' ? 'main_model' : role === 'fast' ? 'fast_model' : role === 'embeddings' ? 'embedding_model' : 'vision_model';
-            const activeLabel = isMainActive ? 'Main Active' : isFastActive ? 'Fast Active' : isEmbedActive ? 'Embed Active' : isVisionActive ? 'Vision Active' : null;
+            const apiRole = role === 'main' ? 'main_model'
+                          : role === 'fast' ? 'fast_model'
+                          : role === 'vision' ? 'vision_model'
+                          : role === 'embeddings' ? 'embedding_model'
+                          : 'main_model';
+            // activeLabel is shown only in the column matching the active role
+            const activeLabel = columnIsActive
+                ? (role === 'main' ? 'Main Active'
+                  : role === 'fast' ? 'Fast Active'
+                  : role === 'vision' ? 'Vision Active'
+                  : role === 'embeddings' ? 'Embed Active'
+                  : null)
+                : null;
 
             // Subtitle line: vendor · params
             const flag = COUNTRY_FLAGS[model.origin_country] || '';
@@ -1368,21 +1397,19 @@
             // Quantization
             const quantStr = model.quantization ? model.quantization : '';
 
-            // Swap button (specialty models are system-managed — no swap)
-            let actionsHtml = '';
-            if (role === 'specialty') {
-                actionsHtml = `<div class="locker-actions">
-                    <span style="font-size:11px;color:var(--text-secondary);padding:8px 0;">System-managed${isVisionActive ? ' · <strong style="color:var(--blue)">Active Vision</strong>' : ''}</span>
-                </div>`;
-            } else {
-                const btnLabel = activeLabel || (role === 'embeddings' ? 'Set as Embed' : role === 'fast' ? 'Set as Fast' : 'Set as Main');
-                actionsHtml = `<div class="locker-actions">
-                    <button class="swap-btn" data-model="${model.name}" data-role="${apiRole}"
-                        ${isActive || model.ram_required_gb > sysRam ? 'disabled' : ''}>
-                        ${btnLabel}
-                    </button>
-                </div>`;
-            }
+            // Swap button — every column (including Vision) is selectable.
+            const btnLabel = activeLabel || (
+                role === 'embeddings' ? 'Set as Embed'
+                : role === 'fast' ? 'Set as Fast'
+                : role === 'vision' ? 'Set as Vision'
+                : 'Set as Main'
+            );
+            const actionsHtml = `<div class="locker-actions">
+                <button class="swap-btn" data-model="${model.name}" data-role="${apiRole}"
+                    ${columnIsActive || model.ram_required_gb > sysRam ? 'disabled' : ''}>
+                    ${btnLabel}
+                </button>
+            </div>`;
 
             card.innerHTML = `
                 <div class="local-badge">Local</div>
