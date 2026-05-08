@@ -8,7 +8,7 @@ from evaluator.capabilities import capabilities_for
 
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
     """Test model's ability to retain and locate specific information inside massive context windows."""
-    from services.ollama_client import ollama_client
+    from services.rag_engine import rag_engine
     from config import settings
 
     main_model = getattr(settings, 'ollama_model', 'olmo-3:7b-instruct')
@@ -70,25 +70,48 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     context_block = "\n".join(haystack_parts)
     actual_chars = len(context_block)
     
-    prompt = f"Given the following context documentation:\n\n{context_block}\n\nAnswer the question concisely based ONLY on the context: {question}"
+    # Split into a system prompt and a user prompt so /api/chat-routed
+    # models (e.g. Gemma4 with use_chat_endpoint=true in rag_profile) get
+    # the right template. Going through rag_engine._call_ollama (instead
+    # of ollama_client.generate directly) ensures we exercise the SAME
+    # routing the production code uses — so the score reflects what users
+    # actually experience, not an artificial /api/generate path.
+    system_prompt = (
+        "You answer questions strictly from the supplied context. "
+        "Output the answer in one short sentence. No preamble."
+    )
+    user_prompt = (
+        f"CONTEXT:\n\n{context_block}\n\n"
+        f"Answer this question using ONLY the context above: {question}"
+    )
 
     start = time.time()
     try:
-        response = await ollama_client.generate(
-            prompt=prompt,
+        # voice_modifier=False — the test scores on a literal needle match,
+        # not tone, and the modifier prefix could push the model toward
+        # paraphrasing the secret rather than reproducing it verbatim.
+        # extra_options carries num_ctx because rag_engine sizes context
+        # automatically but we want a hard guarantee the haystack fits.
+        answer = await rag_engine._call_ollama(
+            system_prompt=system_prompt,
+            prompt=user_prompt,
             model=main_model,
-            temperature=0.0,
             num_predict=100,
-            extra_options={"num_ctx": target_tokens + 2000}
+            num_ctx=target_tokens + 2000,
+            temperature=0.0,
+            voice_modifier=False,
         )
         elapsed = (time.time() - start) * 1000
         result.total_time_ms = elapsed
-        
-        answer = response.get("response", "").strip()
+
+        answer = (answer or "").strip()
         result.actual_output_preview = answer[:200]
         result.input_chars = actual_chars
         result.output_chars = len(answer)
-        result.eval_duration_ns = response.get("eval_duration", 0)
+        # eval_duration / eval_count not surfaced when going through
+        # rag_engine._call_ollama (it returns just the text). That's OK —
+        # we still measure wall-clock latency in total_time_ms.
+        result.eval_duration_ns = 0
         
         # ── Graduated grading ──────────────────────────────────────────
         # Industry best practice: distinguish between full retrieval, partial
@@ -114,11 +137,10 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         
         # Penalize if it just generated a thousand tokens rambling
         length_penalty = 0 if len(answer) < 150 else max(0, min(50, int((len(answer) - 150) / 10)))
-        
-        # Evaluate throughput
-        eval_count = response.get("eval_count", 0)
-        if eval_count > 0 and result.eval_duration_ns > 0:
-            result.tokens_per_second = eval_count / (result.eval_duration_ns / 1e9)
+
+        # Throughput tracking removed — rag_engine._call_ollama returns
+        # the text only, not the eval_count. Total wall-clock time is
+        # still in total_time_ms above.
             
         result.overall_score = max(0, int(result.accuracy_score) - length_penalty)
         result.passed = result.overall_score >= 80

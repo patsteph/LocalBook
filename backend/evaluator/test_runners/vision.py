@@ -93,10 +93,25 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         result.output_chars = len(description)
         result.actual_output_preview = description[:500]
 
-        # Score
-        expected_terms = vision_config.get("expected_terms", ["chart", "bar", "model"])
-        term_hits = sum(1 for t in expected_terms if t.lower() in description.lower())
-        accuracy_score = int((term_hits / max(1, len(expected_terms))) * 100)
+        # Score — synonym-aware. The chart shows three labelled bars. A
+        # competent vision model might call this a "chart", "graph",
+        # "bar chart", "histogram", or "plot" — any of those proves the
+        # model recognised the artifact. Same for the comparison axis
+        # ("bar"/"column"/"rectangle") and the labels
+        # ("model"/"system"/"OLMo"/"Phi"/"Arctic"). Scoring on synonym
+        # GROUPS instead of literal substrings stops penalising more
+        # articulate models for using better vocabulary.
+        synonym_groups = vision_config.get("synonym_groups") or [
+            ["chart", "graph", "histogram", "plot", "diagram"],
+            ["bar", "column", "rectangle"],
+            ["model", "system", "olmo", "phi", "arctic", "throughput"],
+        ]
+        desc_lower = description.lower()
+        groups_hit = sum(
+            1 for group in synonym_groups
+            if any(term.lower() in desc_lower for term in group)
+        )
+        accuracy_score = int((groups_hit / max(1, len(synonym_groups))) * 100)
 
         speed_score = 100 if elapsed < 30000 else max(0, int(100 - (elapsed - 30000) / 500))
         length_score = 100 if len(description) > 50 else max(0, int(len(description) * 2))

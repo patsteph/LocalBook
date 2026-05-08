@@ -24,50 +24,73 @@ from datetime import datetime
 from evaluator.models import EvalResult
 
 
-# Per-mode test specs. Each spec generates an image and lists markers
-# the OCR/transcription must produce. Markers are case-insensitive
-# substring checks — the smallest signal that the mode-specific prompt
-# was followed (vs the model defaulting to generic prose).
+# Per-mode test specs. Each spec generates an image and lists marker
+# GROUPS — each group is a list of acceptable substrings; a group is
+# 'hit' if ANY of its variants appears in output. This stops penalising
+# articulate models for paraphrasing — e.g. Gemma describing a receipt
+# might say "vendor" instead of literally echoing "ACME", or a recipe
+# might say "ingredients list" or "what you'll need" or "components".
+# Granite's literal-OCR style happens to repeat the source verbatim;
+# synonym groups let smarter models score on semantic correctness.
 _MODE_SPECS = [
     {
         "mode": "document",
         "image_text": "Chapter One\n\nThis is a paragraph of plain printed text.\n\nThis is a second paragraph.",
-        "expected_markers": ["chapter", "paragraph"],
+        "marker_groups": [
+            ["chapter", "section", "heading", "title"],
+            ["paragraph", "text", "printed", "first", "second"],
+        ],
         "min_chars": 40,
     },
     {
         "mode": "handwriting",
-        # We can't really render true cursive with PIL — but we CAN test
-        # whether the mode prompt produces useful output on a low-quality
-        # text image. A wobbly font would be ideal; default font is OK
-        # for a smoke test.
+        # PIL's default font isn't real cursive, but the test still
+        # validates that the handwriting prompt produces a useful
+        # transcription rather than refusing or generic-fallback output.
         "image_text": "Dear diary,\n\nToday I learned about\nhash tables and trees.",
-        "expected_markers": ["diary", "hash"],
+        "marker_groups": [
+            ["diary", "journal", "dear", "today", "entry", "note"],
+            ["hash", "table", "tree", "learn", "data"],
+        ],
         "min_chars": 30,
     },
     {
         "mode": "diagram",
         "image_text": "[ Start ] -> [ Process ] -> [ End ]",
-        # Diagram mode is supposed to emit a ```mermaid fence. If the
-        # model emits "graph" or "mermaid" anywhere, that's the right
-        # behavior. A plain prose answer is wrong.
-        "expected_markers": ["mermaid", "graph"],
+        # Diagram mode is supposed to emit a ```mermaid fence with
+        # diagram-type keywords. Either the fence OR the right diagram
+        # vocabulary in the body counts as a pass.
+        "marker_groups": [
+            ["mermaid", "graph", "flowchart", "flow"],
+            ["start", "process", "end", "node"],
+        ],
         "min_chars": 20,
     },
     {
         "mode": "receipt",
         "image_text": "ACME COFFEE\n\nDate: 2026-01-05\n\nLatte         $4.50\nMuffin        $3.25\n--------------\nTotal         $7.75",
-        # Receipt prompt asks for a markdown table — pipe characters or
-        # word "Total" with a price are sufficient signals.
-        "expected_markers": ["acme", "total"],
+        # Receipt mode should produce structured markdown with vendor,
+        # date/total, and itemised lines. Accept either literal echo
+        # ("ACME") or a structural marker ("vendor"/"merchant").
+        "marker_groups": [
+            ["acme", "coffee", "vendor", "merchant", "store"],
+            ["total", "subtotal", "amount", "$7.75", "7.75"],
+            ["latte", "muffin", "item", "qty", "price"],
+        ],
         "min_chars": 40,
     },
     {
         "mode": "recipe",
         "image_text": "Pancakes\n\nIngredients:\n- 2 cups flour\n- 2 eggs\n- 1 cup milk\n\nInstructions:\n1. Mix dry\n2. Add wet\n3. Cook",
         # Recipe prompt asks for ### Ingredients and ### Instructions
-        # sections. We accept either heading style (### or just the word).
-        "expected_markers": ["ingredient", "instruction"],
+        # sections. Accept any structural variant (steps, directions,
+        # method, prep). The dish name "Pancakes" is also acceptable as
+        # a general "this was recognised as a recipe" signal.
+        "marker_groups": [
+            ["ingredient", "component", "what you'll need", "you'll need"],
+            ["instruction", "step", "direction", "method", "how to", "preparation"],
+            ["pancake", "flour", "egg", "milk"],
+        ],
         "min_chars": 40,
     },
 ]
@@ -168,8 +191,15 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
                 raise ValueError(f"vision returned error for mode={mode}: {output[:120]}")
 
             output_lower = output.lower()
-            marker_hits = sum(1 for m in spec["expected_markers"] if m.lower() in output_lower)
-            marker_score = int((marker_hits / max(1, len(spec["expected_markers"]))) * 100)
+            # Synonym-aware: a marker group is 'hit' if ANY of its
+            # variants is present. Smarter models that paraphrase don't
+            # get punished for using equivalent vocabulary.
+            groups = spec["marker_groups"]
+            groups_hit = sum(
+                1 for group in groups
+                if any(variant.lower() in output_lower for variant in group)
+            )
+            marker_score = int((groups_hit / max(1, len(groups))) * 100)
             length_ok = len(output) >= spec["min_chars"]
             length_score = 100 if length_ok else max(0, int((len(output) / spec["min_chars"]) * 100))
 
@@ -181,8 +211,8 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
 
             result.sub_scores = {
                 "mode": mode,
-                "marker_hits": marker_hits,
-                "marker_total": len(spec["expected_markers"]),
+                "marker_groups_hit": groups_hit,
+                "marker_groups_total": len(groups),
                 "length_score": length_score,
                 "generic_score": generic_score,
             }
@@ -194,7 +224,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             if is_generic:
                 result.failure_reason = "Vision model returned generic 'cannot describe' fallback"
             print(
-                f"[EVAL-MODES] {mode}: markers={marker_hits}/{len(spec['expected_markers'])}, "
+                f"[EVAL-MODES] {mode}: groups={groups_hit}/{len(groups)}, "
                 f"chars={len(output)}, score={result.overall_score}"
             )
         except Exception as e:

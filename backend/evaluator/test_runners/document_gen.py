@@ -54,13 +54,21 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
 Source material:
 {built.context[:6000]}"""
 
-        # Generate content
+        # Generate content. voice_modifier=False because the test scores
+        # on heading count + word range + source-term presence — exactly
+        # the kind of structured long-form output the family voice
+        # modifiers ("skip preamble, lead with conclusion") suppress.
+        # Production document generation runs through the streaming
+        # pipeline in api/content.py which doesn't apply the modifier
+        # at this depth, so disabling it here is also closer to what
+        # users actually see.
         content = await rag_engine._call_ollama(
             system_prompt,
             user_prompt,
             model=settings.ollama_model,
             num_predict=2000,
             temperature=0.6,
+            voice_modifier=False,
         )
 
         elapsed = (time.time() - start) * 1000
