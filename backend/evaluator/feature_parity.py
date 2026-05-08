@@ -49,6 +49,12 @@ _CATEGORY_TO_FEATURE = {
     "concurrency": "Multiple users / concurrency",
     "needle_haystack": "Long-context retention",
     "prompt_safety": "Prompt injection robustness",
+    # New categories (apples-to-apples + feature coverage):
+    "voice_modifier": "Agent voice consistency",
+    "capture_modes": "Multi-mode scan",
+    "refinement": "Visual refinement pass",
+    "translation": "Capture translation",
+    "confidence": "Capture confidence calibration",
 }
 
 

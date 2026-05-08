@@ -19,6 +19,12 @@ export interface NotebookSection {
   created_at: string;
 }
 
+export interface OutboundLink {
+  url: string;
+  text: string;
+  context: string;
+}
+
 export interface Source {
   id: string;
   filename: string;
@@ -34,6 +40,11 @@ export interface Source {
   collected_by?: string;  // 'collector' for auto-collected sources
   confidence_score?: number;  // Collector confidence score
   created_at?: string;  // ISO timestamp — used for sort-by-recent
+  // Depth+1 outgoing-link expansion fields. Persisted in metadata_json
+  // server-side; unpacked into top-level keys by source_store._row_to_source.
+  outbound_links?: OutboundLink[];
+  depth?: number;
+  parent_source_id?: string | null;
 }
 
 export interface Citation {

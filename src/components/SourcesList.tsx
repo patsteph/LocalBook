@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { BookOpen, Trash2, PenLine, Archive, ArrowRightLeft, ArrowUpDown, Loader2 } from 'lucide-react';
+import { BookOpen, Trash2, PenLine, Archive, ArrowRightLeft, ArrowUpDown, Loader2, Link2 } from 'lucide-react';
 import { sourceService } from '../services/sources';
 import { notebookService } from '../services/notebooks';
 import { Source, Notebook } from '../types';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
 import { SourceNotesViewer } from './SourceNotesViewer';
+import { OutgoingLinksPanel } from './sources/OutgoingLinksPanel';
 import { useCanvas } from './canvas/CanvasContext';
 import { API_BASE_URL } from '../services/api';
 import { useReconnectingWebSocket } from '../hooks/useReconnectingWebSocket';
@@ -85,6 +86,9 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
   const [moveTarget, setMoveTarget] = useState<string | null>(null);
   const [moveNotebooks, setMoveNotebooks] = useState<Notebook[]>([]);
   const [moving, setMoving] = useState(false);
+  // ID of the source whose outgoing-link panel is currently open. Only
+  // one panel at a time. Hidden by default — opened via the per-row Link2 icon.
+  const [expandingSourceId, setExpandingSourceId] = useState<string | null>(null);
   // ID of the destination notebook currently being moved into. Used to show
   // a spinner + "Moving..." label on the chosen row so the user has visible
   // feedback during the (sometimes 30-60s) re-ingest step on the backend.
@@ -427,6 +431,22 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                         <BookOpen size={14} />
                       </button>
                     )}
+                    {/* Depth+1 expansion: only show the link icon when
+                        the source actually has outgoing links AND it's a
+                        depth-0 (root) capture. Hides cleanly for legacy
+                        sources captured before the feature shipped. */}
+                    {(source.outbound_links?.length ?? 0) > 0 && (source.depth ?? 0) === 0 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpandingSourceId(source.id);
+                        }}
+                        className="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition-colors"
+                        title={`Expand ${source.outbound_links!.length} outgoing link${source.outbound_links!.length !== 1 ? 's' : ''}`}
+                      >
+                        <Link2 size={14} />
+                      </button>
+                    )}
                     <button
                       onClick={async () => {
                         if (moveTarget === source.id) { setMoveTarget(null); return; }
@@ -570,6 +590,21 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
           sourceId={viewingSource.id}
           sourceName={viewingSource.filename}
           onClose={() => setViewingSource(null)}
+        />
+      )}
+
+      {/* Outgoing-link expansion modal — depth+1 picker. */}
+      {expandingSourceId && notebookId && (
+        <OutgoingLinksPanel
+          notebookId={notebookId}
+          sourceId={expandingSourceId}
+          onClose={() => setExpandingSourceId(null)}
+          onSubmitted={(_jobId, _count) => {
+            // Caller can refresh the approval queue via onSourcesChange,
+            // but expansion results are async (job_queue) so we don't
+            // close the modal automatically — let the user see the toast.
+            onSourcesChange?.();
+          }}
         />
       )}
 

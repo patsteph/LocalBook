@@ -145,13 +145,19 @@ async def _check_model_backend(role: str, model_name: str) -> PreflightCheck:
     )
 
 
-async def _warm_main_model(model_name: str) -> PreflightCheck:
+async def _warm_text_model(model_name: str, role: str = "main") -> PreflightCheck:
     """Fire a tiny throwaway generation so the first real test isn't penalised
     by cold-start time. Bounded by a 25s ceiling so a stuck backend cannot
-    block the evaluator forever."""
+    block the evaluator forever.
+
+    Used for any text-completion model — `role` only affects the check name
+    and log messages; the warmup payload is identical across roles to keep
+    cross-role comparisons fair.
+    """
     import time as _time
+    check_name = f"warmup_{role}"
     if not model_name:
-        return PreflightCheck(name="warmup", status="warn", message="No main model configured")
+        return PreflightCheck(name=check_name, status="warn", message=f"No {role} model configured")
     try:
         import asyncio as _asyncio
         from services.ollama_client import ollama_client
@@ -170,24 +176,97 @@ async def _warm_main_model(model_name: str) -> PreflightCheck:
         text = (resp or {}).get("response", "") if isinstance(resp, dict) else ""
         if text.startswith("Error:") or text == "Request timed out":
             return PreflightCheck(
-                name="warmup",
+                name=check_name,
                 status="warn",
-                message=f"Warmup did not return text after {elapsed:.1f}s — first real test may be slow",
+                message=f"{role.capitalize()} warmup did not return text after {elapsed:.1f}s — first real test may be slow",
+                details={"role": role, "model": model_name, "elapsed_seconds": round(elapsed, 2)},
+            )
+        return PreflightCheck(
+            name=check_name,
+            status="pass",
+            message=f"{role.capitalize()} model {model_name} warmed in {elapsed:.1f}s",
+            details={"role": role, "model": model_name, "elapsed_seconds": round(elapsed, 2)},
+        )
+    except Exception as e:
+        return PreflightCheck(
+            name=check_name,
+            status="warn",
+            message=f"{role.capitalize()} warmup failed (non-fatal): {e!s}",
+            details={"role": role, "model": model_name},
+        )
+
+
+async def _warm_vision_model(model_name: str) -> PreflightCheck:
+    """Warm the vision model with a tiny blank image so its first real test
+    isn't slowed by cold-load. Uses the right vision-API style for the
+    model (chat vs generate) so the same code path that production uses
+    is exercised. Bounded by a 30s ceiling — vision loads run a hair
+    slower than text models on first launch."""
+    import time as _time
+    import base64 as _b64
+    import io as _io
+    check_name = "warmup_vision"
+    if not model_name:
+        return PreflightCheck(name=check_name, status="warn", message="No vision model configured")
+    try:
+        import asyncio as _asyncio
+        from services.ollama_client import ollama_client
+        from evaluator.model_registry import model_registry as _registry
+        # 1×1 white PNG via PIL — already a project dep.
+        try:
+            from PIL import Image as _PIL_Image
+            buf = _io.BytesIO()
+            _PIL_Image.new("RGB", (1, 1), color=(255, 255, 255)).save(buf, format="PNG")
+            tiny_png = _b64.b64encode(buf.getvalue()).decode("utf-8")
+        except Exception:
+            return PreflightCheck(
+                name=check_name,
+                status="warn",
+                message="Vision warmup skipped (PIL unavailable)",
+                details={"model": model_name},
+            )
+        info = _registry.get_model(model_name)
+        api_style = info.vision_api_style if info else "generate"
+        t0 = _time.time()
+        resp = await _asyncio.wait_for(
+            ollama_client.vision_describe(
+                image_b64=tiny_png,
+                prompt="ok",
+                model=model_name,
+                api_style=api_style,
+                num_predict=4,
+                timeout=30.0,
+            ),
+            timeout=30.0,
+        )
+        elapsed = _time.time() - t0
+        text = resp if isinstance(resp, str) else ""
+        if text.startswith("Error:"):
+            return PreflightCheck(
+                name=check_name,
+                status="warn",
+                message=f"Vision warmup did not return text after {elapsed:.1f}s — first real test may be slow",
                 details={"model": model_name, "elapsed_seconds": round(elapsed, 2)},
             )
         return PreflightCheck(
-            name="warmup",
+            name=check_name,
             status="pass",
-            message=f"{model_name} warmed in {elapsed:.1f}s",
+            message=f"Vision model {model_name} warmed in {elapsed:.1f}s",
             details={"model": model_name, "elapsed_seconds": round(elapsed, 2)},
         )
     except Exception as e:
         return PreflightCheck(
-            name="warmup",
+            name=check_name,
             status="warn",
-            message=f"Warmup failed (non-fatal): {e!s}",
+            message=f"Vision warmup failed (non-fatal): {e!s}",
             details={"model": model_name},
         )
+
+
+# Back-compat alias — old smoke test or external code may still reference it.
+async def _warm_main_model(model_name: str) -> PreflightCheck:
+    """Deprecated alias for _warm_text_model(model, role='main')."""
+    return await _warm_text_model(model_name, role="main")
 
 
 def _check_sidecar_model_file(model_name: str) -> Optional[PreflightCheck]:
@@ -248,13 +327,23 @@ async def run_preflight(settings_obj) -> PreflightReport:
     if sidecar_file_check is not None:
         report.checks.append(sidecar_file_check)
 
-    # Warm the main model only if its backend passed — skips the expense
-    # when preflight is already going to abort anyway.
-    main_ok = any(
-        c.name == "main_backend" and c.status == "pass" for c in report.checks
-    )
-    if main_ok and main_model:
-        report.checks.append(await _warm_main_model(main_model))
+    # Warmup parity (fairness): warm every model we'll test, not just main.
+    # Without this, the first test using fast/vision incurs cold-load time
+    # while main was already loaded since app boot — an unfair head start.
+    # Each warmup is bounded (25-30s) so a stuck backend can't block forever.
+    # Skipped when the corresponding backend check failed (saves the round-
+    # trip when we already know we're aborting).
+    def _backend_ok(name: str) -> bool:
+        return any(c.name == name and c.status == "pass" for c in report.checks)
+
+    if main_model and _backend_ok("main_backend"):
+        report.checks.append(await _warm_text_model(main_model, role="main"))
+    if fast_model and fast_model != main_model and _backend_ok("fast_backend"):
+        report.checks.append(await _warm_text_model(fast_model, role="fast"))
+    if vision_model and vision_model != main_model and _backend_ok("vision_backend"):
+        report.checks.append(await _warm_vision_model(vision_model))
+    # Embedding model warmup intentionally skipped — first embed call is
+    # already fast (<200ms) and adding an extra warmup just wastes time.
 
     return report
 

@@ -22,6 +22,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class OutboundLink(BaseModel):
+    """A single outgoing link extracted from a captured page.
+
+    Matches the `OutboundLink` shape the browser extension already produces
+    in extension/types.ts. Persisted alongside the source so the user can
+    later choose to follow specific links via the depth+1 expander.
+    """
+    url: str
+    text: str = ""
+    context: str = ""
+
+
 class PageCaptureRequest(BaseModel):
     """Request to capture a web page."""
     url: str
@@ -30,6 +42,11 @@ class PageCaptureRequest(BaseModel):
     notebook_id: str
     html_content: Optional[str] = None  # Raw HTML for metadata extraction
     capture_type: str = "page"  # page, selection, youtube, pdf
+    # Outgoing links extracted by the extension at capture time. Optional —
+    # older extension builds and non-extension callers won't send this.
+    # Persisted to source.metadata_json.outbound_links so the user can
+    # later expand them via /sources/{id}/expand-links (depth+1 cap).
+    outbound_links: Optional[List[OutboundLink]] = None
 
 
 class SelectionCaptureRequest(BaseModel):
@@ -653,7 +670,15 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             "curator_scoring": curator_scoring,
             "topics": curator_scoring.get("topics", []),
             "entities": curator_scoring.get("entities", []),
-            "importance": curator_scoring.get("importance", "medium")
+            "importance": curator_scoring.get("importance", "medium"),
+            # Depth+1 expansion: persist the outgoing links the extension
+            # extracted so the user can later choose which to follow.
+            # Stored as a list of dicts so JSON serialisation is trivial.
+            # depth=0 means "this is the root capture, not the result of an
+            # expansion"; parent_source_id stays unset for root captures.
+            "outbound_links": [link.model_dump() for link in (request.outbound_links or [])],
+            "depth": 0,
+            "parent_source_id": None,
         }
         if content_date:
             source_data["content_date"] = content_date

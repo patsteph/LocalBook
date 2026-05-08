@@ -124,6 +124,18 @@ class CollectedItem(BaseModel):
     curator_decision: Optional[str] = None
     rejection_reason: Optional[str] = None
 
+    # Depth+1 link expansion provenance — set when this item was queued
+    # by the link expander (rather than the regular collector). The UI
+    # uses these to render a "From: <parent>" badge and a
+    # "📌 Also relevant: <NotebookX>" cross-notebook hint. Empty/None on
+    # all regular collector items, so existing behaviour is unchanged.
+    parent_source_id: Optional[str] = None
+    discovery_url: Optional[str] = None  # URL of the parent page that linked here
+    cross_notebook_matches: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="[{notebook_id, notebook_name, score, snippet}] from curator cross-notebook check"
+    )
+
 
 class SourceHealthRecord(BaseModel):
     """Health tracking for a source"""
@@ -2271,6 +2283,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 "title": q.item.title,
                 "preview": q.item.preview or q.item.content[:200],
                 "source": q.item.source_name,
+                "url": q.item.url,
                 "confidence": q.item.overall_confidence,
                 "confidence_reasons": q.item.confidence_reasons,
                 "queued_at": q.queued_at.isoformat(),
@@ -2282,6 +2295,10 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 "temporal_context": q.item.temporal_context,
                 "knowledge_overlap": q.item.knowledge_overlap,
                 "related_titles": q.item.related_titles,
+                # Depth+1 expansion provenance — None for regular collector items.
+                "parent_source_id": q.item.parent_source_id,
+                "discovery_url": q.item.discovery_url,
+                "cross_notebook_matches": q.item.cross_notebook_matches,
             }
             for q in valid
         ]

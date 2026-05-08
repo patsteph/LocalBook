@@ -624,8 +624,100 @@ Respond with JSON only:
     # Cross-Notebook Synthesis
     # =========================================================================
     
+    async def score_text_against_notebooks(
+        self,
+        text: str,
+        exclude_notebook_id: Optional[str] = None,
+        notebook_ids: Optional[List[str]] = None,
+        per_notebook_limit: int = 5,
+        max_results: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """Cross-notebook similarity for a candidate text blob (depth+1 expansion).
+
+        Adapter on top of the same memory_store search the existing
+        synthesize_across_notebooks() helper uses. Skips the LLM synthesis
+        step — the link expander only needs the relevance signal per
+        notebook (so it can render a "📌 Also relevant: NotebookX" hint
+        in the approval queue), not a paragraph of synthesized prose.
+
+        Args:
+            text: Candidate article text (or summary). The first ~1500 chars
+                  are used as the search query — long enough to surface
+                  thematic overlap, short enough to keep search cheap.
+            exclude_notebook_id: Notebook the article is being added to.
+                  Excluded from the cross-notebook hint because "this is
+                  also relevant to its own notebook" is noise.
+            notebook_ids: Restrict search to these notebooks. None = all.
+            per_notebook_limit: Memory matches fetched per notebook. The
+                  highest-scoring match wins per notebook.
+            max_results: Cap the returned list. Default 3 — UI shows at
+                  most 3 chips per queue item to stay readable.
+
+        Returns:
+            [{notebook_id, notebook_name, score, snippet}] sorted by score
+            descending, capped at max_results. Empty list if nothing
+            crosses the relevance threshold.
+        """
+        if not text or not text.strip():
+            return []
+
+        # Resolve notebook IDs + names once so we can stamp human-readable
+        # labels on the results (the queue UI shows the name, not the ID).
+        all_notebooks = await notebook_store.list()
+        nb_name_by_id = {n["id"]: n.get("name", "") or n.get("title", "") or n["id"][:8] for n in all_notebooks}
+        if not notebook_ids:
+            notebook_ids = [n["id"] for n in all_notebooks]
+        notebook_ids = [nid for nid in notebook_ids if nid != exclude_notebook_id]
+        if not notebook_ids:
+            return []
+
+        # Use a leading slice as the search query — full text would slow
+        # the embedding step without adding signal beyond the first
+        # paragraph or two.
+        query = text[:1500]
+
+        # Aggregate the BEST score per notebook. A notebook with one strong
+        # hit beats a notebook with many weak hits — that's what the user
+        # wants when seeing "📌 Also relevant: …".
+        best_by_notebook: Dict[str, Dict[str, Any]] = {}
+        for nb_id in notebook_ids:
+            try:
+                results = memory_store.search_archival_memory(
+                    query=query,
+                    namespace=AgentNamespace.CURATOR,
+                    notebook_id=nb_id,
+                    cross_notebook=True,
+                    limit=per_notebook_limit,
+                )
+            except Exception as e:
+                logger.debug(f"[curator] cross-notebook search failed for {nb_id}: {e}")
+                continue
+            for r in results:
+                score = float(getattr(r, "combined_score", 0.0) or 0.0)
+                if score <= 0:
+                    continue
+                cur = best_by_notebook.get(nb_id)
+                if cur is None or score > cur["score"]:
+                    best_by_notebook[nb_id] = {
+                        "notebook_id": nb_id,
+                        "notebook_name": nb_name_by_id.get(nb_id, nb_id[:8]),
+                        "score": round(score, 3),
+                        "snippet": (r.entry.content or "")[:240],
+                    }
+
+        # Threshold: only surface meaningful matches. The exact value is
+        # tuned to memory_store's combined_score scale (0-1 with semantic
+        # similarity). 0.45 is "noticeable thematic overlap" — below that,
+        # showing a chip is just noise.
+        ranked = sorted(
+            (m for m in best_by_notebook.values() if m["score"] >= 0.45),
+            key=lambda m: m["score"],
+            reverse=True,
+        )
+        return ranked[:max_results]
+
     async def synthesize_across_notebooks(
-        self, 
+        self,
         query: str,
         notebook_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:

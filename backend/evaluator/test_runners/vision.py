@@ -55,10 +55,20 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         # Encode as base64 for Ollama vision API
         b64_image = base64.b64encode(image_data).decode("utf-8")
 
-        # Determine the correct API style for this vision model
+        # Apply the model's full vision_profile so the eval mirrors what
+        # production uses. Without this we'd test with global defaults
+        # (num_predict=1500, num_ctx=8192, temp=0.3) regardless of the
+        # combo's tuning — defeating apples-to-apples comparison once a
+        # second vision model joins the catalog.
         from evaluator.model_registry import model_registry
         model_info = model_registry.get_model(vision_model)
         api_style = model_info.vision_api_style if model_info else "generate"
+        vp = (model_info.vision_profile if model_info else {}) or {}
+        # The chart prompt is short and the answer should be too — cap at 300
+        # tokens unless the profile explicitly wants something longer.
+        eval_num_predict = min(int(vp.get("num_predict", 300)), 300)
+        eval_num_ctx = vp.get("num_ctx")  # None lets ollama_client pick its default
+        eval_temperature = vp.get("temperature", 0.3)
 
         start = time.time()
 
@@ -69,7 +79,9 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             model=vision_model,
             api_style=api_style,
             timeout=60.0,
-            num_predict=300,
+            num_predict=eval_num_predict,
+            num_ctx=eval_num_ctx,
+            temperature=eval_temperature,
         )
 
         elapsed = (time.time() - start) * 1000

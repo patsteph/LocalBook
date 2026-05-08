@@ -30,6 +30,11 @@ from evaluator.test_runners import (
     concurrency,
     needle_haystack,
     prompt_safety,
+    voice_modifier,
+    capture_modes,
+    refinement,
+    translation,
+    confidence,
 )
 from evaluator import scoring
 
@@ -128,6 +133,21 @@ async def run_full_evaluation() -> ComboEvalSummary:
     _progress.results_so_far = {}
     run_start = time.time()
     notebook_id = None
+
+    # Combo snapshot taken at the very top of the run. Every model name
+    # the report cites comes from this dict, not from live settings.* —
+    # so a Locker swap that lands mid-run is visible (we log a warning at
+    # end) but doesn't silently corrupt the score by switching models
+    # between phases. Tests still read settings.* for production code
+    # paths (rag_engine etc. don't take a combo arg) so a mid-run swap
+    # WILL affect later phases; the snapshot's job is to make the
+    # corruption legible in the report rather than invisible.
+    combo_snapshot = {
+        "ollama_model": getattr(settings, "ollama_model", "") or "",
+        "ollama_fast_model": getattr(settings, "ollama_fast_model", "") or "",
+        "vision_model": getattr(settings, "vision_model", "") or "",
+        "embedding_model": getattr(settings, "embedding_model", "") or "",
+    }
 
     try:
         # ── Pre-flight (memory + all backends the combo uses) ──────────
@@ -285,8 +305,48 @@ async def run_full_evaluation() -> ComboEvalSummary:
         category_results["prompt_safety"] = cat
         _progress.results_so_far["prompt_safety"] = {"score": cat.score, "grade": cat.grade}
 
-        # ── Phase 17: Score & Persist ────────────────────────────────────
-        _update_progress(17, "Scoring & persisting results")
+        # Phase 17: Voice Modifier (apples-to-apples voice consistency)
+        _update_progress(17, "Voice Modifier")
+        voice_results = await _run_phase_with_timeout(
+            voice_modifier.run(notebook_id, config, combo.name, hw.fingerprint), "Voice Modifier")
+        cat = _build_category("voice_modifier", "Voice Modifier", voice_results)
+        category_results["voice_modifier"] = cat
+        _progress.results_so_far["voice_modifier"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 18: Capture Modes — multi-mode vision coverage
+        _update_progress(18, "Capture Modes")
+        modes_results = await _run_phase_with_timeout(
+            capture_modes.run(notebook_id, config, combo.name, hw.fingerprint), "Capture Modes")
+        cat = _build_category("capture_modes", "Capture Modes", modes_results)
+        category_results["capture_modes"] = cat
+        _progress.results_so_far["capture_modes"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 19: Refinement Pass Fidelity
+        _update_progress(19, "Refinement Pass")
+        refine_results = await _run_phase_with_timeout(
+            refinement.run(notebook_id, config, combo.name, hw.fingerprint), "Refinement")
+        cat = _build_category("refinement", "Refinement Pass", refine_results)
+        category_results["refinement"] = cat
+        _progress.results_so_far["refinement"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 20: Translation
+        _update_progress(20, "Translation")
+        trans_results = await _run_phase_with_timeout(
+            translation.run(notebook_id, config, combo.name, hw.fingerprint), "Translation")
+        cat = _build_category("translation", "Translation", trans_results)
+        category_results["translation"] = cat
+        _progress.results_so_far["translation"] = {"score": cat.score, "grade": cat.grade}
+
+        # Phase 21: Confidence Scoring Calibration (pure-function)
+        _update_progress(21, "Confidence Calibration")
+        conf_results = await _run_phase_with_timeout(
+            confidence.run(notebook_id, config, combo.name, hw.fingerprint), "Confidence")
+        cat = _build_category("confidence", "Confidence Calibration", conf_results)
+        category_results["confidence"] = cat
+        _progress.results_so_far["confidence"] = {"score": cat.score, "grade": cat.grade}
+
+        # ── Phase 22: Score & Persist ────────────────────────────────────
+        _update_progress(22, "Scoring & persisting results")
 
         # Build summary
         summary.categories = {k: v.to_dict() for k, v in category_results.items()}
@@ -343,6 +403,27 @@ async def run_full_evaluation() -> ComboEvalSummary:
                 summary.warnings.append(f"{cat.display_name} scored D ({cat.score:.0f})")
             summary.warnings.extend(cat.warnings)
 
+        # Combo-drift detection: compare the snapshot we took at the top of
+        # the run against settings.* now. If they differ, a Locker swap
+        # landed during the eval — surface this loudly so the user knows
+        # the report is mixed.
+        drifted = []
+        for k, snap_v in combo_snapshot.items():
+            cur_v = getattr(settings, k, "") or ""
+            if cur_v != snap_v:
+                drifted.append(f"{k}: started with '{snap_v}', ended on '{cur_v}'")
+        if drifted:
+            warn_msg = (
+                "Model swap detected DURING eval — results mix two configurations. "
+                "Wait for the run to finish before swapping next time. Drift: "
+                + " · ".join(drifted)
+            )
+            summary.warnings.append(warn_msg)
+            print(f"[EVALUATOR] ⚠️  {warn_msg}")
+        # The summary.combo dict was built at the same moment as combo_snapshot
+        # (line 143 above); it already records the run-start configuration —
+        # the drift warning above is the only addition from snapshotting.
+
         # Persist
         _persist_results(summary)
 
@@ -366,8 +447,8 @@ async def run_full_evaluation() -> ComboEvalSummary:
         raise
 
     finally:
-        # ── Phase 15: Cleanup ────────────────────────────────────────────
-        _update_progress(15, "Cleaning up test notebook")
+        # ── Phase 23: Cleanup ────────────────────────────────────────────
+        _update_progress(23, "Cleaning up test notebook")
         if notebook_id:
             try:
                 await ingestion.cleanup_test_notebook(notebook_id)

@@ -44,6 +44,7 @@ class JobType(str, Enum):
     CONTRADICTION_SCAN = "contradiction_scan"
     TIMELINE_EXTRACT = "timeline_extract"
     EXPORT = "export"
+    LINK_EXPANSION = "link_expansion"  # depth+1 outgoing-link follow-up scrape
     CUSTOM = "custom"
 
 

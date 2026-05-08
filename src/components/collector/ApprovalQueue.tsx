@@ -3,11 +3,19 @@ import { Button } from '../shared/Button';
 import { collectorService } from '../../services/collector';
 import './ApprovalQueue.css';
 
+interface CrossNotebookMatch {
+  notebook_id: string;
+  notebook_name: string;
+  score: number;
+  snippet: string;
+}
+
 interface PendingItem {
   item_id: string;
   title: string;
   preview: string;
   source: string;
+  url?: string | null;
   confidence: number;
   confidence_reasons: string[];
   queued_at: string;
@@ -19,6 +27,10 @@ interface PendingItem {
   temporal_context?: string | null;
   knowledge_overlap?: number;
   related_titles?: string[];
+  // Depth+1 expansion provenance (set when item came from /sources/.../expand-links)
+  parent_source_id?: string | null;
+  discovery_url?: string | null;
+  cross_notebook_matches?: CrossNotebookMatch[];
 }
 
 interface ApprovalQueueProps {
@@ -187,6 +199,39 @@ export const ApprovalQueue: React.FC<ApprovalQueueProps> = ({
                     Connects to: {item.related_titles.slice(0, 2).join(', ')}
                   </span>
                 )}
+              </div>
+            )}
+
+            {/* Depth+1 expansion provenance — only shown when this item
+                came from an outgoing-link scrape (parent_source_id set). */}
+            {item.parent_source_id && (
+              <div className="approval-queue__expansion">
+                <span className="approval-queue__expansion-badge">
+                  ↳ Linked from a source
+                </span>
+                {item.discovery_url && (
+                  <span className="approval-queue__expansion-url">
+                    {item.discovery_url.length > 70
+                      ? item.discovery_url.slice(0, 70) + '…'
+                      : item.discovery_url}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Cross-notebook similarity hint — never blocks accept,
+                purely informational so the user knows other notebooks
+                might want this article too. */}
+            {item.cross_notebook_matches && item.cross_notebook_matches.length > 0 && (
+              <div className="approval-queue__cross-nb">
+                <span className="approval-queue__cross-nb-label">
+                  📌 Also relevant to:
+                </span>
+                {item.cross_notebook_matches.slice(0, 3).map((m) => (
+                  <span key={m.notebook_id} className="approval-queue__cross-nb-chip" title={m.snippet}>
+                    {m.notebook_name} ({m.score.toFixed(2)})
+                  </span>
+                ))}
               </div>
             )}
 

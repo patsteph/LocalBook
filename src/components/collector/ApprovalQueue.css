@@ -203,6 +203,81 @@
   opacity: 0.75;
 }
 
+/* Depth+1 link expansion provenance — distinct from delta so the user
+   can tell apart "this came from another notebook" vs "this is an
+   outgoing link from a captured page". */
+.approval-queue__expansion {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+  background: #fdf4ff;
+  border: 1px solid #f5d0fe;
+  color: #6b21a8;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.approval-queue__expansion-badge {
+  font-weight: 600;
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+}
+
+.approval-queue__expansion-url {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  opacity: 0.85;
+  word-break: break-all;
+}
+
+/* Cross-notebook similarity hint — chips that link to other notebooks
+   the article would also be relevant to. Hint only, never blocks. */
+.approval-queue__cross-nb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.approval-queue__cross-nb-label {
+  color: #475569;
+  font-weight: 500;
+}
+
+.approval-queue__cross-nb-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
+  background: #ecfeff;
+  border: 1px solid #a5f3fc;
+  color: #155e75;
+  font-weight: 500;
+}
+
+:root[data-theme="dark"] .approval-queue__expansion,
+.dark .approval-queue__expansion {
+  background: rgba(168, 85, 247, 0.08);
+  border-color: rgba(168, 85, 247, 0.25);
+  color: #d8b4fe;
+}
+
+:root[data-theme="dark"] .approval-queue__cross-nb-label,
+.dark .approval-queue__cross-nb-label {
+  color: #94a3b8;
+}
+
+:root[data-theme="dark"] .approval-queue__cross-nb-chip,
+.dark .approval-queue__cross-nb-chip {
+  background: rgba(34, 211, 238, 0.1);
+  border-color: rgba(34, 211, 238, 0.3);
+  color: #67e8f9;
+}
+
 /* Dark mode delta */
 :root[data-theme="dark"] .approval-queue__delta--new,
 .dark .approval-queue__delta--new {

@@ -245,4 +245,55 @@ export const sourceService = {
     const response = await api.post(`/sources/${notebookId}/${sourceId}/move`, { target_notebook_id: targetNotebookId });
     return response.data;
   },
+
+  // =========================================================================
+  // Outgoing-link expansion (depth+1)
+  // =========================================================================
+
+  /**
+   * List the outgoing links extracted at capture for a source. Each link
+   * is annotated with `already_captured: true` if the URL already exists
+   * as a source in any notebook so the UI can pre-disable that checkbox.
+   *
+   * Returns `expansion_blocked: true` when the source is itself a depth-1
+   * expansion result — the UI should hide the panel rather than render an
+   * empty link list.
+   */
+  async listOutgoingLinks(
+    notebookId: string,
+    sourceId: string,
+  ): Promise<{
+    source_id: string;
+    depth: number;
+    links: Array<{ url: string; text: string; context: string; already_captured: boolean }>;
+    total?: number;
+    expansion_blocked: boolean;
+    reason?: string;
+  }> {
+    const response = await api.get(`/sources/${notebookId}/${sourceId}/outgoing-links`);
+    return response.data;
+  },
+
+  /**
+   * Submit the user-selected URLs for depth+1 expansion. Returns a job_id
+   * the caller can poll for progress. Each successful scrape lands in the
+   * notebook's approval queue with parent_source_id, discovery_url, and
+   * cross_notebook_matches stamped on it — never auto-approved.
+   */
+  async expandOutgoingLinks(
+    notebookId: string,
+    sourceId: string,
+    selectedUrls: string[],
+  ): Promise<{
+    status: string;
+    job_id: string;
+    notebook_id: string;
+    source_id: string;
+    selected_count: number;
+  }> {
+    const response = await api.post(`/sources/${notebookId}/${sourceId}/expand-links`, {
+      selected_urls: selectedUrls,
+    });
+    return response.data;
+  },
 };

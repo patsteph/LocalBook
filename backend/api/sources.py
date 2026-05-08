@@ -38,11 +38,109 @@ class TagsRequest(BaseModel):
 class SingleTagRequest(BaseModel):
     tag: str
 
+
+class ExpandLinksRequest(BaseModel):
+    """User-selected outgoing URLs to scrape at depth+1."""
+    selected_urls: List[str]
+
+
 @router.get("/{notebook_id}")
 async def list_sources(notebook_id: str):
     """List all sources for a notebook"""
     sources = await source_store.list(notebook_id)
     return sources
+
+
+# ─── Outgoing-link expansion (depth+1) ─────────────────────────────────────
+
+@router.get("/{notebook_id}/{source_id}/outgoing-links")
+async def list_outgoing_links(notebook_id: str, source_id: str):
+    """Return the outgoing links extracted at capture, marked with dedup status.
+
+    Each link gets `already_captured: bool` so the UI can pre-disable
+    checkboxes for links the user has already brought in (anywhere across
+    notebooks). Sources at depth >= 1 return an empty list — depth+1 is a
+    hard cap, no chained recursion.
+    """
+    source = await source_store.get(source_id)
+    if not source or (source.get("notebook_id") or "") != notebook_id:
+        raise HTTPException(status_code=404, detail="Source not found in this notebook")
+    raw_links = source.get("outbound_links") or []
+    depth = int(source.get("depth") or 0)
+    if depth >= 1:
+        # Hard cap: refuse to surface links from a depth-1 source so the
+        # UI can't even tempt the user into recursion.
+        return {
+            "source_id": source_id,
+            "depth": depth,
+            "links": [],
+            "expansion_blocked": True,
+            "reason": "Depth+1 expansion only — this source was already an expansion result.",
+        }
+    # Build a cross-notebook dedup index ONCE so we don't hit the store
+    # per link.
+    grouped = await source_store.list_all()
+    existing_urls: set[str] = set()
+    for sources in grouped.values():
+        for s in sources:
+            u = (s.get("url") or "").strip()
+            if u:
+                existing_urls.add(u)
+    annotated = []
+    for link in raw_links:
+        if not isinstance(link, dict):
+            continue
+        url = (link.get("url") or "").strip()
+        if not url:
+            continue
+        annotated.append({
+            "url": url,
+            "text": link.get("text") or "",
+            "context": link.get("context") or "",
+            "already_captured": url in existing_urls,
+        })
+    return {
+        "source_id": source_id,
+        "depth": depth,
+        "links": annotated,
+        "total": len(annotated),
+        "expansion_blocked": False,
+    }
+
+
+@router.post("/{notebook_id}/{source_id}/expand-links")
+async def expand_outgoing_links(
+    notebook_id: str,
+    source_id: str,
+    request: ExpandLinksRequest,
+):
+    """Submit a depth+1 expansion job for the user-selected URLs.
+
+    Returns a job_id immediately; the actual scraping runs in the
+    background via services/job_queue.py. Poll /jobs/{job_id} for
+    progress, or subscribe to the JobQueue progress stream.
+
+    Each successfully scraped article lands in the notebook's approval
+    queue with `parent_source_id`, `discovery_url`, and
+    `cross_notebook_matches` stamped on it — never auto-approved, even
+    at high relevance, so the user reviews every result.
+    """
+    from services.link_expander import submit_expansion, LinkExpansionError
+    try:
+        job_id = await submit_expansion(
+            source_id=source_id,
+            notebook_id=notebook_id,
+            selected_urls=request.selected_urls,
+        )
+    except LinkExpansionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "status": "submitted",
+        "job_id": job_id,
+        "notebook_id": notebook_id,
+        "source_id": source_id,
+        "selected_count": len(request.selected_urls),
+    }
 
 LARGE_FILE_THRESHOLD = 5 * 1024 * 1024  # 5 MB — files above this use background processing
 

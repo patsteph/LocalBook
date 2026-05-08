@@ -491,8 +491,13 @@ EVAL_PHASES = [
     (14, "Concurrency & Load"),
     (15, "Context Capacity (Needle)"),
     (16, "Prompt Safety (Adversarial)"),
-    (17, "Score & Persist"),
-    (18, "Cleanup"),
+    (17, "Voice Modifier"),
+    (18, "Capture Modes"),
+    (19, "Refinement Pass"),
+    (20, "Translation"),
+    (21, "Confidence Calibration"),
+    (22, "Score & Persist"),
+    (23, "Cleanup"),
 ]
 
 TOTAL_PHASES = len(EVAL_PHASES)
