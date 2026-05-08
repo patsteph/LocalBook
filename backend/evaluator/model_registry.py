@@ -50,6 +50,8 @@ class ModelRegistry:
                     ollama_options=entry.get("ollama_options", {}),
                     rag_profile=entry.get("rag_profile", {}),
                     vision_profile=entry.get("vision_profile", {}),
+                    audio_profile=entry.get("audio_profile", {}),
+                    structured_profile=entry.get("structured_profile", {}),
                     provider=entry.get("provider", "ollama"),
                 )
                 self._models[info.ollama_name] = info

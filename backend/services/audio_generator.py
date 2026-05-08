@@ -142,6 +142,25 @@ class AudioGenerator:
     DEGENERATE_LINE_THRESHOLD = 500     # Lines > this with few sentence endings = word salad
     MAX_SECTION_RETRIES = 2             # Two retries per section
 
+    @staticmethod
+    def _audio_profile_multiplier() -> float:
+        """Return the active main model's word-tolerance multiplier.
+
+        Models like Gemma tend to produce more verbose prose than expected,
+        so their audio_profile.multi_pass_word_tolerance > 1.0 widens the
+        per-section pass band. olmo's tighter prose uses 1.0-1.1.
+        Falls back to 1.0 if no profile is configured.
+        """
+        try:
+            from config import settings as _s
+            from evaluator.model_registry import model_registry
+            info = model_registry.get_model(_s.ollama_model)
+            if info and info.audio_profile:
+                return float(info.audio_profile.get("multi_pass_word_tolerance", 1.0))
+        except Exception:
+            pass
+        return 1.0
+
     # Gender × accent name pools — picked randomly for each generation
     HOST_NAME_POOLS = {
         "us": {
@@ -439,7 +458,11 @@ Write at least {target_exchanges} back-and-forth exchanges. Keep going — do NO
                     script = await rag_engine._call_ollama(
                         system_prompt, prompt, model=settings.ollama_model,
                         num_predict=audio_num_predict, num_ctx=audio_num_ctx,
-                        temperature=temp, repeat_penalty=1.15
+                        temperature=temp, repeat_penalty=1.15,
+                        # Audio scripts need natural conversational flow; the
+                        # generic "skip preamble / lead with conclusion" voice
+                        # modifier would clip dialogue openings.
+                        voice_modifier=False,
                     )
                 
                 # ── Quality Gate — structural enforcement before TTS ──
@@ -920,10 +943,13 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         errors = []
         words = text.split()
         word_count = len(words)
-        
-        # 1. Word count within tolerance
-        min_words = int(word_budget * (1 - self.SECTION_WORD_TOLERANCE))
-        max_words = int(word_budget * (1 + self.SECTION_WORD_TOLERANCE))
+
+        # 1. Word count within tolerance — widened per active model's
+        #    audio_profile.multi_pass_word_tolerance (e.g. 1.3 for Gemma's
+        #    verbose prose, 1.0-1.1 for olmo's tighter output).
+        effective_tolerance = min(0.95, self.SECTION_WORD_TOLERANCE * self._audio_profile_multiplier())
+        min_words = int(word_budget * (1 - effective_tolerance))
+        max_words = int(word_budget * (1 + effective_tolerance))
         if word_count < min_words:
             errors.append(f"TOO_SHORT: {word_count} words (need {min_words}-{max_words})")
         if word_count > max_words:
@@ -992,7 +1018,8 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
             section = await rag_engine._call_ollama(
                 system_prompt, prompt, model=settings.ollama_model,
                 num_predict=num_predict, num_ctx=num_ctx,
-                temperature=temperature, repeat_penalty=repeat_penalty
+                temperature=temperature, repeat_penalty=repeat_penalty,
+                voice_modifier=False,  # podcast section: dialogue flow
             )
             
             # Always sanitize (catches degenerate lines)

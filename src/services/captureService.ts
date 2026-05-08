@@ -48,6 +48,24 @@ export interface CapturePageEvent {
     errors: number;
     pending: number;
   };
+  // Capture metadata stamped on the `page_received` event (C2 + C4):
+  //   image_hash: SHA256 of the normalized image bytes — primary key in
+  //     the dedup ledger.
+  //   qr_codes:   any QR / 2D codes detected by cv2.QRCodeDetector;
+  //     `kind` hints at follow-up actions (URL → ingest, ISBN → fetch
+  //     book metadata, vcard → seed person profile).
+  //   duplicate_of: present iff this hash was seen before. Surface a
+  //     "Duplicate? Already captured at …" banner.
+  image_hash?: string;
+  qr_codes?: Array<{
+    value: string;
+    kind: 'url' | 'isbn' | 'email' | 'phone' | 'wifi' | 'vcard' | 'text';
+  }>;
+  duplicate_of?: {
+    first_seen_at: string;
+    first_seen_path: string;
+    note_id?: string;
+  };
 }
 
 export const captureService = {

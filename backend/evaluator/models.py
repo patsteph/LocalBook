@@ -102,7 +102,8 @@ class ModelInfo:
     ollama_options: dict = field(default_factory=dict)
 
     # RAG-specific tuning profile — overrides global defaults in rag_llm.py.
-    # Supported keys: think, repeat_penalty, use_chat_endpoint, num_ctx_cap, temperature.
+    # Supported keys: think, repeat_penalty, use_chat_endpoint, num_ctx_cap, temperature,
+    # aggressive_repetition_cleanup (bool), stop_sequences (list[str]).
     # Empty dict (default) means: use global defaults unchanged.
     rag_profile: dict = field(default_factory=dict)
 
@@ -110,6 +111,16 @@ class ModelInfo:
     # ollama_client.vision_describe(). Supported keys: num_predict, num_ctx, temperature.
     # Empty dict means: use global vision defaults (1500 / 8192 / 0.3).
     vision_profile: dict = field(default_factory=dict)
+
+    # Audio (podcast) generation profile — read by audio_generator.py.
+    # Supported keys: multi_pass_word_tolerance (float, e.g. 1.1-1.3), repeat_penalty,
+    # temperature. Empty dict means: use audio_generator built-in defaults.
+    audio_profile: dict = field(default_factory=dict)
+
+    # Structured-output (JSON mode) profile — read by structured_llm.py.
+    # Supported keys: prefer_json_mode (bool), max_repair_attempts (int).
+    # Empty dict means: prefer JSON mode if supports_json_mode is True.
+    structured_profile: dict = field(default_factory=dict)
 
     # v1.7.0: Backend provider — "ollama" (default) or "llama_server" (sidecar).
     # See services/llm_provider.py. Registry entries without this field are

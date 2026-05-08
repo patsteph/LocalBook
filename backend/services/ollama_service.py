@@ -131,6 +131,7 @@ class OllamaService:
         format: Optional[str] = None,
         images: Optional[List[str]] = None,
         keep_alive: Optional[Any] = None,
+        voice_modifier: bool = True,
     ) -> Dict[str, Any]:
         """Non-streaming generate call to Ollama /api/generate.
 
@@ -145,6 +146,12 @@ class OllamaService:
             format: Set to "json" for JSON mode.
             images: List of base64-encoded images (for vision models).
             keep_alive: Override default keep_alive policy.
+            voice_modifier: Prepend the active model's voice/tone instruction
+                to the system prompt. Defaults True. Set False for callers
+                that produce structured output (JSON / SVG / Mermaid /
+                vision OCR transcription) where prose-tone guidance would
+                contaminate format-sensitive output. Auto-disabled when
+                format='json' or when images are present (vision call).
 
         Returns:
             Full Ollama response dict (with 'response', token stats, etc.)
@@ -158,6 +165,12 @@ class OllamaService:
             options["temperature"] = temperature
         if extra_options:
             options.update(extra_options)
+
+        # Voice modifier: inject family-specific tone instruction unless
+        # the caller is producing structured output (JSON, vision OCR).
+        if voice_modifier and not format and not images and system:
+            from services.voice_modifier import voiced_system as _voiced
+            system = _voiced(system, model_name=use_model)
 
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
 
@@ -231,6 +244,7 @@ class OllamaService:
         extra_options: Optional[Dict[str, Any]] = None,
         images: Optional[List[str]] = None,
         keep_alive: Optional[Any] = None,
+        voice_modifier: bool = True,
     ) -> Dict[str, Any]:
         """Non-streaming chat call to Ollama /api/chat.
 
@@ -242,6 +256,9 @@ class OllamaService:
             extra_options: Additional Ollama options.
             images: Injected into the last user message.
             keep_alive: Override default keep_alive policy.
+            voice_modifier: Prepend the active model's voice instruction
+                to the first system message. Auto-disabled if images are
+                present (vision call). Defaults True.
 
         Returns:
             Full Ollama response dict (with 'message', token stats, etc.)
@@ -253,6 +270,18 @@ class OllamaService:
             options["temperature"] = temperature
         if extra_options:
             options.update(extra_options)
+
+        # Voice modifier: prepend tone instruction to the FIRST system
+        # message. Skips for vision calls (images present) where the model
+        # is doing OCR / scene description, not prose generation.
+        if voice_modifier and not images and messages:
+            from services.voice_modifier import voiced_system as _voiced
+            for msg in messages:
+                if msg.get("role") == "system":
+                    voiced = _voiced(msg.get("content", ""), model_name=use_model)
+                    if voiced:
+                        msg["content"] = voiced
+                    break
 
         if images:
             for msg in reversed(messages):

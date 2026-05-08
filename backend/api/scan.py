@@ -18,7 +18,13 @@ router = APIRouter()
 class ScanProcessRequest(BaseModel):
     file_path: str
     notebook_id: Optional[str] = None
-    mode: str = "document"  # "document" or "photo"
+    # Any mode in vision_prompts.MODE_PROMPTS — auto-classifier defaults plus
+    # the user-pick specialized modes (recipe, resume, glossary, title_page,
+    # calendar, form, map, index_page, collage). Defaults to "document".
+    mode: str = "document"
+    # Optional post-OCR translation. Set to a language name like 'Spanish'
+    # to get a Translation section appended; None / 'none' / 'original' skip it.
+    target_language: Optional[str] = None
 
 
 @router.post("/process")
@@ -30,6 +36,7 @@ async def process_scan(request: ScanProcessRequest):
             file_path=request.file_path,
             notebook_id=request.notebook_id,
             mode=request.mode,
+            target_language=request.target_language,
         )
         return {"status": "success", "note": result}
     except FileNotFoundError as e:
@@ -51,6 +58,11 @@ class ScanBatchRequest(BaseModel):
     file_paths: List[str] = Field(..., min_length=1)
     notebook_id: Optional[str] = None
     mode: str = "document"
+    # Optional post-OCR translation. Set to a language name like 'Spanish'.
+    target_language: Optional[str] = None
+    # Optional: append the OCR result to an existing note instead of creating
+    # a new one. Falls back to create-new if the note doesn't exist.
+    append_to: Optional[str] = None
 
 
 async def _run_batch_with_reporter(
@@ -59,6 +71,8 @@ async def _run_batch_with_reporter(
     notebook_id: Optional[str],
     mode: str,
     reporter: ProgressReporter,
+    target_language: Optional[str] = None,
+    append_to: Optional[str] = None,
 ) -> None:
     """Background task: run the batch pipeline, always closing the reporter."""
     try:
@@ -67,6 +81,8 @@ async def _run_batch_with_reporter(
             notebook_id=notebook_id,
             mode=mode,
             reporter=reporter,
+            target_language=target_language,
+            append_to=append_to,
         )
     except FileNotFoundError as e:
         logger.warning(f"[scan-batch] file missing: {e}")
@@ -105,6 +121,8 @@ async def process_scan_batch(request: ScanBatchRequest):
             notebook_id=request.notebook_id,
             mode=request.mode,
             reporter=reporter,
+            target_language=request.target_language,
+            append_to=request.append_to,
         )
     )
 
@@ -141,6 +159,8 @@ class ScanOcrBatchRequest(BaseModel):
     """
     file_paths: List[str] = Field(..., min_length=1)
     mode: str = "document"
+    # Optional post-OCR translation. Set to a language name like 'Spanish'.
+    target_language: Optional[str] = None
 
 
 async def _run_ocr_inline_with_reporter(
@@ -148,6 +168,7 @@ async def _run_ocr_inline_with_reporter(
     file_paths: List[str],
     mode: str,
     reporter: ProgressReporter,
+    target_language: Optional[str] = None,
 ) -> None:
     """Background task: run inline OCR pipeline, always closing the reporter."""
     try:
@@ -155,6 +176,7 @@ async def _run_ocr_inline_with_reporter(
             file_paths=file_paths,
             mode=mode,
             reporter=reporter,
+            target_language=target_language,
         )
     except FileNotFoundError as e:
         logger.warning(f"[scan-ocr] file missing: {e}")
@@ -189,6 +211,7 @@ async def ocr_scan_batch(request: ScanOcrBatchRequest):
             file_paths=list(request.file_paths),
             mode=request.mode,
             reporter=reporter,
+            target_language=request.target_language,
         )
     )
 

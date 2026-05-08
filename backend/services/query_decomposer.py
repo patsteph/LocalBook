@@ -123,18 +123,31 @@ JSON array:"""
                 
                 if response.status_code != 200:
                     return []
-                
+
                 result = response.json().get("response", "")
-                
-                # Extract JSON array
-                match = re.search(r'\[.*?\]', result, re.DOTALL)
-                if match:
-                    sub_questions = json.loads(match.group())
-                    if isinstance(sub_questions, list) and all(isinstance(q, str) for q in sub_questions):
-                        return sub_questions
-                
+
+                # Strategy 1: robust JSON-array parse (handles markdown fences,
+                # trailing commas, preamble text). Works for any model that
+                # produces something close to valid JSON.
+                from utils.json_repair import robust_json_parse
+                parsed = robust_json_parse(result, expect="array", fallback=None, label="QueryDecomposer")
+                if isinstance(parsed, list) and all(isinstance(q, str) for q in parsed):
+                    return [q.strip() for q in parsed if q.strip()]
+
+                # Strategy 2: numbered-list fallback. Some models (notably
+                # Gemma when JSON mode is off) prefer a "1. ...\n2. ..." list.
+                # Extract any line starting with N. or N) and treat as a sub-question.
+                numbered = re.findall(
+                    r'^\s*\d+[\.\)]\s+(.+?)\s*$',
+                    result,
+                    flags=re.MULTILINE,
+                )
+                if len(numbered) >= self.complexity_threshold:
+                    return [q.strip().rstrip('?') + '?' if not q.strip().endswith('?') else q.strip()
+                            for q in numbered if q.strip()]
+
                 return []
-                
+
         except Exception as e:
             print(f"[QueryDecomposer] LLM error: {e}")
             return []

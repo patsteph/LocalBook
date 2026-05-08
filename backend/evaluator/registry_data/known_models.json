@@ -16,7 +16,27 @@
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
       "policy_tags": ["us-origin", "open-source", "research"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.95}
+      "ollama_options": {"temperature": 0.7, "top_p": 0.95},
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.1,
+        "num_ctx_cap": 32768,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": true,
+        "stop_sequences": [
+          "\n\nReferences", "\nReferences", "\n\n**References", "\n**References",
+          "\n\nSources:", "\nSources:", "\n\nSources\n", "\n\n**Sources", "\n**Sources",
+          "\n\nCitations:", "\nCitations:", "\n\nCitations\n",
+          "\nSupporting Citations", "\n\nSupporting Citations", "\nSupporting citations",
+          "\n\nBibliography", "\nBibliography",
+          "\n\nCited Sources", "\nCited Sources",
+          "\n\nKey References", "\nKey References",
+          "\n\nFootnotes", "\nFootnotes",
+          "\n\n---\n[", "\n\n[1]:", "\n\n*Note", "\n*Note:"
+        ]
+      },
+      "audio_profile": {"multi_pass_word_tolerance": 1.1, "repeat_penalty": 1.1, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": false, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "phi4-mini:latest",
@@ -34,7 +54,17 @@
       "min_ram_gb": 4,
       "recommended_ram_gb": 8,
       "policy_tags": ["us-origin", "open-source", "enterprise-ok"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9}
+      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.05,
+        "num_ctx_cap": 8192,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "\n\n[1]:"]
+      },
+      "audio_profile": {"multi_pass_word_tolerance": 1.15, "repeat_penalty": 1.05, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "snowflake-arctic-embed2:latest",
@@ -82,7 +112,7 @@
       "min_ram_gb": 4,
       "recommended_ram_gb": 8,
       "policy_tags": ["us-origin", "open-source", "enterprise-ok"],
-      "vision_profile": {"num_predict": 1500, "num_ctx": 4096}
+      "vision_profile": {"num_predict": 1500, "num_ctx": 4096, "temperature": 0.2}
     },
     {
       "ollama_name": "gemma3:4b",
@@ -101,7 +131,17 @@
       "recommended_ram_gb": 12,
       "policy_tags": ["us-origin", "open-source"],
       "ollama_options": {"temperature": 0.2, "top_p": 0.9},
-      "rag_profile": {"repeat_penalty": 1.0}
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.0,
+        "num_ctx_cap": 16384,
+        "use_chat_endpoint": true,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["<|channel>thought", "<|channel|>"]
+      },
+      "vision_profile": {"num_predict": 2000, "num_ctx": 8192, "temperature": 0.2},
+      "audio_profile": {"multi_pass_word_tolerance": 1.3, "repeat_penalty": 1.0, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "llama3.1:8b",
@@ -118,7 +158,17 @@
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
       "policy_tags": ["us-origin", "open-source"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9}
+      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.1,
+        "num_ctx_cap": 32768,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "<|eot_id|>"]
+      },
+      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "llama3.2:3b",
@@ -135,7 +185,17 @@
       "min_ram_gb": 4,
       "recommended_ram_gb": 8,
       "policy_tags": ["us-origin", "open-source"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9}
+      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.1,
+        "num_ctx_cap": 16384,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "<|eot_id|>"]
+      },
+      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "mistral:7b",
@@ -152,7 +212,17 @@
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
       "policy_tags": ["eu-origin", "open-source"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9}
+      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.1,
+        "num_ctx_cap": 32768,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "</s>"]
+      },
+      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "llava:7b",
@@ -169,7 +239,8 @@
       "disk_size_gb": 4.5,
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
-      "policy_tags": ["us-origin", "open-source"]
+      "policy_tags": ["us-origin", "open-source"],
+      "vision_profile": {"num_predict": 1500, "num_ctx": 4096, "temperature": 0.2}
     },
     {
       "ollama_name": "moondream2:latest",
@@ -186,7 +257,8 @@
       "disk_size_gb": 1.7,
       "min_ram_gb": 4,
       "recommended_ram_gb": 8,
-      "policy_tags": ["us-origin", "open-source"]
+      "policy_tags": ["us-origin", "open-source"],
+      "vision_profile": {"num_predict": 1200, "num_ctx": 2048, "temperature": 0.2}
     },
     {
       "ollama_name": "mxbai-embed-large:latest",
@@ -218,7 +290,17 @@
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
       "policy_tags": ["us-origin", "open-source", "enterprise-ok"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9}
+      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.1,
+        "num_ctx_cap": 32768,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["\n\nReferences", "\n\nBibliography"]
+      },
+      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "granite4:1b",
@@ -235,7 +317,17 @@
       "min_ram_gb": 4,
       "recommended_ram_gb": 8,
       "policy_tags": ["us-origin", "open-source", "enterprise-ok"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9}
+      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.05,
+        "num_ctx_cap": 16384,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["\n\nReferences", "\n\nBibliography"]
+      },
+      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.05, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "llama3.2-vision:11b",
@@ -255,7 +347,17 @@
       "recommended_ram_gb": 24,
       "policy_tags": ["us-origin", "open-source"],
       "ollama_options": {"temperature": 0.7, "top_p": 0.9},
-      "vision_profile": {"num_predict": 2000, "num_ctx": 8192}
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.1,
+        "num_ctx_cap": 32768,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "<|eot_id|>"]
+      },
+      "vision_profile": {"num_predict": 2000, "num_ctx": 8192, "temperature": 0.2},
+      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "llama3.2:1b",
@@ -272,7 +374,16 @@
       "min_ram_gb": 2,
       "recommended_ram_gb": 4,
       "policy_tags": ["us-origin", "open-source"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9}
+      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.05,
+        "num_ctx_cap": 8192,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["\n\nReferences", "<|eot_id|>"]
+      },
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "mistral-nemo:12b",
@@ -289,7 +400,17 @@
       "min_ram_gb": 16,
       "recommended_ram_gb": 24,
       "policy_tags": ["eu-origin", "open-source", "enterprise-ok"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9}
+      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.1,
+        "num_ctx_cap": 32768,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "</s>"]
+      },
+      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "command-r:35b",
@@ -393,8 +514,18 @@
       "recommended_ram_gb": 16,
       "policy_tags": ["us-origin", "open-source"],
       "ollama_options": {"temperature": 0.85, "top_k": 64, "top_p": 0.95},
-      "rag_profile": {"think": false, "repeat_penalty": 1.0, "use_chat_endpoint": true, "num_ctx_cap": 16384, "temperature": 0.3},
-      "vision_profile": {"num_predict": 2000, "num_ctx": 8192, "temperature": 0.2}
+      "rag_profile": {
+        "think": false,
+        "repeat_penalty": 1.0,
+        "use_chat_endpoint": true,
+        "num_ctx_cap": 16384,
+        "temperature": 0.3,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["<|channel>thought", "<|channel|>"]
+      },
+      "vision_profile": {"num_predict": 2000, "num_ctx": 8192, "temperature": 0.2},
+      "audio_profile": {"multi_pass_word_tolerance": 1.3, "repeat_penalty": 1.0, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "gemma4:e2b",
@@ -413,8 +544,18 @@
       "recommended_ram_gb": 12,
       "policy_tags": ["us-origin", "open-source"],
       "ollama_options": {"temperature": 0.85, "top_k": 64, "top_p": 0.95},
-      "rag_profile": {"think": false, "repeat_penalty": 1.0, "use_chat_endpoint": true, "num_ctx_cap": 16384, "temperature": 0.3},
-      "vision_profile": {"num_predict": 2000, "num_ctx": 8192, "temperature": 0.2}
+      "rag_profile": {
+        "think": false,
+        "repeat_penalty": 1.0,
+        "use_chat_endpoint": true,
+        "num_ctx_cap": 16384,
+        "temperature": 0.3,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": ["<|channel>thought", "<|channel|>"]
+      },
+      "vision_profile": {"num_predict": 2000, "num_ctx": 8192, "temperature": 0.2},
+      "audio_profile": {"multi_pass_word_tolerance": 1.3, "repeat_penalty": 1.0, "temperature": 0.7},
+      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
     },
     {
       "ollama_name": "bonsai-8b",
@@ -433,6 +574,15 @@
       "recommended_ram_gb": 6,
       "policy_tags": ["us-origin", "open-source", "experimental", "sidecar"],
       "ollama_options": {"temperature": 0.5, "top_p": 0.85, "top_k": 20, "repeat_penalty": 1.1},
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.1,
+        "num_ctx_cap": 8192,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": true,
+        "stop_sequences": ["\n\nReferences", "\n\nBibliography"]
+      },
+      "structured_profile": {"prefer_json_mode": false, "max_repair_attempts": 3},
       "provider": "llama_server"
     }
   ]

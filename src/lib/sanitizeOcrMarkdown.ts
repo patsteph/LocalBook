@@ -59,6 +59,15 @@
 
 const FENCED_OUTER_RE = /^```(?:markdown|md|text|plaintext)?\s*\n([\s\S]*?)\n```\s*$/i;
 
+// Match a single markdown heading line. Captures hash count + heading text.
+// We deliberately operate on raw text (not inside code fences) to avoid
+// touching code-block content that happens to look like a heading.
+const HEADING_LINE_RE = /^(#{1,6})\s+(.+?)\s*$/;
+// Recognize the start/end of a fenced code block (```lang or ```) so the
+// heading normalizer skips lines inside fences. Mermaid, code, and structured
+// blocks must pass through verbatim.
+const FENCE_TOGGLE_RE = /^\s*```/;
+
 const LATEX_PREAMBLE_LINE_RE =
   /^\s*\\(documentclass|usepackage|usetikzlibrary|begin\{document\}|end\{document\}|input|include|geometry|hypersetup|title|author|date|maketitle)\b.*$/;
 
@@ -159,6 +168,46 @@ function unwrapProseTable(s: string): string {
     .join('\n\n');
 }
 
+/**
+ * Normalize markdown heading levels to a consistent H2/H3 hierarchy:
+ *   • Demote H1 (#) → H2 (##). The source filename carries the document
+ *     title; H1 inside body content drives the H1-vs-H3 cross-page drift.
+ *   • Strip empty headings (just hashes with no text).
+ *   • Skip any lines inside fenced code blocks so Mermaid, code, etc.
+ *     pass through untouched.
+ *
+ * Defensive layer: the backend already runs an equivalent normalizer in
+ * scan_pipeline._normalize_headings, but a saved scan might predate that
+ * pass, or the user may paste raw markdown into the editor.
+ */
+function normalizeHeadingLevels(s: string): string {
+  const lines = s.split('\n');
+  let inFence = false;
+  const out: string[] = [];
+  for (const line of lines) {
+    if (FENCE_TOGGLE_RE.test(line)) {
+      inFence = !inFence;
+      out.push(line);
+      continue;
+    }
+    if (inFence) {
+      out.push(line);
+      continue;
+    }
+    const m = line.match(HEADING_LINE_RE);
+    if (!m) {
+      out.push(line);
+      continue;
+    }
+    const hashes = m[1];
+    const text = m[2].trim();
+    if (!text) continue; // strip empty heading
+    const level = hashes.length === 1 ? 2 : hashes.length;
+    out.push(`${'#'.repeat(level)} ${text}`);
+  }
+  return out.join('\n');
+}
+
 export function sanitizeOcrMarkdown(input: string): string {
   if (!input) return '';
   let s = input.replace(/\r\n/g, '\n').trim();
@@ -199,6 +248,12 @@ export function sanitizeOcrMarkdown(input: string): string {
   //    fence-stripping so a table wrapped in ```markdown ... ``` is
   //    detectable.
   s = unwrapProseTable(s);
+
+  // 5) Normalize heading levels (H1 → H2; strip empties; preserve
+  //    fenced code/mermaid/structured blocks). Defensive — the backend
+  //    pass already does this, but anything that bypassed it (legacy
+  //    notes, paste-in) lands here.
+  s = normalizeHeadingLevels(s);
 
   return s.trim();
 }

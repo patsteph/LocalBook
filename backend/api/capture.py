@@ -379,15 +379,36 @@ async def upload_capture(
     # never carry HEIC payloads).
     _normalize_image_for_vision(file_path)
 
+    # Capture metadata (C2 + C4): hash for dedup ledger, QR codes for
+    # follow-up suggestions. Both are best-effort — failures don't block
+    # the OCR pipeline. Run AFTER normalization so the hash is stable
+    # across iOS/Android sources (HEIC normalized to JPEG first).
+    from services.capture_metadata import (
+        compute_image_hash,
+        check_dedup,
+        record_capture,
+        detect_qr_codes,
+    )
+    image_hash = compute_image_hash(file_path)
+    dedup_record = check_dedup(image_hash) if image_hash else None
+    qr_codes = detect_qr_codes(file_path)
+    if image_hash:
+        record_capture(image_hash, file_path)
+
     page = CapturePageInfo(path=file_path, status="received")
     session.pages.append(page)
 
-    # Notify WebSocket subscribers about the new page
+    # Notify WebSocket subscribers about the new page, including any QR
+    # results and dedup warnings so the iPhone/Mac client can surface them.
     msg = {
         "type": "page_received",
         "page_index": page_index,
         "file_name": file_name,
+        "image_hash": image_hash,
+        "qr_codes": qr_codes,
     }
+    if dedup_record:
+        msg["dedup"] = dedup_record
     for ws in session.ws_connections:
         try:
             await ws.send_json(msg)
@@ -401,12 +422,17 @@ async def upload_capture(
     logger.info(
         f"[capture] Session {session_id[:8]} received page {page_index} "
         f"({len(contents) / 1024:.0f}KB)"
+        + (f" qr={len(qr_codes)}" if qr_codes else "")
+        + (" [dup]" if dedup_record else "")
     )
 
     return {
         "status": "received",
         "page_index": page_index,
         "file_name": file_name,
+        "image_hash": image_hash,
+        "qr_codes": qr_codes,
+        "duplicate_of": dedup_record,
     }
 
 

@@ -17,6 +17,7 @@ export interface ScanBatchResult {
   total_pages?: number;
   chars?: number;
   title?: string;
+  confidence?: number;
 }
 
 export interface ScanOcrBatchResult {
@@ -24,7 +25,18 @@ export interface ScanOcrBatchResult {
   page_texts?: string[];
   total_pages?: number;
   chars?: number;
+  confidence?: number;
 }
+
+// Capture modes the backend understands. The first 12 are auto-classifiable
+// by the vision-model classifier; the remainder are user-pick-only and live
+// in MODE_PROMPTS so the UI can offer them as explicit choices.
+export type ScanMode =
+  | 'document' | 'handwriting' | 'mixed' | 'math' | 'whiteboard'
+  | 'drawing' | 'diagram' | 'photo'
+  | 'receipt' | 'business_card' | 'code' | 'slide'
+  | 'recipe' | 'resume' | 'glossary' | 'title_page'
+  | 'calendar' | 'form' | 'map' | 'index_page' | 'collage';
 
 /**
  * Read a streaming SSE response and dispatch events to onProgress.
@@ -101,12 +113,18 @@ export const scanService = {
     filePaths: string[],
     opts: {
       notebookId?: string | null;
-      mode?: 'document' | 'photo';
+      mode?: ScanMode;
       onProgress: (evt: ScanProgressEvent) => void;
       signal?: AbortSignal;
+      // Optional post-OCR translation. Set to a language name (e.g. 'Spanish')
+      // to get a Translation section appended.
+      targetLanguage?: string;
+      // Optional: append the OCR result to an existing note instead of
+      // creating a new one. Falls back to create-new if the note doesn't exist.
+      appendTo?: string;
     },
   ): Promise<ScanBatchResult> {
-    const { notebookId, mode = 'document', onProgress, signal } = opts;
+    const { notebookId, mode = 'document', onProgress, signal, targetLanguage, appendTo } = opts;
 
     const response = await fetch(`${API_BASE_URL}/scan/process-batch`, {
       method: 'POST',
@@ -115,6 +133,8 @@ export const scanService = {
         file_paths: filePaths,
         notebook_id: notebookId || null,
         mode,
+        target_language: targetLanguage ?? null,
+        append_to: appendTo ?? null,
       }),
       signal,
     });
@@ -131,17 +151,22 @@ export const scanService = {
   async ocrBatchWithProgress(
     filePaths: string[],
     opts: {
-      mode?: 'document' | 'photo';
+      mode?: ScanMode;
       onProgress: (evt: ScanProgressEvent) => void;
       signal?: AbortSignal;
+      targetLanguage?: string;
     },
   ): Promise<ScanOcrBatchResult> {
-    const { mode = 'document', onProgress, signal } = opts;
+    const { mode = 'document', onProgress, signal, targetLanguage } = opts;
 
     const response = await fetch(`${API_BASE_URL}/scan/ocr-batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_paths: filePaths, mode }),
+      body: JSON.stringify({
+        file_paths: filePaths,
+        mode,
+        target_language: targetLanguage ?? null,
+      }),
       signal,
     });
 

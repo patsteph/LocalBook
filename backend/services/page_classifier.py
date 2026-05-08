@@ -17,28 +17,98 @@ from typing import Awaitable, Callable, Tuple
 
 logger = logging.getLogger(__name__)
 
-VALID_MODES = {"document", "math", "whiteboard", "drawing", "photo"}
+VALID_MODES = {
+    # Auto-classifiable broad categories (in CLASSIFY_PROMPT).
+    "document",
+    "handwriting",
+    "mixed",
+    "math",
+    "whiteboard",
+    "drawing",
+    "diagram",
+    "photo",
+    "receipt",
+    "business_card",
+    "code",
+    "slide",
+    # User-pick specialized modes (not in CLASSIFY_PROMPT but accepted as input).
+    "recipe",
+    "resume",
+    "glossary",
+    "title_page",
+    "calendar",
+    "form",
+    "map",
+    "index_page",
+    "collage",
+}
+
+
+def _normalize_mode(raw: str) -> str:
+    """Coerce an LLM classification response into a known mode.
+
+    Tolerates extra whitespace, trailing punctuation, capitalization,
+    and common synonyms ("invoice" → "receipt", "card" → "business_card",
+    "presentation"/"deck" → "slide", "flowchart"/"mindmap" → "diagram").
+    Returns "document" if the response can't be matched.
+    """
+    if not raw:
+        return "document"
+    cleaned = raw.strip().lower().rstrip('.!?,:;"\'')
+    # Take the first whitespace-separated token to defend against the model
+    # echoing the prompt list back.
+    cleaned = cleaned.split()[0] if cleaned.split() else cleaned
+    cleaned = cleaned.replace("-", "_")
+    if cleaned in VALID_MODES:
+        return cleaned
+    synonyms = {
+        "invoice": "receipt",
+        "bill": "receipt",
+        "card": "business_card",
+        "businesscard": "business_card",
+        "vcard": "business_card",
+        "presentation": "slide",
+        "deck": "slide",
+        "ppt": "slide",
+        "powerpoint": "slide",
+        "flowchart": "diagram",
+        "mindmap": "diagram",
+        "mind_map": "diagram",
+        "graph": "diagram",
+        "chart": "diagram",
+        "code_screen": "code",
+        "terminal": "code",
+        "source_code": "code",
+        "screenshot": "code",
+        "handwritten": "handwriting",
+        "notes": "handwriting",
+        "page": "document",
+        "text": "document",
+    }
+    return synonyms.get(cleaned, "document")
 
 
 async def classify_page(
     image_bytes: bytes,
     llm_fallback: Callable[[bytes], Awaitable[str]],
 ) -> str:
-    """Return one of: document, math, whiteboard, drawing, photo.
+    """Return one of the 12 known modes (see VALID_MODES).
 
-    Strategy (revised after empirical misclassification of book pages
-    as 'photo'):
+    Strategy:
       1. Heuristic returns "document", "photo", or None.
+         These two are cheap to detect from image stats alone (~50ms).
       2. Photo classification requires ALL strong photo signals — book
          pages with imperfect lighting / off-axis capture no longer leak
          into 'photo'.
-      3. Ambiguous cases default to "document" — the safe fallback.
+      3. For the other 10 modes (handwriting, mixed, math, whiteboard,
+         drawing, diagram, receipt, business_card, code, slide), the
+         LLM fallback is the source of truth — the visual cues are too
+         subtle for cheap heuristics. Misclassification is recoverable
+         because every prompt is tolerant of a wider input than its
+         strict semantics suggest.
+      4. Ambiguous heuristic + missing LLM → defaults to "document".
          A misclassified document still produces readable text;
-         a misclassified photo wastes time and produces useless prose.
-      4. The LLM fallback is reserved for math/whiteboard/drawing
-         distinctions, which heuristics can't reliably make. We only
-         call it when explicitly hinted (currently never from the
-         per-page QR flow).
+         a misclassified photo wastes time on scene description.
     """
     decision, signals = _heuristic_classify(image_bytes)
     logger.info(f"[classify] signals={signals} → {decision}")
@@ -46,10 +116,17 @@ async def classify_page(
     if decision is not None:
         return decision
 
-    # Ambiguous — bias to document. Most captures from a phone are
-    # documents; the cost of a wrong "document" classification (text
-    # transcription) is far lower than a wrong "photo" (scene description).
-    logger.info("[classify] ambiguous → defaulting to document")
+    # Ambiguous heuristic — call the LLM if available, otherwise document.
+    if llm_fallback is not None:
+        try:
+            raw = await llm_fallback(image_bytes)
+            mode = _normalize_mode(raw)
+            logger.info(f"[classify] LLM said {raw!r} → {mode}")
+            return mode
+        except Exception as e:
+            logger.warning(f"[classify] LLM fallback failed: {e}; defaulting to document")
+
+    logger.info("[classify] ambiguous + no LLM → defaulting to document")
     return "document"
 
 

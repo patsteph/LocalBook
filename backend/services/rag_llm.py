@@ -75,9 +75,10 @@ async def call_ollama(
     temperature: float = None,
     repeat_penalty: float = None,
     extra_options: dict = None,
+    voice_modifier: bool = True,
 ) -> str:
     """Call Ollama API (non-streaming).
-    
+
     Args:
         num_predict: Max tokens to generate. 500 for chat Q&A, 2000-4000 for documents.
         num_ctx: Context window size. None = Ollama default. Set higher (8192+) for long generation.
@@ -86,6 +87,8 @@ async def call_ollama(
                         Use 1.1 for dialogue/scripts where natural repetition is expected.
         extra_options: Additional Ollama options merged LAST (overrides defaults).
                        Used by outline-first pipeline to inject Mirostat on sub-3000-token sections.
+        voice_modifier: Prepend the active model's voice instruction to the system prompt.
+                        Defaults True. Set False for structured/format-sensitive outputs.
     """
     # Use very long timeout - LLM generation can take minutes for complex queries
     timeout = httpx.Timeout(10.0, read=600.0)  # 10s connect, 10 min read
@@ -95,6 +98,11 @@ async def call_ollama(
     # Start with model-specific defaults from registry (temperature, top_p, top_k)
     model_defaults = _get_model_options(use_model)
     rag_profile = _get_rag_profile(use_model)
+    # Voice modifier: prepend family-tone instruction to the system prompt
+    # so chat / RAG / content-gen output stays consistent across model swaps.
+    if voice_modifier and system_prompt:
+        from services.voice_modifier import voiced_system as _voiced
+        system_prompt = _voiced(system_prompt, model_name=use_model) or system_prompt
     options = {**model_defaults, "num_predict": num_predict}
     if num_ctx is not None:
         options["num_ctx"] = num_ctx
@@ -225,9 +233,10 @@ async def stream_ollama(
     num_predict: Optional[int] = None,
     temperature_override: Optional[float] = None,
     extra_options: dict = None,
+    voice_modifier: bool = True,
 ) -> AsyncGenerator[str, None]:
     """Stream response from Ollama API with stop sequences to prevent citation lists.
-    
+
     Args:
         deep_think: Use CoT prompting with lower temperature for thorough analysis
         use_fast_model: Use phi4-mini (System 1) instead of olmo-3:7b-instruct (System 2)
@@ -235,6 +244,8 @@ async def stream_ollama(
                      Set higher (2000-4000) for document generation.
         temperature_override: Per-skill adaptive temperature. None = use model defaults.
         extra_options: Additional Ollama options merged last (e.g., Mirostat overrides).
+        voice_modifier: Prepend the active model's voice instruction to the system prompt.
+                        Defaults True. Set False for structured/format-sensitive outputs.
     """
     timeout = httpx.Timeout(10.0, read=600.0)
 
@@ -245,6 +256,12 @@ async def stream_ollama(
         model = settings.ollama_fast_model
     else:
         model = settings.ollama_model
+
+    # Voice modifier: prepend family-tone instruction so streaming chat
+    # output stays consistent across model swaps.
+    if voice_modifier and system_prompt:
+        from services.voice_modifier import voiced_system as _voiced
+        system_prompt = _voiced(system_prompt, model_name=model) or system_prompt
 
     # Load model-specific defaults from registry (temperature, top_p, top_k)
     model_defaults = _get_model_options(model)
@@ -263,48 +280,25 @@ async def stream_ollama(
     else:
         temperature = base_temp
     
-    # Stop sequences to prevent LLM from generating citation/reference lists
-    # Only apply for chat Q&A, not document generation (which needs References sections)
-    # Comprehensive list covers all observed LLM bibliography header variants
+    # Stop sequences to prevent LLM from generating citation/reference lists.
+    # Family-aware: each model declares its own stop_sequences in rag_profile;
+    # we fall back to a minimal shared list if the active model has none.
+    # Stops only applied for chat Q&A, not document generation (which needs
+    # References sections preserved).
     stop_sequences = []
     if num_predict is None:
-        stop_sequences = [
-            # References variants
-            "\n\nReferences",
-            "\nReferences",
-            "\n\n**References",
-            "\n**References",
-            # Sources variants
-            "\n\nSources:",
-            "\nSources:",
-            "\n\nSources\n",
-            "\n\n**Sources",
-            "\n**Sources",
-            # Citations variants (including "Supporting Citations" — confirmed leak)
-            "\n\nCitations:",
-            "\nCitations:",
-            "\n\nCitations\n",
-            "\nSupporting Citations",
-            "\n\nSupporting Citations",
-            "\nSupporting citations",
-            # Other bibliography headers LLMs generate
-            "\n\nBibliography",
-            "\nBibliography",
-            "\n\nCited Sources",
-            "\nCited Sources",
-            "\n\nKey References",
-            "\nKey References",
-            "\n\nFootnotes",
-            "\nFootnotes",
-            # Separator + citation list patterns
-            "\n\n---\n[",
-            "\n\n[1]:",
-            "\n\n*Note",
-            "\n*Note:",
-            # Gemma 4 thinking tokens (prevent thinking-token leak in chat output)
-            "<|channel>thought",
-            "<|channel|>",
-        ]
+        profile_stops = rag_profile.get("stop_sequences")
+        if profile_stops:
+            stop_sequences = list(profile_stops)
+        else:
+            # Minimal shared default — only the most common bibliography headers.
+            # Tight enough to never clip a legitimate sentence; permissive enough
+            # that any unknown model still gets baseline protection.
+            stop_sequences = [
+                "\n\nReferences",
+                "\n\nBibliography",
+                "\n\n[1]:",
+            ]
     
     # Determine token limit
     if num_predict is not None:

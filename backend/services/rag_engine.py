@@ -1209,17 +1209,20 @@ Answer the question, citing sources inline as [N]. Do not list references at the
             detect_response_format_fn=self._detect_response_format
         )
     
-    async def _call_ollama(self, system_prompt: str, prompt: str, model: str = None, num_predict: int = 500, num_ctx: int = None, temperature: float = None, repeat_penalty: float = None, extra_options: dict = None) -> str:
+    async def _call_ollama(self, system_prompt: str, prompt: str, model: str = None, num_predict: int = 500, num_ctx: int = None, temperature: float = None, repeat_penalty: float = None, extra_options: dict = None, voice_modifier: bool = True) -> str:
         """Call Ollama API
-        
+
         Args:
             num_predict: Max tokens to generate. 500 for chat Q&A, 2000-4000 for documents.
             num_ctx: Context window size. None = Ollama default. Set higher (8192+) for long generation.
             temperature: LLM temperature. None = Ollama default (~0.7).
             repeat_penalty: Repetition penalty. None = auto. Use 1.1 for dialogue scripts.
             extra_options: Additional Ollama options merged last (e.g., Mirostat overrides).
+            voice_modifier: Prepend the active model's voice instruction to the system prompt.
+                Defaults True (chat / synthesis / docs benefit). Set False for callers that
+                produce structured output OR need natural conversational flow (audio scripts).
         """
-        return await rag_llm.call_ollama(system_prompt, prompt, model=model, num_predict=num_predict, num_ctx=num_ctx, temperature=temperature, repeat_penalty=repeat_penalty, extra_options=extra_options)
+        return await rag_llm.call_ollama(system_prompt, prompt, model=model, num_predict=num_predict, num_ctx=num_ctx, temperature=temperature, repeat_penalty=repeat_penalty, extra_options=extra_options, voice_modifier=voice_modifier)
 
     async def _stream_ollama(self, system_prompt: str, prompt: str, deep_think: bool = False, use_fast_model: bool = False, num_predict: Optional[int] = None, temperature_override: Optional[float] = None, extra_options: dict = None) -> AsyncGenerator[str, None]:
         """Stream response from Ollama API with stop sequences to prevent citation lists

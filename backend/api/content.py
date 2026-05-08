@@ -15,18 +15,44 @@ from typing import Dict, List, Optional
 import json
 
 
+def _aggressive_cleanup_active() -> bool:
+    """Return True if the active main model wants the aggressive olmo-tuned
+    cleanup pass (filler-word density + buzzword phrase removal).
+
+    Each model in known_models.json declares
+    rag_profile.aggressive_repetition_cleanup. olmo: True. Gemma/Phi/Llama: False.
+    Defaults to True (olmo's historical behavior) when no profile is configured.
+    """
+    try:
+        from config import settings as _s
+        from evaluator.model_registry import model_registry
+        info = model_registry.get_model(_s.ollama_model)
+        if info and info.rag_profile:
+            return bool(info.rag_profile.get("aggressive_repetition_cleanup", True))
+    except Exception:
+        pass
+    return True
+
+
 def _clean_llm_output(text: str) -> str:
     """Post-process LLM output: detect repetition loops and ensure clean ending.
-    
-    Addresses three failure modes:
-    1. Sentence-level loops (same sentence repeats 3+ times)
-    2. Paragraph-level loops (same paragraph block repeats)
-    3. Mid-sentence cutoff (output ends abruptly)
+
+    Universal failure modes (run for every model):
+      1. Sentence-level loops (same sentence repeats 3+ times)
+      2. Paragraph-level loops (same paragraph block repeats)
+      3. Mid-sentence cutoff (output ends abruptly)
+      4. Trigram-based degenerate paragraphs
+
+    Aggressive olmo-tuned filter (gated by rag_profile.aggressive_repetition_cleanup):
+      5. Filler-word / buzzword density — removes paragraphs where >5% of words
+         are corporate-speak filler. olmo's sampling produced these; Gemma
+         doesn't, so the filter would over-trim its more measured prose.
     """
     if not text or len(text) < 100:
         return text
-    
+
     original_len = len(text)
+    aggressive = _aggressive_cleanup_active()
     
     # --- 0. Strip leaked prompt scaffolding ---
     # The LLM sometimes echoes internal pipeline markers into its output.
@@ -149,17 +175,20 @@ def _clean_llm_output(text: str) -> str:
                                   f"({len(p_words)} words, trigram uniqueness {p_unique:.0%})")
                     continue
                 
-                # Check 3b: filler-word density — buzzword-stuffed paragraphs
-                filler_hits = sum(1 for w in p_words if w.strip('.,;:!?') in _FILLER_WORDS)
-                # Also count multi-word filler phrases
-                p_lower = p.lower()
-                filler_hits += sum(1 for ph in _FILLER_PHRASES if ph in p_lower)
-                filler_pct = filler_hits / len(p_words)
-                if filler_pct > 0.05 and len(p_words) > 60:
-                    removed += 1
-                    logger.warning(f"[PostProcess] Removed filler-heavy paragraph "
-                                  f"({len(p_words)} words, {filler_pct:.0%} buzzwords)")
-                    continue
+                # Check 3b: filler-word density — buzzword-stuffed paragraphs.
+                # olmo-only: olmo's sampling produces these; Gemma/Phi/Llama
+                # don't, so the filter would over-trim their measured prose.
+                if aggressive:
+                    filler_hits = sum(1 for w in p_words if w.strip('.,;:!?') in _FILLER_WORDS)
+                    # Also count multi-word filler phrases
+                    p_lower = p.lower()
+                    filler_hits += sum(1 for ph in _FILLER_PHRASES if ph in p_lower)
+                    filler_pct = filler_hits / len(p_words)
+                    if filler_pct > 0.05 and len(p_words) > 60:
+                        removed += 1
+                        logger.warning(f"[PostProcess] Removed filler-heavy paragraph "
+                                      f"({len(p_words)} words, {filler_pct:.0%} buzzwords)")
+                        continue
             kept.append(p)
         if removed > 0:
             text = '\n\n'.join(kept)

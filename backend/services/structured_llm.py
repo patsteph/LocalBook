@@ -120,6 +120,13 @@ class StructuredLLMService:
           - Ollama models use native `format: "json"` on /api/generate.
           - llama-server sidecar models use OpenAI `response_format={"type":"json_object"}`
             on /v1/chat/completions.
+
+        Profile-aware: the active model's structured_profile (in known_models.json)
+        controls JSON-mode strategy:
+          - prefer_json_mode=False (default for olmo) skips Ollama's native JSON
+            mode and relies on prompt + robust_json_parse instead. olmo's strict
+            JSON output is unreliable.
+          - prefer_json_mode=True (Gemma, Phi, Llama) uses native JSON mode.
         """
         from services.llm_provider import (
             resolve as _resolve_provider,
@@ -133,23 +140,40 @@ class StructuredLLMService:
         route = _resolve_provider(active_model)
         timeout = httpx.Timeout(timeout_seconds)
 
+        # Look up the active model's structured profile
+        prefer_json_mode = True  # Default: use JSON mode if model supports it
+        try:
+            from evaluator.model_registry import model_registry
+            info = model_registry.get_model(active_model)
+            if info:
+                if info.structured_profile:
+                    prefer_json_mode = info.structured_profile.get("prefer_json_mode", True)
+                # Also respect the supports_json_mode capability flag — if the
+                # model literally cannot do JSON mode, never request it.
+                if not info.supports_json_mode:
+                    prefer_json_mode = False
+        except Exception as _e:
+            logger.debug(f"[StructuredLLM] structured_profile lookup failed: {_e}")
+
         async with httpx.AsyncClient(timeout=timeout) as client:
             if route.provider is _Provider.OLLAMA:
+                payload = {
+                    "model": active_model,
+                    "prompt": f"{system_prompt}\n\nUser request:\n{user_prompt}",
+                    "stream": False,
+                    "keep_alive": "5m",
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": num_predict,
+                        "repeat_penalty": 1.2,
+                        "repeat_last_n": 128,
+                    },
+                }
+                if prefer_json_mode:
+                    payload["format"] = "json"
                 response = await client.post(
                     f"{route.base_url}/api/generate",
-                    json={
-                        "model": active_model,
-                        "prompt": f"{system_prompt}\n\nUser request:\n{user_prompt}",
-                        "stream": False,
-                        "format": "json",
-                        "keep_alive": "5m",
-                        "options": {
-                            "temperature": temperature,
-                            "num_predict": num_predict,
-                            "repeat_penalty": 1.2,
-                            "repeat_last_n": 128,
-                        },
-                    },
+                    json=payload,
                 )
                 if response.status_code != 200:
                     logger.error(f"[StructuredLLM] Ollama HTTP {response.status_code}: {response.text[:200]}")

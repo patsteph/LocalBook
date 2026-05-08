@@ -32,7 +32,47 @@ interface ActiveModels {
   vision: string;
 }
 
+interface DefaultCombo {
+  main_model: string;
+  fast_model: string;
+  vision_model: string;
+}
+
+interface SavedDefaultResponse {
+  has_custom_default: boolean;
+  combo: DefaultCombo;
+}
+
 type Role = 'main' | 'fast' | 'vision' | 'embeddings';
+
+// What changes when you swap a model — surfaced in the per-column tooltip
+// so the user understands a swap fully replaces behavior, not just the name.
+const ROLE_FLIP_DETAILS: Record<Role, string> = {
+  main:
+    'Switching the Main model also swaps:\n' +
+    '• stop sequences (per-family from rag_profile)\n' +
+    '• RAG temperature, repeat_penalty\n' +
+    '• num_ctx_cap (e.g. 16K cap on Gemma)\n' +
+    '• /api/chat vs /api/generate endpoint\n' +
+    '• JSON-mode strategy (quiz / writing)\n' +
+    '• Aggressive vs measured repetition cleanup\n' +
+    '• Audio-script word-budget tolerance',
+  fast:
+    'Switching the Fast model also swaps:\n' +
+    '• Follow-up question generator\n' +
+    '• OCR cleanup pass model\n' +
+    '• Auto-tag generator\n' +
+    '• Query decomposer model\n' +
+    'Each pulls per-family tuning from this model\'s rag_profile.',
+  vision:
+    'Switching the Vision model also swaps:\n' +
+    '• num_predict / num_ctx / temperature (vision_profile)\n' +
+    '• /api/chat vs /api/generate routing\n' +
+    '• Cleanup-pass behavior for structured modes',
+  embeddings:
+    'Switching Embeddings forces re-indexing of every notebook — \n' +
+    'older vectors will not match the new model\'s dimension.',
+};
 
 const ROLE_META: Record<Role, { label: string; api_role: string; color: string; desc: string }> = {
   main:       { label: 'Main',       api_role: 'main_model',       color: 'blue',   desc: '≥ 5 GB — deep reasoning, synthesis' },
@@ -58,6 +98,8 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   const [switching, setSwitching] = useState<string | null>(null);
   const [switchMsg, setSwitchMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [availableProviders, setAvailableProviders] = useState<{ [key: string]: boolean }>({});
+  const [savedDefault, setSavedDefault] = useState<SavedDefaultResponse | null>(null);
+  const [savingDefault, setSavingDefault] = useState(false);
 
   useEffect(() => {
     if (selectedProvider !== 'ollama') setMode('cloud');
@@ -67,7 +109,75 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   useEffect(() => {
     loadModels();
     loadProviders();
+    loadSavedDefault();
   }, []);
+
+  const loadSavedDefault = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/evaluator/save-default`);
+      if (!res.ok) return;
+      const data: SavedDefaultResponse = await res.json();
+      setSavedDefault(data);
+    } catch {
+      /* non-fatal */
+    }
+  };
+
+  const saveCurrentAsDefault = useCallback(async () => {
+    setSavingDefault(true);
+    setSwitchMsg(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/evaluator/save-default`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          main_model: active.main,
+          fast_model: active.fast,
+          vision_model: active.vision,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSwitchMsg({ text: data.detail ?? 'Save failed', ok: false });
+      } else {
+        setSwitchMsg({ text: data.message ?? 'Default saved.', ok: true });
+        await loadSavedDefault();
+      }
+    } catch (e: any) {
+      setSwitchMsg({ text: e.message ?? 'Network error', ok: false });
+    } finally {
+      setSavingDefault(false);
+    }
+  }, [active]);
+
+  const resetDefault = useCallback(async () => {
+    setSavingDefault(true);
+    setSwitchMsg(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/evaluator/save-default`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSwitchMsg({ text: data.detail ?? 'Reset failed', ok: false });
+      } else {
+        setSwitchMsg({ text: data.message ?? 'Reset to built-in defaults.', ok: true });
+        await loadSavedDefault();
+      }
+    } catch (e: any) {
+      setSwitchMsg({ text: e.message ?? 'Network error', ok: false });
+    } finally {
+      setSavingDefault(false);
+    }
+  }, []);
+
+  // Compare current active combo to the saved default — if they match, the
+  // Save button has nothing to do, so we disable it.
+  const currentMatchesSaved = !!savedDefault && (
+    savedDefault.combo.main_model === active.main &&
+    savedDefault.combo.fast_model === active.fast &&
+    savedDefault.combo.vision_model === active.vision
+  );
 
   const loadModels = async () => {
     setLoading(true);
@@ -216,7 +326,16 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     return (
       <div key={role} className={`flex-1 rounded-xl border ${colorBorder[meta.color]} overflow-hidden`}>
         <div className={`px-3 py-2 ${colorHeader[meta.color]}`}>
-          <div className="font-semibold text-sm">{meta.label}</div>
+          <div className="flex items-center justify-between">
+            <div className="font-semibold text-sm">{meta.label}</div>
+            <span
+              title={ROLE_FLIP_DETAILS[role]}
+              className="cursor-help text-xs opacity-60 hover:opacity-100 select-none"
+              aria-label={`What changes when switching ${meta.label}`}
+            >
+              ⓘ
+            </span>
+          </div>
           <div className="text-xs opacity-75 mt-0.5">{meta.desc}</div>
         </div>
         <div className="p-2 space-y-1.5">
@@ -285,6 +404,22 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
             </div>
           ) : (
             <>
+              {savedDefault && (
+                <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 px-3 py-2 text-xs flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={`shrink-0 px-2 py-0.5 rounded font-medium ${
+                      savedDefault.has_custom_default
+                        ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300'
+                        : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                    }`}>
+                      {savedDefault.has_custom_default ? 'Saved default' : 'Built-in default'}
+                    </span>
+                    <span className="text-gray-600 dark:text-gray-400 truncate">
+                      {savedDefault.combo.main_model} · {savedDefault.combo.fast_model} · {savedDefault.combo.vision_model}
+                    </span>
+                  </div>
+                </div>
+              )}
               {switchMsg && (
                 <div className={`rounded-lg px-3 py-2 text-sm ${
                   switchMsg.ok
@@ -297,16 +432,50 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
               <div className="flex gap-3">
                 {(['main', 'fast', 'vision', 'embeddings'] as Role[]).map(renderRoleColumn)}
               </div>
-              <div className="flex items-center justify-between pt-1">
+              <div className="flex items-center justify-between pt-1 gap-3 flex-wrap">
                 <p className="text-xs text-gray-400 dark:text-gray-500">
                   {models.length} model{models.length !== 1 ? 's' : ''} installed · roles auto-classified by size
                 </p>
-                <button
-                  onClick={loadModels}
-                  className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
-                >
-                  Refresh
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={saveCurrentAsDefault}
+                    disabled={savingDefault || currentMatchesSaved || !active.main}
+                    title={
+                      currentMatchesSaved
+                        ? 'Current combo already saved as your default.'
+                        : 'Persist the current Main / Fast / Vision combo as the default that loads on every app launch.'
+                    }
+                    className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
+                      currentMatchesSaved
+                        ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 cursor-default'
+                        : savingDefault
+                        ? 'bg-gray-200 dark:bg-gray-700 text-gray-400 cursor-wait'
+                        : 'bg-blue-600 hover:bg-blue-700 text-white'
+                    }`}
+                  >
+                    {savingDefault ? '…' : 'Save as my default'}
+                  </button>
+                  <button
+                    onClick={resetDefault}
+                    disabled={savingDefault || (savedDefault !== null && !savedDefault.has_custom_default)}
+                    title="Clear your saved default. Next launch will use built-in OLMo + Phi4."
+                    className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
+                      savedDefault && !savedDefault.has_custom_default
+                        ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 cursor-default'
+                        : savingDefault
+                        ? 'bg-gray-200 dark:bg-gray-700 text-gray-400 cursor-wait'
+                        : 'border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
+                    }`}
+                  >
+                    Reset to built-in
+                  </button>
+                  <button
+                    onClick={loadModels}
+                    className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                  >
+                    Refresh
+                  </button>
+                </div>
               </div>
             </>
           )}
