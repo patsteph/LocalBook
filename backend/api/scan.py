@@ -115,7 +115,8 @@ async def process_scan_batch(request: ScanBatchRequest):
 
     # Fire-and-forget background task; the SSE generator below drains the
     # reporter queue. Matches the /sources/upload/stream pattern exactly.
-    asyncio.create_task(
+    from utils.tasks import safe_create_task
+    safe_create_task(
         _run_batch_with_reporter(
             file_paths=list(request.file_paths),
             notebook_id=request.notebook_id,
@@ -123,7 +124,8 @@ async def process_scan_batch(request: ScanBatchRequest):
             reporter=reporter,
             target_language=request.target_language,
             append_to=request.append_to,
-        )
+        ),
+        name="scan-batch",
     )
 
     async def _sse_generator():
@@ -206,13 +208,15 @@ async def ocr_scan_batch(request: ScanOcrBatchRequest):
     )
 
     reporter = ProgressReporter()
-    asyncio.create_task(
+    from utils.tasks import safe_create_task
+    safe_create_task(
         _run_ocr_inline_with_reporter(
             file_paths=list(request.file_paths),
             mode=request.mode,
             reporter=reporter,
             target_language=request.target_language,
-        )
+        ),
+        name="scan-ocr-batch",
     )
 
     async def _sse_generator():

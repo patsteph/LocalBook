@@ -1737,16 +1737,39 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         chat_context: Optional[str] = None,
     ):
         """Full background pipeline: script generation → audio synthesis.
-        
+
         Runs entirely in the background so the API returns instantly.
         Updates audio_store status at each stage for frontend polling.
         """
         import traceback
-        
+
         # Pick character names for this generation
         host_names = self._pick_host_names(host1_gender, host2_gender, accent)
         print(f"🎭 Characters: {host_names[0]} (A) and {host_names[1]} (B)")
-        
+
+        # Free RAM for the script-generation main model BEFORE we hit it.
+        # On a memory-pressured Mac, an idle vision model (~4.6 GB) +
+        # follow-up cache can crowd Ollama and cause the main model to
+        # swap or crash mid-script. The eviction is universal — same
+        # benefit for olmo, gemma, phi, llama. Anything we DO need
+        # later (the active main model + embeddings for any in-flight
+        # RAG context) is whitelisted. Best-effort: any failure here is
+        # logged and the pipeline proceeds normally.
+        try:
+            from services.memory_steward import free_for_pipeline
+            from config import settings as _s
+            keep = {
+                _s.ollama_model,             # we're about to call this
+                _s.ollama_fast_model,        # may be used for follow-ups
+                _s.embedding_model,          # context retrieval still active
+            }
+            keep = {m for m in keep if m}
+            evicted = await free_for_pipeline(keep, reason="audio_pipeline")
+            if evicted:
+                logger.info(f"[audio-gen] freed RAM by unloading: {evicted}")
+        except Exception as _e:
+            logger.warning(f"[audio-gen] memory_steward call failed (non-fatal): {_e}")
+
         try:
             # Stage 1: Generate script
             await audio_store.update(audio_id, {

@@ -1351,17 +1351,31 @@ NEWSLETTER FORMATTING (CRITICAL):
 Write the weekly wrap up now:"""
         
         try:
-            from services.ollama_client import ollama_client
+            from services.rag_engine import rag_engine
             from config import settings
-            
-            response = await ollama_client.generate(
+
+            # Routed through rag_engine._call_ollama for two reasons:
+            #   1. num_predict=2000 — the original call left this unset, so
+            #      Ollama defaulted to ~128 tokens and clipped a 300-500
+            #      word newsletter mid-sentence. The clipped tail broke
+            #      markdown pairs (**bold**, [link]()) and rendered as
+            #      raw chars in the UI — the "markdown leakage" symptom.
+            #   2. rag_engine respects the active model's rag_profile,
+            #      including use_chat_endpoint=true for Gemma4. Calling
+            #      ollama_client.generate directly always hits /api/generate
+            #      which uses the wrong template for Gemma and produces
+            #      shorter, more fragmented output on memory pressure.
+            # voice_modifier=False because the system prompt below already
+            # carries the curator's personality and tone instructions.
+            narrative = await rag_engine._call_ollama(
+                system_prompt="You are a concise, insightful research assistant. Write engaging weekly summaries that help people reflect on their research progress.",
                 prompt=prompt,
-                system="You are a concise, insightful research assistant. Write engaging weekly summaries that help people reflect on their research progress.",
                 model=settings.ollama_model,
                 temperature=0.7,
-                timeout=120.0
+                num_predict=2000,
+                voice_modifier=False,
             )
-            narrative = response.get("response", "").strip()
+            narrative = (narrative or "").strip()
             if narrative and not narrative.startswith(("Request timed out", "Error:")):
                 return narrative
         except Exception as e:
@@ -2063,12 +2077,16 @@ TONE:
 Write the brief now:"""
 
         try:
-            from services.ollama_client import ollama_client
+            from services.rag_engine import rag_engine
             from config import settings
-            
-            response = await ollama_client.generate(
-                prompt=prompt,
-                system=(
+
+            # Routed through rag_engine for the same reasons as the
+            # weekly wrap above — respects rag_profile (use_chat_endpoint
+            # for Gemma4, think:false to suppress channel tokens), and
+            # the higher num_predict prevents truncation that manifests
+            # as raw markdown chars in the UI under memory pressure.
+            narrative = await rag_engine._call_ollama(
+                system_prompt=(
                     f"You are {self.name}, the user's research companion. "
                     f"Personality: {self.personality}. "
                     f"You have been quietly paying attention to their research and have "
@@ -2076,13 +2094,13 @@ Write the brief now:"""
                     f"Quote note titles when relevant. If nothing meaningful happened, "
                     f"say so briefly and stop. Never manufacture urgency."
                 ),
+                prompt=prompt,
                 model=settings.ollama_model,
                 temperature=0.7,
-                timeout=90.0,
                 num_predict=1500,
-                extra_options={"keep_alive": "5m"},
+                voice_modifier=False,
             )
-            narrative = response.get("response", "").strip()
+            narrative = (narrative or "").strip()
             # Guard against error strings from ollama_client being treated as valid narrative
             if narrative and not narrative.startswith(("Request timed out", "Error:")):
                 return narrative

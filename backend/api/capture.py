@@ -201,7 +201,8 @@ def _cleanup_session(session_id: str):
     session = _sessions.pop(session_id, None)
     if session:
         if session.queue:
-            asyncio.create_task(session.queue.stop())
+            from utils.tasks import safe_create_task
+            safe_create_task(session.queue.stop(), name=f"capture-queue-stop-{session_id[:8]}")
         if session.temp_dir and os.path.isdir(session.temp_dir):
             shutil.rmtree(session.temp_dir, ignore_errors=True)
         # Clean up short code mapping

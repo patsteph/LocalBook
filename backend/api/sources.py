@@ -449,21 +449,27 @@ async def _run_upload_with_reporter(
             except Exception as tag_err:
                 logger.debug(f"[sources] auto-tag failed (non-fatal): {tag_err}")
 
-        # Fire-and-forget background extras (timeline extraction, image OCR)
+        # Fire-and-forget background extras (timeline extraction, image OCR).
+        # safe_create_task ensures any exception is logged rather than
+        # silently swallowed by the GC — same behaviour the rest of the
+        # codebase converged on.
+        from utils.tasks import safe_create_task
         if source_id and source and source.get("content"):
             if do_timeline:
-                asyncio.create_task(
+                safe_create_task(
                     extract_timeline_for_source(
                         notebook_id, source_id, source["content"], filename,
-                    )
+                    ),
+                    name=f"timeline-{source_id}",
                 )
             if do_image_extract:
                 file_ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
                 if file_ext in ['pdf', 'pptx']:
-                    asyncio.create_task(
+                    safe_create_task(
                         document_processor.process_images_background(
                             content, notebook_id, source_id, filename,
-                        )
+                        ),
+                        name=f"image-ocr-{source_id}",
                     )
 
         # Log & engagement (non-fatal)
@@ -525,7 +531,8 @@ async def upload_source_stream(
     # Kick off the ingestion as a background task so the streamer can drain
     # the queue concurrently. The task runs to completion even if the client
     # disconnects — no data loss, matches the existing background-task pattern.
-    asyncio.create_task(
+    from utils.tasks import safe_create_task
+    safe_create_task(
         _run_upload_with_reporter(
             content=content,
             filename=filename,
@@ -534,7 +541,8 @@ async def upload_source_stream(
             do_auto_tag=True,
             do_timeline=True,
             do_image_extract=True,
-        )
+        ),
+        name=f"upload-{filename}",
     )
 
     async def _sse_generator():

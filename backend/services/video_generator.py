@@ -157,6 +157,26 @@ class VideoGenerator:
 
         return generation
 
+    async def _free_ram_for_pipeline(self) -> None:
+        """Evict idle Ollama models before video gen pulls main + TTS.
+
+        Universal — any model combo benefits on a memory-pressured Mac.
+        Best-effort; failure here is logged and the pipeline proceeds.
+        """
+        try:
+            from services.memory_steward import free_for_pipeline
+            from config import settings as _s
+            keep = {
+                _s.ollama_model,         # narration script writer
+                _s.embedding_model,      # RAG context still needs this
+            }
+            keep = {m for m in keep if m}
+            evicted = await free_for_pipeline(keep, reason="video_pipeline")
+            if evicted:
+                logger.info(f"[video-gen] freed RAM by unloading: {evicted}")
+        except Exception as _e:
+            logger.warning(f"[video-gen] memory_steward call failed (non-fatal): {_e}")
+
     async def _full_pipeline(
         self,
         video_id: str,
@@ -170,6 +190,11 @@ class VideoGenerator:
     ):
         """Full background pipeline: storyboard → TTS → slides → composite."""
         pipeline_start = time.time()
+
+        # Universal: free idle Ollama models before pulling in main +
+        # TTS + (later) compositor. Same pattern the scan pipeline uses
+        # for vision. Best-effort; logs and continues on failure.
+        await self._free_ram_for_pipeline()
 
         try:
             # ── Pre-flight: Check audio model availability ──

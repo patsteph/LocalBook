@@ -81,6 +81,14 @@ export const flashcardsService = {
     voiceId?: string;
     gender?: TutorGender;
     accent?: TutorAccent;
+    /**
+     * Optional AbortSignal. If the caller advances the flashcard (or
+     * triggers another speak) while this request is in flight, abort
+     * the fetch so the stale response doesn't queue up an out-of-order
+     * audio playback. Without this the user can be on card 3 and hear
+     * the audio for card 1 finally arrive.
+     */
+    signal?: AbortSignal;
   }): Promise<string> {
     const resp = await fetch(`${API_BASE}/flashcards/speak`, {
       method: 'POST',
@@ -93,6 +101,7 @@ export const flashcardsService = {
         gender: params.gender,
         accent: params.accent,
       }),
+      signal: params.signal,
     });
     if (!resp.ok) {
       const msg = await resp.text();

@@ -3,6 +3,7 @@ Ollama Client - Shared LLM client for agents
 
 Provides a simple interface for making Ollama API calls across the codebase.
 """
+import asyncio
 import httpx
 import logging
 from typing import Optional, Dict, Any
@@ -13,10 +14,57 @@ logger = logging.getLogger(__name__)
 
 
 class OllamaClient:
-    """Simple async client for Ollama API calls"""
-    
+    """Simple async client for Ollama API calls.
+
+    Uses a SHARED httpx.AsyncClient with connection pooling so every
+    /api/generate, /api/chat, and /api/embeddings call reuses the same
+    TCP connection pool. Previously each call spun up a fresh
+    AsyncClient (84 ephemeral clients across the codebase per the
+    resource audit) — each new client costs 10-50ms in connection setup
+    against localhost Ollama, multiplied across every chat token round
+    trip and agent call. Pooling cuts that overhead to ~0.
+
+    The shared client is lazy-initialised on first use and recreated if
+    it gets closed (defensive — Python garbage collection of an idle
+    client would otherwise force a per-call rebuild).
+    """
+
     def __init__(self):
         self.base_url = settings.ollama_base_url.rstrip('/')
+        self._shared_client: Optional[httpx.AsyncClient] = None
+        # Single async-lock guards client creation across concurrent
+        # first-use callers so we don't accidentally create two clients
+        # in a race.
+        self._client_lock = asyncio.Lock()
+
+    async def _get_client(self, read_timeout: float) -> httpx.AsyncClient:
+        """Return the shared httpx.AsyncClient, building/rebuilding as needed.
+
+        Per-call timeout is applied on each request via httpx.Timeout in
+        the call site (the shared client carries only a generous default)
+        so a short status probe doesn't dictate the read timeout for a
+        long /api/generate call sharing the pool.
+        """
+        if self._shared_client is not None and not self._shared_client.is_closed:
+            return self._shared_client
+        async with self._client_lock:
+            if self._shared_client is not None and not self._shared_client.is_closed:
+                return self._shared_client
+            self._shared_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0, read=max(read_timeout, 600.0)),
+                limits=httpx.Limits(
+                    max_connections=20,
+                    max_keepalive_connections=5,
+                    keepalive_expiry=60,
+                ),
+            )
+            return self._shared_client
+
+    async def close(self) -> None:
+        """Close the shared client on app shutdown. Idempotent."""
+        if self._shared_client is not None and not self._shared_client.is_closed:
+            await self._shared_client.aclose()
+        self._shared_client = None
     
     async def generate(
         self,
@@ -32,6 +80,7 @@ class OllamaClient:
         think: Optional[bool] = None,
         response_format: Optional[Dict[str, Any]] = None,
         tools: Optional[list] = None,
+        respect_rag_profile: bool = True,
     ) -> Dict[str, Any]:
         """
         Generate a response from the LLM backend.
@@ -46,6 +95,15 @@ class OllamaClient:
             think: Enable/disable thinking mode (Gemma 4). True=thinking on, False=thinking off.
             response_format: JSON schema for structured output, e.g. {"type": "json_object"}.
             tools: List of tool definitions for function calling (native Ollama tools).
+            respect_rag_profile: When True (default), automatically apply the active
+                model's rag_profile from known_models.json — specifically
+                use_chat_endpoint (routes Gemma to /api/chat), think (suppresses
+                channel tokens), and num_ctx_cap (Gemma's 16K performance cliff).
+                Universal: every model gets ITS OWN tuning applied; for models
+                without a rag_profile this is a no-op. Set False for callers
+                that need raw /api/generate behaviour (preflight warmup,
+                concurrency stress test, vision_describe which has its own
+                profile path).
         """
         model = model or settings.ollama_model
 
@@ -56,6 +114,35 @@ class OllamaClient:
             options["num_ctx"] = num_ctx
         if extra_options:
             options.update(extra_options)
+
+        # ── Profile-aware overlay ─────────────────────────────────────
+        # Apply the active model's rag_profile so a Gemma-family caller
+        # gets /api/chat routing (its tuned chat template) without every
+        # call site having to switch APIs manually. Same code path for
+        # olmo/phi/llama because their rag_profile.use_chat_endpoint is
+        # false — no behaviour change for them.
+        rag_profile: Dict[str, Any] = {}
+        if respect_rag_profile and not tools and not images:
+            try:
+                from evaluator.model_registry import model_registry
+                info = model_registry.get_model(model)
+                if info and getattr(info, "rag_profile", None):
+                    rag_profile = dict(info.rag_profile)
+            except Exception as _e:
+                logger.debug(f"[ollama-client] rag_profile lookup failed: {_e}")
+            # Apply num_ctx hard cap from profile (e.g. Gemma's 16K cliff).
+            cap = rag_profile.get("num_ctx_cap")
+            if cap and "num_ctx" in options:
+                options["num_ctx"] = min(options["num_ctx"], cap)
+            # Apply think:false from profile if caller didn't override.
+            if think is None and "think" in rag_profile:
+                think = rag_profile["think"]
+            # Apply profile-specific stop sequences (olmo gets its aggressive
+            # set, gemma gets its channel stops, etc.). Caller can override
+            # via extra_options["stop"].
+            profile_stops = rag_profile.get("stop_sequences")
+            if profile_stops and "stop" not in options:
+                options["stop"] = list(profile_stops)
 
         payload: Dict[str, Any] = {
             "model": model,
@@ -82,25 +169,70 @@ class OllamaClient:
         )
         route = _resolve_provider(model)
 
+        # Gemma-family routing: if rag_profile.use_chat_endpoint=true and
+        # we're going to the Ollama backend, switch this generate() call to
+        # the chat() path. The caller sees the SAME {"response": ...} shape
+        # — we normalize the message.content back into "response" below.
+        # tools is a generate-only feature so we keep that path.
+        use_chat = (
+            respect_rag_profile
+            and rag_profile.get("use_chat_endpoint")
+            and route.api_style == "ollama"
+            and not tools
+        )
+
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=timeout)) as client:
-                if route.api_style == "ollama":
-                    response = await client.post(
-                        f"{route.base_url}/api/generate",
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    return response.json()
-                else:
-                    # llama-server OpenAI-compatible route (images unsupported there;
-                    # Bonsai is text-only so this is acceptable).
-                    openai_payload = ollama_to_openai_payload(payload, is_chat=False)
-                    response = await client.post(
-                        f"{route.base_url}/v1/chat/completions",
-                        json=openai_payload,
-                    )
-                    response.raise_for_status()
-                    return openai_non_stream_to_ollama_response(response.json(), is_chat=False)
+            client = await self._get_client(read_timeout=timeout)
+            per_call_timeout = httpx.Timeout(30.0, read=timeout)
+            if use_chat:
+                # Build a /api/chat payload from the same inputs.
+                messages = []
+                if system:
+                    messages.append({"role": "system", "content": system})
+                user_msg: Dict[str, Any] = {"role": "user", "content": prompt}
+                if images:
+                    user_msg["images"] = images
+                messages.append(user_msg)
+                chat_payload: Dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": options,
+                }
+                if think is not None:
+                    chat_payload["think"] = think
+                if response_format is not None:
+                    chat_payload["format"] = response_format
+                response = await client.post(
+                    f"{route.base_url}/api/chat",
+                    json=chat_payload,
+                    timeout=per_call_timeout,
+                )
+                response.raise_for_status()
+                raw = response.json()
+                # Normalize to /api/generate shape so callers checking
+                # `data["response"]` keep working without modification.
+                text = (raw.get("message") or {}).get("content", "")
+                return {"response": text, **raw}
+            elif route.api_style == "ollama":
+                response = await client.post(
+                    f"{route.base_url}/api/generate",
+                    json=payload,
+                    timeout=per_call_timeout,
+                )
+                response.raise_for_status()
+                return response.json()
+            else:
+                # llama-server OpenAI-compatible route (images unsupported there;
+                # Bonsai is text-only so this is acceptable).
+                openai_payload = ollama_to_openai_payload(payload, is_chat=False)
+                response = await client.post(
+                    f"{route.base_url}/v1/chat/completions",
+                    json=openai_payload,
+                    timeout=per_call_timeout,
+                )
+                response.raise_for_status()
+                return openai_non_stream_to_ollama_response(response.json(), is_chat=False)
         except httpx.TimeoutException:
             logger.error(f"LLM request timed out after {timeout}s (model={model}, provider={route.provider.value})")
             return {"response": "Request timed out"}
@@ -169,22 +301,25 @@ class OllamaClient:
         route = _resolve_provider(model)
 
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=timeout)) as client:
-                if route.api_style == "ollama":
-                    response = await client.post(
-                        f"{route.base_url}/api/chat",
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    return response.json()
-                else:
-                    openai_payload = ollama_to_openai_payload(payload, is_chat=True)
-                    response = await client.post(
-                        f"{route.base_url}/v1/chat/completions",
-                        json=openai_payload,
-                    )
-                    response.raise_for_status()
-                    return openai_non_stream_to_ollama_response(response.json(), is_chat=True)
+            client = await self._get_client(read_timeout=timeout)
+            per_call_timeout = httpx.Timeout(10.0, read=timeout)
+            if route.api_style == "ollama":
+                response = await client.post(
+                    f"{route.base_url}/api/chat",
+                    json=payload,
+                    timeout=per_call_timeout,
+                )
+                response.raise_for_status()
+                return response.json()
+            else:
+                openai_payload = ollama_to_openai_payload(payload, is_chat=True)
+                response = await client.post(
+                    f"{route.base_url}/v1/chat/completions",
+                    json=openai_payload,
+                    timeout=per_call_timeout,
+                )
+                response.raise_for_status()
+                return openai_non_stream_to_ollama_response(response.json(), is_chat=True)
         except Exception as e:
             logger.error(f"LLM chat request failed (model={model}, provider={route.provider.value}): {e}")
             return {"message": {"content": f"Error: {str(e)}"}}

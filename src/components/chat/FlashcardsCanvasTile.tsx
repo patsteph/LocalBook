@@ -108,6 +108,12 @@ export const FlashcardsCanvasTile: React.FC<FlashcardsCanvasTileProps> = ({
   }));
   const [showTutorPanel, setShowTutorPanel] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Race-free TTS plumbing. ttsTokenRef increments on every speak() — any
+  // in-flight speak whose token no longer matches at resolve time is
+  // discarded (the user has advanced). ttsAbortRef cancels the underlying
+  // fetch so a slow TTS server can't keep queuing stale audio.
+  const ttsTokenRef = useRef(0);
+  const ttsAbortRef = useRef<AbortController | null>(null);
 
   // ── Voice-answer (Whisper) ─────────────────────────────────────────────
   const [recording, setRecording] = useState(false);
@@ -194,22 +200,47 @@ export const FlashcardsCanvasTile: React.FC<FlashcardsCanvasTileProps> = ({
   }, []);
 
   // ── Tutor TTS ──────────────────────────────────────────────────────────
+  // Race-safe: every call gets a token. Any in-flight fetch is aborted,
+  // any currently-playing audio is paused. When the new request resolves,
+  // we only commit (set audioRef + play) if our token still matches —
+  // otherwise the user has moved on and we discard the result silently.
   const speakLine = useCallback(async (text: string) => {
     if (!text || !tutor) return;
+    // Stop whatever was playing.
+    if (audioRef.current) {
+      audioRef.current.pause();
+      const prev = audioRef.current.src;
+      if (prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+      audioRef.current = null;
+    }
+    // Cancel any in-flight fetch from a previous speak().
+    if (ttsAbortRef.current) {
+      ttsAbortRef.current.abort();
+    }
+    const myToken = ++ttsTokenRef.current;
+    const controller = new AbortController();
+    ttsAbortRef.current = controller;
     try {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        const prev = audioRef.current.src;
-        if (prev.startsWith('blob:')) URL.revokeObjectURL(prev);
-      }
       const url = await flashcardsService.speak({
         notebookId, text, speed: tutor.speed,
+        signal: controller.signal,
       });
+      // STALE CHECK — if the user advanced (or invoked speak again)
+      // while we were waiting on the server, drop this result. Without
+      // this guard the late-resolving audio queues up and plays after
+      // the user has moved cards, producing the "1 minute behind" bug.
+      if (myToken !== ttsTokenRef.current) {
+        URL.revokeObjectURL(url);
+        return;
+      }
       const audio = new Audio(url);
       audioRef.current = audio;
       audio.onended = () => { URL.revokeObjectURL(url); };
       await audio.play();
-    } catch (err) {
+    } catch (err: any) {
+      // AbortError is expected when speakLine() is called rapidly —
+      // not a real failure, just the previous request being cancelled.
+      if (err?.name === 'AbortError') return;
       console.warn('Tutor speak failed:', err);
     }
   }, [notebookId, tutor]);
@@ -345,6 +376,10 @@ export const FlashcardsCanvasTile: React.FC<FlashcardsCanvasTileProps> = ({
 
   const nextCard = useCallback(() => {
     if (!deck) return;
+    // Invalidate any in-flight speak from the previous card so a slow
+    // TTS server can't play the prior card's audio over the new card.
+    ttsTokenRef.current++;
+    if (ttsAbortRef.current) ttsAbortRef.current.abort();
     if (audioRef.current) audioRef.current.pause();
     if (cardIndex + 1 >= deck.questions.length) {
       setComplete(true);

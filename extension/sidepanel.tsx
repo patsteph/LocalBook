@@ -66,6 +66,11 @@ function SidePanel() {
   const [currentAction, setCurrentAction] = useState<ActionType>(null)
   const [summaryResult, setSummaryResult] = useState<SummaryResult | null>(null)
   const [scrapeResult, setScrapeResult] = useState<string | null>(null)
+  // Source ID returned by /browser/capture. Held so SuggestedLinks can
+  // submit batch outgoing-link expansion via /sources/{nb}/{src}/expand-links
+  // — that endpoint requires the parent source to exist + match its
+  // recorded outbound_links list.
+  const [capturedSourceId, setCapturedSourceId] = useState<string | null>(null)
   const [linksResult, setLinksResult] = useState<LinkInfo | null>(null)
   const [compareResult, setCompareResult] = useState<string | null>(null)
 
@@ -422,7 +427,12 @@ function SidePanel() {
           title: pageInfo.title,
           content: content.content,
           html_content: content.html,
-          capture_type: "full_page"
+          capture_type: "full_page",
+          // Persist the outbound links along with the source so the user
+          // can later expand a subset of them via the depth+1 picker.
+          // Without this field the backend drops the links silently and
+          // the main-app "🔗" button never appears.
+          outbound_links: content.outboundLinks || [],
         })
       })
 
@@ -434,6 +444,9 @@ function SidePanel() {
           ? `\nTopics: ${data.key_concepts.slice(0, 3).join(", ")}`
           : ""
         setScrapeResult(`✓ Saved to notebook\n${data.word_count} words • ${data.reading_time_minutes} min read${curatorInfo}`)
+        // Hold onto the source_id so the post-capture SuggestedLinks
+        // panel can submit a batch /sources/{nb}/{src}/expand-links call.
+        if (data.source_id) setCapturedSourceId(data.source_id)
         showMessage("Page captured!", "success")
         handleFetchNotebooks()
         trackAction("scrape")
@@ -862,6 +875,7 @@ function SidePanel() {
                   pageTitle={pageInfo?.title || ""}
                   notebookIntent={notebooks.find(n => n.id === selectedNotebook)?.name || ""}
                   notebookId={selectedNotebook}
+                  sourceId={capturedSourceId}
                   onMessage={showMessage}
                 />
               )}
