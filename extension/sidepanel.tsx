@@ -884,7 +884,12 @@ function SidePanel() {
 
           {/* Links Result */}
           {currentAction === "links" && linksResult && (
-            <LinksResult linksResult={linksResult} />
+            <LinksResult
+              linksResult={linksResult}
+              notebookId={selectedNotebook}
+              sourceId={capturedSourceId}
+              onMessage={showMessage}
+            />
           )}
 
           {/* Compare Result */}
