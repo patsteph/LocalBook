@@ -380,6 +380,58 @@ def _compute_confidence(text: str) -> float:
     return max(0.0, 1.0 - (unclear_count / word_count))
 
 
+# ── Prompt-echo / empty-output sanity gate ───────────────────────────────
+#
+# Small vision models (Granite 2B, Gemma3 4B, phi3-vision) sometimes fail
+# to OCR a page and echo fragments of the instruction prompt instead —
+# phrases like "Output only the transcription" or "Use H2 (##)". The
+# downstream cleanup pass then polishes the echo into fluent-looking
+# instructions that get saved as the page's content, presenting to the
+# user as a "lost" page in the middle of a multi-page scan. This helper
+# detects that pattern so we can retry once with a bare prompt before
+# falling back to a re-scan marker.
+
+_PROMPT_ECHO_TELLS = (
+    "output only the page text",
+    "output only the transcription",
+    "output only the description",
+    "output only the contact block",
+    "output only the metadata block",
+    "output only the structured transcription",
+    "output only the fenced code blocks",
+    "output only the cleaned markdown",
+    "output a clear markdown description",
+    "output only the mermaid block",
+    "if a word is too blurry",
+    "use h2 (##)",
+    "use h3 (###)",
+    "render markers in the body",
+    "render each entry",
+    "begin with the recipe name",
+    "begin with an h2",
+)
+
+
+def _looks_like_prompt_echo(raw: str) -> bool:
+    """Return True when the vision output looks like an echo of the prompt.
+
+    Triggers (any one suffices):
+      - Output shorter than 30 non-whitespace chars (too thin to be useful).
+      - Output contains 2+ distinct prompt-template phrases.
+
+    Conservative on purpose — real OCR rarely contains the literal sentence
+    "Output only the transcription", so a single hit isn't enough to flag.
+    """
+    if not raw:
+        return True
+    text = raw.strip()
+    if len(text) < 30:
+        return True
+    lower = text.lower()
+    hits = sum(1 for tell in _PROMPT_ECHO_TELLS if tell in lower)
+    return hits >= 2
+
+
 # ── Mermaid diagram validation (diagram mode) ────────────────────────────
 
 # Match a fenced ```mermaid ... ``` block. Used to validate diagram-mode
@@ -590,6 +642,21 @@ class ScanPipeline:
             f"Received {total} page{'s' if total != 1 else ''}",
             details={"total_pages": total, "mode": mode},
         )
+
+        # Evict non-pipeline models once before the batch so the vision
+        # call has guaranteed RAM. Mirrors what classify_and_ocr does for
+        # the single-page path. On 16-18 GB Macs the main reasoning model
+        # (~6 GB) competing with vision (~4.6 GB) is the most common cause
+        # of a silent mid-batch failure. Best-effort — non-fatal on error.
+        try:
+            evicted = await free_for_pipeline(
+                self._ocr_working_set(_vision_model()),
+                reason="scan_batch",
+            )
+            if evicted:
+                logger.info(f"[scan-batch] freed RAM by unloading: {evicted}")
+        except Exception as _e:
+            logger.warning(f"[scan-batch] free_for_pipeline failed: {_e}")
 
         page_texts: List[str] = []
         # Reserve 5% for setup/received and (100 - progress_end_pct)% for the
@@ -846,34 +913,65 @@ class ScanPipeline:
         if mode == "photo":
             return await self._ocr_photo(b64_image, vision_model_name, api_style)
 
-        # Build the vision prompt from the per-mode template.
-        prompt = MODE_PROMPTS.get(mode, DOC_VISION_PROMPT)
-        # Cross-page heading context — only for document-class modes where
-        # heading hierarchy matters. Adds explicit guidance about which
-        # heading levels to use when continuing a section.
-        if prior_headings and mode not in DESCRIPTIVE_MODES and mode not in STRUCTURED_MODES:
-            trail_str = "; ".join(f'"{h}"' for h in prior_headings)
-            prompt = (
-                "This page continues from a previous page. The most recent headings were: "
-                f"{trail_str}. If this page continues that section, keep the same heading level. "
-                "Do not start a new section header for content that belongs under one of these headings.\n\n"
-                f"{prompt}"
-            )
-        if prev_page_tail:
-            prompt = (
-                "The previous page ended with:\n"
-                f"\"{prev_page_tail}\"\n\n"
-                f"{prompt}"
-            )
+        # Build the vision prompt from the per-mode template. Cross-page
+        # context (one prior heading + a compact tail of the prior page)
+        # is appended AFTER the main instruction — small vision models
+        # follow the most recent instruction more reliably than the first,
+        # and a heavy prepended prefix is the most common trigger for the
+        # "middle page echoes the prompt" failure mode. Framing is positive
+        # ("keep using…") instead of negative ("do not start…").
+        bare_prompt = MODE_PROMPTS.get(mode, DOC_VISION_PROMPT)
+        prompt = bare_prompt
+        if mode not in DESCRIPTIVE_MODES and mode not in STRUCTURED_MODES:
+            ctx_parts: List[str] = []
+            if prior_headings:
+                last_h = prior_headings[-1].strip()
+                if last_h:
+                    ctx_parts.append(f"The previous page's most recent heading was: {last_h}.")
+            if prev_page_tail:
+                compact = prev_page_tail[-80:].replace("\n", " ").strip()
+                if compact:
+                    ctx_parts.append(f'It ended with: "{compact}".')
+            if ctx_parts:
+                prompt = (
+                    f"{bare_prompt}\n\n"
+                    f"Context: {' '.join(ctx_parts)} "
+                    "If this page continues that section, keep using the same heading level."
+                )
         logger.info(f"[scan] Vision ({mode}) on {file_path}")
         raw = await ollama_client.vision_describe(
             image_b64=b64_image,
             prompt=prompt,
             model=vision_model_name,
             api_style=api_style,
+            temperature=0.1,
         )
         if raw.startswith("Error:"):
             raise VisionModelError(vision_model_name, raw[len('Error:'):].strip() or raw)
+
+        # Sanity gate: vision output that looks like prompt-echo or that
+        # is too short to be useful gets one retry with the bare per-mode
+        # prompt (no cross-page context) at temperature 0.0 — the prefix
+        # is the most common echo trigger. If the retry still fails, write
+        # a clear re-scan marker instead of letting the cleanup pass turn
+        # echoed instructions into fluent-looking content.
+        if _looks_like_prompt_echo(raw):
+            logger.warning(
+                f"[scan] Vision sanity gate fired for {file_path} "
+                f"(mode={mode}, model={vision_model_name}, len={len(raw.strip())}); "
+                "retrying with bare prompt at temp 0.0"
+            )
+            retry = await ollama_client.vision_describe(
+                image_b64=b64_image,
+                prompt=bare_prompt,
+                model=vision_model_name,
+                api_style=api_style,
+                temperature=0.0,
+            )
+            if retry.startswith("Error:") or _looks_like_prompt_echo(retry):
+                logger.warning(f"[scan] Vision retry also failed sanity for {file_path}; emitting re-scan marker")
+                return "*[Page OCR unreliable — please re-scan this page.]*"
+            raw = retry
 
         # Structured modes (diagram / receipt / business_card / code) emit
         # a single primary block whose structure cleanup would corrupt.
