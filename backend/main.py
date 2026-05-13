@@ -108,7 +108,7 @@ from storage.findings_store import init_findings_store
 init_findings_store(settings.data_dir)
 
 # NOW import API modules — stores will read the (possibly corrected) use_sqlite flag
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, agent, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api
 from api.capture import capture_router
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
@@ -304,6 +304,14 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         logger.debug(f"[main] sidecar auto-start skipped: {_e}")
 
+    # Curator Phase 1: start the event bus consumer loop. Agents emit
+    # observability events post-action; brain consumer persists + logs.
+    try:
+        from services.curator_event_bus import event_bus
+        await event_bus.start()
+    except Exception as _e:
+        logger.warning(f"[main] curator event bus start failed (non-fatal): {_e}")
+
     yield
     
     # Wait for startup task to complete if still running
@@ -323,6 +331,13 @@ async def lifespan(app: FastAPI):
         await sidecar_manager.stop(grace_seconds=5.0)
     except Exception as _e:
         logger.debug(f"[main] sidecar stop error: {_e}")
+
+    # Curator Phase 1: stop the event bus consumer loop cleanly.
+    try:
+        from services.curator_event_bus import event_bus
+        await event_bus.stop()
+    except Exception as _e:
+        logger.debug(f"[main] curator event bus stop: {_e}")
 
     # Stop warmup task on shutdown
     await stop_warmup_task()
@@ -411,7 +426,6 @@ app.include_router(voice.router, tags=["voice"])
 app.include_router(site_search.router, tags=["site-search"])
 app.include_router(contradictions.router, tags=["contradictions"])
 app.include_router(credentials.router, tags=["credentials"])
-app.include_router(agent.router, tags=["agent"])
 app.include_router(browser.router, tags=["browser"])
 app.include_router(browser_transform.router, tags=["browser-transform"])
 app.include_router(audio_llm.router, tags=["audio-llm"])

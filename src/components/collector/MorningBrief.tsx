@@ -11,6 +11,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { curatorService } from '../../services/curatorApi';
+import { useEngagement } from '../../hooks/useEngagement';
 
 interface NotebookSummary {
   notebook_id: string;
@@ -44,12 +45,20 @@ export const MorningBrief: React.FC<MorningBriefProps> = ({
   const [briefData, setBriefData] = useState<BriefData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { capture } = useEngagement();
 
   useEffect(() => {
     if (isOpen) {
       fetchBrief();
+      // Curator Phase 2b: signal that the user opened the brief.
+      // The brain uses this to weight which kinds of briefs the user
+      // actually engages with vs ignores (Phase 5 smart brief).
+      capture('brief', 'opened', {
+        subject_type: 'brief_date',
+        subject_id: new Date().toISOString().slice(0, 10),
+      });
     }
-  }, [isOpen]);
+  }, [isOpen, capture]);
 
   const fetchBrief = async () => {
     setIsLoading(true);
@@ -163,10 +172,17 @@ export const MorningBrief: React.FC<MorningBriefProps> = ({
 
               {/* Notebook summaries */}
               {briefData?.notebooks.map((notebook) => (
-                <div 
+                <div
                   key={notebook.notebook_id}
                   className="border dark:border-gray-700 rounded-lg p-3 hover:border-blue-300 dark:hover:border-blue-600 transition-colors cursor-pointer"
-                  onClick={() => onNavigateToNotebook?.(notebook.notebook_id)}
+                  onClick={() => {
+                    capture('brief', 'story_clicked', {
+                      subject_type: 'notebook',
+                      subject_id: notebook.notebook_id,
+                      notebook_id: notebook.notebook_id,
+                    });
+                    onNavigateToNotebook?.(notebook.notebook_id);
+                  }}
                 >
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="font-medium truncate">{notebook.name}</h3>

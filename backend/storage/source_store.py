@@ -199,6 +199,20 @@ class SourceStore:
 
     async def update(self, notebook_id: str, source_id: str, updates: Dict) -> Optional[Dict]:
         """Update a source"""
+        # Capture pre-update status so we can detect the processing→completed
+        # transition that fires source_ingested events (Curator Phase 3a fix).
+        prior_status: Optional[str] = None
+        try:
+            existing = await self.get(source_id)
+            if existing:
+                prior_status = (
+                    existing.get("status")
+                    or (existing.get("metadata", {}) or {}).get("status")
+                )
+        except Exception:
+            pass
+
+        result: Optional[Dict] = None
         if self._use_sqlite:
             known_cols = {'filename', 'content', 'url', 'author', 'date', 'format', 'type',
                           'notes', 'notes_updated_at', 'tags', 'tags_updated_at'}
@@ -224,21 +238,54 @@ class SourceStore:
                     sets.append("metadata_json = ?")
                     params.append(json.dumps(existing_meta))
             if not sets:
-                return await self.get(source_id)
-            params.extend([source_id, notebook_id])
-            conn = self._get_db()
-            conn.execute(f"UPDATE sources SET {', '.join(sets)} WHERE id = ? AND notebook_id = ?", params)
-            conn.commit()
-            return await self.get(source_id)
-        data = self._load_data()
-        if source_id in data["sources"]:
-            source = data["sources"][source_id]
-            if source.get("notebook_id") == notebook_id:
-                source.update(updates)
-                data["sources"][source_id] = source
-                self._save_data(data)
-                return source
-        return None
+                result = await self.get(source_id)
+            else:
+                params.extend([source_id, notebook_id])
+                conn = self._get_db()
+                conn.execute(f"UPDATE sources SET {', '.join(sets)} WHERE id = ? AND notebook_id = ?", params)
+                conn.commit()
+                result = await self.get(source_id)
+        else:
+            data = self._load_data()
+            if source_id in data["sources"]:
+                source = data["sources"][source_id]
+                if source.get("notebook_id") == notebook_id:
+                    source.update(updates)
+                    data["sources"][source_id] = source
+                    self._save_data(data)
+                    result = source
+
+        # Curator Phase 3a fix (2026-05-13): emit source_ingested when
+        # a source transitions to status='completed'. This catches every
+        # source-creation path uniformly — extension capture, web URL
+        # adds, document upload, collector approvals — without each
+        # path having to remember to emit. document_processor still
+        # emits its own (slight duplication but additive, debounced
+        # downstream), most other paths now rely on this single hook.
+        try:
+            new_status = updates.get("status") or (result or {}).get("status")
+            if (
+                result
+                and new_status == "completed"
+                and prior_status != "completed"
+            ):
+                from services.curator_event_bus import event_bus
+                event_bus.emit_now(
+                    actor="system",
+                    action="source_ingested",
+                    notebook_id=notebook_id,
+                    payload={
+                        "source_id": source_id,
+                        "filename": (result.get("filename") or result.get("title") or ""),
+                        "format": result.get("format") or result.get("type"),
+                    },
+                    outcome="success",
+                )
+        except Exception:
+            # Observability must not break source persistence.
+            pass
+
+        return result
 
     async def delete(self, notebook_id: str, source_id: str) -> bool:
         """Delete a source"""

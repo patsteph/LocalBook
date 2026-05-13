@@ -28,6 +28,70 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
+# Cross-notebook keyword router — used by api/chat.py to auto-route
+# queries that obviously span notebooks to the Curator. Previously lived
+# in agents/supervisor.py (archived 2026-05-12 Phase 1); moved here
+# because the routing is curator-specific.
+CROSS_NOTEBOOK_KEYWORDS = [
+    "across notebooks", "all notebooks", "compare notebooks", "both notebooks",
+    "multiple notebooks", "all my research", "everything i have", "cross-reference",
+    "patterns across", "themes across", "what do i know about", "synthesis",
+    "devil's advocate", "challenge my", "counterarguments", "prove me wrong",
+]
+
+
+def is_cross_notebook_query(query: str) -> bool:
+    """Cheap keyword check to detect cross-notebook queries.
+
+    Used by api/chat.py to bypass the LLM intent classifier for obvious cases.
+    """
+    query_lower = query.lower()
+    return any(kw in query_lower for kw in CROSS_NOTEBOOK_KEYWORDS)
+
+
+# ── Curator Voice (Phase 6a — 2026-05-13) ────────────────────────────────
+#
+# User-configurable narrative style for written curator output. Distinct
+# from `personality` (free-text persona description). Each voice is a
+# prompt block injected at the top of the brief synthesizer. The user
+# can switch via `@curator set voice [name]`.
+
+VOICE_PROMPTS: Dict[str, str] = {
+    "smart_colleague": (
+        "VOICE: Write like a smart colleague who has been paying attention to "
+        "this person's research for a while. Observational, opinion-bearing, "
+        "gently candid. Use phrases like 'I noticed', 'you've been wrestling "
+        "with', 'this looks like'. Don't pad with statistics — name the "
+        "actual thing. First-person curator voice. Comfortable being a "
+        "little blunt when something matters."
+    ),
+    "executive_brief": (
+        "VOICE: Write a crisp executive brief. Status. Open questions. "
+        "Suggested action. Lead with what changed. Use short paragraphs and "
+        "bulleted observations. Tone: deliberate, professional, useful. "
+        "Minimal first-person — focus on the situation. Skip pleasantries; "
+        "the reader is busy."
+    ),
+    "conversational_analyst": (
+        "VOICE: Write like a curious analyst chatting through what they're "
+        "seeing. Use phrases like 'curious what you'll make of', 'this "
+        "actually undercuts', 'I keep coming back to'. First-person curator "
+        "voice, conversational but substantive. Signpost your reasoning so "
+        "the user can follow your thinking. Mix observations with light "
+        "questions — invite engagement."
+    ),
+}
+
+VOICE_DESCRIPTIONS: Dict[str, str] = {
+    "smart_colleague": "Observational, opinion-bearing, gently candid",
+    "executive_brief": "Crisp, status-focused, action-oriented",
+    "conversational_analyst": "Chatty, curious, signposts thinking, invites engagement",
+}
+
+VALID_VOICES = frozenset(VOICE_PROMPTS.keys())
+DEFAULT_VOICE = "conversational_analyst"
+
+
 class JudgmentDecision(str, Enum):
     APPROVE = "approve"
     REJECT = "reject"
@@ -175,6 +239,11 @@ class CuratorAgent:
             "proactive_insights": True,
             "insight_frequency": "daily"
         },
+        # Curator Phase 6a (2026-05-13): narrative voice for written
+        # output (morning brief, weekly wrap, drafts). One of the
+        # named voices in VOICE_PROMPTS below. Separate from
+        # `personality` which is the free-text persona descriptor.
+        "narrative_voice": "conversational_analyst",
         "voice": {
             "style": "professional",
             "verbosity": "concise"
@@ -185,7 +254,12 @@ class CuratorAgent:
         self.config = self._load_config()
         self.name = self.config.get("name", "Curator")
         self.personality = self.config.get("personality", "helpful and thorough")
-        self._pending_insights: List[ProactiveInsight] = self._load_insights()
+        # Curator Phase 6a: narrative voice for written output. Falls back
+        # to default when missing or invalid.
+        _vc = self.config.get("narrative_voice")
+        self.narrative_voice = _vc if _vc in VALID_VOICES else DEFAULT_VOICE
+        # Insights moved to curator_brain.db as of 2026-05-12 (Phase 1).
+        # Brain handles legacy curator_insights.json migration on first init.
         # Master scheduler lock — ensures only ONE notebook collection runs at a time.
         # Prevents Ollama contention when multiple notebooks are due simultaneously.
         self._collection_lock = asyncio.Lock()
@@ -231,43 +305,37 @@ class CuratorAgent:
         with open(config_path, 'w') as f:
             yaml.dump(config, f, default_flow_style=False)
     
-    def _get_insights_path(self) -> Path:
-        """Get path to persisted proactive insights file"""
-        return Path(settings.data_dir) / "curator_insights.json"
-    
-    def _load_insights(self) -> List['ProactiveInsight']:
-        """Load persisted proactive insights from disk."""
-        path = self._get_insights_path()
-        if not path.exists():
-            return []
-        try:
-            data = json.loads(path.read_text())
-            return [ProactiveInsight(**item) for item in data]
-        except Exception as e:
-            logger.warning(f"Could not load persisted insights (starting fresh): {e}")
-            return []
-    
-    def _save_insights(self) -> None:
-        """Persist proactive insights to disk."""
-        path = self._get_insights_path()
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            data = [ins.model_dump() for ins in self._pending_insights]
-            path.write_text(json.dumps(data, indent=2))
-        except Exception as e:
-            logger.warning(f"Could not save insights: {e}")
-    
+    # Insight persistence moved to services/curator_brain.py — see
+    # add_insights / get_active_insights / find_insights_by_entity. The
+    # legacy _get_insights_path / _load_insights / _save_insights helpers
+    # were removed 2026-05-12 (Curator Phase 1). One-shot migration of
+    # curator_insights.json → brain.db happens inside CuratorBrain.__init__.
+
     def update_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         """Update curator configuration"""
+        # Curator Phase 6a: validate narrative_voice before persisting.
+        # Silently coerce invalid values to default so a bad set_voice
+        # call doesn't break the curator.
+        if "narrative_voice" in updates:
+            requested = updates["narrative_voice"]
+            if requested not in VALID_VOICES:
+                logger.warning(
+                    f"[curator] update_config: invalid narrative_voice "
+                    f"{requested!r}; coercing to default ({DEFAULT_VOICE})"
+                )
+                updates["narrative_voice"] = DEFAULT_VOICE
+
         self.config.update(updates)
         self._save_config(self.config)
-        
+
         # Update instance attributes
         if "name" in updates:
             self.name = updates["name"]
         if "personality" in updates:
             self.personality = updates["personality"]
-        
+        if "narrative_voice" in updates:
+            self.narrative_voice = updates["narrative_voice"]
+
         return self.config
     
     def get_config(self) -> Dict[str, Any]:
@@ -917,12 +985,22 @@ Be concise and cite which notebook each insight comes from."""
                 except Exception as _e:
                     logger.debug(f"[curator] {type(_e).__name__}: {_e}")
                 
-                # Strip 'origin' from story dicts before passing to RecentStory model
+                # Curator Phase 5: filter + boost stories using
+                # suppressions and engagement signal.
                 stories_raw = stats.get("recent_stories", [])
+                stories_raw = self._filter_and_rank_stories(
+                    notebook["id"], stories_raw,
+                )
+                # Strip 'origin' from story dicts before passing to RecentStory model
                 stories = []
                 for sr in stories_raw:
                     sr_copy = {k: v for k, v in sr.items() if k != "origin"}
                     stories.append(RecentStory(**sr_copy))
+
+                # Phase 5: record story_offered engagement for each story
+                # that survived filtering — the brain uses these to track
+                # which topics are repeatedly shown but not clicked.
+                self._record_stories_offered(notebook["id"], stories_raw)
                 
                 summaries.append(NotebookSummary(
                     notebook_id=notebook["id"],
@@ -969,15 +1047,69 @@ Be concise and cite which notebook each insight comes from."""
                     total_notes=stats.get("total_notes", 0),
                 ))
         
-        # Get any pending cross-notebook insight
+        # Get any active cross-notebook insight from the brain
         cross_insight = None
-        if self._pending_insights:
-            insight = self._pending_insights[0]
-            cross_insight = insight.summary
+        try:
+            from services.curator_brain import curator_brain
+            _active = curator_brain.get_active_insights(limit=1)
+            if _active:
+                cross_insight = _active[0]["summary"]
+        except Exception as _e:
+            logger.debug(f"[curator] get_active_insights (morning brief): {_e}")
         
+        # Curator Phase 5 (2026-05-13): build a per-notebook "What's
+        # changed in your understanding" diff block. Aggregates across
+        # all notebooks. Passed to the synthesizer as a separate input
+        # so the LLM can naturally include a "What's new" section.
+        understanding_diff_block = ""
+        try:
+            from services.curator_brain import curator_brain as _cb
+            since_iso = last_seen.isoformat() if last_seen else None
+            if since_iso:
+                diff_lines: List[str] = []
+                for nb in notebooks[:10]:
+                    diff = _cb.compute_understanding_diff(nb["id"], since_iso)
+                    has_signal = (
+                        diff.get("new_connections")
+                        or diff.get("mental_model_changes")
+                        or diff.get("new_dissent_sources")
+                    )
+                    if not has_signal:
+                        continue
+                    name = nb.get("title", nb.get("name", "Untitled"))
+                    nb_lines = [f"  {name}:"]
+                    if diff.get("mental_model_changes"):
+                        mm = diff["mental_model_changes"][0]
+                        if mm.get("thesis"):
+                            nb_lines.append(f"    - thesis refined: {mm['thesis'][:120]}")
+                        if mm.get("stage"):
+                            nb_lines.append(f"    - stage: {mm['stage']}")
+                    if diff.get("new_dissent_sources"):
+                        for d in diff["new_dissent_sources"][:2]:
+                            nb_lines.append(
+                                f"    - new contradicting source: "
+                                f"{(d.get('rationale') or '')[:120]}"
+                            )
+                    if diff.get("new_connections"):
+                        for c in diff["new_connections"][:2]:
+                            nb_lines.append(
+                                f"    - new cross-notebook link: "
+                                f"{(c.get('description') or '')[:120]}"
+                            )
+                    if len(nb_lines) > 1:
+                        diff_lines.extend(nb_lines)
+                if diff_lines:
+                    understanding_diff_block = (
+                        "What changed in the curator's understanding since last brief:\n"
+                        + "\n".join(diff_lines)
+                    )
+        except Exception as _e:
+            logger.debug(f"[curator] understanding diff fetch failed (non-fatal): {_e}")
+
         # Generate LLM narrative — turn raw data into a newsletter people look forward to
         narrative = await self._synthesize_brief_narrative(
-            summaries, duration_str, cross_insight, temporal_block
+            summaries, duration_str, cross_insight, temporal_block,
+            understanding_diff=understanding_diff_block,
         )
         
         return MorningBrief(
@@ -1084,12 +1216,15 @@ Be concise and cite which notebook each insight comes from."""
             except Exception as _e:
                 logger.debug(f"[curator] {type(_e).__name__}: {_e}")
             
+            # Curator Phase 5: same filter+boost as the primary path
             stories_raw = stats.get("recent_stories", [])
+            stories_raw = self._filter_and_rank_stories(notebook["id"], stories_raw)
             stories = []
             for sr in stories_raw:
                 sr_copy = {k: v for k, v in sr.items() if k != "origin"}
                 stories.append(RecentStory(**sr_copy))
-            
+            self._record_stories_offered(notebook["id"], stories_raw)
+
             summaries.append(NotebookSummary(
                 notebook_id=notebook["id"],
                 name=notebook.get("title", notebook.get("name", "Untitled")),
@@ -1139,10 +1274,15 @@ Be concise and cite which notebook each insight comes from."""
         total_audio = sum(s.audio_generated for s in summaries)
         total_docs = sum(s.docs_generated for s in summaries)
         
-        # Cross-notebook insight
+        # Cross-notebook insight (from the brain — used to be self._pending_insights)
         cross_insight = None
-        if self._pending_insights:
-            cross_insight = self._pending_insights[0].summary
+        try:
+            from services.curator_brain import curator_brain
+            _active = curator_brain.get_active_insights(limit=1)
+            if _active:
+                cross_insight = _active[0]["summary"]
+        except Exception as _e:
+            logger.debug(f"[curator] get_active_insights (weekly): {_e}")
         
         narrative = await self._synthesize_weekly_narrative(
             summaries, cross_insight, total_sources, total_collector,
@@ -1393,9 +1533,94 @@ Write the weekly wrap up now:"""
             lines.append(f", {total_audio} audio pieces")
         return "\n".join(lines)
     
+    def _filter_and_rank_stories(
+        self,
+        notebook_id: str,
+        stories_raw: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Apply Phase 5 brief story filter (suppressions) + boost
+        (engagement-based topic click score).
+
+        Suppression is hard — story is dropped if its title contains any
+        active suppression keyword.
+
+        Boost is soft — surviving stories get reordered with a small
+        positive adjustment for topics the user has clicked recently.
+        Falls back to the original order when no engagement signal exists.
+        """
+        if not stories_raw:
+            return stories_raw
+        try:
+            from services.curator_brain import curator_brain as _cb
+            filtered: List[Dict[str, Any]] = []
+            for sr in stories_raw:
+                title = sr.get("title") or ""
+                if _cb.is_topic_suppressed(notebook_id, title):
+                    continue
+                filtered.append(sr)
+
+            # Apply click-score boost. Topic-key extraction: first 2-3
+            # significant words from title. Cheap stopword filter.
+            stop = {"the", "a", "an", "of", "in", "on", "for", "to",
+                    "and", "or", "is", "are", "with", "from", "by"}
+
+            def _topic_key_for(title: str) -> str:
+                words = [w.strip(".,!?:;\"'()[]").lower() for w in (title or "").split()]
+                meaningful = [w for w in words if w and w not in stop and len(w) > 2]
+                return " ".join(meaningful[:3])
+
+            # Keep stable original order when scores are tied — sort with
+            # a (score_desc, idx_asc) key so click-boost re-orders only
+            # when there's actual engagement signal.
+            scored: List[tuple] = []
+            for i, sr in enumerate(filtered):
+                key = _topic_key_for(sr.get("title") or "")
+                score = _cb.get_topic_click_score(notebook_id, key) if key else 0.0
+                scored.append((-score, i, sr))
+            scored.sort()
+            return [t[2] for t in scored]
+        except Exception as e:
+            logger.debug(f"[curator] _filter_and_rank_stories failed (non-fatal): {e}")
+            return stories_raw
+
+    def _record_stories_offered(
+        self,
+        notebook_id: str,
+        stories: List[Dict[str, Any]],
+    ) -> None:
+        """Phase 5: record an `offered` engagement event per story that
+        ends up in a brief. The brain uses these to compute future
+        topic_click_score (offered + clicked → boost weight).
+
+        Best-effort, never raises.
+        """
+        if not stories:
+            return
+        try:
+            from services.curator_brain import curator_brain as _cb
+            stop = {"the", "a", "an", "of", "in", "on", "for", "to",
+                    "and", "or", "is", "are", "with", "from", "by"}
+            for sr in stories[:20]:  # cap to avoid runaway recording
+                title = sr.get("title") or ""
+                words = [w.strip(".,!?:;\"'()[]").lower() for w in title.split()]
+                meaningful = [w for w in words if w and w not in stop and len(w) > 2]
+                topic_key = " ".join(meaningful[:3])
+                if not topic_key:
+                    continue
+                _cb.record_engagement(
+                    kind="brief",
+                    signal="offered",
+                    subject_type="topic",
+                    subject_id=topic_key,
+                    notebook_id=notebook_id,
+                    payload={"title": title[:120]},
+                )
+        except Exception as e:
+            logger.debug(f"[curator] _record_stories_offered failed (non-fatal): {e}")
+
     async def _get_activity_since(self, notebook_id: str, since: datetime, preloaded_sources: Optional[List[Dict]] = None) -> Dict[str, Any]:
         """Get activity stats for a notebook since a given time.
-        
+
         Pulls from: collector pending queue, archival memory, collection history,
         event logger, and person change detection.
         
@@ -1754,11 +1979,18 @@ Write the weekly wrap up now:"""
         summaries: List['NotebookSummary'],
         duration_str: str,
         cross_insight: Optional[str],
-        temporal_block: str = ""
+        temporal_block: str = "",
+        understanding_diff: str = "",
     ) -> str:
         """
         Use LLM to turn raw notebook activity data into a newsletter-quality
         narrative the user looks forward to reading each morning.
+
+        understanding_diff (Curator Phase 5): optional pre-formatted block
+        describing changes in the curator's understanding since the last
+        brief. When non-empty, prepended to the LLM prompt so the
+        synthesizer naturally weaves a "What's new in your thinking"
+        section into the brief.
         """
         if not summaries:
             return ""
@@ -2009,12 +2241,118 @@ Write the weekly wrap up now:"""
                 f"{brain_context}\n"
             )
 
-        prompt = f"""{temporal_block}
+        # Curator Phase 5: prepend "what changed in understanding"
+        # block when present. The LLM is instructed to integrate this
+        # naturally — typically as a short "What's new in your thinking"
+        # section near the top of the brief.
+        understanding_section = ""
+        if understanding_diff and understanding_diff.strip():
+            understanding_section = (
+                "\nUNDERSTANDING CHANGES SINCE LAST BRIEF "
+                "(include as a 'What's new in your thinking' section "
+                "near the top of the brief. Write a short paragraph — 2-4 "
+                "sentences — that actually narrates the shifts: name the "
+                "specific theses, stages, or contradicting sources that "
+                "changed, not just generic phrases. Be substantive; this "
+                "is the most novel signal in the brief.):\n"
+                f"{understanding_diff}\n"
+            )
 
-You are {self.name}, a personal research assistant writing a morning brief for today, {today_str}. The user was away for {duration_str}. Turn the following raw activity data into a short, engaging newsletter they'll look forward to reading. IMPORTANT: Today's date is {today_str} — use this exact date, do not invent a different date.
-{brain_section}
+        # Curator Phase 6a (2026-05-13): voice + observations.
+        # Voice block is the FIRST thing the LLM sees so it sets the tone
+        # for everything below. Observations payload follows, instructing
+        # the LLM to lead the brief with what was actually noticed —
+        # NOT with "Good morning, you've been away for Xh".
+        voice_block = VOICE_PROMPTS.get(self.narrative_voice, VOICE_PROMPTS[DEFAULT_VOICE])
+
+        # Build observations summary across notebooks. Includes only
+        # signal-bearing fields — the rest is omitted to keep the prompt
+        # tight.
+        observations_section = ""
+        try:
+            from services.curator_brain import curator_brain as _cb
+            since_iso = last_seen.isoformat() if last_seen else None
+            obs_lines: List[str] = []
+            if since_iso:
+                for nb in notebooks[:10]:
+                    obs = _cb.compute_brief_observations(nb["id"], since_iso)
+                    has_signal = any([
+                        obs.get("blocked_on"),
+                        obs.get("recent_focus"),
+                        obs.get("dissent_count", 0) > 0,
+                        obs.get("is_quiet"),
+                        obs.get("recent_completed_plans"),
+                        obs.get("new_connections"),
+                        obs.get("fresh_reclassifications", 0) > 0,
+                        obs.get("has_pending_draft"),
+                    ])
+                    if not has_signal:
+                        continue
+                    name = nb.get("title", nb.get("name", "Untitled"))
+                    # Curator Phase 4: tag the notebook block with mental-model
+                    # confidence so the LLM's hedge-rule knows how strongly
+                    # to phrase the observations.
+                    mm = _cb.get_mental_model(nb["id"])
+                    mm_conf = (mm.get("confidence") if mm else None) or 0
+                    conf_tag = f" [confidence={mm_conf:.2f}]" if mm_conf else ""
+                    nb_lines = [f"  {name}{conf_tag}:"]
+                    if obs.get("blocked_on"):
+                        nb_lines.append(f"    - BLOCKED ON: {obs['blocked_on'][:140]}")
+                    if obs.get("recent_focus"):
+                        nb_lines.append(f"    - recent focus: {obs['recent_focus'][:120]}")
+                    if obs.get("stage"):
+                        nb_lines.append(f"    - stage: {obs['stage']}")
+                    if obs.get("dissent_count", 0) > 0:
+                        line = f"    - dissent: {obs['dissent_count']} contradicting source(s)"
+                        if obs.get("fresh_dissent_rationale"):
+                            line += f" — \"{obs['fresh_dissent_rationale'][:120]}\""
+                        nb_lines.append(line)
+                    if obs.get("is_quiet"):
+                        nb_lines.append("    - QUIET: no engagement here in 7+ days")
+                    if obs.get("recent_completed_plans"):
+                        for p in obs["recent_completed_plans"][:2]:
+                            nb_lines.append(f"    - recently completed: {p[:120]}")
+                    if obs.get("new_connections"):
+                        for c in obs["new_connections"][:2]:
+                            nb_lines.append(f"    - new cross-notebook link: {c[:120]}")
+                    if obs.get("fresh_reclassifications", 0) > 0:
+                        nb_lines.append(
+                            f"    - {obs['fresh_reclassifications']} source(s) freshly reclassified"
+                        )
+                    if obs.get("has_pending_draft"):
+                        kind = obs.get("pending_draft_kind") or "document"
+                        nb_lines.append(
+                            f"    - PENDING DRAFT: a {kind} is ready (mention it; user can run `@curator show draft`)"
+                        )
+                    if len(nb_lines) > 1:
+                        obs_lines.extend(nb_lines)
+            if obs_lines:
+                observations_section = (
+                    "\nOBSERVATIONS (Lead the brief with these — they are the most "
+                    "interesting things noticed. Pick the strongest 1-2 to open with. "
+                    "Activity stats below are supporting evidence, not the headline.):\n"
+                    + "\n".join(obs_lines) + "\n"
+                )
+        except Exception as _e:
+            logger.debug(f"[curator] observations payload failed (non-fatal): {_e}")
+
+        prompt = f"""{voice_block}
+
+{temporal_block}
+
+You are {self.name}, a personal research assistant writing a morning brief for today, {today_str}. The user was away for {duration_str}. Turn the raw activity data below into something worth reading. IMPORTANT: Today's date is {today_str} — use this exact date, do not invent a different date.
+
+WRITE LIKE THE VOICE BLOCK INSTRUCTS — that voice is more important than any pattern below. If the voice says "first-person", use first-person. If the voice says "minimal first-person", don't say "I". The voice block wins.
+{brain_section}{observations_section}{understanding_section}
 ACTIVITY DATA:
 {raw_data}
+
+CONFIDENCE-AWARE LANGUAGE (Curator Phase 4 — applies to ANY claim from the observations payload that includes a confidence value):
+- confidence > 0.85 → DEFINITIVE: "X is the case", "clearly", "established", "confirmed"
+- confidence 0.7 – 0.85 → MODERATE: "appears to be", "seems", "looks like", "is shaping up to"
+- confidence 0.5 – 0.7 → HEDGED: "I think", "this looks like", "tentatively", "I'm reading this as"
+- confidence < 0.5 → SPECULATIVE: "possibly", "not sure but", "worth checking", "wouldn't bet on this yet"
+- Apply this to mental-model fields, dissent rationales, insights, and any other observation that carries a confidence score. Do NOT apply to raw numerical facts (source counts, dates) — those are not hedged.
 
 CRITICAL ACCURACY RULES — you MUST follow these:
 - ALL percentages are PRE-COMPUTED in the data. Use them VERBATIM. Do NOT calculate your own percentages.
@@ -2046,18 +2384,19 @@ COLLECTOR vs USER SOURCES — this distinction is CRITICAL:
 
 STUDIO CONTENT CREATION — acknowledge what the user is BUILDING, not just reading:
 - If "Studio output" data is present, the user actively generated materials (documents, podcasts, visuals, quizzes, videos)
-- This is a strong engagement signal — acknowledge it warmly. Examples:
-  * "You've been actively creating — 2 podcasts and a visual on [topic] show you're moving from research to synthesis"
-  * "The quiz you generated on [topic] is a great way to solidify your understanding"
+- This is a strong engagement signal — acknowledge it warmly. Use the ACTUAL topic from the data, never write literal brackets like "[topic]" — fill them in or rephrase. Patterns to draw from:
+  * "You've been actively creating — 2 podcasts and a visual show you're moving from research to synthesis" (substitute the actual subject matter when known)
+  * "The quiz you generated is a great way to solidify your understanding" (mention the real subject if visible in data)
   * "You created 3 documents since your last session — your research is producing tangible output"
-- If studio topics overlap with unfinished threads or emerging topics, connect the dots — "You're generating content on the same topics you were exploring in chat — your research is maturing"
+- If studio topics overlap with unfinished threads or emerging topics, connect the dots: "You're generating content on the same topics you were exploring in chat — your research is maturing"
 - Keep it brief — 1-2 sentences integrated naturally into the per-notebook section, not a separate block
+- NEVER emit a literal bracket placeholder ("[topic]", "[note titles]", "[recent topic]") — if you don't know the specific subject, omit the phrase entirely or use a generic word
 
 USER NOTES — the user's own thinking, captured in their own words:
 - Notes are first-class content — they represent what the user is ACTIVELY THINKING ABOUT
-- If a user wrote notes recently, lead with that or weave it in prominently: "You've been capturing your thoughts on [note titles] — this is building your personal knowledge base"
-- If a notebook has notes but none were created recently, you can reference them as context: "Your [N] notes in this notebook form a foundation for..."
-- Connect notes to other activity when possible: "The notes you wrote about [topic] align with what the collector is finding" or "Your note on [topic] could inform the collector's search direction"
+- If a user wrote notes recently, lead with that or weave it in prominently: name the actual note titles from the data — never emit literal brackets like "[note titles]"
+- If a notebook has notes but none were created recently, you can reference them as context: "Your N notes in this notebook form a foundation for..." (use the actual count)
+- Connect notes to other activity when possible — name the actual topics from the data, not bracketed placeholders
 - Notes signal what the user cares about MORE than sources — sources are inputs, notes are the user's own synthesis
 
 NEWSLETTER FORMATTING (CRITICAL):
@@ -2273,9 +2612,14 @@ Return ONLY valid JSON, no explanation."""
                     confidence=0.7
                 )
                 insights.append(insight)
-        
-        self._pending_insights = insights
-        self._save_insights()
+
+        # Write the fresh batch to the brain. Brain preserves user signal
+        # (thumbs_up / dismissed) when replacing the active set.
+        try:
+            from services.curator_brain import curator_brain
+            curator_brain.add_insights([ins.model_dump() for ins in insights])
+        except Exception as e:
+            logger.warning(f"Could not persist insights to brain (non-fatal): {e}")
         return insights
     
     async def _find_shared_entities(self, notebooks: List[Dict]) -> Dict[str, List[Dict]]:
@@ -2305,42 +2649,109 @@ Return ONLY valid JSON, no explanation."""
     
     async def surface_insight_if_relevant(self, current_query: str) -> Optional[str]:
         """
-        Check if any pending insights relate to current user query.
-        If so, mention it naturally in response.
+        Check if any active brain insights relate to the current user query.
+        If so, mention it naturally and record the surface event.
         """
-        if not self._pending_insights:
+        try:
+            from services.curator_brain import curator_brain
+            matches = curator_brain.find_insights_by_entity(current_query)
+        except Exception as e:
+            logger.warning(f"Could not query brain insights (non-fatal): {e}")
             return None
-        
-        query_lower = current_query.lower()
-        
-        for insight in self._pending_insights:
-            if insight.entity and insight.entity.lower() in query_lower:
-                return f"💡 By the way: {insight.summary}"
-        
-        return None
+
+        if not matches:
+            return None
+
+        insight = matches[0]
+        try:
+            curator_brain.mark_insight_surfaced(insight["id"])
+        except Exception as _e:
+            logger.debug(f"[curator] mark_insight_surfaced: {_e}")
+        # Curator Phase 4: confidence-aware hedging on the surface phrasing.
+        # High-conf insights → assertive; low-conf → tentative.
+        conf = insight.get("confidence") or 0
+        if conf >= 0.85:
+            prefix = "💡 Worth noting:"
+        elif conf >= 0.5:
+            prefix = "💡 By the way:"
+        else:
+            prefix = "💡 Possibly relevant (low-confidence):"
+        return f"{prefix} {insight['summary']}"
     
     # =========================================================================
     # Devil's Advocate Mode (Enhancement #9)
     # =========================================================================
     
     async def find_counterarguments(
-        self, 
+        self,
         notebook_id: str,
         thesis: Optional[str] = None
     ) -> CounterargumentResult:
         """
         If thesis provided, find evidence against it.
         If not, infer thesis from notebook content and find counters.
+
+        Curator Phase 3b (2026-05-13): when source_stances has ≥3
+        contradicting rows for this notebook AND no override thesis
+        is supplied, prefer the cached stances over re-running an
+        LLM search (faster + already curator-evaluated). Falls back
+        to the original semantic-search path when stances are sparse
+        or absent.
         """
-        # Infer thesis if not provided
+        # Phase 3b: check the stance table for cached counter-evidence.
+        # Only use it when the caller didn't override the thesis — if
+        # they did, the cached stances may have been scored against a
+        # different thesis and would be misleading.
+        if thesis is None:
+            try:
+                from services.curator_brain import curator_brain
+                mm = curator_brain.get_mental_model(notebook_id)
+                if mm and mm.get("thesis"):
+                    dissent_rows = curator_brain.get_dissenting_sources(notebook_id, limit=5)
+                    if len(dissent_rows) >= 3:
+                        # Attach source titles best-effort
+                        from storage.source_store import source_store
+                        counterpoints: List[Dict[str, Any]] = []
+                        for d in dissent_rows:
+                            title = d["source_id"]
+                            try:
+                                src = await source_store.get(d["source_id"])
+                                if src:
+                                    title = (
+                                        src.get("filename")
+                                        or src.get("title")
+                                        or src.get("url")
+                                        or d["source_id"]
+                                    )
+                            except Exception:
+                                pass
+                            counterpoints.append({
+                                "query": "(cached stance)",
+                                "content": f"[{title[:120]}] {d['rationale']}"[:300],
+                                "score": d["confidence"],
+                                "source_id": d["source_id"],
+                            })
+                        avg_conf = sum(d["confidence"] for d in dissent_rows) / max(1, len(dissent_rows))
+                        return CounterargumentResult(
+                            inferred_thesis=mm["thesis"],
+                            counterpoints=counterpoints,
+                            confidence=min(1.0, max(0.3, avg_conf)),
+                        )
+            except Exception as _e:
+                logger.debug(f"[curator] find_counterarguments stance path skipped: {_e}")
+                # Fall through to the legacy semantic-search path.
+
+        # Legacy path — infer thesis if not provided, run counter-query
+        # semantic search. Still used when (a) caller overrides thesis,
+        # or (b) stance table is sparse for this notebook.
         if not thesis:
             thesis = await self._infer_thesis(notebook_id)
-        
+
         # Generate counter-queries
         counter_queries = await self._generate_counter_queries(thesis)
-        
+
         counterpoints = []
-        
+
         for query in counter_queries:
             # Search notebook for contradicting evidence
             results = memory_store.search_archival_memory(
@@ -2349,17 +2760,17 @@ Return ONLY valid JSON, no explanation."""
                 notebook_id=notebook_id,
                 limit=5
             )
-            
+
             for r in results:
                 counterpoints.append({
                     "query": query,
                     "content": r.entry.content[:300],
                     "score": r.combined_score
                 })
-        
+
         # Rank and dedupe
         counterpoints.sort(key=lambda x: x["score"], reverse=True)
-        
+
         return CounterargumentResult(
             inferred_thesis=thesis,
             counterpoints=counterpoints[:5],
@@ -2529,217 +2940,12 @@ Respond with JSON only:
         }
     
     # =========================================================================
-    # Collector Orchestration - Curator as Central Brain
+    # Collection Task Building (called from agents/collection_graph.py)
     # =========================================================================
-    
-    async def orchestrate_collection(
-        self,
-        notebook_ids: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
-        """
-        Central orchestration method. Curator decides what to collect across notebooks.
-        Collectors are workers that execute Curator's decisions.
-        
-        Flow:
-        1. Curator analyzes each notebook's needs
-        2. Curator assigns collection tasks to Collectors
-        3. Collectors execute and return results
-        4. Curator judges all results before they enter notebooks
-        """
-        # Get all notebooks if none specified
-        if notebook_ids is None:
-            notebooks = await notebook_store.list()
-            notebook_ids = [nb.get("id") for nb in notebooks if nb.get("id")]
-        
-        results = {
-            "notebooks_processed": 0,
-            "items_collected": 0,
-            "items_approved": 0,
-            "items_pending": 0,
-            "items_rejected": 0,
-            "notebook_results": []
-        }
-        
-        for notebook_id in notebook_ids:
-            try:
-                nb_result = await self._orchestrate_notebook_collection(notebook_id)
-                results["notebook_results"].append(nb_result)
-                results["notebooks_processed"] += 1
-                results["items_collected"] += nb_result.get("items_collected", 0)
-                results["items_approved"] += nb_result.get("items_approved", 0)
-                results["items_pending"] += nb_result.get("items_pending", 0)
-                results["items_rejected"] += nb_result.get("items_rejected", 0)
-            except Exception as e:
-                logger.error(f"Orchestration failed for notebook {notebook_id}: {e}")
-                results["notebook_results"].append({
-                    "notebook_id": notebook_id,
-                    "error": str(e)
-                })
-        
-        return results
-    
-    async def _orchestrate_notebook_collection(
-        self,
-        notebook_id: str
-    ) -> Dict[str, Any]:
-        """Orchestrate collection for a single notebook (under master lock)."""
-        # Acquire collection lock — only one notebook collects at a time
-        if self._collection_lock.locked():
-            active = self._active_collection or "unknown"
-            logger.info(f"[CURATOR] Batch collection queued for {notebook_id[:8]} — waiting on {active[:8]}")
-        
-        async with self._collection_lock:
-            self._active_collection = notebook_id
-            try:
-                return await self._orchestrate_notebook_collection_inner(notebook_id)
-            finally:
-                self._active_collection = None
-
-    async def _orchestrate_notebook_collection_inner(
-        self,
-        notebook_id: str
-    ) -> Dict[str, Any]:
-        """Inner batch collection logic — always called under _collection_lock."""
-        from agents.collector import get_collector
-        
-        collector = get_collector(notebook_id)
-        config = collector.get_config()
-        
-        # Skip if collector not configured
-        if not config.intent or config.intent.strip() == "":
-            return {
-                "notebook_id": notebook_id,
-                "skipped": True,
-                "reason": "Collector not configured"
-            }
-        
-        result = {
-            "notebook_id": notebook_id,
-            "items_collected": 0,
-            "items_approved": 0,
-            "items_pending": 0,
-            "items_rejected": 0
-        }
-        
-        # Step 1: Curator assigns collection task
-        collection_task = await self._create_collection_task(notebook_id, config)
-        
-        # Step 2: Collector executes the task (worker mode)
-        collected_items = await collector.execute_collection_task(collection_task)
-        result["items_collected"] = len(collected_items)
-        
-        if not collected_items:
-            # Still record history so query rotation works (avoids repeating same queries next run)
-            try:
-                from services.collection_history import record_collection_run
-                record_collection_run(
-                    notebook_id=notebook_id,
-                    items_found=0, items_approved=0, items_pending=0, items_rejected=0,
-                    sources_checked=len(config.sources.get("rss_feeds", [])) + len(config.sources.get("web_pages", [])),
-                    trigger="orchestrated",
-                    keywords_used=collection_task.get("focus_areas", [])[:5],
-                    queries_used=collection_task.get("smart_queries", []),
-                    exploration_queries=collection_task.get("exploration_queries", []),
-                )
-            except Exception as _e:
-                logger.debug(f"[curator] {type(_e).__name__}: {_e}")
-            return result
-        
-        # Step 3: Curator judges ALL collected items
-        judgments = await self.judge_collection(
-            collector_id=notebook_id,
-            proposed_items=collected_items,
-            notebook_intent=config.intent
-        )
-        
-        CONFIDENCE_FLOOR = 0.50
-        
-        # Pre-fetch existing URLs for dedup
-        from storage.source_store import source_store
-        existing_sources = await source_store.list(notebook_id)
-        existing_urls = {s.get("url") for s in existing_sources if s.get("url")}
-        
-        # Step 4: Apply judgments (same pattern as assign_immediate_collection)
-        for item, judgment in zip(collected_items, judgments):
-            if item.overall_confidence < CONFIDENCE_FLOOR:
-                result["items_rejected"] += 1
-                continue
-            
-            if judgment.decision == JudgmentDecision.APPROVE:
-                try:
-                    was_stored = await collector._store_approved_item(item, _existing_urls=existing_urls)
-                    if was_stored:
-                        result["items_approved"] += 1
-                    else:
-                        result["items_rejected"] += 1
-                except Exception as e:
-                    logger.error(f"Failed to store approved item '{item.title}': {e}")
-                    result["items_rejected"] += 1
-            elif judgment.decision == JudgmentDecision.REJECT:
-                result["items_rejected"] += 1
-            else:  # DEFER_TO_USER or MODIFY — queue for user review
-                queue_result = await collector._add_to_approval_queue(item)
-                if queue_result == 'queued':
-                    result["items_pending"] += 1
-                elif queue_result == 'stored':
-                    result["items_approved"] += 1
-                else:
-                    result["items_rejected"] += 1
-        
-        # Record in collection history (mirrors assign_immediate_collection)
-        try:
-            from services.collection_history import record_collection_run
-            record_collection_run(
-                notebook_id=notebook_id,
-                items_found=len(collected_items),
-                items_approved=result["items_approved"],
-                items_pending=result["items_pending"],
-                items_rejected=result["items_rejected"],
-                sources_checked=len(config.sources.get("rss_feeds", [])) + len(config.sources.get("web_pages", [])),
-                trigger="orchestrated",
-                keywords_used=collection_task.get("focus_areas", [])[:5],
-                queries_used=collection_task.get("smart_queries", []),
-                exploration_queries=collection_task.get("exploration_queries", []),
-            )
-        except Exception as hist_err:
-            logger.warning(f"Failed to record collection history (non-fatal): {hist_err}")
-        
-        # Phase 3: Source auto-discovery on stagnation
-        if result["items_approved"] == 0:
-            try:
-                from services.collection_history import detect_stagnation
-                stagnation = detect_stagnation(notebook_id)
-                if stagnation.get("stagnating"):
-                    discovery = await collector.auto_discover_sources(stagnation)
-                    if discovery.get("auto_expanded"):
-                        logger.info(f"[Phase3] Auto-expanded sources for {notebook_id[:8]} after stagnation")
-            except Exception as disc_err:
-                logger.debug(f"Source discovery failed (non-fatal): {disc_err}")
-        
-        # Phase 4: Record CBR pattern + post-run synthesis (batch path)
-        try:
-            from services.collection_history import record_collection_pattern, record_run_synthesis
-            total = result["items_approved"] + result["items_pending"] + result["items_rejected"]
-            rate = result["items_approved"] / max(total, 1)
-            record_collection_pattern(notebook_id, {
-                "strategy": collection_task.get("strategy", "standard"),
-                "queries": collection_task.get("smart_queries", [])[:6],
-                "items_found": result["items_collected"],
-                "items_approved": result["items_approved"],
-                "approval_rate": round(rate, 2),
-                "trigger": "orchestrated",
-            })
-            record_run_synthesis(notebook_id, {
-                "items_found": result["items_collected"],
-                "items_approved": result["items_approved"],
-                "items_pending": result["items_pending"],
-                "strategy": collection_task.get("strategy", "standard"),
-                "trigger": "orchestrated",
-            })
-        except Exception as _e:
-            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
-        
-        return result
+    # Note: orchestrate_collection + _orchestrate_notebook_collection chain was
+    # removed 2026-05-12 (Curator Phase 1) as dead code. The live orchestration
+    # path is assign_immediate_collection (below). _create_collection_task and
+    # its exploration helpers are reached via collection_graph.run_collection.
     
     async def _build_exploration_context(
         self,
@@ -3351,18 +3557,49 @@ Respond with ONLY a JSON array of strings, no other text:
         """Inner collection logic — always called under _collection_lock."""
         import time as _time
         deadline = (_time.time() + deadline_seconds) if deadline_seconds else None
-        
+
         from agents.collector import get_collector
-        
+
         print(f"[CURATOR] assign_immediate_collection: getting collector for {notebook_id}")
         collector = get_collector(notebook_id)
         config = collector.get_config()
-        
+
         if not config.intent:
             return {"error": "Collector not configured", "items_collected": 0}
-        
+
         print(f"[CURATOR] Config loaded. Sources: {list(config.sources.keys()) if config.sources else 'none'}")
-        
+
+        # Curator Phase 2a: register a 3-step plan in the brain so the
+        # UI plan card (Phase 2b) and the audit log have visibility into
+        # this multi-step action. plan_id is None if brain is offline —
+        # everything below tolerates that gracefully.
+        # Curator Phase 2b: also register the plan as cancellable so the
+        # UI Stop button can signal it via POST /curator/plans/{id}/cancel.
+        plan_id: Optional[str] = None
+        try:
+            from services.curator_brain import curator_brain
+            plan_summary = (
+                f"Collect for notebook: {config.name or notebook_id[:8]}"
+                + (f" — focus: {specific_query}" if specific_query else "")
+            )
+            plan_id = curator_brain.create_plan(
+                intent="assign_immediate_collection",
+                summary=plan_summary,
+                steps=[
+                    {"name": "search", "description": "Gather candidate items from configured sources"},
+                    {"name": "judge", "description": "Curator judges each candidate for relevance"},
+                    {"name": "store", "description": "Persist approved items + queue ambiguous ones for review"},
+                ],
+                notebook_id=notebook_id,
+                user_visible=True,
+            )
+            if plan_id:
+                curator_brain.register_cancellable(plan_id)
+                curator_brain.start_plan(plan_id)
+                curator_brain.start_step(plan_id, 1)
+        except Exception as _e:
+            logger.debug(f"[curator] plan setup failed (non-fatal): {_e}")
+
         # Create task with optional specific query
         task = await self._create_collection_task(notebook_id, config)
         if specific_query:
@@ -3379,9 +3616,38 @@ Respond with ONLY a JSON array of strings, no other text:
         
         # Execute collection
         collected_items = await collector.execute_collection_task(task)
-        
+
         print(f"[CURATOR] Collection returned {len(collected_items) if collected_items else 0} items")
-        
+
+        # Plan step 1 (search) — complete with count summary
+        if plan_id:
+            try:
+                from services.curator_brain import curator_brain
+                curator_brain.complete_step(
+                    plan_id, 1,
+                    output_summary=f"{len(collected_items) if collected_items else 0} candidate items"
+                )
+            except Exception as _e:
+                logger.debug(f"[curator] plan step1 complete: {_e}")
+
+        # ── Cancel breakpoint 1: after search, before judge ──────────
+        # If the user clicked Stop while step 1 was running, exit before
+        # spending compute on step 2. No data loss possible — nothing
+        # is persisted yet.
+        if plan_id:
+            try:
+                from services.curator_brain import curator_brain
+                if curator_brain.is_cancelled(plan_id):
+                    curator_brain.cancel_plan(plan_id, reason="user_requested")
+                    curator_brain.unregister_cancellable(plan_id)
+                    return {
+                        "items_collected": 0,
+                        "cancelled": True,
+                        "message": "Cancelled by user after search",
+                    }
+            except Exception as _e:
+                logger.debug(f"[curator] cancel check 1: {_e}")
+
         if not collected_items:
             # Still record history so query rotation works (avoids repeating same queries next run)
             try:
@@ -3397,8 +3663,25 @@ Respond with ONLY a JSON array of strings, no other text:
                 )
             except Exception as _e:
                 logger.debug(f"[curator] {type(_e).__name__}: {_e}")
+            # Plan: no items found — cancel remaining steps (judge + store
+            # have nothing to do). Plan ends in cancelled state with reason.
+            if plan_id:
+                try:
+                    from services.curator_brain import curator_brain
+                    curator_brain.cancel_plan(plan_id, reason="no_items_found")
+                    curator_brain.unregister_cancellable(plan_id)
+                except Exception as _e:
+                    logger.debug(f"[curator] plan cancel: {_e}")
             return {"items_collected": 0, "message": "No new items found"}
-        
+
+        # Plan step 2 (judge) — start
+        if plan_id:
+            try:
+                from services.curator_brain import curator_brain
+                curator_brain.start_step(plan_id, 2)
+            except Exception as _e:
+                logger.debug(f"[curator] plan step2 start: {_e}")
+
         # Judge results (pass deadline so judgment can auto-defer if time is tight)
         if deadline:
             remaining = deadline - _time.time()
@@ -3411,6 +3694,35 @@ Respond with ONLY a JSON array of strings, no other text:
             notebook_intent=config.intent,
             deadline=deadline
         )
+
+        # Plan step 2 (judge) — complete
+        if plan_id:
+            try:
+                from services.curator_brain import curator_brain
+                curator_brain.complete_step(
+                    plan_id, 2,
+                    output_summary=f"{len(judgments)} judgments returned"
+                )
+            except Exception as _e:
+                logger.debug(f"[curator] plan step2 complete: {_e}")
+
+        # ── Cancel breakpoint 2: after judge, before store ───────────
+        # The user can still stop here. Judging work is sunk cost, but
+        # no items have been persisted to the notebook yet.
+        if plan_id:
+            try:
+                from services.curator_brain import curator_brain
+                if curator_brain.is_cancelled(plan_id):
+                    curator_brain.cancel_plan(plan_id, reason="user_requested")
+                    curator_brain.unregister_cancellable(plan_id)
+                    return {
+                        "items_collected": 0,
+                        "cancelled": True,
+                        "message": "Cancelled by user after judging",
+                    }
+                curator_brain.start_step(plan_id, 3)
+            except Exception as _e:
+                logger.debug(f"[curator] cancel check 2 / step3 start: {_e}")
         
         approved = 0
         pending = 0
@@ -3432,8 +3744,24 @@ Respond with ONLY a JSON array of strings, no other text:
         from storage.source_store import source_store
         existing_sources = await source_store.list(notebook_id)
         existing_urls = {s.get("url") for s in existing_sources if s.get("url")}
-        
+
+        # Curator Phase 2b: track whether the user cancelled mid-store.
+        # If they do, we break out of the loop and report partial counts.
+        cancelled_mid_store = False
+
         for item, judgment in zip(collected_items, judgments):
+            # ── Cancel breakpoint 3: per-iteration ──────────────────────
+            # User can stop mid-store. Items already processed in earlier
+            # iterations stay (they're committed). Future iterations skip.
+            if plan_id:
+                try:
+                    from services.curator_brain import curator_brain
+                    if curator_brain.is_cancelled(plan_id):
+                        cancelled_mid_store = True
+                        break
+                except Exception as _e:
+                    logger.debug(f"[curator] cancel check 3: {_e}")
+
             # Hard confidence floor: items below threshold are always filtered
             if item.overall_confidence < CONFIDENCE_FLOOR:
                 filtered += 1
@@ -3492,6 +3820,37 @@ Respond with ONLY a JSON array of strings, no other text:
                     filtered_titles.append({"title": item.title, "source": item.source_name, "confidence": item.overall_confidence, "reason": "shallow_or_duplicate"})
         
         print(f"[CURATOR] Done: {approved} approved, {pending} pending, {rejected} rejected, {filtered} filtered (shallow/dup)")
+
+        # Plan step 3 (store) — complete (or mark cancelled if the user
+        # stopped mid-iteration). Plan auto-completes from complete_step
+        # when this is the final step; cancel_plan overrides to cancelled.
+        if plan_id:
+            try:
+                from services.curator_brain import curator_brain
+                if cancelled_mid_store:
+                    curator_brain.complete_step(
+                        plan_id, 3,
+                        output_summary=(
+                            f"{approved} approved, {pending} pending, "
+                            f"{rejected} rejected before cancel"
+                        ),
+                    )
+                    curator_brain.cancel_plan(plan_id, reason="user_requested")
+                else:
+                    curator_brain.complete_step(
+                        plan_id, 3,
+                        output_summary=f"{approved} approved, {pending} pending, {rejected} rejected, {filtered} filtered"
+                    )
+            except Exception as _e:
+                logger.debug(f"[curator] plan step3 complete: {_e}")
+            finally:
+                # Always unregister so the cancellation registry doesn't
+                # accumulate dead entries.
+                try:
+                    from services.curator_brain import curator_brain as _cb
+                    _cb.unregister_cancellable(plan_id)
+                except Exception:
+                    pass
         
         # Record in collection history
         try:
@@ -3724,7 +4083,87 @@ Respond with ONLY a JSON array of strings, no other text:
                         stagnation_context = f"\n🔭 This notebook's collection is in expansion mode — no new content in {days} days, exploring wider search criteria."
             except Exception as _e:
                 logger.debug(f"[curator] {type(_e).__name__}: {_e}")
-        
+
+        # Curator Phase 3a: mental-model context injection. When the
+        # current notebook has an inferred mental model with reasonable
+        # confidence, surface it so the curator's reply can lean on
+        # what we already understand about the user's project. Empty /
+        # low-confidence / model-missing cases fall through silently.
+        mental_model_context = ""
+        if notebook_id:
+            try:
+                from services.curator_brain import curator_brain as _cb
+                _mm = _cb.get_mental_model(notebook_id)
+                # Phase 3b hotfix: dropped the >0.3 confidence floor to
+                # match the stance scorer. A low-confidence inferred
+                # mental model is still useful context for chat replies.
+                if (
+                    _mm
+                    and (_mm.get("thesis") or _mm.get("stage"))
+                ):
+                    _lines = []
+                    if _mm.get("thesis"):
+                        _lines.append(f"  - thesis: {_mm['thesis']}")
+                    if _mm.get("stage"):
+                        _lines.append(f"  - stage: {_mm['stage']}")
+                    if _mm.get("blocked_on"):
+                        _lines.append(f"  - blocked_on: {_mm['blocked_on']}")
+                    if _mm.get("recent_focus"):
+                        _lines.append(f"  - recent_focus: {_mm['recent_focus']}")
+                    if _mm.get("goals"):
+                        _goals = ", ".join(_mm["goals"][:3])
+                        _lines.append(f"  - goals: {_goals}")
+                    if _lines:
+                        mental_model_context = (
+                            "\nMental model for this notebook (use as context, do not repeat verbatim):\n"
+                            + "\n".join(_lines)
+                        )
+            except Exception as _e:
+                logger.debug(f"[curator] mental_model context fetch: {_e}")
+
+        # Curator Phase 3c: ambient dissent context. Injects top
+        # contradicting sources into the system prompt; LLM is
+        # instructed to mention them ONLY if relevant to the user's
+        # question. Gated by nag budget. The pending overwatch aside
+        # (event-bus triggered) is surfaced separately by _stream_curator
+        # via curator_aside, not here.
+        dissent_context = ""
+        if notebook_id:
+            try:
+                from services.curator_brain import curator_brain as _cb
+                # Dissent in chat is medium priority — relevant to user query
+                # but not urgent enough to bypass the daily cap.
+                if _cb.can_fire_nag("dissent_ambient_in_chat", notebook_id, priority="medium"):
+                    dissenters = _cb.get_dissenting_sources(notebook_id, limit=2)
+                    if dissenters:
+                        # Best-effort: attach source titles for readability.
+                        from storage.source_store import source_store as _ss
+                        _dlines = []
+                        for d in dissenters:
+                            title = d.get("source_id")
+                            try:
+                                src = await _ss.get(d["source_id"])
+                                if src:
+                                    title = (
+                                        src.get("filename") or src.get("title")
+                                        or src.get("url") or title
+                                    )
+                            except Exception:
+                                pass
+                            _dlines.append(
+                                f"  - \"{str(title)[:100]}\": {d.get('rationale', '')[:200]}"
+                            )
+                        if _dlines:
+                            dissent_context = (
+                                "\nDissenting evidence in this notebook "
+                                "(mention ONLY if the user's question touches the thesis; "
+                                "stay silent otherwise — do not force-surface this):\n"
+                                + "\n".join(_dlines)
+                            )
+                            _cb.record_nag("dissent_ambient_in_chat", notebook_id=notebook_id)
+            except Exception as _e:
+                logger.debug(f"[curator] dissent context fetch: {_e}")
+
         # Search across ALL notebooks for cross-references (PARALLEL)
         cross_context = ""
         if notebooks and len(notebooks) > 1:
@@ -3802,6 +4241,8 @@ Your role:
 {search_context}
 {cross_context}
 {stagnation_context}
+{mental_model_context}
+{dissent_context}
 
 Rules:
 - Be conversational and concise (2-4 sentences typical)
@@ -3821,15 +4262,298 @@ Rules:
                 model=settings.ollama_model,
                 temperature=0.5
             )
-            return response.get("response", "I'm having trouble processing that right now.")
+            reply_text = response.get("response", "I'm having trouble processing that right now.")
+            # Curator Phase 1: emit observability event so the brain's
+            # consumer loop knows the user just talked to the curator.
+            try:
+                from services.curator_event_bus import event_bus
+                event_bus.emit_now(
+                    actor="@curator",
+                    action="conversational_reply",
+                    notebook_id=notebook_id,
+                    payload={
+                        "message_chars": len(message),
+                        "reply_chars": len(reply_text),
+                        "had_cross_context": bool(cross_context),
+                    },
+                    outcome="success",
+                )
+            except Exception as _e:
+                pass
+            return reply_text
         except Exception as e:
             logger.error(f"Curator chat failed: {e}")
+            try:
+                from services.curator_event_bus import event_bus
+                event_bus.emit_now(
+                    actor="@curator",
+                    action="conversational_reply",
+                    notebook_id=notebook_id,
+                    payload={"error": str(e)[:200]},
+                    outcome="failed",
+                )
+            except Exception:
+                pass
             return "I'm experiencing a technical issue. Please try again."
     
     # =========================================================================
     # Overwatch — Ambient cross-notebook awareness in regular chat
     # =========================================================================
-    
+
+    async def maybe_fire_anticipatory_draft(
+        self,
+        notebook_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Pre-draft a Studio output for a mature notebook (Curator Phase 6a).
+
+        Gating (all must be true):
+          - Notebook has ≥15 sources (mature enough to draft from)
+          - Mental model exists with a thesis (something to write toward)
+          - Mental model is stable (last_inferred_at OR last_user_edit_at
+            ≥ 3 days ago — thesis isn't churning)
+          - No anticipatory draft active for this notebook (existing
+            unconsumed draft would just get clobbered)
+          - Not in discard cool-off (user hasn't recently rejected one)
+          - `can_fire_nag('anticipatory_draft', nb, priority='low')` allows
+
+        Returns the new draft dict on success, None on skip/failure.
+        """
+        try:
+            from services.curator_brain import curator_brain as _cb
+            from storage.source_store import source_store
+            from datetime import timedelta
+
+            # Gate 1: nag budget (low priority — chatty surface)
+            if not _cb.can_fire_nag("anticipatory_draft", notebook_id, priority="low"):
+                logger.debug(
+                    f"[curator] anticipatory_draft({notebook_id[:8]}): "
+                    f"nag budget blocked"
+                )
+                return None
+
+            # Gate 2: not in discard cool-off
+            if _cb.is_drafting_suppressed(notebook_id):
+                logger.debug(
+                    f"[curator] anticipatory_draft({notebook_id[:8]}): "
+                    f"in 14-day discard cool-off"
+                )
+                return None
+
+            # Gate 3: no existing unconsumed draft
+            existing = _cb.get_latest_unconsumed_draft(notebook_id)
+            if existing:
+                logger.debug(
+                    f"[curator] anticipatory_draft({notebook_id[:8]}): "
+                    f"existing unconsumed draft #{existing['id']}"
+                )
+                return None
+
+            # Gate 4: source count ≥ 15
+            sources = await source_store.list(notebook_id)
+            if len(sources) < 15:
+                return None
+
+            # Gate 5: mental model exists with a thesis
+            mm = _cb.get_mental_model(notebook_id)
+            if not mm:
+                return None
+            thesis = (mm.get("thesis") or "").strip()
+            if not thesis:
+                return None
+
+            # Gate 6: mental model is STABLE (≥3 days since last change)
+            now = datetime.utcnow()
+            three_days_ago = now - timedelta(days=3)
+            stable = True
+            for ts_field in ("last_user_edit_at", "last_inferred_at"):
+                ts_str = mm.get(ts_field)
+                if ts_str:
+                    try:
+                        ts = datetime.fromisoformat(ts_str)
+                        if ts > three_days_ago:
+                            stable = False
+                            break
+                    except (ValueError, TypeError):
+                        pass
+            if not stable:
+                logger.debug(
+                    f"[curator] anticipatory_draft({notebook_id[:8]}): "
+                    f"mental model still settling (changed in last 3d)"
+                )
+                return None
+
+            # Pick kind based on stage. Default = executive_brief.
+            stage = (mm.get("stage") or "").strip().lower()
+            if stage in ("exploration", "gathering"):
+                kind = "mind_map"
+            else:
+                kind = "executive_brief"
+
+            # Generate the draft content via the same fast model path
+            # the brief synthesizer uses — keeps cost low and matches
+            # the curator's voice.
+            recent_sources = sources[:15]
+            source_titles = "\n".join(
+                f"  - {(s.get('filename') or s.get('title') or s.get('url') or 'Untitled')[:120]}"
+                for s in recent_sources
+            )
+            voice_block = VOICE_PROMPTS.get(self.narrative_voice, "")
+            prompt = (
+                f"{voice_block}\n\n"
+                f"You are pre-drafting a {kind} for a researcher who has been working on:\n"
+                f"Thesis: {thesis}\n"
+                f"Stage: {stage or 'unspecified'}\n"
+                f"Recent focus: {mm.get('recent_focus') or 'unspecified'}\n"
+                f"Blocked on: {mm.get('blocked_on') or 'nothing in particular'}\n"
+                f"\n"
+                f"They have {len(sources)} sources collected. Recent ones:\n"
+                f"{source_titles}\n"
+                f"\n"
+                f"Draft a substantive markdown document. For an executive_brief: "
+                f"executive summary, key findings, open questions, suggested next step. "
+                f"For a mind_map: a structured concept map in markdown with the thesis "
+                f"at the root and 5-8 child branches reflecting the sub-themes. "
+                f"Keep it tight (under 800 words). Use H2/H3 headings.\n"
+                f"\n"
+                f"Output ONLY the markdown — no preamble, no commentary."
+            )
+
+            try:
+                result = await ollama_client.generate(
+                    prompt=prompt,
+                    system=f"You are {self.name}, drafting pre-emptive Studio content.",
+                    model=settings.ollama_model,  # main model — quality matters here
+                    temperature=0.5,
+                    timeout=120.0,
+                )
+                content = (result.get("response") or "").strip()
+            except Exception as e:
+                logger.warning(f"[curator] anticipatory_draft LLM call failed: {e}")
+                return None
+
+            if not content or len(content) < 200:
+                logger.debug(
+                    f"[curator] anticipatory_draft({notebook_id[:8]}): "
+                    f"content too short ({len(content)} chars), skipping"
+                )
+                return None
+
+            # Persist + record nag fire so daily cap counts it
+            draft_id = _cb.queue_draft(
+                notebook_id=notebook_id,
+                kind=kind,
+                content_markdown=content,
+                source_signal=f"stage={stage}; sources={len(sources)}",
+            )
+            _cb.record_nag(
+                "anticipatory_draft",
+                notebook_id=notebook_id,
+                subject_id=str(draft_id) if draft_id else None,
+            )
+            logger.info(
+                f"[curator] anticipatory_draft queued for notebook {notebook_id[:8]}: "
+                f"kind={kind} chars={len(content)} id={draft_id}"
+            )
+            return _cb.get_latest_unconsumed_draft(notebook_id)
+        except Exception as e:
+            logger.warning(f"[curator] maybe_fire_anticipatory_draft failed: {e}")
+            return None
+
+    async def maybe_fire_dissent_overwatch(
+        self,
+        notebook_id: str,
+        new_source_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Generate a dissent overwatch aside text if conditions are right.
+
+        Curator Phase 3c (2026-05-13). Called by the event-bus consumer
+        when a new stance scores as high-confidence contradicts. Returns
+        a one-sentence aside text OR None.
+
+        Fires when ALL of:
+          - can_fire_nag('dissent_overwatch_aside', notebook_id) is True
+          - notebook supporting count ≥ 5 (real consensus to dissent against)
+          - at least 1 contradicting source with confidence > 0.6 exists
+
+        On fire: records the nag, queues a pending aside on the brain so
+        the next @curator chat reply surfaces it via curator_aside.
+        """
+        try:
+            from services.curator_brain import curator_brain as _cb
+            # Nag budget gate first — cheapest check.
+            # Contradiction surfacing is HIGH priority — bypasses daily cap.
+            # If the curator detects a contradiction in user-supported thesis,
+            # that's worth surfacing even on a chatty day. Cool-off still applies.
+            if not _cb.can_fire_nag("dissent_overwatch_aside", notebook_id, priority="high"):
+                logger.debug(
+                    f"[curator] maybe_fire_dissent_overwatch({notebook_id[:8]}): nag budget blocked"
+                )
+                return None
+
+            counts = _cb.get_notebook_stance_counts(notebook_id)
+            if counts.get("supports", 0) < 5:
+                return None
+
+            dissenters = _cb.get_dissenting_sources(notebook_id, limit=5)
+            top = next((d for d in dissenters if (d.get("confidence") or 0) > 0.6), None)
+            if not top:
+                return None
+
+            # Best-effort: get the source title for a friendlier aside.
+            title = top.get("source_id") or "a source"
+            try:
+                from storage.source_store import source_store
+                src = await source_store.get(top["source_id"])
+                if src:
+                    title = (
+                        src.get("filename") or src.get("title") or src.get("url") or title
+                    )
+            except Exception:
+                pass
+
+            # If the trigger came from a specific newly-scored source, prefer that one.
+            if new_source_id:
+                new_match = next(
+                    (d for d in dissenters if d.get("source_id") == new_source_id),
+                    None,
+                )
+                if new_match and (new_match.get("confidence") or 0) > 0.6:
+                    top = new_match
+                    try:
+                        from storage.source_store import source_store
+                        src = await source_store.get(new_source_id)
+                        if src:
+                            title = (
+                                src.get("filename") or src.get("title") or src.get("url") or title
+                            )
+                    except Exception:
+                        pass
+
+            aside = (
+                f"Heads up — \"{str(title)[:120]}\" actually contradicts the notebook's thesis: "
+                f"{top.get('rationale', '')[:200]}"
+            )
+
+            # Record + queue
+            nag_id = _cb.record_nag(
+                "dissent_overwatch_aside",
+                notebook_id=notebook_id,
+                subject_id=top.get("source_id"),
+            )
+            _cb.queue_pending_aside(
+                notebook_id=notebook_id,
+                kind="dissent",
+                aside_text=aside,
+                nag_id=nag_id,
+            )
+            logger.info(
+                f"[curator] dissent overwatch queued for notebook {notebook_id[:8]}: {aside[:100]}"
+            )
+            return aside
+        except Exception as e:
+            logger.warning(f"[curator] maybe_fire_dissent_overwatch failed: {e}")
+            return None
+
     async def generate_overwatch_aside(
         self,
         query: str,
@@ -3839,9 +4563,51 @@ Rules:
         """
         After a regular chat answer, check if the Curator should chime in
         with cross-notebook context. Only returns something when genuinely useful.
-        
+
         Returns a short aside string or None.
+
+        Curator Phase 3c: also consumes any pending overwatch asides queued
+        by the event-bus dissent trigger before falling through to the
+        existing cross-notebook brain/vector path. Pending asides are
+        higher-signal (already gated by nag budget + stance confidence).
         """
+        # Phase 3c fast path: pending overwatch aside queued by event bus.
+        try:
+            from services.curator_brain import curator_brain as _cb
+            pending = _cb.consume_pending_aside(notebook_id)
+            if pending and pending.get("aside_text"):
+                logger.debug(
+                    f"[curator] generate_overwatch_aside({notebook_id[:8]}): "
+                    f"surfacing pending aside (kind={pending.get('kind')})"
+                )
+                return pending["aside_text"]
+        except Exception as _e:
+            logger.debug(f"[curator] pending aside consume failed: {_e}")
+
+        # Curator Phase 5 (2026-05-13): narrow the probabilistic fallback.
+        # Skip the expensive cross-notebook LLM path if there's been any
+        # event-driven aside fired for this notebook in the last 30
+        # minutes (even if already consumed). The user just saw a
+        # curator surface — don't pile another one on top.
+        try:
+            from datetime import timedelta
+            from services.curator_brain import curator_brain as _cb
+            recent_cutoff = (datetime.utcnow() - timedelta(minutes=30)).isoformat()
+            row = _cb._conn.execute(
+                """SELECT id FROM pending_asides
+                   WHERE notebook_id = ? AND created_at > ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (notebook_id, recent_cutoff),
+            ).fetchone()
+            if row:
+                logger.debug(
+                    f"[curator] generate_overwatch_aside({notebook_id[:8]}): "
+                    f"recent event-driven aside found — skipping probabilistic fallback"
+                )
+                return None
+        except Exception as _e:
+            logger.debug(f"[curator] recent-aside check failed: {_e}")
+
         notebooks = await notebook_store.list()
 
         # Need at least 2 notebooks for cross-notebook insight

@@ -1,10 +1,12 @@
 """LocalBook Agent System
 
-LangGraph-based agent infrastructure for intelligent task routing and execution.
+Specialized agents (curator, collector, research, mcp-future) plus the
+LangGraph tooling that backs collection workflows and CARR retrieval.
+
+Note: `agents.supervisor` was archived 2026-05-12 (Curator Phase 1).
 """
 
 from agents.state import LocalBookState
-from agents.supervisor import create_supervisor_graph
 from agents.tools import (
     rag_search_tool,
     web_search_tool,
@@ -16,9 +18,8 @@ from agents.tools import (
 
 __all__ = [
     "LocalBookState",
-    "create_supervisor_graph",
     "rag_search_tool",
-    "web_search_tool", 
+    "web_search_tool",
     "generate_document_tool",
     "generate_quiz_tool",
     "generate_visual_tool",

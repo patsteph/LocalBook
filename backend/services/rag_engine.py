@@ -208,9 +208,16 @@ class RAGEngine:
         source_ids: Optional[List[str]] = None,
         top_k: int = 4,
         enable_web_search: bool = False,
-        llm_provider: Optional[str] = None
+        llm_provider: Optional[str] = None,
+        extra_system_context: Optional[str] = None,
     ) -> Dict:
-        """Query the RAG system (non-streaming)"""
+        """Query the RAG system (non-streaming).
+
+        extra_system_context: Optional extra text prepended to the system
+        prompt. Used by api/chat.py to inject the curator's mental model
+        for this notebook (Curator Phase 3.5, 2026-05-13). Default None
+        preserves existing behaviour for all other callers.
+        """
         total_start = time.time()
         query_id = str(uuid.uuid4())
         query_type = self._classify_query(question)
@@ -452,7 +459,10 @@ class RAGEngine:
         rag_metrics.start_stage(RAGStage.LLM_GENERATION)
         step_start = time.time()
         conversation_id = str(uuid.uuid4())
-        answer_result = await self._generate_answer(question, context, num_citations, llm_provider, notebook_id, conversation_id)
+        answer_result = await self._generate_answer(
+            question, context, num_citations, llm_provider, notebook_id, conversation_id,
+            extra_system_context=extra_system_context,
+        )
         answer = answer_result["answer"]
         memory_used = answer_result.get("memory_used", [])
         memory_context_summary = answer_result.get("memory_context_summary")
@@ -720,9 +730,16 @@ JSON:"""
         source_ids: Optional[List[str]] = None,
         top_k: int = 4,
         llm_provider: Optional[str] = None,
-        deep_think: bool = False
+        deep_think: bool = False,
+        extra_system_context: Optional[str] = None,
     ) -> AsyncGenerator[Dict, None]:
-        """Query the RAG system with streaming response"""
+        """Query the RAG system with streaming response.
+
+        extra_system_context: Optional extra text prepended to the system
+        prompt. Used by api/chat.py to inject the curator's mental model
+        for this notebook (Curator Phase 3.5, 2026-05-13). Default None
+        preserves existing behaviour for all other callers.
+        """
         total_start = time.time()
         query_id = str(uuid.uuid4())
         query_type = self._classify_query(question)
@@ -978,6 +995,12 @@ JSON:"""
         format_hint = self._detect_response_format(question) if query_type == 'factual' else ""
         system_prompt = f"User context: {user_context}\n\n{base_prompt}{format_hint}" if user_context else f"{base_prompt}{format_hint}"
 
+        # Curator Phase 3.5 (2026-05-13): if api/chat.py passed mental-model
+        # context, prepend it. Terse — just thesis + stage. Skipped when
+        # not provided (preserves prior behaviour).
+        if extra_system_context and extra_system_context.strip():
+            system_prompt = f"{extra_system_context.strip()}\n\n{system_prompt}"
+
         # Build user prompt with temporal context if detected
         temporal_note = ""
         if temporal_filter:
@@ -1201,12 +1224,13 @@ Answer the question, citing sources inline as [N]. Do not list references at the
         """Fallback suggested questions"""
         return rag_generation.default_suggested_questions()
 
-    async def _generate_answer(self, question: str, context: str, num_citations: int = 5, llm_provider: Optional[str] = None, notebook_id: Optional[str] = None, conversation_id: Optional[str] = None, deep_think: bool = False) -> Dict:
+    async def _generate_answer(self, question: str, context: str, num_citations: int = 5, llm_provider: Optional[str] = None, notebook_id: Optional[str] = None, conversation_id: Optional[str] = None, deep_think: bool = False, extra_system_context: Optional[str] = None) -> Dict:
         """Generate answer using LLM with memory augmentation and user personalization."""
         return await rag_generation.generate_answer(
             question, context, num_citations=num_citations, llm_provider=llm_provider,
             notebook_id=notebook_id, conversation_id=conversation_id, deep_think=deep_think,
-            detect_response_format_fn=self._detect_response_format
+            detect_response_format_fn=self._detect_response_format,
+            extra_system_context=extra_system_context,
         )
     
     async def _call_ollama(self, system_prompt: str, prompt: str, model: str = None, num_predict: int = 500, num_ctx: int = None, temperature: float = None, repeat_penalty: float = None, extra_options: dict = None, voice_modifier: bool = True) -> str:

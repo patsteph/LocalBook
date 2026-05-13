@@ -117,6 +117,28 @@ class DocumentProcessor:
             source["characters"] = characters
             source["status"] = "completed"
 
+            # Curator Phase 2a: emit source_ingested so the brain knows a
+            # new source landed in this notebook (consumer marks the
+            # notebook digest as dirty for the next consolidation cycle).
+            try:
+                from services.curator_event_bus import event_bus
+                event_bus.emit_now(
+                    actor="system",
+                    action="source_ingested",
+                    notebook_id=notebook_id,
+                    payload={
+                        "source_id": source["id"],
+                        "filename": filename,
+                        "format": source.get("format", source.get("type", "unknown")),
+                        "chunks": chunks,
+                        "characters": characters,
+                    },
+                    outcome="success",
+                )
+            except Exception as _e:
+                # observability must not break ingestion
+                pass
+
             return {
                 "source_id": source["id"],
                 "filename": filename,

@@ -281,6 +281,34 @@ def detect_stagnation(notebook_id: str) -> Dict[str, Any]:
             f"days_since_growth={days_since}, dry_runs={consecutive_dry}"
         )
 
+    # Curator Phase 5 (2026-05-13): emit stagnation_escalated event when
+    # severity transitions UP (None→mild→moderate→plateau). Per-process
+    # cache — escalation detection survives a function call but resets
+    # on backend restart (acceptable: at worst we miss one aside).
+    _SEVERITY_RANK = {None: 0, "mild": 1, "moderate": 2, "plateau": 3}
+    prior_severity = _STAGNATION_SEVERITY_CACHE.get(notebook_id)
+    if _SEVERITY_RANK[severity] > _SEVERITY_RANK[prior_severity]:
+        _STAGNATION_SEVERITY_CACHE[notebook_id] = severity
+        if severity is not None:
+            try:
+                from services.curator_event_bus import event_bus
+                event_bus.emit_now(
+                    actor="@curator",
+                    action="stagnation_escalated",
+                    notebook_id=notebook_id,
+                    payload={
+                        "severity": severity,
+                        "prior_severity": prior_severity,
+                        "days_since_growth": days_since,
+                    },
+                    outcome="success",
+                )
+            except Exception as _e:
+                logger.debug(f"[Stagnation] event emit failed (non-fatal): {_e}")
+    elif _SEVERITY_RANK[severity] < _SEVERITY_RANK[prior_severity]:
+        # Recovery — update cache but don't emit (no event for going down).
+        _STAGNATION_SEVERITY_CACHE[notebook_id] = severity
+
     return {
         "stagnating": stagnating,
         "severity": severity,
@@ -288,6 +316,11 @@ def detect_stagnation(notebook_id: str) -> Dict[str, Any]:
         "total_dry_runs": consecutive_dry,
         "dominant_rejection_reasons": dry_rejection_reasons,
     }
+
+
+# Per-process cache for severity escalation detection (Curator Phase 5).
+# Maps notebook_id → last-observed severity. Resets on backend restart.
+_STAGNATION_SEVERITY_CACHE: Dict[str, Optional[str]] = {}
 
 
 def record_query_outcomes(

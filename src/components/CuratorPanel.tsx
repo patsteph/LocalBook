@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { curatorService } from '../services/curatorApi';
+import { useEngagement } from '../hooks/useEngagement';
+import { MentalModelPanel } from './curator/MentalModelPanel';
 
 interface CuratorConfig {
   name: string;
@@ -67,6 +69,18 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { capture: captureEngagement } = useEngagement();
+
+  // Curator Phase 2b: capture that the user opened the curator panel.
+  // Brain uses this as a signal of which curator surfaces the user
+  // actually engages with vs ignores.
+  useEffect(() => {
+    captureEngagement('curator_feature', 'opened', {
+      subject_type: 'panel',
+      subject_id: 'curator_panel',
+      notebook_id: notebookId || undefined,
+    });
+  }, [notebookId, captureEngagement]);
 
   // Inject morning brief as the curator's opening message when navigated from banner
   const briefConsumedRef = useRef<string | null>(null);
@@ -303,6 +317,13 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
           {config?.personality || 'Your research advisor with cross-notebook awareness'}
         </p>
       </div>
+
+      {/* Mental model — Curator Phase 3a (only shown when a notebook is selected) */}
+      {notebookId && (
+        <div className="flex-shrink-0 px-4">
+          <MentalModelPanel notebookId={notebookId} />
+        </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">

@@ -96,6 +96,7 @@ export interface ChatMessage {
   agentName?: string;    // Agent identity: display name (e.g. "Scout", "Curator")
   agentType?: 'curator' | 'collector' | 'research' | 'studio';  // Agent identity: type for color coding
   researchResults?: ResearchResult[];  // @research: structured results for approval UI
+  planId?: string;       // Curator Phase 2b: when present, renders an inline PlanCard
 }
 
 export interface ChatQuery {

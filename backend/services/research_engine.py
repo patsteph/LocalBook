@@ -88,6 +88,12 @@ class ResearchEngine:
                 domain=self._extract_domain(url),
             ))
 
+        self._emit_research_event(
+            mode="web_search",
+            query=query,
+            notebook_id=notebook_id,
+            result_count=len(results),
+        )
         return results
 
     # ── Site Search (mode 2) ─────────────────────────────────────────────
@@ -102,9 +108,50 @@ class ResearchEngine:
     ) -> List[ResearchResult]:
         """Site-scoped search (prepends site: to query)."""
         scoped_query = f"site:{site} {query}"
-        return await self.web_search(
+        results = await self.web_search(
             scoped_query, notebook_id, max_results=max_results, on_status=on_status
         )
+        # Override the mode tag — web_search will have emitted as 'web_search'
+        # but the user intent was site_search. We emit a second event to
+        # make site_search invocations observable.
+        self._emit_research_event(
+            mode="site_search",
+            query=query,
+            notebook_id=notebook_id,
+            result_count=len(results),
+            extra={"site": site},
+        )
+        return results
+
+    def _emit_research_event(
+        self,
+        mode: str,
+        query: str,
+        notebook_id: str,
+        result_count: int,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Fire-and-forget emit to the curator event bus."""
+        try:
+            from services.curator_event_bus import event_bus
+            payload: Dict[str, Any] = {
+                "mode": mode,
+                "query_chars": len(query or ""),
+                "result_count": result_count,
+            }
+            if extra:
+                payload.update(extra)
+            event_bus.emit_now(
+                actor="@research",
+                action="research_completed",
+                notebook_id=notebook_id,
+                intent=mode,
+                payload=payload,
+                outcome="success",
+            )
+        except Exception:
+            # observability must not break the research pipeline
+            pass
 
     # ── Deep Dive (mode 3) ───────────────────────────────────────────────
 
@@ -248,6 +295,17 @@ class ResearchEngine:
         results.sort(key=lambda r: r.quality_score, reverse=True)
         results = results[:filters.max_results]
 
+        self._emit_research_event(
+            mode="deep_dive",
+            query=query,
+            notebook_id=notebook_id,
+            result_count=len(results),
+            extra={
+                "min_quality_score": filters.min_quality_score,
+                "max_results": filters.max_results,
+                "recency_days": filters.recency_days,
+            },
+        )
         return results
 
     # ── LLM Quality Evaluation ───────────────────────────────────────────

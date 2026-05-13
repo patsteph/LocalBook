@@ -18,6 +18,7 @@ import { RichNoteEditor } from './RichNoteEditor';
 import { useCanvasItems, useAppShell } from './canvas/CanvasContext';
 import { CanvasItem } from './canvas/types';
 import { CollectionTombstone } from './collector/CollectionTombstone';
+import { useEngagement } from '../hooks/useEngagement';
 
 interface ChatInterfaceProps {
   notebookId: string | null;
@@ -28,6 +29,7 @@ interface ChatInterfaceProps {
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmProvider, onOpenWebSearch, prefillQuery }) => {
   const { openCollector } = useAppShell();
+  const { capture: captureEngagement } = useEngagement();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [deepThink, setDeepThink] = useState(false);  // Deep Think mode toggle
@@ -271,6 +273,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     setLoading(true);
     setError(null);
 
+    // Curator Phase 2b: capture UI-side query intent. Complements the
+    // backend rag_query event by providing a first-paint timestamp the
+    // brain can use to measure latency-to-answer for engagement work.
+    captureEngagement('query', 'asked_ui', {
+      subject_type: 'agent',
+      subject_id: target || 'rag',
+      notebook_id: notebookId || undefined,
+      payload: { question_chars: currentQuestion.length },
+    });
+
     // Create a placeholder for the streaming response
     const streamingMessage: ChatMessage = {
       role: 'assistant',
@@ -441,6 +453,22 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 return updated;
               });
             }
+          },
+          onPlanAttached: (planId) => {
+            // Curator Phase 2b: backend registered a plan for this
+            // collector action — stamp it on the assistant message
+            // so the PlanCard mounts and the SSE plan stream takes over.
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (updated[lastIdx]?.role === 'assistant') {
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  planId,
+                };
+              }
+              return updated;
+            });
           },
           onDone: (followUpQuestions, curatorName, agentName, agentType) => {
             // Finalize the message with follow-up questions and low confidence prompt

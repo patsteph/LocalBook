@@ -132,6 +132,9 @@ backend/evaluator/results/
 release.sh
 scripts/
 
+# Curator phase verifier scripts (local-only, regenerated each phase)
+backend/scripts/verify_phase*.py
+
 # Code signing + notarization artifacts (NEVER commit to git)
 # Certificate/keystore files — should only ever live in macOS keychain
 *.p12

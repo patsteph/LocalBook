@@ -1,7 +1,10 @@
 """Curator API endpoints for cross-notebook synthesis and oversight"""
+import asyncio
+import json
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agents.curator import curator, CollectedItem
@@ -45,6 +48,42 @@ class OverwatchRequest(BaseModel):
     query: str
     answer: str
     notebook_id: str
+
+
+class MentalModelFieldUpdate(BaseModel):
+    """Body for PUT /curator/notebooks/{nb_id}/mental-model.
+
+    Curator Phase 3a. User edits one field at a time. Optional `pin` flag
+    also adds the field to pinned_fields (or removes via pin=false).
+    """
+    field: str
+    value: Any
+    pin: Optional[bool] = None
+
+
+class AsideThumbsRequest(BaseModel):
+    """Body for POST /curator/asides/{nag_id}/thumbs (Phase 3c).
+
+    `response` is one of: 'up', 'down', 'dismissed'. Two thumbs_down
+    on the same (kind, notebook_id) within 7 days triggers the
+    cool-off policy in can_fire_nag.
+    """
+    response: str
+
+
+class EngagementCaptureRequest(BaseModel):
+    """Body for POST /curator/engagement (Curator Phase 2a).
+
+    Frontend surfaces (morning brief tile, reflections panel, connection
+    cards) POST here when the user takes an action — opens a brief,
+    clicks a story, thumbs-up a reflection. Local-only telemetry.
+    """
+    kind: str
+    signal: str
+    subject_type: Optional[str] = None
+    subject_id: Optional[str] = None
+    notebook_id: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
 
 
 @router.get("/config")
@@ -610,6 +649,13 @@ async def get_brain_status():
                     "notebooks": [c["notebook_a"], c["notebook_b"]],
                     "description": c["description"],
                     "strength": round(c["strength"], 3),
+                    # Curator Phase 4: tier classification so the UI can
+                    # render confidence-aware visuals without recomputing.
+                    "tier": (
+                        "strong" if (c["strength"] or 0) >= 0.7
+                        else "weak" if (c["strength"] or 0) < 0.4
+                        else "medium"
+                    ),
                     "status": c["status"],
                     "discovered_at": c["discovered_at"],
                 }
@@ -618,5 +664,386 @@ async def get_brain_status():
         }
     except Exception as e:
         logger.error(f"[curator-brain] brain-status failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Engagement telemetry (Curator Phase 2a — 2026-05-13) ─────────────────
+
+@router.post("/engagement")
+async def record_engagement_event(request: EngagementCaptureRequest):
+    """Record a UI engagement event into the curator brain.
+
+    Local-only. Returns `{ok: True, suppressed: True}` without persisting
+    when settings.engagement_tracking_enabled is False. The Phase 2b UI
+    surfaces (morning brief tile, reflection cards, connection cards)
+    will POST here when the user opens / clicks / thumbs / dismisses.
+    """
+    try:
+        from config import settings
+        if not getattr(settings, "engagement_tracking_enabled", True):
+            return {"ok": True, "suppressed": True}
+
+        from services.curator_brain import curator_brain
+        new_id = curator_brain.record_engagement(
+            kind=request.kind,
+            signal=request.signal,
+            subject_type=request.subject_type,
+            subject_id=request.subject_id,
+            notebook_id=request.notebook_id,
+            payload=request.payload,
+        )
+        if new_id is None:
+            # record_engagement returned None — either feature disabled
+            # via env mid-flight, or a DB write error already logged.
+            return {"ok": False, "id": None}
+        return {"ok": True, "id": new_id}
+    except Exception as e:
+        logger.error(f"[curator] record_engagement failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/engagement")
+async def get_recent_engagement(
+    limit: int = 100,
+    kind: Optional[str] = None,
+    signal: Optional[str] = None,
+    notebook_id: Optional[str] = None,
+):
+    """Read recent engagement events. Used by debug/observability UI."""
+    try:
+        from services.curator_brain import curator_brain
+        return {
+            "events": curator_brain.recent_engagement(
+                limit=limit, kind=kind, signal=signal, notebook_id=notebook_id
+            )
+        }
+    except Exception as e:
+        logger.error(f"[curator] recent_engagement failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Plan event stream (Curator Phase 2b — 2026-05-13) ────────────────────
+
+# Action prefixes the SSE stream forwards. Other events stay internal.
+_STREAMED_ACTION_PREFIXES = ("plan_",)
+
+
+@router.get("/events/stream")
+async def stream_curator_events(request: Request):
+    """Server-Sent Events stream of plan_* events from the curator event bus.
+
+    Multi-client safe — each connection registers its own subscriber
+    handler that pushes to a per-connection asyncio.Queue. Handler is
+    unsubscribed on disconnect so handler lists don't accumulate.
+
+    Heartbeat ping every 15s keeps the connection alive across any
+    intermediate proxy timeouts.
+    """
+    from services.curator_event_bus import event_bus, CuratorEvent
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+
+    async def _on_event(event: CuratorEvent) -> None:
+        # Filter at subscribe time so we don't burn queue capacity on
+        # unrelated events (source_added, rag_query, etc).
+        if not any(event.action.startswith(p) for p in _STREAMED_ACTION_PREFIXES):
+            return
+        try:
+            queue.put_nowait({
+                "ts": event.ts.isoformat(),
+                "actor": event.actor,
+                "action": event.action,
+                "intent": event.intent,
+                "notebook_id": event.notebook_id,
+                "payload": event.payload,
+                "outcome": event.outcome,
+            })
+        except asyncio.QueueFull:
+            # Drop this event for this client rather than block the bus.
+            # The next event will recover state — plan reconciliation in
+            # the client is incremental but tolerates gaps.
+            logger.debug("[sse] per-client queue full; dropping event")
+
+    event_bus.subscribe(_on_event)
+
+    async def _generator():
+        # Initial ping so the client knows the connection is open.
+        yield ": connected\n\n"
+        try:
+            while True:
+                # If the client disconnected, fastapi sets is_disconnected.
+                if await request.is_disconnected():
+                    break
+                try:
+                    # Wait up to 15s for an event; if none, send heartbeat.
+                    evt = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"event: curator_event\ndata: {json.dumps(evt)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        except asyncio.CancelledError:
+            # Normal cleanup path when the client connection closes.
+            pass
+        finally:
+            event_bus.unsubscribe(_on_event)
+            logger.debug("[sse] client disconnected, unsubscribed handler")
+
+    return StreamingResponse(
+        _generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # disable nginx proxy buffering
+        },
+    )
+
+
+# Read-one endpoint for plans. Used by the PlanCard component when the
+# SSE stream hasn't delivered events yet (race: collection finishes faster
+# than the EventSource connection establishes). Cheap idempotent fetch
+# powered by curator_brain.get_plan.
+@router.get("/plans/{plan_id}")
+async def get_plan_by_id(plan_id: str):
+    """Return a single plan with its steps. 404 if not found."""
+    try:
+        from services.curator_brain import curator_brain
+        plan = curator_brain.get_plan(plan_id)
+        if plan is None:
+            raise HTTPException(status_code=404, detail="Plan not found")
+        return plan
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[curator] get_plan({plan_id}) failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Mental Model endpoints (Curator Phase 3a — 2026-05-13) ──────────────
+
+_EMPTY_MENTAL_MODEL = {
+    "thesis": "",
+    "goals": [],
+    "audience": "",
+    "stage": "",
+    "blocked_on": "",
+    "recent_focus": "",
+    "pinned_fields": [],
+    "confidence": 0.0,
+    "last_inferred_at": None,
+    "last_user_edit_at": None,
+}
+
+_VALID_MM_FIELDS = {"thesis", "goals", "audience", "stage", "blocked_on", "recent_focus"}
+
+
+@router.get("/notebooks/{nb_id}/mental-model")
+async def get_mental_model(nb_id: str):
+    """Return the curator's mental model for a notebook.
+
+    Returns an empty default shape when no model exists yet (rather than
+    404) so frontend always has a renderable response.
+    """
+    try:
+        from services.curator_brain import curator_brain
+        model = curator_brain.get_mental_model(nb_id)
+        if model is None:
+            return {"notebook_id": nb_id, **_EMPTY_MENTAL_MODEL, "exists": False}
+        return {**model, "exists": True}
+    except Exception as e:
+        logger.error(f"[curator] get_mental_model({nb_id}) failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/notebooks/{nb_id}/mental-model")
+async def update_mental_model_field(nb_id: str, request: MentalModelFieldUpdate):
+    """Set a single field on the mental model + optionally pin/unpin.
+
+    Curator Phase 3a. by_user=True is stamped automatically; pin flag
+    is handled if present in the request.
+    """
+    if request.field not in _VALID_MM_FIELDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown field '{request.field}'. Valid: {sorted(_VALID_MM_FIELDS)}",
+        )
+    try:
+        from services.curator_brain import curator_brain
+        ok = curator_brain.set_mental_model_field(
+            nb_id, request.field, request.value, by_user=True,
+        )
+        if not ok:
+            raise HTTPException(status_code=500, detail="Failed to write mental model")
+        if request.pin is True:
+            curator_brain.pin_field(nb_id, request.field)
+        elif request.pin is False:
+            curator_brain.unpin_field(nb_id, request.field)
+        return curator_brain.get_mental_model(nb_id) or {}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[curator] update_mental_model_field({nb_id}, {request.field}) failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Nag-budget / aside feedback (Curator Phase 3c — 2026-05-13) ────────
+
+@router.post("/asides/{nag_id}/thumbs")
+async def record_aside_thumbs(nag_id: int, request: AsideThumbsRequest):
+    """Record the user's response to a proactive curator surface.
+
+    `response`: 'up' | 'down' | 'dismissed'. Two 'down' responses
+    within 7 days for the same (kind, notebook_id) trigger cool-off:
+    curator stops firing that kind of surface for that notebook for
+    7 days. Backend-only in Phase 3c; UI buttons land later.
+    """
+    if request.response not in ("up", "down", "dismissed"):
+        raise HTTPException(
+            status_code=400,
+            detail="response must be 'up', 'down', or 'dismissed'",
+        )
+    try:
+        from services.curator_brain import curator_brain
+        ok = curator_brain.set_nag_response(nag_id, request.response)
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"No nag record with id {nag_id}")
+        return {"ok": True, "nag_id": nag_id, "response": request.response}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[curator] record_aside_thumbs({nag_id}) failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Source stance endpoints (Curator Phase 3b — 2026-05-13) ────────────
+
+@router.get("/notebooks/{nb_id}/stances")
+async def get_notebook_stances(nb_id: str, dissent_limit: int = 5):
+    """Return stance counts + top dissenting sources for the notebook.
+
+    Used by MentalModelPanel's dissent meter. Cheap query — all rows
+    aggregated server-side. Includes source titles by joining with
+    source_store (best-effort).
+    """
+    try:
+        from services.curator_brain import curator_brain
+        counts = curator_brain.get_notebook_stance_counts(nb_id)
+        dissent_rows = curator_brain.get_dissenting_sources(nb_id, limit=dissent_limit)
+
+        # Best-effort: attach source titles
+        try:
+            from storage.source_store import source_store
+            for row in dissent_rows:
+                src = await source_store.get(row["source_id"])
+                if src:
+                    row["title"] = (
+                        src.get("filename") or src.get("title") or src.get("url") or ""
+                    )[:200]
+                else:
+                    row["title"] = row["source_id"]
+        except Exception:
+            for row in dissent_rows:
+                row.setdefault("title", row["source_id"])
+
+        return {
+            "notebook_id": nb_id,
+            "counts": counts,
+            "top_dissent": dissent_rows,
+            "total": sum(counts.values()),
+        }
+    except Exception as e:
+        logger.error(f"[curator] get_notebook_stances({nb_id}) failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/notebooks/{nb_id}/sources/{source_id}/rescore")
+async def rescore_single_source(nb_id: str, source_id: str):
+    """Force a fresh stance scoring for one source.
+
+    Bypasses the thesis-hash skip. Returns the new stance dict.
+    Useful for "I disagree with the curator's classification — try again."
+    """
+    try:
+        from services.curator_brain import curator_brain
+        stance = await curator_brain.score_source_stance(
+            notebook_id=nb_id, source_id=source_id, force=True,
+        )
+        if stance is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not score — no thesis on this notebook, or scoring failed",
+            )
+        return stance
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[curator] rescore_single_source({nb_id}, {source_id}) failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/notebooks/{nb_id}/stances/rescore-all")
+async def rescore_all_notebook_stances(nb_id: str):
+    """Kick off a background re-score of all sources in the notebook.
+
+    Returns immediately with a queued response. Actual scoring happens
+    in a background task with the batched/throttled policy. Used by
+    UI "Rescore all" button + as a manual recovery from a bad thesis.
+    """
+    try:
+        from services.curator_brain import curator_brain
+        from storage.source_store import source_store
+        sources = await source_store.list(nb_id)
+        count = len(sources)
+
+        # Kick off in background — don't await
+        asyncio.create_task(
+            curator_brain.rescore_notebook_stances(nb_id),
+            name=f"stance-rescore-{nb_id[:8]}",
+        )
+        return {"queued": True, "source_count": count, "notebook_id": nb_id}
+    except Exception as e:
+        logger.error(f"[curator] rescore_all_notebook_stances({nb_id}) failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/notebooks/{nb_id}/mental-model/infer")
+async def trigger_mental_model_inference(nb_id: str):
+    """Force a fresh mental-model inference (bypasses the 30s debounce).
+
+    Used by the UI 'Refresh inference' button. Pinned fields are still
+    preserved. Returns the post-inference model.
+    """
+    try:
+        from services.curator_brain import curator_brain
+        model = await curator_brain.infer_mental_model(nb_id, force=True)
+        if model is None:
+            # Inference failed but we still have storage; return current.
+            return curator_brain.get_mental_model(nb_id) or {
+                "notebook_id": nb_id, **_EMPTY_MENTAL_MODEL, "exists": False,
+            }
+        return model
+    except Exception as e:
+        logger.error(f"[curator] trigger_mental_model_inference({nb_id}) failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/plans/{plan_id}/cancel")
+async def cancel_plan(plan_id: str):
+    """Request cancellation of a running plan.
+
+    Sets an asyncio.Event the plan's runner checks at natural breakpoints.
+    Returns 200 if the plan was found and signal sent, 404 if no such
+    cancellable plan is registered (already done, never started, or
+    not a cancellable kind).
+    """
+    try:
+        from services.curator_brain import curator_brain
+        ok = curator_brain.trigger_cancel(plan_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="No cancellable plan with that id")
+        return {"ok": True, "plan_id": plan_id, "signal": "sent"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[curator] cancel_plan({plan_id}) failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 

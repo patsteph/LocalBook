@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { ChatMessage, Citation as CitationType, InlineVisualData, ResearchResult } from '../../types';
 import { Citation, CitationList } from '../Citation';
@@ -6,6 +6,8 @@ import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { InlineVisual } from '../visual';
 import { BookmarkButton } from '../shared/BookmarkButton';
 import { Radio, Compass, Search, ExternalLink, Plus, Check, Wand2 } from 'lucide-react';
+import { PlanCard } from '../curator/PlanCard';
+import { useEngagement } from '../../hooks/useEngagement';
 
 interface ChatMessageBubbleProps {
   message: ChatMessage;
@@ -200,6 +202,25 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
   onAddResearchResult,
 }) => {
   const [addedResults, setAddedResults] = React.useState<Set<string>>(new Set());
+  const { capture: captureEngagement } = useEngagement();
+
+  // Curator Phase 2b: signal that the user actually saw a curator aside.
+  // Brain will use this to learn which asides land (followed by an action
+  // shortly after) vs which fall flat (no follow-up). Fires once per
+  // message since useEffect dep is the aside text itself.
+  useEffect(() => {
+    if (message.curatorAside) {
+      captureEngagement('curator_feature', 'viewed', {
+        subject_type: 'aside',
+        subject_id: message.timestamp instanceof Date
+          ? message.timestamp.toISOString()
+          : String(message.timestamp),
+        notebook_id: notebookId || undefined,
+        payload: { chars: message.curatorAside.length },
+      });
+    }
+  }, [message.curatorAside, message.timestamp, notebookId, captureEngagement]);
+
   return (
     <div className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
       <div
@@ -266,7 +287,14 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                 <span className="animate-pulse">{message.statusMessage}</span>
               </div>
             )}
-            
+
+            {/* Plan card — Curator Phase 2b. Renders inline when the
+                message carries a planId, reads live state from the SSE
+                stream, provides a real Stop button. */}
+            {message.planId && (
+              <PlanCard planId={message.planId} />
+            )}
+
             {/* Memory indicator - subtle tooltip when memory is used */}
             {message.memoryUsed && message.memoryUsed.length > 0 && (
               <div className="mb-2 flex items-center gap-1.5 group relative">

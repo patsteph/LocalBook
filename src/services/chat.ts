@@ -25,6 +25,7 @@ export interface StreamCallbacks {
   onReplaceAnswer?: (content: string) => void;
   onResearchResults?: (results: ResearchResult[]) => void;
   onFollowUpQuestions?: (questions: string[]) => void;
+  onPlanAttached?: (planId: string) => void;
   onDone?: (followUpQuestions: string[], curatorName?: string, agentName?: string, agentType?: string) => void;
   onError?: (error: string) => void;
 }
@@ -85,6 +86,11 @@ export const chatService = {
             callbacks.onResearchResults?.(data.results || []);
           } else if (data.type === 'follow_up_questions') {
             callbacks.onFollowUpQuestions?.(data.questions || []);
+          } else if (data.type === 'plan_attached') {
+            // Curator Phase 2b: backend has registered a multi-step
+            // plan for this message — frontend stamps planId so the
+            // PlanCard mounts and the SSE plan stream takes over.
+            if (data.plan_id) callbacks.onPlanAttached?.(data.plan_id);
           } else if (data.type === 'done') {
             callbacks.onDone?.(data.follow_up_questions || [], data.curator_name, data.agent_name, data.agent_type);
           }

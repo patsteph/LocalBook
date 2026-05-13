@@ -95,6 +95,24 @@ class Settings(BaseSettings):
     # Debug mode — enables diagnostic endpoints (health portal, RAG health)
     debug_mode: bool = False  # Set LOCALBOOK_DEBUG_MODE=true to enable
 
+    # Curator pre-triage: when True, collector._add_to_approval_queue runs
+    # each candidate through curator._judge_single_item before queuing. The
+    # curator can auto-approve high-confidence items, auto-reject obvious
+    # rejects (e.g. high overlap with existing knowledge), or stamp the
+    # item with its decision and let it queue for the user. Set False to
+    # restore prior behaviour (no curator pre-triage). Curator Phase 1.
+    curator_pre_triage_enabled: bool = True
+
+    # Engagement telemetry: when True, the curator brain records what
+    # the user actually interacts with (RAG queries, source rejections,
+    # which @curator intents fire, brief opens, story clicks, thumbs
+    # reactions). Powers smart morning brief (Phase 5) + calibrated
+    # uncertainty (Phase 4). Data is local-only — never leaves the
+    # device. Flip to False to disable; record_engagement becomes a
+    # no-op and the /curator/engagement capture endpoint returns
+    # {ok: True, suppressed: True} without persisting. Curator Phase 2a.
+    engagement_tracking_enabled: bool = True
+
     # Storage backend — use SQLite instead of JSON files
     use_sqlite: bool = True  # SQLite is default — auto-migrates from JSON on first launch
 

@@ -151,6 +151,7 @@ async def generate_answer(
     conversation_id: Optional[str] = None,
     deep_think: bool = False,
     detect_response_format_fn=None,
+    extra_system_context: Optional[str] = None,
 ) -> Dict:
     """Generate answer using LLM with memory augmentation and user personalization.
     
@@ -194,6 +195,11 @@ async def generate_answer(
 
     # Combine user context + memory + base prompt
     system_parts = []
+    # Curator Phase 3.5 (2026-05-13): mental-model context goes first
+    # so the LLM frames the rest of the prompt against it. Terse — just
+    # what we get from api/chat.py (thesis + stage).
+    if extra_system_context and extra_system_context.strip():
+        system_parts.append(extra_system_context.strip())
     if user_context:
         system_parts.append(f"User context: {user_context}")
         memory_used.append("user_profile")

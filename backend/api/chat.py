@@ -89,6 +89,38 @@ _STUDIO_HELP = """**@studio — Create content from your conversation**
 **Tips:** Describe what you want naturally — specify format, style, duration, hosts, difficulty, etc. The conversation context is included automatically."""
 
 
+def _build_mental_model_block(notebook_id: Optional[str]) -> Optional[str]:
+    """Build a terse mental-model context block for RAG prompt injection.
+
+    Curator Phase 3.5 (2026-05-13). Format intentionally short — 1 line
+    per populated field — so RAG context bloat stays under ~100 tokens
+    on the high-traffic chat path. Returns None when no notebook, no
+    mental model, or no thesis (RAG should fall through to current
+    behaviour silently).
+
+    Failure-safe: ANY error (brain unavailable, DB lock, etc.) returns
+    None so chat continues to work even if the curator brain is broken.
+    """
+    if not notebook_id:
+        return None
+    try:
+        from services.curator_brain import curator_brain
+        mm = curator_brain.get_mental_model(notebook_id)
+        if not mm:
+            return None
+        thesis = (mm.get("thesis") or "").strip()
+        if not thesis:
+            return None
+        lines = [f"Notebook thesis: {thesis}"]
+        stage = (mm.get("stage") or "").strip()
+        if stage:
+            lines.append(f"Stage: {stage}")
+        return "\n".join(lines)
+    except Exception as _e:
+        logger.debug(f"[chat] mental-model fetch for RAG injection failed (non-fatal): {_e}")
+        return None
+
+
 def _is_help_request(question: str) -> bool:
     """Check if the user is asking for help."""
     q = question.strip().lower()
@@ -183,6 +215,12 @@ async def query(chat_query: ChatQuery):
                 )
                 return result
         
+        # Curator Phase 3.5 (2026-05-13): inject the notebook's mental
+        # model (thesis + stage) into the RAG system prompt so every
+        # chat reply is notebook-context aware, not just @curator chats.
+        # Terse format, fail-silent on any error.
+        extra_ctx = _build_mental_model_block(chat_query.notebook_id)
+
         # Standard path for simple/moderate queries
         result = await rag_engine.query(
             notebook_id=chat_query.notebook_id,
@@ -190,7 +228,8 @@ async def query(chat_query: ChatQuery):
             source_ids=chat_query.source_ids,
             top_k=chat_query.top_k or 4,
             enable_web_search=chat_query.enable_web_search,
-            llm_provider=chat_query.llm_provider
+            llm_provider=chat_query.llm_provider,
+            extra_system_context=extra_ctx,
         )
         
         # Log Q&A for memory consolidation (fire-and-forget)
@@ -199,7 +238,27 @@ async def query(chat_query: ChatQuery):
             log_chat_qa(chat_query.notebook_id, chat_query.question, result.answer if hasattr(result, 'answer') else result.get("answer", ""), sources_used)
         except Exception as _e:
             logger.debug(f"[chat] log_chat_qa failed (non-fatal): {_e}")
-        
+
+        # Curator Phase 2a: emit rag_query event for engagement tracking +
+        # brain awareness of what the user is asking. Fire-and-forget.
+        try:
+            from services.curator_event_bus import event_bus
+            _sources_used = sources_used if 'sources_used' in dir() else []
+            event_bus.emit_now(
+                actor="user",
+                action="rag_query",
+                notebook_id=chat_query.notebook_id,
+                payload={
+                    "question_chars": len(chat_query.question or ""),
+                    "source_count": len(_sources_used),
+                    "top_k": chat_query.top_k or 4,
+                    "streaming": False,
+                },
+                outcome="success",
+            )
+        except Exception as _e:
+            logger.debug(f"[chat] rag_query event emit failed: {_e}")
+
         return result
     except Exception as e:
         import traceback
@@ -255,7 +314,7 @@ async def query_stream(chat_query: ChatQuery):
     # Fallback intent detection: auto-route cross-notebook queries to Curator
     # Uses fast regex first; only invokes LLM classifier if regex is inconclusive
     if chat_query.target is None:
-        from agents.supervisor import is_cross_notebook_query
+        from agents.curator import is_cross_notebook_query
         if is_cross_notebook_query(chat_query.question):
             print(f"[Chat] Auto-routing cross-notebook query to Curator: '{chat_query.question[:60]}...'")
             return StreamingResponse(
@@ -271,6 +330,10 @@ async def query_stream(chat_query: ChatQuery):
     if cleared > 0:
         print(f"[Chat] Cleared {cleared} stale visual cache entries for notebook {chat_query.notebook_id}")
     
+    # Curator Phase 3.5: mental-model context for the streaming path.
+    # Fetched once outside the generator so it's not re-fetched on retries.
+    extra_ctx = _build_mental_model_block(chat_query.notebook_id)
+
     async def generate():
         answer_parts = []
         sources_used = []
@@ -281,7 +344,8 @@ async def query_stream(chat_query: ChatQuery):
                 source_ids=chat_query.source_ids,
                 top_k=chat_query.top_k or 4,
                 llm_provider=chat_query.llm_provider,
-                deep_think=chat_query.deep_think or False
+                deep_think=chat_query.deep_think or False,
+                extra_system_context=extra_ctx,
             ):
                 if chunk.get("type") == "answer_chunk":
                     answer_parts.append(chunk.get("content", ""))
@@ -293,10 +357,39 @@ async def query_stream(chat_query: ChatQuery):
                 log_chat_qa(chat_query.notebook_id, chat_query.question, "".join(answer_parts), sources_used)
             except Exception as _e:
                 logger.debug(f"[chat] log_chat_qa failed (non-fatal): {_e}")
+            # Curator Phase 2a: emit rag_query event for engagement tracking.
+            try:
+                from services.curator_event_bus import event_bus
+                event_bus.emit_now(
+                    actor="user",
+                    action="rag_query",
+                    notebook_id=chat_query.notebook_id,
+                    payload={
+                        "question_chars": len(chat_query.question or ""),
+                        "answer_chars": sum(len(p) for p in answer_parts),
+                        "source_count": len(sources_used),
+                        "top_k": chat_query.top_k or 4,
+                        "streaming": True,
+                    },
+                    outcome="success",
+                )
+            except Exception as _e:
+                logger.debug(f"[chat] rag_query stream emit failed: {_e}")
         except Exception as e:
             import traceback
             traceback.print_exc()
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            try:
+                from services.curator_event_bus import event_bus
+                event_bus.emit_now(
+                    actor="user",
+                    action="rag_query",
+                    notebook_id=chat_query.notebook_id,
+                    payload={"error": str(e)[:200], "streaming": True},
+                    outcome="failed",
+                )
+            except Exception:
+                pass
     
     return StreamingResponse(
         generate(),
@@ -437,6 +530,26 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
         intent = classified["intent"]
         params = classified.get("params", {})
         handled = False
+
+        # Curator Phase 2a: emit which intent the user invoked so the
+        # brain knows which curator features are getting used. Confidence
+        # included so we can later distinguish high-confidence dispatches
+        # from low-confidence fallbacks.
+        try:
+            from services.curator_event_bus import event_bus
+            event_bus.emit_now(
+                actor="@curator",
+                action="curator_intent_dispatched",
+                notebook_id=chat_query.notebook_id,
+                intent=intent,
+                payload={
+                    "message_chars": len(q),
+                    "confidence": classified.get("confidence", 0.5),
+                    "injected": bool(injected_action),
+                },
+            )
+        except Exception as _e:
+            logger.debug(f"[chat] curator intent emit failed: {_e}")
 
         # -----------------------------------------------------------------
         # SET NAME
@@ -762,9 +875,19 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
 
                 if connections:
                     lines.append("\n**Cross-notebook connections I've detected:**")
+                    # Curator Phase 4: tier-aware phrasing by strength.
+                    # ≥ 0.7 → "strong" (definitive); 0.4–0.7 → "related" (moderate);
+                    # < 0.4 → "possible" (hedged).
                     for i, c in enumerate(connections[:8], 1):
-                        strength_bar = "▓" * int(c["strength"] * 5) + "░" * (5 - int(c["strength"] * 5))
-                        lines.append(f"{i}. [{strength_bar}] {c['description']}")
+                        s = c["strength"] or 0
+                        if s >= 0.7:
+                            tier_label = "🟢 strong"
+                        elif s >= 0.4:
+                            tier_label = "⚪ related"
+                        else:
+                            tier_label = "🟡 possible"
+                        strength_bar = "▓" * int(s * 5) + "░" * (5 - int(s * 5))
+                        lines.append(f"{i}. [{strength_bar}] **{tier_label}** — {c['description']}")
                     lines.append("\n*Say **\"dismiss connection 2\"** or **\"connection 3 is useful\"** to give me feedback.*")
                 elif stats.get('digests_total', 0) > 0:
                     lines.append("\n*No cross-notebook connections detected yet. More sources needed across notebooks.*")
@@ -859,6 +982,230 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
             handled = True
 
         # -----------------------------------------------------------------
+        # SHOW WEAKEST HYPOTHESIS (Curator Phase 4 — inverse query)
+        # -----------------------------------------------------------------
+        elif intent == "show_weakest_hypothesis":
+            try:
+                from services.curator_brain import curator_brain
+                weak = curator_brain.get_weakest_hypothesis(chat_query.notebook_id)
+                if not weak:
+                    reply = (
+                        "I don't have anything I'd flag as weak right now — "
+                        "either the brain hasn't formed enough opinions yet, "
+                        "or everything's holding up. Try again after more "
+                        "sources land in your notebooks."
+                    )
+                else:
+                    kind = weak["kind"]
+                    conf_pct = int((weak["confidence"] or 0) * 100)
+                    kind_label = {
+                        "mental_model": "🧠 The notebook thesis I have",
+                        "connection": "🔗 A cross-notebook connection I noticed",
+                        "insight": "💡 An insight I flagged",
+                    }.get(kind, "something")
+                    lines = [
+                        f"**{kind_label}** (curator confidence: {conf_pct}%)",
+                        "",
+                        f"> {weak['content']}",
+                        "",
+                        "I'm not sure about this one. If you can correct, "
+                        "confirm, or dismiss it, that helps me sharpen.",
+                    ]
+                    # Plain-text suggested next step (compromise per Q3) —
+                    # the user has to type the follow-up; no auto-invoke.
+                    if kind == "mental_model" and weak.get("notebook_id"):
+                        lines.append("")
+                        lines.append(
+                            "If you want me to dig in: *@research deep dive [topic]* "
+                            "for fresh evidence, or *@curator devil's advocate* for counterarguments."
+                        )
+                    elif kind == "connection":
+                        lines.append("")
+                        lines.append(
+                            f"If the link's wrong, say *dismiss connection {weak['subject_id']}*. "
+                            f"If it's interesting, say *connection {weak['subject_id']} is useful*."
+                        )
+                    elif kind == "insight":
+                        lines.append("")
+                        lines.append(
+                            "Say *@curator dismiss insight* if it's not useful — "
+                            "I won't surface it again."
+                        )
+                    reply = "\n".join(lines)
+                follow_ups = ["Brain status", "Devil's advocate", "Find patterns"]
+            except Exception as e:
+                reply = f"Couldn't find a weak hypothesis: {e}"
+            handled = True
+
+        # -----------------------------------------------------------------
+        # SET VOICE (Curator Phase 6a — change narrative voice)
+        # -----------------------------------------------------------------
+        elif intent == "set_voice":
+            from agents.curator import VALID_VOICES, VOICE_DESCRIPTIONS
+            requested = (params.get("voice") or "").strip().lower().replace(" ", "_").replace("-", "_")
+            # Best-effort normalization for the LLM's variations
+            normalization = {
+                "smart": "smart_colleague",
+                "colleague": "smart_colleague",
+                "executive": "executive_brief",
+                "brief": "executive_brief",
+                "analyst": "conversational_analyst",
+                "conversational": "conversational_analyst",
+                "casual": "conversational_analyst",
+            }
+            if requested not in VALID_VOICES and requested in normalization:
+                requested = normalization[requested]
+            if requested in VALID_VOICES:
+                curator.update_config({"narrative_voice": requested})
+                desc = VOICE_DESCRIPTIONS.get(requested, "")
+                reply = f"Voice set to **{requested}** — {desc}. Your next morning brief will use it."
+            else:
+                opts = ", ".join(f"`{v}`" for v in sorted(VALID_VOICES))
+                reply = (
+                    f"I don't recognize that voice. Pick one of: {opts}. "
+                    f"Say *@curator show voice* to see what each one sounds like."
+                )
+            follow_ups = ["Show voice options", "Morning brief", "Brain status"]
+            handled = True
+
+        # -----------------------------------------------------------------
+        # SHOW VOICE (Curator Phase 6a — list current + available voices)
+        # -----------------------------------------------------------------
+        elif intent == "show_voice":
+            from agents.curator import VALID_VOICES, VOICE_DESCRIPTIONS
+            current = curator.narrative_voice
+            lines = [f"Current voice: **{current}** — {VOICE_DESCRIPTIONS.get(current, '')}"]
+            lines.append("")
+            lines.append("Available voices:")
+            for v in sorted(VALID_VOICES):
+                marker = " (current)" if v == current else ""
+                lines.append(f"  - **{v}**{marker}: {VOICE_DESCRIPTIONS.get(v, '')}")
+            lines.append("")
+            lines.append("Switch with: *@curator set voice [name]*")
+            reply = "\n".join(lines)
+            follow_ups = ["Set voice to smart colleague", "Set voice to executive brief", "Morning brief"]
+            handled = True
+
+        # -----------------------------------------------------------------
+        # SHOW DRAFT (Curator Phase 6a — view anticipatory draft)
+        # -----------------------------------------------------------------
+        elif intent == "show_draft":
+            try:
+                from services.curator_brain import curator_brain
+                if not chat_query.notebook_id:
+                    reply = "Pick a notebook first — drafts are notebook-scoped."
+                else:
+                    draft = curator_brain.get_latest_unconsumed_draft(chat_query.notebook_id)
+                    if not draft:
+                        reply = (
+                            "No pending draft for this notebook. Curator pre-drafts "
+                            "Studio content for notebooks with ≥15 sources, a stable "
+                            "thesis, and no recent Studio output — yours might not "
+                            "qualify yet."
+                        )
+                    else:
+                        curator_brain.mark_draft_consumed(draft["id"])
+                        reply = (
+                            f"Here's the draft I prepared (**{draft['kind']}**):\n\n"
+                            f"---\n\n{draft['content_markdown']}\n\n---\n\n"
+                            f"Say *@curator discard draft* if it's not useful — "
+                            f"I'll back off on this notebook for a couple weeks."
+                        )
+                follow_ups = ["Morning brief", "Brain status"]
+            except Exception as e:
+                reply = f"Couldn't fetch the draft: {e}"
+            handled = True
+
+        # -----------------------------------------------------------------
+        # DISCARD DRAFT (Curator Phase 6a — reject + cool off)
+        # -----------------------------------------------------------------
+        elif intent == "discard_draft":
+            try:
+                from services.curator_brain import curator_brain
+                if not chat_query.notebook_id:
+                    reply = "Pick a notebook first."
+                else:
+                    # Find the latest unconsumed OR most recently consumed draft
+                    # — user might have read it, then decided to discard.
+                    draft = curator_brain.get_latest_unconsumed_draft(chat_query.notebook_id)
+                    if not draft:
+                        draft = curator_brain.get_latest_draft(chat_query.notebook_id)
+                    if not draft:
+                        reply = "No recent draft for this notebook."
+                    else:
+                        curator_brain.mark_draft_discarded(draft["id"])
+                        reply = (
+                            f"Discarded. I won't draft for this notebook for the "
+                            f"next 14 days — say *@curator show draft* again after "
+                            f"that if you want me to start prepping content again."
+                        )
+                follow_ups = ["Morning brief"]
+            except Exception as e:
+                reply = f"Couldn't discard: {e}"
+            handled = True
+
+        # -----------------------------------------------------------------
+        # SUPPRESS BRIEF TOPIC (Curator Phase 5 — mute a topic keyword)
+        # -----------------------------------------------------------------
+        elif intent == "suppress_brief_topic":
+            topic = (params.get("topic") or "").strip()
+            if not topic:
+                reply = "What topic should I stop showing you? Try something like *@curator stop showing me crypto stories*."
+            else:
+                try:
+                    from services.curator_brain import curator_brain
+                    curator_brain.suppress_topic(topic, notebook_id=chat_query.notebook_id)
+                    reply = (
+                        f"Got it — won't surface stories about **\"{topic}\"** in your briefs anymore. "
+                        f"Say *`@curator unmute {topic}`* to undo."
+                    )
+                    follow_ups = ["What topics am I muting", "Morning brief", "Brain status"]
+                except Exception as e:
+                    reply = f"Couldn't mute that topic: {e}"
+            handled = True
+
+        # -----------------------------------------------------------------
+        # UNSUPPRESS BRIEF TOPIC
+        # -----------------------------------------------------------------
+        elif intent == "unsuppress_brief_topic":
+            topic = (params.get("topic") or "").strip()
+            if not topic:
+                reply = "Which topic should I unmute? Try *@curator unmute crypto*."
+            else:
+                try:
+                    from services.curator_brain import curator_brain
+                    removed = curator_brain.unsuppress_topic(topic, notebook_id=chat_query.notebook_id)
+                    if removed:
+                        reply = f"Unmuted **\"{topic}\"** — stories about it will appear in briefs again."
+                    else:
+                        reply = f"I didn't have a mute on **\"{topic}\"** for this notebook."
+                    follow_ups = ["What topics am I muting", "Morning brief"]
+                except Exception as e:
+                    reply = f"Couldn't unmute: {e}"
+            handled = True
+
+        # -----------------------------------------------------------------
+        # LIST SUPPRESSED TOPICS
+        # -----------------------------------------------------------------
+        elif intent == "list_suppressed_topics":
+            try:
+                from services.curator_brain import curator_brain
+                rows = curator_brain.list_suppressions(chat_query.notebook_id)
+                if not rows:
+                    reply = "You haven't muted any topics. Say *@curator stop showing me X* if you want to mute one."
+                else:
+                    lines = [f"You've muted these topics:"]
+                    for r in rows:
+                        scope = "(global)" if r["notebook_id"] is None else "(this notebook)"
+                        lines.append(f"  - **{r['topic_key']}** {scope}")
+                    lines.append(f"\nSay *@curator unmute X* to undo one.")
+                    reply = "\n".join(lines)
+                follow_ups = ["Morning brief", "Brain status"]
+            except Exception as e:
+                reply = f"Couldn't fetch your mutes: {e}"
+            handled = True
+
+        # -----------------------------------------------------------------
         # FALLBACK: CROSS-NOTEBOOK RAG SEARCH (default behavior)
         # -----------------------------------------------------------------
         if not handled:
@@ -941,6 +1288,12 @@ Answer:"""
         chunk_size = 12
         for i in range(0, len(reply), chunk_size):
             yield f"data: {json.dumps({'type': 'token', 'content': reply[i:i+chunk_size]})}\n\n"
+
+        # Note: pending overwatch asides (Phase 3c) are consumed by
+        # generate_overwatch_aside on the regular RAG chat path. The
+        # @curator chat path already injects dissent_context into the
+        # prompt (see conversational_reply) so the LLM can surface it
+        # naturally. Avoiding double-consume here.
 
         yield _done_event()
 
@@ -1276,6 +1629,23 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
             classified = await classify_intent(q, "collector", ollama_client)
         intent = classified["intent"]
         params = classified.get("params", {})
+
+        # Curator Phase 2a: emit collector intent dispatch event.
+        try:
+            from services.curator_event_bus import event_bus
+            event_bus.emit_now(
+                actor="@collector",
+                action="collector_intent_dispatched",
+                notebook_id=notebook_id,
+                intent=intent,
+                payload={
+                    "message_chars": len(q),
+                    "confidence": classified.get("confidence", 0.5),
+                    "injected": bool(injected_action),
+                },
+            )
+        except Exception as _e:
+            logger.debug(f"[chat] collector intent emit failed: {_e}")
 
         # Safety net: if message contains a URL but intent fell through to
         # show_status (fallback), the user almost certainly wants add_url.
@@ -2171,13 +2541,83 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
             yield f"data: {json.dumps({'type': 'status', 'message': f'{collector_name} running collection...', 'query_type': 'collector'})}\n\n"
             try:
                 from agents.curator import curator
-                result = await curator.assign_immediate_collection(notebook_id=notebook_id)
+                from datetime import datetime as _dt
+                # Curator Phase 2b: kick collection off in a background
+                # task so we can detect the plan_id (created inside
+                # _execute_collection) and stream it to the client.
+                #
+                # IMPORTANT (2026-05-13 fix): the polling below filters
+                # plans by created_at >= collection_start to avoid
+                # picking up a PRIOR run's plan from the same notebook.
+                # Without this filter, the card showed the old plan's
+                # results while the final message reflected the new
+                # run — confusing and wrong.
+                collection_start_iso = _dt.utcnow().isoformat()
+                collection_task = asyncio.create_task(
+                    curator.assign_immediate_collection(notebook_id=notebook_id)
+                )
+
+                def _pick_this_runs_plan(plans):
+                    """Filter to plans for THIS collection: same notebook,
+                    correct intent, created at or after we kicked off."""
+                    return [
+                        p for p in plans
+                        if p.get("created_at", "") >= collection_start_iso
+                        and p.get("intent") == "assign_immediate_collection"
+                    ]
+
+                plan_id_streamed = False
+                try:
+                    from services.curator_brain import curator_brain
+                    for _ in range(20):  # up to ~2s
+                        if collection_task.done():
+                            break
+                        candidates = curator_brain.recent_plans(
+                            limit=5, notebook_id=notebook_id, status="running"
+                        )
+                        candidates = _pick_this_runs_plan(candidates)
+                        if not candidates:
+                            # Newly-completed plan path: the collection
+                            # finished fast enough that there's no
+                            # running plan, but still must be THIS run
+                            # (filter by start timestamp).
+                            all_recent = curator_brain.recent_plans(
+                                limit=5, notebook_id=notebook_id
+                            )
+                            candidates = _pick_this_runs_plan(all_recent)
+                        if candidates:
+                            plan_id = candidates[0]["plan_id"]
+                            yield f"data: {json.dumps({'type': 'plan_attached', 'plan_id': plan_id})}\n\n"
+                            plan_id_streamed = True
+                            break
+                        await asyncio.sleep(0.1)
+                except Exception as _e:
+                    logger.debug(f"[chat] plan_attached probe failed (non-fatal): {_e}")
+
+                result = await collection_task
+
+                # If the task finished too fast for the poll loop to
+                # catch, do one last check — same timestamp filter so
+                # we never attach a prior run's plan to this message.
+                if not plan_id_streamed:
+                    try:
+                        from services.curator_brain import curator_brain
+                        all_recent = curator_brain.recent_plans(limit=5, notebook_id=notebook_id)
+                        candidates = _pick_this_runs_plan(all_recent)
+                        if candidates:
+                            yield f"data: {json.dumps({'type': 'plan_attached', 'plan_id': candidates[0]['plan_id']})}\n\n"
+                    except Exception:
+                        pass
+
                 found = result.get("items_collected", 0)
                 approved = result.get("items_approved", 0)
                 queued = result.get("items_pending", 0)
-                reply = f"**Collection complete.**\n- **{found}** items found\n- **{approved}** auto-approved\n- **{queued}** items queued for review"
-                if queued > 0:
-                    follow_ups = ['Show pending items', 'Approve all pending', 'Check source health']
+                if result.get("cancelled"):
+                    reply = f"**Collection cancelled.** {result.get('message', '')}"
+                else:
+                    reply = f"**Collection complete.**\n- **{found}** items found\n- **{approved}** auto-approved\n- **{queued}** items queued for review"
+                    if queued > 0:
+                        follow_ups = ['Show pending items', 'Approve all pending', 'Check source health']
             except Exception as ce:
                 reply = f"Collection failed: {ce}"
 
@@ -2350,6 +2790,23 @@ async def _stream_research(chat_query: ChatQuery, injected_action: Optional[Dict
             classified = await classify_intent(q, "research", ollama_client)
         intent = classified["intent"]
         params = classified.get("params", {})
+
+        # Curator Phase 2a: emit research intent dispatch event.
+        try:
+            from services.curator_event_bus import event_bus
+            event_bus.emit_now(
+                actor="@research",
+                action="research_intent_dispatched",
+                notebook_id=notebook_id,
+                intent=intent,
+                payload={
+                    "message_chars": len(q),
+                    "confidence": classified.get("confidence", 0.5),
+                    "injected": bool(injected_action),
+                },
+            )
+        except Exception as _e:
+            logger.debug(f"[chat] research intent emit failed: {_e}")
 
         # Async status helper (for research_engine callbacks)
         async def _emit_status(msg: str):

@@ -1955,11 +1955,12 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
     
     async def _add_to_approval_queue(self, item: CollectedItem) -> str:
         """Add item to approval queue based on approval mode.
-        
+
         Returns:
             'queued' if item was queued for user review,
             'stored' if auto-approved and stored successfully,
-            'skipped' if auto-approved but storage failed (dedup, shallow, error)
+            'skipped' if auto-approved but storage failed (dedup, shallow, error),
+            'rejected' if curator pre-triage rejected the item outright (Phase 1).
         """
         # Dedup: skip if URL already in queue or known sources
         if item.url:
@@ -1971,19 +1972,72 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                     logger.info(f"Skipping queue add (already queued): {item.url}")
                     return 'skipped'
 
+        # Curator pre-triage (Curator Phase 1, 2026-05-12). Runs before
+        # the approval-mode branches so a curator REJECT can short-circuit
+        # even TRUST_ME, and a high-confidence curator APPROVE can store
+        # without queuing. Falls through gracefully on any failure — the
+        # collector behaves exactly as before when the curator isn't
+        # available or pre-triage is disabled.
+        curator_judgment = None
+        if settings.curator_pre_triage_enabled:
+            try:
+                from agents.curator import curator, JudgmentDecision
+                curator_judgment = await curator._judge_single_item(
+                    item,
+                    self.config.intent or "",
+                    self.config.name or "Collector",
+                )
+                item.curator_decision = curator_judgment.decision.value
+                logger.info(
+                    f"[curator] judged '{item.title[:60]}': "
+                    f"{curator_judgment.decision.value} "
+                    f"(confidence {curator_judgment.confidence:.2f}) — {curator_judgment.reason}"
+                )
+                # Reject: stamp the reason and short-circuit. The item
+                # never enters the queue.
+                if curator_judgment.decision == JudgmentDecision.REJECT:
+                    item.status = "rejected"
+                    item.rejection_reason = curator_judgment.reason
+                    self._emit_event(
+                        "source_rejected",
+                        item,
+                        outcome="success",
+                        extra={"by": "curator", "reason": curator_judgment.reason},
+                    )
+                    return 'rejected'
+                # Approve with high confidence: store immediately, bypass queue.
+                if (
+                    curator_judgment.decision == JudgmentDecision.APPROVE
+                    and curator_judgment.confidence >= 0.8
+                ):
+                    item.status = "approved"
+                    was_stored = await self._store_approved_item(item)
+                    self._emit_event(
+                        "source_added" if was_stored else "source_store_skipped",
+                        item,
+                        outcome="success" if was_stored else "deferred",
+                        extra={"by": "curator_auto_approve"},
+                    )
+                    return 'stored' if was_stored else 'skipped'
+                # Otherwise (MODIFY / DEFER_TO_USER / low-confidence APPROVE)
+                # fall through to the existing approval-mode logic, with
+                # the curator decision stamped on the item for UI display.
+            except Exception as e:
+                logger.warning(f"Curator pre-triage failed (non-fatal): {e}")
+
         if self.config.approval_mode == ApprovalMode.TRUST_ME:
             # Auto-approve
             item.status = "approved"
             was_stored = await self._store_approved_item(item)
             return 'stored' if was_stored else 'skipped'
-        
+
         if self.config.approval_mode == ApprovalMode.MIXED:
             # Auto-approve high confidence
             if item.overall_confidence >= 0.85:
                 item.status = "approved"
                 was_stored = await self._store_approved_item(item)
                 return 'stored' if was_stored else 'skipped'
-        
+
         # Queue for approval
         queue_item = ApprovalQueueItem(
             item=item,
@@ -1993,7 +2047,50 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
         if item.url:
             self._known_urls.add(item.url)
         self._save_approval_queue()
+        self._emit_event(
+            "source_pending_review",
+            item,
+            outcome="deferred",
+            extra={
+                "curator_decision": item.curator_decision,
+                "approval_mode": str(self.config.approval_mode),
+            },
+        )
         return 'queued'
+
+    def _emit_event(
+        self,
+        action: str,
+        item: CollectedItem,
+        outcome: str = "success",
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Best-effort emit to the curator event bus. Never raises.
+
+        Curator Phase 1 (2026-05-12). Centralized so we have ONE spot to
+        update if the payload shape evolves.
+        """
+        try:
+            from services.curator_event_bus import event_bus
+            payload: Dict[str, Any] = {
+                "item_id": item.id,
+                "title": item.title[:120] if item.title else "",
+                "url": item.url,
+                "source_name": item.source_name,
+                "overall_confidence": item.overall_confidence,
+            }
+            if extra:
+                payload.update(extra)
+            event_bus.emit_now(
+                actor="@collector",
+                action=action,
+                notebook_id=self.notebook_id,
+                payload=payload,
+                outcome=outcome,
+            )
+        except Exception as _e:
+            # event bus is observability; failures must not break the agent
+            pass
     
     async def _store_approved_item(self, item: CollectedItem, _existing_urls: set = None) -> bool:
         """Store an approved item as a notebook source AND in Collector memory.
@@ -2319,6 +2416,12 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 await self._store_approved_item(q.item)
                 self._approval_queue.pop(i)
                 self._save_approval_queue()
+                self._emit_event(
+                    "source_added",
+                    q.item,
+                    outcome="success",
+                    extra={"by": "curator" if curator_approved else "user"},
+                )
                 return True
         return False
     
@@ -2373,12 +2476,18 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 
                 # Learn from rejection
                 await self._learn_from_rejection(q.item, reason, feedback_type)
-                
+
                 self._approval_queue.pop(i)
                 self._save_approval_queue()
+                self._emit_event(
+                    "source_rejected",
+                    q.item,
+                    outcome="success",
+                    extra={"by": "user", "reason": reason, "feedback_type": feedback_type},
+                )
                 return True
         return False
-    
+
     async def _learn_from_rejection(
         self,
         item: CollectedItem,
