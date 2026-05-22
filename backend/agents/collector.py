@@ -1982,7 +1982,12 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
         if settings.curator_pre_triage_enabled:
             try:
                 from agents.curator import curator, JudgmentDecision
-                curator_judgment = await curator._judge_single_item(
+                # Phase C.1 (2026-05-22): use the public `judge_collected_item`
+                # contract instead of reaching into the curator's private
+                # `_judge_single_item`. The public wrapper additionally emits
+                # a `collector_item_pre_triaged` observability event so every
+                # pre-triage decision lands in the brain's event log.
+                curator_judgment = await curator.judge_collected_item(
                     item,
                     self.config.intent or "",
                     self.config.name or "Collector",

@@ -6,7 +6,7 @@
  * Hacker News, Stack Overflow, PubMed, and any site via Brave fallback.
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 const API_BASE = API_BASE_URL;
 
@@ -53,7 +53,7 @@ export const siteSearchService = {
    * Get list of sites with native search support
    */
   async getSupportedSites(): Promise<SupportedSite[]> {
-    const response = await fetch(`${API_BASE}/site-search/supported-sites`);
+    const response = await localFetch(`${API_BASE}/site-search/supported-sites`);
     if (!response.ok) throw new Error('Failed to get supported sites');
     return response.json();
   },
@@ -72,7 +72,7 @@ export const siteSearchService = {
     timeRange: TimeRange = 'all',
     maxResults: number = 10
   ): Promise<SiteSearchResponse> {
-    const response = await fetch(`${API_BASE}/site-search/search`, {
+    const response = await localFetch(`${API_BASE}/site-search/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

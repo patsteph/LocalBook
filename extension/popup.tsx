@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react"
 import "./style.css"
+import { API_BASE, tokenFetch } from "./types"
 
 interface Notebook {
   id: string
@@ -17,7 +18,6 @@ interface CaptureResult {
   error?: string
 }
 
-const API_BASE = "http://localhost:8000"
 
 function IndexPopup() {
   const [notebooks, setNotebooks] = useState<Notebook[]>([])
@@ -35,7 +35,7 @@ function IndexPopup() {
 
   const checkConnection = async () => {
     try {
-      const res = await fetch(`${API_BASE}/browser/status`)
+      const res = await tokenFetch(`${API_BASE}/browser/status`)
       if (!res.ok) throw new Error("Offline")
     } catch {
       setStatus("offline")
@@ -45,7 +45,7 @@ function IndexPopup() {
 
   const loadNotebooks = async () => {
     try {
-      const res = await fetch(`${API_BASE}/browser/notebooks`)
+      const res = await tokenFetch(`${API_BASE}/browser/notebooks`)
       if (res.ok) {
         const data = await res.json()
         setNotebooks(data)
@@ -107,7 +107,7 @@ function IndexPopup() {
       if (!pageData) throw new Error("Could not extract page content")
 
       // Send to LocalBook
-      const res = await fetch(`${API_BASE}/browser/capture`, {
+      const res = await tokenFetch(`${API_BASE}/browser/capture`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -156,7 +156,7 @@ function IndexPopup() {
         return
       }
 
-      const res = await fetch(`${API_BASE}/browser/capture/selection`, {
+      const res = await tokenFetch(`${API_BASE}/browser/capture/selection`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

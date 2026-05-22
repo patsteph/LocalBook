@@ -2,7 +2,7 @@
  * Video Service - API calls for video explainer generation
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 const API_BASE = API_BASE_URL;
 
@@ -44,7 +44,7 @@ export interface VisualStyle {
 
 export const videoService = {
   async generate(request: VideoGenerateRequest): Promise<VideoGeneration> {
-    const response = await fetch(`${API_BASE}/video/generate`, {
+    const response = await localFetch(`${API_BASE}/video/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
@@ -57,14 +57,14 @@ export const videoService = {
   },
 
   async list(notebookId: string): Promise<VideoGeneration[]> {
-    const response = await fetch(`${API_BASE}/video/${notebookId}`);
+    const response = await localFetch(`${API_BASE}/video/${notebookId}`);
     if (!response.ok) throw new Error('Failed to list videos');
     const data = await response.json();
     return data.generations || [];
   },
 
   async getStatus(videoId: string): Promise<VideoGeneration> {
-    const response = await fetch(`${API_BASE}/video/status/${videoId}`);
+    const response = await localFetch(`${API_BASE}/video/status/${videoId}`);
     if (!response.ok) throw new Error('Failed to get video status');
     return response.json();
   },
@@ -74,14 +74,14 @@ export const videoService = {
   },
 
   async delete(videoId: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/video/remove/${videoId}`, {
+    const response = await localFetch(`${API_BASE}/video/remove/${videoId}`, {
       method: 'DELETE',
     });
     if (!response.ok) throw new Error('Failed to delete video');
   },
 
   async listStyles(): Promise<VisualStyle[]> {
-    const response = await fetch(`${API_BASE}/video/styles/list`);
+    const response = await localFetch(`${API_BASE}/video/styles/list`);
     if (!response.ok) throw new Error('Failed to list video styles');
     const data = await response.json();
     return data.styles || [];

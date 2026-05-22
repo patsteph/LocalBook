@@ -12,7 +12,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Target, Headphones, ChevronRight, ChevronDown, Check, X, Loader2 } from 'lucide-react';
-import { API_BASE_URL } from '../../services/api';
+import { API_BASE_URL, localFetch } from '../../services/api';
 
 // ── Quiz Cache Types ──────────────────────────────────────────────────────
 
@@ -271,7 +271,7 @@ const OpenEndedQuestion: React.FC<{ index: number; q: StudioQuestion }> = ({ ind
     if (revealed || !value.trim()) return;
     setChecking(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/quiz/grade`, {
+      const res = await localFetch(`${API_BASE_URL}/quiz/grade`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: q.question, correct_answer: q.answer, user_answer: value.trim(), question_type: q.question_type }),

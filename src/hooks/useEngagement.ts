@@ -18,7 +18,7 @@
  *   special-case it client-side.
  */
 import { useCallback } from 'react';
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, localFetch } from '../services/api';
 
 export type EngagementKind =
   | 'query'
@@ -81,7 +81,7 @@ async function postEngagement(
   opts: CaptureOptions,
 ): Promise<void> {
   try {
-    await fetch(`${API_BASE_URL}/curator/engagement`, {
+    await localFetch(`${API_BASE_URL}/curator/engagement`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

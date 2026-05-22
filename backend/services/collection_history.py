@@ -85,6 +85,40 @@ def record_collection_run(
     history.append(entry)
     _save_history(notebook_id, history)
 
+    # Phase B.3 (2026-05-22): dual-write to the activity ledger. Once all
+    # callers read from the ledger, the JSON file write above is removed.
+    try:
+        from services import activity_ledger
+        kind = (
+            activity_ledger.KIND_COLLECTOR_RUN_SCHEDULED
+            if trigger in ("scheduled", "first_sweep")
+            else activity_ledger.KIND_COLLECTOR_RUN_MANUAL
+        )
+        activity_ledger.record_event(
+            notebook_id=notebook_id,
+            kind=kind,
+            actor="@collector",
+            payload={
+                "items_found": items_found,
+                "items_approved": items_approved,
+                "items_rejected": items_rejected,
+                "trigger": trigger,
+                "duration_ms": round(duration_ms, 1),
+                "error": error,
+            },
+        )
+        # Every approved item also gets its own collector_item_approved event
+        # so the dry-run detector can count growth without parsing run records.
+        for _ in range(items_approved):
+            activity_ledger.record_event(
+                notebook_id=notebook_id,
+                kind=activity_ledger.KIND_COLLECTOR_ITEM_APPROVED,
+                actor="@collector",
+                payload={"trigger": trigger},
+            )
+    except Exception as _ledger_err:
+        logger.debug(f"[collection_history] ledger dual-write failed (non-fatal): {_ledger_err}")
+
     logger.info(
         f"Collection history recorded for {notebook_id}: "
         f"{items_found} found, {items_approved} approved, {trigger}"
@@ -165,6 +199,35 @@ def record_engagement(notebook_id: str, action: str = "unknown") -> None:
     except Exception as e:
         logger.error(f"Failed to record engagement for {notebook_id}: {e}")
 
+    # Phase B.3 (2026-05-22): dual-write to activity ledger. The legacy file
+    # above is last-wins (just a timestamp); the ledger keeps the full history
+    # so we can distinguish "added 12 sources today" from "touched config once".
+    try:
+        from services import activity_ledger
+        # Map legacy action labels to ledger kinds + payload.via.
+        if action in ("source_upload", "source_add"):
+            kind = activity_ledger.KIND_SOURCE_ADDED
+            payload = {"via": action}
+        elif action == "manual_collect":
+            kind = activity_ledger.KIND_COLLECTOR_RUN_MANUAL
+            payload = {"via": "manual_collect"}
+        elif action == "config_update":
+            kind = activity_ledger.KIND_CONFIG_UPDATED
+            payload = {"via": "config_update"}
+        else:
+            # Unknown action — record under config_updated as a catch-all so
+            # it still counts toward engagement_active().
+            kind = activity_ledger.KIND_CONFIG_UPDATED
+            payload = {"via": action}
+        activity_ledger.record_event(
+            notebook_id=notebook_id,
+            kind=kind,
+            actor="user",
+            payload=payload,
+        )
+    except Exception as _ledger_err:
+        logger.debug(f"[collection_history] engagement ledger dual-write failed (non-fatal): {_ledger_err}")
+
 
 def _get_last_engagement(notebook_id: str) -> Optional[datetime]:
     """Get the timestamp of the user's last engagement, or None."""
@@ -196,7 +259,33 @@ def detect_stagnation(notebook_id: str) -> Dict[str, Any]:
         days_since_growth: int — calendar days since last approved item
         total_dry_runs: int — consecutive scheduled runs with 0 approved
         dominant_rejection_reasons: dict — why items are failing
+
+    Phase B.4 (2026-05-22): prefers the activity_ledger if it has any
+    entries for this notebook (i.e. the dual-write started before stagnation
+    became relevant). Falls back to the legacy JSON path so notebooks created
+    before the ledger existed still get accurate stagnation reports.
     """
+    # Try the new ledger first — but only if it has data for this notebook.
+    # An empty ledger means the dual-write hasn't caught any events yet for
+    # this notebook (could be a pre-existing notebook). In that case we MUST
+    # use the legacy path or we'd report bogus zero stagnation.
+    try:
+        from services import activity_ledger
+        if activity_ledger.last_activity(notebook_id) is not None:
+            ledger_result = activity_ledger.detect_stagnation(notebook_id)
+            # Bridge to the legacy return shape callers expect.
+            return {
+                "stagnating": ledger_result["stagnating"],
+                "severity": ledger_result["severity"],
+                "days_since_growth": ledger_result["days_since_growth"],
+                "total_dry_runs": 0,  # Not tracked by ledger; legacy-only field.
+                "dominant_rejection_reasons": {},
+                "_source": "ledger",
+                "engagement_suppressed": ledger_result.get("engagement_suppressed", False),
+            }
+    except Exception as _ledger_err:
+        logger.debug(f"[Stagnation] ledger lookup failed, falling back to JSON: {_ledger_err}")
+
     history = _load_history(notebook_id)
 
     if not history:

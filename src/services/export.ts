@@ -5,7 +5,7 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import { jsPDF } from 'jspdf';
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 const API_BASE = API_BASE_URL;
 
@@ -41,7 +41,7 @@ export const exportService = {
      * Get available export formats
      */
     async getAvailableFormats(): Promise<ExportFormat[]> {
-        const response = await fetch(`${API_BASE}/export/formats`);
+        const response = await localFetch(`${API_BASE}/export/formats`);
 
         if (!response.ok) {
             throw new Error(`Failed to get export formats: ${response.statusText}`);
@@ -56,7 +56,7 @@ export const exportService = {
      * Returns a Blob that can be downloaded
      */
     async exportNotebook(options: ExportOptions): Promise<Blob> {
-        const response = await fetch(`${API_BASE}/export/notebook`, {
+        const response = await localFetch(`${API_BASE}/export/notebook`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -120,7 +120,7 @@ export const exportService = {
      * Generate PPTX slide preview as JSON for the revision UI
      */
     async previewPptxSlides(notebookId: string, theme?: string): Promise<{ slides: SlideData[]; theme: string }> {
-        const response = await fetch(`${API_BASE}/export/pptx/preview`, {
+        const response = await localFetch(`${API_BASE}/export/pptx/preview`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ notebook_id: notebookId, pptx_theme: theme || 'light' }),
@@ -136,7 +136,7 @@ export const exportService = {
      * Revise slides using a natural language prompt
      */
     async revisePptxSlides(notebookId: string, slides: SlideData[], revisionPrompt: string, theme?: string): Promise<{ slides: SlideData[]; theme: string }> {
-        const response = await fetch(`${API_BASE}/export/pptx/revise`, {
+        const response = await localFetch(`${API_BASE}/export/pptx/revise`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -157,7 +157,7 @@ export const exportService = {
      * Download finalized slides as .pptx file
      */
     async downloadPptxSlides(notebookId: string, slides: SlideData[], theme?: string): Promise<Blob> {
-        const response = await fetch(`${API_BASE}/export/pptx/download`, {
+        const response = await localFetch(`${API_BASE}/export/pptx/download`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -177,7 +177,7 @@ export const exportService = {
      * Render a Mermaid diagram to a base64 PNG data URL for preview
      */
     async renderDiagramPreview(mermaidCode: string): Promise<{ success: boolean; image?: string; error?: string }> {
-        const response = await fetch(`${API_BASE}/export/pptx/render-diagram`, {
+        const response = await localFetch(`${API_BASE}/export/pptx/render-diagram`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ mermaid_code: mermaidCode }),
@@ -326,7 +326,7 @@ export const exportService = {
     // === Custom PPTX template management ===
 
     async listTemplates(): Promise<{ id: string; name: string; filename: string; size: number; uploaded: string }[]> {
-        const response = await fetch(`${API_BASE}/export/templates`);
+        const response = await localFetch(`${API_BASE}/export/templates`);
         if (!response.ok) return [];
         const data = await response.json();
         return data.templates || [];
@@ -336,7 +336,7 @@ export const exportService = {
         const formData = new FormData();
         formData.append('file', file);
         formData.append('name', name);
-        const response = await fetch(`${API_BASE}/export/templates`, {
+        const response = await localFetch(`${API_BASE}/export/templates`, {
             method: 'POST',
             body: formData,
         });
@@ -348,7 +348,7 @@ export const exportService = {
     },
 
     async deleteTemplate(templateId: string): Promise<void> {
-        const response = await fetch(`${API_BASE}/export/templates/${templateId}`, { method: 'DELETE' });
+        const response = await localFetch(`${API_BASE}/export/templates/${templateId}`, { method: 'DELETE' });
         if (!response.ok) throw new Error('Failed to delete template');
     },
 };

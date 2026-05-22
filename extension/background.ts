@@ -1,6 +1,6 @@
 // Background service worker for LocalBook extension
 
-import { API_BASE } from "./types"
+import { API_BASE, tokenFetch } from "./types"
 
 // Set side panel to open when extension icon is clicked
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error)
@@ -81,7 +81,7 @@ async function createContextMenus() {
 
 async function refreshNotebookMenus() {
   try {
-    const res = await fetch(`${API_BASE}/browser/notebooks`)
+    const res = await tokenFetch(`${API_BASE}/browser/notebooks`)
     if (res.ok) {
       cachedNotebooks = await res.json()
       
@@ -167,7 +167,7 @@ async function getSelectedNotebook(): Promise<string | null> {
 
 async function captureSelection(text: string, url: string, title: string, notebookId: string) {
   try {
-    const res = await fetch(`${API_BASE}/browser/capture/selection`, {
+    const res = await tokenFetch(`${API_BASE}/browser/capture/selection`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -202,7 +202,7 @@ async function capturePage(tab: chrome.tabs.Tab, notebookId: string) {
     const pageData = results[0]?.result
     if (!pageData) throw new Error("Could not get page content")
     
-    const res = await fetch(`${API_BASE}/browser/capture`, {
+    const res = await tokenFetch(`${API_BASE}/browser/capture`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -299,7 +299,7 @@ async function pollPendingScrapes() {
     // Abort if fetch takes >5s (backend might be hung)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 5000)
-    const res = await fetch(`${API_BASE}/browser/pending-scrapes`, { signal: controller.signal })
+    const res = await tokenFetch(`${API_BASE}/browser/pending-scrapes`, { signal: controller.signal })
     clearTimeout(timeout)
 
     if (!res.ok) {
@@ -409,7 +409,7 @@ async function handleScrapeRequest(requestId: string, url: string) {
     // Post result back to backend (with timeout)
     const postController = new AbortController()
     const postTimeout = setTimeout(() => postController.abort(), 10000)
-    await fetch(`${API_BASE}/browser/scrape-result/${requestId}`, {
+    await tokenFetch(`${API_BASE}/browser/scrape-result/${requestId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content, title, html }),

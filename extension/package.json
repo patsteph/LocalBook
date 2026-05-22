@@ -27,6 +27,7 @@
     "typescript": "5.3.3"
   },
   "manifest": {
+    "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1i8wBUyKF7CAh3MZIvPSjaMS8dLpmzWYk/dTFUH0ZU1RIPAK98iBode4O978oJZoj8RGktc6ieCo3Y7g27Ka5c9JXfbuAknpq03tPjpIltHiWByQTlgrEdlSfWDoOqz4M3ZnnkOF4nVyH2TJqq+TrNyDiHAoYuvj5UGMS49ZR503q5O//CwRGebO5DpgIDDELIuOjXmRgSqupiGWYEPktjQOweum84J6ovDaOInvCb0vTXOXRDFPLrzXTOz+Y56zIEW/cfoIP+lSK4+/XtXM+OtPXmUs4iCMVc9sYHcZQX6FM3tbZlvU7tpOY4w3OGP2I1ophgDIIggFV/fjtE4qHQIDAQAB",
     "host_permissions": [
       "<all_urls>"
     ],

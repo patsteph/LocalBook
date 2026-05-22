@@ -303,45 +303,13 @@ class CuratorEventBus:
                             logger.debug(f"[event_bus] connection_discovered handler: {e}")
 
                 # Stagnation severity escalation (mild→moderate→plateau).
+                # Phase A.1 (2026-05-22): no longer queues a chat aside. Stagnation
+                # is a collector-health signal, not a notebook-wide one — surfacing
+                # it on every chat reads as a notebook-wide alarm to the user. The
+                # event is still persisted by the default handler, and the Collector
+                # panel reads detect_stagnation() directly to show the badge.
                 if action == "stagnation_escalated" and nb:
-                    payload = event.payload or {}
-                    severity = payload.get("severity", "")
-                    days = payload.get("days_since_growth", 0)
-                    try:
-                        if curator_brain.can_fire_nag(
-                            "stagnation_overwatch", nb, priority="medium"
-                        ):
-                            if severity == "plateau":
-                                aside = (
-                                    f"Heads up — this notebook's collection has PLATEAUED "
-                                    f"({days} days without new content). The topic space may "
-                                    f"be saturated. Consider expanding scope."
-                                )
-                            elif severity == "moderate":
-                                aside = (
-                                    f"This notebook has been quiet for {days} days. "
-                                    f"Search criteria have been auto-expanded — keep an eye on "
-                                    f"the approval queue."
-                                )
-                            else:  # mild
-                                aside = (
-                                    f"Collection slowing down ({days} days). Curator is "
-                                    f"trying wider exploratory queries."
-                                )
-                            nag_id = curator_brain.record_nag(
-                                "stagnation_overwatch",
-                                notebook_id=nb,
-                                subject_id=severity,
-                            )
-                            curator_brain.queue_pending_aside(
-                                notebook_id=nb,
-                                kind="stagnation",
-                                aside_text=aside,
-                                nag_id=nag_id,
-                            )
-                            self._dispatch_counts[action] = self._dispatch_counts.get(action, 0) + 1
-                    except Exception as e:
-                        logger.debug(f"[event_bus] stagnation_escalated handler: {e}")
+                    self._dispatch_counts[action] = self._dispatch_counts.get(action, 0) + 1
 
                 # User-visible plan completed — low-priority aside.
                 # We only fire when there was meaningful output (steps that
@@ -391,6 +359,23 @@ class CuratorEventBus:
                         },
                     )
                     self._dispatch_counts[action] = self._dispatch_counts.get(action, 0) + 1
+                    # Phase C.2 (2026-05-22): mirror to activity ledger so
+                    # engagement_active() can suppress stagnation alerts
+                    # based on recent chat activity, not just source adds.
+                    if nb:
+                        try:
+                            from services import activity_ledger
+                            activity_ledger.record_event(
+                                notebook_id=nb,
+                                kind=activity_ledger.KIND_QUERY_RAN,
+                                actor="user",
+                                payload={
+                                    "question_chars": payload.get("question_chars"),
+                                    "source_count": payload.get("source_count"),
+                                },
+                            )
+                        except Exception as _ledger_err:
+                            logger.debug(f"[event_bus] ledger query_ran emit failed: {_ledger_err}")
 
                 elif action == "source_rejected":
                     payload = event.payload or {}

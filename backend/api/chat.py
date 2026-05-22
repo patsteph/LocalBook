@@ -317,8 +317,19 @@ async def query_stream(chat_query: ChatQuery):
         from agents.curator import is_cross_notebook_query
         if is_cross_notebook_query(chat_query.question):
             print(f"[Chat] Auto-routing cross-notebook query to Curator: '{chat_query.question[:60]}...'")
+
+            async def _wrap_auto_routed():
+                # Phase A.3 (2026-05-22, F5): emit auto_routed signal BEFORE
+                # the dispatcher so the frontend can render an "auto-routed"
+                # badge in the curator agent header. Without this, the user
+                # types a plain question, sees curator styling, and has no
+                # idea why.
+                yield f"data: {json.dumps({'type': 'auto_routed', 'to': 'curator', 'reason': 'cross_notebook_keywords'})}\n\n"
+                async for chunk in _dispatch_multi_intent(chat_query, "curator", _stream_curator):
+                    yield chunk
+
             return StreamingResponse(
-                _dispatch_multi_intent(chat_query, "curator", _stream_curator),
+                _wrap_auto_routed(),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
@@ -763,7 +774,14 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
         elif intent == "note_themes":
             yield f"data: {json.dumps({'type': 'status', 'message': f'{curator_name} analyzing your notes...', 'query_type': 'curator'})}\n\n"
             try:
-                result = await curator.suggest_collector_keywords_from_notes(notebook_id)
+                # F7 fix (2026-05-22): _stream_curator never binds a local
+                # `notebook_id` — the only available name is chat_query.notebook_id.
+                # The bare reference raised NameError on every @curator note themes
+                # call, surfaced as "Failed to analyze notes: name 'notebook_id'
+                # is not defined" to the user. The downstream method already
+                # returns a graceful "No notes in this notebook" message when
+                # no sources are present, so we don't need an extra guard.
+                result = await curator.suggest_collector_keywords_from_notes(chat_query.notebook_id)
                 themes = result.get("note_themes", [])
                 suggestions = result.get("suggestions", [])
                 current = result.get("current_focus", [])
@@ -1610,10 +1628,27 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
             try:
                 from storage.memory_store import memory_store, AgentNamespace
                 from models.memory import ArchivalMemoryEntry, MemorySourceType, MemoryImportance
-                memory_store.add_archival_memory(ArchivalMemoryEntry(
+                entry = ArchivalMemoryEntry(
                     content=msg, source_type=MemorySourceType.AGENT_GENERATED,
                     importance=MemoryImportance.MEDIUM, notebook_id=notebook_id,
-                ), namespace=AgentNamespace.CURATOR)
+                )
+                # P0.5 (2026-05-15): offload sync embedding+write to loop executor
+                # so the streaming event loop is not blocked by Ollama HTTP.
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    # No running loop (rare — tests / non-streaming) — fall back to sync.
+                    memory_store.add_archival_memory(entry, namespace=AgentNamespace.CURATOR)
+                    return
+                future = loop.run_in_executor(
+                    None,
+                    lambda e=entry: memory_store.add_archival_memory(e, namespace=AgentNamespace.CURATOR),
+                )
+                def _log_failure(fut):
+                    exc = fut.exception()
+                    if exc:
+                        logger.warning(f"[chat] Memory store failed (async): {exc}")
+                future.add_done_callback(_log_failure)
             except Exception as _e:
                 logger.warning(f"[chat] Memory store failed: {_e}")
 

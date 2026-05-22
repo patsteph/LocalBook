@@ -2,7 +2,7 @@
  * Settings service for managing API keys and configuration
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 const API_BASE = API_BASE_URL;
 
@@ -36,7 +36,7 @@ export const settingsService = {
      * Get the status of all API keys (configured or not)
      */
     async getAPIKeysStatus(): Promise<APIKeysStatus> {
-        const response = await fetch(`${API_BASE}/settings/api-keys/status`);
+        const response = await localFetch(`${API_BASE}/settings/api-keys/status`);
 
         if (!response.ok) {
             throw new Error(`Failed to get API keys status: ${response.statusText}`);
@@ -49,7 +49,7 @@ export const settingsService = {
      * Set an API key
      */
     async setAPIKey(keyName: string, value: string): Promise<void> {
-        const response = await fetch(`${API_BASE}/settings/api-keys/set`, {
+        const response = await localFetch(`${API_BASE}/settings/api-keys/set`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -72,7 +72,7 @@ export const settingsService = {
      * Delete an API key
      */
     async deleteAPIKey(keyName: string): Promise<void> {
-        const response = await fetch(`${API_BASE}/settings/api-keys/${keyName}`, {
+        const response = await localFetch(`${API_BASE}/settings/api-keys/${keyName}`, {
             method: 'DELETE',
         });
 
@@ -88,7 +88,7 @@ export const settingsService = {
      * Get current LLM model information
      */
     async getLLMInfo(): Promise<LLMInfo> {
-        const response = await fetch(`${API_BASE}/settings/llm-info`);
+        const response = await localFetch(`${API_BASE}/settings/llm-info`);
 
         if (!response.ok) {
             throw new Error(`Failed to get LLM info: ${response.statusText}`);
@@ -101,7 +101,7 @@ export const settingsService = {
      * Get user profile for personalization
      */
     async getUserProfile(): Promise<UserProfile> {
-        const response = await fetch(`${API_BASE}/settings/user-profile`);
+        const response = await localFetch(`${API_BASE}/settings/user-profile`);
 
         if (!response.ok) {
             throw new Error(`Failed to get user profile: ${response.statusText}`);
@@ -114,7 +114,7 @@ export const settingsService = {
      * Save user profile for personalization
      */
     async saveUserProfile(profile: UserProfile): Promise<void> {
-        const response = await fetch(`${API_BASE}/settings/user-profile`, {
+        const response = await localFetch(`${API_BASE}/settings/user-profile`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -132,7 +132,7 @@ export const settingsService = {
      * Delete user profile
      */
     async deleteUserProfile(): Promise<void> {
-        const response = await fetch(`${API_BASE}/settings/user-profile`, {
+        const response = await localFetch(`${API_BASE}/settings/user-profile`, {
             method: 'DELETE',
         });
 

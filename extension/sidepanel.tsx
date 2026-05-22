@@ -13,7 +13,7 @@ import type {
   SearchResult,
   OutboundLink
 } from "./types"
-import { API_BASE } from "./types"
+import { API_BASE, tokenFetch } from "./types"
 
 import {
   cleanUrl,
@@ -173,7 +173,7 @@ function SidePanel() {
     const nbId = selectedNotebook || primaryId || (nbs.length > 0 ? nbs[0].id : null)
     if (nbId) {
       try {
-        const pendingRes = await fetch(`${API_BASE}/collector/${nbId}/pending`)
+        const pendingRes = await tokenFetch(`${API_BASE}/collector/${nbId}/pending`)
         if (pendingRes.ok) {
           const pendingData = await pendingRes.json()
           setCollectorPending(pendingData.total || pendingData.pending?.length || 0)
@@ -236,7 +236,7 @@ function SidePanel() {
 
     if (newActions.length === 2 && pageInfo && selectedNotebook) {
       try {
-        await fetch(`${API_BASE}/exploration/record`, {
+        await tokenFetch(`${API_BASE}/exploration/record`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -290,6 +290,10 @@ function SidePanel() {
       case "compare": await handleCompareWithNotebook(); break
       case "chat": handleStartChatDirect(); break
       case "collector": await handleAddToCollector(); break
+      // P0.3+ (2026-05-15): Wire up Automate button — was previously missing,
+      // causing clicks to silently no-op. AutomationView (or its fallback)
+      // renders based on `currentAction === "automate"` further down.
+      case "automate": setCurrentAction("automate"); break
     }
   }
 
@@ -300,7 +304,7 @@ function SidePanel() {
 
     try {
       // Fetch current collector config
-      const configRes = await fetch(`${API_BASE}/collector/${selectedNotebook}/config`)
+      const configRes = await tokenFetch(`${API_BASE}/collector/${selectedNotebook}/config`)
       if (!configRes.ok) throw new Error("Collector not configured for this notebook")
       const config = await configRes.json()
 
@@ -325,7 +329,7 @@ function SidePanel() {
         [sourceType]: [...sourceList, url]
       }
 
-      const updateRes = await fetch(`${API_BASE}/collector/${selectedNotebook}/config`, {
+      const updateRes = await tokenFetch(`${API_BASE}/collector/${selectedNotebook}/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sources: updatedSources })
@@ -358,7 +362,7 @@ function SidePanel() {
         setOutboundLinks(content.outboundLinks)
       }
 
-      const res = await fetch(`${API_BASE}/browser/summarize`, {
+      const res = await tokenFetch(`${API_BASE}/browser/summarize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -397,7 +401,7 @@ function SidePanel() {
     try {
       // Dedup check: see if this URL is already in the notebook
       try {
-        const checkRes = await fetch(`${API_BASE}/sources/${selectedNotebook}`)
+        const checkRes = await tokenFetch(`${API_BASE}/sources/${selectedNotebook}`)
         if (checkRes.ok) {
           const sources = await checkRes.json()
           const existing = sources.find((s: any) => s.url === pageInfo.cleanUrl || s.url === pageInfo.url)
@@ -418,7 +422,7 @@ function SidePanel() {
         setOutboundLinks(content.outboundLinks)
       }
 
-      const res = await fetch(`${API_BASE}/browser/capture`, {
+      const res = await tokenFetch(`${API_BASE}/browser/capture`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -510,7 +514,7 @@ function SidePanel() {
       const content = await getPageContent()
       if (!content) throw new Error("Could not extract page content")
 
-      const res = await fetch(`${API_BASE}/chat/query`, {
+      const res = await tokenFetch(`${API_BASE}/chat/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -669,7 +673,7 @@ function SidePanel() {
         }
       }
 
-      const res = await fetch(streamUrl, {
+      const res = await tokenFetch(streamUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody)
@@ -756,7 +760,7 @@ function SidePanel() {
     setSearchResults([])
 
     try {
-      const res = await fetch(`${API_BASE}/site-search/search`, {
+      const res = await tokenFetch(`${API_BASE}/site-search/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -784,7 +788,7 @@ function SidePanel() {
     setLoading(true)
 
     try {
-      const res = await fetch(`${API_BASE}/web/quick-add`, {
+      const res = await tokenFetch(`${API_BASE}/web/quick-add`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -903,6 +907,25 @@ function SidePanel() {
               pageUrl={pageInfo.url}
               onMessage={showMessage}
             />
+          )}
+
+          {/* Automation fallback when page content can't be read (P0.3+, 2026-05-15) */}
+          {currentAction === "automate" && !pageInfo && (
+            <div className="bg-gray-800/60 border border-gray-700 rounded p-3 text-sm">
+              <div className="flex items-center gap-2 mb-2 text-gray-200 font-medium">
+                <span>🤖</span>
+                <span>Automation unavailable on this page</span>
+              </div>
+              <p className="text-gray-400 text-xs leading-relaxed">
+                LocalBook couldn't read the current tab's contents. This usually means the page
+                blocks content-script injection — common on browser-internal pages
+                (<code className="text-gray-300">chrome://</code>, <code className="text-gray-300">about:</code>),
+                some restricted intranet sites, and pages with strict content security policies.
+              </p>
+              <p className="text-gray-400 text-xs leading-relaxed mt-2">
+                Switch to a regular web page and reopen the side panel to use automation.
+              </p>
+            </div>
           )}
 
           {/* Collector Pending Badge */}

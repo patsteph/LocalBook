@@ -100,7 +100,6 @@ python -W ignore -m PyInstaller \
     --add-data="$SCRIPT_DIR/evaluator/registry_data:evaluator/registry_data" \
     --add-data="$SCRIPT_DIR/config.py:." \
     --hidden-import=api \
-    --hidden-import=api.agent \
     --hidden-import=api.agent_browser \
     --hidden-import=api.audio \
     --hidden-import=api.audio_llm \
@@ -143,6 +142,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.agent_browser \
     --hidden-import=services.audio_generator \
     --hidden-import=services.audio_llm \
+    --hidden-import=services.activity_ledger \
     --hidden-import=services.citation_verifier \
     --hidden-import=services.collection_scheduler \
     --hidden-import=services.community_detection \

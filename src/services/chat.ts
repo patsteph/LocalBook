@@ -1,5 +1,5 @@
 // Chat API service
-import api, { API_BASE_URL } from './api';
+import api, { API_BASE_URL, localFetch } from './api';
 import { ChatQuery, ChatResponse, Citation, ResearchResult } from '../types';
 
 export interface QueryAnalysis {
@@ -22,7 +22,8 @@ export interface StreamCallbacks {
   onRetrievalProgress?: (progress: RetrievalProgress) => void;
   onCitations?: (citations: Citation[], sources: string[], lowConfidence: boolean) => void;
   onToken?: (token: string) => void;
-  onReplaceAnswer?: (content: string) => void;
+  onReplaceAnswer?: (content: string, reason?: string) => void;
+  onAutoRouted?: (to: 'curator', reason: string) => void;
   onResearchResults?: (results: ResearchResult[]) => void;
   onFollowUpQuestions?: (questions: string[]) => void;
   onPlanAttached?: (planId: string) => void;
@@ -37,7 +38,7 @@ export const chatService = {
   },
 
   async queryStream(query: ChatQuery, callbacks: StreamCallbacks): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/chat/query/stream`, {
+    const response = await localFetch(`${API_BASE_URL}/chat/query/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -81,7 +82,9 @@ export const chatService = {
           } else if (data.type === 'token') {
             callbacks.onToken?.(data.content);
           } else if (data.type === 'replace_answer') {
-            callbacks.onReplaceAnswer?.(data.content);
+            callbacks.onReplaceAnswer?.(data.content, data.reason);
+          } else if (data.type === 'auto_routed') {
+            callbacks.onAutoRouted?.(data.to, data.reason);
           } else if (data.type === 'research_results') {
             callbacks.onResearchResults?.(data.results || []);
           } else if (data.type === 'follow_up_questions') {

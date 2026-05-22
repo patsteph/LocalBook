@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { API_BASE_URL, WS_BASE_URL } from '../services/api';
+import { API_BASE_URL, WS_BASE_URL, localFetch } from '../services/api';
 import { graphService } from '../services/graph';
 
 interface GraphNode {
@@ -978,7 +978,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
         ? `${API_BASE}/graph/all?${params}`
         : `${API_BASE}/graph/notebook/${currentNotebookId}?${params}`;
       
-      const response = await fetch(endpoint);
+      const response = await localFetch(endpoint);
       
       if (response.ok) {
         const data: GraphData = await response.json();
@@ -991,7 +991,7 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
         // check if sources exist and auto-trigger a topic rebuild
         if (data.nodes.length === 0 && currentNotebookId && !autoBuiltNotebooks.current.has(currentNotebookId) && !building) {
           try {
-            const sourcesRes = await fetch(`${API_BASE}/sources/${currentNotebookId}`);
+            const sourcesRes = await localFetch(`${API_BASE}/sources/${currentNotebookId}`);
             if (sourcesRes.ok) {
               const sources = await sourcesRes.json();
               if (Array.isArray(sources) && sources.length >= 3) {

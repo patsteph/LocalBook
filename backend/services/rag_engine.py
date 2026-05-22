@@ -1097,7 +1097,7 @@ Answer the question, citing sources inline as [N]. Do not list references at the
         # If cleanup changed the answer, send replace_answer to fix what the user already saw
         if full_answer != streamed_answer:
             print(f"[RAG STREAM] Post-stream cleanup removed {len(streamed_answer) - len(full_answer)} chars of bibliography leakage")
-            yield {"type": "replace_answer", "content": full_answer}
+            yield {"type": "replace_answer", "content": full_answer, "reason": "bibliography_cleanup"}
         
         print(f"[RAG STREAM] Step 6a - LLM generation (streamed): {gen_time:.2f}s ({len(full_answer)} chars)")
 
@@ -1124,7 +1124,7 @@ Answer the question, citing sources inline as [N]. Do not list references at the
                 if updated_verif:
                     verification_result = updated_verif
                 # Replace the already-streamed answer with the improved version
-                yield {"type": "replace_answer", "content": new_answer}
+                yield {"type": "replace_answer", "content": new_answer, "reason": "carr_retry"}
                 print(f"[RAG STREAM] CaRR: retry accepted, replaced streamed answer")
             else:
                 print(f"[RAG STREAM] CaRR: retry rejected, keeping streamed answer")

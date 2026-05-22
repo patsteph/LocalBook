@@ -2,7 +2,7 @@
  * Findings Service - API calls for bookmarks, saved visuals, and highlights
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 const API_BASE = API_BASE_URL;
 
@@ -33,7 +33,7 @@ export const findingsService = {
     tags?: string[],
     starred?: boolean
   ): Promise<Finding> {
-    const response = await fetch(`${API_BASE}/findings`, {
+    const response = await localFetch(`${API_BASE}/findings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

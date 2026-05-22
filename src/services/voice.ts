@@ -2,7 +2,7 @@
  * Voice Notes Service - API calls for Whisper transcription
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 const API_BASE = API_BASE_URL;
 
@@ -21,7 +21,7 @@ export interface VoiceStatus {
 
 export const voiceService = {
   async getStatus(): Promise<VoiceStatus> {
-    const response = await fetch(`${API_BASE}/voice/status`);
+    const response = await localFetch(`${API_BASE}/voice/status`);
     if (!response.ok) throw new Error('Failed to get voice status');
     return response.json();
   },
@@ -38,7 +38,7 @@ export const voiceService = {
     if (title) formData.append('title', title);
     formData.append('add_as_source', addAsSource.toString());
 
-    const response = await fetch(`${API_BASE}/voice/transcribe`, {
+    const response = await localFetch(`${API_BASE}/voice/transcribe`, {
       method: 'POST',
       body: formData,
     });
@@ -50,7 +50,7 @@ export const voiceService = {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(`${API_BASE}/voice/transcribe-quick`, {
+    const response = await localFetch(`${API_BASE}/voice/transcribe-quick`, {
       method: 'POST',
       body: formData,
     });

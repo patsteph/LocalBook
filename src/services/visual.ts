@@ -2,7 +2,7 @@
  * Visual Summary Service - API calls for Mermaid diagrams and visual summaries
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 const API_BASE = API_BASE_URL;
 
@@ -45,7 +45,7 @@ export const visualService = {
     focusTopic?: string,
     colorTheme?: string
   ): Promise<VisualSummary> {
-    const response = await fetch(`${API_BASE}/visual/summary`, {
+    const response = await localFetch(`${API_BASE}/visual/summary`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -60,7 +60,7 @@ export const visualService = {
   },
 
   async generateMindmap(notebookId: string): Promise<any> {
-    const response = await fetch(`${API_BASE}/visual/mindmap`, {
+    const response = await localFetch(`${API_BASE}/visual/mindmap`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ notebook_id: notebookId }),
@@ -70,7 +70,7 @@ export const visualService = {
   },
 
   async generateFlowchart(notebookId: string, focus?: string): Promise<any> {
-    const response = await fetch(`${API_BASE}/visual/flowchart`, {
+    const response = await localFetch(`${API_BASE}/visual/flowchart`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ notebook_id: notebookId, focus }),
@@ -97,7 +97,7 @@ export const visualService = {
     topic: string,
     colorTheme?: string
   ): Promise<VisualSummary> {
-    const response = await fetch(`${API_BASE}/visual/smart`, {
+    const response = await localFetch(`${API_BASE}/visual/smart`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -122,7 +122,7 @@ export const visualService = {
     templateId?: string,  // Optional: force specific visual type
     guidance?: string     // Optional: user refinement guidance
   ): Promise<void> {
-    const response = await fetch(`${API_BASE}/visual/smart/stream`, {
+    const response = await localFetch(`${API_BASE}/visual/smart/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -183,7 +183,7 @@ export const visualService = {
     refinement: string,
     colorTheme?: string
   ): Promise<{ success: boolean; code: string; changes_made: string }> {
-    const response = await fetch(`${API_BASE}/visual/refine`, {
+    const response = await localFetch(`${API_BASE}/visual/refine`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -198,7 +198,7 @@ export const visualService = {
   },
 
   async checkCacheStatus(notebookId: string): Promise<{ ready: boolean; theme_count?: number; age_seconds?: number; reason?: string }> {
-    const response = await fetch(`${API_BASE}/visual/cache/status/${notebookId}`);
+    const response = await localFetch(`${API_BASE}/visual/cache/status/${notebookId}`);
     if (!response.ok) return { ready: false, reason: 'fetch_error' };
     return response.json();
   },

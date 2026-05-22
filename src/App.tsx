@@ -15,7 +15,7 @@ import { Modal } from './components/shared/Modal';
 import { Settings } from './components/Settings';
 import { LLMSelector } from './components/LLMSelector';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
-import { API_BASE_URL } from './services/api';
+import { API_BASE_URL, localFetch } from './services/api';
 import { useReconnectingWebSocket } from './hooks/useReconnectingWebSocket';
 import { prewarmMermaid } from './components/shared/MermaidRenderer';
 import { useSystemHealth, STATUS_COLORS } from './hooks/useSystemHealth';
@@ -304,7 +304,7 @@ function App() {
       setSelectedNotebookName('Notebook');
       return;
     }
-    fetch(`${API_BASE_URL}/notebooks/${selectedNotebookId}`)
+    localFetch(`${API_BASE_URL}/notebooks/${selectedNotebookId}`)
       .then(res => res.ok ? res.json() : null)
       .then(data => {
         if (data?.title) setSelectedNotebookName(data.title);
@@ -381,17 +381,17 @@ function App() {
       if (morningBrief || weeklyWrap) return;
 
       const localHour = new Date().getHours();
-      fetch(`${API_BASE_URL}/curator/morning-brief/should-show?local_hour=${localHour}`)
+      localFetch(`${API_BASE_URL}/curator/morning-brief/should-show?local_hour=${localHour}`)
         .then(r => r.ok ? r.json() : null)
         .then(check => {
           if (check?.should_show_weekly) {
-            return fetch(`${API_BASE_URL}/curator/weekly-wrap`)
+            return localFetch(`${API_BASE_URL}/curator/weekly-wrap`)
               .then(r => r.ok ? r.json() : null)
               .then(wrap => {
                 if (wrap?.narrative) {
                   setWeeklyWrap(wrap);
-                  fetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
-                  fetch(`${API_BASE_URL}/curator/weekly-wrap/save`, {
+                  localFetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
+                  localFetch(`${API_BASE_URL}/curator/weekly-wrap/save`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(wrap)
                   }).catch(() => {});
@@ -399,13 +399,13 @@ function App() {
               });
           } else if (check?.should_show) {
             const hoursAway = check.hours_away || 12;
-            return fetch(`${API_BASE_URL}/curator/morning-brief?hours_away=${hoursAway}`)
+            return localFetch(`${API_BASE_URL}/curator/morning-brief?hours_away=${hoursAway}`)
               .then(r => r.ok ? r.json() : null)
               .then(brief => {
                 if (brief && (brief.notebooks?.length > 0 || brief.cross_notebook_insight || brief.narrative)) {
                   setMorningBrief(brief);
-                  fetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
-                  fetch(`${API_BASE_URL}/curator/morning-brief/save`, {
+                  localFetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
+                  localFetch(`${API_BASE_URL}/curator/morning-brief/save`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(brief)
                   }).catch(() => {});
@@ -528,7 +528,7 @@ function App() {
         // Also try to get startup status from backend API for upgrade info
         let startupComplete = false;
         try {
-          const response = await fetch(`${API_BASE_URL}/updates/startup-status`);
+          const response = await localFetch(`${API_BASE_URL}/updates/startup-status`);
           if (response.ok) {
             const startupStatus = await response.json();
             setStartupProgress(startupStatus.progress);
@@ -559,7 +559,7 @@ function App() {
           // Retries if models are still loading (backend returns reason: "models_loading")
           const fetchBriefWhenReady = (retries = 0) => {
             const localHour = new Date().getHours();
-            fetch(`${API_BASE_URL}/curator/morning-brief/should-show?local_hour=${localHour}`)
+            localFetch(`${API_BASE_URL}/curator/morning-brief/should-show?local_hour=${localHour}`)
               .then(r => r.ok ? r.json() : null)
               .then(check => {
                 if (check?.reason === 'models_loading' && retries < 6) {
@@ -569,13 +569,13 @@ function App() {
                 }
                 if (check?.should_show_weekly) {
                   // Monday — fetch weekly wrap up
-                  fetch(`${API_BASE_URL}/curator/weekly-wrap`)
+                  localFetch(`${API_BASE_URL}/curator/weekly-wrap`)
                     .then(r => r.ok ? r.json() : null)
                     .then(wrap => {
                       if (wrap?.narrative) {
                         setWeeklyWrap(wrap);
-                        fetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
-                        fetch(`${API_BASE_URL}/curator/weekly-wrap/save`, {
+                        localFetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
+                        localFetch(`${API_BASE_URL}/curator/weekly-wrap/save`, {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify(wrap)
                         }).catch(() => {});
@@ -583,13 +583,13 @@ function App() {
                     }).catch(() => {});
                 } else if (check?.should_show) {
                   const hoursAway = check.hours_away || 12;
-                  fetch(`${API_BASE_URL}/curator/morning-brief?hours_away=${hoursAway}`)
+                  localFetch(`${API_BASE_URL}/curator/morning-brief?hours_away=${hoursAway}`)
                     .then(r => r.ok ? r.json() : null)
                     .then(brief => {
                       if (brief && (brief.notebooks?.length > 0 || brief.cross_notebook_insight || brief.narrative)) {
                         setMorningBrief(brief);
-                        fetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
-                        fetch(`${API_BASE_URL}/curator/morning-brief/save`, {
+                        localFetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
+                        localFetch(`${API_BASE_URL}/curator/morning-brief/save`, {
                           method: 'POST', headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify(brief)
                         }).catch(() => {});

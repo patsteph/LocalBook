@@ -1,7 +1,7 @@
 /**
  * Themes Service - Access discovered themes from the knowledge graph
  */
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 export interface TopicSource {
     source_id: string;
@@ -47,7 +47,7 @@ export const themesService = {
      * Get themes for a notebook
      */
     async getThemes(notebookId: string, limit: number = 50): Promise<ThemesResponse> {
-        const response = await fetch(`${API_BASE_URL}/graph/themes/${notebookId}?limit=${limit}`);
+        const response = await localFetch(`${API_BASE_URL}/graph/themes/${notebookId}?limit=${limit}`);
         
         if (!response.ok) {
             throw new Error('Failed to fetch themes');
@@ -76,7 +76,7 @@ export const themesService = {
      * v0.6.5: Now calls /graph/build/{notebookId} instead of deprecated /graph/cluster
      */
     async rebuildThemes(notebookId: string): Promise<{ message: string; status: string }> {
-        const response = await fetch(`${API_BASE_URL}/graph/build/${notebookId}`, {
+        const response = await localFetch(`${API_BASE_URL}/graph/build/${notebookId}`, {
             method: 'POST',
         });
         

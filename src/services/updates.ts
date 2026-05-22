@@ -1,7 +1,7 @@
 /**
  * Updates Service - App update check, download, and install API
  */
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 export interface UpdateInfo {
   current_version: string;
@@ -28,19 +28,19 @@ export interface SourceInfo {
 
 class UpdatesService {
   async checkForUpdates(): Promise<UpdateInfo> {
-    const response = await fetch(`${API_BASE_URL}/updates/check`);
+    const response = await localFetch(`${API_BASE_URL}/updates/check`);
     if (!response.ok) throw new Error('Failed to check for updates');
     return response.json();
   }
 
   async getSourceInfo(): Promise<SourceInfo> {
-    const response = await fetch(`${API_BASE_URL}/updates/source-info`);
+    const response = await localFetch(`${API_BASE_URL}/updates/source-info`);
     if (!response.ok) return { has_source: false };
     return response.json();
   }
 
   async launchUpgrade(): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/updates/launch-upgrade`, {
+    const response = await localFetch(`${API_BASE_URL}/updates/launch-upgrade`, {
       method: 'POST',
     });
     if (!response.ok) throw new Error('Failed to launch upgrade');
@@ -48,7 +48,7 @@ class UpdatesService {
   }
 
   async downloadAndInstall(): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/updates/download-and-install`, {
+    const response = await localFetch(`${API_BASE_URL}/updates/download-and-install`, {
       method: 'POST',
     });
     if (!response.ok) throw new Error('Failed to start download');
@@ -56,13 +56,13 @@ class UpdatesService {
   }
 
   async getDownloadProgress(): Promise<DownloadProgress> {
-    const response = await fetch(`${API_BASE_URL}/updates/download-progress`);
+    const response = await localFetch(`${API_BASE_URL}/updates/download-progress`);
     if (!response.ok) throw new Error('Failed to get download progress');
     return response.json();
   }
 
   async installAndRestart(): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/updates/install-and-restart`, {
+    const response = await localFetch(`${API_BASE_URL}/updates/install-and-restart`, {
       method: 'POST',
     });
     if (!response.ok) throw new Error('Failed to install update');

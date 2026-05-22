@@ -241,7 +241,7 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                 ? 'bg-emerald-50 dark:bg-emerald-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-emerald-500'
                 : message.agentType === 'studio'
                   ? 'bg-amber-50 dark:bg-amber-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-amber-500'
-                  : (message.curatorName || message.agentType === 'curator')
+                  : message.agentType === 'curator'
                     ? 'bg-purple-50 dark:bg-purple-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-purple-500'
                     : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
         }`}
@@ -271,9 +271,25 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                 <Search className="w-3.5 h-3.5" /> {message.agentName || 'Research'}
               </div>
             )}
-            {(message.curatorName || message.agentType === 'curator') && (
+            {/* F5 fix (2026-05-22): agent badge only when the answer ITSELF
+                is from curator (agentType==='curator'). An overwatch aside
+                attached to a RAG answer renders separately in its own indigo
+                block below — it shouldn't relabel the answer as curator. */}
+            {message.agentType === 'curator' && (
               <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-purple-600 dark:text-purple-400">
                 <Compass className="w-3.5 h-3.5" /> {message.agentName || message.curatorName || 'Curator'}
+                {/* Phase A.3 (2026-05-22, F5): explain why the user is seeing
+                    curator styling when they didn't type @curator. The backend
+                    auto-routes cross-notebook queries; tell the user so the
+                    color change isn't unexplained. */}
+                {message.autoRoutedTo === 'curator' && (
+                  <span
+                    className="ml-1 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 normal-case tracking-normal"
+                    title="Your question matched cross-notebook keywords, so the Curator handled it instead of regular chat."
+                  >
+                    auto-routed
+                  </span>
+                )}
               </div>
             )}
             {message.agentType === 'studio' && (
@@ -317,6 +333,27 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
               renderMessageWithCitations(message.content, message.citations, onViewSource)
             )}
             
+            {/* Phase A.2 (2026-05-22, F8): persistent badge when the answer
+                was silently replaced post-stream by bibliography cleanup or
+                a CaRR retry. Without this, the user sees the answer change
+                with no explanation. */}
+            {message.refinementReason && (
+              <div
+                className="mt-2 inline-flex items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400 italic"
+                title={
+                  message.refinementReason === 'carr_retry'
+                    ? "The initial answer didn't match the cited sources well, so a verified version replaced it."
+                    : "Trailing bibliography text was trimmed after streaming finished."
+                }
+              >
+                <span>✨</span>
+                <span>
+                  {message.refinementReason === 'carr_retry'
+                    ? 'Refined for accuracy'
+                    : 'Cleaned up trailing references'}
+                </span>
+              </div>
+            )}
             {message.citations && message.citations.length > 0 && (
               <CitationList citations={message.citations} onViewSource={onViewSource} />
             )}

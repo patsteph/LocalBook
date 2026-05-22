@@ -706,6 +706,14 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             "content": content,
         })
         
+        # B-fix (2026-05-21): record engagement so stagnation grace period
+        # kicks in when user captures via extension.
+        try:
+            from services.collection_history import record_engagement
+            record_engagement(request.notebook_id, "source_add")
+        except Exception as _eng_err:
+            print(f"[BROWSER] record_engagement failed (non-fatal): {_eng_err}")
+
         # Auto-tag the source (non-fatal)
         try:
             from services.auto_tagger import auto_tagger
@@ -852,6 +860,14 @@ async def capture_selection(request: SelectionCaptureRequest):
             "content": request.selected_text,
         })
         
+        # B-fix (2026-05-21): record engagement so stagnation grace period
+        # kicks in when user captures via extension.
+        try:
+            from services.collection_history import record_engagement
+            record_engagement(request.notebook_id, "source_add")
+        except Exception as _eng_err:
+            print(f"[BROWSER] record_engagement failed (non-fatal): {_eng_err}")
+
         # Auto-tag the source (non-fatal)
         try:
             from services.auto_tagger import auto_tagger
@@ -998,6 +1014,14 @@ async def capture_youtube(request: YouTubeCaptureRequest):
             "content": content,
         })
         
+        # B-fix (2026-05-21): record engagement so stagnation grace period
+        # kicks in when user captures via extension.
+        try:
+            from services.collection_history import record_engagement
+            record_engagement(request.notebook_id, "source_add")
+        except Exception as _eng_err:
+            print(f"[BROWSER] record_engagement failed (non-fatal): {_eng_err}")
+
         # Auto-tag the source (non-fatal)
         try:
             from services.auto_tagger import auto_tagger

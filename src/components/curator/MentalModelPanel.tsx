@@ -21,7 +21,7 @@ import {
   Lightbulb,
   Scale,
 } from 'lucide-react';
-import { API_BASE_URL } from '../../services/api';
+import { API_BASE_URL, localFetch } from '../../services/api';
 
 interface MentalModel {
   notebook_id: string;
@@ -245,8 +245,8 @@ export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
     setLoading(true);
     try {
       const [modelRes, stancesRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/curator/notebooks/${encodeURIComponent(notebookId)}/mental-model`),
-        fetch(`${API_BASE_URL}/curator/notebooks/${encodeURIComponent(notebookId)}/stances`),
+        localFetch(`${API_BASE_URL}/curator/notebooks/${encodeURIComponent(notebookId)}/mental-model`),
+        localFetch(`${API_BASE_URL}/curator/notebooks/${encodeURIComponent(notebookId)}/stances`),
       ]);
       if (modelRes.ok) {
         const data = (await modelRes.json()) as MentalModel;

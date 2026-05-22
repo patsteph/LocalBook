@@ -1,7 +1,7 @@
 /**
  * Exploration Service - Track and retrieve user's learning journey
  */
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 export interface QueryRecord {
     id: string;
@@ -59,7 +59,7 @@ export const explorationService = {
         confidence: number = 0.5,
         answerPreview: string = ''
     ): Promise<{ status: string; query_id: string }> {
-        const response = await fetch(`${API_BASE_URL}/exploration/record`, {
+        const response = await localFetch(`${API_BASE_URL}/exploration/record`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -83,7 +83,7 @@ export const explorationService = {
      * Get the exploration journey for a notebook
      */
     async getJourney(notebookId: string, limit: number = 50): Promise<JourneyResponse> {
-        const response = await fetch(`${API_BASE_URL}/exploration/journey/${notebookId}?limit=${limit}`);
+        const response = await localFetch(`${API_BASE_URL}/exploration/journey/${notebookId}?limit=${limit}`);
 
         if (!response.ok) {
             throw new Error('Failed to get journey');
@@ -96,7 +96,7 @@ export const explorationService = {
      * Get suggestions for continuing exploration
      */
     async getSuggestions(notebookId: string): Promise<SuggestionsResponse> {
-        const response = await fetch(`${API_BASE_URL}/exploration/suggestions/${notebookId}`);
+        const response = await localFetch(`${API_BASE_URL}/exploration/suggestions/${notebookId}`);
 
         if (!response.ok) {
             throw new Error('Failed to get suggestions');
@@ -109,7 +109,7 @@ export const explorationService = {
      * Clear exploration history for a notebook
      */
     async clearHistory(notebookId: string): Promise<void> {
-        const response = await fetch(`${API_BASE_URL}/exploration/clear/${notebookId}`, {
+        const response = await localFetch(`${API_BASE_URL}/exploration/clear/${notebookId}`, {
             method: 'DELETE',
         });
 

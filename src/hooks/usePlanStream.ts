@@ -11,7 +11,7 @@
  * via React state. Auto-reconnects with exponential backoff on close.
  */
 import { useEffect, useState } from 'react';
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, localFetch } from '../services/api';
 
 export type PlanStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 export type PlanStatus = 'proposed' | 'running' | 'completed' | 'cancelled' | 'failed';
@@ -247,7 +247,7 @@ export function usePlanStream(): UsePlanStreamReturn {
 
 async function cancelPlan(planId: string): Promise<boolean> {
   try {
-    const res = await fetch(`${API_BASE_URL}/curator/plans/${encodeURIComponent(planId)}/cancel`, {
+    const res = await localFetch(`${API_BASE_URL}/curator/plans/${encodeURIComponent(planId)}/cancel`, {
       method: 'POST',
     });
     return res.ok;
@@ -264,7 +264,7 @@ async function fetchPlan(planId: string): Promise<void> {
   if (inFlightFetches.has(planId)) return;
   inFlightFetches.add(planId);
   try {
-    const res = await fetch(`${API_BASE_URL}/curator/plans/${encodeURIComponent(planId)}`);
+    const res = await localFetch(`${API_BASE_URL}/curator/plans/${encodeURIComponent(planId)}`);
     if (!res.ok) return;
     const plan = (await res.json()) as PlanWithSteps;
     // Only insert if SSE hasn't beaten us to it. If a later SSE event

@@ -2,7 +2,7 @@
  * Writing Assistant Service - API calls for AI writing assistance
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 const API_BASE = API_BASE_URL;
 
@@ -21,13 +21,13 @@ export interface WritingResult {
 
 export const writingService = {
   async getFormats(): Promise<FormatOption[]> {
-    const response = await fetch(`${API_BASE}/writing/formats`);
+    const response = await localFetch(`${API_BASE}/writing/formats`);
     if (!response.ok) throw new Error('Failed to get formats');
     return response.json();
   },
 
   async getTasks(): Promise<{ value: string; label: string; description: string }[]> {
-    const response = await fetch(`${API_BASE}/writing/tasks`);
+    const response = await localFetch(`${API_BASE}/writing/tasks`);
     if (!response.ok) throw new Error('Failed to get tasks');
     return response.json();
   },
@@ -38,7 +38,7 @@ export const writingService = {
     formatStyle: string = 'professional',
     voiceProfile?: any
   ): Promise<WritingResult> {
-    const response = await fetch(`${API_BASE}/writing/assist`, {
+    const response = await localFetch(`${API_BASE}/writing/assist`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -60,7 +60,7 @@ export const writingService = {
     maxWords: number = 500,
     voiceProfile?: any
   ): Promise<WritingResult> {
-    const response = await fetch(`${API_BASE}/writing/from-sources`, {
+    const response = await localFetch(`${API_BASE}/writing/from-sources`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -84,7 +84,7 @@ export const writingService = {
     notebookId?: string,
     voiceProfile?: any
   ): Promise<WritingResult> {
-    const response = await fetch(`${API_BASE}/writing/transform`, {
+    const response = await localFetch(`${API_BASE}/writing/transform`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

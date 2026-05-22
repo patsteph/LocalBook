@@ -288,7 +288,17 @@ async def lifespan(app: FastAPI):
     This allows the frontend to poll /updates/startup-status for progress updates.
     """
     global _startup_task
-    
+
+    # P0.1a (2026-05-15): generate per-launch app token. Not enforced yet
+    # (warn-only middleware lands in P0.1f). Initialized before any startup
+    # task so later code paths can read it.
+    try:
+        from utils.token import initialize_app_token
+        _tok = initialize_app_token(settings.data_dir)
+        logger.info(f"[main] app token generated ({len(_tok)} chars), written to .app_token (0o600)")
+    except Exception as _e:
+        logger.error(f"[main] failed to initialize app token (non-fatal until P0.1f): {_e}")
+
     # Start startup tasks in background - HTTP server will be ready immediately
     _startup_task = safe_create_task(_run_startup_tasks(), name="startup-tasks")
     
@@ -377,16 +387,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
-# Allow all origins since backend binds to localhost only (not network-exposed)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 import logging
@@ -397,7 +397,54 @@ class DiagnosticsMiddleware(BaseHTTPMiddleware):
         record_endpoint(f"{request.method} {request.url.path}")
         return await call_next(request)
 
+# Middleware ordering note (P0.1f, 2026-05-21):
+#   Starlette runs middleware in REVERSE order of add_middleware() calls.
+#   The LAST added is the OUTERMOST wrapper (runs first on request, last
+#   on response). For the auth middleware's 401 response to include CORS
+#   headers — so the browser lets JS see the 401 and our refresh-retry
+#   logic can run — CORS must be the OUTERMOST. So: add Diagnostics,
+#   then Auth, then CORS last.
 app.add_middleware(DiagnosticsMiddleware)
+
+# P0.1f Stage 2 RE-ENABLED 2026-05-21 with the actual root cause fixed:
+# middleware ordering. Previously CORS was innermost — auth middleware's
+# 401 response bypassed it, so the browser blocked the entire response
+# (no Access-Control-Allow-Origin header). JS never saw the 401, retry
+# never fired, app hung. Now CORS is OUTERMOST (added last below) so 401s
+# pass through it and the browser allows JS to read them.
+from utils.auth_middleware import AppTokenAuthMiddleware
+app.add_middleware(AppTokenAuthMiddleware, enforce=True)
+
+# CORS middleware — added LAST so it's the OUTERMOST wrapper. This is
+# critical: it ensures error responses (401 from auth, etc.) include
+# CORS headers, so browsers don't block the response and our retry logic
+# can actually see the status code.
+#
+# P0.1g (2026-05-21): narrowed origins from "*" to specific allowlist.
+# Combined with P0.1f token enforcement, this means random browser tabs
+# (not in this list) can't even READ responses from the backend, AND
+# can't make credentialed requests. Defense in depth.
+#
+# Allowed origins:
+#   - tauri://localhost              → main app webview
+#   - http://localhost:1420          → Vite dev server (if used)
+#   - http://localhost:8000          → loopback (Tauri Rust → backend)
+#   - chrome-extension://<id>        → pinned LocalBook Companion extension
+#     The ID is deterministic via the manifest "key" field (P0.1d) — same
+#     across all installs of OUR signed extension.
+from config import settings as _cfg_for_cors
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "tauri://localhost",
+        "http://localhost:1420",
+        "http://localhost:8000",
+        f"chrome-extension://{_cfg_for_cors.extension_id}",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Include routers
 app.include_router(notebooks.router, prefix="/notebooks", tags=["notebooks"])
@@ -445,6 +492,10 @@ app.include_router(evaluator.router, tags=["evaluator"])
 app.include_router(flashcards.router, tags=["flashcards"])
 app.include_router(scan_api.router, prefix="/scan", tags=["scan"])
 app.include_router(capture_router, prefix="/capture", tags=["capture"])
+
+# P0.1e (2026-05-15): extension token-bootstrap endpoint (Origin-checked).
+from api import auth as auth_api
+app.include_router(auth_api.router)
 
 @app.get("/")
 async def root():

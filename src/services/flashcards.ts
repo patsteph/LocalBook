@@ -11,7 +11,7 @@
  * The main card lifecycle calls go through `quizService` (generate + grade).
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 import { quizService, GradeAnswerResponse } from './quiz';
 
 const API_BASE = API_BASE_URL;
@@ -47,13 +47,13 @@ export type AnswerMode = 'click' | 'type' | 'voice';
 
 export const flashcardsService = {
   async getTutor(notebookId: string): Promise<TutorProfile> {
-    const resp = await fetch(`${API_BASE}/flashcards/tutor/${notebookId}`);
+    const resp = await localFetch(`${API_BASE}/flashcards/tutor/${notebookId}`);
     if (!resp.ok) throw new Error(`Failed to load tutor profile (${resp.status})`);
     return resp.json();
   },
 
   async updateTutor(notebookId: string, patch: TutorUpdate): Promise<TutorProfile> {
-    const resp = await fetch(`${API_BASE}/flashcards/tutor/${notebookId}`, {
+    const resp = await localFetch(`${API_BASE}/flashcards/tutor/${notebookId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
@@ -90,7 +90,7 @@ export const flashcardsService = {
      */
     signal?: AbortSignal;
   }): Promise<string> {
-    const resp = await fetch(`${API_BASE}/flashcards/speak`, {
+    const resp = await localFetch(`${API_BASE}/flashcards/speak`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -118,7 +118,7 @@ export const flashcardsService = {
   async transcribeAnswer(audio: Blob, filename = 'answer.webm'): Promise<string> {
     const fd = new FormData();
     fd.append('file', audio, filename);
-    const resp = await fetch(`${API_BASE}/voice/transcribe-quick`, {
+    const resp = await localFetch(`${API_BASE}/voice/transcribe-quick`, {
       method: 'POST',
       body: fd,
     });

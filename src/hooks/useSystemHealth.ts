@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, localFetch } from '../services/api';
 
 interface SystemHealth {
   llm: 'ok' | 'warn' | 'error' | 'unknown';
@@ -18,7 +18,7 @@ export function useSystemHealth(): SystemHealth {
 
   const check = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/health`, { signal: AbortSignal.timeout(5000) });
+      const res = await localFetch(`${API_BASE_URL}/health`, { signal: AbortSignal.timeout(5000) });
       if (!res.ok) {
         setHealth({ llm: 'error', embedding: 'error', system: 'error' });
         return;

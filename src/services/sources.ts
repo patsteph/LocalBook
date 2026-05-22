@@ -1,5 +1,5 @@
 // Source document API service
-import api, { API_BASE_URL } from './api';
+import api, { API_BASE_URL, localFetch } from './api';
 import { Source } from '../types';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -80,7 +80,7 @@ export const sourceService = {
     formData.append('notebook_id', notebookId);
     formData.append('file', file);
 
-    const response = await fetch(`${API_BASE_URL}/sources/upload/stream`, {
+    const response = await localFetch(`${API_BASE_URL}/sources/upload/stream`, {
       method: 'POST',
       body: formData,
       signal,

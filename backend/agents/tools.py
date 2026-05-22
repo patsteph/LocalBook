@@ -259,7 +259,15 @@ async def capture_page_tool(
             "meta_tags": meta_tags or {},
         },
     )
-    
+
+    # B-fix (2026-05-21): record engagement so stagnation grace period
+    # kicks in when user captures via extension / agent tool.
+    try:
+        from services.collection_history import record_engagement
+        record_engagement(notebook_id, "source_add")
+    except Exception as _eng_err:
+        print(f"[agents.tools] record_engagement failed (non-fatal): {_eng_err}")
+
     return {
         "success": True,
         "source_id": result["source_id"],

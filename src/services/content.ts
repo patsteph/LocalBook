@@ -1,7 +1,7 @@
 /**
  * Content Generation Service - Text-based skill outputs
  */
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 import jsPDF from 'jspdf';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
@@ -41,7 +41,7 @@ export const contentService = {
      * Generate content using a skill (non-streaming)
      */
     async generate(request: ContentGenerateRequest): Promise<ContentGenerateResponse> {
-        const response = await fetch(`${API_BASE_URL}/content/generate`, {
+        const response = await localFetch(`${API_BASE_URL}/content/generate`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -61,7 +61,7 @@ export const contentService = {
      * Generate content with streaming for real-time display
      */
     async *generateStream(request: ContentGenerateRequest): AsyncGenerator<string, void, unknown> {
-        const response = await fetch(`${API_BASE_URL}/content/generate/stream`, {
+        const response = await localFetch(`${API_BASE_URL}/content/generate/stream`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -132,7 +132,7 @@ export const contentService = {
      * List all content generations for a notebook
      */
     async list(notebookId: string): Promise<ContentGeneration[]> {
-        const response = await fetch(`${API_BASE_URL}/content/list/${notebookId}`);
+        const response = await localFetch(`${API_BASE_URL}/content/list/${notebookId}`);
         if (!response.ok) {
             throw new Error('Failed to list content generations');
         }
@@ -144,7 +144,7 @@ export const contentService = {
      * Get a specific content generation
      */
     async get(contentId: string): Promise<ContentGeneration> {
-        const response = await fetch(`${API_BASE_URL}/content/${contentId}`);
+        const response = await localFetch(`${API_BASE_URL}/content/${contentId}`);
         if (!response.ok) {
             throw new Error('Failed to get content generation');
         }
@@ -155,7 +155,7 @@ export const contentService = {
      * Delete a content generation
      */
     async delete(contentId: string): Promise<void> {
-        const response = await fetch(`${API_BASE_URL}/content/${contentId}`, {
+        const response = await localFetch(`${API_BASE_URL}/content/${contentId}`, {
             method: 'DELETE',
         });
         if (!response.ok) {

@@ -2,7 +2,7 @@
  * Web search and scraping service
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 const API_BASE = API_BASE_URL;
 
@@ -44,7 +44,7 @@ export const webService = {
      * Search the web for a query with pagination
      */
     async search(query: string, maxResults: number = 20, offset: number = 0): Promise<WebSearchResponse> {
-        const response = await fetch(`${API_BASE}/web/search`, {
+        const response = await localFetch(`${API_BASE}/web/search`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -67,7 +67,7 @@ export const webService = {
      * Get previously scraped web sources for a notebook
      */
     async getWebSources(notebookId: string): Promise<{ sources: Array<{ id: string; title: string; url: string; word_count: number; date_added: string; type: string }>; count: number }> {
-        const response = await fetch(`${API_BASE}/web/sources/${notebookId}`);
+        const response = await localFetch(`${API_BASE}/web/sources/${notebookId}`);
 
         if (!response.ok) {
             throw new Error(`Failed to get web sources: ${response.statusText}`);
@@ -85,7 +85,7 @@ export const webService = {
         const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
         
         try {
-            const response = await fetch(`${API_BASE}/web/scrape`, {
+            const response = await localFetch(`${API_BASE}/web/scrape`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -117,7 +117,7 @@ export const webService = {
      * Scraping and ingestion happen in background, UI updates via WebSocket
      */
     async quickAdd(notebookId: string, url: string, title: string): Promise<{ source_id: string; status: string }> {
-        const response = await fetch(`${API_BASE}/web/quick-add`, {
+        const response = await localFetch(`${API_BASE}/web/quick-add`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -150,7 +150,7 @@ export const webService = {
         const timeoutId = setTimeout(() => controller.abort(), 120000);
         
         try {
-            const response = await fetch(`${API_BASE}/web/add-to-notebook`, {
+            const response = await localFetch(`${API_BASE}/web/add-to-notebook`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

@@ -35,6 +35,7 @@ from models.memory import (
     ArchivalMemoryEntry, MemorySearchResult, MemoryConflict
 )
 from config import settings
+from utils.json_io import atomic_write_json
 import logging
 logger = logging.getLogger(__name__)
 
@@ -138,9 +139,9 @@ class MemoryStore:
         """Save core memory to disk"""
         with self._core_memory_lock:
             self._core_memory_cache = memory
-            self.core_memory_path.write_text(
-                memory.model_dump_json(indent=2)
-            )
+            # Atomic write (write-temp + fsync + rename) — crash mid-write
+            # cannot leave core_memory.json partial. P0.4 (2026-05-15).
+            atomic_write_json(self.core_memory_path, memory.model_dump(mode="json"))
     
     def add_core_memory(self, entry: CoreMemoryEntry) -> Tuple[bool, Optional[MemoryConflict]]:
         """

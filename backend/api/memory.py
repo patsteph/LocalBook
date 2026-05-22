@@ -1,4 +1,5 @@
 """Memory API endpoints for viewing and managing persistent memory"""
+import asyncio
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -139,12 +140,14 @@ async def search_archival_memory(request: MemorySearchRequest):
     except ValueError:
         namespace = AgentNamespace.SYSTEM
     
-    results = memory_store.search_archival_memory(
+    # P0.5 (2026-05-15): off-load sync memory call to thread — async route doesn't block event loop.
+    results = await asyncio.to_thread(
+        memory_store.search_archival_memory,
         query=request.query,
         limit=request.max_results,
         namespace=namespace,
         notebook_id=request.notebook_id,
-        cross_notebook=request.cross_notebook
+        cross_notebook=request.cross_notebook,
     )
     
     return [
@@ -184,7 +187,8 @@ async def create_archival_memory(
     except ValueError:
         ns = AgentNamespace.SYSTEM
     
-    memory_store.add_archival_memory(entry, namespace=ns, notebook_id=notebook_id)
+    # P0.5 (2026-05-15): off-load sync memory call to thread — async route doesn't block event loop.
+    await asyncio.to_thread(memory_store.add_archival_memory, entry, namespace=ns, notebook_id=notebook_id)
     return {"success": True, "memory_id": entry.id, "namespace": ns.value}
 
 

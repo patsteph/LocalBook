@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { notebookService, NOTEBOOK_COLORS } from '../services/notebooks';
 import { exportService } from '../services/export';
 import { sourceService } from '../services/sources';
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, localFetch } from '../services/api';
 import { curatorService } from '../services/curatorApi';
 import { Notebook, NotebookSection } from '../types';
 import { Button } from './shared/Button';
@@ -126,7 +126,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
         onNotebookSelect(data[0].id);
       }
       try {
-        const prefsRes = await fetch(`${API_BASE_URL}/settings/primary-notebook`);
+        const prefsRes = await localFetch(`${API_BASE_URL}/settings/primary-notebook`);
         if (prefsRes.ok) {
           const prefsData = await prefsRes.json();
           setPrimaryNotebookId(prefsData.primary_notebook_id);
@@ -143,7 +143,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
 
   const handleSetPrimary = async (notebookId: string) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/settings/primary-notebook/${notebookId}`, {
+      const res = await localFetch(`${API_BASE_URL}/settings/primary-notebook/${notebookId}`, {
         method: 'POST'
       });
       if (res.ok) {

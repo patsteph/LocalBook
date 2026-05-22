@@ -4,7 +4,7 @@
  * Manages session lifecycle, WebSocket subscriptions, and cleanup.
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 export interface CaptureSession {
   session_id: string;
@@ -74,7 +74,7 @@ export const captureService = {
    * the QR code URL for the iPhone.
    */
   async createSession(): Promise<CaptureSession> {
-    const resp = await fetch(`${API_BASE_URL}/capture/session`, {
+    const resp = await localFetch(`${API_BASE_URL}/capture/session`, {
       method: 'POST',
     });
     if (!resp.ok) {
@@ -89,7 +89,7 @@ export const captureService = {
    */
   async closeSession(sessionId: string): Promise<void> {
     try {
-      await fetch(`${API_BASE_URL}/capture/session/${sessionId}`, {
+      await localFetch(`${API_BASE_URL}/capture/session/${sessionId}`, {
         method: 'DELETE',
       });
     } catch (err) {

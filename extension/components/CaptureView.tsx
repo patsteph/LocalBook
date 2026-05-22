@@ -1,6 +1,6 @@
 import { useState } from "react"
 import type { LinkInfo } from "../types"
-import { API_BASE } from "../types"
+import { API_BASE, tokenFetch } from "../types"
 import { extractDomain } from "../hooks/usePageContent"
 
 interface ScrapeResultProps {
@@ -58,7 +58,7 @@ export function LinksResult({ linksResult, notebookId, sourceId, onMessage }: Li
 
     try {
       if (sourceId) {
-        const res = await fetch(`${API_BASE}/sources/${notebookId}/${sourceId}/expand-links`, {
+        const res = await tokenFetch(`${API_BASE}/sources/${notebookId}/${sourceId}/expand-links`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ selected_urls: urls })
@@ -79,7 +79,7 @@ export function LinksResult({ linksResult, notebookId, sourceId, onMessage }: Li
         let fail = 0
         for (const url of urls) {
           try {
-            const res = await fetch(`${API_BASE}/web/quick-add`, {
+            const res = await tokenFetch(`${API_BASE}/web/quick-add`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ notebook_id: notebookId, url, title: url })

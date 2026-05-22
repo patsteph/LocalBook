@@ -93,6 +93,8 @@ export interface ChatMessage {
   visualLoadingMessage?: string;  // Canvas: custom loading message (e.g., "Analyzing your guidance...")
   curatorAside?: string;  // Curator overwatch: cross-notebook insight aside
   curatorName?: string;  // Curator overwatch: name of the curator
+  refinementReason?: 'bibliography_cleanup' | 'carr_retry';  // Phase A.2: replace_answer attribution (F8)
+  autoRoutedTo?: 'curator';  // Phase A.3: implicit-routing attribution (F5)
   agentName?: string;    // Agent identity: display name (e.g. "Scout", "Curator")
   agentType?: 'curator' | 'collector' | 'research' | 'studio';  // Agent identity: type for color coding
   researchResults?: ResearchResult[];  // @research: structured results for approval UI

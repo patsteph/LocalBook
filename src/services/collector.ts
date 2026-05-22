@@ -1,7 +1,7 @@
 /**
  * Collector Service - Frontend API for per-notebook content collection
  */
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 export interface CollectorConfig {
   name: string;
@@ -80,7 +80,7 @@ class CollectorService {
    * Get Collector configuration for a notebook
    */
   async getConfig(notebookId: string): Promise<CollectorConfig> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/config`);
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/config`);
     if (!response.ok) throw new Error('Failed to fetch collector config');
     return response.json();
   }
@@ -92,7 +92,7 @@ class CollectorService {
     notebookId: string, 
     updates: Partial<CollectorConfig>
   ): Promise<{ success: boolean; config: CollectorConfig }> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/config`, {
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/config`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
@@ -110,7 +110,7 @@ class CollectorService {
     sources_checked: number;
     duration_ms: number;
   }> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/first-sweep`, {
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/first-sweep`, {
       method: 'POST'
     });
     if (!response.ok) throw new Error('Failed to run first sweep');
@@ -121,7 +121,7 @@ class CollectorService {
    * Trigger immediate collection run
    */
   async collectNow(notebookId: string): Promise<CollectionResult> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/collect-now`, {
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/collect-now`, {
       method: 'POST'
     });
     if (!response.ok) throw new Error('Failed to trigger collection');
@@ -136,7 +136,7 @@ class CollectorService {
     total: number;
     expiring_soon: number;
   }> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/pending`);
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/pending`);
     if (!response.ok) throw new Error('Failed to fetch pending approvals');
     return response.json();
   }
@@ -155,7 +155,7 @@ class CollectorService {
     auto_expand: boolean;
     pending_count: number;
   }> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/stagnation`);
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/stagnation`);
     if (!response.ok) throw new Error('Failed to fetch stagnation status');
     return response.json();
   }
@@ -164,7 +164,7 @@ class CollectorService {
    * Approve a pending item
    */
   async approveItem(notebookId: string, itemId: string): Promise<{ success: boolean }> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/approve/${itemId}`, {
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/approve/${itemId}`, {
       method: 'POST'
     });
     if (!response.ok) throw new Error('Failed to approve item');
@@ -178,7 +178,7 @@ class CollectorService {
     approved: number;
     total: number;
   }> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/approve-batch`, {
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/approve-batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ item_ids: itemIds })
@@ -211,7 +211,7 @@ class CollectorService {
     reason: string,
     feedbackType?: 'wrong_topic' | 'too_old' | 'bad_source' | 'already_knew' | 'other'
   ): Promise<{ success: boolean }> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/reject/${itemId}`, {
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/reject/${itemId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason, feedback_type: feedbackType })
@@ -224,7 +224,7 @@ class CollectorService {
    * Get health report for all configured sources
    */
   async getSourceHealth(notebookId: string): Promise<{ sources: SourceHealth[] }> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/source-health`);
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/source-health`);
     if (!response.ok) throw new Error('Failed to fetch source health');
     return response.json();
   }
@@ -233,7 +233,7 @@ class CollectorService {
    * Get collection scheduler status
    */
   async getSchedulerStatus(): Promise<SchedulerStatus> {
-    const response = await fetch(`${API_BASE_URL}/collector/scheduler/status`);
+    const response = await localFetch(`${API_BASE_URL}/collector/scheduler/status`);
     if (!response.ok) throw new Error('Failed to fetch scheduler status');
     return response.json();
   }
@@ -242,7 +242,7 @@ class CollectorService {
    * Start the collection scheduler
    */
   async startScheduler(): Promise<{ success: boolean; status: string }> {
-    const response = await fetch(`${API_BASE_URL}/collector/scheduler/start`, {
+    const response = await localFetch(`${API_BASE_URL}/collector/scheduler/start`, {
       method: 'POST'
     });
     if (!response.ok) throw new Error('Failed to start scheduler');
@@ -253,7 +253,7 @@ class CollectorService {
    * Stop the collection scheduler
    */
   async stopScheduler(): Promise<{ success: boolean; status: string }> {
-    const response = await fetch(`${API_BASE_URL}/collector/scheduler/stop`, {
+    const response = await localFetch(`${API_BASE_URL}/collector/scheduler/stop`, {
       method: 'POST'
     });
     if (!response.ok) throw new Error('Failed to stop scheduler');
@@ -264,7 +264,7 @@ class CollectorService {
    * Get collector profile (collection history summary)
    */
   async getProfile(notebookId: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/profile`);
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/profile`);
     if (!response.ok) throw new Error('Failed to fetch collector profile');
     return response.json();
   }
@@ -273,7 +273,7 @@ class CollectorService {
    * Get collection history
    */
   async getHistory(notebookId: string, limit = 15): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/history?limit=${limit}`);
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/history?limit=${limit}`);
     if (!response.ok) throw new Error('Failed to fetch collection history');
     return response.json();
   }
@@ -282,7 +282,7 @@ class CollectorService {
    * Toggle a source on/off
    */
   async toggleSource(notebookId: string, sourceId: string, enabled: boolean): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/collector/${notebookId}/source-toggle`, {
+    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/source-toggle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source_id: sourceId, enabled })

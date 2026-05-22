@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from services.progress_reporter import ProgressReporter
 from services.scan_pipeline import scan_pipeline
+from utils.path_safety import is_safe_user_path
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ class ScanProcessRequest(BaseModel):
 @router.post("/process")
 async def process_scan(request: ScanProcessRequest):
     """Process a single scanned image synchronously, return the created note."""
+    # P0.2 (2026-05-15): reject paths outside user content roots or in sensitive dirs.
+    ok, reason = is_safe_user_path(request.file_path)
+    if not ok:
+        logger.warning(f"[scan] /process rejected unsafe path: {request.file_path} ({reason})")
+        raise HTTPException(status_code=400, detail=f"Invalid file_path: {reason}")
     try:
         logger.info(f"[scan] /process request: {request.file_path}")
         result = await scan_pipeline.process_image(
@@ -106,6 +112,13 @@ async def process_scan_batch(request: ScanBatchRequest):
     Terminal event is stage="complete" (details include note_id, total_pages,
     chars, title) or stage="error" (details include the failure message).
     """
+    # P0.2 (2026-05-15): reject batch if any path is unsafe.
+    for fp in request.file_paths:
+        ok, reason = is_safe_user_path(fp)
+        if not ok:
+            logger.warning(f"[scan-batch] rejected unsafe path: {fp} ({reason})")
+            raise HTTPException(status_code=400, detail=f"Invalid file_path '{fp}': {reason}")
+
     logger.info(
         f"[scan] /process-batch: {len(request.file_paths)} pages "
         f"(mode={request.mode}, notebook={request.notebook_id})"
@@ -203,6 +216,13 @@ async def ocr_scan_batch(request: ScanOcrBatchRequest):
          "details": {"merged_text": "...", "page_texts": [...],
                      "total_pages": N, "chars": M}}
     """
+    # P0.2 (2026-05-15): reject batch if any path is unsafe.
+    for fp in request.file_paths:
+        ok, reason = is_safe_user_path(fp)
+        if not ok:
+            logger.warning(f"[scan-ocr] rejected unsafe path: {fp} ({reason})")
+            raise HTTPException(status_code=400, detail=f"Invalid file_path '{fp}': {reason}")
+
     logger.info(
         f"[scan] /ocr-batch: {len(request.file_paths)} pages (mode={request.mode})"
     )

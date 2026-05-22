@@ -48,13 +48,42 @@ def get_static_dir():
 
 @router.get("/portal", response_class=HTMLResponse)
 async def get_portal():
-    """Serve the Smoke Screen Portal HTML page."""
+    """Serve the Smoke Screen Portal HTML page.
+
+    P0.1f (2026-05-15): inject the current app token + a fetch monkey-patch
+    so the page's many inline fetch() calls automatically include the
+    X-LocalBook-Token header without having to rewrite every call site.
+    """
     static_dir = get_static_dir()
     html_path = static_dir / "health_portal.html"
-    if html_path.exists():
-        return HTMLResponse(content=html_path.read_text(), status_code=200)
+    if not html_path.exists():
+        return HTMLResponse(
+            content=f"<h1>Portal not found</h1><p>Looked in: {html_path}</p>",
+            status_code=404,
+        )
+    raw = html_path.read_text()
+
+    # Token injection — escape it as a JSON string literal so any future
+    # change to token format (currently hex) stays safe.
+    import json
+    from utils.token import get_app_token
+    token = get_app_token() or ""
+    injection = (
+        '<script>(function(){'
+        f'window.__LB_TOKEN__={json.dumps(token)};'
+        'const _of=window.fetch;'
+        'window.fetch=function(input,init){'
+        'const h=new Headers((init&&init.headers)||{});'
+        'if(window.__LB_TOKEN__)h.set("X-LocalBook-Token",window.__LB_TOKEN__);'
+        'return _of(input,Object.assign({},init,{headers:h}));'
+        '};})();</script>'
+    )
+    # Inject right after <head> if present, else at top of body.
+    if "<head>" in raw:
+        html = raw.replace("<head>", "<head>\n" + injection, 1)
     else:
-        return HTMLResponse(content=f"<h1>Portal not found</h1><p>Looked in: {html_path}</p>", status_code=404)
+        html = injection + raw
+    return HTMLResponse(content=html, status_code=200)
 
 
 class RepairRequest(BaseModel):

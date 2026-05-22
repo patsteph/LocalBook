@@ -320,8 +320,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
             // Track when deep think mode is active (manual or auto-upgraded)
             setActiveDeepThink(isDeepThink);
           },
-          onStatus: (message, _queryType) => {
-            // Phase 1.2: Show progressive status updates
+          onStatus: (message, queryType) => {
+            // Show progressive status updates AND — F5 fix (2026-05-21) — set
+            // agentType IMMEDIATELY when the backend signals which agent is
+            // handling the query, so the chat bubble's styling matches from
+            // token #1 instead of switching mid-stream when the done event
+            // arrives. queryType is one of "curator" | "collector" |
+            // "research" | "studio" when present, else undefined for plain
+            // RAG (which leaves agentType unset = default white styling).
             setMessages((prev) => {
               const updated = [...prev];
               const lastIdx = updated.length - 1;
@@ -329,6 +335,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 updated[lastIdx] = {
                   ...updated[lastIdx],
                   statusMessage: message,
+                  ...(queryType === 'curator' || queryType === 'collector' || queryType === 'research' || queryType === 'studio'
+                    ? { agentType: queryType }
+                    : {}),
                 };
               }
               return updated;
@@ -407,8 +416,30 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               tokenBuffer = '';
             }
           },
-          onReplaceAnswer: (content) => {
-            // CaRR retry: replace the entire answer with the verified version
+          onAutoRouted: (to, _reason) => {
+            // Phase A.3 (2026-05-22, F5): backend auto-routed a non-@curator
+            // query to the curator (cross-notebook keyword match). Stamp the
+            // message so the ChatMessageBubble can show an "auto-routed"
+            // pill. Also set agentType immediately so styling matches from
+            // token #1 (in case onStatus didn't carry queryType for this hop).
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (updated[lastIdx]?.role === 'assistant') {
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  autoRoutedTo: to,
+                  agentType: to,
+                };
+              }
+              return updated;
+            });
+          },
+          onReplaceAnswer: (content, reason) => {
+            // CaRR retry or bibliography cleanup: replace the entire answer
+            // with the verified version. Phase A.2 (F8): stamp the reason on
+            // the message so a persistent "Refined for accuracy" badge can
+            // explain why the user just saw the answer change.
             currentContent = content;
             tokenBuffer = '';
             setMessages((prev) => {
@@ -419,6 +450,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                   ...updated[lastIdx],
                   content,
                   citations: currentCitations,
+                  ...(reason === 'carr_retry' || reason === 'bibliography_cleanup'
+                    ? { refinementReason: reason as 'carr_retry' | 'bibliography_cleanup' }
+                    : {}),
                 };
               }
               return updated;
@@ -900,8 +934,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
               onAddResearchResult={async (result) => {
                 if (!notebookId) return;
                 try {
-                  const API_BASE = (await import('../services/api')).API_BASE_URL;
-                  const resp = await fetch(`${API_BASE}/web/quick-add`, {
+                  const apiMod = await import('../services/api');
+                  const API_BASE = apiMod.API_BASE_URL;
+                  const resp = await apiMod.localFetch(`${API_BASE}/web/quick-add`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({

@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     api_port: int = 8000
     api_host: str = "127.0.0.1"
 
+    # Browser extension — pinned ID derived from extension/.key.pem manifest key.
+    # Used by P0.1e (Origin-checked /auth/bootstrap) and P0.1g (CORS allowlist).
+    # If the key ever rotates (private key compromise), regenerate and update
+    # this string. P0.1d (2026-05-15).
+    extension_id: str = "opnfhnhhcahpkglaepaplpafogdhemon"
+
     # Data paths - computed based on environment
     data_dir: Path = get_data_directory()
     db_path: Path = get_data_directory() / "lancedb"

@@ -2,7 +2,7 @@
 //
 // Mirrors the shape of sourceService.uploadWithProgress() so UI code that
 // consumes SSE progress events is uniform across upload and batch-scan.
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 // Re-export the same event shape the upload flow uses — same backend contract.
 export interface ScanProgressEvent {
@@ -126,7 +126,7 @@ export const scanService = {
   ): Promise<ScanBatchResult> {
     const { notebookId, mode = 'document', onProgress, signal, targetLanguage, appendTo } = opts;
 
-    const response = await fetch(`${API_BASE_URL}/scan/process-batch`, {
+    const response = await localFetch(`${API_BASE_URL}/scan/process-batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -159,7 +159,7 @@ export const scanService = {
   ): Promise<ScanOcrBatchResult> {
     const { mode = 'document', onProgress, signal, targetLanguage } = opts;
 
-    const response = await fetch(`${API_BASE_URL}/scan/ocr-batch`, {
+    const response = await localFetch(`${API_BASE_URL}/scan/ocr-batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

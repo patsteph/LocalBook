@@ -281,6 +281,27 @@ class SourceStore:
                     },
                     outcome="success",
                 )
+                # Phase C.2 (2026-05-22): also write KIND_SOURCE_ADDED to the
+                # activity ledger from this single chokepoint. Catches every
+                # source path uniformly — including collector-stored sources
+                # that don't call record_engagement() (which is the path
+                # that previously slipped through the stagnation grace).
+                try:
+                    from services import activity_ledger
+                    activity_ledger.record_event(
+                        notebook_id=notebook_id,
+                        kind=activity_ledger.KIND_SOURCE_ADDED,
+                        actor="system",
+                        payload={
+                            "source_id": source_id,
+                            "filename": (result.get("filename") or result.get("title") or ""),
+                            "format": result.get("format") or result.get("type"),
+                            "via": "store_update",
+                        },
+                    )
+                except Exception as _ledger_err:
+                    # Ledger writes must not break source persistence.
+                    pass
         except Exception:
             # Observability must not break source persistence.
             pass

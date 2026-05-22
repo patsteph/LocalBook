@@ -4,7 +4,7 @@ import { writingService, FormatOption, WritingResult } from '../services/writing
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { BookmarkButton } from './shared/BookmarkButton';
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, localFetch } from '../services/api';
 
 interface WritingPanelProps {
   notebookId: string;
@@ -29,7 +29,7 @@ export const WritingPanel: React.FC<WritingPanelProps> = ({ notebookId }) => {
   useEffect(() => {
     const fetchVoiceProfile = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/settings/voice-profile`);
+        const res = await localFetch(`${API_BASE_URL}/settings/voice-profile`);
         if (res.ok) {
           const data = await res.json();
           if (Object.keys(data).length > 0) setVoiceProfile(data);

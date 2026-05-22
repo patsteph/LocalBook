@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { API_BASE } from "../types"
+import { API_BASE, tokenFetch } from "../types"
 
 interface ImportMenuProps {
   notebookId: string
@@ -77,7 +77,7 @@ export function ImportMenu({ notebookId, onMessage, onRefresh }: ImportMenuProps
     let added = 0
     for (const item of selected) {
       try {
-        const res = await fetch(`${API_BASE}/web/quick-add`, {
+        const res = await tokenFetch(`${API_BASE}/web/quick-add`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ notebook_id: notebookId, url: item.url, title: item.title })

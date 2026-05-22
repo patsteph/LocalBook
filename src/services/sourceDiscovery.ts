@@ -1,11 +1,11 @@
 /**
  * Source Discovery Service - Discover and approve new sources for collector
  */
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 class SourceDiscoveryService {
   async discover(notebookId: string, config: any): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/source-discovery/discover`, {
+    const response = await localFetch(`${API_BASE_URL}/source-discovery/discover`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ notebook_id: notebookId, ...config }),
@@ -15,7 +15,7 @@ class SourceDiscoveryService {
   }
 
   async approve(notebookId: string, approvedSources: any[], rejectedSources: any[] = []): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/source-discovery/approve`, {
+    const response = await localFetch(`${API_BASE_URL}/source-discovery/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ notebook_id: notebookId, approved_sources: approvedSources, rejected_sources: rejectedSources }),

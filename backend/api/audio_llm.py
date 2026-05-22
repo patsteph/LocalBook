@@ -167,13 +167,15 @@ async def get_audio_file(filename: str):
     """Serve generated audio file."""
     from config import settings
     from pathlib import Path
-    
+    from utils.path_safety import strict_path_under_base
+
     audio_dir = Path(settings.data_dir) / "audio_output"
-    file_path = audio_dir / filename
-    
+    # P0.2 (2026-05-15): reject path traversal via '..' or absolute filenames.
+    file_path = strict_path_under_base(audio_dir, filename)
+
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Audio file not found")
-    
+
     return FileResponse(
         path=str(file_path),
         media_type="audio/wav",

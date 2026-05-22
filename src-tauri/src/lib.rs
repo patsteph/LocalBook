@@ -4,6 +4,50 @@ use std::time::Duration;
 use std::path::PathBuf;
 use serde::Serialize;
 
+// P0.1b (2026-05-15) → revised P0.1f (2026-05-21): cache the app token in
+// process memory. CHANGED from OnceLock to Mutex<Option<String>> so we
+// can invalidate the cache when the backend restarts (e.g. after a
+// crash + watchdog respawn) and the token file rotates. Cache is hit
+// on every call; only the first request after a rotation pays the file-
+// read cost. The webview calls refresh_app_token() on 401 to invalidate.
+static APP_TOKEN_CACHE: Mutex<Option<String>> = Mutex::new(None);
+
+fn app_token_file_path() -> PathBuf {
+    // Mirrors backend's settings.data_dir = ~/Library/Application Support/LocalBook
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join("Library/Application Support/LocalBook/.app_token")
+}
+
+/// Read the app token from the cache, or from disk if cache is empty.
+async fn read_app_token() -> Result<String, String> {
+    // Fast path: cache hit.
+    if let Ok(guard) = APP_TOKEN_CACHE.lock() {
+        if let Some(t) = guard.as_ref() {
+            return Ok(t.clone());
+        }
+    }
+    // Cache miss: read file and populate.
+    let path = app_token_file_path();
+    let token = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("could not read app token at {}: {}", path.display(), e))?
+        .trim()
+        .to_string();
+    if let Ok(mut guard) = APP_TOKEN_CACHE.lock() {
+        *guard = Some(token.clone());
+    }
+    Ok(token)
+}
+
+/// Clear the cache and re-read from disk. Called by the webview on 401
+/// so a stale cached token after backend restart can refresh itself.
+async fn refresh_app_token_impl() -> Result<String, String> {
+    if let Ok(mut guard) = APP_TOKEN_CACHE.lock() {
+        *guard = None;
+    }
+    read_app_token().await
+}
+
 // State to track the backend process
 struct BackendState {
     process: Arc<Mutex<Option<std::process::Child>>>,
@@ -29,6 +73,23 @@ async fn is_backend_ready(state: tauri::State<'_, BackendState>) -> Result<bool,
 async fn get_backend_status(state: tauri::State<'_, BackendState>) -> Result<BackendStatus, String> {
     let status = state.status.lock().map_err(|e| e.to_string())?;
     Ok(status.clone())
+}
+
+// P0.1b: expose the app token to the webview so axios can attach it to
+// API requests. Cached after first read; refresh_app_token() invalidates
+// the cache when the backend rotates the token (e.g. after a restart).
+#[tauri::command]
+async fn get_app_token() -> Result<String, String> {
+    read_app_token().await
+}
+
+// P0.1f (2026-05-21): called by the webview on a 401 — clears the cache
+// and reads the current token from disk so callers can retry with the
+// fresh value. The webview's `localFetch` and axios response-interceptor
+// invoke this once per request on 401, then retry once.
+#[tauri::command]
+async fn refresh_app_token() -> Result<String, String> {
+    refresh_app_token_impl().await
 }
 
 // Tauri command to check backend health
@@ -883,8 +944,16 @@ async fn upload_file_streaming(
         .build()
         .map_err(|e| format!("HTTP client build failed: {}", e))?;
 
+    // P0.1c (2026-05-15): attach the app token. read_app_token() reads from
+    // the cached OnceLock or falls back to the file; unwrap_or_default()
+    // sends an empty string if neither works — backend isn't enforcing yet
+    // so that's a soft no-op. Once P0.1f Stage 2 enforces, an empty token
+    // returns 401 — that's the right failure mode (caller learns immediately).
+    let token = read_app_token().await.unwrap_or_default();
+
     let resp = client
         .post("http://localhost:8000/sources/upload/stream")
+        .header("X-LocalBook-Token", &token)
         .multipart(form)
         .send()
         .await
@@ -992,7 +1061,9 @@ pub fn run() {
             is_backend_ready,
             check_backend_health,
             get_backend_status,
-            upload_file_streaming
+            upload_file_streaming,
+            get_app_token,
+            refresh_app_token
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

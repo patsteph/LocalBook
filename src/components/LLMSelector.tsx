@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { settingsService } from '../services/settings';
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, localFetch } from '../services/api';
 
 interface LLMSelectorProps {
   selectedProvider: string;
@@ -114,7 +114,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
 
   const loadSavedDefault = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/evaluator/save-default`);
+      const res = await localFetch(`${API_BASE_URL}/evaluator/save-default`);
       if (!res.ok) return;
       const data: SavedDefaultResponse = await res.json();
       setSavedDefault(data);
@@ -127,7 +127,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     setSavingDefault(true);
     setSwitchMsg(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/evaluator/save-default`, {
+      const res = await localFetch(`${API_BASE_URL}/evaluator/save-default`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -154,7 +154,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     setSavingDefault(true);
     setSwitchMsg(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/evaluator/save-default`, {
+      const res = await localFetch(`${API_BASE_URL}/evaluator/save-default`, {
         method: 'DELETE',
       });
       const data = await res.json();
@@ -183,7 +183,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/settings/ollama/models`);
+      const res = await localFetch(`${API_BASE_URL}/settings/ollama/models`);
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setModels(data.models ?? []);
@@ -206,7 +206,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     setSwitching(`${modelName}:${role}`);
     setSwitchMsg(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/evaluator/swap`, {
+      const res = await localFetch(`${API_BASE_URL}/evaluator/swap`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target_model: modelName, role: ROLE_META[role].api_role }),

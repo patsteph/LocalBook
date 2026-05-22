@@ -154,6 +154,15 @@ async def _process_web_source_background(notebook_id: str, source_id: str, text:
             "content": text
         })
         print(f"[Web] Background ingestion complete for {title}: {chunks} chunks")
+
+        # B-fix (2026-05-21): mark notebook as engaged so the stagnation
+        # detector's grace period suppresses spurious "research stalled"
+        # alerts. Mirrors api/sources.py upload paths + api/web.py:422.
+        try:
+            from services.collection_history import record_engagement
+            record_engagement(notebook_id, "source_add")
+        except Exception as _eng_err:
+            print(f"[Web] record_engagement failed (non-fatal): {_eng_err}")
         
         # Auto-tag the source (non-fatal)
         try:

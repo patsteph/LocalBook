@@ -1,10 +1,110 @@
 import { useState } from "react"
-import { API_BASE } from "../types"
+import { API_BASE, tokenFetch } from "../types"
 
 interface AutomationViewProps {
   pageUrl: string
   pageHtml?: string
   onMessage: (msg: string, type: "success" | "error" | "info") => void
+}
+
+// ----------------------------------------------------------------------------
+// Structured action interpreter — runs an action_payload from the backend in
+// the active tab via chrome.scripting.executeScript. Replaces the previous
+// eval(data.script) approach (P0.3, 2026-05-15). The verb set mirrors
+// BrowserAction in backend/services/agent_browser.py.
+// ----------------------------------------------------------------------------
+interface ActionPayload {
+  action: string
+  selector?: string | null
+  xpath?: string | null
+  description?: string | null
+  value?: string | null
+}
+
+interface ActionResult {
+  ok: boolean
+  error?: string
+  text?: string
+  value?: string | null
+  found?: boolean
+}
+
+async function runStructuredAction(payload: ActionPayload): Promise<ActionResult> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
+  const tabId = tabs[0]?.id
+  if (!tabId) {
+    return { ok: false, error: "no active tab" }
+  }
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      // NOTE: this `func` runs in the page context, isolated from this
+      // module's scope. Everything it needs must come through `args`. No
+      // closures over outer variables. No `eval`.
+      func: (a: ActionPayload): ActionResult => {
+        const findElement = (): Element | null => {
+          if (a.selector) {
+            try { return document.querySelector(a.selector) } catch { /* invalid selector */ }
+          }
+          if (a.xpath) {
+            try {
+              const r = document.evaluate(a.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null)
+              return r.singleNodeValue as Element | null
+            } catch { /* invalid xpath */ }
+          }
+          return null
+        }
+        const el = findElement()
+        const needsElement = !["screenshot"].includes(a.action)
+        if (!el && needsElement) {
+          return { ok: false, error: "element not found" }
+        }
+        try {
+          switch (a.action) {
+            case "click":
+              (el as HTMLElement).click()
+              return { ok: true }
+            case "type": {
+              const input = el as HTMLInputElement | HTMLTextAreaElement
+              input.value = a.value ?? ""
+              input.dispatchEvent(new Event("input", { bubbles: true }))
+              input.dispatchEvent(new Event("change", { bubbles: true }))
+              return { ok: true }
+            }
+            case "select": {
+              const sel = el as HTMLSelectElement
+              sel.value = a.value ?? ""
+              sel.dispatchEvent(new Event("change", { bubbles: true }))
+              return { ok: true }
+            }
+            case "scroll_to":
+              (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" })
+              return { ok: true }
+            case "hover":
+              el!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }))
+              el!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }))
+              return { ok: true }
+            case "extract_text":
+              return { ok: true, text: (el as HTMLElement).innerText ?? el!.textContent ?? "" }
+            case "extract_attribute":
+              return { ok: true, value: el!.getAttribute(a.value ?? "") }
+            case "wait_for":
+              return { ok: true, found: !!el }
+            case "screenshot":
+              return { ok: false, error: "screenshot not supported by in-page interpreter" }
+            default:
+              return { ok: false, error: `unknown action: ${a.action}` }
+          }
+        } catch (e) {
+          return { ok: false, error: String(e) }
+        }
+      },
+      args: [payload],
+    })
+    return (results?.[0]?.result as ActionResult) ?? { ok: false, error: "no result returned" }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
 }
 
 interface ActionStep {
@@ -35,7 +135,7 @@ export function AutomationView({ pageUrl, pageHtml, onMessage }: AutomationViewP
     setPlan(null)
     
     try {
-      const response = await fetch(`${API_BASE}/agent-browser/plan-actions`, {
+      const response = await tokenFetch(`${API_BASE}/agent-browser/plan-actions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -65,7 +165,7 @@ export function AutomationView({ pageUrl, pageHtml, onMessage }: AutomationViewP
     setFoundElement(null)
     
     try {
-      const response = await fetch(`${API_BASE}/agent-browser/find-element`, {
+      const response = await tokenFetch(`${API_BASE}/agent-browser/find-element`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -89,7 +189,7 @@ export function AutomationView({ pageUrl, pageHtml, onMessage }: AutomationViewP
 
   const executeStep = async (step: ActionStep) => {
     try {
-      const response = await fetch(`${API_BASE}/agent-browser/prepare-action`, {
+      const response = await tokenFetch(`${API_BASE}/agent-browser/prepare-action`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -104,27 +204,25 @@ export function AutomationView({ pageUrl, pageHtml, onMessage }: AutomationViewP
       if (!response.ok) throw new Error("Failed to prepare action")
       
       const data = await response.json()
-      
-      // Execute in page context
-      if (data.script) {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs[0]?.id) {
-            chrome.scripting.executeScript({
-              target: { tabId: tabs[0].id },
-              func: (script: string) => {
-                try {
-                  eval(script)
-                  return { success: true }
-                } catch (e) {
-                  return { success: false, error: String(e) }
-                }
-              },
-              args: [data.script]
-            })
-          }
-        })
+
+      // Structured-action interpreter (P0.3+, 2026-05-15). Runs the
+      // backend-provided action_payload in the active tab via
+      // chrome.scripting.executeScript with a finite verb switch. No eval.
+      const payload: ActionPayload | undefined = data?.action_payload
+      if (payload && payload.action) {
+        const result = await runStructuredAction(payload)
+        if (!result.ok) {
+          onMessage(`Action failed: ${result.error ?? "unknown"}`, "error")
+          return
+        }
+        // Surface any extracted data so the user sees the result.
+        if (result.text) {
+          onMessage(`Extracted: ${result.text.slice(0, 120)}${result.text.length > 120 ? "…" : ""}`, "info")
+        } else if (result.value !== undefined && result.value !== null) {
+          onMessage(`Attribute value: ${result.value}`, "info")
+        }
       }
-      
+
       onMessage(`Executed: ${step.action}`, "success")
       if (plan && currentStep < plan.steps.length - 1) {
         setCurrentStep(currentStep + 1)

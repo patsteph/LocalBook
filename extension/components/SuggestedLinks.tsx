@@ -1,6 +1,6 @@
 import { useState } from "react"
 import type { OutboundLink } from "../types"
-import { API_BASE } from "../types"
+import { API_BASE, tokenFetch } from "../types"
 
 interface SuggestedLinksProps {
   links: OutboundLink[]
@@ -44,7 +44,7 @@ export function SuggestedLinks({ links, pageTitle, notebookIntent, notebookId, s
     setCollapsed(false)
 
     try {
-      const res = await fetch(`${API_BASE}/browser/suggest-links`, {
+      const res = await tokenFetch(`${API_BASE}/browser/suggest-links`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -98,7 +98,7 @@ export function SuggestedLinks({ links, pageTitle, notebookIntent, notebookId, s
     try {
       if (sourceId) {
         // Preferred path — batch expansion via the depth+1 service.
-        const res = await fetch(`${API_BASE}/sources/${notebookId}/${sourceId}/expand-links`, {
+        const res = await tokenFetch(`${API_BASE}/sources/${notebookId}/${sourceId}/expand-links`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ selected_urls: urls })
@@ -122,7 +122,7 @@ export function SuggestedLinks({ links, pageTitle, notebookIntent, notebookId, s
         for (const url of urls) {
           const text = suggestions.find(s => s.url === url)?.text || url
           try {
-            const res = await fetch(`${API_BASE}/web/quick-add`, {
+            const res = await tokenFetch(`${API_BASE}/web/quick-add`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ notebook_id: notebookId, url, title: text })

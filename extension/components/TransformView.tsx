@@ -1,6 +1,6 @@
 import { useState } from "react"
 import type { TransformResult } from "../types"
-import { API_BASE } from "../types"
+import { API_BASE, tokenFetch } from "../types"
 
 interface TransformViewProps {
   content: string
@@ -29,7 +29,7 @@ export function TransformView({ content, title, onBack, onMessage }: TransformVi
     setResult(null)
 
     try {
-      const res = await fetch(`${API_BASE}/browser/transform`, {
+      const res = await tokenFetch(`${API_BASE}/browser/transform`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

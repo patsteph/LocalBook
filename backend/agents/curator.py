@@ -33,9 +33,19 @@ logger = logging.getLogger(__name__)
 # in agents/supervisor.py (archived 2026-05-12 Phase 1); moved here
 # because the routing is curator-specific.
 CROSS_NOTEBOOK_KEYWORDS = [
+    # Plural / explicit cross-notebook phrasings
     "across notebooks", "all notebooks", "compare notebooks", "both notebooks",
-    "multiple notebooks", "all my research", "everything i have", "cross-reference",
+    "multiple notebooks", "between notebooks", "between my notebooks",
+    # Natural-language variants users actually type (2026-05-22)
+    # NOTE: do NOT add "my notebooks" or "other notebooks" — those false-fire
+    # on innocent queries like "show my notebooks" / "list other notebooks".
+    "cross notebook", "cross-notebook", "cross notebooks",
+    "look across", "look cross", "search across", "search cross",
+    # Aggregations across the user's whole library
+    "all my research", "everything i have", "cross-reference",
+    # Pattern / theme phrasings
     "patterns across", "themes across", "what do i know about", "synthesis",
+    # Devil's-advocate / challenge phrasings (these specifically invoke curator)
     "devil's advocate", "challenge my", "counterarguments", "prove me wrong",
 ]
 
@@ -384,13 +394,57 @@ class CuratorAgent:
         results = await asyncio.gather(*[_judge_bounded(item) for item in proposed_items])
         return list(results)
     
+    async def judge_collected_item(
+        self,
+        item: CollectedItem,
+        intent: str,
+        collector_id: str,
+    ) -> JudgmentResult:
+        """Public contract for collector pre-triage (Phase C.1).
+
+        Synchronous quality-gate decision the Collector calls on each
+        proposed item before queueing. The Collector treats Curator as a
+        verdict source via this method; that's the only entry point.
+
+        Internally delegates to `_judge_single_item` (the implementation
+        also used by the batched `judge_proposed_items` path).
+        """
+        result = await self._judge_single_item(item, intent, collector_id)
+        # Phase C.1 (2026-05-22): emit an observability event so the brain's
+        # event log captures every pre-triage decision. The collector still
+        # gets the verdict synchronously above; this is purely additive.
+        try:
+            from services.curator_event_bus import event_bus
+            event_bus.emit_now(
+                actor="@curator",
+                action="collector_item_pre_triaged",
+                notebook_id=getattr(item, "notebook_id", None),
+                payload={
+                    "decision": result.decision.value,
+                    "confidence": float(result.confidence or 0.0),
+                    "item_title": (item.title or "")[:120],
+                    "url": (item.url or "")[:240],
+                    "collector_id": collector_id,
+                },
+                outcome="success",
+            )
+        except Exception as _bus_err:
+            logger.debug(f"[curator] pre-triage event emit failed (non-fatal): {_bus_err}")
+        return result
+
     async def _judge_single_item(
         self,
         item: CollectedItem,
         intent: str,
         collector_id: str
     ) -> JudgmentResult:
-        """Judge a single collected item"""
+        """Judge a single collected item.
+
+        Implementation detail of `judge_collected_item`. External callers
+        should use the public method — this is kept as an internal name so
+        the batched `_judge_bounded` helper and any back-compat tooling
+        don't break.
+        """
         auto_threshold = self.config.get("oversight", {}).get("auto_approve_threshold", 0.85)
         
         # High confidence items get auto-approved
@@ -4561,17 +4615,30 @@ Rules:
         notebook_id: str
     ) -> Optional[str]:
         """
-        After a regular chat answer, check if the Curator should chime in
-        with cross-notebook context. Only returns something when genuinely useful.
+        Phase D.1 (2026-05-22): trigger-driven only. No probabilistic fallback.
 
-        Returns a short aside string or None.
+        Returns a short aside string ONLY when an explicit upstream trigger
+        has queued one. Otherwise returns None — the user typed a regular
+        question; we stay quiet.
 
-        Curator Phase 3c: also consumes any pending overwatch asides queued
-        by the event-bus dissent trigger before falling through to the
-        existing cross-notebook brain/vector path. Pending asides are
-        higher-signal (already gated by nag budget + stance confidence).
+        Surfacing channels (all upstream signals that emit pending_asides
+        via the event bus):
+          - contradiction (Phase 3b/3c: stance_scored 'contradicts' + high conf)
+          - connection (Phase 5: connection_discovered with strength > 0.7)
+          - plan_completed (Phase 5: plan_completed with user_visible plans)
+          - mental_model_shift (Phase 3a: pending — added when emitted)
+
+        NOT surfaced here (intentionally moved away from chat asides):
+          - stagnation: now lives in the Collector panel only (Phase A.1)
+          - generic cross-notebook search: required the user to suspect a
+            connection exists; if it's genuinely useful, surface it via
+            @curator instead
+
+        Pre-D this method ran a brain digest LLM call + a parallel vector
+        search across every other notebook + another LLM to decide if any
+        of it was useful, on EVERY chat reply. Two LLM hops + N-notebook
+        archival scans for a sidebar note the user usually didn't need.
         """
-        # Phase 3c fast path: pending overwatch aside queued by event bus.
         try:
             from services.curator_brain import curator_brain as _cb
             pending = _cb.consume_pending_aside(notebook_id)
@@ -4584,145 +4651,8 @@ Rules:
         except Exception as _e:
             logger.debug(f"[curator] pending aside consume failed: {_e}")
 
-        # Curator Phase 5 (2026-05-13): narrow the probabilistic fallback.
-        # Skip the expensive cross-notebook LLM path if there's been any
-        # event-driven aside fired for this notebook in the last 30
-        # minutes (even if already consumed). The user just saw a
-        # curator surface — don't pile another one on top.
-        try:
-            from datetime import timedelta
-            from services.curator_brain import curator_brain as _cb
-            recent_cutoff = (datetime.utcnow() - timedelta(minutes=30)).isoformat()
-            row = _cb._conn.execute(
-                """SELECT id FROM pending_asides
-                   WHERE notebook_id = ? AND created_at > ?
-                   ORDER BY created_at DESC LIMIT 1""",
-                (notebook_id, recent_cutoff),
-            ).fetchone()
-            if row:
-                logger.debug(
-                    f"[curator] generate_overwatch_aside({notebook_id[:8]}): "
-                    f"recent event-driven aside found — skipping probabilistic fallback"
-                )
-                return None
-        except Exception as _e:
-            logger.debug(f"[curator] recent-aside check failed: {_e}")
-
-        notebooks = await notebook_store.list()
-
-        # Need at least 2 notebooks for cross-notebook insight
-        if len(notebooks) < 2:
-            return None
-
-        # --- Phase 2: Brain fast-path (thematic, pre-computed) ---
-        # Check brain digest connections before doing the full vector search.
-        # One small Phi4-Mini call is faster than scanning archival memory across
-        # every other notebook, and it catches THEMATIC connections that keyword
-        # search misses.
-        try:
-            from services.curator_brain import curator_brain
-            current_digest = curator_brain.get_digest(notebook_id)
-            relevant_connections = curator_brain.get_connections_for_notebook(notebook_id)
-
-            if relevant_connections and current_digest:
-                conn_text = "\n".join(
-                    c["description"] for c in relevant_connections[:3]
-                )
-                brain_prompt = (
-                    f'The user just asked: "{query[:200]}"\n'
-                    f'In notebook: {current_digest.get("name", "")}\n\n'
-                    f'Known connections to other notebooks:\n{conn_text}\n\n'
-                    f'Is any of these connections relevant to this specific question? '
-                    f'If YES, write a brief 1-2 sentence aside the user will find valuable. '
-                    f'If NO or UNSURE, say exactly SKIP.'
-                )
-                brain_response = await ollama_client.generate(
-                    prompt=brain_prompt,
-                    model=settings.ollama_fast_model,
-                    temperature=0.3,
-                    timeout=10.0,
-                    num_predict=100,
-                )
-                brain_text = brain_response.get("response", "").strip()
-                if brain_text and "SKIP" not in brain_text.upper() and 10 < len(brain_text) < 500:
-                    return brain_text
-        except Exception as _brain_err:
-            logger.debug(f"[curator] Brain overwatch check failed (non-fatal): {_brain_err}")
-        # Brain had nothing — fall through to existing vector search
-
-        # Search other notebooks for related content (PARALLEL)
-        import asyncio
-        cross_hits = []
-        other_nbs = [nb for nb in notebooks if nb["id"] != notebook_id]
-        
-        async def _search_overwatch(nb):
-            return nb, await asyncio.to_thread(
-                memory_store.search_archival_memory,
-                query=query,
-                namespace=AgentNamespace.COLLECTOR,
-                notebook_id=nb["id"],
-                cross_notebook=True,
-                limit=3
-            )
-        
-        try:
-            nb_results = await asyncio.gather(
-                *[_search_overwatch(nb) for nb in other_nbs],
-                return_exceptions=True
-            )
-            for item in nb_results:
-                if isinstance(item, Exception):
-                    continue
-                nb, results = item
-                for r in results:
-                    if r.combined_score > 0.5:  # Only high-relevance hits
-                        cross_hits.append({
-                            "notebook": nb.get("name", nb.get("title", "Untitled")),
-                            "content": r.entry.content[:200],
-                            "score": r.combined_score
-                        })
-        except Exception as _e:
-            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
-        
-        if not cross_hits:
-            # Also check pending insights
-            insight = await self.surface_insight_if_relevant(query)
-            return insight
-        
-        # Use LLM to decide if cross-notebook context is actually useful
-        cross_summary = "\n".join(
-            f"- [{h['notebook']}] {h['content']}" for h in cross_hits[:5]
-        )
-        
-        try:
-            prompt = f"""The user asked: "{query[:200]}"
-The answer discussed: {answer[:300]}
-
-Related content found in OTHER notebooks:
-{cross_summary}
-
-Is there a genuinely useful cross-notebook connection here? If YES, write a brief 1-2 sentence aside that adds value. If the connection is weak or obvious, respond with exactly "SKIP".
-
-Rules:
-- Only surface connections that the user likely hasn't noticed
-- Be specific about which notebook the connection comes from
-- Be concise — this is a sidebar note, not a full response"""
-
-            response = await ollama_client.generate(
-                prompt=prompt,
-                system=f"You are {self.name}, providing brief cross-notebook insights. Only speak up when you have something genuinely useful to add.",
-                model=settings.ollama_fast_model,
-                temperature=0.3,
-                timeout=15.0
-            )
-            
-            text = response.get("response", "").strip()
-            if text and "SKIP" not in text.upper() and len(text) > 10 and len(text) < 500:
-                return text
-            return None
-        except Exception as e:
-            logger.warning(f"Overwatch aside generation failed: {e}")
-            return None
+        # No pending aside = nothing event-driven to say. Stay quiet.
+        return None
     
     # =========================================================================
     # Source Discovery Validation - Curator validates discovered sources

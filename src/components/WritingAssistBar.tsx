@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Sparkles, Expand, Shrink, CheckCheck, PenLine, BookOpen, ArrowRight, X, Loader2 } from 'lucide-react';
 import { writingService } from '../services/writing';
-import { API_BASE_URL } from '../services/api';
+import { API_BASE_URL, localFetch } from '../services/api';
 
 interface WritingAction {
   id: string;
@@ -51,7 +51,7 @@ export const WritingAssistBar: React.FC<WritingAssistBarProps> = ({
   useEffect(() => {
     const fetchVoiceProfile = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/settings/voice-profile`);
+        const res = await localFetch(`${API_BASE_URL}/settings/voice-profile`);
         if (res.ok) {
           const data = await res.json();
           if (Object.keys(data).length > 0) setVoiceProfile(data);

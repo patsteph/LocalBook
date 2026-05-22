@@ -2,7 +2,7 @@
  * Quiz Service - API calls for quiz generation and FSRS spaced repetition
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 const API_BASE = API_BASE_URL;
 
@@ -95,7 +95,7 @@ export const quizService = {
     chatContext?: string,
     questionTypes?: string[],
   ): Promise<Quiz> {
-    const response = await fetch(`${API_BASE}/quiz/generate`, {
+    const response = await localFetch(`${API_BASE}/quiz/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -121,13 +121,13 @@ export const quizService = {
   },
 
   async getDueCards(notebookId: string, limit: number = 20): Promise<ReviewCard[]> {
-    const response = await fetch(`${API_BASE}/quiz/due/${notebookId}?limit=${limit}`);
+    const response = await localFetch(`${API_BASE}/quiz/due/${notebookId}?limit=${limit}`);
     if (!response.ok) throw new Error('Failed to get due cards');
     return response.json();
   },
 
   async submitReview(cardId: string, rating: number): Promise<any> {
-    const response = await fetch(`${API_BASE}/quiz/review`, {
+    const response = await localFetch(`${API_BASE}/quiz/review`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ card_id: cardId, rating }),
@@ -137,13 +137,13 @@ export const quizService = {
   },
 
   async getStats(notebookId: string): Promise<QuizStats> {
-    const response = await fetch(`${API_BASE}/quiz/stats/${notebookId}`);
+    const response = await localFetch(`${API_BASE}/quiz/stats/${notebookId}`);
     if (!response.ok) throw new Error('Failed to get stats');
     return response.json();
   },
 
   async gradeAnswer(req: GradeAnswerRequest): Promise<GradeAnswerResponse> {
-    const response = await fetch(`${API_BASE}/quiz/grade`, {
+    const response = await localFetch(`${API_BASE}/quiz/grade`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
@@ -157,7 +157,7 @@ export const quizService = {
     missedQuestions: MissedQuestion[],
     quizTopic?: string,
   ): Promise<GapAnalysisResponse> {
-    const response = await fetch(`${API_BASE}/quiz/gap-analysis`, {
+    const response = await localFetch(`${API_BASE}/quiz/gap-analysis`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -4,7 +4,7 @@
  * Frontend service for managing encrypted site credentials.
  */
 
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 const API_BASE = API_BASE_URL;
 
@@ -32,7 +32,7 @@ export const credentialService = {
    * List all stored credentials (passwords not returned)
    */
   async list(): Promise<SiteCredential[]> {
-    const response = await fetch(`${API_BASE}/credentials/`);
+    const response = await localFetch(`${API_BASE}/credentials/`);
     if (!response.ok) throw new Error('Failed to list credentials');
     return response.json();
   },
@@ -41,7 +41,7 @@ export const credentialService = {
    * Add or update a credential
    */
   async add(request: AddCredentialRequest): Promise<SiteCredential> {
-    const response = await fetch(`${API_BASE}/credentials/`, {
+    const response = await localFetch(`${API_BASE}/credentials/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
@@ -54,7 +54,7 @@ export const credentialService = {
    * Delete a credential
    */
   async delete(siteDomain: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/credentials/${encodeURIComponent(siteDomain)}`, {
+    const response = await localFetch(`${API_BASE}/credentials/${encodeURIComponent(siteDomain)}`, {
       method: 'DELETE',
     });
     if (!response.ok) throw new Error('Failed to delete credential');
@@ -64,7 +64,7 @@ export const credentialService = {
    * Check if a credential exists
    */
   async exists(siteDomain: string): Promise<boolean> {
-    const response = await fetch(`${API_BASE}/credentials/${encodeURIComponent(siteDomain)}/exists`);
+    const response = await localFetch(`${API_BASE}/credentials/${encodeURIComponent(siteDomain)}/exists`);
     if (!response.ok) return false;
     const data = await response.json();
     return data.exists;
@@ -74,7 +74,7 @@ export const credentialService = {
    * Test a credential
    */
   async test(siteDomain: string): Promise<{ success: boolean; message: string }> {
-    const response = await fetch(`${API_BASE}/credentials/${encodeURIComponent(siteDomain)}/test`, {
+    const response = await localFetch(`${API_BASE}/credentials/${encodeURIComponent(siteDomain)}/test`, {
       method: 'POST',
     });
     if (!response.ok) throw new Error('Failed to test credential');
@@ -85,7 +85,7 @@ export const credentialService = {
    * Get disclaimer text
    */
   async getDisclaimer(): Promise<{ title: string; message: string }> {
-    const response = await fetch(`${API_BASE}/credentials/disclaimer`);
+    const response = await localFetch(`${API_BASE}/credentials/disclaimer`);
     if (!response.ok) throw new Error('Failed to get disclaimer');
     return response.json();
   },

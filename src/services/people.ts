@@ -1,17 +1,17 @@
 /**
  * People Service - People profiler, members, and social auth API
  */
-import { API_BASE_URL } from './api';
+import { API_BASE_URL, localFetch } from './api';
 
 class PeopleService {
   async getConfig(notebookId: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/config`);
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/config`);
     if (!response.ok) throw new Error('Failed to fetch people config');
     return response.json();
   }
 
   async updateConfig(notebookId: string, config: any): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/config`, {
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config),
@@ -30,7 +30,7 @@ class PeopleService {
   }
 
   async getMembers(notebookId: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/members`, {
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/members`, {
       method: 'GET',
     });
     if (!response.ok) throw new Error('Failed to fetch members');
@@ -38,20 +38,20 @@ class PeopleService {
   }
 
   async getMember(notebookId: string, memberId: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}`);
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}`);
     if (!response.ok) throw new Error('Failed to fetch member');
     return response.json();
   }
 
   async deleteMember(notebookId: string, memberId: string): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}`, {
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}`, {
       method: 'DELETE',
     });
     if (!response.ok) throw new Error('Failed to delete member');
   }
 
   async collectAll(notebookId: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/collect-all`, {
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/collect-all`, {
       method: 'POST',
     });
     if (!response.ok) throw new Error('Failed to start collection');
@@ -59,7 +59,7 @@ class PeopleService {
   }
 
   async collectMember(notebookId: string, memberId: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/collect`, {
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/collect`, {
       method: 'POST',
     });
     if (!response.ok) throw new Error('Failed to collect member data');
@@ -67,31 +67,31 @@ class PeopleService {
   }
 
   async getMemberActivity(notebookId: string, memberId: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/activity`);
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/activity`);
     if (!response.ok) throw new Error('Failed to fetch activity');
     return response.json();
   }
 
   async getMemberInsights(notebookId: string, memberId: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/insights`);
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/insights`);
     if (!response.ok) throw new Error('Failed to fetch insights');
     return response.json();
   }
 
   async getMemberCoaching(notebookId: string, memberId: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/coaching`);
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/coaching`);
     if (!response.ok) throw new Error('Failed to fetch coaching');
     return response.json();
   }
 
   async getAuthStatus(): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/auth/status`);
+    const response = await localFetch(`${API_BASE_URL}/people/auth/status`);
     if (!response.ok) throw new Error('Failed to fetch auth status');
     return response.json();
   }
 
   async authenticate(platform: string, credentials: any): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/auth/${platform}`, {
+    const response = await localFetch(`${API_BASE_URL}/people/auth/${platform}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(credentials),
@@ -101,7 +101,7 @@ class PeopleService {
   }
 
   async addNote(notebookId: string, memberId: string, text: string, category: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/notes`, {
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, category }),
@@ -111,14 +111,14 @@ class PeopleService {
   }
 
   async deleteNote(notebookId: string, memberId: string, noteId: string): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/notes/${noteId}`, {
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/notes/${noteId}`, {
       method: 'DELETE',
     });
     if (!response.ok) throw new Error('Failed to delete note');
   }
 
   async addGoal(notebookId: string, memberId: string, goal: string): Promise<any> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/goals`, {
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/goals`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ goal }),
@@ -128,7 +128,7 @@ class PeopleService {
   }
 
   async deleteGoal(notebookId: string, memberId: string, goalId: string): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/goals/${goalId}`, {
+    const response = await localFetch(`${API_BASE_URL}/people/${notebookId}/members/${memberId}/goals/${goalId}`, {
       method: 'DELETE',
     });
     if (!response.ok) throw new Error('Failed to delete goal');

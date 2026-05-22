@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { API_BASE_URL } from '../../services/api';
+import { API_BASE_URL, localFetch } from '../../services/api';
 
 interface VoiceProfile {
     vocabulary?: string;
@@ -17,7 +17,7 @@ export const VoiceProfileSection: React.FC = () => {
     useEffect(() => {
         const fetchProfile = async () => {
             try {
-                const res = await fetch(`${API_BASE_URL}/settings/voice-profile`);
+                const res = await localFetch(`${API_BASE_URL}/settings/voice-profile`);
                 if (!res.ok) throw new Error('Failed to fetch voice profile');
                 const data = await res.json();
                 // It returns empty object if none exists
