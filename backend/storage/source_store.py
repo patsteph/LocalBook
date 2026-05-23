@@ -310,19 +310,59 @@ class SourceStore:
 
     async def delete(self, notebook_id: str, source_id: str) -> bool:
         """Delete a source"""
+        # Fix #5 (2026-05-23): capture filename/label before delete so the
+        # downstream source_removed event has something useful in its payload.
+        source_label = ""
+        try:
+            existing = await self.get(source_id)
+            if existing:
+                source_label = existing.get("filename") or existing.get("title") or ""
+        except Exception:
+            pass
+
+        deleted = False
         if self._use_sqlite:
             conn = self._get_db()
             cursor = conn.execute("DELETE FROM sources WHERE id = ? AND notebook_id = ?", (source_id, notebook_id))
             conn.commit()
-            return cursor.rowcount > 0
-        data = self._load_data()
-        if source_id in data["sources"]:
-            source = data["sources"][source_id]
-            if source.get("notebook_id") == notebook_id:
-                del data["sources"][source_id]
-                self._save_data(data)
-                return True
-        return False
+            deleted = cursor.rowcount > 0
+        else:
+            data = self._load_data()
+            if source_id in data["sources"]:
+                source = data["sources"][source_id]
+                if source.get("notebook_id") == notebook_id:
+                    del data["sources"][source_id]
+                    self._save_data(data)
+                    deleted = True
+
+        # Fix #5 (2026-05-23): emit source_removed when the user explicitly
+        # deletes a source. This is the strongest negative signal we get for
+        # Phase 7.6 source reputation — "this source was useless enough to
+        # actively delete" is much higher signal than "rolling acceptance
+        # rate trended down." Both event bus + activity ledger capture it.
+        if deleted:
+            try:
+                from services.curator_event_bus import event_bus
+                event_bus.emit_now(
+                    actor="user",
+                    action="source_removed",
+                    notebook_id=notebook_id,
+                    payload={"source_id": source_id, "filename": source_label},
+                    outcome="success",
+                )
+            except Exception:
+                pass
+            try:
+                from services import activity_ledger
+                activity_ledger.record_event(
+                    notebook_id=notebook_id,
+                    kind="source_removed",  # Not a canonical KIND_* — added as a discriminator for reputation queries only.
+                    actor="user",
+                    payload={"source_id": source_id, "filename": source_label},
+                )
+            except Exception:
+                pass
+        return deleted
 
     async def delete_all(self, notebook_id: str) -> int:
         """Delete all sources for a notebook"""

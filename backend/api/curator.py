@@ -256,17 +256,22 @@ async def curator_overwatch(request: OverwatchRequest):
     except Exception as _e:
         logger.debug(f"[curator] {type(_e).__name__}: {_e}")
 
-    aside = await curator.generate_overwatch_aside(
+    aside_payload = await curator.generate_overwatch_aside(
         query=request.query,
         answer=request.answer,
         notebook_id=request.notebook_id
     )
-    if aside:
+    # Fix #5 (2026-05-23): aside_payload is now a dict (text + nag_id + kind)
+    # not a bare string, so the UI can wire thumbs feedback through to
+    # POST /curator/asides/{nag_id}/thumbs.
+    if aside_payload:
         return {
-            "aside": aside,
-            "curator_name": curator.name
+            "aside": aside_payload.get("aside_text"),
+            "nag_id": aside_payload.get("nag_id"),
+            "kind": aside_payload.get("kind"),
+            "curator_name": curator.name,
         }
-    return {"aside": None, "curator_name": curator.name}
+    return {"aside": None, "nag_id": None, "kind": None, "curator_name": curator.name}
 
 
 @router.post("/infer-config")
@@ -1024,6 +1029,80 @@ async def trigger_mental_model_inference(nb_id: str):
     except Exception as e:
         logger.error(f"[curator] trigger_mental_model_inference({nb_id}) failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/voice-scoreboard")
+async def voice_scoreboard(lookback_days: int = 30):
+    """Phase 7.2 readiness diagnostic — returns brief engagement broken down
+    by voice. Lets the UI (and a future auto-rotate worker) see which
+    narrative voice the user is responding to. Empty on fresh installs
+    until briefs accumulate.
+    """
+    try:
+        from services.curator_brain import curator_brain
+        return curator_brain.get_voice_scoreboard(lookback_days=lookback_days)
+    except Exception as e:
+        logger.error(f"[curator] voice_scoreboard failed: {e}")
+        return {"voices": {}, "lookback_days": lookback_days, "total_events": 0}
+
+
+@router.get("/studio-scoreboard")
+async def studio_scoreboard(lookback_days: int = 30):
+    """Phase 7.5 readiness diagnostic — Studio output engagement by kind.
+    Powers the medium-selection learning layer when it lands.
+    """
+    try:
+        from services.curator_brain import curator_brain
+        return curator_brain.get_studio_kind_scores(lookback_days=lookback_days)
+    except Exception as e:
+        logger.error(f"[curator] studio_scoreboard failed: {e}")
+        return {"kinds": {}, "lookback_days": lookback_days}
+
+
+@router.get("/notebooks/{nb_id}/source-reputation")
+async def source_reputation(nb_id: str, limit: int = 50):
+    """Phase 7.6 readiness diagnostic — per-source rolling acceptance rates
+    for the notebook. UI can display "trending down" sources once the
+    surfacing rule ships; meantime this is also a useful debugging surface.
+    """
+    try:
+        from services.curator_brain import curator_brain
+        return {"sources": curator_brain.get_source_reputation_summary(nb_id, limit=limit)}
+    except Exception as e:
+        logger.error(f"[curator] source_reputation({nb_id}) failed: {e}")
+        return {"sources": []}
+
+
+@router.get("/notebooks/{nb_id}/anticipatory-draft")
+async def get_anticipatory_draft(nb_id: str):
+    """Fix #3 (2026-05-23): expose the latest unconsumed anticipatory draft
+    for a notebook so the CuratorPanel can show a "✨ Draft ready" pill.
+
+    Returns null when no draft is queued — UI hides the pill in that case.
+    Reading does NOT consume the draft; the user has to open it via
+    `@curator show draft` for that side effect.
+    """
+    try:
+        from services.curator_brain import curator_brain
+        draft = curator_brain.get_latest_unconsumed_draft(nb_id)
+        if not draft:
+            return {"has_draft": False, "draft": None}
+        # Trim the markdown to a preview so the panel doesn't fetch
+        # the full body until the user opens it.
+        preview = (draft.get("content_markdown") or "")[:300]
+        return {
+            "has_draft": True,
+            "draft": {
+                "id": draft.get("id"),
+                "kind": draft.get("kind"),
+                "preview": preview,
+                "source_signal": draft.get("source_signal"),
+                "created_at": draft.get("created_at"),
+            },
+        }
+    except Exception as e:
+        logger.error(f"[curator] get_anticipatory_draft({nb_id}) failed: {e}")
+        return {"has_draft": False, "draft": None}
 
 
 @router.post("/plans/{plan_id}/cancel")

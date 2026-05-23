@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from itertools import combinations
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -333,6 +333,33 @@ class CuratorBrain:
                 ON topic_suppressions (notebook_id, topic_key);
             CREATE INDEX IF NOT EXISTS idx_drafts_active
                 ON draft_outputs (notebook_id, consumed_at, discarded_at, created_at DESC);
+
+            -- Per-source rolling reputation (Phase 7.6 prep — 2026-05-23).
+            -- Capture-only at first: every source_added / source_approved /
+            -- source_rejected event updates this table. Surfacing rule
+            -- ("source X dropped from 80% to 20%") lands later once the
+            -- table has enough data to be meaningful. One row per
+            -- (notebook_id, source_id).
+            CREATE TABLE IF NOT EXISTS source_reputation (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                notebook_id       TEXT NOT NULL,
+                source_id         TEXT NOT NULL,
+                source_label      TEXT DEFAULT '',
+                total_events      INTEGER DEFAULT 0,
+                approved_count    INTEGER DEFAULT 0,
+                rejected_count    INTEGER DEFAULT 0,
+                added_count       INTEGER DEFAULT 0,
+                rolling_30d_events INTEGER DEFAULT 0,
+                rolling_30d_approved INTEGER DEFAULT 0,
+                rolling_30d_rejected INTEGER DEFAULT 0,
+                lifetime_acceptance_rate REAL DEFAULT 0.0,
+                rolling_acceptance_rate REAL DEFAULT 0.0,
+                first_seen_at     TEXT,
+                last_event_at     TEXT,
+                UNIQUE(notebook_id, source_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_source_reputation_nb
+                ON source_reputation (notebook_id, rolling_acceptance_rate);
         """)
         self._conn.commit()
         self._migrate_legacy_insights()
@@ -1670,6 +1697,100 @@ class CuratorBrain:
         except Exception as e:
             logger.warning(f"[CuratorBrain] get_weakest_hypothesis failed: {e}")
             return None
+
+    def get_topic_engagement_summary(
+        self,
+        notebook_id: str,
+        lookback_days: int = 30,
+        limit: int = 5,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Phase 5 helper (2026-05-23 expansion): returns per-notebook
+        topic engagement broken into 'liked' and 'ignored' lists. The brief
+        synthesizer reads this so the LLM can write things like "I noticed
+        you keep coming back to X" or "I'll surface less about Y for now."
+
+        Returns:
+            {
+              "liked":   [{topic, offered, clicked, ratio}, ...],   # ratio > 0.4
+              "ignored": [{topic, offered, clicked, ratio}, ...],   # offered>=3, clicked==0
+              "lookback_days": int,
+            }
+        """
+        try:
+            since = (datetime.utcnow() - timedelta(days=lookback_days)).isoformat()
+            rows = self._conn.execute(
+                """SELECT subject_id as topic,
+                          SUM(CASE WHEN signal IN ('clicked','story_clicked','thumbs_up') THEN 1 ELSE 0 END) as positive,
+                          SUM(CASE WHEN signal='offered' THEN 1 ELSE 0 END) as offered,
+                          SUM(CASE WHEN signal='thumbs_down' THEN 1 ELSE 0 END) as down
+                   FROM engagement_events
+                   WHERE notebook_id = ?
+                     AND ts > ?
+                     AND kind = 'brief'
+                     AND subject_type = 'topic'
+                   GROUP BY subject_id""",
+                (notebook_id, since),
+            ).fetchall()
+            liked: List[Dict[str, Any]] = []
+            ignored: List[Dict[str, Any]] = []
+            for r in rows:
+                topic = r["topic"] or ""
+                positive = r["positive"] or 0
+                offered = r["offered"] or 0
+                down = r["down"] or 0
+                if not topic:
+                    continue
+                ratio = positive / max(offered, 1)
+                if positive > 0 and ratio > 0.4:
+                    liked.append({"topic": topic, "offered": offered, "clicked": positive, "ratio": round(ratio, 2)})
+                elif offered >= 3 and positive == 0:
+                    ignored.append({"topic": topic, "offered": offered, "clicked": 0, "ratio": 0.0, "thumbs_down": down})
+            liked.sort(key=lambda x: -x["ratio"])
+            ignored.sort(key=lambda x: -x["offered"])
+            return {
+                "liked": liked[:limit],
+                "ignored": ignored[:limit],
+                "lookback_days": lookback_days,
+            }
+        except Exception as e:
+            logger.debug(f"[CuratorBrain] get_topic_engagement_summary failed: {e}")
+            return {"liked": [], "ignored": [], "lookback_days": lookback_days}
+
+    def is_topic_repeatedly_ignored(
+        self,
+        notebook_id: str,
+        topic_key: str,
+        lookback_days: int = 14,
+        threshold: int = 3,
+    ) -> bool:
+        """Phase 5 (2026-05-23): true when a topic has been offered ≥threshold
+        times in lookback_days with ZERO positive engagement. Story ranker
+        uses this to demote repeatedly-ignored topics rather than just not
+        boosting them (anti-stale signal — was the missing other half of
+        the engagement-aware brief)."""
+        key = (topic_key or "").strip().lower()
+        if not key:
+            return False
+        try:
+            since = (datetime.utcnow() - timedelta(days=lookback_days)).isoformat()
+            row = self._conn.execute(
+                """SELECT
+                     SUM(CASE WHEN signal IN ('clicked','story_clicked','thumbs_up') THEN 1 ELSE 0 END) as positive,
+                     SUM(CASE WHEN signal='offered' THEN 1 ELSE 0 END) as offered
+                   FROM engagement_events
+                   WHERE notebook_id = ?
+                     AND ts > ?
+                     AND LOWER(COALESCE(subject_id, '')) LIKE ?""",
+                (notebook_id, since, f"%{key}%"),
+            ).fetchone()
+            if not row:
+                return False
+            offered = row["offered"] or 0
+            positive = row["positive"] or 0
+            return offered >= threshold and positive == 0
+        except Exception as e:
+            logger.debug(f"[CuratorBrain] is_topic_repeatedly_ignored failed: {e}")
+            return False
 
     def get_topic_click_score(
         self,
@@ -3452,6 +3573,228 @@ class CuratorBrain:
             }
         except Exception as e:
             return {"error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Phase 7 readiness helpers (2026-05-23)
+    # ------------------------------------------------------------------
+    #
+    # These read paths are what Phase 7.2 (voice scoring) and Phase 7.6
+    # (source reputation) will call when their surfacing rules ship.
+    # Adding them now so the engagement_events table is being queried
+    # the same way at capture-time and at surface-time.
+
+    def record_source_reputation_event(
+        self,
+        notebook_id: str,
+        source_id: str,
+        signal: str,  # 'added' | 'approved' | 'rejected'
+        source_label: str = "",
+    ) -> None:
+        """Update the rolling reputation row for a (notebook, source).
+
+        Phase 7.6 capture-only. Surfacing rules ("source X dropped from
+        80% to 20%") read this table later; for now we just keep it
+        populated so the data accumulates from day one.
+        """
+        try:
+            now = datetime.utcnow().isoformat()
+            cutoff_30d = (datetime.utcnow() - timedelta(days=30)).isoformat()
+            # Upsert pattern — SQLite-friendly: try update, insert on fail.
+            row = self._conn.execute(
+                "SELECT id, total_events, approved_count, rejected_count, added_count, first_seen_at "
+                "FROM source_reputation WHERE notebook_id=? AND source_id=?",
+                (notebook_id, source_id),
+            ).fetchone()
+            if row is None:
+                self._conn.execute(
+                    """INSERT INTO source_reputation
+                        (notebook_id, source_id, source_label, total_events,
+                         approved_count, rejected_count, added_count,
+                         first_seen_at, last_event_at)
+                       VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)""",
+                    (
+                        notebook_id, source_id, source_label,
+                        1 if signal == "approved" else 0,
+                        1 if signal == "rejected" else 0,
+                        1 if signal == "added" else 0,
+                        now, now,
+                    ),
+                )
+            else:
+                approved = row["approved_count"] + (1 if signal == "approved" else 0)
+                rejected = row["rejected_count"] + (1 if signal == "rejected" else 0)
+                added = row["added_count"] + (1 if signal == "added" else 0)
+                total = row["total_events"] + 1
+                # Lifetime acceptance rate: both "approved" (collector queue)
+                # and "added" (direct user adds — upload/extension/voice/etc.)
+                # represent the user choosing to keep the source. "rejected"
+                # is the only negative signal we get today. If we later add
+                # an explicit "useless / remove this" signal, fold it into
+                # rejected here.
+                positive = approved + added
+                resolved = positive + rejected
+                lifetime_rate = (positive / resolved) if resolved > 0 else 0.0
+                self._conn.execute(
+                    """UPDATE source_reputation SET
+                        total_events=?, approved_count=?, rejected_count=?,
+                        added_count=?, lifetime_acceptance_rate=?, last_event_at=?
+                       WHERE id=?""",
+                    (total, approved, rejected, added, lifetime_rate, now, row["id"]),
+                )
+            # Recompute the 30d rolling window from engagement_events so it
+            # stays accurate even when old rows age out. This is cheap and
+            # avoids needing a per-event timestamp column on the reputation
+            # table itself.
+            rolling = self._conn.execute(
+                """SELECT
+                      SUM(CASE WHEN signal IN ('approved','added') THEN 1 ELSE 0 END) as positive,
+                      SUM(CASE WHEN signal='rejected' THEN 1 ELSE 0 END) as rejected,
+                      COUNT(*) as total
+                   FROM engagement_events
+                   WHERE notebook_id=? AND subject_id=? AND ts > ?""",
+                (notebook_id, source_id, cutoff_30d),
+            ).fetchone()
+            r_positive = rolling["positive"] or 0
+            r_rejected = rolling["rejected"] or 0
+            r_total = rolling["total"] or 0
+            r_resolved = r_positive + r_rejected
+            rolling_rate = (r_positive / r_resolved) if r_resolved > 0 else 0.0
+            self._conn.execute(
+                """UPDATE source_reputation SET
+                    rolling_30d_events=?, rolling_30d_approved=?,
+                    rolling_30d_rejected=?, rolling_acceptance_rate=?
+                   WHERE notebook_id=? AND source_id=?""",
+                (r_total, r_positive, r_rejected, rolling_rate, notebook_id, source_id),
+            )
+            self._conn.commit()
+        except Exception as e:
+            logger.debug(f"[CuratorBrain] record_source_reputation_event failed: {e}")
+
+    def get_source_reputation_summary(self, notebook_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Phase 7.6 reader. Returns reputation rows for a notebook ordered by
+        rolling acceptance rate ascending — UI will surface the worst-trending
+        sources first when the surfacing rule ships."""
+        try:
+            rows = self._conn.execute(
+                """SELECT notebook_id, source_id, source_label, total_events,
+                          approved_count, rejected_count, added_count,
+                          rolling_30d_events, rolling_30d_approved, rolling_30d_rejected,
+                          lifetime_acceptance_rate, rolling_acceptance_rate,
+                          first_seen_at, last_event_at
+                   FROM source_reputation
+                   WHERE notebook_id=?
+                   ORDER BY rolling_acceptance_rate ASC, total_events DESC
+                   LIMIT ?""",
+                (notebook_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.debug(f"[CuratorBrain] get_source_reputation_summary failed: {e}")
+            return []
+
+    def get_voice_scoreboard(self, lookback_days: int = 30) -> Dict[str, Any]:
+        """Phase 7.2 reader. Aggregates brief engagement by voice.
+
+        Returns:
+            {
+              "voices": {
+                "smart_colleague": {"opens": N, "thumbs_up": M, "thumbs_down": K},
+                ...
+              },
+              "lookback_days": int,
+              "total_events": int,
+            }
+
+        UI / auto-rotation reads this. When any voice accrues ≥2 thumbs_down
+        within the lookback window, that's the signal to rotate away from
+        it (per Phase 7.2 compressed-v2 plan in _PHASE7_DATA_READINESS.md).
+        """
+        try:
+            cutoff = (datetime.utcnow() - timedelta(days=lookback_days)).isoformat()
+            # We tagged voice in payload (see CuratorPanel useEngagement
+            # calls); JSON_EXTRACT pulls it out without a separate column.
+            rows = self._conn.execute(
+                """SELECT
+                      json_extract(payload, '$.voice') as voice,
+                      signal,
+                      COUNT(*) as cnt
+                   FROM engagement_events
+                   WHERE kind='brief'
+                     AND ts > ?
+                     AND json_extract(payload, '$.voice') IS NOT NULL
+                   GROUP BY voice, signal""",
+                (cutoff,),
+            ).fetchall()
+            voices: Dict[str, Dict[str, int]] = {}
+            total = 0
+            for r in rows:
+                v = r["voice"]
+                s = r["signal"]
+                c = r["cnt"]
+                if not v:
+                    continue
+                voices.setdefault(v, {"opens": 0, "thumbs_up": 0, "thumbs_down": 0})
+                if s == "opened":
+                    voices[v]["opens"] += c
+                elif s == "thumbs_up":
+                    voices[v]["thumbs_up"] += c
+                elif s == "thumbs_down":
+                    voices[v]["thumbs_down"] += c
+                total += c
+            return {
+                "voices": voices,
+                "lookback_days": lookback_days,
+                "total_events": total,
+            }
+        except Exception as e:
+            logger.debug(f"[CuratorBrain] get_voice_scoreboard failed: {e}")
+            return {"voices": {}, "lookback_days": lookback_days, "total_events": 0}
+
+    def get_studio_kind_scores(self, lookback_days: int = 30) -> Dict[str, Any]:
+        """Phase 7.5 reader. Aggregates Studio output engagement by skill_id.
+
+        UI uses this to know which Studio types are landing well; learning
+        layer uses it to bias anticipatory-draft medium selection.
+        """
+        try:
+            cutoff = (datetime.utcnow() - timedelta(days=lookback_days)).isoformat()
+            rows = self._conn.execute(
+                """SELECT
+                      subject_type,
+                      json_extract(payload, '$.skill_id') as skill_id,
+                      signal,
+                      COUNT(*) as cnt
+                   FROM engagement_events
+                   WHERE subject_type LIKE 'studio_%'
+                     AND ts > ?
+                   GROUP BY subject_type, skill_id, signal""",
+                (cutoff,),
+            ).fetchall()
+            kinds: Dict[str, Dict[str, Any]] = {}
+            for r in rows:
+                key = r["subject_type"] or "studio_unknown"
+                bucket = kinds.setdefault(key, {
+                    "skills": {},
+                    "thumbs_up": 0,
+                    "thumbs_down": 0,
+                    "invoked": 0,
+                })
+                if r["signal"] == "thumbs_up":
+                    bucket["thumbs_up"] += r["cnt"]
+                elif r["signal"] == "thumbs_down":
+                    bucket["thumbs_down"] += r["cnt"]
+                elif r["signal"] == "invoked":
+                    bucket["invoked"] += r["cnt"]
+                if r["skill_id"]:
+                    sk = bucket["skills"].setdefault(r["skill_id"], {
+                        "invoked": 0, "thumbs_up": 0, "thumbs_down": 0,
+                    })
+                    if r["signal"] in ("invoked", "thumbs_up", "thumbs_down"):
+                        sk[r["signal"]] += r["cnt"]
+            return {"kinds": kinds, "lookback_days": lookback_days}
+        except Exception as e:
+            logger.debug(f"[CuratorBrain] get_studio_kind_scores failed: {e}")
+            return {"kinds": {}, "lookback_days": lookback_days}
 
 
 # Module-level singleton — imported by curator.py, memory_manager.py, ingestion pipeline

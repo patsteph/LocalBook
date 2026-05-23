@@ -92,6 +92,9 @@ export interface ChatMessage {
   visualLoading?: boolean;  // Canvas: visual is being generated
   visualLoadingMessage?: string;  // Canvas: custom loading message (e.g., "Analyzing your guidance...")
   curatorAside?: string;  // Curator overwatch: cross-notebook insight aside
+  curatorAsideNagId?: number;  // Fix #5: nag_id for POST /curator/asides/{nag_id}/thumbs
+  curatorAsideKind?: string;  // Fix #5: aside kind for telemetry (connection / dissent / plan_completed)
+  curatorAsideFeedback?: 'up' | 'down' | 'dismissed';  // Fix #5: client-side acknowledgment of a thumbs submission
   curatorName?: string;  // Curator overwatch: name of the curator
   refinementReason?: 'bibliography_cleanup' | 'carr_retry';  // Phase A.2: replace_answer attribution (F8)
   autoRoutedTo?: 'curator';  // Phase A.3: implicit-routing attribution (F5)

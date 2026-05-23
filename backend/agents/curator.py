@@ -1626,10 +1626,24 @@ Write the weekly wrap up now:"""
             # Keep stable original order when scores are tied — sort with
             # a (score_desc, idx_asc) key so click-boost re-orders only
             # when there's actual engagement signal.
+            # 2026-05-23 (#1 engagement-weighted brief boost): repeatedly
+            # ignored topics now get a HARD negative score that pushes them
+            # to the bottom. Without this, click-boost only RAISED clicked
+            # topics; it didn't suppress the topics the user keeps ignoring.
+            # Net effect: brief stops repeating things the user has shown
+            # they don't care about.
             scored: List[tuple] = []
             for i, sr in enumerate(filtered):
                 key = _topic_key_for(sr.get("title") or "")
-                score = _cb.get_topic_click_score(notebook_id, key) if key else 0.0
+                if not key:
+                    scored.append((0.0, i, sr))
+                    continue
+                if _cb.is_topic_repeatedly_ignored(notebook_id, key):
+                    # Push to bottom — score very negative, preserves order
+                    # within the demoted bucket via the original index.
+                    scored.append((1000.0, i, sr))
+                    continue
+                score = _cb.get_topic_click_score(notebook_id, key)
                 scored.append((-score, i, sr))
             scored.sort()
             return [t[2] for t in scored]
@@ -2066,11 +2080,14 @@ Write the weekly wrap up now:"""
             for nb in summaries
         )
         if not has_meaningful_activity:
-            from services.temporal import TemporalContext
-            greeting = TemporalContext(self._get_user_timezone()).greeting_hint
+            # 2026-05-23 (Fix #1): no greeting prefix here. The CuratorPanel
+            # frontend already prepends "Good {greeting}! You've been away
+            # for {duration}.\n\n{narrative}" — including another "Good X."
+            # produced "Good morning! You've been away... Good morning. Quiet
+            # since..." (double-greeting). Narrative starts mid-thought.
             return (
-                f"Good {greeting}. Quiet since you were last here — nothing I'd flag "
-                f"as worth your time. Your notebooks are where you left them."
+                "Quiet since you were last here — nothing I'd flag as worth "
+                "your time. Your notebooks are where you left them."
             )
 
         # --- Phase 2: Inject Curator Brain context (pre-computed understanding) ---
@@ -2390,6 +2407,46 @@ Write the weekly wrap up now:"""
         except Exception as _e:
             logger.debug(f"[curator] observations payload failed (non-fatal): {_e}")
 
+        # Fix #1 (2026-05-23): engagement-weighted brief boost — make the
+        # LLM AWARE of click patterns so it can actively reference them in
+        # the brief ("I noticed you keep coming back to X" / "I'll surface
+        # less about Y for now"). The ranker already demotes ignored topics;
+        # this is the prose layer the user actually reads.
+        engagement_section = ""
+        try:
+            from services.curator_brain import curator_brain as _cb
+            eng_lines: List[str] = []
+            for nb in notebooks[:10]:
+                summary = _cb.get_topic_engagement_summary(nb["id"])
+                if not summary["liked"] and not summary["ignored"]:
+                    continue
+                name = nb.get("title", nb.get("name", "Untitled"))
+                nb_lines = [f"  {name}:"]
+                if summary["liked"]:
+                    liked_str = ", ".join(
+                        f"{t['topic']} ({t['clicked']}×)" for t in summary["liked"][:3]
+                    )
+                    nb_lines.append(f"    - user has engaged with: {liked_str}")
+                if summary["ignored"]:
+                    ignored_str = ", ".join(
+                        f"{t['topic']} ({t['offered']}× offered)" for t in summary["ignored"][:3]
+                    )
+                    nb_lines.append(f"    - user has been ignoring: {ignored_str}")
+                if len(nb_lines) > 1:
+                    eng_lines.extend(nb_lines)
+            if eng_lines:
+                engagement_section = (
+                    "\nUSER ENGAGEMENT PATTERNS (Phase 5 calibration — use these "
+                    "to shape what you emphasize. Briefly acknowledge topics the "
+                    "user keeps engaging with ('you've been digging into X') and "
+                    "do NOT dwell on topics they keep ignoring. Don't list these "
+                    "verbatim — internalize them and let them shape your tone "
+                    "and selection.):\n"
+                    + "\n".join(eng_lines) + "\n"
+                )
+        except Exception as _e:
+            logger.debug(f"[curator] engagement payload failed (non-fatal): {_e}")
+
         prompt = f"""{voice_block}
 
 {temporal_block}
@@ -2397,7 +2454,7 @@ Write the weekly wrap up now:"""
 You are {self.name}, a personal research assistant writing a morning brief for today, {today_str}. The user was away for {duration_str}. Turn the raw activity data below into something worth reading. IMPORTANT: Today's date is {today_str} — use this exact date, do not invent a different date.
 
 WRITE LIKE THE VOICE BLOCK INSTRUCTS — that voice is more important than any pattern below. If the voice says "first-person", use first-person. If the voice says "minimal first-person", don't say "I". The voice block wins.
-{brain_section}{observations_section}{understanding_section}
+{brain_section}{observations_section}{understanding_section}{engagement_section}
 ACTIVITY DATA:
 {raw_data}
 
@@ -4613,13 +4670,17 @@ Rules:
         query: str,
         answer: str,
         notebook_id: str
-    ) -> Optional[str]:
+    ) -> Optional[Dict[str, Any]]:
         """
         Phase D.1 (2026-05-22): trigger-driven only. No probabilistic fallback.
 
-        Returns a short aside string ONLY when an explicit upstream trigger
-        has queued one. Otherwise returns None — the user typed a regular
-        question; we stay quiet.
+        Returns a dict {aside_text, nag_id, kind} ONLY when an explicit
+        upstream trigger has queued one. Otherwise returns None — the user
+        typed a regular question; we stay quiet.
+
+        Fix #5 (2026-05-23): now returns the full payload (including nag_id)
+        instead of just the aside text, so the UI can wire thumbs feedback
+        to POST /curator/asides/{nag_id}/thumbs.
 
         Surfacing channels (all upstream signals that emit pending_asides
         via the event bus):
@@ -4647,7 +4708,11 @@ Rules:
                     f"[curator] generate_overwatch_aside({notebook_id[:8]}): "
                     f"surfacing pending aside (kind={pending.get('kind')})"
                 )
-                return pending["aside_text"]
+                return {
+                    "aside_text": pending["aside_text"],
+                    "nag_id": pending.get("nag_id"),
+                    "kind": pending.get("kind"),
+                }
         except Exception as _e:
             logger.debug(f"[curator] pending aside consume failed: {_e}")
 

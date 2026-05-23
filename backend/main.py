@@ -46,6 +46,7 @@ if "--verify-kokoro" in sys.argv or "--verify-tts" in sys.argv:
         sys.exit(0)
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -167,6 +168,66 @@ async def _run_startup_tasks():
                 print(f"[Migration] ERROR: {update.get('error')}")
             if update.get("warning"):
                 print(f"[Migration] WARNING: {update.get('warning')}")
+
+    # ── Step 2b: Activity-ledger backfill (one-shot per install) ──────────
+    # Phase B (2026-05-22) introduced the activity_ledger; notebooks created
+    # before that date have empty ledger state and the new views (stagnation,
+    # source_reputation, voice scoreboard, etc.) return "no data" for them.
+    # This step synthesizes back-dated events from source_store +
+    # collection_history.json so old notebooks immediately show real history
+    # in the new UI. Guarded by a sentinel file — runs once per install,
+    # never blocks startup on failure.
+    async def _maybe_backfill():
+        sentinel = settings.data_dir / ".activity_ledger_backfilled"
+        if sentinel.exists():
+            return
+        try:
+            # Import is lazy because the script lives in backend/scripts/
+            # which is not on the module path during normal operation.
+            # PyInstaller bundles it via --add-data (see build_backend.sh).
+            run_backfill = None
+            try:
+                from scripts.backfill_activity_ledger import run_backfill as _rb
+                run_backfill = _rb
+            except ImportError:
+                # PyInstaller / frozen bundle layout — load by path.
+                import importlib.util
+                candidate = Path(__file__).resolve().parent / "scripts" / "backfill_activity_ledger.py"
+                if not candidate.exists():
+                    print("[startup] backfill script not bundled — skipping")
+                    sentinel.write_text(datetime.utcnow().isoformat())
+                    return
+                spec = importlib.util.spec_from_file_location("backfill_activity_ledger", candidate)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                run_backfill = module.run_backfill
+
+            def _backfill_status(_status, message, progress):
+                # Map per-notebook progress (0-100) into our 12-15% slice
+                # so the splash bar moves visibly but we don't lie about
+                # where in startup we are.
+                scaled = 12 + int(progress * 0.03)
+                set_startup_status("migrating", message, scaled)
+
+            set_startup_status(
+                "migrating",
+                "Migrating notebook activity history... a few minutes max.",
+                12,
+            )
+            grand = await run_backfill(status_callback=_backfill_status)
+            print(
+                f"[startup] activity ledger backfill: {grand['notebooks_processed']} notebooks, "
+                f"+{grand['sources_added']} sources, +{grand['runs_added']} runs, "
+                f"+{grand['approvals_added']} approvals"
+            )
+            sentinel.write_text(datetime.utcnow().isoformat())
+        except Exception as e:
+            # Non-fatal: backfill is a convenience, not a correctness gate.
+            # Notebooks still work; they just won't have historical ledger
+            # context until enough new activity accrues.
+            print(f"[startup] activity ledger backfill failed (non-fatal): {e}")
+
+    await _step("migrating", "Checking notebook history...", 12, _maybe_backfill())
 
     # ── Step 3: Verify data directory ─────────────────────────────────────
     await _step("checking", "Verifying data directory...", 15)

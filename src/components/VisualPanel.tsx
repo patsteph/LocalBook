@@ -10,6 +10,8 @@ import { MermaidRenderer } from './shared/MermaidRenderer';
 import { SVGRenderer } from './shared/SVGRenderer';
 import { ChartRenderer } from './shared/ChartRenderer';
 import { BookmarkButton } from './shared/BookmarkButton';
+import { useEngagement } from '../hooks/useEngagement';
+import { FeedbackThumbs } from './shared/FeedbackThumbs';
 
 // Phase 4: Refinement Chat Component
 interface RefinementChatProps {
@@ -222,6 +224,9 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
   const [error, setError] = useState<string | null>(null);
   const [diagrams, setDiagrams] = useState<Diagram[]>([]);
   const [selectedDiagram, setSelectedDiagram] = useState<Diagram | null>(null);
+  // 2026-05-23: Phase 7.5 capture — visual generation engagement.
+  const { capture: captureEngagement } = useEngagement();
+  const [visualSubjectId, setVisualSubjectId] = useState<string | null>(null);
   const [diagramType, setDiagramType] = useState<DiagramType>('auto');
   const [topic, setTopic] = useState(initialContent);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -256,7 +261,24 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
     setError(null);
     setDiagrams([]);
     setSelectedDiagram(null);
-    
+
+    // Phase 7.5 capture (2026-05-23): tag visual gen with template/type
+    // so we can learn which visual kinds land vs get regenerated.
+    const subjId = `studio_visual_${Date.now()}`;
+    setVisualSubjectId(subjId);
+    captureEngagement('curator_feature', 'invoked', {
+      subject_type: 'studio_visual',
+      subject_id: subjId,
+      notebook_id: notebookId,
+      payload: {
+        skill_id: 'visual',
+        diagram_type: diagramType,
+        template_id: selectedTemplate || null,
+        color_theme: colorTheme,
+        topic_chars: (topic || '').length,
+      },
+    });
+
     try {
       // Use streaming endpoint - primary appears first, alternatives follow
       // Pass explicit template_id if user selected a specific chart or template
@@ -562,6 +584,25 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({ notebookId, initialCon
       {/* Diagram Display */}
       {selectedDiagram && (
         <div className="space-y-2">
+          {/* 2026-05-23: thumbs on the rendered visual. */}
+          {visualSubjectId && (
+            <div className="flex items-center justify-end gap-1.5">
+              <span className="text-[10px] text-gray-500 dark:text-gray-400">How was this visual?</span>
+              <FeedbackThumbs
+                kind="curator_feature"
+                subjectType="studio_visual"
+                subjectId={visualSubjectId}
+                notebookId={notebookId}
+                payload={{
+                  skill_id: 'visual',
+                  diagram_type: diagramType,
+                  render_type: selectedDiagram.render_type,
+                  title: selectedDiagram.title,
+                }}
+                size="sm"
+              />
+            </div>
+          )}
           <div className="flex justify-between items-center">
             <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300">
               {selectedDiagram.title}

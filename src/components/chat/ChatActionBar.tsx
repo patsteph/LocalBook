@@ -12,6 +12,7 @@ import { visualService } from '../../services/visual';
 import { quizService } from '../../services/quiz';
 import { audioService } from '../../services/audio';
 import { curatorService } from '../../services/curatorApi';
+import { useEngagement } from '../../hooks/useEngagement';
 import { exportService } from '../../services/export';
 import { skillsService } from '../../services/skills';
 import { writingService, FormatOption } from '../../services/writing';
@@ -116,6 +117,10 @@ interface ChatActionBarProps {
 
 export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expanded = true, onToggleExpand }) => {
   const ctx = useCanvas();
+  // 2026-05-23: Phase 7.5 capture for chat-initiated Studio generations.
+  // Mirrors the captures in Studio.tsx so we get the same engagement events
+  // regardless of which entry point fired the generation.
+  const { capture: captureEngagement } = useEngagement();
 
   // ── Shared data ──────────────────────────────────────────────────────────
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -281,6 +286,13 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
         style: docsStyle,
         ...(ctx.chatContext ? { chat_context: ctx.chatContext } : {}),
       });
+      // Phase 7.5 capture (chat entry point).
+      captureEngagement('curator_feature', 'invoked', {
+        subject_type: 'studio_doc',
+        subject_id: `studio_doc_${Date.now()}_chat`,
+        notebook_id: notebookId,
+        payload: { skill_id: docsSkill, style: docsStyle, entry_point: 'chat', length: result.content?.length || 0 },
+      });
       ctx.updateCanvasItem(itemId, {
         title: result.skill_name || skillName,
         content: result.content,
@@ -316,6 +328,13 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
     try {
       const content = getPrimaryContent() || docsTopic || 'Generate a visual summary';
       const title = getPrimaryTitle();
+      // Phase 7.5 capture (chat entry point).
+      captureEngagement('curator_feature', 'invoked', {
+        subject_type: 'studio_visual',
+        subject_id: `studio_visual_${Date.now()}_chat`,
+        notebook_id: notebookId,
+        payload: { skill_id: 'visual', color_theme: visualColorTheme, template_id: selectedTemplate, entry_point: 'chat' },
+      });
       await visualService.generateSmartStream(
         notebookId,
         content,
@@ -392,6 +411,13 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
         metadata: { audioId: result.audio_id, notebookId: notebookId },
       });
       ctx.setGenerationStatus('complete');
+      // Phase 7.5 capture (chat entry point).
+      captureEngagement('curator_feature', 'invoked', {
+        subject_type: 'studio_audio',
+        subject_id: `studio_audio_${Date.now()}_chat`,
+        notebook_id: notebookId,
+        payload: { skill_id: effectiveSkill, duration_minutes: audioDuration, accent: audioAccent, entry_point: 'chat' },
+      });
       // Signal Studio to refresh audio list
       window.dispatchEvent(new CustomEvent('studioAudioRefresh'));
     } catch (err: any) {
@@ -425,6 +451,13 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
       const topic = topicOverride || stripAtChat(quizTopic) || content.substring(0, 300).replace(/[#*_\n]/g, ' ').trim();
       const difficulty = difficultyOverride || quizDifficulty;
       const quiz = await quizService.generate(notebookId, quizCount, difficulty, topic, ctx.chatContext || undefined);
+      // Phase 7.5 capture (chat entry point).
+      captureEngagement('curator_feature', 'invoked', {
+        subject_type: 'studio_quiz',
+        subject_id: `studio_quiz_${Date.now()}_chat`,
+        notebook_id: notebookId,
+        payload: { skill_id: 'quiz', difficulty, num_questions: quizCount, entry_point: 'chat' },
+      });
       if (!quiz.questions || quiz.questions.length === 0) {
         throw new Error('The model could not generate quiz questions. Try again or use a different topic.');
       }
@@ -608,6 +641,20 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
         metadata: { videoId: result.video_id, notebookId },
       });
       ctx.setGenerationStatus('complete');
+      // Phase 7.5 capture: video uses the result.video_id as subject_id so
+      // it matches the video_id the VideoHistory thumbs will use later.
+      captureEngagement('curator_feature', 'invoked', {
+        subject_type: 'studio_video',
+        subject_id: result.video_id,
+        notebook_id: notebookId,
+        payload: {
+          skill_id: 'video',
+          duration_minutes: videoDuration,
+          visual_style: videoStyle,
+          format_type: videoFormat,
+          entry_point: 'chat',
+        },
+      });
       // Poll for completion
       const pollInterval = setInterval(async () => {
         try {

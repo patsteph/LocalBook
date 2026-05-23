@@ -44,6 +44,10 @@ function App() {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [visualContent] = useState<string>('');
   const [morningBrief, setMorningBrief] = useState<any>(null);
+  // Fix #3 (2026-05-23): track whether the curator has a queued anticipatory
+  // draft for the active notebook. Surfaces as a badge on the panel-view
+  // selector so users in chat/constellation/etc. notice a draft was prepared.
+  const [hasPendingDraft, setHasPendingDraft] = useState(false);
   const [weeklyWrap, setWeeklyWrap] = useState<any>(null);
   const [curatorBriefData, setCuratorBriefData] = useState<any>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -217,6 +221,27 @@ function App() {
   const openCollector = useCallback(() => {
     if (!drawers.collector) toggleDrawer('collector');
   }, [drawers.collector, toggleDrawer]);
+
+  // Fix #3 (2026-05-23): poll for anticipatory drafts on the active notebook
+  // every 60s. Sets a badge state the view-selector renders. Skips polling
+  // while the user is on the curator view since they'll see the pill there.
+  useEffect(() => {
+    if (!selectedNotebookId) { setHasPendingDraft(false); return; }
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const r = await localFetch(`${API_BASE_URL}/curator/notebooks/${encodeURIComponent(selectedNotebookId)}/anticipatory-draft`);
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!cancelled) setHasPendingDraft(!!data.has_draft);
+      } catch {
+        // Silent — backend may be transiently down; we'll retry next tick.
+      }
+    };
+    check();
+    const interval = setInterval(check, 60_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [selectedNotebookId]);
 
   const openWebResearch = useCallback((query?: string) => {
     openPanel('web-research', query ? { initialQuery: query } : undefined);
@@ -882,13 +907,24 @@ function App() {
                 <div className="relative" ref={viewMenuRef}>
                   <button
                     onClick={() => setShowViewMenu(!showViewMenu)}
-                    className="flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                    className="relative flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors"
                   >
                     <span>{VIEW_ICONS[currentView as PanelView]}</span>
                     <span>{VIEW_LABELS[currentView as PanelView]}</span>
                     <svg className="w-3 h-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                     </svg>
+                    {/* Fix #3 (2026-05-23): draft-ready dot. Renders when a
+                        notebook anticipatory draft is queued AND the user is
+                        currently on a non-curator view. Click reveals the
+                        Curator entry in the menu where the full draft pill
+                        will be visible. */}
+                    {hasPendingDraft && currentView !== 'curator' && (
+                      <span
+                        className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-indigo-500 ring-2 ring-white dark:ring-gray-900"
+                        title="Curator drafted something for this notebook"
+                      />
+                    )}
                   </button>
                   {showViewMenu && (
                     <div className="absolute top-full left-0 mt-1 w-48 bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-lg shadow-lg z-50 py-1">
@@ -902,6 +938,11 @@ function App() {
                           }`}
                         >
                           <span>{VIEW_ICONS[v]}</span> {VIEW_LABELS[v]}
+                          {/* Fix #3: also flag the curator item in the menu
+                              so the badge story is consistent everywhere. */}
+                          {v === 'curator' && hasPendingDraft && (
+                            <span className="ml-auto text-[10px] text-indigo-500 font-medium">✨ draft</span>
+                          )}
                         </button>
                       ))}
                     </div>

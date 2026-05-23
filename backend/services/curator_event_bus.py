@@ -186,6 +186,20 @@ class CuratorEventBus:
                         self._dispatch_counts[action] = self._dispatch_counts.get(action, 0) + 1
                     except Exception as e:
                         logger.debug(f"[event_bus] mark_notebook_dirty: {e}")
+                    # Phase 7.6 capture (2026-05-23): track source reputation.
+                    # Capture-only — surfacing rule ("source X dropped from
+                    # 80% to 20% accept rate") ships later once data accrues.
+                    try:
+                        source_id = (event.payload or {}).get("source_id")
+                        if source_id:
+                            curator_brain.record_source_reputation_event(
+                                notebook_id=nb,
+                                source_id=str(source_id),
+                                signal="added",
+                                source_label=name,
+                            )
+                    except Exception as e:
+                        logger.debug(f"[event_bus] source_reputation add: {e}")
 
                     # Curator Phase 3a: tiered inference trigger. When
                     # the notebook's source count crosses 5/10/25/50/+25,
@@ -392,6 +406,61 @@ class CuratorEventBus:
                         },
                     )
                     self._dispatch_counts[action] = self._dispatch_counts.get(action, 0) + 1
+                    # Phase 7.6 capture: rejection event for reputation.
+                    if nb and payload.get("item_id"):
+                        try:
+                            curator_brain.record_source_reputation_event(
+                                notebook_id=nb,
+                                source_id=str(payload["item_id"]),
+                                signal="rejected",
+                            )
+                        except Exception as e:
+                            logger.debug(f"[event_bus] source_reputation reject: {e}")
+
+                # Fix #5 (2026-05-23): user explicitly deleted a source.
+                # Treat as the strongest negative signal — counts twice in
+                # reputation so the rolling rate moves visibly. Also writes
+                # to engagement_events so Phase 7.2/voice features see it.
+                elif action == "source_removed":
+                    payload = event.payload or {}
+                    source_id = payload.get("source_id")
+                    if nb and source_id:
+                        try:
+                            curator_brain.record_engagement(
+                                kind="source",
+                                signal="rejected",
+                                subject_type="source",
+                                subject_id=str(source_id),
+                                notebook_id=nb,
+                                payload={
+                                    "by": "user",
+                                    "reason": "removed",
+                                    "feedback_type": "explicit_delete",
+                                    "filename": payload.get("filename"),
+                                },
+                            )
+                        except Exception as e:
+                            logger.debug(f"[event_bus] source_removed engagement: {e}")
+                        try:
+                            # Hit reputation twice — once is the
+                            # acceptance-rate-impacting "rejected" signal;
+                            # second time makes deletion visibly stronger
+                            # than a single rejection.
+                            curator_brain.record_source_reputation_event(
+                                notebook_id=nb,
+                                source_id=str(source_id),
+                                signal="rejected",
+                                source_label=payload.get("filename") or "",
+                            )
+                            curator_brain.record_source_reputation_event(
+                                notebook_id=nb,
+                                source_id=str(source_id),
+                                signal="rejected",
+                                source_label=payload.get("filename") or "",
+                            )
+                        except Exception as e:
+                            logger.debug(f"[event_bus] source_removed reputation: {e}")
+                        self._dispatch_counts[action] = self._dispatch_counts.get(action, 0) + 1
 
                 elif action == "curator_intent_dispatched" and event.intent:
                     curator_brain.record_engagement(
@@ -403,6 +472,50 @@ class CuratorEventBus:
                         payload=event.payload or {},
                     )
                     self._dispatch_counts[action] = self._dispatch_counts.get(action, 0) + 1
+                    # Fix #8 (2026-05-23): brief follow-up correlation.
+                    # When a user invokes @curator within 10 minutes of a
+                    # brief_opened event, that's a strong positive signal —
+                    # the brief was useful enough to engage with. Emits a
+                    # correlated `brief_followup` engagement event for
+                    # Phase 7.2 voice scoring.
+                    try:
+                        from datetime import timedelta
+                        cutoff = (datetime.utcnow() - timedelta(minutes=10)).isoformat()
+                        # Look for a brief open in the window. We don't
+                        # require same notebook (briefs are cross-notebook)
+                        # but tag the follow-up with intent + notebook so
+                        # consumers can slice both ways.
+                        recent_brief = curator_brain._conn.execute(
+                            """SELECT subject_id, payload, ts
+                               FROM engagement_events
+                               WHERE kind='brief' AND signal='opened' AND ts > ?
+                               ORDER BY ts DESC LIMIT 1""",
+                            (cutoff,),
+                        ).fetchone()
+                        if recent_brief:
+                            import json as _json
+                            brief_payload = {}
+                            try:
+                                brief_payload = _json.loads(recent_brief["payload"] or "{}")
+                            except Exception:
+                                pass
+                            curator_brain.record_engagement(
+                                kind="brief",
+                                signal="followup",
+                                subject_type="morning_brief",
+                                subject_id=recent_brief["subject_id"],
+                                notebook_id=nb,
+                                payload={
+                                    "intent": event.intent,
+                                    "voice": brief_payload.get("voice"),
+                                    "brief_ts": recent_brief["ts"],
+                                    "latency_seconds": (
+                                        datetime.utcnow() - datetime.fromisoformat(recent_brief["ts"])
+                                    ).total_seconds() if recent_brief["ts"] else None,
+                                },
+                            )
+                    except Exception as _fu_err:
+                        logger.debug(f"[event_bus] brief followup correlation failed: {_fu_err}")
 
                 elif action == "conversational_reply":
                     curator_brain.record_engagement(

@@ -13,6 +13,8 @@ import { VisualPanel } from './VisualPanel';
 import { WritingPanel } from './WritingPanel';
 import { ContentViewer } from './studio/ContentViewer';
 import { AudioHistory } from './studio/AudioHistory';
+import { useEngagement } from '../hooks/useEngagement';
+import { FeedbackThumbs } from './shared/FeedbackThumbs';
 import { VideoHistory } from './studio/VideoHistory';
 
 interface StudioProps {
@@ -59,6 +61,14 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
   const [generatedContent, setGeneratedContent] = useState<string>('');
   const [contentSkillName, setContentSkillName] = useState<string>('');
   const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
+  // 2026-05-23: hook into engagement capture so Studio generations land
+  // in engagement_events for Phase 7.5 medium-selection learning.
+  const { capture: captureEngagement } = useEngagement();
+  // Subject id for the freshly-generated text output (powers thumbs widget).
+  const [lastGeneratedSubjectId, setLastGeneratedSubjectId] = useState<string | null>(null);
+  const [lastGeneratedSkill, setLastGeneratedSkill] = useState<string | null>(null);
+  const [lastGeneratedAudioSubjectId, setLastGeneratedAudioSubjectId] = useState<string | null>(null);
+  const [lastGeneratedAudioSkill, setLastGeneratedAudioSkill] = useState<string | null>(null);
   
   // Style options for Docs tab
   const [styleFormats, setStyleFormats] = useState<FormatOption[]>([]);
@@ -209,6 +219,21 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
       // The polling interval (useEffect) will pick up status updates.
       await loadAudioGenerations();
       onGenerationStatus?.('complete');
+      // 2026-05-23: capture audio generation event for Phase 7.5.
+      const audioSubjId = `studio_audio_${Date.now()}`;
+      setLastGeneratedAudioSubjectId(audioSubjId);
+      setLastGeneratedAudioSkill(selectedSkill);
+      captureEngagement('curator_feature', 'invoked', {
+        subject_type: 'studio_audio',
+        subject_id: audioSubjId,
+        notebook_id: notebookId,
+        payload: {
+          skill_id: selectedSkill,
+          duration_minutes: duration,
+          accent,
+          had_chat_context: !!useChatContext,
+        },
+      });
 
     } catch (err: any) {
       console.error('Failed to generate:', err);
@@ -243,6 +268,22 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
       loadContentGenerations(); // Refresh list
       onContentGenerated?.(result.content, result.skill_name);
       onGenerationStatus?.('complete');
+      // 2026-05-23: log a generated event so Phase 7.5 (self-selecting medium)
+      // can score doc / quiz / visual / audio kinds by user engagement.
+      const subjId = `studio_doc_${Date.now()}`;
+      setLastGeneratedSubjectId(subjId);
+      setLastGeneratedSkill(selectedSkill);
+      captureEngagement('curator_feature', 'invoked', {
+        subject_type: 'studio_doc',
+        subject_id: subjId,
+        notebook_id: notebookId,
+        payload: {
+          skill_id: selectedSkill,
+          style: selectedStyle,
+          length: result.content?.length || 0,
+          had_chat_context: !!useChatContext,
+        },
+      });
     } catch (err: any) {
       console.error('Failed to generate:', err);
       setError(err.message || 'Failed to generate content');
@@ -536,6 +577,28 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
           {generating ? 'Generating...' : activeTab === 'audio' ? 'Generate Podcast' : 'Generate Document'}
         </Button>
 
+        {/* 2026-05-23: thumbs on the freshly-generated document. Powers
+            Phase 7.5 medium-selection learning + general doc quality
+            calibration. Hidden once user picks a different content from
+            the history (different output = irrelevant feedback). */}
+        {activeTab === 'documents' && lastGeneratedSubjectId && generatedContent && !selectedContentId && (
+          <div className="flex items-center justify-end gap-1.5 -mb-1">
+            <span className="text-[10px] text-gray-500 dark:text-gray-400">How was this output?</span>
+            <FeedbackThumbs
+              kind="curator_feature"
+              subjectType="studio_doc"
+              subjectId={lastGeneratedSubjectId}
+              notebookId={notebookId}
+              payload={{
+                skill_id: lastGeneratedSkill,
+                style: selectedStyle,
+                length: generatedContent.length,
+              }}
+              size="sm"
+            />
+          </div>
+        )}
+
         {/* Generated Text Content (Documents tab) */}
         {activeTab === 'documents' && (
           <ContentViewer
@@ -569,6 +632,26 @@ export const Studio: React.FC<StudioProps> = ({ notebookId, initialVisualContent
         )}
 
         </>
+        )}
+
+        {/* 2026-05-23: thumbs on the freshly-generated podcast. The audio
+            history below holds older generations; thumbs apply to the most
+            recent one we just kicked off. */}
+        {activeTab === 'audio' && lastGeneratedAudioSubjectId && (
+          <div className="flex items-center justify-end gap-1.5 -mb-1">
+            <span className="text-[10px] text-gray-500 dark:text-gray-400">How was this podcast?</span>
+            <FeedbackThumbs
+              kind="curator_feature"
+              subjectType="studio_audio"
+              subjectId={lastGeneratedAudioSubjectId}
+              notebookId={notebookId}
+              payload={{
+                skill_id: lastGeneratedAudioSkill,
+                duration_minutes: duration,
+              }}
+              size="sm"
+            />
+          </div>
         )}
 
         {/* Audio History - Only for audio tab */}

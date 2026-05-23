@@ -583,6 +583,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                           updated[i] = {
                             ...updated[i],
                             curatorAside: data.aside,
+                            // Fix #5 (2026-05-23): thread nag_id + kind so the
+                            // bubble can render thumbs-up/down that post back
+                            // to POST /curator/asides/{nag_id}/thumbs.
+                            curatorAsideNagId: data.nag_id ?? undefined,
+                            curatorAsideKind: data.kind ?? undefined,
                             curatorName: data.curator_name || 'Curator',
                           };
                           break;

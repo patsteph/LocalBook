@@ -93,6 +93,7 @@ python -W ignore -m PyInstaller \
     --add-data="$SCRIPT_DIR/models:models" \
     --add-data="$SCRIPT_DIR/utils:utils" \
     --add-data="$SCRIPT_DIR/agents:agents" \
+    --add-data="$SCRIPT_DIR/scripts:scripts" \
     --add-data="$SCRIPT_DIR/static:static" \
     --add-data="$SCRIPT_DIR/templates:templates" \
     --add-data="$SCRIPT_DIR/evaluator/test_content:evaluator/test_content" \

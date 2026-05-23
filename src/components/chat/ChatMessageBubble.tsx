@@ -1,13 +1,15 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { ChatMessage, Citation as CitationType, InlineVisualData, ResearchResult } from '../../types';
 import { Citation, CitationList } from '../Citation';
 import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { InlineVisual } from '../visual';
 import { BookmarkButton } from '../shared/BookmarkButton';
-import { Radio, Compass, Search, ExternalLink, Plus, Check, Wand2 } from 'lucide-react';
+import { Radio, Compass, Search, ExternalLink, Plus, Check, Wand2, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { PlanCard } from '../curator/PlanCard';
 import { useEngagement } from '../../hooks/useEngagement';
+import { curatorService } from '../../services/curatorApi';
+import { FeedbackThumbs } from '../shared/FeedbackThumbs';
 
 interface ChatMessageBubbleProps {
   message: ChatMessage;
@@ -203,6 +205,33 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
 }) => {
   const [addedResults, setAddedResults] = React.useState<Set<string>>(new Set());
   const { capture: captureEngagement } = useEngagement();
+  // Fix #5 (2026-05-23): track per-bubble aside thumbs state so the buttons
+  // become non-interactive after submission. Local state is fine — the
+  // backend has the authoritative record; this is just UX feedback.
+  const [asideFeedback, setAsideFeedback] = useState<'up' | 'down' | null>(null);
+
+  const handleAsideThumbs = async (response: 'up' | 'down') => {
+    if (asideFeedback || !message.curatorAsideNagId) return;
+    setAsideFeedback(response);  // optimistic
+    try {
+      const ok = await curatorService.recordAsideThumbs(message.curatorAsideNagId, response);
+      if (!ok) {
+        // Revert if backend rejected (e.g., 404 unknown nag).
+        setAsideFeedback(null);
+      } else {
+        // Mirror to engagement telemetry — keeps the engagement_events
+        // table in sync with the nag log; powers Phase 5 brief boost.
+        captureEngagement('curator_feature', response === 'up' ? 'thumbs_up' : 'thumbs_down', {
+          subject_type: 'aside',
+          subject_id: String(message.curatorAsideNagId),
+          notebook_id: notebookId || undefined,
+          payload: { kind: message.curatorAsideKind },
+        });
+      }
+    } catch {
+      setAsideFeedback(null);
+    }
+  };
 
   // Curator Phase 2b: signal that the user actually saw a curator aside.
   // Brain will use this to learn which asides land (followed by an action
@@ -356,6 +385,38 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
             )}
             {message.citations && message.citations.length > 0 && (
               <CitationList citations={message.citations} onViewSource={onViewSource} />
+            )}
+            {/* Universal feedback thumbs (2026-05-23): every AI-generated chat
+                answer carries a thumb. Powers Phase 7.2 voice scoring + general
+                answer-quality calibration over time. Shown only after content
+                has finalized (not during streaming) to avoid the user thumbing
+                an in-progress answer. Skip for routed-curator answers — the
+                aside has its own thumbs and we don't want to double up. */}
+            {message.content && message.content.length > 20 && !message.statusMessage && (
+              <div className="mt-1 flex items-center justify-end opacity-60 hover:opacity-100 transition-opacity">
+                <FeedbackThumbs
+                  kind="curator_feature"
+                  subjectType={
+                    message.agentType === 'curator' ? 'curator_answer'
+                      : message.agentType === 'collector' ? 'collector_answer'
+                      : message.agentType === 'research' ? 'research_answer'
+                      : message.agentType === 'studio' ? 'studio_answer'
+                      : 'chat_answer'
+                  }
+                  subjectId={
+                    message.timestamp instanceof Date
+                      ? message.timestamp.toISOString()
+                      : String(message.timestamp)
+                  }
+                  notebookId={notebookId}
+                  payload={{
+                    length: message.content.length,
+                    agent_type: message.agentType || 'rag',
+                    auto_routed: message.autoRoutedTo === 'curator',
+                    has_citations: !!(message.citations && message.citations.length > 0),
+                  }}
+                />
+              </div>
             )}
             {message.web_sources && message.web_sources.length > 0 && (
               <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
@@ -553,6 +614,45 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                   <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wide">
                     {message.curatorName || 'Curator'}
                   </span>
+                  {/* Fix #5 (2026-05-23): thumbs feedback — only renders when
+                      the backend supplied a nag_id (event-driven asides only;
+                      not for legacy probabilistic ones). After submission the
+                      buttons go static — the backend learns from the response
+                      via two-downs-in-7-days cool-off in record_aside_thumbs. */}
+                  {message.curatorAsideNagId && (
+                    <div className="ml-auto flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleAsideThumbs('up')}
+                        disabled={asideFeedback !== null}
+                        title={asideFeedback === 'up' ? 'Thanks — noted' : 'Useful'}
+                        className={`p-0.5 rounded transition-colors ${
+                          asideFeedback === 'up'
+                            ? 'text-indigo-700 dark:text-indigo-300'
+                            : asideFeedback === 'down'
+                              ? 'text-gray-300 dark:text-gray-600 cursor-default'
+                              : 'text-indigo-400 dark:text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300'
+                        }`}
+                      >
+                        <ThumbsUp className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAsideThumbs('down')}
+                        disabled={asideFeedback !== null}
+                        title={asideFeedback === 'down' ? 'Noted — fewer of these' : 'Not useful'}
+                        className={`p-0.5 rounded transition-colors ${
+                          asideFeedback === 'down'
+                            ? 'text-indigo-700 dark:text-indigo-300'
+                            : asideFeedback === 'up'
+                              ? 'text-gray-300 dark:text-gray-600 cursor-default'
+                              : 'text-indigo-400 dark:text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300'
+                        }`}
+                      >
+                        <ThumbsDown className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <p className="text-xs text-indigo-800 dark:text-indigo-200 leading-relaxed">
                   {message.curatorAside}

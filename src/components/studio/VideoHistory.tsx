@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Video, Trash2, Play, Loader2, AlertCircle } from 'lucide-react';
 import { videoService, VideoGeneration } from '../../services/video';
 import { API_BASE_URL } from '../../services/api';
+import { FeedbackThumbs } from '../shared/FeedbackThumbs';
 
 interface VideoHistoryProps {
   notebookId: string | null;
@@ -126,6 +127,23 @@ export const VideoHistory: React.FC<VideoHistoryProps> = ({ notebookId }) => {
               </div>
 
               <div className="flex items-center gap-1 flex-shrink-0">
+                {/* 2026-05-23: thumbs on completed videos. Phase 7.5 capture
+                    for studio_video kind. Uses the video_id as the stable
+                    subject_id since videos persist across sessions. */}
+                {v.status === 'completed' && (
+                  <FeedbackThumbs
+                    kind="curator_feature"
+                    subjectType="studio_video"
+                    subjectId={v.video_id}
+                    notebookId={(v as any).notebook_id || null}
+                    payload={{
+                      skill_id: 'video',
+                      visual_style: v.visual_style,
+                      format_type: v.format_type,
+                      duration_seconds: v.duration_seconds,
+                    }}
+                  />
+                )}
                 {v.status === 'completed' && (
                   <button
                     onClick={() => setPlayingId(playingId === v.video_id ? null : v.video_id)}

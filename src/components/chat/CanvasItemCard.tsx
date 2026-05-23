@@ -14,6 +14,7 @@ import { AudioCanvasPlayer } from './AudioCanvasPlayer';
 import { FlashcardsCanvasTile } from './FlashcardsCanvasTile';
 import { API_BASE_URL } from '../../services/api';
 import { RichNoteEditor } from '../RichNoteEditor';
+import { FeedbackThumbs } from '../shared/FeedbackThumbs';
 
 // ─── Type icons ────────────────────────────────────────────────────────────
 const iconSm = 'w-3.5 h-3.5';
@@ -173,6 +174,26 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
             )}
           </div>
           <div className="flex items-center gap-1.5">
+            {/* Fix #6 (2026-05-23): thumbs on inline canvas items. Only
+                shown for completed outputs (not while generating/processing).
+                Mirrors the Studio-panel thumbs so chat-only users can give
+                feedback without navigating to Studio. Click is contained
+                so it doesn't trigger the header collapse. */}
+            {item.status === 'complete' && (item.type === 'document' || item.type === 'visual' || item.type === 'quiz' || item.type === 'audio' || item.type === 'video') && (
+              <div onClick={(e) => e.stopPropagation()}>
+                <FeedbackThumbs
+                  kind="curator_feature"
+                  subjectType={`studio_${item.type === 'document' ? 'doc' : item.type}`}
+                  subjectId={item.metadata?.audioId || item.metadata?.videoId || item.id}
+                  notebookId={item.metadata?.notebookId || null}
+                  payload={{
+                    skill_id: item.type,
+                    entry_point: 'canvas',
+                    title: item.title,
+                  }}
+                />
+              </div>
+            )}
             <span className="text-[10px] text-gray-400 dark:text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity">
               Collapse
             </span>

@@ -4,6 +4,8 @@ import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { BookmarkButton } from './shared/BookmarkButton';
 import { useAppShell } from './canvas/CanvasContext';
+import { useEngagement } from '../hooks/useEngagement';
+import { FeedbackThumbs } from './shared/FeedbackThumbs';
 
 const ALL_QUESTION_TYPE_OPTIONS = [
   { id: 'multiple_choice', label: 'Multiple Choice' },
@@ -39,6 +41,9 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
   const [topic, setTopic] = useState(initialTopic || '');
   const [selectedTypes, setSelectedTypes] = useState<string[]>(['multiple_choice', 'true_false', 'fill_in_the_blank']);
   const [quiz, setQuiz] = useState<Quiz | null>(null);
+  // 2026-05-23: Phase 7.5 capture — quiz generation engagement.
+  const { capture: captureEngagement } = useEngagement();
+  const [quizSubjectId, setQuizSubjectId] = useState<string | null>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   // Maps questionId → user's typed/selected answer
   const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
@@ -101,6 +106,22 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
       setQuizResults([]);
       setQuizComplete(false);
       onQuizGenerated?.(result);
+      // Phase 7.5 capture (2026-05-23): quiz generation event tagged with
+      // difficulty + question count so we can learn what quiz shapes land.
+      const subjId = `studio_quiz_${Date.now()}`;
+      setQuizSubjectId(subjId);
+      captureEngagement('curator_feature', 'invoked', {
+        subject_type: 'studio_quiz',
+        subject_id: subjId,
+        notebook_id: notebookId,
+        payload: {
+          skill_id: 'quiz',
+          difficulty,
+          num_questions: numQuestions,
+          types: selectedTypes,
+          had_chat_context: !!chatContext,
+        },
+      });
     } catch (err: any) {
       setError(err.message || 'Failed to generate quiz');
     } finally {
@@ -489,6 +510,26 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
       {/* Quiz Results */}
       {mode === 'generate' && quiz && quizComplete && (
         <div className="space-y-4">
+          {/* 2026-05-23: thumbs on the completed quiz — landed after the
+              user has actually answered everything, the best signal moment. */}
+          {quizSubjectId && (
+            <div className="flex items-center justify-end gap-1.5">
+              <span className="text-[10px] text-gray-500 dark:text-gray-400">How was this quiz?</span>
+              <FeedbackThumbs
+                kind="curator_feature"
+                subjectType="studio_quiz"
+                subjectId={quizSubjectId}
+                notebookId={notebookId}
+                payload={{
+                  skill_id: 'quiz',
+                  difficulty,
+                  num_questions: numQuestions,
+                  score_pct: Math.round((getScore().correct / Math.max(getScore().total, 1)) * 100),
+                }}
+                size="sm"
+              />
+            </div>
+          )}
           <div className="text-center py-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg">
             <div className="text-5xl mb-3">
               {getScore().correct === getScore().total ? '🏆' : getScore().correct >= getScore().total * 0.7 ? '🎉' : '📚'}
