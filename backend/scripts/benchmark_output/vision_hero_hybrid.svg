@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+<defs>
+  <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#425466" />
+  </marker>
+  <marker id="arrowhead_primary" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#635BFF" />
+  </marker>
+  <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0A2540" flood-opacity="0.08" />
+  </filter>
+  <linearGradient id="primaryGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#635BFF" stop-opacity="1" />
+    <stop offset="100%" stop-color="#4A43D1" stop-opacity="1" />
+  </linearGradient>
+  <linearGradient id="headerGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" stop-color="#F6F9FC" stop-opacity="1" />
+    <stop offset="100%" stop-color="#FFFFFF" stop-opacity="1" />
+  </linearGradient>
+</defs>
+  <rect x="0" y="0" width="1600" height="900" fill="#FFFFFF" />
+  <rect x="60" y="60" width="1480" height="100" rx="12" fill="url(#headerGradient)" />
+  <text x="80" y="106" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="44" font-weight="600" fill="#0A2540">The Future of Application Deployment: Serverless Computing</text>
+  <text x="80" y="138" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="20" fill="#425466">A CTO-targeted pitch deck cover slide making a persuasive case for serverless architectures</text>
+
+  <!-- Central focal section -->
+  <rect x="200" y="200" width="1200" height="280" rx="16" fill="url(#headerGradient)" />
+  <circle cx="800" cy="300" r="56" fill="url(#primaryGradient)" filter="url(#softShadow)" />
+  <text x="800" y="316" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="44" font-weight="600" fill="#FFFFFF" text-anchor="middle">☁️</text>
+  <text x="800" y="400" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="42" font-weight="600" fill="#0A2540" text-anchor="middle">Serverless: The inevitable evolution beyond complexity.</text>
+  <text x="800" y="444" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="20" font-weight="400" fill="#425466" text-anchor="middle">Achieve unprecedented developer productivity and operational efficiency.</text>
+  <rect x="100" y="540" width="440" height="220" rx="12" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <rect x="100" y="540" width="440" height="6" rx="3" fill="#635BFF" />
+  <circle cx="150" cy="600" r="22" fill="#635BFF" fill-opacity="0.15" />
+  <text x="150" y="608" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#635BFF" text-anchor="middle">🚀</text>
+  <text x="190" y="596" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#0A2540">Accelerate Feature Delivery Speed</text>
+  <text x="190" y="622" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#8898AA">Ship features 4x faster with zero overhead.</text>
+  <text x="126" y="670" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" fill="#425466">Eliminate infrastructure management.</text>
+  <text x="126" y="698" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" fill="#425466">Focus purely on business logic.</text>
+  <text x="126" y="726" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" fill="#425466">Maximize developer velocity instantly.</text>
+  <rect x="580" y="540" width="440" height="220" rx="12" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <rect x="580" y="540" width="440" height="6" rx="3" fill="#00C896" />
+  <circle cx="630" cy="600" r="22" fill="#00C896" fill-opacity="0.15" />
+  <text x="630" y="608" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#00C896" text-anchor="middle">💰</text>
+  <text x="670" y="596" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#0A2540">Optimize Operational Costs</text>
+  <text x="670" y="622" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#8898AA">Pay only for actual execution time.</text>
+  <text x="606" y="670" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" fill="#425466">Achieve 60-80% cost reduction.</text>
+  <text x="606" y="698" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" fill="#425466">No wasted spend on idle resources.</text>
+  <text x="606" y="726" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" fill="#425466">True pay-per-use billing model.</text>
+  <rect x="1060" y="540" width="440" height="220" rx="12" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <rect x="1060" y="540" width="440" height="6" rx="3" fill="#F5A623" />
+  <circle cx="1110" cy="600" r="22" fill="#F5A623" fill-opacity="0.15" />
+  <text x="1110" y="608" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#F5A623" text-anchor="middle">♾️</text>
+  <text x="1150" y="596" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#0A2540">Infinite Scalability Built-In</text>
+  <text x="1150" y="622" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#8898AA">Scale from zero to massive traffic instantly.</text>
+  <text x="1086" y="670" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" fill="#425466">Handle 0 to 100k QPS easily.</text>
+  <text x="1086" y="698" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" fill="#425466">No capacity planning required.</text>
+  <text x="1086" y="726" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" fill="#425466">Elasticity without manual intervention.</text>
+</svg>

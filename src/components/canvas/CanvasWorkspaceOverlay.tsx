@@ -6,14 +6,17 @@ import {
   CalendarDays, Network, BarChart3, BookOpen, MessageCircle
 } from 'lucide-react';
 import { useCanvas } from './CanvasContext';
+import { useGenerateVisualToCanvas } from '../../hooks/useGenerateVisualToCanvas';
 import { CanvasItem } from './types';
 import ReactMarkdown from 'react-markdown';
 import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { SVGRenderer } from '../shared/SVGRenderer';
+import { VisualCriticBadge, VisualFeedbackBar } from '../shared/VisualCriticBadge';
+import { VisualIdiomSwap } from '../shared/VisualIdiomSwap';
+import { FeedbackThumbs } from '../shared/FeedbackThumbs';
 import { FeynmanQuizBlock, FeynmanAudioBlock, isFeynmanBlock } from '../shared/FeynmanBlocks';
 import { CanvasActionPopover } from './CanvasActionPopover';
 import { contentService } from '../../services/content';
-import { visualService } from '../../services/visual';
 import { quizService } from '../../services/quiz';
 import { audioService } from '../../services/audio';
 import { chatService } from '../../services/chat';
@@ -41,6 +44,65 @@ const TYPE_ICONS: Record<CanvasItem['type'], React.ReactNode> = {
 };
 
 // Note Editor — uses RichNoteEditor (imported above)
+
+// VisualCanvasContent — SVG render + thumbs row + critic badge + thumbs-down feedback.
+// Used for v2-generated visuals on the canvas (any item whose content begins with <svg).
+const VisualCanvasContent: React.FC<{ item: CanvasItem; notebookId: string }> = ({ item, notebookId }) => {
+  const [downSubmitted, setDownSubmitted] = useState(false);
+  const subjectId = item.id;
+  const criticScore = item.metadata?.criticScore;
+  const templateId = item.metadata?.templateId;
+  const v2Path = item.metadata?.v2Path;
+  const v2GenerationMs = item.metadata?.v2GenerationMs;
+
+  return (
+    <div className="space-y-2">
+      <SVGRenderer
+        svg={item.content}
+        className="border border-gray-200 dark:border-gray-600 rounded-lg"
+      />
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+          {criticScore && <VisualCriticBadge score={criticScore} />}
+          {v2Path && (
+            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-mono">
+              {v2Path}{templateId ? ` · ${templateId}` : ''}
+              {v2GenerationMs ? ` · ${Math.round(v2GenerationMs / 1000)}s` : ''}
+            </span>
+          )}
+          <VisualIdiomSwap
+            currentIdiom={templateId}
+            notebookId={notebookId}
+            originalPrompt={item.metadata?.originalPrompt}
+          />
+        </div>
+        <FeedbackThumbs
+          kind="curator_feature"
+          subjectType="studio_visual"
+          subjectId={subjectId}
+          notebookId={notebookId}
+          payload={{
+            skill_id: 'visual',
+            template_id: templateId,
+            v2_path: v2Path,
+            critic_overall: criticScore?.overall,
+          }}
+          size="sm"
+          onFeedback={(response) => {
+            if (response === 'down') setDownSubmitted(true);
+          }}
+        />
+      </div>
+      <VisualFeedbackBar
+        visible={downSubmitted}
+        notebookId={notebookId}
+        subjectId={subjectId}
+        templateId={templateId}
+        originalPrompt={item.metadata?.originalPrompt}
+      />
+    </div>
+  );
+};
 
 interface CanvasItemRendererProps {
   item: CanvasItem;
@@ -178,7 +240,16 @@ const CanvasItemRenderer: React.FC<CanvasItemRendererProps> = ({ item, onToggleC
           )}
           {item.type === 'visual' && (
             item.content ? (
-              <MermaidRenderer code={item.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+              // v2 produces native SVG; legacy template path produces Mermaid.
+              // Detect by content shape so each renderer gets the right input.
+              item.content.trimStart().startsWith('<svg') ? (
+                <VisualCanvasContent
+                  item={item}
+                  notebookId={item.metadata?.notebookId || ''}
+                />
+              ) : (
+                <MermaidRenderer code={item.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+              )
             ) : item.status !== 'generating' && item.status !== 'error' ? (
               <p className="text-gray-400 text-sm">No visual content</p>
             ) : null
@@ -311,6 +382,8 @@ const CANVAS_ACTIONS: CanvasAction[] = [
 
 export const CanvasWorkspaceOverlay: React.FC = () => {
   const ctx = useCanvas();
+  // Lock-step visual generation — shared with VisualPanel + ChatActionBar.
+  const generateVisualToCanvas = useGenerateVisualToCanvas();
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -456,35 +529,21 @@ export const CanvasWorkspaceOverlay: React.FC = () => {
     ctx.setGenerationStatus('generating');
     try {
       const content = getPrimaryContent();
-      const title = getPrimaryTitle();
-      await visualService.generateSmartStream(
-        ctx.selectedNotebookId,
-        content,
-        visualType,
-        // onPrimary — add visual to canvas
-        (diagram) => {
-          ctx.addCanvasItem({
-            type: 'visual',
-            title: diagram.title || `Visual: ${title}`,
-            content: diagram.svg || diagram.code || '',
-            collapsed: true,
-            metadata: { notebookId: ctx.selectedNotebookId },
-          });
+      // 2026-05-26: route through the shared hook for lock-step parity with
+      // VisualPanel + ChatActionBar. Same params, same canvas-item shape,
+      // same v2 metadata threading.
+      await generateVisualToCanvas(ctx.selectedNotebookId, content, {
+        source: 'canvas_overlay',
+        onComplete: () => {
           setActionLoading(null);
           ctx.setGenerationStatus('complete');
         },
-        // onAlternative — ignore for canvas (only show primary)
-        () => {},
-        // onDone
-        () => setActionLoading(null),
-        // onError
-        (err) => {
-          console.error('Canvas visual generation failed:', err);
+        onError: (err) => {
           ctx.addToast({ type: 'error', title: 'Visual generation failed', message: err });
           setActionLoading(null);
           ctx.setGenerationStatus('error');
-        }
-      );
+        },
+      });
     } catch (err) {
       console.error('Canvas visual failed:', err);
       setActionLoading(null);

@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+<defs>
+  <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#425466" />
+  </marker>
+  <marker id="arrowhead_primary" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#635BFF" />
+  </marker>
+  <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0A2540" flood-opacity="0.08" />
+  </filter>
+  <linearGradient id="primaryGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#635BFF" stop-opacity="1" />
+    <stop offset="100%" stop-color="#4A43D1" stop-opacity="1" />
+  </linearGradient>
+  <linearGradient id="headerGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" stop-color="#F6F9FC" stop-opacity="1" />
+    <stop offset="100%" stop-color="#FFFFFF" stop-opacity="1" />
+  </linearGradient>
+</defs>
+  <rect x="0" y="0" width="1600" height="900" fill="#FFFFFF" />
+  <rect x="60" y="60" width="1480" height="100" rx="12" fill="url(#headerGradient)" />
+  <text x="80" y="106" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="44" font-weight="600" fill="#0A2540">B2B SaaS Customer Journey Funnel and Leak Analysis</text>
+  <text x="80" y="138" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="20" fill="#425466">Growth team quarterly OKR planning</text>
+  <text x="80" y="270" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#8898AA">METRICS</text>
+  <text x="80" y="590" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#8898AA">OWNERS</text>
+
+  <rect x="90" y="420" width="260" height="140" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <rect x="90" y="420" width="260" height="36" rx="8" fill="#EEF0FF" />
+  <text x="220" y="444" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#4A43D1" text-anchor="middle">Discover (Anonymous Visit)</text>
+  <text x="108" y="488" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Visit website</text>
+  <text x="108" y="512" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">View product pages</text>
+  <text x="108" y="536" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Research solutions</text>
+  <text x="220" y="290" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="36" font-weight="600" fill="#635BFF" text-anchor="middle">312k</text>
+  <text x="220" y="314" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="12" fill="#8898AA" text-anchor="middle">Monthly visitors</text>
+  <text x="220" y="590" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">Marketing</text>
+  <path d="M 354 490 L 376 490" stroke="#425466" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="380" y="420" width="260" height="140" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <rect x="380" y="420" width="260" height="36" rx="8" fill="#EEF0FF" />
+  <text x="510" y="444" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#4A43D1" text-anchor="middle">Engage (Trial Signup)</text>
+  <text x="398" y="488" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Sign up for trial</text>
+  <text x="398" y="512" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Explore features</text>
+  <text x="398" y="536" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Attend webinar</text>
+  <text x="510" y="290" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="36" font-weight="600" fill="#635BFF" text-anchor="middle">5.8%</text>
+  <text x="510" y="314" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="12" fill="#8898AA" text-anchor="middle">Conversion rate</text>
+  <text x="510" y="590" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">Growth</text>
+  <path d="M 644 490 L 666 490" stroke="#425466" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="670" y="420" width="260" height="140" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <rect x="670" y="420" width="260" height="36" rx="8" fill="#EEF0FF" />
+  <text x="800" y="444" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#4A43D1" text-anchor="middle">Activate (Onboarding)</text>
+  <text x="688" y="488" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Complete onboarding</text>
+  <text x="688" y="512" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">First integration</text>
+  <text x="688" y="536" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Use core features</text>
+  <text x="800" y="290" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="36" font-weight="600" fill="#635BFF" text-anchor="middle">61%</text>
+  <text x="800" y="314" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="12" fill="#8898AA" text-anchor="middle">Activation rate</text>
+  <text x="800" y="590" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">Product</text>
+  <path d="M 934 490 L 956 490" stroke="#425466" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="960" y="420" width="260" height="140" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <rect x="960" y="420" width="260" height="36" rx="8" fill="#EEF0FF" />
+  <text x="1090" y="444" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#4A43D1" text-anchor="middle">Convert (Paid Plan)</text>
+  <text x="978" y="488" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Start paid plan</text>
+  <text x="978" y="512" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Use paid features</text>
+  <text x="978" y="536" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Commit to subscription</text>
+  <text x="1090" y="290" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="36" font-weight="600" fill="#635BFF" text-anchor="middle">22%</text>
+  <text x="1090" y="314" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="12" fill="#8898AA" text-anchor="middle">Activation-to-paid</text>
+  <text x="1090" y="590" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">Sales</text>
+  <path d="M 1224 490 L 1246 490" stroke="#425466" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="1250" y="420" width="260" height="140" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <rect x="1250" y="420" width="260" height="36" rx="8" fill="#EEF0FF" />
+  <text x="1380" y="444" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#4A43D1" text-anchor="middle">Expand/Champion</text>
+  <text x="1268" y="488" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Grow seat count</text>
+  <text x="1268" y="512" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Refer new logos</text>
+  <text x="1268" y="536" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Case study participation</text>
+  <text x="1380" y="290" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="36" font-weight="600" fill="#635BFF" text-anchor="middle">24%</text>
+  <text x="1380" y="314" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="12" fill="#8898AA" text-anchor="middle">Champion rate</text>
+  <text x="1380" y="590" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">CS</text>
+</svg>

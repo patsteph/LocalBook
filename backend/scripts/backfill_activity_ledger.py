@@ -12,9 +12,13 @@ activity_events rows so the ledger views work uniformly across old + new
 notebooks. Idempotent: re-running adds nothing if the same events are
 already present.
 
-How to invoke:
-    cd backend
-    python scripts/backfill_activity_ledger.py
+How to invoke (any of these work — the script auto-bootstraps the venv):
+    cd backend && python scripts/backfill_activity_ledger.py
+    cd backend && ./.venv/bin/python scripts/backfill_activity_ledger.py
+
+If you run with the system python and `pydantic_settings` isn't installed,
+the script automatically re-execs itself using `backend/.venv/bin/python`
+when that venv exists. No manual `source .venv/bin/activate` needed.
 
 What gets backfilled per notebook:
     1. KIND_SOURCE_ADDED — one row per source in source_store, ts =
@@ -32,18 +36,61 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# ── Auto-bootstrap into the backend venv when invoked with system python ──
+# Reason: users naturally run `python scripts/backfill_activity_ledger.py`
+# from backend/ without `source .venv/bin/activate`, which hits a
+# ModuleNotFoundError on pydantic_settings. Detect the venv and re-exec.
+# Skip the bootstrap when we're already inside it (sys.prefix points at the
+# venv) or when explicitly told to (LOCALBOOK_SKIP_VENV_BOOTSTRAP=1).
+def _maybe_reexec_in_venv() -> None:
+    if os.environ.get("LOCALBOOK_SKIP_VENV_BOOTSTRAP"):
+        return
+    backend_dir = Path(__file__).resolve().parent.parent
+    venv_python = backend_dir / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        # No venv on disk — let the import fail with a clear error below.
+        return
+    # If we're already running with that python, nothing to do.
+    try:
+        if Path(sys.executable).resolve() == venv_python.resolve():
+            return
+    except Exception:
+        pass
+    # Sanity check — only re-exec when the current interpreter is missing
+    # a backend dep, to avoid pointless re-execs in dev environments.
+    try:
+        import pydantic_settings  # noqa: F401
+        return  # current python is fine, no need to switch
+    except ImportError:
+        pass
+    print(f"[backfill] switching to backend venv: {venv_python}")
+    os.environ["LOCALBOOK_SKIP_VENV_BOOTSTRAP"] = "1"  # break re-exec loop
+    os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
+
+
+_maybe_reexec_in_venv()
 
 # Make backend modules importable when run as a script.
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
-from config import settings
-from storage.notebook_store import notebook_store
-from storage.source_store import source_store
-from services import activity_ledger
+try:
+    from config import settings
+    from storage.notebook_store import notebook_store
+    from storage.source_store import source_store
+    from services import activity_ledger
+except ModuleNotFoundError as e:
+    print(f"\n[backfill] Missing dependency: {e}")
+    print(f"[backfill] The backend venv at backend/.venv was either not found")
+    print(f"[backfill] or doesn't have requirements installed. Fix one of these:")
+    print(f"[backfill]   1. cd backend && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt")
+    print(f"[backfill]   2. Or just rebuild the app — the startup sequence will run the backfill automatically.")
+    sys.exit(1)
 
 
 def _safe_iso(ts: str | None) -> str | None:

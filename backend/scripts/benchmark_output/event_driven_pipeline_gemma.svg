@@ -1,0 +1,132 @@
+<svg width="1200" height="900" xmlns="http://www.w3.org/2000/svg" style="background-color: #f9f9f9;">
+    <defs>
+        <!-- Style for all components -->
+        <style>
+            .component {
+                fill: #ffffff;
+                stroke: #333;
+                stroke-width: 2;
+                rx: 10;
+                ry: 10;
+            }
+            .title {
+                font-family: Arial, sans-serif;
+                font-size: 16px;
+                font-weight: bold;
+                fill: #0056b3;
+            }
+            .description {
+                font-family: Arial, sans-serif;
+                font-size: 12px;
+                fill: #555;
+                margin-top: 5px;
+            }
+            .arrow {
+                stroke: #333;
+                stroke-width: 2;
+                fill: none;
+                marker-end: url(#arrowhead);
+            }
+            .kpi-box {
+                fill: #e6f2ff;
+                stroke: #0056b3;
+                stroke-width: 1;
+                rx: 8;
+                ry: 8;
+            }
+        </style>
+        <!-- Arrowhead definition -->
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5"orient="auto"markerUnits="strokeWidth">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#333" />
+        </marker>
+    </defs>
+
+    <!-- 1. Title and Context -->
+    <rect x="50" y="30" width="1100" height="40" fill="#0056b3" rx="10"/>
+    <text x="100" y="55" font-family="Arial, sans-serif" font-size="24" fill="#ffffff" font-weight="bold">
+        CQRS Event Sourcing Flow Diagram
+    </text>
+    <text x="100" y="80" font-family="Arial, sans-serif" font-size="14" fill="#ffffff">
+        Command -> Write Model -> Event Stream -> Read Model
+    </text>
+
+    <!-- 2. Main Flow Components (Top Row) -->
+    <g transform="translate(0, 80)">
+        <!-- UI/Command Input -->
+        <rect class="component" x="50" y="0" width="200" height="100"/>
+        <text class="title" x="70" y="30">API Gateway / UI</text>
+        <text class="description" x="70" y="55">Receives User Commands (e.g., PlaceOrder)</text>
+
+        <!-- Order Command Processor -->
+        <rect class="component" x="280" y="0" width="200" height="100"/>
+        <text class="title" x="300" y="30">Command Processor</text>
+        <text class="description" x="300" y="55">Validates &amp; Executes Business Logic</text>
+
+        <!-- Write Model/Aggregate Root -->
+        <rect class="component" x="510" y="0" width="200" height="100"/>
+        <text class="title" x="530" y="30">Write Model (Aggregate)</text>
+        <text class="description" x="530" y="55">Applies Command, Generates Domain Events</text>
+    </g>
+
+    <!-- 3. Event Backbone (Center) -->
+    <rect class="component" x="350" y="220" width="500" height="100" style="fill: #fff3cd; stroke: #ffc107; stroke-width: 2;"/>
+    <text class="title" x="370" y="250" style="fill: #856404;">Event Store / Message Broker (Kafka)</text>
+    <text class="description" x="370" y="275" style="fill: #856404;">Source of Truth: Immutable Event Stream</text>
+
+    <!-- 4. Read Model Components (Bottom Row) -->
+    <g transform="translate(0, 400)">
+        <!-- Projection Service -->
+        <rect class="component" x="150" y="0" width="200" height="100"/>
+        <text class="title" x="170" y="30">Projection Service</text>
+        <text class="description" x="170" y="55">Subscribes to Events, Transforms Data</text>
+
+        <!-- Read Store -->
+        <rect class="component" x="400" y="0" width="200" height="100"/>
+        <text class="title" x="420" y="30">Read Store (View)</text>
+        <text class="description" x="420" y="55">Optimized for Queries (e.g., OrderView)</text>
+    </g>
+
+    <!-- 5. Side Effects / Side Flows -->
+    <g transform="translate(0, 250)">
+        <!-- Risk Engine (Side Effect) -->
+        <rect class="component" x="750" y="-100" width="200" height="100"/>
+        <text class="title" x="770" y="20" style="fill: #28a745;">Risk Engine</text>
+        <text class="description" x="770" y="45" style="fill: #28a745;">Monitors Events for Fraud/Compliance</text>
+    </g>
+
+    <!-- 6. Arrows (Connections) -->
+    <!-- 1. UI -> Command Processor -->
+    <path class="arrow" d="M250 100 L280 100"/>
+    <!-- 2. Command Processor -> Write Model -->
+    <path class="arrow" d="M480 100 L510 100"/>
+    <!-- 3. Write Model -> Event Store -->
+    <path class="arrow" d="M710 100 L710 220"/>
+    <!-- 4. Event Store -> Projection Service -->
+    <path class="arrow" d="M370 320 L370 400"/>
+    <!-- 5. Event Store -> Risk Engine (Side Flow) -->
+    <path class="arrow" d="M710 220 L750 220"/>
+    <!-- 6. Projection Service -> Read Store -->
+    <path class="arrow" d="M370 400 L400 400"/>
+
+
+    <!-- 7. Footer / KPIs -->
+    <rect x="50" y="750" width="1100" height="120" fill="#e9ecef" rx="10"/>
+    <text x="70" y="780" font-family="Arial, sans-serif" font-size="18" fill="#333" font-weight="bold">
+        Key Metrics &amp; Insights (Read Model Output)
+    </text>
+
+    <!-- KPI 1 -->
+    <rect class="kpi-box" x="50" y="800" width="300" height="60"/>
+    <text x="70" y="830" font-family="Arial, sans-serif" font-size="18" fill="#0056b3">99.9%</text>
+    <text x="120" y="845" font-size="14px" fill="#555">Uptime</text>
+
+    <!-- KPI 2 -->
+    <text x="380" y="845" font-size="14px" fill="#555">Avg. Latency</text>
+    <text x="380" y="810" font-size="24px" fill="#28a745">50ms</text>
+
+    <!-- KPI 3 -->
+    <text x="650" y="845" font-size="14px" fill="#555">Processed</text>
+    <text x="650" y="810" font-size="24px" fill="#ffc107">1.2M</text>
+    <text x="750" y="845" font-size="14px" fill="#555">Transactions</text>
+
+</svg>

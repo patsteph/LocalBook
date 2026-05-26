@@ -1,0 +1,368 @@
+<!doctype html>
+<html><head><meta charset='utf-8'>
+<title>Visual v2 Benchmark</title>
+<style>
+  body { font-family: Inter, system-ui, -apple-system, sans-serif;
+          max-width: 1700px; margin: 40px auto; padding: 0 24px;
+          color: #0A2540; background: #fff }
+  h1 { font-size: 36px; margin: 0 0 8px }
+  .meta { color: #425466; font-size: 14px; margin-bottom: 32px }
+  .stats { background:#F6F9FC; padding:20px; border-radius:8px;
+            display:flex; gap:32px; flex-wrap:wrap; margin-bottom:32px }
+  .axis-bar { display:inline-block; width:80px; height:8px;
+               background:#E3E8EE; border-radius:4px; vertical-align:middle;
+               margin-left:8px; position:relative; overflow:hidden }
+  .axis-fill { position:absolute; left:0; top:0; height:100%; border-radius:4px }
+</style></head>
+<body>
+  <h1>Visual v2 Benchmark — Professional-Grade Outputs</h1>
+  <p class="meta">
+    Capability: <code>setup=setup_a ram=16GB mode=swap_strict olmo-freeform klein critic=gemma</code><br>
+    19 runs across 9 prompts ·
+    Generated 2026-05-25 18:40
+  </p>
+  <div class="stats"><div><strong style="color:#635BFF;font-size:22px">0.72</strong> <span style="color:#8898AA;font-size:12px">avg overall · 9 runs · 53s mean</span> <div style="color:#0A2540;font-size:13px">olmo_freeform</div></div><div><strong style="color:#635BFF;font-size:22px">0.78</strong> <span style="color:#8898AA;font-size:12px">avg overall · 10 runs · 349s mean</span> <div style="color:#0A2540;font-size:13px">gemma_freeform</div></div></div>
+  
+        <section style="margin-bottom:60px;border-bottom:1px solid #E3E8EE;padding-bottom:40px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+            <h2 style="margin:0;color:#0A2540;font-size:24px">
+              Architecture · Multi-region e-commerce deployment
+            </h2>
+            <span style="color:#8898AA;font-size:13px">audience: Enterprise security review board</span>
+          </div>
+          <details style="margin-bottom:16px">
+            <summary style="cursor:pointer;color:#635BFF;font-size:13px">prompt</summary>
+            <p style="color:#425466;font-size:13px;line-height:1.6;margin-top:8px;
+                      background:#F6F9FC;padding:12px 16px;border-radius:8px;white-space:pre-wrap">
+              Acme Corp's new e-commerce platform deployment topology, designed for 100k peak queries-per-second across 3 AWS regions (us-east-1, us-west-2, eu-west-1). Show: external CDN (CloudFront) routing to regional Application Load Balancers, then to an API Gateway (Kong), then to 6 backend microservices: User, Catalog, Cart, Checkout, Payment, Order. Each microservice owns its own PostgreSQL database. Catalog also reads from a shared Elasticsearch cluster for product search. Payment integrates with Stripe externally. Order writes to a Kafka event bus, consumed by Analytics in a separate VPC. Each service runs in 3 availability zones for HA. The visual must show the data flow direction for a typical purchase request.
+            </p>
+          </details>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:20px">
+            
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">auto</strong>
+        <span style="font-size:11px;color:#8898AA">olmo_freeform · microservices_mesh · 49s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">Acme E-Commerce Platform Deployment Topology</div>
+      <img src="distributed_ecommerce_auto.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.85 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The overall visual weight is very low, making it feel somewhat flat and unmemorable.</li><li>The connection lines (arrows) are purely functional and lack any visual polish or explanation of the data flow (e.g., request/response).</li><li>The text descriptions under the service boxes are slightly long and interrupt the clean flow of the diagram.</li></ul></details></div>
+    </div>
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">gemma</strong>
+        <span style="font-size:11px;color:#8898AA">gemma_freeform · microservices_mesh · 29s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">E-commerce Platform Deployment Topology</div>
+      <img src="distributed_ecommerce_gemma.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.85 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The diagram lacks explicit directional arrows or connectors between the boxes, making the flow slightly ambiguous (though the vertical arrangement implies flow).</li><li>The text within the boxes is somewhat dense and could benefit from more visual separation (e.g., using bullet points or smaller sub-headers).</li><li>The title and subtitle are slightly separated from the main diagram, making the overall composition feel a little disjointed.</li></ul></details></div>
+    </div>
+          </div>
+        </section>
+        
+        <section style="margin-bottom:60px;border-bottom:1px solid #E3E8EE;padding-bottom:40px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+            <h2 style="margin:0;color:#0A2540;font-size:24px">
+              Architecture · Production Kubernetes cluster topology
+            </h2>
+            <span style="color:#8898AA;font-size:13px">audience: Platform engineering team</span>
+          </div>
+          <details style="margin-bottom:16px">
+            <summary style="cursor:pointer;color:#635BFF;font-size:13px">prompt</summary>
+            <p style="color:#425466;font-size:13px;line-height:1.6;margin-top:8px;
+                      background:#F6F9FC;padding:12px 16px;border-radius:8px;white-space:pre-wrap">
+              Production Kubernetes cluster topology showing namespace boundaries, ingress, service mesh, and observability. Components: NGINX Ingress Controller at the edge. Istio service mesh providing mTLS between all services. Three application namespaces: 'frontend' (React SPA served from a static deploy + 3-replica nginx pod), 'api' (12 microservices, each a 3-replica Deployment), 'data' (2 StatefulSets for Postgres-HA and Redis-cluster). One platform namespace 'observ' running Prometheus + Grafana + Loki + Tempo. Cert-manager auto-renews TLS. ArgoCD watches GitOps repo and reconciles deployments. Use swimlanes to separate the namespaces visually. Audience: SRE team design review.
+            </p>
+          </details>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:20px">
+            
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">auto</strong>
+        <span style="font-size:11px;color:#8898AA">olmo_freeform · microservices_mesh · 45s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">Production Kubernetes Cluster Topology and Namespace Layout</div>
+      <img src="k8s_cluster_topology_auto.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.85 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The visual is very dense and lacks visual separation between the 'Service Mesh' layer and the underlying components, making the flow feel monolithic.</li><li>The arrows are purely decorative and do not convey the *type* of relationship (e.g., API call, data flow, dependency).</li><li>The use of identical, generic blue boxes for all components (services and databases) dilutes the meaning and makes the diagram look uniform and uninformative.</li></ul></details></div>
+    </div>
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">gemma</strong>
+        <span style="font-size:11px;color:#8898AA">gemma_freeform · microservices_mesh · 31s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">Kubernetes Cluster Topology and Service Mesh Diagram</div>
+      <img src="k8s_cluster_topology_gemma.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.80 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The diagram lacks explicit connecting lines or arrows to show the flow of data or dependency between components, making the relationships ambiguous.</li><li>The titles and descriptions are slightly repetitive (e.g., 'Service Mesh' vs. 'Istio Service Mesh'), which dilutes the professional polish.</li><li>The use of generic, rectangular boxes makes the diagram feel flat and academic, failing to convey the complexity or interaction of the systems.</li></ul></details></div>
+    </div>
+          </div>
+        </section>
+        
+        <section style="margin-bottom:60px;border-bottom:1px solid #E3E8EE;padding-bottom:40px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+            <h2 style="margin:0;color:#0A2540;font-size:24px">
+              Architecture · Event-driven CQRS data pipeline
+            </h2>
+            <span style="color:#8898AA;font-size:13px">audience: Engineering leadership architecture review</span>
+          </div>
+          <details style="margin-bottom:16px">
+            <summary style="cursor:pointer;color:#635BFF;font-size:13px">prompt</summary>
+            <p style="color:#425466;font-size:13px;line-height:1.6;margin-top:8px;
+                      background:#F6F9FC;padding:12px 16px;border-radius:8px;white-space:pre-wrap">
+              Event-driven CQRS architecture for a financial trading platform. Write path: Trader UI submits order via REST → Order API validates → writes to Order Write-Store (PostgreSQL) → emits OrderPlaced event to Kafka. Read path: Projection service consumes from Kafka → denormalizes into Read-Store (DynamoDB) → Reporting API serves from Read-Store. Volume: 50k orders/sec peak, 99.9% latency under 200ms write, sub-50ms read. Also show: Risk Engine consuming the same Kafka stream for real-time exposure calculations, with a separate output topic for risk alerts. Audience: Chief Architect review board.
+            </p>
+          </details>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:20px">
+            
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">auto</strong>
+        <span style="font-size:11px;color:#8898AA">olmo_freeform · cqrs_pattern · 54s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">Event-Driven CQRS Financial Trading Platform Architecture</div>
+      <img src="event_driven_pipeline_auto.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.75 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The diagram is extremely dense and suffers from information overload; too many components are shown at once.</li><li>The arrows and connections are visually weak and do not clearly define the flow or causality between components.</li><li>The component names and descriptions are too text-heavy, making the diagram look like a flowchart of text rather than a system.</li></ul></details></div>
+    </div>
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">gemma</strong>
+        <span style="font-size:11px;color:#8898AA">gemma_freeform · cqrs_pattern · 265s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">Event-Driven CQRS Architecture for Financial Trading</div>
+      <img src="event_driven_pipeline_gemma.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.70 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.60</strong><span class="axis-bar"><span class="axis-fill" style="width:60%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The diagram is too dense and lacks visual breathing room, making the flow hard to follow at a glance.</li><li>The labels within the boxes are too long and descriptive, causing the boxes to feel overloaded and visually heavy.</li><li>The arrows connecting the components are generic and do not differentiate between types of communication (e.g., synchronous API calls vs. asynchronous event streams).</li></ul></details></div>
+    </div>
+          </div>
+        </section>
+        
+        <section style="margin-bottom:60px;border-bottom:1px solid #E3E8EE;padding-bottom:40px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+            <h2 style="margin:0;color:#0A2540;font-size:24px">
+              Infographic · Q3 2026 SaaS performance dashboard
+            </h2>
+            <span style="color:#8898AA;font-size:13px">audience: Board of directors</span>
+          </div>
+          <details style="margin-bottom:16px">
+            <summary style="cursor:pointer;color:#635BFF;font-size:13px">prompt</summary>
+            <p style="color:#425466;font-size:13px;line-height:1.6;margin-top:8px;
+                      background:#F6F9FC;padding:12px 16px;border-radius:8px;white-space:pre-wrap">
+              Quarterly performance summary for a B2B SaaS company. Key metrics to feature prominently: ARR $42.3M (up 38% YoY), Net Revenue Retention 124%, Logo Retention 96%, Customer Count 1,840 (up 31% YoY), Average Contract Value $23k, Sales Cycle 47 days, Gross Margin 78%, Cash Burn $1.2M/mo (improving from $1.8M). Highlight: expansion into European market generated $4.1M of the YoY growth. Lowlight: enterprise segment closed-won rate dropped to 18% from 24% last quarter. Make 6 of the metrics the dominant visual elements (large numbers with context). Audience: board of directors quarterly review.
+            </p>
+          </details>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:20px">
+            
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">auto</strong>
+        <span style="font-size:11px;color:#8898AA">olmo_freeform · stat_callouts · 46s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">Quarterly Performance Metrics Overview</div>
+      <img src="quarterly_dashboard_auto.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.80 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The labels/descriptions below the numbers are too small and lack visual separation from the main data point, reducing scannability.</li><li>The use of percentage signs and units (M, %) is inconsistent in placement and style across the cards.</li><li>The negative metric (-18%) is presented identically to the positive metrics, failing to signal the required attention or action.</li></ul></details></div>
+    </div>
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">gemma</strong>
+        <span style="font-size:11px;color:#8898AA">gemma_freeform · stat_callouts · 40s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">Q3 Performance Summary: Key Growth Metrics</div>
+      <img src="quarterly_dashboard_gemma.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.80 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The metric labels (e.g., 'Annual Recurring Revenue', 'Gross Margin') are too small and lack sufficient visual weight compared to the numbers, causing the eye to skip over the context.</li><li>The explanatory text below each metric (e.g., 'Up 38% YoY') is visually weak and feels like an afterthought, diluting the impact of the main metric.</li><li>The title/subtitle block is slightly disconnected from the main grid, making the overall flow feel a bit disjointed.</li></ul></details></div>
+    </div>
+          </div>
+        </section>
+        
+        <section style="margin-bottom:60px;border-bottom:1px solid #E3E8EE;padding-bottom:40px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+            <h2 style="margin:0;color:#0A2540;font-size:24px">
+              Infographic · Competitor positioning quadrant
+            </h2>
+            <span style="color:#8898AA;font-size:13px">audience: Sales kickoff strategy session</span>
+          </div>
+          <details style="margin-bottom:16px">
+            <summary style="cursor:pointer;color:#635BFF;font-size:13px">prompt</summary>
+            <p style="color:#425466;font-size:13px;line-height:1.6;margin-top:8px;
+                      background:#F6F9FC;padding:12px 16px;border-radius:8px;white-space:pre-wrap">
+              Competitive positioning for the customer data platform market. Two axes: X = Implementation Complexity (low to high), Y = Feature Depth (basic to advanced). 8 competitors to place: Segment (low-complexity, mid-depth), Rudderstack (mid-complexity, mid-depth), mParticle (high-complexity, deep), Tealium (very-high complexity, deep), our product 'DataCanvas' (mid-complexity, advanced), Hightouch (low-complexity, advanced for reverse-ETL only), Census (low, advanced reverse-ETL), Treasure Data (very-high complexity, advanced). Label each quadrant: 'Quick Wins' (top-left), 'Leaders' (top-right), 'Niche Tools' (bottom-left), 'Enterprise Heavy' (bottom-right). Audience: Sales kickoff strategy session — they need to know where we sit relative to deals they'll face.
+            </p>
+          </details>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:20px">
+            
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">auto</strong>
+        <span style="font-size:11px;color:#8898AA">olmo_freeform · comparison_matrix · 51s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">Competitive Positioning Matrix: 8 Competitors in Implementation Complexity vs. Feature Depth</div>
+      <img src="market_quadrant_auto.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.00 overall ⚠</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.00</strong><span class="axis-bar"><span class="axis-fill" style="width:0%;background:#D32F2F"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.00</strong><span class="axis-bar"><span class="axis-fill" style="width:0%;background:#D32F2F"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.00</strong><span class="axis-bar"><span class="axis-fill" style="width:0%;background:#D32F2F"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.00</strong><span class="axis-bar"><span class="axis-fill" style="width:0%;background:#D32F2F"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.00</strong><span class="axis-bar"><span class="axis-fill" style="width:0%;background:#D32F2F"></span></span></div></div>
+    </div>
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">gemma</strong>
+        <span style="font-size:11px;color:#8898AA">gemma_freeform · quadrant_2x2 · 1012s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">Competitive Positioning Map: CDP Market</div>
+      <img src="market_quadrant_gemma.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.75 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The axes labels (e.g., 'Low Implementation Complexity' to 'High Implementation Complexity') are too long and make the visual feel horizontally stretched and unbalanced.</li><li>The quadrant labels (e.g., 'Quick Wins', 'Leaders') are placed too close to the axes, making the corner text feel cramped.</li><li>The overall visual lacks a central focal point or guiding narrative, making the viewer unsure where to look first or what the key takeaway is.</li></ul></details></div>
+    </div>
+          </div>
+        </section>
+        
+        <section style="margin-bottom:60px;border-bottom:1px solid #E3E8EE;padding-bottom:40px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+            <h2 style="margin:0;color:#0A2540;font-size:24px">
+              Infographic · Cloud cost breakdown FY26
+            </h2>
+            <span style="color:#8898AA;font-size:13px">audience: FinOps team + CFO</span>
+          </div>
+          <details style="margin-bottom:16px">
+            <summary style="cursor:pointer;color:#635BFF;font-size:13px">prompt</summary>
+            <p style="color:#425466;font-size:13px;line-height:1.6;margin-top:8px;
+                      background:#F6F9FC;padding:12px 16px;border-radius:8px;white-space:pre-wrap">
+              Comparison of AWS cloud costs across our 3 product lines, fiscal year 2026 to-date. Products: Platform ($4.2M total — 62% compute, 23% storage, 10% data transfer, 5% other), Analytics ($1.8M total — 35% compute, 48% storage, 12% data transfer, 5% other), ML Training ($2.7M total — 88% compute on GPU instances, 8% storage, 3% data transfer, 1% other). Reserved instance coverage: Platform 78%, Analytics 92%, ML Training 12%. Highlight the cost-per-customer ratio: Platform $2,280, Analytics $980, ML Training $14,500 (only 186 customers). Compare each category across the three products in a table. Audience: FinOps team + CFO cost-optimization review.
+            </p>
+          </details>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:20px">
+            
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">auto</strong>
+        <span style="font-size:11px;color:#8898AA">olmo_freeform · comparison_matrix · 55s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">AWS Cloud Cost Comparison by Product Line</div>
+      <img src="cost_breakdown_auto.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.75 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The sheer volume of data points (8 rows of metrics) makes the visual feel dense and overwhelming, diluting the primary message (cost comparison).</li><li>The metrics are listed in a non-standard order (e.g., Total Annual Spend followed by Component Mix, then Reserved Instance Coverage), forcing the reader to process multiple, unrelated concepts sequentially.</li><li>The primary takeaway—which product line is the most expensive or most efficient—is not visually emphasized or summarized, requiring the audience to do the heavy lifting.</li></ul></details></div>
+    </div>
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">gemma</strong>
+        <span style="font-size:11px;color:#8898AA">gemma_freeform · comparison_matrix · 28s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">AWS Cloud Cost Comparison by Product Line (FY2026)</div>
+      <img src="cost_breakdown_gemma.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.75 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The visual is currently just a title and a list of empty placeholders, lacking any actual data representation (charts, bars, etc.), making it impossible to assess the core message.</li><li>The placeholder buttons are too large and dominate the visual space, drawing attention away from the metrics list.</li><li>The metrics list (Total Cost, Compute %, etc.) is presented as a simple, unformatted list, which fails to communicate any relationship or comparison between the product lines.</li></ul></details></div>
+    </div>
+          </div>
+        </section>
+        
+        <section style="margin-bottom:60px;border-bottom:1px solid #E3E8EE;padding-bottom:40px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+            <h2 style="margin:0;color:#0A2540;font-size:24px">
+              Storytelling · Customer journey: lead → champion
+            </h2>
+            <span style="color:#8898AA;font-size:13px">audience: Growth team OKR planning</span>
+          </div>
+          <details style="margin-bottom:16px">
+            <summary style="cursor:pointer;color:#635BFF;font-size:13px">prompt</summary>
+            <p style="color:#425466;font-size:13px;line-height:1.6;margin-top:8px;
+                      background:#F6F9FC;padding:12px 16px;border-radius:8px;white-space:pre-wrap">
+              Customer journey for a B2B SaaS company from anonymous visitor to expansion champion. 6 stages: Discover (anonymous visit, 312k/mo), Engage (signup for trial, 18k/mo, 5.8% conversion), Activate (complete onboarding + first integration, 11k/mo, 61% from trial), Convert (start paid plan, 2.4k/mo, 22% activation-to-paid), Expand (grow seat count by 50%+, 380/quarter, 16% of paid), Champion (refer ≥1 new logo OR speak in marketing case study, 92/quarter, 24% of expansion). For each stage list: 2-3 key actions the user takes, the metric tracked, the team that owns it (Marketing, Growth, Product, CS, Sales). Highlight the biggest leak: 78% drop-off between Engage and Activate. Audience: growth team quarterly OKR planning.
+            </p>
+          </details>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:20px">
+            
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">auto</strong>
+        <span style="font-size:11px;color:#8898AA">olmo_freeform · journey_map · 65s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">B2B SaaS Customer Journey Stages</div>
+      <img src="customer_journey_auto.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.80 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The text within the cards is dense and lacks internal hierarchy (all bullet points look equally important).</li><li>The transition between the stages (the arrows/connectors) are visually weak and don't reinforce the 'journey' feeling.</li><li>The use of the same font weight and size for all bullet points makes the content feel like a list rather than a progression.</li></ul></details></div>
+    </div>
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">gemma</strong>
+        <span style="font-size:11px;color:#8898AA">gemma_freeform · journey_map · 396s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">B2B SaaS Customer Journey Funnel and Leak Analysis</div>
+      <img src="customer_journey_gemma.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.75 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The title and subtitle are slightly generic and lack immediate impact, failing to hook the audience.</li><li>The sheer volume of text in the lower boxes (the 'steps') makes the visual feel dense and overwhelming, forcing the audience to read too much.</li><li>The transitions between the metrics (e.g., 312k to 5.8%) are presented as isolated data points rather than a continuous, flowing funnel, which weakens the narrative flow.</li></ul></details></div>
+    </div>
+          </div>
+        </section>
+        
+        <section style="margin-bottom:60px;border-bottom:1px solid #E3E8EE;padding-bottom:40px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+            <h2 style="margin:0;color:#0A2540;font-size:24px">
+              Storytelling · Monolith → microservices transformation
+            </h2>
+            <span style="color:#8898AA;font-size:13px">audience: Tech all-hands case study</span>
+          </div>
+          <details style="margin-bottom:16px">
+            <summary style="cursor:pointer;color:#635BFF;font-size:13px">prompt</summary>
+            <p style="color:#425466;font-size:13px;line-height:1.6;margin-top:8px;
+                      background:#F6F9FC;padding:12px 16px;border-radius:8px;white-space:pre-wrap">
+              Before/after case study of our 18-month transformation from monolith to microservices. Before state: single PHP monolith on bare-metal servers, 14-day release cadence, 4-hour deploy windows requiring downtime, single MySQL master writing 8k QPS at peak, on-call engineer paged 4-6x per week, ~2000 lines per pull request average. After state: 47 microservices running on Kubernetes (AWS EKS), continuous deploy with ~120 deploys/day, zero-downtime blue-green rollouts, per-service databases (mostly PostgreSQL + Redis) with no single point handling more than 3k QPS, on-call paged ~1x per week, ~180 lines per PR average. The transition mechanism: explicit strangler-fig migration with feature flags and traffic shadowing. Audience: engineering all-hands case study presentation.
+            </p>
+          </details>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:20px">
+            
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">auto</strong>
+        <span style="font-size:11px;color:#8898AA">olmo_freeform · comparison_matrix · 52s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">Monolith vs. Microservices: Before/After Case Study</div>
+      <img src="transformation_case_auto.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.85 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The content is presented as a simple list of bullet points, which is dry and lacks visual impact for a high-stakes presentation.</li><li>The headers (Legacy Monolith, Microservices Architecture, Cloud-Native Approach) are visually heavy and take up too much space, making the overall visual feel blocky.</li><li>The sheer amount of text in the cells, while necessary, makes the visual feel dense and overwhelming, risking cognitive overload for the audience.</li></ul></details></div>
+    </div>
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">gemma</strong>
+        <span style="font-size:11px;color:#8898AA">gemma_freeform · before_after · 764s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">Monolith to Microservices: An 18-Month Transformation</div>
+      <img src="transformation_case_gemma.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.75 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The transition element ('Strangler Fig Migration') is visually weak and lacks integration with the content blocks.</li><li>The content blocks themselves are highly repetitive and lack visual distinction (they are just lists of text).</li><li>The overall visual flow is static; it feels like two separate lists placed side-by-side rather than a narrative transformation.</li></ul></details></div>
+    </div>
+          </div>
+        </section>
+        
+        <section style="margin-bottom:60px;border-bottom:1px solid #E3E8EE;padding-bottom:40px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+            <h2 style="margin:0;color:#0A2540;font-size:24px">
+              Storytelling · Vision: the future of cloud computing is serverless
+            </h2>
+            <span style="color:#8898AA;font-size:13px">audience: CTO pitch deck cover slide</span>
+          </div>
+          <details style="margin-bottom:16px">
+            <summary style="cursor:pointer;color:#635BFF;font-size:13px">prompt</summary>
+            <p style="color:#425466;font-size:13px;line-height:1.6;margin-top:8px;
+                      background:#F6F9FC;padding:12px 16px;border-radius:8px;white-space:pre-wrap">
+              A hero image for our marketing campaign about the future of cloud computing. We are making the case for serverless architectures as the next generation of application deployment — the inevitable evolution beyond Kubernetes complexity. Three key benefits to highlight in supporting callouts: (1) Ship features 4x faster with zero infrastructure overhead, (2) Pay only for actual execution — typical 60-80% cost reduction vs always-on containers, (3) Infinite elasticity from 0 to 100k QPS with no capacity planning. The narrative: serverless is to containers what containers were to VMs — a step-change in developer productivity that becomes obvious in retrospect. Audience: CTO-targeted pitch deck cover slide.
+            </p>
+          </details>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));gap:20px">
+            
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">auto</strong>
+        <span style="font-size:11px;color:#8898AA">olmo_freeform · value_proposition · 55s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">The Future of Cloud: Serverless as the Next Generation</div>
+      <img src="vision_hero_auto.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.85 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The three benefit cards (S, C, E) are visually identical and lack differentiation, making the content feel like a list rather than a cohesive narrative.</li><li>The bullet points within the cards are dense and use technical jargon without sufficient explanation, which can overwhelm a non-technical executive audience.</li><li>The central graphic element (the large 'S' and the subsequent three cards) feels disconnected from the main headline, creating a slight visual jump.</li></ul></details></div>
+    </div>
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">gemma</strong>
+        <span style="font-size:11px;color:#8898AA">gemma_freeform · value_proposition · 30s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">The Next Generation of Application Deployment: Serverless Computing</div>
+      <img src="vision_hero_gemma.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.80 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.70</strong><span class="axis-bar"><span class="axis-fill" style="width:70%;background:#635BFF"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The main body text (the three bullet points) is presented as a list of features rather than a cohesive narrative, making the impact feel diluted.</li><li>The visual structure is overly simplistic and lacks a strong, unifying visual metaphor for 'serverless' or 'evolution.'</li><li>The sub-text under the main title ('CTO-targeted pitch deck cover slide') should be removed as it is internal metadata and distracting to the viewer.</li></ul></details></div>
+    </div>
+    <div style="padding:12px;background:#fff;border:1px solid #E3E8EE;border-radius:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <strong style="font-size:13px;color:#635BFF">hybrid</strong>
+        <span style="font-size:11px;color:#8898AA">gemma_freeform · value_proposition · 892s</span>
+      </div>
+      <div style="font-size:13px;color:#0A2540;margin-top:4px">The Future of Application Deployment: Serverless Computing</div>
+      <img src="vision_hero_hybrid.png" alt="rendered" style="width:100%;border:1px solid #E3E8EE;border-radius:8px;display:block;margin-top:8px"/>
+      <div style="background:#F6F9FC;padding:10px 12px;border-radius:6px;margin-top:8px"><div style="font-size:13px;color:#0A2540;font-weight:600;margin-bottom:6px">Critic: 0.85 overall ✓</div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Legibility</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Hierarchy</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Balance</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Color</span><strong style="color:#0A2540">0.80</strong><span class="axis-bar"><span class="axis-fill" style="width:80%;background:#00C896"></span></span></div><div style="font-size:11px;color:#425466;margin:2px 0"><span style="display:inline-block;width:78px">Clarity</span><strong style="color:#0A2540">0.90</strong><span class="axis-bar"><span class="axis-fill" style="width:90%;background:#00C896"></span></span></div><details style='margin-top:6px'><summary style='cursor:pointer;color:#D32F2F;font-size:11px'>weaknesses</summary><ul style='margin:4px 0 0;padding-left:16px;font-size:11px;color:#425466'><li>The bullet points under each pillar are too dense and read like technical jargon rather than high-level business benefits.</li><li>The supporting text (e.g., 'A CTO-targeted pitch deck cover slide...') is unnecessary and should be removed.</li><li>The icons, while relevant, are generic and do not add significant visual interest or differentiation.</li></ul></details></div>
+    </div>
+          </div>
+        </section>
+        
+</body></html>

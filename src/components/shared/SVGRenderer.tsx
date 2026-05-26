@@ -1,12 +1,22 @@
 /**
  * SVGRenderer - Renders SVG visuals inline
- * 
- * Simple component that renders SVG code directly.
- * Replaces MermaidRenderer for more reliable visual output.
+ *
+ * Renders trusted-source SVG markup directly into the DOM. v2 visuals are
+ * generated from pre-validated skeletons with XML-escaped slot values
+ * (see backend/services/visual_slotfill.py:_apply_slot_fill), so we
+ * intentionally skip DOMPurify sanitization here.
+ *
+ * Why: DOMPurify's SVG profile strips the HTML children of <foreignObject>
+ * even when those tags are added to ADD_TAGS, because of the SVG↔XHTML
+ * namespace transition. Stripping them produces "empty boxes" — the
+ * structural SVG renders fine, but the wrapped text disappears.
+ *
+ * Trust boundary: the SVG markup must NEVER be produced from user-controlled
+ * SVG/HTML source. Slot values from LLMs are always XML-escaped server-side
+ * before they reach the skeleton, so text content is safe.
  */
 
-import React from 'react';
-import DOMPurify from 'dompurify';
+import React, { useEffect, useRef } from 'react';
 
 interface SVGRendererProps {
   svg: string;
@@ -15,6 +25,38 @@ interface SVGRendererProps {
 }
 
 export const SVGRenderer: React.FC<SVGRendererProps> = ({ svg, className = '', title }) => {
+  // We render the SVG via direct DOM insertion (vs dangerouslySetInnerHTML) so
+  // the browser parses it as proper SVG with namespace handling — which makes
+  // <foreignObject> children render correctly in the WebView.
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ref.current) return;
+    if (!svg || !svg.includes('<svg')) {
+      ref.current.innerHTML = '';
+      return;
+    }
+    // Parse as XML so foreignObject + xmlns transitions are respected.
+    // (Setting innerHTML on an HTML element can sometimes mis-handle
+    // namespaces; parsing as XML and inserting the resulting node tree
+    // avoids that.)
+    try {
+      const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+      const root = doc.documentElement;
+      // Detect parser errors (DOMParser emits a <parsererror> root on failure)
+      const isError = root.nodeName === 'parsererror' || root.querySelector?.('parsererror');
+      if (isError) {
+        // Fall back to innerHTML — better partial render than nothing
+        ref.current.innerHTML = svg;
+        return;
+      }
+      // Adopt + replace existing children
+      ref.current.innerHTML = '';
+      ref.current.appendChild(document.importNode(root, true));
+    } catch {
+      ref.current.innerHTML = svg;
+    }
+  }, [svg]);
 
   if (!svg) {
     return (
@@ -40,7 +82,7 @@ export const SVGRenderer: React.FC<SVGRendererProps> = ({ svg, className = '', t
   }
 
   return (
-    <div 
+    <div
       className={`svg-container bg-gray-800 rounded-lg overflow-hidden animate-fade-in ${className}`}
       style={{
         animation: 'fadeInScale 0.3s ease-out forwards',
@@ -51,14 +93,7 @@ export const SVGRenderer: React.FC<SVGRendererProps> = ({ svg, className = '', t
           <h3 className="text-sm font-medium text-gray-200">{title}</h3>
         </div>
       )}
-      <div 
-        className="svg-content p-2"
-        dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg, { 
-          USE_PROFILES: { svg: true, svgFilters: true },
-          ADD_TAGS: ['foreignObject', 'div', 'span'],
-          ADD_ATTR: ['xmlns', 'style'],
-        }) }}
-      />
+      <div ref={ref} className="svg-content p-2" />
     </div>
   );
 };

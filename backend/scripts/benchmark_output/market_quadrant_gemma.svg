@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+<defs>
+  <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#425466" />
+  </marker>
+  <marker id="arrowhead_primary" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#635BFF" />
+  </marker>
+  <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0A2540" flood-opacity="0.08" />
+  </filter>
+  <linearGradient id="primaryGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#635BFF" stop-opacity="1" />
+    <stop offset="100%" stop-color="#4A43D1" stop-opacity="1" />
+  </linearGradient>
+  <linearGradient id="headerGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" stop-color="#F6F9FC" stop-opacity="1" />
+    <stop offset="100%" stop-color="#FFFFFF" stop-opacity="1" />
+  </linearGradient>
+</defs>
+  <rect x="0" y="0" width="1600" height="900" fill="#FFFFFF" />
+  <rect x="60" y="60" width="1480" height="100" rx="12" fill="url(#headerGradient)" />
+  <text x="80" y="106" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="44" font-weight="600" fill="#0A2540">Competitive Positioning Map: CDP Market</text>
+  <text x="80" y="138" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="20" fill="#425466">Sales kickoff strategy session: Understanding our market placement</text>
+
+  <rect x="240" y="220" width="1120" height="600" rx="8" fill="#F6F9FC" />
+  <!-- Axes -->
+  <line x1="800" y1="220" x2="800" y2="820" stroke="#E3E8EE" stroke-width="1.5" />
+  <line x1="240" y1="520" x2="1360" y2="520" stroke="#E3E8EE" stroke-width="1.5" />
+  <!-- Axis labels -->
+  <text x="800" y="206" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">Advanced Feature Depth</text>
+  <text x="800" y="846" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">Basic Feature Depth</text>
+  <text x="226" y="525" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="end">Low Implementation Complexity</text>
+  <text x="1374" y="525" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="start">High Implementation Complexity</text>
+  <text x="264" y="256" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#8898AA" text-anchor="start">Quick Wins</text>
+  <text x="1336" y="256" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#8898AA" text-anchor="end">Leaders</text>
+  <text x="264" y="796" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#8898AA" text-anchor="start">Niche Tools</text>
+  <text x="1336" y="796" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="#8898AA" text-anchor="end">Enterprise Heavy</text>
+  <rect x="500" y="310" width="160" height="60" rx="8" fill="#FFFFFF" stroke="#635BFF" stroke-width="1.5" filter="url(#softShadow)" />
+  <text x="580" y="346" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">Segment</text>
+  <rect x="940" y="310" width="160" height="60" rx="8" fill="#FFFFFF" stroke="#635BFF" stroke-width="1.5" filter="url(#softShadow)" />
+  <text x="1020" y="346" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">mParticle</text>
+  <rect x="500" y="670" width="160" height="60" rx="8" fill="#FFFFFF" stroke="#635BFF" stroke-width="1.5" filter="url(#softShadow)" />
+  <text x="580" y="706" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">Hightouch</text>
+  <rect x="940" y="670" width="160" height="60" rx="8" fill="#FFFFFF" stroke="#635BFF" stroke-width="1.5" filter="url(#softShadow)" />
+  <text x="1020" y="706" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">Tealium</text>
+</svg>

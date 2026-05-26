@@ -481,6 +481,166 @@ function App() {
     };
   }, [selectedNotebookId]);
 
+  // 2026-05-26: regenerate-with-feedback closes the loop on thumbs-down.
+  // The feedback bar dispatches this event with the original prompt + the
+  // user's reason text; we run a fresh generation with the reason appended
+  // as a refinement directive and add a new canvas item with the result.
+  useEffect(() => {
+    const handler = async (event: CustomEvent<{
+      notebookId: string;
+      originalPrompt: string;
+      reason: string;
+      previousSubjectId: string;
+      previousTemplateId?: string;
+    }>) => {
+      const { notebookId, originalPrompt, reason, previousTemplateId } = event.detail;
+      if (!notebookId || !originalPrompt) return;
+      const { visualService } = await import('./services/visual');
+      const subjId = `studio_visual_${Date.now()}_regen`;
+      const canvasItemId = `visual-${subjId}`;
+      // Drop placeholder immediately
+      setCanvasItems(prev => [...prev, {
+        id: canvasItemId,
+        type: 'visual',
+        title: `Visual (refined): ${originalPrompt.substring(0, 50)}…`,
+        content: '',
+        collapsed: false,
+        timestamp: Date.now(),
+        status: 'generating',
+        metadata: { notebookId },
+      } as CanvasItem]);
+      // Augmented prompt = original + REFINEMENT DIRECTIVE block
+      const augmented = (
+        `${originalPrompt}\n\n` +
+        `---\n` +
+        `REFINEMENT DIRECTIVE — the previous visual was rated poorly. ` +
+        `User feedback: "${reason}". Address this concern specifically in the new visual.`
+      );
+      try {
+        await visualService.generateSmartStream(
+          notebookId,
+          augmented,
+          'auto',
+          (diagram) => {
+            setCanvasItems(prev => prev.map(it =>
+              it.id === canvasItemId
+                ? {
+                    ...it,
+                    content: diagram.svg || diagram.code || '',
+                    status: 'complete',
+                    title: diagram.title || it.title,
+                    metadata: {
+                      notebookId,
+                      originalPrompt,  // Keep so they can refine again
+                      criticScore: diagram.v2_critic_score || undefined,
+                      v2Path: diagram.v2_path,
+                      v2Setup: diagram.v2_setup,
+                      v2GenerationMs: diagram.v2_generation_ms,
+                      templateId: diagram.template_id,
+                      refinedFromReason: reason,
+                      refinedFromTemplateId: previousTemplateId,
+                    },
+                  }
+                : it
+            ));
+          },
+          () => {},
+          () => {},
+          (err) => {
+            console.error('Regenerate-with-feedback failed:', err);
+            setCanvasItems(prev => prev.map(it =>
+              it.id === canvasItemId
+                ? { ...it, status: 'error', metadata: { ...it.metadata, errorMessage: err } }
+                : it
+            ));
+          },
+        );
+      } catch (err) {
+        console.error('Regenerate-with-feedback exception:', err);
+      }
+    };
+    window.addEventListener('visualRegenerateWithFeedback', handler as unknown as EventListener);
+    return () => {
+      window.removeEventListener('visualRegenerateWithFeedback', handler as unknown as EventListener);
+    };
+  }, []);
+
+  // 2026-05-26: manual idiom swap — bypasses the v2 picker and forces a
+  // specific skeleton when the user knows the picker chose wrong.
+  useEffect(() => {
+    const handler = async (event: CustomEvent<{
+      notebookId: string;
+      originalPrompt: string;
+      newIdiom: string;
+      previousIdiom?: string;
+    }>) => {
+      const { notebookId, originalPrompt, newIdiom } = event.detail;
+      if (!notebookId || !originalPrompt || !newIdiom) return;
+      const { visualService } = await import('./services/visual');
+      const subjId = `studio_visual_${Date.now()}_swap`;
+      const canvasItemId = `visual-${subjId}`;
+      setCanvasItems(prev => [...prev, {
+        id: canvasItemId,
+        type: 'visual',
+        title: `Visual (${newIdiom}): ${originalPrompt.substring(0, 50)}…`,
+        content: '',
+        collapsed: false,
+        timestamp: Date.now(),
+        status: 'generating',
+        metadata: { notebookId },
+      } as CanvasItem]);
+      try {
+        const result = await visualService.v2Compose(notebookId, originalPrompt, undefined);
+        // We're calling v2Compose without force_idiom plumbed through the
+        // client helper, so go direct via fetch for now.
+        const { localFetch, API_BASE_URL } = await import('./services/api');
+        const response = await localFetch(`${API_BASE_URL}/visual/v2/compose`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            notebook_id: notebookId,
+            topic: originalPrompt,
+            force_idiom: newIdiom,
+          }),
+        });
+        if (!response.ok) throw new Error(`v2 compose returned ${response.status}`);
+        const visual = await response.json();
+        setCanvasItems(prev => prev.map(it =>
+          it.id === canvasItemId
+            ? {
+                ...it,
+                content: visual.svg_markup || visual.mermaid_code || '',
+                status: 'complete',
+                title: visual.title || it.title,
+                metadata: {
+                  notebookId,
+                  originalPrompt,
+                  criticScore: visual.critic_score || undefined,
+                  v2Path: visual.path,
+                  v2Setup: visual.setup,
+                  v2GenerationMs: visual.generation_ms,
+                  templateId: visual.template_id,
+                  swappedFromIdiom: event.detail.previousIdiom,
+                },
+              }
+            : it
+        ));
+        void result;
+      } catch (err) {
+        console.error('Idiom swap failed:', err);
+        setCanvasItems(prev => prev.map(it =>
+          it.id === canvasItemId
+            ? { ...it, status: 'error', metadata: { ...it.metadata, errorMessage: (err as Error)?.message } }
+            : it
+        ));
+      }
+    };
+    window.addEventListener('visualSwapIdiom', handler as unknown as EventListener);
+    return () => {
+      window.removeEventListener('visualSwapIdiom', handler as unknown as EventListener);
+    };
+  }, []);
+
   // Restore persisted canvas notes when backend is ready and a notebook is selected
   useEffect(() => {
     if (!backendReady || !selectedNotebookId) return;

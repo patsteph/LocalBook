@@ -471,6 +471,9 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                   pattern: message.inlineVisual.pattern,
                   tagline: message.inlineVisual.tagline,
                 } : null}
+                v2CriticScore={message.inlineVisual?.v2_critic_score || null}
+                notebookId={message.inlineVisual?.notebookId}
+                originalPrompt={message.inlineVisual?.originalPrompt}
                 alternatives={(message.alternativeVisuals || []).map(alt => ({
                   id: alt.id,
                   type: alt.type,

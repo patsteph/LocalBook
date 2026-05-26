@@ -17,6 +17,23 @@ export interface Diagram {
   template_id?: string;
   template_name?: string;
   tagline?: string;  // Editable summary line shown below visual
+  // v2 extras (populated only when the visual was generated through the
+  // visual_composer pipeline). Frontend uses these for the critic-score
+  // badge + provenance display on the canvas item.
+  v2_path?: string;
+  v2_setup?: string;
+  v2_critic_score?: {
+    overall: number;
+    legibility: number;
+    hierarchy: number;
+    balance: number;
+    color_harmony: number;
+    message_clarity: number;
+    strengths?: string[];
+    weaknesses?: string[];
+    suggestions?: string[];
+  } | null;
+  v2_generation_ms?: number;
 }
 
 export interface VisualSummary {
@@ -214,4 +231,153 @@ export const visualService = {
     }
     return false;
   },
+
+  // ────────────────────────────────────────────────────────────────
+  // Visual System v2 — composer-routed endpoints
+  // ────────────────────────────────────────────────────────────────
+
+  /** Report current machine's visual-generation capability. */
+  async v2GetCapability(): Promise<V2Capability> {
+    const response = await localFetch(`${API_BASE}/visual/v2/capability`);
+    if (!response.ok) throw new Error('Failed to fetch v2 capability');
+    return response.json();
+  },
+
+  /** Non-streaming compose via the v2 composer. */
+  async v2Compose(
+    notebookId: string,
+    topic: string,
+    templateId?: string,
+  ): Promise<V2ComposedVisual> {
+    const response = await localFetch(`${API_BASE}/visual/v2/compose`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        notebook_id: notebookId,
+        topic,
+        template_id: templateId,
+      }),
+    });
+    if (!response.ok) throw new Error('Failed to compose v2 visual');
+    return response.json();
+  },
+
+  /** Streaming compose. Calls back as SSE events arrive. */
+  async v2ComposeStream(
+    notebookId: string,
+    topic: string,
+    onTier: (info: V2TierEvent) => void,
+    onCritic: (score: V2CriticScore) => void,
+    onResult: (visual: V2ComposedVisual) => void,
+    onDone: () => void,
+    onError: (message: string) => void,
+    templateId?: string,
+  ): Promise<void> {
+    const response = await localFetch(`${API_BASE}/visual/v2/compose/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        notebook_id: notebookId,
+        topic,
+        template_id: templateId,
+      }),
+    });
+    if (!response.ok) {
+      onError('Failed to start v2 visual stream');
+      return;
+    }
+    const reader = response.body?.getReader();
+    if (!reader) {
+      onError('No response body for v2 stream');
+      return;
+    }
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      let eventType = '';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (eventType === 'tier') onTier(data as V2TierEvent);
+            else if (eventType === 'critic') onCritic(data.score as V2CriticScore);
+            else if (eventType === 'result') onResult(data.visual as V2ComposedVisual);
+            else if (eventType === 'done') onDone();
+            else if (eventType === 'error') onError(data.message);
+          } catch {
+            // Ignore malformed lines
+          }
+        }
+      }
+    }
+  },
 };
+
+// ──────────────────────────────────────────────────────────────────
+// v2 types
+// ──────────────────────────────────────────────────────────────────
+export interface V2Capability {
+  setup: 'setup_a' | 'setup_b' | 'unknown';
+  concurrency_mode: 'concurrent' | 'swap' | 'swap_strict';
+  total_ram_gb: number;
+  warn_user: boolean;
+  models: {
+    gemma: string | null;
+    klein: string | null;
+    olmo: string | null;
+    vision: string | null;
+  };
+  can_freeform_gemma: boolean;
+  can_freeform_olmo: boolean;
+  can_critic_gemma_vision: boolean;
+  can_critic_separate_vision: boolean;
+  can_diffusion_klein: boolean;
+  summary: string;
+}
+
+export interface V2TierEvent {
+  setup: string;
+  path: string;
+  concurrency: string;
+}
+
+export interface V2CriticScore {
+  legibility: number;
+  hierarchy: number;
+  balance: number;
+  color_harmony: number;
+  message_clarity: number;
+  overall: number;
+  strengths: string[];
+  weaknesses: string[];
+  suggestions: string[];
+}
+
+export interface V2ComposedVisual {
+  success: boolean;
+  path: string;
+  setup: string;
+  output_format: 'svg' | 'mermaid';
+  svg_markup: string | null;
+  mermaid_code: string | null;
+  title: string;
+  description: string;
+  key_points: string[];
+  alternatives: { id: string; name: string; reason: string }[];
+  critic_score: V2CriticScore | null;
+  retry_count: number;
+  generation_ms: number;
+  error: string | null;
+  model_used: string | null;
+  template_id: string | null;
+  template_name: string | null;
+}

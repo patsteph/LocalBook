@@ -35,6 +35,13 @@ export function useVisualActions(
             template_id: diagram.template_id,
             pattern: diagram.diagram_type,
             tagline: diagram.tagline,
+            // v2 extras for the inline thumbs + critic row
+            v2_path: diagram.v2_path,
+            v2_setup: diagram.v2_setup,
+            v2_critic_score: diagram.v2_critic_score,
+            v2_generation_ms: diagram.v2_generation_ms,
+            notebookId: notebookId || undefined,
+            originalPrompt: content,
           };
           
           setMessages(prev => prev.map((m, i) => 

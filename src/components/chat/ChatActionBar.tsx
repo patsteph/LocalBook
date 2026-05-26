@@ -5,10 +5,10 @@ import {
   ChevronUp, ChevronDown, MessageCircle,
 } from 'lucide-react';
 import { useCanvas } from '../canvas/CanvasContext';
+import { useGenerateVisualToCanvas } from '../../hooks/useGenerateVisualToCanvas';
 import { CanvasItem } from '../canvas/types';
 import { CanvasActionPopover } from '../canvas/CanvasActionPopover';
 import { contentService } from '../../services/content';
-import { visualService } from '../../services/visual';
 import { quizService } from '../../services/quiz';
 import { audioService } from '../../services/audio';
 import { curatorService } from '../../services/curatorApi';
@@ -117,6 +117,9 @@ interface ChatActionBarProps {
 
 export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expanded = true, onToggleExpand }) => {
   const ctx = useCanvas();
+  // Shared visual generation — keeps Studio bar in lock-step with VisualPanel
+  // and CanvasWorkspaceOverlay (identical params, identical output shape).
+  const generateVisualToCanvas = useGenerateVisualToCanvas();
   // 2026-05-23: Phase 7.5 capture for chat-initiated Studio generations.
   // Mirrors the captures in Studio.tsx so we get the same engagement events
   // regardless of which entry point fired the generation.
@@ -135,6 +138,9 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
   const [docsSkill, setDocsSkill] = useState(() => localStorage.getItem('lb-bar-docs-skill') || 'summary');
   const [docsStyle, setDocsStyle] = useState(() => localStorage.getItem('lb-bar-docs-style') || 'professional');
   const [docsTopic, setDocsTopic] = useState('');
+  // 2026-05-26: explicit topic input for the Studio bar Visual action so
+  // users can describe what they want even if there's no prior chat content.
+  const [visualTopic, setVisualTopic] = useState('');
 
   // ── Audio config ────────────────────────────────────────────────────────
   const [audioSkill, setAudioSkill] = useState(() => localStorage.getItem('lb-bar-audio-skill') || 'podcast_script');
@@ -323,48 +329,35 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
 
   const handleCreateVisual = async () => {
     if (!notebookId) return;
+    // 2026-05-26: require meaningful content; route through the shared
+    // useGenerateVisualToCanvas hook so behavior is identical to VisualPanel
+    // and CanvasWorkspaceOverlay regardless of entry point.
+    const fallbackChat = getPrimaryContent();
+    const fallbackChatMeaningful = fallbackChat && fallbackChat.replace(/\s+/g, ' ').trim().length >= 40;
+    const userTopic = visualTopic.trim();
+    if (!userTopic && !fallbackChatMeaningful) {
+      ctx.addToast({
+        type: 'warning',
+        title: 'Tell me what to visualize',
+        message: 'Type a topic in the Visual popover, or ask a chat question first.',
+      });
+      return;
+    }
     setActionLoading('visual');
     ctx.setGenerationStatus('generating');
-    try {
-      const content = getPrimaryContent() || docsTopic || 'Generate a visual summary';
-      const title = getPrimaryTitle();
-      // Phase 7.5 capture (chat entry point).
-      captureEngagement('curator_feature', 'invoked', {
-        subject_type: 'studio_visual',
-        subject_id: `studio_visual_${Date.now()}_chat`,
-        notebook_id: notebookId,
-        payload: { skill_id: 'visual', color_theme: visualColorTheme, template_id: selectedTemplate, entry_point: 'chat' },
-      });
-      await visualService.generateSmartStream(
-        notebookId,
-        content,
-        visualColorTheme,
-        (diagram) => {
-          ctx.addCanvasItem({
-            type: 'visual',
-            title: diagram.title || `Visual: ${title}`,
-            content: diagram.svg || diagram.code || '',
-            collapsed: true,
-            metadata: { notebookId },
-          });
-          setActionLoading(null);
-          ctx.setGenerationStatus('complete');
-        },
-        () => {},
-        () => setActionLoading(null),
-        (err) => {
-          console.error('Visual generation failed:', err);
-          ctx.addToast({ type: 'error', title: 'Visual generation failed', message: err });
-          setActionLoading(null);
-          ctx.setGenerationStatus('error');
-        },
-        selectedTemplate || undefined,
-      );
-    } catch (err) {
-      console.error('Visual failed:', err);
-      setActionLoading(null);
-      ctx.setGenerationStatus('error');
-    }
+    const content = userTopic || fallbackChat || docsTopic;
+    await generateVisualToCanvas(notebookId, content, {
+      source: 'studio_bar',
+      onComplete: () => {
+        setActionLoading(null);
+        ctx.setGenerationStatus('complete');
+      },
+      onError: (err) => {
+        ctx.addToast({ type: 'error', title: 'Visual generation failed', message: err });
+        setActionLoading(null);
+        ctx.setGenerationStatus('error');
+      },
+    });
   };
 
   const handleCreateAudio = async (skillOverride?: string) => {
@@ -845,6 +838,23 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
               onGenerate={() => { setActivePopover(null); setShowTemplates(false); handleCreateVisual(); }}
             >
               <div className="space-y-2.5">
+                {/* Topic input — 2026-05-26: lock-step with VisualPanel.
+                    User describes what they want; falls back to chat content. */}
+                <div>
+                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    What should the visual show?
+                  </label>
+                  <textarea
+                    value={visualTopic}
+                    onChange={(e) => setVisualTopic(e.target.value)}
+                    placeholder="A three-tier microservices architecture with API gateway and four backend services…"
+                    rows={3}
+                    className="w-full px-2 py-1.5 text-[12px] border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 resize-none focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  />
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
+                    Leave blank to visualize the latest chat answer.
+                  </p>
+                </div>
                 {/* Diagram type */}
                 <div>
                   <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1.5">Type</label>

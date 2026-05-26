@@ -1,0 +1,15 @@
+mindmap
+  root((Key Metrics for Financial Trading Platform))
+    |--- System Performance
+    |      ├- Orders Per Second: 50,000 (peak)
+    |      ├- Write Latency: 99.9% < 200 ms
+    |      ├- Read Latency: < 50 ms
+    |    |--- Scalability & Throughput
+    |    |      ├- Event Processing: Kafka
+    |    |      └- Real-time Risk Calculations (Risk Engine)
+    |    |--- Data Stores
+    |      ├- Order Write-Store: PostgreSQL
+    |      └- Read-Store: DynamoDB (Denormalized)
+    |    |--- Event-Driven Flow
+    |      ├- Order Submission Path: REST → Order API → Write-Store → Kafka Event
+    |      └- Reporting Path: Kafka Stream → Projection Service → Read-Store → Reporting API

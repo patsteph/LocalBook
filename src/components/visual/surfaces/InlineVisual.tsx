@@ -7,6 +7,8 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { VisualCore, type VisualData } from '../core/VisualCore';
+import { VisualCriticBadge, VisualFeedbackBar, type CriticScoreData } from '../../shared/VisualCriticBadge';
+import { FeedbackThumbs } from '../../shared/FeedbackThumbs';
 import { VisualToolbar, type ColorPaletteId } from '../core/VisualToolbar';
 import { VisualSkeleton } from '../core/VisualSkeleton';
 import type { PaletteId } from '../design/DesignSystem';
@@ -86,6 +88,48 @@ const VisualModal: React.FC<{
   );
 };
 
+// Small subcomponent: thumbs + critic + thumbs-down feedback bar for v2
+// inline visuals in chat. Mirrors the canvas-side surface so feedback
+// works identically from either entry point.
+const InlineVisualFeedbackRow: React.FC<{
+  visual: VisualData | null;
+  score: CriticScoreData;
+  notebookId?: string;
+  originalPrompt?: string;
+}> = ({ visual, score, notebookId, originalPrompt }) => {
+  const [downSubmitted, setDownSubmitted] = useState(false);
+  const subjectId = visual?.id || `inline-visual-${Date.now()}`;
+  return (
+    <div className="px-3 py-2 bg-gray-50 dark:bg-gray-900/40 border-t border-gray-200 dark:border-gray-700 space-y-1.5">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <VisualCriticBadge score={score} />
+        <FeedbackThumbs
+          kind="curator_feature"
+          subjectType="studio_visual"
+          subjectId={subjectId}
+          notebookId={notebookId || null}
+          payload={{
+            skill_id: 'visual',
+            template_id: visual?.template_id,
+            critic_overall: score.overall,
+          }}
+          size="sm"
+          onFeedback={(r) => { if (r === 'down') setDownSubmitted(true); }}
+        />
+      </div>
+      {notebookId && (
+        <VisualFeedbackBar
+          visible={downSubmitted}
+          notebookId={notebookId}
+          subjectId={subjectId}
+          templateId={visual?.template_id}
+          originalPrompt={originalPrompt}
+        />
+      )}
+    </div>
+  );
+};
+
 export interface InlineVisualProps {
   visual: VisualData | null;
   alternatives?: VisualData[];  // Alternative visual options
@@ -101,6 +145,11 @@ export interface InlineVisualProps {
   onRegenerateWithPalette?: (palette: ColorPaletteId) => void;  // Regenerate with new palette
   onSelectAlternative?: (visual: VisualData) => void;  // Swap primary with alternative
   onTaglineChange?: (tagline: string) => void;  // Update tagline
+  // v2 critic + feedback wiring — when present, renders the thumbs/critic
+  // row beneath the visual so users can rate inline without opening canvas.
+  v2CriticScore?: import('../../shared/VisualCriticBadge').CriticScoreData | null;
+  notebookId?: string;
+  originalPrompt?: string;
 }
 
 export const InlineVisual: React.FC<InlineVisualProps> = ({
@@ -118,6 +167,9 @@ export const InlineVisual: React.FC<InlineVisualProps> = ({
   onRegenerateWithPalette,
   onSelectAlternative,
   onTaglineChange,
+  v2CriticScore,
+  notebookId,
+  originalPrompt,
 }) => {
   const [saved, setSaved] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -249,7 +301,10 @@ export const InlineVisual: React.FC<InlineVisualProps> = ({
             showTitle={false}
           />
         </div>
-        
+
+        {/* v2 critic + thumbs row (only renders when v2 generation produced a score) */}
+        {v2CriticScore && <InlineVisualFeedbackRow visual={visual} score={v2CriticScore} notebookId={notebookId} originalPrompt={originalPrompt} />}
+
         {/* Inline refinement UI */}
         {isEditing && (
           <div className="border-t border-gray-700 px-3 py-3 bg-gray-800/80">

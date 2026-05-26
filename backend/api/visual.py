@@ -604,13 +604,13 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
     
     async def generate_stream():
         from services.visual_cache import visual_cache  # Import inside generator
-        
+
         # Use topic as primary content, but FETCH notebook sources for meaningful extraction
         topic = request.topic
         if not topic or not topic.strip():
             yield f"event: error\ndata: {json_module.dumps({'error': 'No topic provided'})}\n\n"
             return
-        
+
         # Fetch notebook sources using centralized context builder for theme extraction
         content = topic
         try:
@@ -624,6 +624,56 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
                 print(f"[Visual Stream] Using {built.sources_used} sources ({built.total_chars} chars) for extraction")
         except Exception as e:
             print(f"[Visual Stream] Failed to fetch sources: {e}")
+
+        # ─────────────────────────────────────────────────────────────
+        # v2 routing (2026-05-26): if the v2 composer can run on this
+        # machine, route every visual through it and emit one primary
+        # event in the existing /smart/stream shape. The frontend (canvas
+        # overlay, ChatActionBar, useVisualActions, VisualPanel) gets v2
+        # quality with zero call-site changes.
+        # ─────────────────────────────────────────────────────────────
+        try:
+            from services.visual_capability import get_capability
+            from services.visual_composer import visual_composer
+            cap = await get_capability()
+            if cap.can_freeform_gemma or cap.can_freeform_olmo:
+                print(f"[Visual Stream] v2 path: {cap.summary()}")
+                visual = await visual_composer.compose(content=content)
+                if visual.success and visual.svg_markup:
+                    primary = {
+                        "render_type": "svg",
+                        "svg": visual.svg_markup,
+                        "title": visual.title or "Visual",
+                        "description": visual.description or "",
+                        "template_id": visual.template_id or "v2",
+                        "template_name": visual.template_name or visual.path.value,
+                        "tagline": visual.title or "",
+                        # v2-specific extras (frontend can opt-in)
+                        "v2_path": visual.path.value,
+                        "v2_setup": visual.setup.value,
+                        "v2_critic_score": (
+                            {
+                                "overall": visual.critic_score.overall,
+                                "legibility": visual.critic_score.legibility,
+                                "hierarchy": visual.critic_score.hierarchy,
+                                "balance": visual.critic_score.balance,
+                                "color_harmony": visual.critic_score.color_harmony,
+                                "message_clarity": visual.critic_score.message_clarity,
+                                "strengths": visual.critic_score.strengths,
+                                "weaknesses": visual.critic_score.weaknesses,
+                                "suggestions": visual.critic_score.suggestions,
+                            } if visual.critic_score else None
+                        ),
+                        "v2_generation_ms": visual.generation_ms,
+                    }
+                    yield f"event: primary\ndata: {json_module.dumps(primary)}\n\n"
+                    yield f"event: done\ndata: {json_module.dumps({'total': 1, 'v2': True})}\n\n"
+                    return
+                # v2 composer returned a non-svg result (template fallback already
+                # fired internally). Fall through to legacy path for safety.
+                print(f"[Visual Stream] v2 returned no SVG ({visual.error}); legacy fallback")
+        except Exception as e:
+            print(f"[Visual Stream] v2 path failed: {e}; falling through to legacy")
         
         # STEP 1: Check cache FIRST - it contains structure extracted from the ANSWER
         # This is critical for context alignment: the cache was built from the actual answer,
@@ -1086,3 +1136,194 @@ CRITICAL: Preserve the diagram type (flowchart, mindmap, etc). Only modify struc
         "code": request.current_code,
         "changes_made": "Refinement failed - original preserved",
     }
+
+
+# =============================================================================
+# Visual System v2 — composer-routed endpoints
+# =============================================================================
+# These endpoints route through services.visual_composer.VisualComposer, which
+# auto-detects machine capability (Setup A/B) and picks the best generation
+# path (Gemma freeform SVG, Olmo freeform [Phase 2], or legacy templates).
+#
+# Phase 1 ship: v2 endpoints additive; existing /smart/stream untouched.
+# Frontend prefers v2 when capability supports it (Setup B / Gemma installed).
+
+
+class V2ComposeRequest(BaseModel):
+    """Request to generate a visual via the v2 composer pipeline."""
+    notebook_id: str
+    topic: str = Field(..., description="What to visualize (intent + content)")
+    template_id: Optional[str] = Field(
+        default=None,
+        description="Force legacy template path with specific template id",
+    )
+    force_idiom: Optional[str] = Field(
+        default=None,
+        description=(
+            "Skip the picker and use this specific v2 skeleton idiom "
+            "(e.g., 'comparison_matrix'). Used by the 'Swap idiom' UI."
+        ),
+    )
+    include_sources: bool = Field(
+        default=True,
+        description="Pull notebook source content into the generation prompt",
+    )
+
+
+@router.get("/v2/capability")
+async def v2_capability():
+    """Report current visual-generation capability for the UI to decide
+    whether to use the v2 composer path or stick with /smart/stream."""
+    from services.visual_capability import get_capability
+    cap = await get_capability()
+    return {
+        "setup": cap.setup.value,
+        "concurrency_mode": cap.concurrency_mode.value,
+        "total_ram_gb": round(cap.total_ram_gb, 1),
+        "warn_user": cap.warn_user,
+        "models": {
+            "gemma": cap.gemma_model,
+            "klein": cap.klein_model,
+            "olmo": cap.olmo_model,
+            "vision": cap.vision_model,
+        },
+        "can_freeform_gemma": cap.can_freeform_gemma,
+        "can_freeform_olmo": cap.can_freeform_olmo,
+        "can_critic_gemma_vision": cap.can_critic_gemma_vision,
+        "can_critic_separate_vision": cap.can_critic_separate_vision,
+        "can_diffusion_klein": cap.can_diffusion_klein,
+        "summary": cap.summary(),
+    }
+
+
+@router.get("/v2/styles")
+async def v2_styles():
+    """List available visual styles for Phase 1 (Stripe-clean only)."""
+    from services.visual_style_library import list_styles
+    return {"styles": list_styles()}
+
+
+@router.post("/v2/compose")
+async def v2_compose(request: V2ComposeRequest):
+    """Generate a visual via the composer. Non-streaming.
+
+    Returns a unified result containing svg_markup OR mermaid_code,
+    critic scores (when freeform path ran), and routing metadata.
+    """
+    from services.visual_composer import visual_composer, _visual_to_dict
+
+    if not request.topic or not request.topic.strip():
+        raise HTTPException(status_code=400, detail="topic is required")
+
+    content = request.topic
+    if request.include_sources:
+        try:
+            built = await context_builder.build_context(
+                notebook_id=request.notebook_id,
+                skill_id="visual",
+                topic=request.topic,
+            )
+            if built.sources_used > 0:
+                content = f"{request.topic}\n\nSource content:\n{built.context}"
+        except Exception as e:
+            logger.warning(f"[v2_compose] context_builder failed: {e}")
+
+    visual = await visual_composer.compose(
+        content=content,
+        template_id=request.template_id,
+        force_idiom=request.force_idiom,
+    )
+    payload = _visual_to_dict(visual)
+
+    # Telemetry hook (same surface as existing endpoints)
+    try:
+        log_content_generated(
+            notebook_id=request.notebook_id,
+            content_type="visual_v2",
+            success=visual.success,
+            details={
+                "path": visual.path.value,
+                "setup": visual.setup.value,
+                "output_format": visual.output_format.value,
+                "retry_count": visual.retry_count,
+                "generation_ms": visual.generation_ms,
+                "critic_overall": (
+                    visual.critic_score.overall if visual.critic_score else None
+                ),
+                "template_id": visual.template_id,
+            },
+        )
+    except Exception as e:
+        logger.debug(f"[v2_compose] telemetry log failed: {e}")
+
+    return payload
+
+
+@router.post("/v2/compose/stream")
+async def v2_compose_stream(request: V2ComposeRequest):
+    """Streaming variant — emits SSE events for tier, critic, result.
+
+    Events:
+      event: tier         data: {"setup":..., "path":..., "concurrency":...}
+      event: critic       data: {<5-axis scores + critique>}
+      event: result       data: {<full ComposedVisual dict>}
+      event: error        data: {"message": "..."}
+      event: done         data: {}
+    """
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from services.visual_composer import visual_composer
+
+    if not request.topic or not request.topic.strip():
+        raise HTTPException(status_code=400, detail="topic is required")
+
+    async def stream():
+        content = request.topic
+        if request.include_sources:
+            try:
+                built = await context_builder.build_context(
+                    notebook_id=request.notebook_id,
+                    skill_id="visual",
+                    topic=request.topic,
+                )
+                if built.sources_used > 0:
+                    content = f"{request.topic}\n\nSource content:\n{built.context}"
+            except Exception as e:
+                logger.warning(f"[v2_compose_stream] context_builder: {e}")
+
+        try:
+            async for event in visual_composer.compose_stream(
+                content=content,
+                template_id=request.template_id,
+            ):
+                event_name = event.get("type", "message")
+                data = _json.dumps({k: v for k, v in event.items() if k != "type"})
+                yield f"event: {event_name}\ndata: {data}\n\n"
+        except Exception as e:
+            logger.exception("[v2_compose_stream] failed")
+            yield f"event: error\ndata: {_json.dumps({'message': str(e)})}\n\n"
+        finally:
+            yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@router.post("/v2/render/png")
+async def v2_render_png(payload: dict):
+    """Rasterize an SVG element to PNG (for download / export use cases).
+
+    Body: {"svg_markup": "<svg ...>...</svg>", "width": 1600, "height": 900}
+    """
+    from fastapi.responses import Response
+    from services.svg_renderer import render_svg_to_png
+
+    svg_markup = payload.get("svg_markup") or ""
+    width = int(payload.get("width") or 1600)
+    height = int(payload.get("height") or 900)
+    if not svg_markup or "<svg" not in svg_markup.lower():
+        raise HTTPException(status_code=400, detail="svg_markup is required")
+
+    png = await render_svg_to_png(svg_markup, width=width, height=height)
+    if not png:
+        raise HTTPException(status_code=500, detail="SVG render failed")
+    return Response(content=png, media_type="image/png")

@@ -74,6 +74,24 @@ export interface InlineVisualData {
   template_id?: string;
   pattern?: string;
   tagline?: string;  // Editable summary line shown below visual
+  // v2 extras — populated when the visual was generated via visual_composer.
+  // Surfaces the critic score next to the thumbs row.
+  v2_path?: string;
+  v2_setup?: string;
+  v2_critic_score?: {
+    overall: number;
+    legibility: number;
+    hierarchy: number;
+    balance: number;
+    color_harmony: number;
+    message_clarity: number;
+    strengths?: string[];
+    weaknesses?: string[];
+    suggestions?: string[];
+  } | null;
+  v2_generation_ms?: number;
+  notebookId?: string;  // For feedback engagement targeting
+  originalPrompt?: string;  // For "Regenerate with my feedback" flow
 }
 
 export interface ChatMessage {

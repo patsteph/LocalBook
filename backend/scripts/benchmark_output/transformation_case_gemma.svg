@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+<defs>
+  <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#425466" />
+  </marker>
+  <marker id="arrowhead_primary" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#635BFF" />
+  </marker>
+  <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0A2540" flood-opacity="0.08" />
+  </filter>
+  <linearGradient id="primaryGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#635BFF" stop-opacity="1" />
+    <stop offset="100%" stop-color="#4A43D1" stop-opacity="1" />
+  </linearGradient>
+  <linearGradient id="headerGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" stop-color="#F6F9FC" stop-opacity="1" />
+    <stop offset="100%" stop-color="#FFFFFF" stop-opacity="1" />
+  </linearGradient>
+</defs>
+  <rect x="0" y="0" width="1600" height="900" fill="#FFFFFF" />
+  <rect x="60" y="60" width="1480" height="100" rx="12" fill="url(#headerGradient)" />
+  <text x="80" y="106" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="44" font-weight="600" fill="#0A2540">Monolith to Microservices: An 18-Month Transformation</text>
+  <text x="80" y="138" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="20" fill="#425466">Engineering All-Hands Case Study</text>
+
+  <rect x="80" y="220" width="640" height="580" rx="12" fill="#F6F9FC" />
+  <rect x="80" y="220" width="640" height="56" rx="12" fill="#8898AA" />
+  <text x="400" y="258" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#FFFFFF" text-anchor="middle">Monolithic Architecture</text>
+  <rect x="110" y="320" width="580" height="90" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="130" y="356" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540">Single PHP Monolith</text>
+  <text x="130" y="388" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Running on bare-metal servers.</text>
+  <rect x="110" y="430" width="580" height="90" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="130" y="466" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540">Slow Release Cadence</text>
+  <text x="130" y="498" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">14-day release cycles.</text>
+  <rect x="110" y="540" width="580" height="90" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="130" y="576" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540">High Deployment Risk</text>
+  <text x="130" y="608" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">4-hour downtime windows.</text>
+  <rect x="110" y="650" width="580" height="90" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="130" y="686" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540">Single MySQL Master</text>
+  <text x="130" y="718" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Handling 8k QPS peak load.</text>
+  <rect x="880" y="220" width="640" height="580" rx="12" fill="#F6F9FC" />
+  <rect x="880" y="220" width="640" height="56" rx="12" fill="#635BFF" />
+  <text x="1200" y="258" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#FFFFFF" text-anchor="middle">Microservices on Kubernetes</text>
+  <rect x="910" y="320" width="580" height="90" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="930" y="356" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540">Microservices on EKS</text>
+  <text x="930" y="388" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">47 services on Kubernetes.</text>
+  <rect x="910" y="430" width="580" height="90" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="930" y="466" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540">Continuous Deployment</text>
+  <text x="930" y="498" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">120 deploys per day.</text>
+  <rect x="910" y="540" width="580" height="90" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="930" y="576" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540">Zero-Downtime Rollouts</text>
+  <text x="930" y="608" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Blue-green deployment strategy.</text>
+  <rect x="910" y="650" width="580" height="90" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="930" y="686" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540">Decentralized Databases</text>
+  <text x="930" y="718" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466">Per-service, reducing single point failure.</text>
+  <path d="M 732 510 L 868 510" stroke="#635BFF" stroke-width="4" fill="none" marker-end="url(#arrowhead_primary)" />
+  <text x="800" y="494" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#635BFF" text-anchor="middle">Strangler Fig Migration</text>
+</svg>

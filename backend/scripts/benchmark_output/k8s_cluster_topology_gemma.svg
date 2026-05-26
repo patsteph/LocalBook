@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+<defs>
+  <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#425466" />
+  </marker>
+  <marker id="arrowhead_primary" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#635BFF" />
+  </marker>
+  <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0A2540" flood-opacity="0.08" />
+  </filter>
+  <linearGradient id="primaryGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#635BFF" stop-opacity="1" />
+    <stop offset="100%" stop-color="#4A43D1" stop-opacity="1" />
+  </linearGradient>
+  <linearGradient id="headerGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" stop-color="#F6F9FC" stop-opacity="1" />
+    <stop offset="100%" stop-color="#FFFFFF" stop-opacity="1" />
+  </linearGradient>
+</defs>
+  <rect x="0" y="0" width="1600" height="900" fill="#FFFFFF" />
+  <rect x="60" y="60" width="1480" height="100" rx="12" fill="url(#headerGradient)" />
+  <text x="80" y="106" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="44" font-weight="600" fill="#0A2540">Kubernetes Cluster Topology and Service Mesh Diagram</text>
+  <text x="80" y="138" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="20" fill="#425466">SRE Design Review: Production Environment Components</text>
+  <!-- Central bus / gateway -->
+  <rect x="200" y="440" width="1200" height="80" rx="12" fill="url(#primaryGradient)" />
+  <text x="800" y="488" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#FFFFFF" text-anchor="middle">Istio Service Mesh</text>
+
+  <rect x="248" y="280" width="240" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="368" y="322" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">NGINX Ingress Controller</text>
+  <text x="368" y="350" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Edge traffic routing and ingress</text>
+  <path d="M 368 384 L 368 436" stroke="#635BFF" stroke-width="2" fill="none" marker-end="url(#arrowhead_primary)" />
+  <rect x="278" y="600" width="180" height="80" rx="8" fill="#F6F9FC" stroke="#E3E8EE" stroke-width="1" />
+  <text x="368" y="636" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">N/A</text>
+  <text x="368" y="660" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="13" fill="#8898AA" text-anchor="middle">N/A</text>
+  <path d="M 368 524 L 368 596" stroke="#425466" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="536" y="280" width="240" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="656" y="322" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Frontend SPA</text>
+  <text x="656" y="350" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">User interface presentation layer</text>
+  <path d="M 656 384 L 656 436" stroke="#635BFF" stroke-width="2" fill="none" marker-end="url(#arrowhead_primary)" />
+  <rect x="566" y="600" width="180" height="80" rx="8" fill="#F6F9FC" stroke="#E3E8EE" stroke-width="1" />
+  <text x="656" y="636" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">N/A</text>
+  <text x="656" y="660" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="13" fill="#8898AA" text-anchor="middle">N/A</text>
+  <path d="M 656 524 L 656 596" stroke="#425466" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="824" y="280" width="240" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="944" y="322" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">API Microservices</text>
+  <text x="944" y="350" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Business logic execution layer</text>
+  <path d="M 944 384 L 944 436" stroke="#635BFF" stroke-width="2" fill="none" marker-end="url(#arrowhead_primary)" />
+  <rect x="854" y="600" width="180" height="80" rx="8" fill="#F6F9FC" stroke="#E3E8EE" stroke-width="1" />
+  <text x="944" y="636" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">Postgres-HA</text>
+  <text x="944" y="660" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="13" fill="#8898AA" text-anchor="middle">PostgreSQL</text>
+  <path d="M 944 524 L 944 596" stroke="#425466" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="1112" y="280" width="240" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="1232" y="322" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Observability Stack</text>
+  <text x="1232" y="350" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Monitoring and logging aggregation</text>
+  <path d="M 1232 384 L 1232 436" stroke="#635BFF" stroke-width="2" fill="none" marker-end="url(#arrowhead_primary)" />
+  <rect x="1142" y="600" width="180" height="80" rx="8" fill="#F6F9FC" stroke="#E3E8EE" stroke-width="1" />
+  <text x="1232" y="636" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540" text-anchor="middle">Redis-cluster</text>
+  <text x="1232" y="660" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="13" fill="#8898AA" text-anchor="middle">Redis</text>
+  <path d="M 1232 524 L 1232 596" stroke="#425466" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+</svg>

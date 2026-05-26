@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+<defs>
+  <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#425466" />
+  </marker>
+  <marker id="arrowhead_primary" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#635BFF" />
+  </marker>
+  <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0A2540" flood-opacity="0.08" />
+  </filter>
+  <linearGradient id="primaryGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#635BFF" stop-opacity="1" />
+    <stop offset="100%" stop-color="#4A43D1" stop-opacity="1" />
+  </linearGradient>
+  <linearGradient id="headerGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" stop-color="#F6F9FC" stop-opacity="1" />
+    <stop offset="100%" stop-color="#FFFFFF" stop-opacity="1" />
+  </linearGradient>
+</defs>
+  <rect x="0" y="0" width="1600" height="900" fill="#FFFFFF" />
+  <rect x="60" y="60" width="1480" height="100" rx="12" fill="url(#headerGradient)" />
+  <text x="80" y="106" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="44" font-weight="600" fill="#0A2540">Event-Driven CQRS Financial Trading Platform Architecture</text>
+  <text x="80" y="138" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="20" fill="#425466">System design overview for high-throughput order processing</text>
+
+  <rect x="40" y="220" width="1520" height="170" rx="10" fill="#F6F9FC" />
+  <rect x="40" y="220" width="6" height="170" rx="3" fill="#635BFF" />
+  <text x="60" y="299" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#0A2540">Write Path</text>
+  <text x="60" y="323" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#8898AA">Order submission and persistence</text>
+  <rect x="365" y="255" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="490" y="295" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Trader UI REST API</text>
+  <text x="490" y="327" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">User interface for order entry</text>
+  <path d="M 619 305 L 641 305" stroke="#635BFF" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="645" y="255" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="770" y="295" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Order API Validator</text>
+  <text x="770" y="327" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Validates incoming order requests</text>
+  <path d="M 899 305 L 921 305" stroke="#635BFF" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="925" y="255" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="1050" y="295" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Order Write-Store (PostgreSQL)</text>
+  <text x="1050" y="327" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Persistent order storage service</text>
+  <path d="M 1179 305 L 1201 305" stroke="#635BFF" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="1205" y="255" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="1330" y="295" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Order Event Emitter (Kafka)</text>
+  <text x="1330" y="327" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Publishes order placed events asynchronously</text>
+  <rect x="40" y="404" width="1520" height="170" rx="10" fill="#F6F9FC" />
+  <rect x="40" y="404" width="6" height="170" rx="3" fill="#00C896" />
+  <text x="60" y="483" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#0A2540">Event Store / Kafka</text>
+  <text x="60" y="507" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#8898AA">Central hub for event publishing</text>
+  <rect x="365" y="439" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="490" y="479" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Order Placed Events</text>
+  <text x="490" y="511" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Captures order submission events</text>
+  <path d="M 619 489 L 641 489" stroke="#00C896" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="645" y="439" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="770" y="479" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Kafka Producer Service</text>
+  <text x="770" y="511" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Sends events to Kafka brokers</text>
+  <path d="M 899 489 L 921 489" stroke="#00C896" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="925" y="439" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="1050" y="479" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Risk Engine Consumer</text>
+  <text x="1050" y="511" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Processes events for exposure calculations</text>
+  <path d="M 1179 489 L 1201 489" stroke="#00C896" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="1205" y="439" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="1330" y="479" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Risk Alerts Topic</text>
+  <text x="1330" y="511" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Outputs risk-related notifications</text>
+  <rect x="40" y="588" width="1520" height="170" rx="10" fill="#F6F9FC" />
+  <rect x="40" y="588" width="6" height="170" rx="3" fill="#F5A623" />
+  <text x="60" y="667" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#0A2540">Read Path</text>
+  <text x="60" y="691" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#8898AA">Query and reporting data retrieval</text>
+  <rect x="365" y="623" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="490" y="663" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Projection Service Consumer</text>
+  <text x="490" y="695" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Consumes order events for denormalization</text>
+  <path d="M 619 673 L 641 673" stroke="#F5A623" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="645" y="623" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="770" y="663" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Read-Store (DynamoDB) Populator</text>
+  <text x="770" y="695" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Populates denormalized data store</text>
+  <path d="M 899 673 L 921 673" stroke="#F5A623" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="925" y="623" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="1050" y="663" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Reporting API Service</text>
+  <text x="1050" y="695" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Serves read queries to users</text>
+  <path d="M 1179 673 L 1201 673" stroke="#F5A623" stroke-width="2" fill="none" marker-end="url(#arrowhead)" />
+  <rect x="1205" y="623" width="250" height="100" rx="8" fill="#FFFFFF" stroke="#E3E8EE" stroke-width="1" filter="url(#softShadow)" />
+  <text x="1330" y="663" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#0A2540" text-anchor="middle">Real-Time Analytics Engine</text>
+  <text x="1330" y="695" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Processes and analyzes historical events</text>
+  <path d="M 910 391 L 910 403" stroke="#425466" stroke-width="2.5" fill="none" marker-end="url(#arrowhead)" />
+  <path d="M 910 575 L 910 587" stroke="#425466" stroke-width="2.5" fill="none" marker-end="url(#arrowhead)" />
+</svg>

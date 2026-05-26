@@ -1,0 +1,807 @@
+[
+  {
+    "id": "distributed_ecommerce",
+    "label": "auto",
+    "category": "Architecture",
+    "title_def": "Multi-region e-commerce deployment",
+    "title_actual": "Acme E-Commerce Platform Deployment Topology",
+    "audience": "Enterprise security review board",
+    "path": "olmo_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "microservices_mesh",
+    "model_used": "olmo-3:7b-instruct",
+    "retry_count": 0,
+    "generation_ms": 49281,
+    "elapsed_s": 49.3,
+    "success": true,
+    "error": null,
+    "svg_path": "distributed_ecommerce_auto.svg",
+    "png_path": "distributed_ecommerce_auto.png",
+    "critic": {
+      "legibility": 0.9,
+      "hierarchy": 0.8,
+      "balance": 0.8,
+      "color_harmony": 0.9,
+      "message_clarity": 0.9,
+      "overall": 0.85,
+      "strengths": [
+        "The use of consistent shapes (rounded rectangles) for all components provides a clean, uniform look.",
+        "The flow (Service -> Bus -> DB) is visually logical and easy to follow.",
+        "The color palette is professional and restrained (blue/white/grey)."
+      ],
+      "weaknesses": [
+        "The overall visual weight is very low, making it feel somewhat flat and unmemorable.",
+        "The connection lines (arrows) are purely functional and lack any visual polish or explanation of the data flow (e.g., request/response).",
+        "The text descriptions under the service boxes are slightly long and interrupt the clean flow of the diagram."
+      ],
+      "suggestions": [
+        "Use a more impactful visual element (e.g., a subtle background gradient or a key icon) to highlight the 'Kafka Event Bus' as the central nervous system, emphasizing its role.",
+        "Replace the simple downward arrows with a more stylized, labeled flow indicator (e.g., a dashed line with an arrow and a label like 'Asynchronous Event Stream') to improve message clarity.",
+        "Condense the descriptive text under the service boxes into bullet points or a single, punchy phrase to maintain diagram cleanliness and focus on the architecture itself."
+      ]
+    }
+  },
+  {
+    "id": "k8s_cluster_topology",
+    "label": "auto",
+    "category": "Architecture",
+    "title_def": "Production Kubernetes cluster topology",
+    "title_actual": "Production Kubernetes Cluster Topology and Namespace Layout",
+    "audience": "Platform engineering team",
+    "path": "olmo_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "microservices_mesh",
+    "model_used": "olmo-3:7b-instruct",
+    "retry_count": 0,
+    "generation_ms": 44576,
+    "elapsed_s": 44.6,
+    "success": true,
+    "error": null,
+    "svg_path": "k8s_cluster_topology_auto.svg",
+    "png_path": "k8s_cluster_topology_auto.png",
+    "critic": {
+      "legibility": 0.9,
+      "hierarchy": 0.8,
+      "balance": 0.8,
+      "color_harmony": 0.9,
+      "message_clarity": 0.9,
+      "overall": 0.85,
+      "strengths": [
+        "The use of consistent, labeled boxes clearly defines the components (services and databases).",
+        "The overall flow (top-down, left-to-right) is logical and easy to follow.",
+        "The title and subtitle clearly set the context (SRE design review, Kubernetes topology)."
+      ],
+      "weaknesses": [
+        "The visual is very dense and lacks visual separation between the 'Service Mesh' layer and the underlying components, making the flow feel monolithic.",
+        "The arrows are purely decorative and do not convey the *type* of relationship (e.g., API call, data flow, dependency).",
+        "The use of identical, generic blue boxes for all components (services and databases) dilutes the meaning and makes the diagram look uniform and uninformative."
+      ],
+      "suggestions": [
+        "Introduce distinct visual treatments (e.g., different background colors, border styles, or icons) for the service layer vs. the data layer to immediately differentiate component types.",
+        "Replace the simple arrows with labeled directional arrows or connecting lines that specify the interaction type (e.g., 'HTTP Request', 'Data Query', 'Asynchronous Event').",
+        "Use a more structured layout, perhaps grouping the entire 'Service Mesh' layer into a single container or boundary box to visually represent the scope of the mesh, rather than just a single horizontal bar."
+      ]
+    }
+  },
+  {
+    "id": "event_driven_pipeline",
+    "label": "auto",
+    "category": "Architecture",
+    "title_def": "Event-driven CQRS data pipeline",
+    "title_actual": "Event-Driven CQRS Financial Trading Platform Architecture",
+    "audience": "Engineering leadership architecture review",
+    "path": "olmo_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "cqrs_pattern",
+    "model_used": "olmo-3:7b-instruct",
+    "retry_count": 0,
+    "generation_ms": 54441,
+    "elapsed_s": 54.4,
+    "success": true,
+    "error": null,
+    "svg_path": "event_driven_pipeline_auto.svg",
+    "png_path": "event_driven_pipeline_auto.png",
+    "critic": {
+      "legibility": 0.8,
+      "hierarchy": 0.7,
+      "balance": 0.7,
+      "color_harmony": 0.8,
+      "message_clarity": 0.8,
+      "overall": 0.75,
+      "strengths": [
+        "The overall structure (Swimlanes/Flow) is appropriate for a system architecture diagram.",
+        "The use of distinct sections (Write, Event Store, Read) helps segment the complex process.",
+        "The title and subtitle clearly state the topic and intent."
+      ],
+      "weaknesses": [
+        "The diagram is extremely dense and suffers from information overload; too many components are shown at once.",
+        "The arrows and connections are visually weak and do not clearly define the flow or causality between components.",
+        "The component names and descriptions are too text-heavy, making the diagram look like a flowchart of text rather than a system."
+      ],
+      "suggestions": [
+        "Simplify the diagram by grouping related components into logical blocks (e.g., 'Ingestion Layer,' 'Persistence Layer').",
+        "Use standardized architectural symbols (e.g., AWS/Azure/GCP icons, or standard UML components) instead of simple boxes to immediately convey the nature of the system components.",
+        "Reduce the text in the boxes; focus on the *action* or *role* of the component (e.g., 'Validate Orders' instead of 'Order API Validator: Validates incoming order requests')."
+      ]
+    }
+  },
+  {
+    "id": "quarterly_dashboard",
+    "label": "auto",
+    "category": "Infographic",
+    "title_def": "Q3 2026 SaaS performance dashboard",
+    "title_actual": "Quarterly Performance Metrics Overview",
+    "audience": "Board of directors",
+    "path": "olmo_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "stat_callouts",
+    "model_used": "olmo-3:7b-instruct",
+    "retry_count": 0,
+    "generation_ms": 46087,
+    "elapsed_s": 46.1,
+    "success": true,
+    "error": null,
+    "svg_path": "quarterly_dashboard_auto.svg",
+    "png_path": "quarterly_dashboard_auto.png",
+    "critic": {
+      "legibility": 0.9,
+      "hierarchy": 0.8,
+      "balance": 0.8,
+      "color_harmony": 0.9,
+      "message_clarity": 0.8,
+      "overall": 0.8,
+      "strengths": [
+        "The use of large, bold numbers immediately draws the eye to the key data points.",
+        "The overall layout is clean, utilizing a consistent grid structure (3x2).",
+        "The title and subtitle clearly set the context (Quarterly Performance Metrics Overview for board review)."
+      ],
+      "weaknesses": [
+        "The labels/descriptions below the numbers are too small and lack visual separation from the main data point, reducing scannability.",
+        "The use of percentage signs and units (M, %) is inconsistent in placement and style across the cards.",
+        "The negative metric (-18%) is presented identically to the positive metrics, failing to signal the required attention or action."
+      ],
+      "suggestions": [
+        "Use a consistent visual treatment for negative metrics (e.g., red text, a downward-pointing arrow, or a dedicated 'Warning' icon) to immediately signal the required action.",
+        "Increase the font size and/or use a bolder weight for the metric labels (e.g., 'Annual Run Rate (ARR)') to improve scannability and readability.",
+        "Consider grouping the metrics into logical categories (e.g., 'Growth Metrics,' 'Profitability Metrics') and using a subtle divider or section header to improve the narrative flow for the board."
+      ]
+    }
+  },
+  {
+    "id": "market_quadrant",
+    "label": "auto",
+    "category": "Infographic",
+    "title_def": "Competitor positioning quadrant",
+    "title_actual": "Competitive Positioning Matrix: 8 Competitors in Implementation Complexity vs. Feature Depth",
+    "audience": "Sales kickoff strategy session",
+    "path": "olmo_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "comparison_matrix",
+    "model_used": "olmo-3:7b-instruct",
+    "retry_count": 0,
+    "generation_ms": 51199,
+    "elapsed_s": 51.2,
+    "success": true,
+    "error": null,
+    "svg_path": "market_quadrant_auto.svg",
+    "png_path": "market_quadrant_auto.png",
+    "critic": {
+      "legibility": 0.0,
+      "hierarchy": 0.0,
+      "balance": 0.0,
+      "color_harmony": 0.0,
+      "message_clarity": 0.0,
+      "overall": 0.0,
+      "strengths": [],
+      "weaknesses": [],
+      "suggestions": []
+    }
+  },
+  {
+    "id": "cost_breakdown",
+    "label": "auto",
+    "category": "Infographic",
+    "title_def": "Cloud cost breakdown FY26",
+    "title_actual": "AWS Cloud Cost Comparison by Product Line",
+    "audience": "FinOps team + CFO",
+    "path": "olmo_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "comparison_matrix",
+    "model_used": "olmo-3:7b-instruct",
+    "retry_count": 0,
+    "generation_ms": 54703,
+    "elapsed_s": 54.7,
+    "success": true,
+    "error": null,
+    "svg_path": "cost_breakdown_auto.svg",
+    "png_path": "cost_breakdown_auto.png",
+    "critic": {
+      "legibility": 0.8,
+      "hierarchy": 0.7,
+      "balance": 0.8,
+      "color_harmony": 0.9,
+      "message_clarity": 0.7,
+      "overall": 0.75,
+      "strengths": [
+        "The use of distinct, solid color blocks for the three product lines (Platform, Analytics, ML Training) immediately segments the data, which is helpful for comparison.",
+        "The title and subtitle clearly define the scope (AWS Cloud Cost Comparison) and the audience/purpose (FinOps & CFO Review).",
+        "The data is presented in a clean, tabular format, which is inherently easy to read."
+      ],
+      "weaknesses": [
+        "The sheer volume of data points (8 rows of metrics) makes the visual feel dense and overwhelming, diluting the primary message (cost comparison).",
+        "The metrics are listed in a non-standard order (e.g., Total Annual Spend followed by Component Mix, then Reserved Instance Coverage), forcing the reader to process multiple, unrelated concepts sequentially.",
+        "The primary takeaway\u2014which product line is the most expensive or most efficient\u2014is not visually emphasized or summarized, requiring the audience to do the heavy lifting."
+      ],
+      "suggestions": [
+        "Condense the data: Focus only on the top 2-3 most critical metrics (e.g., Total Annual Spend and Cost-per-Customer) and eliminate the component mix and reserved instance coverage rows unless specifically requested by the CFO.",
+        "Use visual comparison elements: Instead of just listing the metrics, use a simple bar chart or stacked area chart to visually compare the 'Total Annual Spend' across the three lines, making the magnitude differences instantly obvious.",
+        "Improve the narrative flow: Add a clear, bolded summary box or bullet point below the table that explicitly states the key finding (e.g., 'Analytics is the primary cost driver, requiring immediate review')."
+      ]
+    }
+  },
+  {
+    "id": "customer_journey",
+    "label": "auto",
+    "category": "Storytelling",
+    "title_def": "Customer journey: lead \u2192 champion",
+    "title_actual": "B2B SaaS Customer Journey Stages",
+    "audience": "Growth team OKR planning",
+    "path": "olmo_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "journey_map",
+    "model_used": "olmo-3:7b-instruct",
+    "retry_count": 0,
+    "generation_ms": 64750,
+    "elapsed_s": 64.8,
+    "success": true,
+    "error": null,
+    "svg_path": "customer_journey_auto.svg",
+    "png_path": "customer_journey_auto.png",
+    "critic": {
+      "legibility": 0.9,
+      "hierarchy": 0.8,
+      "balance": 0.7,
+      "color_harmony": 0.8,
+      "message_clarity": 0.9,
+      "overall": 0.8,
+      "strengths": [
+        "The overall flow (left-to-right) clearly maps a process, which is excellent for a journey visual.",
+        "The use of distinct, colored cards for each stage helps segment the information and keeps the content digestible.",
+        "The title and subtitle clearly set the context (B2B SaaS, OKR planning)."
+      ],
+      "weaknesses": [
+        "The text within the cards is dense and lacks internal hierarchy (all bullet points look equally important).",
+        "The transition between the stages (the arrows/connectors) are visually weak and don't reinforce the 'journey' feeling.",
+        "The use of the same font weight and size for all bullet points makes the content feel like a list rather than a progression."
+      ],
+      "suggestions": [
+        "Introduce a visual element (e.g., a subtle gradient or a connecting line with increasing thickness) between the stages to emphasize the flow and momentum.",
+        "Break down the bullet points within each card. Use bolding or slightly larger text for the key action/metric (e.g., 'Initiates trial signup') and smaller text for the supporting detail.",
+        "Consider adding a small, illustrative icon above each stage title (e.g., a magnifying glass for 'Discover', a handshake for 'Engage') to add visual interest and reinforce the concept immediately."
+      ]
+    }
+  },
+  {
+    "id": "transformation_case",
+    "label": "auto",
+    "category": "Storytelling",
+    "title_def": "Monolith \u2192 microservices transformation",
+    "title_actual": "Monolith vs. Microservices: Before/After Case Study",
+    "audience": "Tech all-hands case study",
+    "path": "olmo_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "comparison_matrix",
+    "model_used": "olmo-3:7b-instruct",
+    "retry_count": 0,
+    "generation_ms": 52295,
+    "elapsed_s": 52.3,
+    "success": true,
+    "error": null,
+    "svg_path": "transformation_case_auto.svg",
+    "png_path": "transformation_case_auto.png",
+    "critic": {
+      "legibility": 0.9,
+      "hierarchy": 0.8,
+      "balance": 0.8,
+      "color_harmony": 0.9,
+      "message_clarity": 0.9,
+      "overall": 0.85,
+      "strengths": [
+        "The use of a clear, comparative table structure makes the comparison easy to follow.",
+        "The title and subtitle clearly define the scope (Monolith vs. Microservices) and intent (Before/After Case Study).",
+        "The consistent use of colored headers for the three categories (Legacy, Microservices, Cloud-Native) helps segment the information visually."
+      ],
+      "weaknesses": [
+        "The content is presented as a simple list of bullet points, which is dry and lacks visual impact for a high-stakes presentation.",
+        "The headers (Legacy Monolith, Microservices Architecture, Cloud-Native Approach) are visually heavy and take up too much space, making the overall visual feel blocky.",
+        "The sheer amount of text in the cells, while necessary, makes the visual feel dense and overwhelming, risking cognitive overload for the audience."
+      ],
+      "suggestions": [
+        "Replace the current table structure with a visual timeline or a three-column diagram using icons and simple flow arrows to illustrate the 'transformation' concept, rather than just listing features.",
+        "Condense the text in each cell significantly. Use headlines and 3-5 bullet points per row, focusing on the *impact* (e.g., 'Faster Deployment' instead of 'Continuous daily deployments') rather than just the technical feature.",
+        "Introduce a visual element (like a progress bar or a simple graph) to represent the 'improvement' or 'transformation' across the rows, making the comparison more dynamic and less like a spreadsheet."
+      ]
+    }
+  },
+  {
+    "id": "vision_hero",
+    "label": "auto",
+    "category": "Storytelling",
+    "title_def": "Vision: the future of cloud computing is serverless",
+    "title_actual": "The Future of Cloud: Serverless as the Next Generation",
+    "audience": "CTO pitch deck cover slide",
+    "path": "olmo_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "value_proposition",
+    "model_used": "olmo-3:7b-instruct",
+    "retry_count": 0,
+    "generation_ms": 55205,
+    "elapsed_s": 55.2,
+    "success": true,
+    "error": null,
+    "svg_path": "vision_hero_auto.svg",
+    "png_path": "vision_hero_auto.png",
+    "critic": {
+      "legibility": 0.9,
+      "hierarchy": 0.8,
+      "balance": 0.8,
+      "color_harmony": 0.8,
+      "message_clarity": 0.9,
+      "overall": 0.85,
+      "strengths": [
+        "The overall structure is clean and professional, using ample whitespace.",
+        "The main headline ('The Future of Cloud: Serverless as the Next Generation') is strong and clearly sets the topic.",
+        "The use of distinct, colored cards for the three benefits helps segment the information effectively."
+      ],
+      "weaknesses": [
+        "The three benefit cards (S, C, E) are visually identical and lack differentiation, making the content feel like a list rather than a cohesive narrative.",
+        "The bullet points within the cards are dense and use technical jargon without sufficient explanation, which can overwhelm a non-technical executive audience.",
+        "The central graphic element (the large 'S' and the subsequent three cards) feels disconnected from the main headline, creating a slight visual jump."
+      ],
+      "suggestions": [
+        "Instead of three identical cards, use a visual progression (e.g., a timeline or a three-step diagram) to show how the benefits build upon each other, reinforcing the 'Next Generation' narrative.",
+        "Simplify the bullet points drastically. For an executive audience, replace technical lists with 1-2 high-impact, benefit-driven statements (e.g., instead of 'No manual provisioning...', use 'Eliminate operational overhead').",
+        "Use a more sophisticated visual anchor for the central 'S' element, perhaps connecting it with subtle lines or arrows to the three benefit cards, tying the whole composition together."
+      ]
+    }
+  },
+  {
+    "id": "distributed_ecommerce",
+    "label": "gemma",
+    "category": "Architecture",
+    "title_def": "Multi-region e-commerce deployment",
+    "title_actual": "E-commerce Platform Deployment Topology",
+    "audience": "Enterprise security review board",
+    "path": "gemma_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "microservices_mesh",
+    "model_used": "gemma4:e4b",
+    "retry_count": 0,
+    "generation_ms": 29390,
+    "elapsed_s": 29.4,
+    "success": true,
+    "error": null,
+    "svg_path": "distributed_ecommerce_gemma.svg",
+    "png_path": "distributed_ecommerce_gemma.png",
+    "critic": {
+      "legibility": 0.9,
+      "hierarchy": 0.8,
+      "balance": 0.8,
+      "color_harmony": 0.9,
+      "message_clarity": 0.9,
+      "overall": 0.85,
+      "strengths": [
+        "The use of distinct, labeled boxes for each component (Service, Bus, Data) clearly segments the architecture.",
+        "The flow (Service -> Bus -> Data) is visually intuitive and easy to follow.",
+        "The color palette is professional and restrained, using blue effectively to denote connectivity and grouping."
+      ],
+      "weaknesses": [
+        "The diagram lacks explicit directional arrows or connectors between the boxes, making the flow slightly ambiguous (though the vertical arrangement implies flow).",
+        "The text within the boxes is somewhat dense and could benefit from more visual separation (e.g., using bullet points or smaller sub-headers).",
+        "The title and subtitle are slightly separated from the main diagram, making the overall composition feel a little disjointed."
+      ],
+      "suggestions": [
+        "Add explicit, directional arrows (e.g., downward arrows) connecting the Service boxes to the Kafka Event Bus, and the Bus to the Data boxes, to solidify the flow.",
+        "Use a consistent visual style for the connecting elements (e.g., dashed lines or arrows) to reinforce the 'flow' concept, rather than just relying on the blue background.",
+        "Consider grouping the entire diagram (Title, Diagram, Subtitle) within a single, contained frame or card to improve the overall visual cohesion and professionalism."
+      ]
+    }
+  },
+  {
+    "id": "k8s_cluster_topology",
+    "label": "gemma",
+    "category": "Architecture",
+    "title_def": "Production Kubernetes cluster topology",
+    "title_actual": "Kubernetes Cluster Topology and Service Mesh Diagram",
+    "audience": "Platform engineering team",
+    "path": "gemma_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "microservices_mesh",
+    "model_used": "gemma4:e4b",
+    "retry_count": 0,
+    "generation_ms": 31420,
+    "elapsed_s": 31.4,
+    "success": true,
+    "error": null,
+    "svg_path": "k8s_cluster_topology_gemma.svg",
+    "png_path": "k8s_cluster_topology_gemma.png",
+    "critic": {
+      "legibility": 0.8,
+      "hierarchy": 0.7,
+      "balance": 0.8,
+      "color_harmony": 0.9,
+      "message_clarity": 0.8,
+      "overall": 0.8,
+      "strengths": [
+        "The use of distinct, colored boxes for each component helps segment the architecture clearly.",
+        "The overall flow (top-down, left-to-right) is logical and easy to follow.",
+        "The color palette is professional and restrained, contributing to a clean, modern look."
+      ],
+      "weaknesses": [
+        "The diagram lacks explicit connecting lines or arrows to show the flow of data or dependency between components, making the relationships ambiguous.",
+        "The titles and descriptions are slightly repetitive (e.g., 'Service Mesh' vs. 'Istio Service Mesh'), which dilutes the professional polish.",
+        "The use of generic, rectangular boxes makes the diagram feel flat and academic, failing to convey the complexity or interaction of the systems."
+      ],
+      "suggestions": [
+        "Add directional arrows or labeled lines (e.g., 'API Calls', 'Data Flow') connecting the components to explicitly show the flow of data and dependencies.",
+        "Refine the component labeling to be more concise. Use the primary component name (e.g., 'Istio Service Mesh') and reserve the description for a footnote or speaker notes, keeping the visual clean.",
+        "Introduce subtle visual depth or grouping (e.g., using containers or background shading) to differentiate the logical layers (e.g., 'Ingress Layer', 'Data Layer') rather than just using uniform boxes."
+      ]
+    }
+  },
+  {
+    "id": "event_driven_pipeline",
+    "label": "gemma",
+    "category": "Architecture",
+    "title_def": "Event-driven CQRS data pipeline",
+    "title_actual": "Event-Driven CQRS Architecture for Financial Trading",
+    "audience": "Engineering leadership architecture review",
+    "path": "gemma_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "cqrs_pattern",
+    "model_used": "gemma4:e4b",
+    "retry_count": 0,
+    "generation_ms": 264585,
+    "elapsed_s": 264.6,
+    "success": true,
+    "error": null,
+    "svg_path": "event_driven_pipeline_gemma.svg",
+    "png_path": "event_driven_pipeline_gemma.png",
+    "critic": {
+      "legibility": 0.7,
+      "hierarchy": 0.7,
+      "balance": 0.6,
+      "color_harmony": 0.7,
+      "message_clarity": 0.7,
+      "overall": 0.7,
+      "strengths": [
+        "The overall structure (boxes and arrows) effectively maps the flow of data in a CQRS/Event Sourcing pattern.",
+        "The use of a clear title and subtitle sets the context for the audience.",
+        "The grouping of related components (e.g., the 'Read Model' section) helps segment the information."
+      ],
+      "weaknesses": [
+        "The diagram is too dense and lacks visual breathing room, making the flow hard to follow at a glance.",
+        "The labels within the boxes are too long and descriptive, causing the boxes to feel overloaded and visually heavy.",
+        "The arrows connecting the components are generic and do not differentiate between types of communication (e.g., synchronous API calls vs. asynchronous event streams)."
+      ],
+      "suggestions": [
+        "Use more whitespace around the main flow components to reduce visual clutter and allow the eye to rest.",
+        "Simplify the text labels within the boxes, focusing only on the core component name and its primary function (e.g., 'Command Processor: Validates & Executes Business Logic').",
+        "Differentiate the arrows: use a dashed line/icon for asynchronous event streams (Event Store) and a solid line for synchronous API calls (API Gateway)."
+      ]
+    }
+  },
+  {
+    "id": "quarterly_dashboard",
+    "label": "gemma",
+    "category": "Infographic",
+    "title_def": "Q3 2026 SaaS performance dashboard",
+    "title_actual": "Q3 Performance Summary: Key Growth Metrics",
+    "audience": "Board of directors",
+    "path": "gemma_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "stat_callouts",
+    "model_used": "gemma4:e4b",
+    "retry_count": 0,
+    "generation_ms": 40310,
+    "elapsed_s": 40.3,
+    "success": true,
+    "error": null,
+    "svg_path": "quarterly_dashboard_gemma.svg",
+    "png_path": "quarterly_dashboard_gemma.png",
+    "critic": {
+      "legibility": 0.9,
+      "hierarchy": 0.8,
+      "balance": 0.7,
+      "color_harmony": 0.9,
+      "message_clarity": 0.8,
+      "overall": 0.8,
+      "strengths": [
+        "The use of large, bold numbers immediately draws attention to the key metrics, which is highly effective for a board presentation.",
+        "The overall structure is clean and modular, making it easy for the audience to process multiple data points quickly.",
+        "The consistent use of a single accent color (blue) maintains a professional and cohesive look."
+      ],
+      "weaknesses": [
+        "The metric labels (e.g., 'Annual Recurring Revenue', 'Gross Margin') are too small and lack sufficient visual weight compared to the numbers, causing the eye to skip over the context.",
+        "The explanatory text below each metric (e.g., 'Up 38% YoY') is visually weak and feels like an afterthought, diluting the impact of the main metric.",
+        "The title/subtitle block is slightly disconnected from the main grid, making the overall flow feel a bit disjointed."
+      ],
+      "suggestions": [
+        "Increase the font size and weight of the metric labels (e.g., 'Annual Recurring Revenue') to match the visual importance of the numbers, creating a clear visual hierarchy (Number > Label > Context).",
+        "Consolidate the explanatory text ('Up 38% YoY') into a single, consistent format (e.g., a small, colored tag or footnote) and place it directly under the main label to improve flow.",
+        "Consider adding a subtle, unifying element (like a light border or background shade) around the entire 3x2 grid to visually group the metrics and reinforce that they belong to the 'Q3 Performance Summary' section."
+      ]
+    }
+  },
+  {
+    "id": "market_quadrant",
+    "label": "gemma",
+    "category": "Infographic",
+    "title_def": "Competitor positioning quadrant",
+    "title_actual": "Competitive Positioning Map: CDP Market",
+    "audience": "Sales kickoff strategy session",
+    "path": "gemma_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "quadrant_2x2",
+    "model_used": "gemma4:e4b",
+    "retry_count": 0,
+    "generation_ms": 1012468,
+    "elapsed_s": 1012.5,
+    "success": true,
+    "error": null,
+    "svg_path": "market_quadrant_gemma.svg",
+    "png_path": "market_quadrant_gemma.png",
+    "critic": {
+      "legibility": 0.8,
+      "hierarchy": 0.7,
+      "balance": 0.8,
+      "color_harmony": 0.9,
+      "message_clarity": 0.7,
+      "overall": 0.75,
+      "strengths": [
+        "The use of a standard 2x2 matrix format is immediately recognizable and appropriate for market positioning.",
+        "The color palette is clean and professional, using distinct, non-clashing colors for the quadrants.",
+        "The title and subtitle are clear and directly state the visual's purpose."
+      ],
+      "weaknesses": [
+        "The axes labels (e.g., 'Low Implementation Complexity' to 'High Implementation Complexity') are too long and make the visual feel horizontally stretched and unbalanced.",
+        "The quadrant labels (e.g., 'Quick Wins', 'Leaders') are placed too close to the axes, making the corner text feel cramped.",
+        "The overall visual lacks a central focal point or guiding narrative, making the viewer unsure where to look first or what the key takeaway is."
+      ],
+      "suggestions": [
+        "Shorten the axis labels significantly (e.g., 'Complexity' on the Y-axis, 'Depth' on the X-axis) and use descriptive text in the slide notes or accompanying talk track.",
+        "Add a prominent, contrasting element (e.g., a bold arrow or a shaded area) to highlight the company's current position or the target market, immediately directing the viewer's attention to the key takeaway.",
+        "Re-evaluate the quadrant labels. Instead of just naming the quadrant, consider using a brief, actionable descriptor (e.g., 'Low Hanging Fruit' instead of 'Quick Wins') to enhance the strategic impact."
+      ]
+    }
+  },
+  {
+    "id": "cost_breakdown",
+    "label": "gemma",
+    "category": "Infographic",
+    "title_def": "Cloud cost breakdown FY26",
+    "title_actual": "AWS Cloud Cost Comparison by Product Line (FY2026)",
+    "audience": "FinOps team + CFO",
+    "path": "gemma_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "comparison_matrix",
+    "model_used": "gemma4:e4b",
+    "retry_count": 0,
+    "generation_ms": 27840,
+    "elapsed_s": 27.8,
+    "success": true,
+    "error": null,
+    "svg_path": "cost_breakdown_gemma.svg",
+    "png_path": "cost_breakdown_gemma.png",
+    "critic": {
+      "legibility": 0.8,
+      "hierarchy": 0.7,
+      "balance": 0.7,
+      "color_harmony": 0.8,
+      "message_clarity": 0.8,
+      "overall": 0.75,
+      "strengths": [
+        "The title is clear and immediately sets the context (AWS Cost Comparison, FY2026).",
+        "The use of distinct, colored buttons for the product lines (Platform, Analytics, ML Training) is a good starting point for grouping data.",
+        "The overall structure\u2014a clear title followed by a list of metrics\u2014is logical."
+      ],
+      "weaknesses": [
+        "The visual is currently just a title and a list of empty placeholders, lacking any actual data representation (charts, bars, etc.), making it impossible to assess the core message.",
+        "The placeholder buttons are too large and dominate the visual space, drawing attention away from the metrics list.",
+        "The metrics list (Total Cost, Compute %, etc.) is presented as a simple, unformatted list, which fails to communicate any relationship or comparison between the product lines."
+      ],
+      "suggestions": [
+        "Replace the large, colored buttons with a single, clean legend or a single chart axis label, reserving the visual space for the actual data visualization (e.g., a grouped bar chart or stacked area chart).",
+        "For the metrics list, use a structured table or a dedicated chart type (like a grouped bar chart) to show the comparison across the three product lines, rather than just listing the metrics.",
+        "Introduce a visual element (like a subtle background gradient or a key callout box) to highlight the 'Cost Optimization' takeaway, moving the focus from merely listing data to telling a story."
+      ]
+    }
+  },
+  {
+    "id": "customer_journey",
+    "label": "gemma",
+    "category": "Storytelling",
+    "title_def": "Customer journey: lead \u2192 champion",
+    "title_actual": "B2B SaaS Customer Journey Funnel and Leak Analysis",
+    "audience": "Growth team OKR planning",
+    "path": "gemma_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "journey_map",
+    "model_used": "gemma4:e4b",
+    "retry_count": 0,
+    "generation_ms": 395755,
+    "elapsed_s": 395.8,
+    "success": true,
+    "error": null,
+    "svg_path": "customer_journey_gemma.svg",
+    "png_path": "customer_journey_gemma.png",
+    "critic": {
+      "legibility": 0.8,
+      "hierarchy": 0.7,
+      "balance": 0.7,
+      "color_harmony": 0.8,
+      "message_clarity": 0.8,
+      "overall": 0.75,
+      "strengths": [
+        "The overall structure of the funnel is clear and easy to follow, mapping the customer journey logically.",
+        "The use of distinct, colored boxes for each stage helps segment the information effectively.",
+        "The inclusion of both quantitative metrics (numbers) and qualitative actions (steps) provides comprehensive context."
+      ],
+      "weaknesses": [
+        "The title and subtitle are slightly generic and lack immediate impact, failing to hook the audience.",
+        "The sheer volume of text in the lower boxes (the 'steps') makes the visual feel dense and overwhelming, forcing the audience to read too much.",
+        "The transitions between the metrics (e.g., 312k to 5.8%) are presented as isolated data points rather than a continuous, flowing funnel, which weakens the narrative flow."
+      ],
+      "suggestions": [
+        "Simplify the text in the lower boxes. Instead of listing 3-4 steps per stage, use icons and 1-2 key action phrases (e.g., 'Sign Up' and 'Explore Features') to maintain visual breathing room.",
+        "Improve the visual flow by connecting the stages with directional arrows or a gradient background that visually represents the 'leak' or drop-off, reinforcing the funnel concept.",
+        "Refine the title to be more outcome-oriented, such as: 'Optimizing the B2B SaaS Funnel: Key Leak Points and OKR Targets' to immediately signal the visual's purpose and value."
+      ]
+    }
+  },
+  {
+    "id": "transformation_case",
+    "label": "gemma",
+    "category": "Storytelling",
+    "title_def": "Monolith \u2192 microservices transformation",
+    "title_actual": "Monolith to Microservices: An 18-Month Transformation",
+    "audience": "Tech all-hands case study",
+    "path": "gemma_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "before_after",
+    "model_used": "gemma4:e4b",
+    "retry_count": 0,
+    "generation_ms": 764216,
+    "elapsed_s": 764.2,
+    "success": true,
+    "error": null,
+    "svg_path": "transformation_case_gemma.svg",
+    "png_path": "transformation_case_gemma.png",
+    "critic": {
+      "legibility": 0.9,
+      "hierarchy": 0.7,
+      "balance": 0.8,
+      "color_harmony": 0.7,
+      "message_clarity": 0.8,
+      "overall": 0.75,
+      "strengths": [
+        "The core concept (Monolith to Microservices) is immediately clear and well-structured.",
+        "The use of two distinct columns/sections effectively separates the 'before' and 'after' states.",
+        "The title and subtitle clearly set the context (Case Study, Transformation)."
+      ],
+      "weaknesses": [
+        "The transition element ('Strangler Fig Migration') is visually weak and lacks integration with the content blocks.",
+        "The content blocks themselves are highly repetitive and lack visual distinction (they are just lists of text).",
+        "The overall visual flow is static; it feels like two separate lists placed side-by-side rather than a narrative transformation."
+      ],
+      "suggestions": [
+        "Replace the simple arrow/text 'Strangler Fig Migration' with a dedicated, visually dynamic process flow (e.g., a curved arrow or a timeline graphic) that physically connects the two columns.",
+        "Group the corresponding items (e.g., 'Single PHP Monolith' and 'Microservices on EKS') into a single, cohesive row or card to emphasize the direct transformation relationship.",
+        "Use subtle visual cues (like color gradients or icons) to show the *improvement* or *scale* when moving from the left column to the right column, rather than just listing the new state."
+      ]
+    }
+  },
+  {
+    "id": "vision_hero",
+    "label": "gemma",
+    "category": "Storytelling",
+    "title_def": "Vision: the future of cloud computing is serverless",
+    "title_actual": "The Next Generation of Application Deployment: Serverless Computing",
+    "audience": "CTO pitch deck cover slide",
+    "path": "gemma_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "value_proposition",
+    "model_used": "gemma4:e4b",
+    "retry_count": 0,
+    "generation_ms": 29595,
+    "elapsed_s": 29.6,
+    "success": true,
+    "error": null,
+    "svg_path": "vision_hero_gemma.svg",
+    "png_path": "vision_hero_gemma.png",
+    "critic": {
+      "legibility": 0.9,
+      "hierarchy": 0.7,
+      "balance": 0.8,
+      "color_harmony": 0.8,
+      "message_clarity": 0.8,
+      "overall": 0.8,
+      "strengths": [
+        "The title is clear and highly relevant to the target audience (CTO).",
+        "The use of whitespace is generally effective, giving the slide room to breathe.",
+        "The core message ('Serverless: The inevitable evolution beyond complexity.') is punchy and memorable."
+      ],
+      "weaknesses": [
+        "The main body text (the three bullet points) is presented as a list of features rather than a cohesive narrative, making the impact feel diluted.",
+        "The visual structure is overly simplistic and lacks a strong, unifying visual metaphor for 'serverless' or 'evolution.'",
+        "The sub-text under the main title ('CTO-targeted pitch deck cover slide') should be removed as it is internal metadata and distracting to the viewer."
+      ],
+      "suggestions": [
+        "Replace the three bullet points with a single, impactful graphic or diagram that illustrates the *benefit* (e.g., a simplified flow diagram showing complexity reduction, not just a list of features).",
+        "Use a more sophisticated color palette for the accent elements (like the cloud icon and the bullet points) that aligns with enterprise trust (e.g., deep blues, teals, or grays) rather than a generic light blue.",
+        "Refine the main headline to be more benefit-driven, perhaps combining the title and the sub-headline into one powerful statement, e.g., 'Achieving Massive Scale and Velocity: The Serverless Advantage.'"
+      ]
+    }
+  },
+  {
+    "id": "vision_hero",
+    "label": "hybrid",
+    "category": "Storytelling",
+    "title_def": "Vision: the future of cloud computing is serverless",
+    "title_actual": "The Future of Application Deployment: Serverless Computing",
+    "audience": "CTO pitch deck cover slide",
+    "path": "gemma_freeform",
+    "setup": "setup_a",
+    "output_format": "svg",
+    "idiom": "value_proposition",
+    "model_used": "gemma4:e4b",
+    "retry_count": 0,
+    "generation_ms": 891777,
+    "elapsed_s": 891.8,
+    "success": true,
+    "error": null,
+    "svg_path": "vision_hero_hybrid.svg",
+    "png_path": "vision_hero_hybrid.png",
+    "critic": {
+      "legibility": 0.9,
+      "hierarchy": 0.8,
+      "balance": 0.8,
+      "color_harmony": 0.8,
+      "message_clarity": 0.9,
+      "overall": 0.85,
+      "strengths": [
+        "The overall structure is clean and professional, using ample whitespace.",
+        "The main headline ('Serverless: The inevitable evolution beyond complexity.') is strong and persuasive.",
+        "The use of three distinct, equally weighted pillars (Speed, Cost, Scalability) provides clear structure."
+      ],
+      "weaknesses": [
+        "The bullet points under each pillar are too dense and read like technical jargon rather than high-level business benefits.",
+        "The supporting text (e.g., 'A CTO-targeted pitch deck cover slide...') is unnecessary and should be removed.",
+        "The icons, while relevant, are generic and do not add significant visual interest or differentiation."
+      ],
+      "suggestions": [
+        "Rewrite the bullet points to use benefit-driven language (e.g., instead of 'Eliminate infrastructure management,' use 'Focus engineering effort on core business logic').",
+        "Consider replacing the current three-column layout with a more dynamic visual representation (e.g., a timeline or a diagram showing the shift from traditional to serverless).",
+        "Use a single, consistent accent color for all icons and headings to unify the visual and increase polish."
+      ]
+    }
+  }
+]

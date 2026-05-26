@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import DOMPurify from 'dompurify';
 import {
   FileText, Palette, Target, Layers, Mic, MessageSquare, PenLine,
@@ -15,6 +15,8 @@ import { FlashcardsCanvasTile } from './FlashcardsCanvasTile';
 import { API_BASE_URL } from '../../services/api';
 import { RichNoteEditor } from '../RichNoteEditor';
 import { FeedbackThumbs } from '../shared/FeedbackThumbs';
+import { VisualCriticBadge, VisualFeedbackBar } from '../shared/VisualCriticBadge';
+import { VisualIdiomSwap } from '../shared/VisualIdiomSwap';
 
 // ─── Type icons ────────────────────────────────────────────────────────────
 const iconSm = 'w-3.5 h-3.5';
@@ -65,6 +67,63 @@ const TYPE_LABELS: Record<CanvasItem['type'], string> = {
   'note': 'Note',
 };
 
+// VisualChatInlineContent — SVG renderer + thumbs row + critic badge for v2
+// visuals shown in the chat-area canvas card. Mirrors the canvas-overlay
+// surface so both paths feel identical.
+const VisualChatInlineContent: React.FC<{
+  item: CanvasItem;
+  downSubmitted: boolean;
+  onThumbsDown: () => void;
+}> = ({ item, downSubmitted, onThumbsDown }) => {
+  const criticScore = item.metadata?.criticScore;
+  const templateId = item.metadata?.templateId;
+  const v2Path = item.metadata?.v2Path;
+  const v2GenerationMs = item.metadata?.v2GenerationMs;
+  const notebookId = item.metadata?.notebookId || '';
+  return (
+    <div className="space-y-2">
+      <SVGRenderer svg={item.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+          {criticScore && <VisualCriticBadge score={criticScore} />}
+          {v2Path && (
+            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-mono">
+              {v2Path}{templateId ? ` · ${templateId}` : ''}
+              {v2GenerationMs ? ` · ${Math.round(v2GenerationMs / 1000)}s` : ''}
+            </span>
+          )}
+          <VisualIdiomSwap
+            currentIdiom={templateId}
+            notebookId={notebookId}
+            originalPrompt={item.metadata?.originalPrompt}
+          />
+        </div>
+        <FeedbackThumbs
+          kind="curator_feature"
+          subjectType="studio_visual"
+          subjectId={item.id}
+          notebookId={notebookId}
+          payload={{
+            skill_id: 'visual',
+            template_id: templateId,
+            v2_path: v2Path,
+            critic_overall: criticScore?.overall,
+          }}
+          size="sm"
+          onFeedback={(response) => { if (response === 'down') onThumbsDown(); }}
+        />
+      </div>
+      <VisualFeedbackBar
+        visible={downSubmitted}
+        notebookId={notebookId}
+        subjectId={item.id}
+        templateId={templateId}
+        originalPrompt={item.metadata?.originalPrompt}
+      />
+    </div>
+  );
+};
+
 interface CanvasItemCardProps {
   item: CanvasItem;
   isOnly?: boolean;
@@ -72,6 +131,7 @@ interface CanvasItemCardProps {
 
 export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
   const ctx = useCanvas();
+  const [visualThumbsDown, setVisualThumbsDown] = useState(false);
   const hasUnsavedNote = item.type === 'note' && item.content.trim().length > 0;
 
   const handleRemove = (e: React.MouseEvent) => {
@@ -308,7 +368,17 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
           )}
           {item.type === 'visual' && (
             item.content ? (
-              <MermaidRenderer code={item.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+              // v2 produces native SVG; legacy template path produces Mermaid.
+              // Detect by content shape so each renderer gets the right input.
+              item.content.trimStart().startsWith('<svg') ? (
+                <VisualChatInlineContent
+                  item={item}
+                  downSubmitted={visualThumbsDown}
+                  onThumbsDown={() => setVisualThumbsDown(true)}
+                />
+              ) : (
+                <MermaidRenderer code={item.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+              )
             ) : !isGenerating && !isError ? (
               <p className="text-gray-400 text-sm">No visual content</p>
             ) : null

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+<defs>
+  <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#425466" />
+  </marker>
+  <marker id="arrowhead_primary" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+    <polygon points="0 0, 10 5, 0 10" fill="#635BFF" />
+  </marker>
+  <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0A2540" flood-opacity="0.08" />
+  </filter>
+  <linearGradient id="primaryGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#635BFF" stop-opacity="1" />
+    <stop offset="100%" stop-color="#4A43D1" stop-opacity="1" />
+  </linearGradient>
+  <linearGradient id="headerGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+    <stop offset="0%" stop-color="#F6F9FC" stop-opacity="1" />
+    <stop offset="100%" stop-color="#FFFFFF" stop-opacity="1" />
+  </linearGradient>
+</defs>
+  <rect x="0" y="0" width="1600" height="900" fill="#FFFFFF" />
+  <rect x="60" y="60" width="1480" height="100" rx="12" fill="url(#headerGradient)" />
+  <text x="80" y="106" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="44" font-weight="600" fill="#0A2540">Monolith vs. Microservices: Before/After Case Study</text>
+  <text x="80" y="138" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="20" fill="#425466">Engineering transformation comparison</text>
+
+  <rect x="340" y="220" width="372" height="80" rx="8" fill="#635BFF" />
+  <text x="526" y="270" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#FFFFFF" text-anchor="middle">Legacy Monolith</text>
+  <rect x="720" y="220" width="372" height="80" rx="8" fill="#635BFF" />
+  <text x="906" y="270" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#FFFFFF" text-anchor="middle">Microservices Architecture</text>
+  <rect x="1100" y="220" width="372" height="80" rx="8" fill="#635BFF" />
+  <text x="1286" y="270" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#FFFFFF" text-anchor="middle">Cloud-Native Approach</text>
+  <rect x="120" y="316" width="1352" height="82" rx="6" fill="#F6F9FC" />
+  <text x="136" y="362" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540">Deployment Environment</text>
+  <text x="526" y="362" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Single PHP monolith on bare-metal servers</text>
+  <text x="906" y="362" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Kubernetes (AWS EKS) deployments</text>
+  <text x="1286" y="362" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Cloud-native microservices platform</text>
+  <rect x="120" y="406" width="1352" height="82" rx="6" fill="#FFFFFF" />
+  <text x="136" y="452" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540">Release Cadence</text>
+  <text x="526" y="452" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">14-day release cycles</text>
+  <text x="906" y="452" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Continuous daily deployments (~120/day)</text>
+  <text x="1286" y="452" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Zero-downtime rollouts</text>
+  <rect x="120" y="496" width="1352" height="82" rx="6" fill="#F6F9FC" />
+  <text x="136" y="542" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540">Deployment Duration</text>
+  <text x="526" y="542" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">4-hour deployments with downtime</text>
+  <text x="906" y="542" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Near-instant deployments</text>
+  <text x="1286" y="542" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Blue-green rollout strategy</text>
+  <rect x="120" y="586" width="1352" height="82" rx="6" fill="#FFFFFF" />
+  <text x="136" y="632" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540">System Throughput (QPS)</text>
+  <text x="526" y="632" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">MySQL master handling 8k QPS</text>
+  <text x="906" y="632" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">PostgreSQL/Redis per service, max 3k QPS</text>
+  <text x="1286" y="632" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Distributed database and cache layers</text>
+  <rect x="120" y="676" width="1352" height="82" rx="6" fill="#F6F9FC" />
+  <text x="136" y="722" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="16" font-weight="600" fill="#0A2540">On-Call Incident Frequency</text>
+  <text x="526" y="722" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">On-call paged 4-6 times/week</text>
+  <text x="906" y="722" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">On-call paged ~1 time/week</text>
+  <text x="1286" y="722" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" fill="#425466" text-anchor="middle">Reduced incident frequency post-migration</text>
+</svg>
