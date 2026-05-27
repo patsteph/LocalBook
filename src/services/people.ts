@@ -21,7 +21,7 @@ class PeopleService {
   }
 
   async toggleCoaching(notebookId: string, enabled: boolean): Promise<any> {
-    const response = await fetch(
+    const response = await localFetch(
       `${API_BASE_URL}/people/${notebookId}/config/coaching?enabled=${enabled}`,
       { method: 'PATCH' }
     );

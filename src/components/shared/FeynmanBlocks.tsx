@@ -64,7 +64,7 @@ export const FeynmanQuizBlock: React.FC<{ json: string; docTitle?: string }> = (
   const fetchQuiz = useCallback(async () => {
     if (!data.notebook_id || !data.level) return false;
     try {
-      const res = await fetch(
+      const res = await localFetch(
         `${API_BASE_URL}/content/feynman-quiz-cache?notebook_id=${encodeURIComponent(data.notebook_id)}&level=${data.level}`
       );
       const result = await res.json();

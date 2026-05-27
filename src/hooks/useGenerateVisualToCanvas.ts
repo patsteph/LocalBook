@@ -102,6 +102,10 @@ export function useGenerateVisualToCanvas() {
                 v2Setup: diagram.v2_setup,
                 v2GenerationMs: diagram.v2_generation_ms,
                 templateId: diagram.template_id,
+                // Hero overlay (Klein full-bleed): subtitle ships separately
+                // so the VisualHeroOverlay component can pre-fill its editor
+                // and the user can toggle/edit independently of the SVG.
+                heroSubtitle: diagram.subtitle || '',
               },
             });
             options.onComplete?.(canvasItemId);

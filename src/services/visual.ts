@@ -13,6 +13,7 @@ export interface Diagram {
   render_type?: 'svg' | 'mermaid' | 'chart';
   chart_config?: any;  // JSON config for Recharts-based data charts
   title: string;
+  subtitle?: string;  // Second line shown in the hero overlay (Klein full-bleed)
   description: string;
   template_id?: string;
   template_name?: string;
@@ -101,7 +102,7 @@ export const visualService = {
     sourceId1: string,
     sourceId2: string
   ): Promise<DocumentComparison> {
-    const response = await fetch(
+    const response = await localFetch(
       `${API_BASE}/visual/compare?notebook_id=${notebookId}&source_id_1=${sourceId1}&source_id_2=${sourceId2}`,
       { method: 'POST' }
     );

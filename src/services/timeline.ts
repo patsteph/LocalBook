@@ -1,5 +1,4 @@
-import axios from 'axios';
-import { API_BASE_URL } from './api';
+import api from './api';
 
 export interface TimelineEvent {
   event_id: string;
@@ -23,24 +22,28 @@ export interface ExtractionProgress {
   message: string;
 }
 
+// All calls go through the project's `api` axios instance (not bare axios)
+// so the request interceptor attaches X-LocalBook-Token. Bare axios would
+// 401 against the hardened backend (P0.1f enforce mode). Same class of bug
+// as src/services/highlights.ts (fixed 2026-05-27).
 class TimelineService {
   async getTimeline(notebookId: string, sourceId?: string): Promise<TimelineEvent[]> {
     const params = sourceId ? { source_id: sourceId } : {};
-    const response = await axios.get(`${API_BASE_URL}/timeline/${notebookId}`, { params });
+    const response = await api.get(`/timeline/${notebookId}`, { params });
     return response.data;
   }
 
   async extractTimeline(notebookId: string): Promise<void> {
-    await axios.post(`${API_BASE_URL}/timeline/extract/${notebookId}`);
+    await api.post(`/timeline/extract/${notebookId}`);
   }
 
   async getExtractionProgress(notebookId: string): Promise<ExtractionProgress> {
-    const response = await axios.get(`${API_BASE_URL}/timeline/progress/${notebookId}`);
+    const response = await api.get(`/timeline/progress/${notebookId}`);
     return response.data;
   }
 
   async deleteTimeline(notebookId: string): Promise<void> {
-    await axios.delete(`${API_BASE_URL}/timeline/${notebookId}`);
+    await api.delete(`/timeline/${notebookId}`);
   }
 }
 

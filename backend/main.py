@@ -474,7 +474,11 @@ app.add_middleware(DiagnosticsMiddleware)
 # never fired, app hung. Now CORS is OUTERMOST (added last below) so 401s
 # pass through it and the browser allows JS to read them.
 from utils.auth_middleware import AppTokenAuthMiddleware
-app.add_middleware(AppTokenAuthMiddleware, enforce=True)
+# enforce defaults to True (production); flip via settings.auth_enforce
+# (set AUTH_ENFORCE=false in ~/Library/Application Support/LocalBook/.env)
+# while diagnosing 401 regressions, then flip back when fixed.
+app.add_middleware(AppTokenAuthMiddleware, enforce=settings.auth_enforce)
+logger.info(f"[main] auth middleware enforce={settings.auth_enforce}")
 
 # CORS middleware — added LAST so it's the OUTERMOST wrapper. This is
 # critical: it ensures error responses (401 from auth, etc.) include

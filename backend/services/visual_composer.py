@@ -109,6 +109,7 @@ class ComposedVisual:
 
     # Common metadata
     title: str = ""
+    subtitle: str = ""   # rendered as a separate line in the frontend overlay
     description: str = ""
     key_points: List[str] = field(default_factory=list)
     alternatives: List[Dict[str, str]] = field(default_factory=list)
@@ -556,16 +557,15 @@ class VisualComposer:
             )
             return None
 
-        # Step 5: wrap in full-bleed SVG with editorial typography overlay.
-        # Klein renders pure imagery; SVG provides the title/subtitle as
-        # curated typography at fixed editorial positions (NOT labels-on-
-        # things — we don't pretend to know what's where in the image).
+        # Step 5: wrap in minimal full-bleed SVG (image only). Title and
+        # subtitle stay in ComposedVisual metadata; the frontend renders
+        # them as a user-controllable overlay layer on top — toggleable,
+        # repositionable, editable — so users aren't stuck with a fixed
+        # overlay that Klein had no awareness of when composing the scene.
         svg = _build_full_bleed_svg(
             png_bytes=diffusion.png_bytes,
             width=diffusion.width or width,
             height=diffusion.height or height,
-            title=title,
-            subtitle=subtitle,
         )
 
         # Step 6: critic (best-effort — None on failure is fine).
@@ -585,6 +585,7 @@ class VisualComposer:
             output_format=OutputFormat.SVG,
             svg_markup=svg,
             title=title,
+            subtitle=subtitle,
             description=(
                 f"Klein full-bleed hero"
                 + (f" — {intent.style_hint}" if intent.style_hint else "")
@@ -799,153 +800,25 @@ def _extract_topic(content: str) -> str:
     return content[:idx].strip()
 
 
-def _build_full_bleed_svg(
-    png_bytes: bytes,
-    width: int,
-    height: int,
-    title: str = "",
-    subtitle: str = "",
-) -> str:
-    """Klein PNG with editorial typography overlay.
+def _build_full_bleed_svg(png_bytes: bytes, width: int, height: int) -> str:
+    """Wrap a Klein PNG in a minimal image-only SVG.
 
-    Magazine-spread aesthetic: Klein renders pure imagery (text fully
-    suppressed in the negative prompt), and SVG adds curated typography
-    at fixed editorial positions. NO labels-on-things — these are TITLE
-    elements, not annotations.
-
-    Layout (proportional to viewBox, works at any aspect):
-      • Soft radial gradient at upper-left (top 45%, left 55%) fading
-        from rgba(0,0,0,0.42) to transparent — ensures title legibility
-        against any image without obscuring the imagery
-      • Thin colored accent bar (4px tall, 64px wide) at upper-left
-      • Title in white, semi-bold serif, drop shadow
-      • Subtitle below title, lighter weight, slightly muted white
-
-    Skipped when title is empty or the generic placeholder
-    ("Hero Visual"). The image alone is shown.
+    Title overlay is rendered by the FRONTEND as a user-controllable
+    layer (toggleable, repositionable, editable). See
+    src/components/shared/VisualHeroOverlay.tsx — keeping the overlay
+    out of the SVG means users aren't stuck with a fixed placement that
+    Klein had no awareness of when composing the scene.
     """
     import base64
-    import xml.sax.saxutils as _xml
-
     b64 = base64.b64encode(png_bytes).decode("ascii")
-
-    show_title = bool(title) and title.strip().lower() != "hero visual"
-    overlay = ""
-    if show_title:
-        overlay = _editorial_overlay(width, height, title, subtitle, _xml.escape)
-
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" '
         f'viewBox="0 0 {width} {height}" width="{width}" height="{height}">'
-        f'<defs>'
-        f'<radialGradient id="heroTitleScrim" cx="0" cy="0" r="0.7">'
-        f'<stop offset="0%" stop-color="rgb(0,0,0)" stop-opacity="0.42"/>'
-        f'<stop offset="100%" stop-color="rgb(0,0,0)" stop-opacity="0"/>'
-        f'</radialGradient>'
-        f'<filter id="heroTextShadow" x="-10%" y="-10%" width="120%" height="120%">'
-        f'<feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.55"/>'
-        f'</filter>'
-        f'</defs>'
         f'<image x="0" y="0" width="{width}" height="{height}" '
         f'href="data:image/png;base64,{b64}" '
         f'preserveAspectRatio="xMidYMid meet" />'
-        f'{overlay}'
         f'</svg>'
     )
-
-
-def _editorial_overlay(
-    width: int,
-    height: int,
-    title: str,
-    subtitle: str,
-    escape,
-) -> str:
-    """Generate the SVG typography layer for a Klein hero image.
-
-    Positions and sizes scale proportionally to the viewBox so the same
-    code works at 16:9 / 4:3 / 1:1 / 9:16. Tested anchor: title baseline
-    at ~16% from top, accent bar 24px above title baseline.
-    """
-    # Layout anchors — fractions of viewBox so this works across aspects.
-    pad_x = max(48, int(width * 0.045))
-    pad_y = max(80, int(height * 0.11))
-    title_size = max(36, int(height * 0.072))   # ~52px @ 720h, ~74px @ 1024h
-    subtitle_size = max(18, int(height * 0.028))
-    line_gap = int(title_size * 0.45)
-    accent_bar_h = max(3, int(height * 0.006))
-    accent_bar_w = int(title_size * 1.15)
-    accent_bar_y = pad_y - title_size - 18
-
-    # Scrim covers upper-left to ensure title contrast against any image.
-    scrim_w = int(width * 0.55)
-    scrim_h = int(height * 0.45)
-
-    # Truncate titles that would overflow horizontally. Rough heuristic:
-    # serif chars ≈ 0.55 × font_size wide. Available width is viewBox width
-    # minus left padding minus 8% right margin.
-    avail = width - pad_x - int(width * 0.08)
-    title_t = _truncate_for_width(title, avail, title_size, 0.55)
-    subtitle_t = _truncate_for_width(subtitle, avail, subtitle_size, 0.5) if subtitle else ""
-
-    parts: list[str] = []
-    # Scrim rectangle (clipped to upper-left via the radial gradient)
-    parts.append(
-        f'<rect x="0" y="0" width="{scrim_w}" height="{scrim_h}" '
-        f'fill="url(#heroTitleScrim)"/>'
-    )
-    # Accent bar — thin colored line above the title
-    parts.append(
-        f'<rect x="{pad_x}" y="{accent_bar_y}" '
-        f'width="{accent_bar_w}" height="{accent_bar_h}" '
-        f'rx="{accent_bar_h // 2}" fill="rgb(236,72,153)" '
-        f'fill-opacity="0.95"/>'
-    )
-    # Title — serif, semi-bold, white, drop shadow for legibility
-    parts.append(
-        f'<text x="{pad_x}" y="{pad_y}" '
-        f'font-family="Georgia, \'Iowan Old Style\', \'Apple Garamond\', '
-        f'\'Palatino Linotype\', serif" '
-        f'font-size="{title_size}" font-weight="600" '
-        f'fill="rgb(255,255,255)" filter="url(#heroTextShadow)" '
-        f'letter-spacing="-0.01em">'
-        f'{escape(title_t)}</text>'
-    )
-    if subtitle_t:
-        parts.append(
-            f'<text x="{pad_x}" y="{pad_y + line_gap + subtitle_size}" '
-            f'font-family="Inter, \'Helvetica Neue\', system-ui, sans-serif" '
-            f'font-size="{subtitle_size}" font-weight="400" '
-            f'fill="rgb(245,245,245)" fill-opacity="0.92" '
-            f'filter="url(#heroTextShadow)">'
-            f'{escape(subtitle_t)}</text>'
-        )
-    return "".join(parts)
-
-
-def _truncate_for_width(
-    text: str,
-    avail_px: int,
-    font_size: int,
-    avg_char_ratio: float,
-) -> str:
-    """Truncate `text` so it likely fits in `avail_px` at the given font
-    size, appending an ellipsis. Heuristic only — width depends on the
-    actual rendered font, but this is close enough to prevent obvious
-    overflow.
-    """
-    if not text:
-        return ""
-    max_chars = max(8, int(avail_px / (font_size * avg_char_ratio)))
-    text = text.strip()
-    if len(text) <= max_chars:
-        return text
-    # Trim back to word boundary if possible
-    trimmed = text[: max_chars - 1].rstrip()
-    last_space = trimmed.rfind(" ")
-    if last_space > max_chars * 0.6:
-        trimmed = trimmed[:last_space]
-    return trimmed + "…"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -992,6 +865,7 @@ def _visual_to_dict(v: ComposedVisual) -> Dict[str, Any]:
         "svg_markup": v.svg_markup,
         "mermaid_code": v.mermaid_code,
         "title": v.title,
+        "subtitle": v.subtitle,
         "description": v.description,
         "key_points": v.key_points,
         "alternatives": v.alternatives,

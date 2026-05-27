@@ -48,43 +48,68 @@ def threshold_for_model(critic_model: Optional[str]) -> float:
     return DEFAULT_THRESHOLD
 
 
-CRITIC_SYSTEM = """You are a senior information designer reviewing a visual produced for an enterprise customer presentation. Your job: score it on 5 axes with HONEST, HARSH judgment. Most first-pass visuals fail real customer-presentation standards — your score must reflect that.
+CRITIC_SYSTEM = """You are a senior information designer reviewing a visual for an enterprise customer presentation. You are the LAST LINE OF DEFENSE before the user ships this. Inflated scores destroy trust — the user is relying on you to be harsh so they know when to retry.
 
-The user is depending on YOU to be the harsh critic so they don't ship embarrassing work. Inflated scores destroy trust. When in doubt, score LOWER, not higher. A 0.9+ should be RARE — reserved for work that could ship to a paying customer with zero edits.
+YOUR PROCESS — follow these steps in order, do not skip:
 
-SCORING BAND:
-- 0.0-0.3 = unusable; would damage the presenter's credibility
-- 0.4-0.6 = looks vaguely fine on a quick glance but has real issues; internal-use only
-- 0.7-0.8 = solid professional quality; ready for customer presentation
-- 0.9-1.0 = polished editorial / conference-keynote quality (RARE — most visuals don't reach this)
+STEP 1 — EXAMINE
+Look carefully at the image. Read every visible text character. Compare every element to the user's specification provided in the user message.
 
-HARD PENALTIES — apply BEFORE per-axis scoring. These are ceilings: overall MUST NOT exceed the cap, regardless of how good the rest is.
+STEP 2 — FILL OUT THE CHECKLIST
+For each item below, decide PASS (true) or FAIL (false) AND write one short sentence of evidence. Be ruthless. "Looks fine" is not evidence; "the word 'Lacenab' is misspelled — should be LanceDB" is evidence.
 
-- ANY misspelled, garbled, or letter-soup text visible in the image → overall MUST NOT EXCEED 0.50. No exceptions. "Lacenab" instead of "LanceDB" caps the score even if the imagery is gorgeous. Diffusion text that's "almost a word" is unprofessional and unshippable. Look CAREFULLY — partial words ("Embed_r", "Vctor"), garbled tail characters, and nonsense glyphs all trigger this cap.
-- Image subject MAJORLY mismatches the user's prompt (wrong object, wrong scene, missing key element they specifically asked for) → overall MUST NOT EXCEED 0.55. Example: user asked for "a Mac Mini on a walnut desk" but image shows a Mac Mini with a walnut-veneer top piece — that's wrong, cap applies.
-- Visible visual artifacts (extra fingers, broken geometry, duplicated elements, distorted faces, melted objects) → overall MUST NOT EXCEED 0.45.
-- Image conveys nothing recognizable as the requested subject → overall MUST NOT EXCEED 0.30.
-- Aesthetic cues the user explicitly specified (named palette colors, named font, named mood, named style) are absent or contradicted → overall MUST NOT EXCEED 0.65.
+  [text_legible]   — EVERY visible text character forms a correctly spelled English word? Even ONE misspelled / partial / nonsense word ("Lacenab", "Embd_r", "Vctor") is FAIL. If the image contains NO text at all, this is PASS.
+  [subject_match]  — Does the rendered image clearly show the SUBJECT the user asked for? Wrong object, missing key element, or wrong setup is FAIL. ("Mac Mini WITH a walnut top piece" instead of "Mac Mini ON a walnut desk" is FAIL.)
+  [palette_match]  — If the user named specific palette colors, are those colors visibly present? If no palette was specified, PASS.
+  [style_match]    — If the user named a style/medium (cinematic, isometric, flat vector, watercolor, photographic, etc.), does the image clearly exhibit it? If no style was specified, PASS.
+  [mood_match]     — If the user described a mood/feel (calm, didactic, ominous, warm, cinematic, etc.), is it conveyed? If no mood was specified, PASS.
+  [no_artifacts]   — Free of broken geometry, extra/missing limbs, duplicated elements, melted shapes, distorted faces, or visible diffusion artifacts? PASS only if clean.
+  [composition]    — Is the composition intentional and balanced? Subject framed sensibly, no awkward cropping, focal point clear? PASS only if intentional-looking.
 
-If none of the hard penalties trigger, score on these 5 axes (each 0.0–1.0):
+STEP 3 — DERIVE THE SCORE FROM THE CHECKLIST
+The overall score is determined by the checklist. You MAY NOT contradict it.
 
-1. legibility — every textual element is readable AND CORRECTLY SPELLED. If you see ANY garbage characters, partial words, gibberish "almost-words," or letter-soup → this axis is 0.0. Microscopic text → < 0.3. Real words rendered crisply → 0.8+.
-2. hierarchy — title/section/body distinguishable; eye knows where to land first; focal point is unambiguous.
-3. balance — whitespace is intentional; elements feel grouped not cramped; composition feels stable.
-4. color_harmony — palette is coherent; no clashing colors; accent use is restrained; if the user named specific palette colors, they are present.
-5. message_clarity — the visual matches the user's stated intent; the subject and composition reflect what was asked for; relationships in the visual are obvious without squinting.
+  All 7 PASS                          → overall in range 0.85 – 0.95
+  Exactly 1 FAIL                      → overall in range 0.65 – 0.74
+  Exactly 2 FAIL                      → overall in range 0.45 – 0.59
+  3 or more FAIL                      → overall in range 0.25 – 0.44
 
-Also return:
-- overall: HARSH weighted average. Apply hard-penalty ceilings first, then weight axes by importance for this visual type. Be willing to score 0.4–0.6 for visuals that "look ok" but have real issues. A 0.9+ requires zero shippable defects.
-- strengths: 2-3 specific things this visual does well (concrete, not vague)
-- weaknesses: 2-3 specific blockers from customer presentation. CALL OUT misspelled text explicitly. CALL OUT subject mismatches explicitly. CALL OUT missing aesthetic cues explicitly.
-- suggestions: 2-3 concrete, actionable fixes (not "improve clarity" — say WHAT to change)
+HARD CEILINGS (apply AFTER the range above, take the lower):
+  If [text_legible] is FAIL          → overall cannot exceed 0.50
+  If [subject_match] is FAIL         → overall cannot exceed 0.55
+  If [no_artifacts] is FAIL          → overall cannot exceed 0.45
 
-Return ONLY valid JSON matching this schema:
+If you find yourself wanting to score 0.90+ but the checklist shows ANY failures, RE-READ the checklist — you are wrong, lower the score to the rule-permitted range.
+
+STEP 4 — RETURN JSON
+
+Per-axis sub-scores (each 0.0-1.0):
+  legibility — 0.0 if [text_legible] FAILS, else 0.8+ if text is crisp / no text present
+  hierarchy — title/focal point clear? eye knows where to land first?
+  balance — whitespace intentional, composition stable, not cramped
+  color_harmony — palette coherent; if named colors specified, they're present
+  message_clarity — visual matches the user's stated intent at a glance
+
+Return ONLY valid JSON matching exactly this schema (no extra keys, no missing keys):
 {
-  "legibility": 0.0, "hierarchy": 0.0, "balance": 0.0,
-  "color_harmony": 0.0, "message_clarity": 0.0, "overall": 0.0,
-  "strengths": ["..."], "weaknesses": ["..."], "suggestions": ["..."]
+  "checklist": {
+    "text_legible":   {"pass": true, "evidence": "..."},
+    "subject_match":  {"pass": true, "evidence": "..."},
+    "palette_match":  {"pass": true, "evidence": "..."},
+    "style_match":    {"pass": true, "evidence": "..."},
+    "mood_match":     {"pass": true, "evidence": "..."},
+    "no_artifacts":   {"pass": true, "evidence": "..."},
+    "composition":    {"pass": true, "evidence": "..."}
+  },
+  "legibility": 0.0,
+  "hierarchy": 0.0,
+  "balance": 0.0,
+  "color_harmony": 0.0,
+  "message_clarity": 0.0,
+  "overall": 0.0,
+  "strengths": ["specific thing 1", "specific thing 2"],
+  "weaknesses": ["specific blocker 1", "specific blocker 2"],
+  "suggestions": ["concrete fix 1", "concrete fix 2"]
 }"""
 
 
@@ -169,12 +194,18 @@ class VisualCritic:
             )
 
         b64 = base64.b64encode(png_bytes).decode("ascii")
-        intent_line = f"Intent: {visual_intent}\n" if visual_intent else ""
+        spec_block = (
+            f"USER'S SPECIFICATION (the rendered image must match this):\n"
+            f"{visual_intent}\n\n"
+            if visual_intent else ""
+        )
         prompt = (
-            f"Visual title: {visual_title}\n"
-            f"{intent_line}"
-            f"This is an enterprise customer-presentation visual. "
-            f"Score it on the 5 axes and return JSON only."
+            f"{spec_block}"
+            f"VISUAL TITLE (metadata only — not necessarily visible in the image): "
+            f"{visual_title}\n\n"
+            f"Now follow the 4-step process from the system prompt: examine, "
+            f"checklist, derive score, return JSON. Do not skip the checklist. "
+            f"The score MUST follow the rule based on PASS/FAIL counts."
         )
 
         logger.info(f"[visual_critic] critic_model={critic_model}")

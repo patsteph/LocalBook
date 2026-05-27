@@ -647,6 +647,7 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
                         "render_type": "svg",
                         "svg": visual.svg_markup,
                         "title": visual.title or "Visual",
+                        "subtitle": visual.subtitle or "",
                         "description": visual.description or "",
                         "template_id": visual.template_id or "v2",
                         "template_name": visual.template_name or visual.path.value,

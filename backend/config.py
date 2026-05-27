@@ -122,8 +122,20 @@ class Settings(BaseSettings):
     # Storage backend — use SQLite instead of JSON files
     use_sqlite: bool = True  # SQLite is default — auto-migrates from JSON on first launch
 
+    # Auth enforcement (P0.1f). When True, AppTokenAuthMiddleware returns
+    # 401 on missing/invalid X-LocalBook-Token; when False, it logs a
+    # warning and lets the request through. Default True (production).
+    # Override at launch time with the LOCALBOOK_AUTH_ENFORCE env var or
+    # by adding `LOCALBOOK_AUTH_ENFORCE=false` to the .env file in the
+    # data dir — use this temporarily while diagnosing a 401 regression.
+    auth_enforce: bool = True
+
     class Config:
-        env_file = ".env"
+        # Read .env from the user data dir so production .app bundles
+        # (read-only CWD) can still be configured by editing
+        # ~/Library/Application Support/LocalBook/.env.
+        # The local cwd .env stays as a secondary lookup for dev mode.
+        env_file = (get_data_directory() / ".env", ".env")
         extra = "ignore"  # LLM Locker writes LOCALBOOK_-prefixed keys to .env; ignore them
 
 settings = Settings()

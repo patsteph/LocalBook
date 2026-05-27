@@ -267,7 +267,7 @@ export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
     if (!notebookId || rescoring) return;
     setRescoring(true);
     try {
-      await fetch(
+      await localFetch(
         `${API_BASE_URL}/curator/notebooks/${encodeURIComponent(notebookId)}/stances/rescore-all`,
         { method: 'POST' }
       );
@@ -300,7 +300,7 @@ export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
     if (!notebookId || refreshing) return;
     setRefreshing(true);
     try {
-      const res = await fetch(
+      const res = await localFetch(
         `${API_BASE_URL}/curator/notebooks/${encodeURIComponent(notebookId)}/mental-model/infer`,
         { method: 'POST' }
       );
@@ -322,7 +322,7 @@ export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
         ? value.split(',').map((s) => s.trim()).filter(Boolean)
         : value;
     try {
-      const res = await fetch(
+      const res = await localFetch(
         `${API_BASE_URL}/curator/notebooks/${encodeURIComponent(notebookId)}/mental-model`,
         {
           method: 'PUT',
@@ -344,7 +344,7 @@ export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
     const wasPinned = model.pinned_fields.includes(field);
     const current = field === 'goals' ? (model.goals || []).join(', ') : (model[field] as string);
     try {
-      const res = await fetch(
+      const res = await localFetch(
         `${API_BASE_URL}/curator/notebooks/${encodeURIComponent(notebookId)}/mental-model`,
         {
           method: 'PUT',

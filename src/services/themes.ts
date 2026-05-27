@@ -60,7 +60,7 @@ export const themesService = {
      * Get exploration questions for a specific topic
      */
     async getTopicQuestions(topicId: number, notebookId: string): Promise<ExplorationQuestionsResponse> {
-        const response = await fetch(
+        const response = await localFetch(
             `${API_BASE_URL}/graph/topics/${topicId}/questions?notebook_id=${notebookId}`
         );
         

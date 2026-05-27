@@ -194,7 +194,7 @@ class CollectorService {
     approved: number;
     source: string;
   }> {
-    const response = await fetch(
+    const response = await localFetch(
       `${API_BASE_URL}/collector/${notebookId}/approve-source/${encodeURIComponent(sourceName)}`,
       { method: 'POST' }
     );

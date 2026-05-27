@@ -9,6 +9,7 @@ import { CanvasItem } from '../canvas/types';
 import ReactMarkdown from 'react-markdown';
 import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { SVGRenderer } from '../shared/SVGRenderer';
+import { VisualHeroOverlay, OverlayPosition } from '../shared/VisualHeroOverlay';
 import { FeynmanQuizBlock, FeynmanAudioBlock, StudioQuizBlock, isFeynmanBlock } from '../shared/FeynmanBlocks';
 import { AudioCanvasPlayer } from './AudioCanvasPlayer';
 import { FlashcardsCanvasTile } from './FlashcardsCanvasTile';
@@ -80,9 +81,29 @@ const VisualChatInlineContent: React.FC<{
   const v2Path = item.metadata?.v2Path;
   const v2GenerationMs = item.metadata?.v2GenerationMs;
   const notebookId = item.metadata?.notebookId || '';
+
+  // Klein full-bleed visuals get the user-controllable hero overlay:
+  // toggle, position, edit text. All other visuals use the bare SVG
+  // renderer (the structural skeletons already have their own header band
+  // baked into the SVG so they don't need an overlay).
+  const isHeroFullBleed = templateId === 'full_bleed_hero';
+
   return (
     <div className="space-y-2">
-      <SVGRenderer svg={item.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+      {isHeroFullBleed ? (
+        <VisualHeroOverlay
+          itemId={item.id}
+          svg={item.content}
+          defaultTitle={item.title || ''}
+          defaultSubtitle={(item.metadata as any)?.heroSubtitle || ''}
+          initialEnabled={(item.metadata as any)?.overlayEnabled}
+          initialPosition={(item.metadata as any)?.overlayPosition as OverlayPosition | undefined}
+          initialTitle={(item.metadata as any)?.overlayTitle}
+          initialSubtitle={(item.metadata as any)?.overlaySubtitle}
+        />
+      ) : (
+        <SVGRenderer svg={item.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+      )}
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
           {criticScore && <VisualCriticBadge score={criticScore} />}

@@ -66,7 +66,7 @@ export const findingsService = {
     if (options?.limit) params.append('limit', options.limit.toString());
     if (options?.offset) params.append('offset', options.offset.toString());
 
-    const response = await fetch(
+    const response = await localFetch(
       `${API_BASE}/findings/${notebookId}?${params.toString()}`
     );
     if (!response.ok) throw new Error('Failed to fetch findings');
@@ -74,7 +74,7 @@ export const findingsService = {
   },
 
   async getFinding(notebookId: string, findingId: string): Promise<Finding> {
-    const response = await fetch(
+    const response = await localFetch(
       `${API_BASE}/findings/${notebookId}/${findingId}`
     );
     if (!response.ok) throw new Error('Finding not found');
@@ -91,7 +91,7 @@ export const findingsService = {
       content?: Record<string, unknown>;
     }
   ): Promise<Finding> {
-    const response = await fetch(
+    const response = await localFetch(
       `${API_BASE}/findings/${notebookId}/${findingId}`,
       {
         method: 'PATCH',
@@ -104,7 +104,7 @@ export const findingsService = {
   },
 
   async deleteFinding(notebookId: string, findingId: string): Promise<void> {
-    const response = await fetch(
+    const response = await localFetch(
       `${API_BASE}/findings/${notebookId}/${findingId}`,
       { method: 'DELETE' }
     );
@@ -112,7 +112,7 @@ export const findingsService = {
   },
 
   async getStats(notebookId: string): Promise<FindingsStats> {
-    const response = await fetch(
+    const response = await localFetch(
       `${API_BASE}/findings/${notebookId}/stats/summary`
     );
     if (!response.ok) throw new Error('Failed to fetch findings stats');
