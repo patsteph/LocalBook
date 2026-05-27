@@ -1032,6 +1032,19 @@ async fn upload_file_streaming(
             }
             Ok(None) => break, // End of stream
             Err(e) => {
+                // If we already received the terminal 'complete' event,
+                // a subsequent stream-read error is just the connection
+                // closing — the upload succeeded. Returning Err here
+                // would surface as a red error toast on a successful
+                // upload (the symptom the heavy user hit 2026-05-27).
+                if final_result.is_some() {
+                    println!(
+                        "[upload-stream] stream-close hiccup after complete event \
+                         for {} (ignoring): {}",
+                        filename, e
+                    );
+                    break;
+                }
                 return Err(format!("Stream read error: {}", e));
             }
         }

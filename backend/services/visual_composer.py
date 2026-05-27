@@ -113,6 +113,11 @@ class ComposedVisual:
     description: str = ""
     key_points: List[str] = field(default_factory=list)
     alternatives: List[Dict[str, str]] = field(default_factory=list)
+    # Smart overlay default position — computed from image analysis (least-
+    # detailed zone). Frontend uses this as initial position when the user
+    # hasn't yet picked one. One of: top-left / top-right / bottom-left /
+    # bottom-right / center. Defaults to bottom-left for non-Klein paths.
+    suggested_overlay_position: str = "bottom-left"
 
     # Tier-A/B only
     critic_score: Optional[CriticScore] = None
@@ -568,6 +573,11 @@ class VisualComposer:
             height=diffusion.height or height,
         )
 
+        # Step 5b: analyze the image for the least-detailed zone so the
+        # frontend overlay defaults to a non-obstructive position when the
+        # user opens it. Pure metadata — costs ~10ms, no Klein round-trip.
+        suggested_overlay = suggest_overlay_position(diffusion.png_bytes)
+
         # Step 6: critic (best-effort — None on failure is fine).
         # Pass the user's ACTUAL prompt (not the enriched content blob, not
         # truncated to 300 chars) so the critic can apply the prompt-fidelity
@@ -598,6 +608,7 @@ class VisualComposer:
             model_used=f"{capability.gemma_model}+{capability.klein_model}",
             template_id="full_bleed_hero",
             template_name="full_bleed_hero",
+            suggested_overlay_position=suggested_overlay,
             generation_ms=int((time.time() - t0) * 1000),
         )
 
@@ -784,6 +795,54 @@ def _is_valid_svg(markup: Optional[str]) -> bool:
 _SOURCE_CONTENT_MARKER = "\n\nSource content:\n"
 
 
+def suggest_overlay_position(png_bytes: bytes) -> str:
+    """Analyze a Klein PNG and return the zone with the least visual
+    detail — the best place to put a title overlay without obscuring
+    important imagery.
+
+    Scoring: standard deviation of grayscale luminance per zone. Lower
+    std dev = more uniform brightness = less detail = better overlay
+    placement. Cheap (~10ms for a 1280×720 image via Pillow).
+
+    Best-effort: returns 'bottom-left' on any analysis failure so the
+    composer never crashes on a Klein image that Pillow can't decode.
+    """
+    try:
+        from io import BytesIO
+        from PIL import Image, ImageStat
+        img = Image.open(BytesIO(png_bytes)).convert("L")  # grayscale
+        w, h = img.size
+        # 30% × 30% corner zones; 40% × 30% center zone (overlay text is
+        # widest in the center position so the analysis zone matches).
+        cw = max(1, int(w * 0.30))
+        ch = max(1, int(h * 0.30))
+        cx_w = max(1, int(w * 0.40))
+        cx_h = max(1, int(h * 0.30))
+        zones = {
+            "top-left":     (0,                  0,                  cw,                 ch),
+            "top-right":    (w - cw,             0,                  w,                  ch),
+            "bottom-left":  (0,                  h - ch,             cw,                 h),
+            "bottom-right": (w - cw,             h - ch,             w,                  h),
+            "center":       ((w - cx_w) // 2,    (h - cx_h) // 2,    (w + cx_w) // 2,    (h + cx_h) // 2),
+        }
+        scores: dict[str, float] = {}
+        for name, box in zones.items():
+            zone = img.crop(box)
+            scores[name] = ImageStat.Stat(zone).stddev[0]
+        best = min(scores.items(), key=lambda kv: kv[1])
+        logger.info(
+            f"[visual_composer] overlay placement scores={ {k: round(v, 1) for k, v in scores.items()} } "
+            f"→ {best[0]}"
+        )
+        return best[0]
+    except Exception as e:
+        logger.warning(
+            f"[visual_composer] overlay placement analysis failed ({e}); "
+            f"defaulting to bottom-left"
+        )
+        return "bottom-left"
+
+
 def _extract_topic(content: str) -> str:
     """Pull just the user's topic out of an enriched content blob.
 
@@ -876,6 +935,7 @@ def _visual_to_dict(v: ComposedVisual) -> Dict[str, Any]:
         "model_used": v.model_used,
         "template_id": v.template_id,
         "template_name": v.template_name,
+        "suggested_overlay_position": v.suggested_overlay_position,
     }
 
 

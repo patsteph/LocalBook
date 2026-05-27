@@ -106,6 +106,10 @@ export function useGenerateVisualToCanvas() {
                 // so the VisualHeroOverlay component can pre-fill its editor
                 // and the user can toggle/edit independently of the SVG.
                 heroSubtitle: diagram.subtitle || '',
+                // Backend image-analysis pick for the least-obstructive
+                // overlay position. Frontend uses this as the default when
+                // the user hasn't yet chosen one.
+                suggestedOverlayPosition: diagram.suggested_overlay_position,
               },
             });
             options.onComplete?.(canvasItemId);

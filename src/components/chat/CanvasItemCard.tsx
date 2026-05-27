@@ -10,6 +10,7 @@ import ReactMarkdown from 'react-markdown';
 import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { SVGRenderer } from '../shared/SVGRenderer';
 import { VisualHeroOverlay, OverlayPosition } from '../shared/VisualHeroOverlay';
+import { VisualRegenerateButton } from '../shared/VisualRegenerateButton';
 import { FeynmanQuizBlock, FeynmanAudioBlock, StudioQuizBlock, isFeynmanBlock } from '../shared/FeynmanBlocks';
 import { AudioCanvasPlayer } from './AudioCanvasPlayer';
 import { FlashcardsCanvasTile } from './FlashcardsCanvasTile';
@@ -98,6 +99,7 @@ const VisualChatInlineContent: React.FC<{
           defaultSubtitle={(item.metadata as any)?.heroSubtitle || ''}
           initialEnabled={(item.metadata as any)?.overlayEnabled}
           initialPosition={(item.metadata as any)?.overlayPosition as OverlayPosition | undefined}
+          suggestedPosition={(item.metadata as any)?.suggestedOverlayPosition as OverlayPosition | undefined}
           initialTitle={(item.metadata as any)?.overlayTitle}
           initialSubtitle={(item.metadata as any)?.overlaySubtitle}
         />
@@ -118,6 +120,16 @@ const VisualChatInlineContent: React.FC<{
             notebookId={notebookId}
             originalPrompt={item.metadata?.originalPrompt}
           />
+          {/* Klein full-bleed visuals get a re-roll affordance — Klein has
+             real seed variance, so the same prompt → meaningfully different
+             image on each generation. Hidden for structural skeletons. */}
+          {isHeroFullBleed && (
+            <VisualRegenerateButton
+              itemId={item.id}
+              notebookId={notebookId}
+              originalPrompt={item.metadata?.originalPrompt}
+            />
+          )}
         </div>
         <FeedbackThumbs
           kind="curator_feature"

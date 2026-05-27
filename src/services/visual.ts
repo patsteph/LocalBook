@@ -35,6 +35,10 @@ export interface Diagram {
     suggestions?: string[];
   } | null;
   v2_generation_ms?: number;
+  // Smart overlay placement: backend image-analysis pick of the
+  // least-detailed zone, used as the overlay's default position when the
+  // user hasn't chosen one yet. One of the 5 overlay positions or absent.
+  suggested_overlay_position?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
 }
 
 export interface VisualSummary {

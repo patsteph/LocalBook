@@ -132,9 +132,19 @@ function App() {
   }, []);
 
   const updateCanvasItem = useCallback((id: string, updates: Partial<Pick<CanvasItem, 'title' | 'content' | 'status' | 'metadata'>>) => {
-    setCanvasItems(prev => prev.map(item =>
-      item.id === id ? { ...item, ...updates } : item
-    ));
+    // Metadata is shallow-merged with existing so partial updates don't
+    // wipe other keys. The previous spread-replace behavior caused
+    // VisualHeroOverlay's overlay-state persist to clobber templateId,
+    // notebookId, criticScore, etc. — the parent then swapped the visual
+    // back to bare SVGRenderer and the user lost the overlay controls.
+    setCanvasItems(prev => prev.map(item => {
+      if (item.id !== id) return item;
+      const next = { ...item, ...updates };
+      if (updates.metadata) {
+        next.metadata = { ...(item.metadata || {}), ...updates.metadata };
+      }
+      return next;
+    }));
   }, []);
 
   const toggleCanvasItemCollapse = useCallback((id: string) => {

@@ -390,32 +390,136 @@ class DocumentProcessor:
                 multimodal_extractor.max_parallel_workers = saved_workers
                 multimodal_extractor.max_images_per_doc = saved_max_images
             
-            if not image_descriptions:
-                print(f"[DocProcessor] No images found in {filename}")
-                return
-            
-            # Format image descriptions for indexing
-            image_text = multimodal_extractor.format_for_indexing(image_descriptions)
-            
-            # Append image descriptions to the RAG index
-            await rag_engine.append_to_document(
-                notebook_id=notebook_id,
-                source_id=source_id,
-                text=image_text,
-                chunk_prefix="[IMAGE] "
-            )
-            
-            # Update source metadata to indicate images were processed
-            await source_store.update(notebook_id, source_id, {
-                "images_processed": len(image_descriptions),
-                "has_visual_content": True
-            })
-            
-            print(f"[DocProcessor] Background: Added {len(image_descriptions)} image descriptions for {filename}")
-            
+            # Process embedded-image results (logos, photos, charts inside the PDF)
+            if image_descriptions:
+                image_text = multimodal_extractor.format_for_indexing(image_descriptions)
+                await rag_engine.append_to_document(
+                    notebook_id=notebook_id,
+                    source_id=source_id,
+                    text=image_text,
+                    chunk_prefix="[IMAGE] "
+                )
+                await source_store.update(notebook_id, source_id, {
+                    "images_processed": len(image_descriptions),
+                    "has_visual_content": True
+                })
+                print(
+                    f"[DocProcessor] Background: Added {len(image_descriptions)} "
+                    f"image descriptions for {filename}"
+                )
+            else:
+                print(f"[DocProcessor] No embedded images in {filename}")
+
+            # ─── Low-text-yield fallback: page-render-to-vision ─────────────
+            # For scanned PDFs, flat forms, and image-of-document PDFs the
+            # text-layer extraction misses most content because field values
+            # / body text are pixels, not text. Detect by chars/page ratio.
+            # Trigger page render + vision extraction on each page so the
+            # vision model recovers what text extraction couldn't.
+            try:
+                await self._maybe_run_page_render_vision(
+                    content=content,
+                    notebook_id=notebook_id,
+                    source_id=source_id,
+                    filename=filename,
+                )
+            except Exception as fallback_err:
+                print(
+                    f"[DocProcessor] Page-render-vision fallback raised "
+                    f"(non-fatal): {fallback_err}"
+                )
+
         except Exception as e:
             print(f"[DocProcessor] Background image processing failed for {filename}: {e}")
     
+    async def _maybe_run_page_render_vision(
+        self,
+        content: bytes,
+        notebook_id: str,
+        source_id: str,
+        filename: str,
+    ) -> None:
+        """If the indexed text yield is low per page, render pages as
+        images and run them through the vision model.
+
+        Trigger: chars/page < LOW_TEXT_THRESHOLD (200). This catches
+        scanned PDFs and flat forms where text-extraction got only
+        labels/header info but missed field values and body content.
+
+        Vision model is whatever's configured in settings.vision_model
+        (typically the same as the main model when the user has chosen
+        a multimodal main like Gemma).
+        """
+        from services.multimodal_extractor import multimodal_extractor
+
+        LOW_TEXT_THRESHOLD = 200  # chars per page
+
+        # Page count via a cheap pymupdf probe
+        try:
+            import fitz
+            probe_doc = fitz.open(stream=content, filetype="pdf")
+            page_count = len(probe_doc)
+            probe_doc.close()
+        except Exception as e:
+            print(f"[DocProcessor] page count probe failed: {e}")
+            return
+
+        if page_count == 0:
+            return
+
+        # Pull the source's currently-indexed text content
+        source = await source_store.get(source_id)
+        text_chars = len((source or {}).get("content", "") or "")
+        chars_per_page = text_chars / page_count
+
+        if chars_per_page >= LOW_TEXT_THRESHOLD:
+            print(
+                f"[DocProcessor] Text yield OK for {filename}: "
+                f"{chars_per_page:.0f} chars/page across {page_count} pages "
+                f"(threshold {LOW_TEXT_THRESHOLD}) — skipping page-render"
+            )
+            return
+
+        print(
+            f"[DocProcessor] Low text yield for {filename}: "
+            f"{chars_per_page:.0f} chars/page in {page_count} pages "
+            f"(under {LOW_TEXT_THRESHOLD}). Triggering page-render vision."
+        )
+
+        page_results = await multimodal_extractor.extract_pages_as_images(
+            pdf_content=content,
+            source_id=source_id,
+            filename=filename,
+        )
+
+        if not page_results:
+            print(f"[DocProcessor] Page-render returned no text for {filename}")
+            return
+
+        # Format: one chunk per page, prefixed so retrieval can identify
+        # the source. The chunk_prefix on append_to_document tags every
+        # chunk for diagnostics in /sources.
+        page_text = "\n\n".join(
+            f"--- Page {r['page']} ---\n{r['extracted_text']}"
+            for r in page_results
+        )
+        await rag_engine.append_to_document(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            text=page_text,
+            chunk_prefix="[PAGE-VISION] ",
+        )
+
+        # Record the recovery in source metadata
+        await source_store.update(notebook_id, source_id, {
+            "pages_vision_extracted": len(page_results),
+            "has_visual_content": True,
+        })
+        print(
+            f"[DocProcessor] Page-render added {len(page_results)} pages of "
+            f"vision-extracted text for {filename}"
+        )
+
     def _extract_pdf_table(self, table) -> str:
         """Extract table from PDF and convert to searchable text."""
         try:

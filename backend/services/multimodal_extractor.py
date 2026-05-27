@@ -38,6 +38,28 @@ class ExtractedImage:
 # Defaults to granite3.2-vision:2b but will use main model if it supports vision natively
 
 
+# Prompt for full-page text extraction (different from per-image
+# description). Used by extract_pages_as_images() when text-layer
+# extraction yielded little — typically scanned PDFs or flat forms where
+# the field values are pixels, not text.
+PAGE_TEXT_EXTRACT_PROMPT = """Read this page of a document and transcribe ALL text content visible on it. Include:
+- Every label, field name, and field value
+- Table contents (preserve row/column structure)
+- Headers, subheaders, footers, footnotes
+- Captions, annotations, sidebars
+- Handwritten text if any
+- Form field values, checkbox states, signatures
+
+Output the transcribed text as structured plain text:
+- For forms, output "Label: Value" pairs (or "Label: [empty]" if blank)
+- For tables, separate columns with " | " on each row
+- For sections, prefix with the section heading on its own line
+- Preserve the visual reading order (top to bottom, left to right)
+
+Do NOT describe the page visually. Do NOT interpret meaning. Do NOT summarize.
+Output ONLY the transcribed text. If a field is empty write [empty]. If unreadable write [unreadable]."""
+
+
 class MultimodalExtractor:
     """Extracts and describes images from documents with parallel processing."""
     
@@ -268,6 +290,108 @@ Focus on information that would be useful for answering questions about this doc
                 }
             return None
     
+    async def extract_pages_as_images(
+        self,
+        pdf_content: bytes,
+        source_id: str,
+        filename: str = "",
+        max_pages: int = 15,
+        dpi_scale: float = 2.0,
+    ) -> List[Dict]:
+        """Render each PDF page as an image and vision-extract its text.
+
+        Use this fallback when normal text extraction yielded little content
+        (scanned PDFs, flat forms, image-of-document PDFs). For each page:
+          1. Render via PyMuPDF at `dpi_scale × 72` DPI (default 144 DPI —
+             legible for body text without producing huge PNGs)
+          2. Send to the vision model with PAGE_TEXT_EXTRACT_PROMPT
+          3. Collect the extracted text
+
+        Sequential (single worker) — page render + vision inference is
+        memory-heavy and we don't want to thrash 16-18 GB Macs. Capped at
+        `max_pages` (default 15) to bound runtime for very long PDFs.
+
+        Returns: List of {page, extracted_text} dicts, one per processed page.
+        """
+        try:
+            import fitz  # PyMuPDF
+        except ImportError:
+            print(
+                "[MultimodalExtractor] PyMuPDF not installed, "
+                "skipping page-render extraction"
+            )
+            return []
+
+        results: List[Dict] = []
+        try:
+            doc = fitz.open(stream=pdf_content, filetype="pdf")
+            total_pages = min(len(doc), max_pages)
+            print(
+                f"[MultimodalExtractor] Page-render fallback: "
+                f"rendering {total_pages} pages of {filename} at "
+                f"{int(dpi_scale * 72)} DPI for vision extraction"
+            )
+
+            from services.ollama_client import ollama_client
+            api_style = self._get_vision_api_style()
+
+            for page_idx in range(total_pages):
+                page_num = page_idx + 1
+                try:
+                    page = doc[page_idx]
+                    pixmap = page.get_pixmap(
+                        matrix=fitz.Matrix(dpi_scale, dpi_scale),
+                    )
+                    image_bytes = pixmap.tobytes("png")
+                    # Free pixmap before sending to vision (which can take seconds)
+                    del pixmap
+
+                    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                    description = await ollama_client.vision_describe(
+                        image_b64=image_b64,
+                        prompt=PAGE_TEXT_EXTRACT_PROMPT,
+                        model=self.vision_model,
+                        api_style=api_style,
+                    )
+
+                    if (
+                        description
+                        and not description.startswith("Error:")
+                        and description.strip()
+                    ):
+                        text = description.strip()
+                        results.append({
+                            "page": page_num,
+                            "extracted_text": text,
+                        })
+                        print(
+                            f"[MultimodalExtractor] Page-render p{page_num}: "
+                            f"{len(text)} chars extracted"
+                        )
+                    else:
+                        print(
+                            f"[MultimodalExtractor] Page-render p{page_num}: "
+                            f"vision returned no usable text"
+                        )
+                except Exception as e:
+                    print(
+                        f"[MultimodalExtractor] Page-render failed for "
+                        f"p{page_num}: {e}"
+                    )
+                    continue
+
+            doc.close()
+            print(
+                f"[MultimodalExtractor] Page-render complete: "
+                f"{len(results)}/{total_pages} pages yielded text"
+            )
+            return results
+        except Exception as e:
+            print(
+                f"[MultimodalExtractor] Page-render extraction crashed: {e}"
+            )
+            return []
+
     async def extract_and_describe(
         self,
         pdf_content: bytes,

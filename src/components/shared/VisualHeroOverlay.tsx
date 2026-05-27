@@ -29,7 +29,11 @@ interface VisualHeroOverlayProps {
   defaultTitle?: string;
   defaultSubtitle?: string;
   initialEnabled?: boolean;
+  /** User-chosen position (persisted in metadata). Takes precedence. */
   initialPosition?: OverlayPosition;
+  /** Backend-suggested position from image analysis — used as the default
+   *  when the user hasn't yet picked one. Falls back to bottom-left. */
+  suggestedPosition?: OverlayPosition;
   initialTitle?: string;
   initialSubtitle?: string;
 }
@@ -41,6 +45,103 @@ const POSITION_STYLES: Record<OverlayPosition, React.CSSProperties> = {
   'bottom-right': { bottom: '8%', right: '5%', textAlign: 'right' },
   'center':       { top: '50%', left: '50%', transform: 'translate(-50%, -50%)', textAlign: 'center' },
 };
+
+/**
+ * Bake the overlay (title + subtitle + scrim) into the base SVG as
+ * native SVG elements so it survives standalone export.
+ *
+ * The frontend renders the overlay as DOM/CSS for live editing — but
+ * for export (`.svg` download, embedding elsewhere) we need everything
+ * in one self-contained SVG. This walks the base SVG, computes the same
+ * positions used by POSITION_STYLES (in viewBox coordinates), and
+ * appends a backdrop + text elements before `</svg>`.
+ */
+function buildExportSvg(
+  baseSvg: string,
+  title: string,
+  subtitle: string,
+  position: OverlayPosition,
+  enabled: boolean,
+): string {
+  if (!enabled || (!title && !subtitle)) return baseSvg;
+
+  // Extract viewBox dims; bail if non-standard (caller falls back to raw svg)
+  const vbMatch = baseSvg.match(/viewBox="0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)"/);
+  if (!vbMatch) return baseSvg;
+  const w = parseFloat(vbMatch[1]);
+  const h = parseFloat(vbMatch[2]);
+
+  const padX = Math.max(40, Math.round(w * 0.05));
+  const padY = Math.max(40, Math.round(h * 0.08));
+  const titleSize = Math.max(36, Math.round(h * 0.072));
+  const subtitleSize = Math.max(18, Math.round(h * 0.028));
+  const blockMaxW = position === 'center' ? Math.round(w * 0.7) : Math.round(w * 0.55);
+  // Block height: padding(24) + title + gap(12) + subtitle + padding(20)
+  const blockH = 24 + titleSize + (subtitle ? 12 + subtitleSize : 0) + 20;
+
+  let blockX = padX;
+  let blockY = padY;
+  switch (position) {
+    case 'top-left':     blockX = padX;                       blockY = padY; break;
+    case 'top-right':    blockX = w - padX - blockMaxW;       blockY = padY; break;
+    case 'bottom-left':  blockX = padX;                       blockY = h - padY - blockH; break;
+    case 'bottom-right': blockX = w - padX - blockMaxW;       blockY = h - padY - blockH; break;
+    case 'center':       blockX = (w - blockMaxW) / 2;        blockY = (h - blockH) / 2; break;
+  }
+
+  const escape = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const textX = blockX + 24;
+  const titleBaseline = blockY + 24 + titleSize * 0.82;
+  const subtitleBaseline = titleBaseline + Math.round(titleSize * 0.55) + subtitleSize * 0.2;
+
+  const defs =
+    `<defs><filter id="exTextShadow" x="-10%" y="-10%" width="120%" height="120%">` +
+    `<feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.55"/>` +
+    `</filter></defs>`;
+
+  const backdrop =
+    `<rect x="${blockX}" y="${blockY}" width="${blockMaxW}" height="${blockH}" ` +
+    `rx="12" fill="rgb(0,0,0)" fill-opacity="0.45"/>`;
+
+  const titleEl = title
+    ? `<text x="${textX}" y="${titleBaseline}" ` +
+      `font-family="Georgia, 'Iowan Old Style', 'Palatino Linotype', serif" ` +
+      `font-size="${titleSize}" font-weight="600" fill="rgb(255,255,255)" ` +
+      `filter="url(#exTextShadow)" letter-spacing="-0.01em">` +
+      `${escape(title)}</text>`
+    : '';
+
+  const subtitleEl = subtitle
+    ? `<text x="${textX}" y="${subtitleBaseline}" ` +
+      `font-family="Inter, 'Helvetica Neue', system-ui, sans-serif" ` +
+      `font-size="${subtitleSize}" font-weight="400" fill="rgb(245,245,245)" ` +
+      `fill-opacity="0.92" filter="url(#exTextShadow)">` +
+      `${escape(subtitle)}</text>`
+    : '';
+
+  return baseSvg.replace('</svg>', defs + backdrop + titleEl + subtitleEl + '</svg>');
+}
+
+function downloadSvg(svg: string, suggestedTitle: string) {
+  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = sanitizeFilename(suggestedTitle) + '.svg';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function sanitizeFilename(s: string): string {
+  const cleaned = (s || 'visual').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return cleaned || 'visual';
+}
 
 const POSITION_GLYPHS: Record<OverlayPosition, string> = {
   'top-left': '◤',
@@ -61,14 +162,16 @@ export const VisualHeroOverlay: React.FC<VisualHeroOverlayProps> = ({
   defaultSubtitle = '',
   initialEnabled,
   initialPosition,
+  suggestedPosition,
   initialTitle,
   initialSubtitle,
 }) => {
   const { updateCanvasItem } = useCanvasItems();
 
   const [enabled, setEnabled] = React.useState<boolean>(initialEnabled ?? false);
+  // Priority: explicit user choice > backend smart suggestion > safe default
   const [position, setPosition] = React.useState<OverlayPosition>(
-    initialPosition ?? 'bottom-left',
+    initialPosition ?? suggestedPosition ?? 'bottom-left',
   );
   const [title, setTitle] = React.useState<string>(initialTitle ?? defaultTitle);
   const [subtitle, setSubtitle] = React.useState<string>(initialSubtitle ?? defaultSubtitle);
@@ -176,6 +279,17 @@ export const VisualHeroOverlay: React.FC<VisualHeroOverlayProps> = ({
               className="text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400 underline-offset-2 hover:underline"
             >
               {editing ? 'Done editing' : 'Edit text'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const exported = buildExportSvg(svg, title, subtitle, position, true);
+                downloadSvg(exported, title || 'visual');
+              }}
+              className="text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400 underline-offset-2 hover:underline"
+              title="Download SVG with the title overlay baked in at the chosen position"
+            >
+              Export ↓
             </button>
           </>
         )}

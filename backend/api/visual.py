@@ -669,6 +669,7 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
                             } if visual.critic_score else None
                         ),
                         "v2_generation_ms": visual.generation_ms,
+                        "suggested_overlay_position": visual.suggested_overlay_position,
                     }
                     yield f"event: primary\ndata: {json_module.dumps(primary)}\n\n"
                     yield f"event: done\ndata: {json_module.dumps({'total': 1, 'v2': True})}\n\n"
