@@ -10,6 +10,7 @@
  * kept in sync manually since the catalog is small and changes rarely.
  */
 import React, { useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 const CATEGORIES: Record<string, { label: string; idioms: { id: string; label: string }[] }> = {
   ARCHITECTURE: {
@@ -77,6 +78,11 @@ interface VisualIdiomSwapProps {
   originalPrompt?: string;
 }
 
+const MENU_MAX_H = 200; // matches max-h-[200px] tailwind class on the menu
+const MENU_W = 200;
+const EDGE_PAD = 8;
+const TRIGGER_GAP = 4;
+
 export const VisualIdiomSwap: React.FC<VisualIdiomSwapProps> = ({
   currentIdiom,
   notebookId,
@@ -84,26 +90,38 @@ export const VisualIdiomSwap: React.FC<VisualIdiomSwapProps> = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [swapping, setSwapping] = useState(false);
-  // Direction the menu opens: 'down' default, 'up' when there isn't enough
-  // viewport room below (the case the user hit — visual near bottom of canvas).
-  const [direction, setDirection] = useState<'up' | 'down'>('down');
+  const [coords, setCoords] = useState<{
+    top: number;
+    left: number;
+    flipUp: boolean;
+  }>({ top: 0, left: 0, flipUp: false });
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Measure available room each time the menu opens and flip direction
-  // if the menu would overflow the viewport.
+  // Position computation runs whenever the menu opens. We use position:fixed
+  // and portal into document.body so the menu escapes parent overflow:
+  // hidden/auto clipping — the previous absolute-positioned version got
+  // cropped inside CanvasItemCard's overflow wrapper, leaving the menu
+  // unreachable when the visual sat near the bottom of the canvas.
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
     const spaceBelow = window.innerHeight - rect.bottom;
     const spaceAbove = rect.top;
-    // Estimate menu height: header (24px) + 4 items × 28px + padding ≈ 150px
-    const estimatedMenuH = 160;
-    if (spaceBelow < estimatedMenuH && spaceAbove > spaceBelow) {
-      setDirection('up');
-    } else {
-      setDirection('down');
-    }
+    const flipUp = spaceBelow < MENU_MAX_H + TRIGGER_GAP && spaceAbove > spaceBelow;
+
+    // Right-align the menu to the trigger, but clamp to viewport edges.
+    const rawLeft = rect.right - MENU_W;
+    const left = Math.max(
+      EDGE_PAD,
+      Math.min(rawLeft, window.innerWidth - MENU_W - EDGE_PAD),
+    );
+
+    setCoords({
+      top: flipUp ? rect.top - TRIGGER_GAP : rect.bottom + TRIGGER_GAP,
+      left,
+      flipUp,
+    });
   }, [open]);
 
   // Close on outside click
@@ -119,6 +137,20 @@ export const VisualIdiomSwap: React.FC<VisualIdiomSwapProps> = ({
     };
     document.addEventListener('mousedown', onClick);
     return () => document.removeEventListener('mousedown', onClick);
+  }, [open]);
+
+  // Close on viewport scroll/resize — popover position is computed once on
+  // open; if the user scrolls, the menu would visually detach from its
+  // trigger. Cheapest fix is to just close.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const onChange = () => setOpen(false);
+    window.addEventListener('scroll', onChange, true);
+    window.addEventListener('resize', onChange);
+    return () => {
+      window.removeEventListener('scroll', onChange, true);
+      window.removeEventListener('resize', onChange);
+    };
   }, [open]);
 
   // Without the original prompt we can't re-run generation; hide the swap.
@@ -140,9 +172,39 @@ export const VisualIdiomSwap: React.FC<VisualIdiomSwapProps> = ({
     }));
   };
 
-  const menuPosition = direction === 'up'
-    ? 'bottom-full mb-1'
-    : 'top-full mt-1';
+  // Portal the menu into document.body so parent overflow can't clip it.
+  // Position is computed from the trigger's bounding rect; flip up when
+  // there's not enough room below.
+  const menu = open ? (
+    <div
+      ref={menuRef}
+      style={{
+        position: 'fixed',
+        left: coords.left,
+        ...(coords.flipUp
+          ? { bottom: window.innerHeight - coords.top }
+          : { top: coords.top }),
+        width: MENU_W,
+        maxHeight: MENU_MAX_H,
+        zIndex: 9999,
+      }}
+      className="overflow-y-auto bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1"
+    >
+      <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 sticky top-0 bg-white dark:bg-gray-800">
+        {CATEGORIES[category].label}
+      </div>
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          onClick={() => swap(o.id)}
+          className="block w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-200 hover:bg-indigo-50 dark:hover:bg-indigo-900/30"
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  ) : null;
 
   return (
     <div className="relative inline-block">
@@ -155,26 +217,7 @@ export const VisualIdiomSwap: React.FC<VisualIdiomSwapProps> = ({
       >
         {swapping ? 'Swapping…' : 'Swap idiom ▾'}
       </button>
-      {open && (
-        <div
-          ref={menuRef}
-          className={`absolute right-0 ${menuPosition} z-50 min-w-[180px] max-h-[200px] overflow-y-auto bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1`}
-        >
-          <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 sticky top-0 bg-white dark:bg-gray-800">
-            {CATEGORIES[category].label}
-          </div>
-          {options.map((o) => (
-            <button
-              key={o.id}
-              type="button"
-              onClick={() => swap(o.id)}
-              className="block w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-200 hover:bg-indigo-50 dark:hover:bg-indigo-900/30"
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {menu && createPortal(menu, document.body)}
     </div>
   );
 };

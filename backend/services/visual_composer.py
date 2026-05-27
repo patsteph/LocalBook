@@ -37,6 +37,7 @@ from services.visual_diffusion import (
     force_unload,
     klein_diffusion,
     resolve_dimensions,
+    write_klein_brief,
     write_klein_prompt,
 )
 from services.visual_freeform import (
@@ -51,6 +52,13 @@ from services.svg_renderer import render_svg_to_png
 from services.visual_skeletons import HERO_IDIOMS
 
 logger = logging.getLogger(__name__)
+
+
+# Klein's text encoder (T5-XXL or similar) truncates beyond ~512 tokens.
+# At ~4 chars/token that's ~2000 chars; we set the safe passthrough limit
+# below that so the user's full prompt fits without losing the cinematic
+# tail. Prompts over this go through the art director compressor.
+KLEIN_PROMPT_PASSTHROUGH_LIMIT = 1500
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -463,43 +471,69 @@ class VisualComposer:
         # Step 1: dimensions + steps from (aspect, tier)
         width, height, steps = resolve_dimensions(intent.aspect_ratio, intent.quality_tier)
 
-        # Step 2: Klein prompt — passthrough or Gemma-written
-        if intent.passthrough_recommended:
+        # Step 2: build the Klein prompt.
+        #
+        # Three branches:
+        #   A) passthrough + short  → use user prompt verbatim (preserves
+        #      every comma of their art direction)
+        #   B) passthrough + long   → art director compression. Klein's T5
+        #      text encoder caps at ~512 tokens (≈2000 chars); a passthrough
+        #      prompt over the limit gets its CINEMATIC TAIL silently
+        #      truncated. The compressor re-orders to front-load art
+        #      direction so nothing important is lost.
+        #   C) not passthrough      → art director pass (replaces the old
+        #      one-shot write_klein_prompt). Produces a 50-150 word prompt
+        #      assembled in Klein-optimal order (style → palette → lighting
+        #      → subject → composition).
+        if intent.passthrough_recommended and len(prompt_source) <= KLEIN_PROMPT_PASSTHROUGH_LIMIT:
             klein_prompt = prompt_source
             logger.info(
-                f"[visual_composer] full-bleed passthrough: using user prompt verbatim "
-                f"({len(klein_prompt)} chars)"
+                f"[visual_composer] full-bleed passthrough (verbatim, "
+                f"{len(klein_prompt)} chars within encoder budget)"
             )
-        else:
-            style_hint = intent.style_hint or "minimalist editorial illustration"
-            klein_prompt = await write_klein_prompt(
-                intent=prompt_source,
-                title=title,
-                style_hint=style_hint,
-                capability=capability,
+        elif intent.passthrough_recommended:
+            logger.info(
+                f"[visual_composer] full-bleed passthrough requested but prompt is "
+                f"{len(prompt_source)} chars (>{KLEIN_PROMPT_PASSTHROUGH_LIMIT}); "
+                f"compressing via art director pass to preserve art-direction tail"
+            )
+            klein_prompt = await write_klein_brief(
+                user_prompt=prompt_source, title=title, capability=capability,
             )
             if not klein_prompt:
-                logger.warning("[visual_composer] full-bleed: Klein prompt-writer failed")
+                logger.warning("[visual_composer] full-bleed: compression failed")
                 return None
             logger.info(
-                f"[visual_composer] full-bleed Gemma-written prompt: {klein_prompt[:140]}..."
+                f"[visual_composer] full-bleed compressed prompt ({len(klein_prompt)} chars): "
+                f"{klein_prompt[:140]}..."
+            )
+        else:
+            logger.info("[visual_composer] full-bleed: running art director pass")
+            klein_prompt = await write_klein_brief(
+                user_prompt=prompt_source, title=title, capability=capability,
+            )
+            if not klein_prompt:
+                logger.warning("[visual_composer] full-bleed: art director pass failed")
+                return None
+            logger.info(
+                f"[visual_composer] full-bleed art-directed prompt ({len(klein_prompt)} chars): "
+                f"{klein_prompt[:140]}..."
             )
 
-        # Step 2b: conditional text suppression in the negative prompt.
-        # Klein's text rendering on technical/programmatic terms produces
-        # garbage that looks worse than no text. Only allow Klein to render
-        # text when the user explicitly asked for in-image labels/callouts.
-        negative_prompt = DEFAULT_NEGATIVE_PROMPT
-        if not _user_wants_text_in_image(prompt_source):
-            negative_prompt = (
-                f"{DEFAULT_NEGATIVE_PROMPT}, "
-                f"no text in image, no labels, no captions, "
-                f"no readable words, no typography in image"
-            )
-            logger.info(
-                "[visual_composer] full-bleed: suppressing in-image text "
-                "(user did not request labels)"
-            )
+        # Step 2b: always suppress in-image text. The editorial typography
+        # overlay added by _build_full_bleed_svg below provides the title
+        # and subtitle as crisp SVG type — Klein should never compete with
+        # that by attempting to render labels itself. Klein has no
+        # character-level knowledge of programmatic strings ("LanceDB",
+        # "Embedder", "Chunker"), so any text it generates for technical
+        # content is illegible by design.
+        negative_prompt = (
+            f"{DEFAULT_NEGATIVE_PROMPT}, "
+            f"no text in image, no labels, no captions, "
+            f"no readable words, no typography in image, "
+            f"no signs, no logos, no character text, "
+            f"no written language"
+        )
 
         # Step 3: pre-unload Gemma on swap-mode machines so Klein has room
         swap_mode = capability.concurrency_mode.value in ("swap", "swap_strict")
@@ -522,16 +556,26 @@ class VisualComposer:
             )
             return None
 
-        # Step 5: wrap in minimal full-bleed SVG
+        # Step 5: wrap in full-bleed SVG with editorial typography overlay.
+        # Klein renders pure imagery; SVG provides the title/subtitle as
+        # curated typography at fixed editorial positions (NOT labels-on-
+        # things — we don't pretend to know what's where in the image).
         svg = _build_full_bleed_svg(
             png_bytes=diffusion.png_bytes,
             width=diffusion.width or width,
             height=diffusion.height or height,
+            title=title,
+            subtitle=subtitle,
         )
 
-        # Step 6: critic (best-effort — None on failure is fine)
+        # Step 6: critic (best-effort — None on failure is fine).
+        # Pass the user's ACTUAL prompt (not the enriched content blob, not
+        # truncated to 300 chars) so the critic can apply the prompt-fidelity
+        # hard-penalty check from CRITIC_SYSTEM. Cap at 1500 chars to keep
+        # the critic's context bounded.
+        critic_intent = prompt_source[:1500] if prompt_source else content[:300]
         critic_result = await self._run_critic(
-            svg, title=title, intent=content[:300], capability=capability,
+            svg, title=title, intent=critic_intent, capability=capability,
         )
 
         return ComposedVisual(
@@ -755,48 +799,153 @@ def _extract_topic(content: str) -> str:
     return content[:idx].strip()
 
 
-_TEXT_REQUEST_CUES = (
-    "label", "callout", "caption", "with the text", "with the words",
-    "typography", "annotated", "annotation", "title text",
-    "rendered cleanly", "hand-labeled",
-)
+def _build_full_bleed_svg(
+    png_bytes: bytes,
+    width: int,
+    height: int,
+    title: str = "",
+    subtitle: str = "",
+) -> str:
+    """Klein PNG with editorial typography overlay.
 
+    Magazine-spread aesthetic: Klein renders pure imagery (text fully
+    suppressed in the negative prompt), and SVG adds curated typography
+    at fixed editorial positions. NO labels-on-things — these are TITLE
+    elements, not annotations.
 
-def _user_wants_text_in_image(user_prompt: str) -> bool:
-    """Heuristic: did the user explicitly ask for in-image text?
+    Layout (proportional to viewBox, works at any aspect):
+      • Soft radial gradient at upper-left (top 45%, left 55%) fading
+        from rgba(0,0,0,0.42) to transparent — ensures title legibility
+        against any image without obscuring the imagery
+      • Thin colored accent bar (4px tall, 64px wide) at upper-left
+      • Title in white, semi-bold serif, drop shadow
+      • Subtitle below title, lighter weight, slightly muted white
 
-    Klein's text rendering on technical/programmatic strings produces
-    garbage that looks worse than no text. We default to suppressing
-    text in the negative prompt, but honor explicit user requests.
-    """
-    if not user_prompt:
-        return False
-    lower = user_prompt.lower()
-    return any(cue in lower for cue in _TEXT_REQUEST_CUES)
-
-
-def _build_full_bleed_svg(png_bytes: bytes, width: int, height: int) -> str:
-    """Wrap a Klein PNG in a minimal full-bleed SVG.
-
-    No header band, no callout cards — the image IS the visual. Title
-    metadata is carried separately on ComposedVisual and rendered by the
-    UI as a caption above the SVG, not inside it. Keeps Klein output
-    unencumbered.
-
-    The SVG uses the Klein output's actual dimensions as its viewBox so
-    the frontend renderer can preserve aspect ratio without letterbox or
-    crop.
+    Skipped when title is empty or the generic placeholder
+    ("Hero Visual"). The image alone is shown.
     """
     import base64
+    import xml.sax.saxutils as _xml
+
     b64 = base64.b64encode(png_bytes).decode("ascii")
+
+    show_title = bool(title) and title.strip().lower() != "hero visual"
+    overlay = ""
+    if show_title:
+        overlay = _editorial_overlay(width, height, title, subtitle, _xml.escape)
+
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" '
         f'viewBox="0 0 {width} {height}" width="{width}" height="{height}">'
+        f'<defs>'
+        f'<radialGradient id="heroTitleScrim" cx="0" cy="0" r="0.7">'
+        f'<stop offset="0%" stop-color="rgb(0,0,0)" stop-opacity="0.42"/>'
+        f'<stop offset="100%" stop-color="rgb(0,0,0)" stop-opacity="0"/>'
+        f'</radialGradient>'
+        f'<filter id="heroTextShadow" x="-10%" y="-10%" width="120%" height="120%">'
+        f'<feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.55"/>'
+        f'</filter>'
+        f'</defs>'
         f'<image x="0" y="0" width="{width}" height="{height}" '
         f'href="data:image/png;base64,{b64}" '
         f'preserveAspectRatio="xMidYMid meet" />'
+        f'{overlay}'
         f'</svg>'
     )
+
+
+def _editorial_overlay(
+    width: int,
+    height: int,
+    title: str,
+    subtitle: str,
+    escape,
+) -> str:
+    """Generate the SVG typography layer for a Klein hero image.
+
+    Positions and sizes scale proportionally to the viewBox so the same
+    code works at 16:9 / 4:3 / 1:1 / 9:16. Tested anchor: title baseline
+    at ~16% from top, accent bar 24px above title baseline.
+    """
+    # Layout anchors — fractions of viewBox so this works across aspects.
+    pad_x = max(48, int(width * 0.045))
+    pad_y = max(80, int(height * 0.11))
+    title_size = max(36, int(height * 0.072))   # ~52px @ 720h, ~74px @ 1024h
+    subtitle_size = max(18, int(height * 0.028))
+    line_gap = int(title_size * 0.45)
+    accent_bar_h = max(3, int(height * 0.006))
+    accent_bar_w = int(title_size * 1.15)
+    accent_bar_y = pad_y - title_size - 18
+
+    # Scrim covers upper-left to ensure title contrast against any image.
+    scrim_w = int(width * 0.55)
+    scrim_h = int(height * 0.45)
+
+    # Truncate titles that would overflow horizontally. Rough heuristic:
+    # serif chars ≈ 0.55 × font_size wide. Available width is viewBox width
+    # minus left padding minus 8% right margin.
+    avail = width - pad_x - int(width * 0.08)
+    title_t = _truncate_for_width(title, avail, title_size, 0.55)
+    subtitle_t = _truncate_for_width(subtitle, avail, subtitle_size, 0.5) if subtitle else ""
+
+    parts: list[str] = []
+    # Scrim rectangle (clipped to upper-left via the radial gradient)
+    parts.append(
+        f'<rect x="0" y="0" width="{scrim_w}" height="{scrim_h}" '
+        f'fill="url(#heroTitleScrim)"/>'
+    )
+    # Accent bar — thin colored line above the title
+    parts.append(
+        f'<rect x="{pad_x}" y="{accent_bar_y}" '
+        f'width="{accent_bar_w}" height="{accent_bar_h}" '
+        f'rx="{accent_bar_h // 2}" fill="rgb(236,72,153)" '
+        f'fill-opacity="0.95"/>'
+    )
+    # Title — serif, semi-bold, white, drop shadow for legibility
+    parts.append(
+        f'<text x="{pad_x}" y="{pad_y}" '
+        f'font-family="Georgia, \'Iowan Old Style\', \'Apple Garamond\', '
+        f'\'Palatino Linotype\', serif" '
+        f'font-size="{title_size}" font-weight="600" '
+        f'fill="rgb(255,255,255)" filter="url(#heroTextShadow)" '
+        f'letter-spacing="-0.01em">'
+        f'{escape(title_t)}</text>'
+    )
+    if subtitle_t:
+        parts.append(
+            f'<text x="{pad_x}" y="{pad_y + line_gap + subtitle_size}" '
+            f'font-family="Inter, \'Helvetica Neue\', system-ui, sans-serif" '
+            f'font-size="{subtitle_size}" font-weight="400" '
+            f'fill="rgb(245,245,245)" fill-opacity="0.92" '
+            f'filter="url(#heroTextShadow)">'
+            f'{escape(subtitle_t)}</text>'
+        )
+    return "".join(parts)
+
+
+def _truncate_for_width(
+    text: str,
+    avail_px: int,
+    font_size: int,
+    avg_char_ratio: float,
+) -> str:
+    """Truncate `text` so it likely fits in `avail_px` at the given font
+    size, appending an ellipsis. Heuristic only — width depends on the
+    actual rendered font, but this is close enough to prevent obvious
+    overflow.
+    """
+    if not text:
+        return ""
+    max_chars = max(8, int(avail_px / (font_size * avg_char_ratio)))
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+    # Trim back to word boundary if possible
+    trimmed = text[: max_chars - 1].rstrip()
+    last_space = trimmed.rfind(" ")
+    if last_space > max_chars * 0.6:
+        trimmed = trimmed[:last_space]
+    return trimmed + "…"
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -282,6 +282,92 @@ PROMPT RULES:
 Return ONLY the prompt text — no JSON, no explanations, no quotes around the whole prompt."""
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Art-director prompt-writer chain
+# ──────────────────────────────────────────────────────────────────────
+# A stronger alternative to PROMPT_WRITER_SYSTEM above. Used by the
+# full-bleed Klein path. The key differences:
+#   • Front-loads art direction (style, palette, lighting, mood) because
+#     Klein's text encoder truncates the tail at ~512 tokens
+#   • Drops any in-image label requests from the user (Klein cannot spell
+#     technical strings; we render typography via SVG overlay instead)
+#   • Targets 50-150 words / ~200 tokens — well under the truncation point
+#   • Concrete visual language only — no "beautiful", no "amazing"
+
+KLEIN_BRIEF_SYSTEM = """You are an art director writing a single prompt for FLUX.2 [klein], a text-to-image diffusion model. Your job: convert the user's request into a concise, vivid prompt that produces a striking, professional image.
+
+ASSEMBLE THE PROMPT IN THIS EXACT ORDER (Klein parses front-to-back; the tail gets truncated at the text encoder's limit):
+  1. STYLE + MEDIUM — e.g. "A cinematic isometric illustration", "A flat editorial vector graphic", "A photographic 3/4 hero shot"
+  2. PALETTE — concrete named colors: "warm walnut and brushed silver tones with electric teal, amber, and magenta accents"
+  3. LIGHTING + MOOD — "soft directional golden-hour light, calm didactic atmosphere"
+  4. SUBJECT — what's actually in the image, described visually (the literal scene/object)
+  5. COMPOSITION — layout, perspective, focal point — "centered composition with a faceted crystalline database as the focal point"
+
+HARD RULES:
+- Output ONE single prompt, 50–150 words (≈200 tokens MAX). Brevity is the point — every word fights for encoder budget.
+- DROP all of: label text the user wants in the image (LanceDB, Embedder, Chunker, etc.), label instructions, "annotated", "labeled", "callouts", "captions", "with the text X". Klein cannot spell technical strings — we render typography on top via SVG. Including label requests here only wastes tokens and produces garbage.
+- DROP filler adjectives ("beautiful", "amazing", "nice", "perfect").
+- KEEP every aesthetic / lighting / palette / mood / style cue the user provided. These are precious.
+- KEEP the literal visual subject described as a scene (a Mac Mini on a walnut desk, a glowing crystalline gem, a cascade of floating documents).
+- USE concrete visual language: "soft directional light from upper-left" beats "good lighting", "muted walnut brown" beats "warm tone".
+
+Return ONLY the prompt text. No JSON, no quotes around the whole prompt, no "Prompt:" prefix, no explanations.
+
+EXAMPLES:
+
+User asks: "A simple SVG diagram of five stages, calm palette, sans-serif labels"
+→ "A clean editorial vector illustration in a calm three-color palette: soft cornflower blue, warm coral orange, and light slate grey on a bone-white field. Crisp flat shapes, no gradients or shadows, generous whitespace. Five connected stages flowing left to right as distinct iconic forms — a stack of pages, a faceted prism, a hexagonal vessel, a magnifier paired with a glowing core, and a chat bubble. Subtle directional flow lines connect them, with one loop returning. Centered horizontal composition with breathing room on all sides."
+
+User asks: A 200-word cinematic Mac Mini scene
+→ "A cinematic isometric cutaway illustration at golden hour, in warm walnut and brushed aluminum tones with electric teal, amber, and magenta highlights. Studio Ghibli warmth, soft volumetric light, shallow depth of field. A sleek aluminum Mac Mini sits on a walnut desk; its chassis is transparent glass revealing a luminous multi-layered interior — floating documents cascading into a glowing splitter, a faceted crystalline gem at center twinkling like a galaxy, and a rotating polyhedron of light at right. Fiber-optic ribbons of cyan, amber, and magenta flow between layers. Hyper-detailed technical-illustration meets editorial elegance, quiet competence."
+"""
+
+
+async def write_klein_brief(
+    user_prompt: str,
+    title: str,
+    capability: Optional[VisualCapability] = None,
+) -> Optional[str]:
+    """Compress a user's request into a Klein-optimal art-direction prompt.
+
+    Used by the full-bleed Klein path in two cases:
+      1. The classifier said the prompt is NOT passthrough-ready (sparse,
+         structurally dominant, lacks rich art direction)
+      2. The user's passthrough-ready prompt exceeds Klein's text-encoder
+         budget (~2000 chars / ~512 tokens), in which case the cinematic
+         tail would be silently truncated. Compressing preserves the
+         user's art direction by re-ordering it to the front.
+
+    Returns a ~50-150 word string assembled in Klein-optimal order, or
+    None on Gemma failure (caller falls through to the structural path).
+    """
+    cap = capability or await get_capability()
+    model = cap.gemma_model or settings.ollama_model
+
+    user_msg = (
+        f"USER REQUEST:\n{user_prompt}\n\n"
+        f"TITLE FOR THE VISUAL (for context only — do NOT include this "
+        f"text in the image, the SVG overlay handles titles): {title}\n\n"
+        f"Write the Klein prompt now. Front-load art direction. Drop any "
+        f"label/caption/annotation text requests."
+    )
+    result = await ollama_service.generate(
+        prompt=user_msg,
+        system=KLEIN_BRIEF_SYSTEM,
+        model=model,
+        temperature=0.4,
+        num_predict=2500,
+        timeout=180.0,
+        voice_modifier=False,
+    )
+    raw = (result.get("response") or "").strip()
+    if not raw:
+        return None
+    cleaned = re.sub(r'^["\']+|["\']+$', "", raw).strip()
+    cleaned = re.sub(r'^(?:klein\s+)?prompt:\s*', "", cleaned, flags=re.IGNORECASE)
+    return cleaned or None
+
+
 async def write_klein_prompt(
     intent: str,
     title: str,
