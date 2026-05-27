@@ -32,7 +32,13 @@ from services.visual_capability import (
     get_capability,
 )
 from services.visual_critic import CritiqueResult, visual_critic
-from services.visual_diffusion import force_unload, klein_diffusion, write_klein_prompt
+from services.visual_diffusion import (
+    DEFAULT_NEGATIVE_PROMPT,
+    force_unload,
+    klein_diffusion,
+    resolve_dimensions,
+    write_klein_prompt,
+)
 from services.visual_freeform import (
     FreeformResult,
     gemma_skeleton,    # Setup B primary path
@@ -40,6 +46,7 @@ from services.visual_freeform import (
     olmo_skeleton,     # Setup A primary path
 )
 from services.visual_generator import GeneratedVisual, VisualGenerator
+from services.visual_intent import IllustrationIntent, classify_intent
 from services.svg_renderer import render_svg_to_png
 from services.visual_skeletons import HERO_IDIOMS
 
@@ -288,11 +295,39 @@ class VisualComposer:
         AND runs ~4× faster (42s vs 170s). Picker handles hero choice
         natively — no more false hybrid triggers on abstract value-prop
         content.
+
+        v2.1 addition (2026-05-26): an illustration-intent pre-classifier
+        runs BEFORE the structural picker. When the user is asking for a
+        cinematic/illustrated image (cues like "cinematic", "isometric",
+        "render", art-direction vocabulary) AND Klein is installed, the
+        composer routes to _compose_klein_full_bleed — a pure raster hero
+        with no SVG callouts. Mirrors how Gemini / Claude / ChatGPT route
+        image asks separately from structural ones. Failure here is
+        non-fatal: falls through to the structural skeleton path.
         """
+        # NEW: illustration-intent pre-classifier (Klein-first path)
+        forced = getattr(self, "_forced_idiom", None)
+        if capability.can_diffusion_klein and not forced:
+            intent = await classify_intent(content, capability.gemma_model)
+            if intent.routes_to_klein():
+                logger.info(
+                    f"[visual_composer] intent routes to Klein full-bleed "
+                    f"(conf={intent.confidence:.2f}, reason={intent.reason!r})"
+                )
+                klein_result = await self._compose_klein_full_bleed(
+                    content, intent, capability,
+                )
+                if klein_result and klein_result.svg_markup:
+                    return klein_result
+                logger.warning(
+                    "[visual_composer] Klein full-bleed path failed; "
+                    "falling through to structural skeleton path"
+                )
+
         # Path 1: gemma_skeleton (primary — runs the two-stage picker)
         logger.info("[visual_composer] Setup B path: gemma_skeleton (two-stage picker)")
         scaffolded = await gemma_skeleton.generate(
-            content, capability, force_idiom=getattr(self, "_forced_idiom", None),
+            content, capability, force_idiom=forced,
         )
 
         if scaffolded.success and scaffolded.svg_markup and _is_valid_svg(scaffolded.svg_markup):
@@ -370,6 +405,115 @@ class VisualComposer:
         result = await self._compose_template(content, None, capability)
         result.error = f"skeleton failed: {scaffolded.error}; used template fallback"
         return result
+
+    async def _compose_klein_full_bleed(
+        self,
+        content: str,
+        intent: IllustrationIntent,
+        capability: VisualCapability,
+    ) -> Optional[ComposedVisual]:
+        """Klein-first path: pure raster hero, no SVG callouts.
+
+        Triggered by the intent classifier when the user is asking for a
+        cinematic / illustrated image rather than a structural diagram.
+        Bypasses the two-stage idiom picker entirely.
+
+        Flow:
+          1. Resolve Klein params from intent (aspect, tier → w/h/steps)
+          2. Build Klein prompt — passthrough (use user content directly)
+             when the prompt is already art-directed, otherwise have
+             Gemma write a tuned prompt via write_klein_prompt
+          3. Pre-unload Gemma on swap-mode machines
+          4. Generate the Klein image with negative prompt
+          5. Wrap the PNG in a minimal full-bleed SVG
+          6. Run the critic (best-effort)
+
+        Returns None on any failure so the caller can fall through to the
+        existing skeleton path — never raises.
+        """
+        t0 = time.time()
+        title = intent.title or "Hero Visual"
+        subtitle = intent.subtitle or ""
+
+        # Step 1: dimensions + steps from (aspect, tier)
+        width, height, steps = resolve_dimensions(intent.aspect_ratio, intent.quality_tier)
+
+        # Step 2: Klein prompt — passthrough or Gemma-written
+        if intent.passthrough_recommended:
+            klein_prompt = content.strip()
+            logger.info(
+                f"[visual_composer] full-bleed passthrough: using user prompt verbatim "
+                f"({len(klein_prompt)} chars)"
+            )
+        else:
+            style_hint = intent.style_hint or "minimalist editorial illustration"
+            klein_prompt = await write_klein_prompt(
+                intent=content,
+                title=title,
+                style_hint=style_hint,
+                capability=capability,
+            )
+            if not klein_prompt:
+                logger.warning("[visual_composer] full-bleed: Klein prompt-writer failed")
+                return None
+            logger.info(
+                f"[visual_composer] full-bleed Gemma-written prompt: {klein_prompt[:140]}..."
+            )
+
+        # Step 3: pre-unload Gemma on swap-mode machines so Klein has room
+        swap_mode = capability.concurrency_mode.value in ("swap", "swap_strict")
+        if swap_mode and capability.gemma_model:
+            logger.info("[visual_composer] full-bleed: pre-Klein Gemma unload (swap mode)")
+            await force_unload(capability.gemma_model)
+
+        # Step 4: Klein generation
+        diffusion = await klein_diffusion.generate(
+            prompt=klein_prompt,
+            capability=capability,
+            aspect_ratio=intent.aspect_ratio,
+            quality_tier=intent.quality_tier,
+            negative_prompt=DEFAULT_NEGATIVE_PROMPT,
+            unload_after=swap_mode,
+        )
+        if not diffusion.success or not diffusion.png_bytes:
+            logger.warning(
+                f"[visual_composer] full-bleed: Klein generation failed: {diffusion.error}"
+            )
+            return None
+
+        # Step 5: wrap in minimal full-bleed SVG
+        svg = _build_full_bleed_svg(
+            png_bytes=diffusion.png_bytes,
+            width=diffusion.width or width,
+            height=diffusion.height or height,
+        )
+
+        # Step 6: critic (best-effort — None on failure is fine)
+        critic_result = await self._run_critic(
+            svg, title=title, intent=content[:300], capability=capability,
+        )
+
+        return ComposedVisual(
+            success=True,
+            path=GenerationPath.GEMMA_FREEFORM,
+            setup=capability.setup,
+            output_format=OutputFormat.SVG,
+            svg_markup=svg,
+            title=title,
+            description=(
+                f"Klein full-bleed hero"
+                + (f" — {intent.style_hint}" if intent.style_hint else "")
+                + (f" ({intent.aspect_ratio}, {intent.quality_tier})")
+            ),
+            key_points=[],
+            alternatives=[],
+            critic_score=_critic_result_to_score(critic_result) if critic_result else None,
+            retry_count=0,
+            model_used=f"{capability.gemma_model}+{capability.klein_model}",
+            template_id="full_bleed_hero",
+            template_name="full_bleed_hero",
+            generation_ms=int((time.time() - t0) * 1000),
+        )
 
     async def _inject_klein_hero(
         self,
@@ -549,6 +693,30 @@ def _is_valid_svg(markup: Optional[str]) -> bool:
         return False
     lower = markup.lower()
     return "<svg" in lower and "</svg>" in lower
+
+
+def _build_full_bleed_svg(png_bytes: bytes, width: int, height: int) -> str:
+    """Wrap a Klein PNG in a minimal full-bleed SVG.
+
+    No header band, no callout cards — the image IS the visual. Title
+    metadata is carried separately on ComposedVisual and rendered by the
+    UI as a caption above the SVG, not inside it. Keeps Klein output
+    unencumbered.
+
+    The SVG uses the Klein output's actual dimensions as its viewBox so
+    the frontend renderer can preserve aspect ratio without letterbox or
+    crop.
+    """
+    import base64
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 {width} {height}" width="{width}" height="{height}">'
+        f'<image x="0" y="0" width="{width}" height="{height}" '
+        f'href="data:image/png;base64,{b64}" '
+        f'preserveAspectRatio="xMidYMid meet" />'
+        f'</svg>'
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -41,6 +41,43 @@ DEFAULT_STEPS = 4  # Klein is a "schnell" class model — few steps suffice
 KLEIN_TIMEOUT = 240.0  # Generous; first cold load can take 60-90s
 KLEIN_PREWARM_TIMEOUT = 600.0
 
+# Aspect-ratio → (draft_dims, hero_dims). All values divisible by 8 (Klein
+# constraint). Hero dims push resolution where Klein's coherence holds up;
+# beyond these the wall-clock cost grows faster than the quality.
+_ASPECT_DIMS: dict[str, dict[str, tuple[int, int]]] = {
+    "16:9": {"draft": (1024, 576), "hero": (1280, 720)},
+    "4:3":  {"draft": (1024, 768), "hero": (1280, 960)},
+    "1:1":  {"draft": (1024, 1024), "hero": (1024, 1024)},
+    "9:16": {"draft": (576, 1024), "hero": (720, 1280)},
+}
+_TIER_STEPS = {"draft": 4, "hero": 8}
+
+# Default negative prompt — kept short on purpose. Klein is most sensitive
+# to "no text artifacts" (prevents garbled caption text) and "no
+# watermarks". Longer negative prompts diminish over schnell-class speed.
+DEFAULT_NEGATIVE_PROMPT = (
+    "no text artifacts, no watermarks, no UI mockups, no random people, "
+    "no extra limbs, no broken typography, no border decorations"
+)
+
+
+def resolve_dimensions(
+    aspect_ratio: Optional[str],
+    quality_tier: Optional[str],
+) -> tuple[int, int, int]:
+    """Map (aspect, tier) → (width, height, steps).
+
+    Falls back to (DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_STEPS) on any
+    unknown / missing input — preserves legacy behavior for callers that
+    don't pass the new params.
+    """
+    aspect = aspect_ratio if aspect_ratio in _ASPECT_DIMS else None
+    tier = quality_tier if quality_tier in _TIER_STEPS else None
+    if not aspect or not tier:
+        return DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_STEPS
+    w, h = _ASPECT_DIMS[aspect][tier]
+    return w, h, _TIER_STEPS[tier]
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Klein wrapper
@@ -69,18 +106,29 @@ class KleinDiffusionService:
         self,
         prompt: str,
         capability: Optional[VisualCapability] = None,
-        width: int = DEFAULT_WIDTH,
-        height: int = DEFAULT_HEIGHT,
-        steps: int = DEFAULT_STEPS,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        steps: Optional[int] = None,
         unload_after: bool = True,
+        aspect_ratio: Optional[str] = None,
+        quality_tier: Optional[str] = None,
+        negative_prompt: Optional[str] = None,
     ) -> DiffusionResult:
         """Generate a PNG from a prompt.
 
         Args:
             prompt: text prompt for image generation
             capability: optional snapshot (saves a detection call)
-            width/height: image dimensions in px
-            steps: diffusion steps
+            width/height/steps: explicit pixel dims + step count. If
+                omitted AND aspect_ratio+quality_tier provided, dims are
+                resolved from the (aspect, tier) table. If everything is
+                omitted, falls back to the legacy 1024×768 @ 4 steps.
+            aspect_ratio: "16:9" | "4:3" | "1:1" | "9:16" — resolves
+                width/height via resolve_dimensions().
+            quality_tier: "draft" | "hero" — resolves step count via
+                resolve_dimensions().
+            negative_prompt: passed to Klein as "negative_prompt" in the
+                payload. None = no negative prompt sent.
             unload_after: if True, set keep_alive=0 so Klein unloads after
                 this call. Use True on swap-mode machines (default safe).
                 On concurrent-mode machines you can leave it loaded.
@@ -92,6 +140,14 @@ class KleinDiffusionService:
                 error="Klein model not installed (need x/flux2-klein in ollama list)",
             )
 
+        # Resolve final dimensions: explicit args win; otherwise (aspect, tier);
+        # otherwise legacy defaults. Lets new callers opt into the table
+        # without breaking existing call-sites.
+        resolved_w, resolved_h, resolved_steps = resolve_dimensions(aspect_ratio, quality_tier)
+        final_w = width if width is not None else resolved_w
+        final_h = height if height is not None else resolved_h
+        final_steps = steps if steps is not None else resolved_steps
+
         model = cap.klein_model
         t0 = time.time()
 
@@ -101,22 +157,27 @@ class KleinDiffusionService:
                 warm_ok = await self._prewarm(model)
                 self._warmed = warm_ok
 
-        payload = {
+        payload: dict = {
             "model": model,
             "prompt": prompt,
-            "width": width,
-            "height": height,
-            "steps": steps,
+            "width": final_w,
+            "height": final_h,
+            "steps": final_steps,
             "stream": False,
             "keep_alive": 0 if unload_after else "5m",
         }
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
 
         url = f"{settings.ollama_base_url}/api/generate"
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=KLEIN_TIMEOUT)) as client:
                 logger.info(
                     f"[visual_diffusion] generate model={model} "
-                    f"{width}x{height} steps={steps} unload_after={unload_after}"
+                    f"{final_w}x{final_h} steps={final_steps} "
+                    f"tier={quality_tier or '-'} aspect={aspect_ratio or '-'} "
+                    f"neg={'y' if negative_prompt else 'n'} "
+                    f"unload_after={unload_after}"
                 )
                 response = await client.post(url, json=payload)
                 response.raise_for_status()
@@ -166,8 +227,8 @@ class KleinDiffusionService:
         return DiffusionResult(
             success=True,
             png_bytes=png,
-            width=width,
-            height=height,
+            width=final_w,
+            height=final_h,
             elapsed_ms=int((time.time() - t0) * 1000),
             model=model,
             prompt_used=prompt,
