@@ -638,7 +638,10 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
             cap = await get_capability()
             if cap.can_freeform_gemma or cap.can_freeform_olmo:
                 print(f"[Visual Stream] v2 path: {cap.summary()}")
-                visual = await visual_composer.compose(content=content)
+                # Pass topic explicitly so the classifier judges the user's
+                # prompt, not the (topic + 3KB notebook sources) blob built
+                # above for the actual generator.
+                visual = await visual_composer.compose(content=content, topic=topic)
                 if visual.success and visual.svg_markup:
                     primary = {
                         "render_type": "svg",
@@ -1232,6 +1235,7 @@ async def v2_compose(request: V2ComposeRequest):
         content=content,
         template_id=request.template_id,
         force_idiom=request.force_idiom,
+        topic=request.topic,
     )
     payload = _visual_to_dict(visual)
 

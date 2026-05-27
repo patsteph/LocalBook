@@ -142,16 +142,24 @@ class VisualComposer:
         template_id: Optional[str] = None,
         force_path: Optional[GenerationPath] = None,
         force_idiom: Optional[str] = None,
+        topic: Optional[str] = None,
     ) -> ComposedVisual:
         """Generate a visual using the best available path.
 
         Args:
-            content: Source text to visualize
+            content: Source text to visualize (prompt + enriched notebook
+                sources, used for actual generation)
             template_id: Optional specific legacy template (forces Tier D path)
             force_path: Override capability detection (testing only)
             force_idiom: Skip the v2 two-stage picker and use this skeleton
                 idiom directly. Used by the 'Swap idiom' UI to let users
                 override picker mistakes.
+            topic: The raw user prompt BEFORE enrichment. Used by the
+                illustration-intent classifier so notebook source content
+                doesn't pollute the classification (a 4-6 KB enriched blob
+                dominated by RAG-article text routinely fools the binary
+                illustration-vs-diagram judgment). Falls back to `content`
+                when None for backward compatibility.
         """
         t0 = time.time()
         capability = await get_capability()
@@ -160,11 +168,15 @@ class VisualComposer:
         # it up. Cleared per-call.
         self._forced_idiom = force_idiom if force_idiom and not template_id else None
 
+        # Stash topic on the instance for the classifier. Falls back to
+        # parsing it out of the enriched content when caller didn't pass it.
+        self._topic = topic if topic and topic.strip() else _extract_topic(content)
+
         path = force_path or self._select_path(capability, template_id)
         logger.info(
             f"[visual_composer] compose path={path.value} "
             f"setup={capability.setup.value} content_chars={len(content)} "
-            f"force_idiom={force_idiom or '-'}"
+            f"topic_chars={len(self._topic)} force_idiom={force_idiom or '-'}"
         )
 
         try:
@@ -308,14 +320,21 @@ class VisualComposer:
         # NEW: illustration-intent pre-classifier (Klein-first path)
         forced = getattr(self, "_forced_idiom", None)
         if capability.can_diffusion_klein and not forced:
-            intent = await classify_intent(content, capability.gemma_model)
+            # Classify on the user's TOPIC only, not the enriched content.
+            # Notebook-source enrichment dominates the blob and routinely
+            # fools the binary illustration-vs-diagram judgment (e.g., a
+            # purely structural "simple SVG diagram" prompt gets misjudged
+            # as illustration because the source blob mentions palettes
+            # and aesthetic words from RAG articles).
+            topic_for_classifier = getattr(self, "_topic", None) or content
+            intent = await classify_intent(topic_for_classifier, capability.gemma_model)
             if intent.routes_to_klein():
                 logger.info(
                     f"[visual_composer] intent routes to Klein full-bleed "
                     f"(conf={intent.confidence:.2f}, reason={intent.reason!r})"
                 )
                 klein_result = await self._compose_klein_full_bleed(
-                    content, intent, capability,
+                    content, intent, capability, topic=topic_for_classifier,
                 )
                 if klein_result and klein_result.svg_markup:
                     return klein_result
@@ -411,6 +430,7 @@ class VisualComposer:
         content: str,
         intent: IllustrationIntent,
         capability: VisualCapability,
+        topic: Optional[str] = None,
     ) -> Optional[ComposedVisual]:
         """Klein-first path: pure raster hero, no SVG callouts.
 
@@ -434,13 +454,18 @@ class VisualComposer:
         t0 = time.time()
         title = intent.title or "Hero Visual"
         subtitle = intent.subtitle or ""
+        # Use the user's topic for prompt building — passing the enriched
+        # blob (topic + 3KB of notebook articles) to Klein would be both
+        # over-budget and off-target. Fall back to content for legacy callers
+        # that didn't thread topic through.
+        prompt_source = (topic or content).strip()
 
         # Step 1: dimensions + steps from (aspect, tier)
         width, height, steps = resolve_dimensions(intent.aspect_ratio, intent.quality_tier)
 
         # Step 2: Klein prompt — passthrough or Gemma-written
         if intent.passthrough_recommended:
-            klein_prompt = content.strip()
+            klein_prompt = prompt_source
             logger.info(
                 f"[visual_composer] full-bleed passthrough: using user prompt verbatim "
                 f"({len(klein_prompt)} chars)"
@@ -448,7 +473,7 @@ class VisualComposer:
         else:
             style_hint = intent.style_hint or "minimalist editorial illustration"
             klein_prompt = await write_klein_prompt(
-                intent=content,
+                intent=prompt_source,
                 title=title,
                 style_hint=style_hint,
                 capability=capability,
@@ -458,6 +483,22 @@ class VisualComposer:
                 return None
             logger.info(
                 f"[visual_composer] full-bleed Gemma-written prompt: {klein_prompt[:140]}..."
+            )
+
+        # Step 2b: conditional text suppression in the negative prompt.
+        # Klein's text rendering on technical/programmatic terms produces
+        # garbage that looks worse than no text. Only allow Klein to render
+        # text when the user explicitly asked for in-image labels/callouts.
+        negative_prompt = DEFAULT_NEGATIVE_PROMPT
+        if not _user_wants_text_in_image(prompt_source):
+            negative_prompt = (
+                f"{DEFAULT_NEGATIVE_PROMPT}, "
+                f"no text in image, no labels, no captions, "
+                f"no readable words, no typography in image"
+            )
+            logger.info(
+                "[visual_composer] full-bleed: suppressing in-image text "
+                "(user did not request labels)"
             )
 
         # Step 3: pre-unload Gemma on swap-mode machines so Klein has room
@@ -472,7 +513,7 @@ class VisualComposer:
             capability=capability,
             aspect_ratio=intent.aspect_ratio,
             quality_tier=intent.quality_tier,
-            negative_prompt=DEFAULT_NEGATIVE_PROMPT,
+            negative_prompt=negative_prompt,
             unload_after=swap_mode,
         )
         if not diffusion.success or not diffusion.png_bytes:
@@ -693,6 +734,45 @@ def _is_valid_svg(markup: Optional[str]) -> bool:
         return False
     lower = markup.lower()
     return "<svg" in lower and "</svg>" in lower
+
+
+_SOURCE_CONTENT_MARKER = "\n\nSource content:\n"
+
+
+def _extract_topic(content: str) -> str:
+    """Pull just the user's topic out of an enriched content blob.
+
+    API endpoints build content as `{topic}\\n\\nSource content:\\n{...}`.
+    Used as a fallback when callers don't thread topic through explicitly —
+    splits on the marker and returns everything before it. If the marker
+    isn't present, returns content unchanged.
+    """
+    if not content:
+        return ""
+    idx = content.find(_SOURCE_CONTENT_MARKER)
+    if idx == -1:
+        return content.strip()
+    return content[:idx].strip()
+
+
+_TEXT_REQUEST_CUES = (
+    "label", "callout", "caption", "with the text", "with the words",
+    "typography", "annotated", "annotation", "title text",
+    "rendered cleanly", "hand-labeled",
+)
+
+
+def _user_wants_text_in_image(user_prompt: str) -> bool:
+    """Heuristic: did the user explicitly ask for in-image text?
+
+    Klein's text rendering on technical/programmatic strings produces
+    garbage that looks worse than no text. We default to suppressing
+    text in the negative prompt, but honor explicit user requests.
+    """
+    if not user_prompt:
+        return False
+    lower = user_prompt.lower()
+    return any(cue in lower for cue in _TEXT_REQUEST_CUES)
 
 
 def _build_full_bleed_svg(png_bytes: bytes, width: int, height: int) -> str:
