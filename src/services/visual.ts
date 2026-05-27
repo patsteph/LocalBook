@@ -164,6 +164,13 @@ export const visualService = {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    // SSE state persists ACROSS reader.read() chunks. The previous version
+    // declared eventType inside the while loop, which meant large payloads
+    // (Klein full-bleed visuals embed a ~1MB base64 PNG → response is
+    // chunked) lost the eventType between the `event:` line in chunk N
+    // and the `data:` line in chunk N+1 — and onPrimary never fired,
+    // leaving the canvas tombstone stuck at "Generating visual" forever.
+    let eventType = '';
 
     while (true) {
       const { done, value } = await reader.read();
@@ -173,12 +180,18 @@ export const visualService = {
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
-      let eventType = '';
       for (const line of lines) {
         if (line.startsWith('event: ')) {
           eventType = line.slice(7).trim();
         } else if (line.startsWith('data: ')) {
-          const data = JSON.parse(line.slice(6));
+          let data: any;
+          try {
+            data = JSON.parse(line.slice(6));
+          } catch (e) {
+            // Malformed JSON shouldn't kill the whole stream — skip and continue
+            console.error('[visual SSE] failed to parse data line:', e);
+            continue;
+          }
           if (eventType === 'primary') {
             onPrimary(data as Diagram);
           } else if (eventType === 'alternative') {
@@ -188,6 +201,11 @@ export const visualService = {
           } else if (eventType === 'error') {
             onError(data.error);
           }
+        } else if (line === '') {
+          // Blank line terminates an SSE event. Reset eventType so a
+          // subsequent `data:` line without its own `event:` defaults to
+          // the SSE-standard "message" type rather than inheriting.
+          eventType = '';
         }
       }
     }
@@ -293,6 +311,9 @@ export const visualService = {
     }
     const decoder = new TextDecoder();
     let buffer = '';
+    // SSE state persists ACROSS reader.read() chunks — see the matching
+    // comment in generateSmartStream above for the chunking bug this fixes.
+    let eventType = '';
 
     while (true) {
       const { done, value } = await reader.read();
@@ -301,7 +322,6 @@ export const visualService = {
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
-      let eventType = '';
       for (const line of lines) {
         if (line.startsWith('event: ')) {
           eventType = line.slice(7).trim();
@@ -316,6 +336,10 @@ export const visualService = {
           } catch {
             // Ignore malformed lines
           }
+        } else if (line === '') {
+          // Blank line terminates an SSE event — reset to the SSE-default
+          // "message" type for any subsequent data: line.
+          eventType = '';
         }
       }
     }

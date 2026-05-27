@@ -103,8 +103,30 @@ quality_tier:
 - "draft" — quicker illustrative spots. Default when prompt is short or casual.
 
 passthrough_recommended:
-- TRUE if the user's prompt is ALREADY a polished image-generation prompt: long (>80 words), includes palette + lighting + mood + style cues, reads like Midjourney/DALL-E art direction.
-- FALSE if the prompt is sparse, generic ("a picture of X"), or mostly describes data/structure rather than visual aesthetic.
+The question is: would re-writing this prompt produce something BETTER than what the user already wrote? If the user has already done the art direction, passthrough is TRUE — you should NOT have Gemma rewrite their work.
+
+TRUE when ANY TWO of these signals are present in the prompt:
+  (a) explicit color palette — named colors, hex codes, or a color scheme described in concrete terms ("cream and walnut", "teal/amber/magenta accents")
+  (b) named style or medium — "flat vector", "isometric", "watercolor", "photography", "low-poly", "studio ghibli", "editorial illustration"
+  (c) mood/feel adjectives — "cinematic", "calm", "didactic", "moody", "playful", "ominous"
+  (d) lighting or composition cues — "golden hour", "shallow depth of field", "wide shot", "rim light", "shot from above"
+  (e) named fonts or typography — "Inter font", "serif typography", "clean sans-serif"
+  (f) length >150 words of mostly descriptive prose
+  (g) explicit references to art styles or eras — "art deco", "Studio Ghibli", "Wes Anderson framing", "engineering handbook"
+
+CRITICAL: structural callouts embedded inside an otherwise art-directed prompt DO NOT disqualify passthrough. A prompt like "A flat vector illustration of [Stage 1/Stage 2/Stage 3], cream palette, Inter font, didactic mood" is PASSTHROUGH because the art direction is rich — the structural callouts are just describing what's IN the illustration.
+
+FALSE only when:
+  - the prompt is sparse ("a picture of a dog")
+  - the prompt is purely structural data with zero aesthetic cues ("five stages: ingest, chunk, store, retrieve, answer")
+  - fewer than two of the above signals are present
+
+EXAMPLES:
+  - "A picture of a dog" → FALSE (zero signals)
+  - "A cinematic shot of a dog" → FALSE (one weak signal)
+  - "A cinematic golden-hour photo of a corgi on a beach, shallow depth of field, warm pastel palette, Wes Anderson framing" → TRUE (palette + style + mood + composition + lighting + reference — strong art direction)
+  - "Show me a five-stage RAG pipeline: ingest → chunk → embed → retrieve → generate" → FALSE (purely structural, no aesthetic cues)
+  - "A clean flat vector illustration of a three-stage RAG pipeline on a cream background, with teal/amber/magenta accents for the three flows, Inter font, calm didactic mood, like an engineering handbook" → TRUE (palette + style + mood + font + reference — five signals)
 
 style_hint: 2-6 word style summary extracted from the prompt (e.g. "cinematic isometric warm", "flat editorial vector", "studio ghibli watercolor"). Omit (null) if no style cues are present.
 
