@@ -136,6 +136,71 @@ function downloadSvg(svg: string, suggestedTitle: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/**
+ * Rasterize an SVG to PNG entirely in the browser and trigger a download.
+ *
+ * Implementation: load the SVG string as an Image via a blob URL, draw
+ * onto a canvas at the SVG's native dimensions, encode as PNG. Works
+ * because the SVG's embedded base64 PNG is a data URI (no taint), so
+ * canvas.toBlob succeeds without CORS issues.
+ *
+ * No backend round-trip — keeps the export instant and offline-safe.
+ */
+async function downloadPng(svg: string, suggestedTitle: string): Promise<void> {
+  // Pull native pixel dimensions from the viewBox
+  const match = svg.match(/viewBox="0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)"/);
+  if (!match) {
+    throw new Error('Cannot determine SVG dimensions for PNG export');
+  }
+  const w = Math.round(parseFloat(match[1]));
+  const h = Math.round(parseFloat(match[2]));
+
+  const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  const svgUrl = URL.createObjectURL(svgBlob);
+
+  try {
+    // Load the SVG as an Image element
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('SVG failed to render as Image'));
+      el.src = svgUrl;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas 2D context unavailable');
+
+    // White background — PNG is opaque by default; SVGs with transparency
+    // could otherwise show ugly black backgrounds in some viewers.
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+
+    await new Promise<void>((resolve, reject) => {
+      canvas.toBlob((pngBlob) => {
+        if (!pngBlob) {
+          reject(new Error('PNG encoding failed'));
+          return;
+        }
+        const pngUrl = URL.createObjectURL(pngBlob);
+        const a = document.createElement('a');
+        a.href = pngUrl;
+        a.download = sanitizeFilename(suggestedTitle) + '.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(pngUrl), 1000);
+        resolve();
+      }, 'image/png');
+    });
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+}
+
 function sanitizeFilename(s: string): string {
   const cleaned = (s || 'visual').toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -287,9 +352,28 @@ export const VisualHeroOverlay: React.FC<VisualHeroOverlayProps> = ({
                 downloadSvg(exported, title || 'visual');
               }}
               className="text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400 underline-offset-2 hover:underline"
-              title="Download SVG with the title overlay baked in at the chosen position"
+              title="Download as SVG with the title overlay baked in at the chosen position"
             >
-              Export ↓
+              SVG ↓
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  const exported = buildExportSvg(svg, title, subtitle, position, true);
+                  await downloadPng(exported, title || 'visual');
+                } catch (err) {
+                  console.error('[png export]', err);
+                  // Best-effort fallback: drop the SVG instead so the user
+                  // still gets something rather than a silent failure.
+                  const exported = buildExportSvg(svg, title, subtitle, position, true);
+                  downloadSvg(exported, title || 'visual');
+                }
+              }}
+              className="text-gray-500 hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-400 underline-offset-2 hover:underline"
+              title="Download as PNG with the title overlay baked in (rasterized in the browser)"
+            >
+              PNG ↓
             </button>
           </>
         )}

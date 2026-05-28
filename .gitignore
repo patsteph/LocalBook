@@ -40,8 +40,12 @@ data/
 *.db
 *.sqlite
 
-# Internal documentation (offline troubleshooting)
+# Internal documentation (offline troubleshooting) + track-work tracking
+# state. READFIRST/ holds local-only docs AND the track-work kanban
+# folders (planning/, in-progress/, done/, abandoned/). STATUS.md at the
+# repo root is the track-work auto-rendered "what's now" pointer.
 READFIRST/
+STATUS.md
 
 # Secrets
 .env

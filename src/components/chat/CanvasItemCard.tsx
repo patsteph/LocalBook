@@ -11,6 +11,7 @@ import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { SVGRenderer } from '../shared/SVGRenderer';
 import { VisualHeroOverlay, OverlayPosition } from '../shared/VisualHeroOverlay';
 import { VisualRegenerateButton } from '../shared/VisualRegenerateButton';
+import { VisualEditRegenerateButton } from '../shared/VisualEditRegenerateButton';
 import { FeynmanQuizBlock, FeynmanAudioBlock, StudioQuizBlock, isFeynmanBlock } from '../shared/FeynmanBlocks';
 import { AudioCanvasPlayer } from './AudioCanvasPlayer';
 import { FlashcardsCanvasTile } from './FlashcardsCanvasTile';
@@ -120,15 +121,24 @@ const VisualChatInlineContent: React.FC<{
             notebookId={notebookId}
             originalPrompt={item.metadata?.originalPrompt}
           />
-          {/* Klein full-bleed visuals get a re-roll affordance — Klein has
-             real seed variance, so the same prompt → meaningfully different
-             image on each generation. Hidden for structural skeletons. */}
+          {/* Klein full-bleed visuals get two regeneration affordances:
+             - "Regenerate ↻" — same prompt, different Klein seed
+             - "Edit ✎" — expands a panel with refinement chips + editable
+               textarea, then regenerates with the modified prompt.
+             Hidden for structural skeletons. */}
           {isHeroFullBleed && (
-            <VisualRegenerateButton
-              itemId={item.id}
-              notebookId={notebookId}
-              originalPrompt={item.metadata?.originalPrompt}
-            />
+            <>
+              <VisualRegenerateButton
+                itemId={item.id}
+                notebookId={notebookId}
+                originalPrompt={item.metadata?.originalPrompt}
+              />
+              <VisualEditRegenerateButton
+                itemId={item.id}
+                notebookId={notebookId}
+                originalPrompt={item.metadata?.originalPrompt}
+              />
+            </>
           )}
         </div>
         <FeedbackThumbs
