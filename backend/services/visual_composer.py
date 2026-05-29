@@ -338,28 +338,16 @@ class VisualComposer:
         image asks separately from structural ones. Failure here is
         non-fatal: falls through to the structural skeleton path.
         """
-        # User-directed SVG (Fix B, 2026-05-29): when the user has written
-        # a self-contained SVG spec ("Generate a clean SVG...", hex palette,
-        # geometry vocabulary), neither Klein (raster) nor the skeleton
-        # picker (fixed templates) honors the spec. Render the SVG from
-        # the user's prompt directly via a single LLM call. Falls through
-        # to the existing paths on any failure.
+        # User-directed SVG path (`is_user_directed_svg` + `_compose_user_directed_svg`)
+        # was reverted 2026-05-29 after user testing: 4B/7B local models can't
+        # produce well-composed SVG from natural-language geometry specs, and
+        # the vision critic at this scale can't reliably detect when they
+        # haven't (scored garbled outputs ≥0.95). The detector, the renderer,
+        # and the system prompt remain in the codebase for future revisit
+        # when either local SVG quality or critic discrimination improves.
+        # SVG-art-directed prompts are now routed to Klein via classifier
+        # rule (visual_intent._INTENT_SYSTEM, "SVG-style prompts" section).
         forced = getattr(self, "_forced_idiom", None)
-        topic_for_router = getattr(self, "_topic", None) or content
-        if not forced and is_user_directed_svg(topic_for_router):
-            logger.info(
-                "[visual_composer] user-directed SVG detected; routing to "
-                "freeform SVG renderer (bypasses classifier + picker)"
-            )
-            uds_result = await self._compose_user_directed_svg(
-                topic_for_router, capability,
-            )
-            if uds_result and uds_result.svg_markup:
-                return uds_result
-            logger.warning(
-                "[visual_composer] user-directed SVG path failed; "
-                "falling through to classifier + picker"
-            )
 
         # NEW: illustration-intent pre-classifier (Klein-first path)
         if capability.can_diffusion_klein and not forced:

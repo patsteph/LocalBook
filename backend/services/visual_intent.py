@@ -166,6 +166,11 @@ When the FIRST CLAUSE of the prompt explicitly names a visual medium ("a cinemat
 ANTI-PATTERN — abstract framing of a concrete scene:
 A prompt that opens by naming a medium and then describes a concrete scene at length (figure + setting + lighting + palette + mood) is an ILLUSTRATION even when it ALSO uses business-coded or philosophical vocabulary ("leadership", "stewardship", "transformation", "the weight of", "evoking"). Do NOT downgrade to STRUCTURAL DIAGRAM just because the scene's symbolic meaning is abstract — the user is asking for a picture that captures that meaning, not a slide that lists it.
 
+SVG-STYLE PROMPTS — when "SVG" + art direction = ILLUSTRATION:
+Prompts that say "Generate a clean SVG / minimalist SVG illustration / SVG concept diagram" AND include rich art direction (≥2 explicit hex colors like #2d1b69, named geometric composition like "central circle with twelve smaller circles in an orbital pattern", explicit viewBox, opacity / stroke / fill values) are ILLUSTRATION with confidence ≥ 0.85, passthrough_recommended TRUE. The user is asking for a clean illustrated aesthetic — they're using "SVG" to mean "clean vector look", not "render this as a structural skeleton." A diffusion model (Klein) produces this look more reliably than a templated skeleton picker can.
+
+Counter-case: "Show me a swim-lane diagram of our deployment process" — no hex colors, no geometric composition, just structural-data language. That stays STRUCTURAL DIAGRAM and goes to the skeleton picker. The trigger for ILLUSTRATION is the COMBINATION of "SVG" language AND ≥2 explicit hex colors AND named compositional geometry — any one of those alone is not enough.
+
 ALSO DECIDE:
 
 aspect_ratio:
@@ -210,6 +215,9 @@ ILLUSTRATION-VS-DIAGRAM EXAMPLES (the binary classification — separate from pa
   - "An oil painting of the future of work — figures crossing a bridge into mist, warm afternoon light, muted earth palette" → ILLUSTRATION conf=0.95 (medium-naming opener locks the verdict; "future of work" is the painting's subject, not a value-prop slide cue)
   - "The future of cloud is serverless: ship faster, lower cost, infinite scale" → STRUCTURAL conf=0.9 (no medium named, no scene, three bullet-style benefits — this IS a value-prop slide)
   - "A hero image of leadership: someone leading a team" → ILLUSTRATION conf=0.7 (medium named, scene sparse — weaker signal but still illustration)
+  - "Generate a clean SVG concept diagram of a neural network. A central circle (deep indigo #2d1b69) with twelve smaller circles in orbital pattern, thin lines, viewBox 1200x900" → ILLUSTRATION conf=0.9, passthrough TRUE ("SVG concept diagram" + 2 hex colors + named composition = clean-illustration intent, not skeleton-picker territory)
+  - "Generate a minimalist SVG illustration. One figure on a platform (#2d5a3d), five silhouettes in semicircle (#7a9b7e), sun shape (#e8a04a), cream background (#f5ede0), viewBox 1600x900" → ILLUSTRATION conf=0.9, passthrough TRUE (same pattern — SVG + hex palette + compositional geometry)
+  - "Show me a swim-lane diagram of our deployment process" → STRUCTURAL conf=0.9 (no hex colors, no geometric composition, just structural-data language — skeleton picker is correct)
 
 style_hint: 2-6 word style summary extracted from the prompt (e.g. "cinematic isometric warm", "flat editorial vector", "studio ghibli watercolor"). Omit (null) if no style cues are present.
 
