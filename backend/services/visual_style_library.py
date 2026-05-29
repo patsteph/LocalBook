@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 class StyleName(str, Enum):
@@ -208,6 +208,83 @@ def list_styles() -> List[Dict[str, str]]:
         {"name": s.name.value, "label": s.label, "description": s.description}
         for s in _STYLES.values()
     ]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Klein style presets — prompt-tail nudges for the diffusion path
+#
+# Distinct from VisualStyle (which configures SVG generation). Klein
+# styles attach to full-bleed hero prompts via the Edit-panel chip row:
+# clicking a chip appends `prompt_tail` to the user's prompt textarea.
+# No backend routing changes — the modified prompt flows through the
+# existing /visual/v2/compose path.
+# ──────────────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class KleinStyle:
+    """A named visual style preset for Klein full-bleed generation."""
+    id: str           # Stable kebab-case identifier
+    label: str        # Display label (with a one-glyph prefix)
+    prompt_tail: str  # Appended to the prompt textarea after a comma
+
+
+KLEIN_STYLES: List[KleinStyle] = [
+    KleinStyle(
+        id="editorial",
+        label="📰 Editorial",
+        prompt_tail="editorial photography style, considered composition, magazine cover aesthetic, sophisticated color grading, balanced negative space, professional retouching",
+    ),
+    KleinStyle(
+        id="watercolor",
+        label="🎨 Watercolor",
+        prompt_tail="watercolor painting, soft washes of pigment, hand-painted texture, paper grain visible, gentle bleeds and color blooms, light and airy palette",
+    ),
+    KleinStyle(
+        id="low-poly",
+        label="🔷 Low-poly",
+        prompt_tail="low-poly 3D illustration, flat geometric facets, smooth gradient fills, minimal detail, three-quarter angle, soft ambient lighting",
+    ),
+    KleinStyle(
+        id="blueprint",
+        label="📐 Blueprint",
+        prompt_tail="architectural blueprint style, white linework on deep cyan paper, technical drawing conventions, dimension callouts and grid, drafting precision, no realistic shading",
+    ),
+    KleinStyle(
+        id="photographic",
+        label="📷 Photographic",
+        prompt_tail="professional DSLR photograph, sharp focus, natural lighting, realistic textures and materials, shallow depth of field, color-accurate, hyper-realistic",
+    ),
+    KleinStyle(
+        id="ghibli",
+        label="🌸 Ghibli",
+        prompt_tail="Studio Ghibli animation style, hand-painted backgrounds, soft pastel palette, warm cinematic lighting, gentle painterly brushwork, nostalgic atmosphere",
+    ),
+    KleinStyle(
+        id="noir",
+        label="🎭 Noir",
+        prompt_tail="film noir aesthetic, high-contrast black and white, dramatic chiaroscuro, deep shadows, single hard light source, smoky atmosphere, 1940s cinematic mood",
+    ),
+    KleinStyle(
+        id="risograph",
+        label="🖨 Risograph",
+        prompt_tail="risograph print aesthetic, limited two-color palette, visible halftone dot texture, slight print misregistration, matte paper feel, indie zine vibe",
+    ),
+]
+
+
+def list_klein_styles() -> List[Dict[str, str]]:
+    """Return Klein style presets for the Edit-panel chip row."""
+    return [
+        {"id": s.id, "label": s.label, "prompt_tail": s.prompt_tail}
+        for s in KLEIN_STYLES
+    ]
+
+
+def get_klein_style(style_id: str) -> Optional[KleinStyle]:
+    """Look up a Klein style by id; returns None if unknown."""
+    for s in KLEIN_STYLES:
+        if s.id == style_id:
+            return s
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────────

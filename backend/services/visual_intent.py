@@ -33,6 +33,77 @@ logger = logging.getLogger(__name__)
 VALID_ASPECTS = ("16:9", "4:3", "1:1", "9:16")
 VALID_TIERS = ("draft", "hero")
 
+
+# ──────────────────────────────────────────────────────────────────────
+# User-directed SVG detector — sits BEFORE the LLM classifier
+#
+# When the user has fully specified an SVG (medium + palette + geometry),
+# the right move is to render the SVG from their spec, not classify and
+# route to either Klein (raster, wrong medium) or the skeleton picker
+# (fixed templates, can't honor custom geometry).
+#
+# Cheap heuristic check — no LLM call. Returns True only when the prompt
+# is unambiguously asking the model to write a custom SVG.
+# ──────────────────────────────────────────────────────────────────────
+_HEX_COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}\b")
+_SVG_MEDIUM_RE = re.compile(
+    r"\b(?:generate|create|produce|render|draw|make)\s+(?:a\s+|an\s+)?(?:clean\s+|minimalist\s+|simple\s+)?svg\b",
+    re.IGNORECASE,
+)
+_GEOMETRY_RE = re.compile(
+    r"\b(viewbox|viewBox|circle|rectangle|polygon|polyline|stroke|fill|path|opacity|gradient)\b",
+    re.IGNORECASE,
+)
+
+
+def is_user_directed_svg(prompt: str) -> bool:
+    """True when the prompt is a self-contained SVG specification.
+
+    Requires THREE signals (all cheap regex checks):
+      1. An "SVG" medium opener — "Generate a clean SVG..." style.
+      2. At least 2 explicit hex colors (#RRGGBB) — proves the user has
+         already done the palette work.
+      3. At least 2 geometry/SVG-attribute mentions (viewBox, circle,
+         stroke, gradient, opacity, etc.) — proves the user is thinking
+         in SVG primitives, not abstractly.
+
+    Misses by design: prompts that ask for a "diagram" without saying
+    "SVG", prompts with named colors but no hex, prompts with hex but
+    no geometry vocabulary. Those still go through the classifier.
+    """
+    if not prompt:
+        return False
+    head = prompt[:300]  # SVG opener must be near the start
+    if not _SVG_MEDIUM_RE.search(head):
+        return False
+    if len(_HEX_COLOR_RE.findall(prompt)) < 2:
+        return False
+    if len(_GEOMETRY_RE.findall(prompt)) < 2:
+        return False
+    return True
+
+
+# ──────────────────────────────────────────────────────────────────────
+# System prompt for the user-directed SVG renderer (Fix B).
+# Kept here next to is_user_directed_svg so the trigger and the prompt
+# travel together. Caller (visual_composer) wires the LLM call.
+# ──────────────────────────────────────────────────────────────────────
+USER_DIRECTED_SVG_SYSTEM = """You are an SVG renderer. The user has written a complete specification for an SVG visual. Your job is to produce that exact SVG.
+
+RULES:
+1. Output a single, valid SVG document. Start with <svg ...> and end with </svg>. No markdown fences, no commentary, no preamble.
+2. Honor every specified value: hex colors, viewBox dimensions, stroke weights, opacities, geometry, positions. Treat the user's spec as a contract.
+3. When a position is described qualitatively ("loose orbital pattern", "balanced composition"), pick coordinates that honor the description AND distribute elements evenly within the viewBox.
+4. Include the viewBox attribute the user named (e.g., viewBox="0 0 1200 900"). Default to width="100%" height="100%" so the SVG scales.
+5. When the user says "no labels" / "no text", do not add any <text> elements. When they say "subtle", "minimal", or "no gradients", obey.
+6. Add a generous internal margin (≥ 6% of the viewBox dimension on each side) so the composition has breathing room — unless the user specifies otherwise.
+7. If the user does not specify a background, omit it (transparent). If they specify one, use a <rect> covering the viewBox with the named color.
+
+OUTPUT FORMAT — ONLY the SVG, exactly like:
+<svg viewBox="0 0 1200 900" xmlns="http://www.w3.org/2000/svg" width="100%" height="100%">
+  <!-- elements honoring the user's spec -->
+</svg>"""
+
 # Confidence floor for routing to the Klein full-bleed path. Below this
 # we fall through to the existing structural picker even if is_illustration
 # came back True — defends against weak / hedged classifier outputs.
@@ -89,6 +160,12 @@ B) A STRUCTURAL DIAGRAM — a chart, flowchart, architecture diagram, comparison
 
 Many prompts mix both — they describe a structural subject (a pipeline, an architecture) but request it AS an illustration ("a cinematic isometric illustration of a RAG pipeline"). When art-direction vocabulary is present OR the prompt reads like a scene description rather than a data description, classify as ILLUSTRATION.
 
+DISPOSITIVE RULE — medium-naming opener:
+When the FIRST CLAUSE of the prompt explicitly names a visual medium ("a cinematic photograph of...", "an editorial photograph of...", "an oil painting of...", "a watercolor illustration of...", "a render of...", "a hero image of...", "a poster of..."), the answer is ILLUSTRATION with confidence ≥ 0.85. Abstract, emotional, or thematic vocabulary appearing LATER in the same prompt does NOT override this. "Evoking the quiet weight of leadership", "earned solitude", "the future of X", "a sense of stewardship" are FRAMING — they describe what the depicted scene means, not what kind of artifact the user wants. If the prompt also describes a concrete scene (figure, landscape, lighting, palette, camera), the illustration verdict is locked.
+
+ANTI-PATTERN — abstract framing of a concrete scene:
+A prompt that opens by naming a medium and then describes a concrete scene at length (figure + setting + lighting + palette + mood) is an ILLUSTRATION even when it ALSO uses business-coded or philosophical vocabulary ("leadership", "stewardship", "transformation", "the weight of", "evoking"). Do NOT downgrade to STRUCTURAL DIAGRAM just because the scene's symbolic meaning is abstract — the user is asking for a picture that captures that meaning, not a slide that lists it.
+
 ALSO DECIDE:
 
 aspect_ratio:
@@ -127,6 +204,12 @@ EXAMPLES:
   - "A cinematic golden-hour photo of a corgi on a beach, shallow depth of field, warm pastel palette, Wes Anderson framing" → TRUE (palette + style + mood + composition + lighting + reference — strong art direction)
   - "Show me a five-stage RAG pipeline: ingest → chunk → embed → retrieve → generate" → FALSE (purely structural, no aesthetic cues)
   - "A clean flat vector illustration of a three-stage RAG pipeline on a cream background, with teal/amber/magenta accents for the three flows, Inter font, calm didactic mood, like an engineering handbook" → TRUE (palette + style + mood + font + reference — five signals)
+
+ILLUSTRATION-VS-DIAGRAM EXAMPLES (the binary classification — separate from passthrough above):
+  - "A cinematic editorial photograph evoking the quiet weight of leadership. A solitary figure stands at the edge of a weathered stone overlook... amber and honey-gold light, weathered umber palette, medium format depth" → ILLUSTRATION conf=0.95 (medium named in first clause + concrete scene + palette + lighting; the "weight of leadership" framing is symbolic meaning of the scene, not a request for a business slide)
+  - "An oil painting of the future of work — figures crossing a bridge into mist, warm afternoon light, muted earth palette" → ILLUSTRATION conf=0.95 (medium-naming opener locks the verdict; "future of work" is the painting's subject, not a value-prop slide cue)
+  - "The future of cloud is serverless: ship faster, lower cost, infinite scale" → STRUCTURAL conf=0.9 (no medium named, no scene, three bullet-style benefits — this IS a value-prop slide)
+  - "A hero image of leadership: someone leading a team" → ILLUSTRATION conf=0.7 (medium named, scene sparse — weaker signal but still illustration)
 
 style_hint: 2-6 word style summary extracted from the prompt (e.g. "cinematic isometric warm", "flat editorial vector", "studio ghibli watercolor"). Omit (null) if no style cues are present.
 

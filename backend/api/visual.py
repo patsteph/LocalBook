@@ -1208,6 +1208,13 @@ async def v2_styles():
     return {"styles": list_styles()}
 
 
+@router.get("/v2/klein-styles")
+async def v2_klein_styles():
+    """List Klein full-bleed style presets shown as chips in the Edit panel."""
+    from services.visual_style_library import list_klein_styles
+    return {"styles": list_klein_styles()}
+
+
 @router.post("/v2/compose")
 async def v2_compose(request: V2ComposeRequest):
     """Generate a visual via the composer. Non-streaming.

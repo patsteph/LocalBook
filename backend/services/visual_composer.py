@@ -21,6 +21,7 @@ new module slots in via a single conditional branch below.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -47,7 +48,13 @@ from services.visual_freeform import (
     olmo_skeleton,     # Setup A primary path
 )
 from services.visual_generator import GeneratedVisual, VisualGenerator
-from services.visual_intent import IllustrationIntent, classify_intent
+from services.visual_intent import (
+    IllustrationIntent,
+    USER_DIRECTED_SVG_SYSTEM,
+    classify_intent,
+    is_user_directed_svg,
+)
+from services.ollama_service import ollama_service
 from services.svg_renderer import render_svg_to_png
 from services.visual_skeletons import HERO_IDIOMS
 
@@ -331,8 +338,30 @@ class VisualComposer:
         image asks separately from structural ones. Failure here is
         non-fatal: falls through to the structural skeleton path.
         """
-        # NEW: illustration-intent pre-classifier (Klein-first path)
+        # User-directed SVG (Fix B, 2026-05-29): when the user has written
+        # a self-contained SVG spec ("Generate a clean SVG...", hex palette,
+        # geometry vocabulary), neither Klein (raster) nor the skeleton
+        # picker (fixed templates) honors the spec. Render the SVG from
+        # the user's prompt directly via a single LLM call. Falls through
+        # to the existing paths on any failure.
         forced = getattr(self, "_forced_idiom", None)
+        topic_for_router = getattr(self, "_topic", None) or content
+        if not forced and is_user_directed_svg(topic_for_router):
+            logger.info(
+                "[visual_composer] user-directed SVG detected; routing to "
+                "freeform SVG renderer (bypasses classifier + picker)"
+            )
+            uds_result = await self._compose_user_directed_svg(
+                topic_for_router, capability,
+            )
+            if uds_result and uds_result.svg_markup:
+                return uds_result
+            logger.warning(
+                "[visual_composer] user-directed SVG path failed; "
+                "falling through to classifier + picker"
+            )
+
+        # NEW: illustration-intent pre-classifier (Klein-first path)
         if capability.can_diffusion_klein and not forced:
             # Classify on the user's TOPIC only, not the enriched content.
             # Notebook-source enrichment dominates the blob and routinely
@@ -609,6 +638,85 @@ class VisualComposer:
             template_id="full_bleed_hero",
             template_name="full_bleed_hero",
             suggested_overlay_position=suggested_overlay,
+            generation_ms=int((time.time() - t0) * 1000),
+        )
+
+    async def _compose_user_directed_svg(
+        self,
+        topic: str,
+        capability: VisualCapability,
+    ) -> Optional[ComposedVisual]:
+        """Render an SVG from a user-written spec (Fix B, 2026-05-29).
+
+        Triggered by is_user_directed_svg() when the prompt is a complete
+        SVG specification (explicit "SVG" + hex palette + geometry vocab).
+        Skeletons can't honor custom geometry; Klein produces raster.
+        This path asks the LLM to write the SVG directly from the prompt.
+
+        Single LLM call, no critic retry. Returns None on any failure so
+        the caller can fall through to the classifier + picker. Validation
+        is structural only — we trust the model to honor the user's spec
+        and rely on visual feedback (the user looking at the result) to
+        catch fidelity issues.
+        """
+        t0 = time.time()
+        model = capability.gemma_model or capability.olmo_model
+        if not model:
+            logger.warning(
+                "[visual_composer] user-directed SVG: no LLM model available"
+            )
+            return None
+
+        try:
+            result = await ollama_service.generate(
+                prompt=f"USER SPECIFICATION:\n{topic}\n\nProduce the SVG.",
+                system=USER_DIRECTED_SVG_SYSTEM,
+                model=model,
+                temperature=0.2,
+                num_predict=4000,
+                timeout=180.0,
+                voice_modifier=False,
+            )
+        except Exception as e:
+            logger.warning(f"[visual_composer] user-directed SVG LLM call failed: {e}")
+            return None
+
+        raw = (result.get("response") or "").strip()
+        # Strip markdown fences if the model wrapped the SVG despite the
+        # system prompt telling it not to.
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:svg|xml|html)?\s*", "", raw)
+            raw = re.sub(r"\s*```\s*$", "", raw)
+        # Trim to the actual <svg>...</svg> envelope if the model added
+        # any preamble/postamble.
+        m = re.search(r"<svg[\s\S]*?</svg>", raw, re.IGNORECASE)
+        svg = m.group(0) if m else raw
+
+        if not _is_valid_svg(svg):
+            logger.warning(
+                f"[visual_composer] user-directed SVG: invalid output "
+                f"({len(svg)} chars, model={model})"
+            )
+            return None
+
+        logger.info(
+            f"[visual_composer] user-directed SVG rendered "
+            f"({len(svg)} chars, model={model}, "
+            f"{int((time.time() - t0) * 1000)}ms)"
+        )
+
+        return ComposedVisual(
+            success=True,
+            path=GenerationPath.GEMMA_FREEFORM,
+            setup=capability.setup,
+            output_format=OutputFormat.SVG,
+            svg_markup=svg,
+            title="",
+            subtitle="",
+            description="user-directed SVG (rendered from spec)",
+            model_used=model,
+            template_id="user_directed_svg",
+            template_name="user_directed_svg",
             generation_ms=int((time.time() - t0) * 1000),
         )
 

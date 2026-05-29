@@ -26,6 +26,38 @@ interface VisualEditRegenerateButtonProps {
   originalPrompt?: string;
 }
 
+// Session-level cache: the styles list is static and the same for every
+// visual, so we fetch once and reuse for the rest of the session.
+interface KleinStyle {
+  id: string;
+  label: string;
+  prompt_tail: string;
+}
+let stylesCache: KleinStyle[] | null = null;
+let stylesPromise: Promise<KleinStyle[]> | null = null;
+
+const fetchKleinStyles = async (): Promise<KleinStyle[]> => {
+  if (stylesCache) return stylesCache;
+  if (stylesPromise) return stylesPromise;
+  stylesPromise = (async () => {
+    try {
+      const res = await localFetch(`${API_BASE_URL}/visual/v2/klein-styles`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const styles: KleinStyle[] = Array.isArray(data?.styles) ? data.styles : [];
+      stylesCache = styles;
+      return styles;
+    } catch (err) {
+      console.warn('[edit-regenerate] failed to load klein styles', err);
+      stylesCache = [];
+      return [];
+    } finally {
+      stylesPromise = null;
+    }
+  })();
+  return stylesPromise;
+};
+
 // Curated refinement modifiers. Each appends a short clause to the prompt
 // when the chip is clicked. Kept generic so they compose with most
 // existing prompts; user can always edit further before submitting.
@@ -72,12 +104,28 @@ export const VisualEditRegenerateButton: React.FC<VisualEditRegenerateButtonProp
   const [open, setOpen] = React.useState(false);
   const [draft, setDraft] = React.useState<string>(originalPrompt || '');
   const [busy, setBusy] = React.useState(false);
+  const [kleinStyles, setKleinStyles] = React.useState<KleinStyle[]>(
+    () => stylesCache ?? []
+  );
 
   // Reset the draft whenever the panel opens, so leaving and re-opening
   // gives the user a fresh copy of the original prompt to work from.
   React.useEffect(() => {
     if (open) setDraft(originalPrompt || '');
   }, [open, originalPrompt]);
+
+  // Lazy-load the style chip list the first time the panel opens.
+  // Result is cached at module level so subsequent opens are free.
+  React.useEffect(() => {
+    if (!open || kleinStyles.length > 0) return;
+    let cancelled = false;
+    fetchKleinStyles().then((styles) => {
+      if (!cancelled) setKleinStyles(styles);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, kleinStyles.length]);
 
   if (!originalPrompt || !notebookId) return null;
 
@@ -163,7 +211,10 @@ export const VisualEditRegenerateButton: React.FC<VisualEditRegenerateButtonProp
       {open && (
         <div className="w-full mt-2 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800/60 p-3 space-y-2">
           {/* Quick refinement chips — append modifier text to the draft */}
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mr-1">
+              Refine
+            </span>
             {REFINEMENT_CHIPS.map((chip) => (
               <button
                 key={chip.label}
@@ -177,6 +228,27 @@ export const VisualEditRegenerateButton: React.FC<VisualEditRegenerateButtonProp
               </button>
             ))}
           </div>
+
+          {/* Style preset chips — append style prompt_tail to the draft */}
+          {kleinStyles.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mr-1">
+                Style
+              </span>
+              {kleinStyles.map((style) => (
+                <button
+                  key={style.id}
+                  type="button"
+                  onClick={() => applyChip(`, ${style.prompt_tail}`)}
+                  title={style.prompt_tail}
+                  disabled={busy}
+                  className="text-[11px] px-2 py-1 rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-indigo-50 hover:border-indigo-300 dark:hover:bg-indigo-900/30 dark:hover:border-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {style.label}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Editable prompt textarea */}
           <textarea
