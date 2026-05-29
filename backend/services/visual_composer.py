@@ -641,6 +641,13 @@ class VisualComposer:
             generation_ms=int((time.time() - t0) * 1000),
         )
 
+    # Critic floor below which we abandon the LLM-written SVG and re-run
+    # via Klein full-bleed (when Klein is installed). Empirically 7B/4B
+    # local models struggle with precise SVG geometry, so this trigger
+    # fires fairly often on art-directed prompts — Klein's diffusion
+    # output is usually higher quality at the cost of literal SVG fidelity.
+    USER_DIRECTED_SVG_KLEIN_FALLBACK_FLOOR = 0.60
+
     async def _compose_user_directed_svg(
         self,
         topic: str,
@@ -651,13 +658,19 @@ class VisualComposer:
         Triggered by is_user_directed_svg() when the prompt is a complete
         SVG specification (explicit "SVG" + hex palette + geometry vocab).
         Skeletons can't honor custom geometry; Klein produces raster.
-        This path asks the LLM to write the SVG directly from the prompt.
 
-        Single LLM call, no critic retry. Returns None on any failure so
-        the caller can fall through to the classifier + picker. Validation
-        is structural only — we trust the model to honor the user's spec
-        and rely on visual feedback (the user looking at the result) to
-        catch fidelity issues.
+        Hybrid path (2026-05-29 revision):
+          1. Ask the LLM to write the SVG from the user's prompt.
+          2. Validate it parses as an SVG; if not, return None and let
+             the caller fall through to the classifier path.
+          3. Run the critic on the SVG.
+          4. If critic.overall < USER_DIRECTED_SVG_KLEIN_FALLBACK_FLOOR AND
+             Klein is available, abandon the SVG and re-run via Klein
+             full-bleed. This is the "graceful degradation" path —
+             on machines without Klein, the LLM's best-effort SVG is
+             still returned with its honest critic score so the user
+             knows what they got.
+          5. Otherwise, return the SVG with its critic score.
         """
         t0 = time.time()
         model = capability.gemma_model or capability.olmo_model
@@ -705,6 +718,56 @@ class VisualComposer:
             f"{int((time.time() - t0) * 1000)}ms)"
         )
 
+        # Run the critic so the user sees an honest quality score.
+        critic_result = await self._run_critic(
+            svg,
+            title="",
+            intent=topic[:200],  # short context for the critic
+            capability=capability,
+        )
+        critic_score = (
+            _critic_result_to_score(critic_result) if critic_result else None
+        )
+
+        # Klein fallback: if the SVG scored below the floor AND Klein is
+        # installed, abandon the SVG and re-run as a raster full-bleed.
+        # Graceful degradation: on machines without Klein, we return the
+        # SVG anyway with its honest score — the user sees what they got.
+        if (
+            critic_score
+            and critic_score.overall < self.USER_DIRECTED_SVG_KLEIN_FALLBACK_FLOOR
+            and capability.can_diffusion_klein
+        ):
+            logger.info(
+                f"[visual_composer] user-directed SVG scored "
+                f"{critic_score.overall:.2f} < floor "
+                f"{self.USER_DIRECTED_SVG_KLEIN_FALLBACK_FLOOR}; "
+                f"falling back to Klein full-bleed"
+            )
+            # Synthesize an IllustrationIntent for the Klein call.
+            # Passthrough=True preserves the user's verbatim art direction;
+            # hero tier signals "make it polished."
+            fallback_intent = IllustrationIntent(
+                is_illustration=True,
+                confidence=0.85,
+                aspect_ratio="16:9",
+                quality_tier="hero",
+                passthrough_recommended=True,
+                style_hint=None,
+                title="",
+                subtitle="",
+                reason="user_directed_svg critic-floor fallback",
+            )
+            klein_result = await self._compose_klein_full_bleed(
+                topic, fallback_intent, capability, topic=topic,
+            )
+            if klein_result and klein_result.svg_markup:
+                return klein_result
+            logger.warning(
+                "[visual_composer] Klein fallback also failed; "
+                "returning the original SVG with its low critic score"
+            )
+
         return ComposedVisual(
             success=True,
             path=GenerationPath.GEMMA_FREEFORM,
@@ -714,6 +777,7 @@ class VisualComposer:
             title="",
             subtitle="",
             description="user-directed SVG (rendered from spec)",
+            critic_score=critic_score,
             model_used=model,
             template_id="user_directed_svg",
             template_name="user_directed_svg",

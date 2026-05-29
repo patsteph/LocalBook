@@ -90,6 +90,12 @@ const VisualChatInlineContent: React.FC<{
   // baked into the SVG so they don't need an overlay).
   const isHeroFullBleed = templateId === 'full_bleed_hero';
 
+  // Both Klein full-bleed AND user-directed SVG are prompt-driven and
+  // benefit from the Regenerate ↻ and Edit ✎ affordances. (Structural
+  // skeletons are content-driven — re-running them would produce the
+  // same template, so they don't expose these.)
+  const isRegenerable = isHeroFullBleed || templateId === 'user_directed_svg';
+
   return (
     <div className="space-y-2">
       {isHeroFullBleed ? (
@@ -121,12 +127,13 @@ const VisualChatInlineContent: React.FC<{
             notebookId={notebookId}
             originalPrompt={item.metadata?.originalPrompt}
           />
-          {/* Klein full-bleed visuals get two regeneration affordances:
-             - "Regenerate ↻" — same prompt, different Klein seed
+          {/* Prompt-driven visuals (Klein full-bleed AND user-directed SVG)
+             get two regeneration affordances:
+             - "Regenerate ↻" — same prompt, different seed / generation
              - "Edit ✎" — expands a panel with refinement chips + editable
                textarea, then regenerates with the modified prompt.
-             Hidden for structural skeletons. */}
-          {isHeroFullBleed && (
+             Hidden for structural skeletons (content-driven). */}
+          {isRegenerable && (
             <>
               <VisualRegenerateButton
                 itemId={item.id}

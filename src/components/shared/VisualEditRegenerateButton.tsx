@@ -209,10 +209,10 @@ export const VisualEditRegenerateButton: React.FC<VisualEditRegenerateButtonProp
       </button>
 
       {open && (
-        <div className="w-full mt-2 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800/60 p-3 space-y-2">
+        <div className="w-full mt-1.5 border border-gray-200 dark:border-gray-700 rounded-md bg-gray-50 dark:bg-gray-800/60 p-2 space-y-1.5">
           {/* Quick refinement chips — append modifier text to the draft */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mr-1">
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-[9px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mr-0.5">
               Refine
             </span>
             {REFINEMENT_CHIPS.map((chip) => (
@@ -222,7 +222,7 @@ export const VisualEditRegenerateButton: React.FC<VisualEditRegenerateButtonProp
                 onClick={() => applyChip(chip.modifier)}
                 title={chip.title}
                 disabled={busy}
-                className="text-[11px] px-2 py-1 rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-indigo-50 hover:border-indigo-300 dark:hover:bg-indigo-900/30 dark:hover:border-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-indigo-50 hover:border-indigo-300 dark:hover:bg-indigo-900/30 dark:hover:border-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {chip.label}
               </button>
@@ -231,8 +231,8 @@ export const VisualEditRegenerateButton: React.FC<VisualEditRegenerateButtonProp
 
           {/* Style preset chips — append style prompt_tail to the draft */}
           {kleinStyles.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mr-1">
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="text-[9px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mr-0.5">
                 Style
               </span>
               {kleinStyles.map((style) => (
@@ -242,7 +242,7 @@ export const VisualEditRegenerateButton: React.FC<VisualEditRegenerateButtonProp
                   onClick={() => applyChip(`, ${style.prompt_tail}`)}
                   title={style.prompt_tail}
                   disabled={busy}
-                  className="text-[11px] px-2 py-1 rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-indigo-50 hover:border-indigo-300 dark:hover:bg-indigo-900/30 dark:hover:border-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-indigo-50 hover:border-indigo-300 dark:hover:bg-indigo-900/30 dark:hover:border-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {style.label}
                 </button>
@@ -256,11 +256,11 @@ export const VisualEditRegenerateButton: React.FC<VisualEditRegenerateButtonProp
             onChange={(e) => setDraft(e.target.value)}
             disabled={busy}
             rows={Math.min(8, Math.max(3, draft.split('\n').length + 1))}
-            className="w-full text-xs px-2 py-2 border border-gray-200 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 font-mono leading-relaxed resize-y disabled:opacity-50"
+            className="w-full text-[11px] px-1.5 py-1.5 border border-gray-200 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 font-mono leading-relaxed resize-y disabled:opacity-50"
             placeholder="Edit the prompt, then regenerate…"
           />
 
-          <div className="flex items-center justify-between gap-2 text-[11px]">
+          <div className="flex items-center justify-between gap-1.5 text-[10px]">
             <button
               type="button"
               onClick={resetDraft}
@@ -270,12 +270,12 @@ export const VisualEditRegenerateButton: React.FC<VisualEditRegenerateButtonProp
             >
               ↺ Reset to original
             </button>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => setOpen(false)}
                 disabled={busy}
-                className="px-2 py-1 rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+                className="px-1.5 py-0.5 rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -283,7 +283,7 @@ export const VisualEditRegenerateButton: React.FC<VisualEditRegenerateButtonProp
                 type="button"
                 onClick={handleRegenerate}
                 disabled={busy || !draft.trim()}
-                className={`px-2.5 py-1 rounded font-medium ${
+                className={`px-2 py-0.5 rounded font-medium ${
                   busy
                     ? 'bg-indigo-300 text-white cursor-wait'
                     : 'bg-indigo-600 hover:bg-indigo-700 text-white disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed'
