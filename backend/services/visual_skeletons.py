@@ -46,6 +46,12 @@ def wrap(
 ) -> str:
     """Emit a <foreignObject> + nested HTML div that auto-wraps {{placeholder}}.
 
+    Uses `-webkit-line-clamp` to truncate cleanly with `…` when slot content
+    overflows the bounding box — rather than silently clipping mid-character
+    like the prior `overflow:hidden`-only approach did. Slots that fit
+    render unchanged; long slot-fill values get gracefully truncated at the
+    last full line that fits with an ellipsis marker.
+
     Args:
         x, y, w, h: bounding box in viewBox coords
         placeholder: slot key (will become {{PLACEHOLDER}} in output)
@@ -58,6 +64,10 @@ def wrap(
     """
     text_align = "center" if align == "center" else "left"
     flex_align = "center" if vertical == "middle" else "flex-start"
+    # Compute the max number of full lines that fit in `h` at this font size.
+    # Floor of (h ÷ (font_size × line_height)). At minimum 1 line — even tiny
+    # label boxes need to render *something*.
+    line_clamp = max(1, int(h / (font_size * line_height)))
     # CRITICAL: `overflow="hidden"` on the foreignObject ELEMENT (not just the
     # inner div). Without this, text content that wraps beyond the height
     # attribute bleeds past the foreignObject boundary and overlaps neighbors
@@ -71,8 +81,10 @@ def wrap(
         f'font-weight:{weight};color:{color};line-height:{line_height};'
         f'text-align:{text_align};word-wrap:break-word;overflow-wrap:break-word;'
         f'overflow:hidden;box-sizing:border-box;">'
-        f'<span style="overflow:hidden;text-overflow:ellipsis;">{{{{{placeholder}}}}}</span>'
-        f'</div></foreignObject>'
+        f'<div style="display:-webkit-box;-webkit-box-orient:vertical;'
+        f'-webkit-line-clamp:{line_clamp};overflow:hidden;text-overflow:ellipsis;">'
+        f'{{{{{placeholder}}}}}'
+        f'</div></div></foreignObject>'
     )
 
 

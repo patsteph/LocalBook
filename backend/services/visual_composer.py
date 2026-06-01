@@ -490,6 +490,12 @@ class VisualComposer:
         # over-budget and off-target. Fall back to content for legacy callers
         # that didn't thread topic through.
         prompt_source = (topic or content).strip()
+        # Strip SVG-as-file-format technical preamble before passing to Klein.
+        # Klein is a diffusion model — "Generate a clean SVG concept diagram"
+        # pollutes the latent space (Klein doesn't know SVG is a format; it
+        # tries to render those tokens as visual cues). Sanitization keeps the
+        # actual visual description intact while removing the technical noise.
+        prompt_source = _sanitize_klein_prompt(prompt_source)
 
         # Step 1: dimensions + steps from (aspect, tier)
         width, height, steps = resolve_dimensions(intent.aspect_ratio, intent.quality_tier)
@@ -950,6 +956,48 @@ def _is_valid_svg(markup: Optional[str]) -> bool:
         return False
     lower = markup.lower()
     return "<svg" in lower and "</svg>" in lower
+
+
+# Patterns that turn SVG-as-file-format technical preambles into natural
+# image descriptions before passing to Klein. "Generate a clean SVG concept
+# diagram representing X" → "A clean illustration of X". Klein is a diffusion
+# model — it doesn't know SVG is a file format, so those tokens leak into
+# the rendered image as noise. Tested patterns cover the user's BASIC-tier
+# prompt shapes; non-matching prompts pass through unchanged.
+_KLEIN_SVG_PREAMBLE_RE = re.compile(
+    r"^\s*(?:generate|create|produce|render|draw|make)\s+"
+    r"(?:a\s+|an\s+)?"
+    r"(?:clean\s+|minimalist\s+|simple\s+)?"
+    r"svg\s+"
+    r"(concept\s+diagram|illustration|diagram|graphic|picture|image)\b",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_klein_prompt(prompt: str) -> str:
+    """Strip SVG-as-format technical preamble so Klein sees the visual ask.
+
+    "Generate a clean SVG concept diagram representing a neural network..."
+       → "A clean illustration of a neural network..."
+    "Generate a minimalist SVG illustration. A simple geometric..."
+       → "A clean illustration. A simple geometric..."
+
+    Non-matching prompts (no SVG preamble) are returned unchanged.
+    """
+    m = _KLEIN_SVG_PREAMBLE_RE.match(prompt)
+    if not m:
+        return prompt
+    # Use "illustration" as the replacement noun regardless of source —
+    # Klein responds best to "illustration" / "picture" framing.
+    rest = prompt[m.end():].lstrip()
+    # Strip a leading "." if the source had punctuation right after the
+    # SVG noun (e.g., "Generate a minimalist SVG illustration. A simple...").
+    rest = rest.lstrip(".").lstrip()
+    # If the remaining text starts with "representing" or "of" or "showing"
+    # or "depicting", flow naturally; otherwise prepend a separator.
+    if rest.lower().startswith(("representing ", "of ", "showing ", "depicting ", "for ")):
+        return f"A clean illustration {rest}"
+    return f"A clean illustration. {rest}"
 
 
 _SOURCE_CONTENT_MARKER = "\n\nSource content:\n"
