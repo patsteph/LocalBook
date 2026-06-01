@@ -405,6 +405,7 @@ from storage.content_store import content_store
 from services.rag_engine import rag_engine
 from services.output_templates import build_document_prompt, DOCUMENT_TEMPLATES
 from services.context_builder import context_builder
+from services.citation_validator import strip_invalid_citations, enforce_citations
 from config import settings
 
 # Skills that use Outline-First generation (multi-step) instead of single-pass.
@@ -1519,11 +1520,22 @@ async def generate_content(request: ContentGenerateRequest):
         skill_name = skill.get("name", "Content")
         topic_focus = effective_topic or request.topic or "the main topics and insights"
         
+        # Citation contract (Tier 1.1) — every factual claim must end with [Sn]
+        # matching a source from the legend. Post-generation, strip_invalid_citations
+        # removes claims with bogus tags so verifiable provenance survives.
+        citation_rule = """
+CITATION CONTRACT — required for every factual claim:
+- Each source in the content below is preceded by a tag like `[S1] filename.pdf`.
+- Every factual claim, statistic, quote, or specific finding in your output MUST end with the `[Sn]` tag of the source it came from. Example: "Adoption grew 47% YoY [S2]."
+- When a claim synthesizes across multiple sources, append all tags: "Both studies converge on this point [S1][S3]."
+- Connective tissue, transitions, and the user's own framing don't need citations.
+- Do NOT invent `[Sn]` references beyond what's in the legend — invalid tags get stripped after generation."""
+
         # Use professional template if available, otherwise fall back to skill's own prompt
         if request.skill_id in DOCUMENT_TEMPLATES:
             template_system, template_format = build_document_prompt(
-                request.skill_id, 
-                topic_focus, 
+                request.skill_id,
+                topic_focus,
                 request.style or "professional",
                 built.sources_used
             )
@@ -1532,15 +1544,16 @@ async def generate_content(request: ContentGenerateRequest):
 {template_format}
 
 FOCUS: {topic_focus}
+{citation_rule}
 
 CRITICAL: Use ONLY the provided source content. Synthesize across multiple sources.
-Do not make up information. Attribute insights to specific sources where possible."""
+Do not make up information."""
         else:
             # Fallback to skill's own prompt for custom skills
             skill_prompt = skill.get("system_prompt", "")
             format_instructions = _get_format_instructions(request.skill_id)
             style_instructions = _get_style_instructions(request.style)
-            
+
             system_prompt = f"""{skill_prompt}
 
 {format_instructions}
@@ -1548,6 +1561,7 @@ Do not make up information. Attribute insights to specific sources where possibl
 {style_instructions}
 
 Focus on: {topic_focus}
+{citation_rule}
 
 Use ONLY the provided source content. Do not make up information."""
 
@@ -1562,11 +1576,21 @@ Use ONLY the provided source content. Do not make up information."""
 
 """
 
-        user_prompt = f"""{chat_preamble}Based on the following {built.sources_used} source document(s), create a world-class {skill_name}:
+        # Citation legend — single, scannable source-tag list the LLM can refer
+        # to when deciding which `[Sn]` to suffix to each claim.
+        legend_block = ""
+        legend = built.citation_legend()
+        if legend:
+            legend_block = f"""SOURCE LEGEND (use these `[Sn]` tags in your citations):
+{legend}
+
+"""
+
+        user_prompt = f"""{chat_preamble}{legend_block}Based on the following {built.sources_used} source document(s), create a world-class {skill_name}:
 
 {built.context}
 
-Generate the {skill_name} now, ensuring you synthesize insights across ALL sources:"""
+Generate the {skill_name} now, ensuring you synthesize insights across ALL sources and cite every factual claim with the matching `[Sn]` tag:"""
 
         # Use template-specific token limit for thorough generation
         template = DOCUMENT_TEMPLATES.get(request.skill_id)
@@ -1631,6 +1655,21 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
                     temperature=skill_temp,
                 )
 
+        # Citation contract enforcement (Tier 1.1): strip [Sn] tags whose n
+        # isn't in the source legend. Bogus invented tags would leak into
+        # the saved output otherwise. Use strip mode (not enforce mode) so
+        # uncited connective prose survives — the contract is about
+        # verifiable claims, not removing every transition sentence.
+        valid_indices = built.valid_citation_indices()
+        if valid_indices:
+            before = len(content)
+            content = strip_invalid_citations(content, valid_indices)
+            if len(content) != before:
+                logger.info(
+                    f"[STUDIO] Citation validator stripped {before - len(content)} chars "
+                    f"of invalid [Sn] tags from {request.skill_id} output"
+                )
+
         # Save to content store for persistence
         await content_store.create(
             notebook_id=request.notebook_id,
@@ -1687,12 +1726,21 @@ async def generate_content_stream(request: ContentGenerateRequest):
         
         skill_name = skill.get("name", "Content")
         topic_focus = effective_topic or request.topic or "the main topics and insights"
-        
+
+        # Citation contract (Tier 1.1) — mirrored from the non-streaming endpoint.
+        citation_rule = """
+CITATION CONTRACT — required for every factual claim:
+- Each source in the content below is preceded by a tag like `[S1] filename.pdf`.
+- Every factual claim, statistic, quote, or specific finding in your output MUST end with the `[Sn]` tag of the source it came from. Example: "Adoption grew 47% YoY [S2]."
+- When a claim synthesizes across multiple sources, append all tags: "Both studies converge on this point [S1][S3]."
+- Connective tissue, transitions, and the user's own framing don't need citations.
+- Do NOT invent `[Sn]` references beyond what's in the legend — invalid tags get stripped after generation."""
+
         # Use professional template if available
         if request.skill_id in DOCUMENT_TEMPLATES:
             template_system, template_format = build_document_prompt(
-                request.skill_id, 
-                topic_focus, 
+                request.skill_id,
+                topic_focus,
                 request.style or "professional",
                 built.sources_used
             )
@@ -1701,14 +1749,15 @@ async def generate_content_stream(request: ContentGenerateRequest):
 {template_format}
 
 FOCUS: {topic_focus}
+{citation_rule}
 
 CRITICAL: Use ONLY the provided source content. Synthesize across multiple sources.
-Do not make up information. Attribute insights to specific sources where possible."""
+Do not make up information."""
         else:
             skill_prompt = skill.get("system_prompt", "")
             format_instructions = _get_format_instructions(request.skill_id)
             style_instructions = _get_style_instructions(request.style)
-            
+
             system_prompt = f"""{skill_prompt}
 
 {format_instructions}
@@ -1716,6 +1765,7 @@ Do not make up information. Attribute insights to specific sources where possibl
 {style_instructions}
 
 Focus on: {topic_focus}
+{citation_rule}
 
 Use ONLY the provided source content. Do not make up information."""
 
@@ -1730,11 +1780,19 @@ Use ONLY the provided source content. Do not make up information."""
 
 """
 
-        user_prompt = f"""{chat_preamble}Based on the following {built.sources_used} source document(s), create a world-class {skill_name}:
+        legend_block = ""
+        legend = built.citation_legend()
+        if legend:
+            legend_block = f"""SOURCE LEGEND (use these `[Sn]` tags in your citations):
+{legend}
+
+"""
+
+        user_prompt = f"""{chat_preamble}{legend_block}Based on the following {built.sources_used} source document(s), create a world-class {skill_name}:
 
 {built.context}
 
-Generate the {skill_name} now, ensuring you synthesize insights across ALL sources:"""
+Generate the {skill_name} now, ensuring you synthesize insights across ALL sources and cite every factual claim with the matching `[Sn]` tag:"""
 
         # Use template-specific token limit for thorough generation
         template = DOCUMENT_TEMPLATES.get(request.skill_id)

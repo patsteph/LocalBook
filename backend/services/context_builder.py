@@ -143,12 +143,33 @@ class BuiltContext:
     """Result of context building — everything needed for content generation."""
     context: str                        # The assembled context string
     sources_used: int                   # Number of sources included
-    source_names: List[str]             # Filenames of sources used
+    source_names: List[str]             # Filenames of sources used (parallel to sources_map order)
     total_chars: int                    # Total characters in context
     strategy_used: str                  # Which strategy was applied
     profile_used: str                   # Which profile was applied
+    # Citation contract (Tier 1.1, 2026-05-31): each chunk in `context` is
+    # preceded by `[Sn] filename` where n is the 1-based key in this map.
+    # Downstream prompts ask the LLM to suffix every factual claim with
+    # `[Sn]`; the citation_validator can then strip claims whose n isn't
+    # in this map. sources_map[n] = filename for n ∈ 1..sources_used.
+    sources_map: Dict[int, str] = field(default_factory=dict)
     topic_relevance_scores: Dict[str, float] = field(default_factory=dict)  # source_id → relevance
     build_time_ms: int = 0             # How long context building took
+
+    def valid_citation_indices(self) -> set:
+        """Set of integer indices that are valid `[Sn]` references."""
+        return set(self.sources_map.keys())
+
+    def citation_legend(self) -> str:
+        """Multi-line legend for prompt injection. Example:
+            [S1] paper-a.pdf
+            [S2] meeting-notes.md
+        Empty string when no sources."""
+        if not self.sources_map:
+            return ""
+        return "\n".join(
+            f"[S{n}] {fname}" for n, fname in sorted(self.sources_map.items())
+        )
 
 
 # =============================================================================
@@ -229,15 +250,31 @@ class ContextBuilder:
         context = "\n\n---\n\n".join(context_parts)
         if len(context) > profile.total_context_chars:
             context = context[:profile.total_context_chars]
-        
+
+        # Step 6.5 — Tag headers with `[Sn]` for the citation contract.
+        # Each `_build_*_context` method emits "## Source: <filename>" headers;
+        # we rewrite ALL occurrences (a source can be referenced by multiple
+        # parts) to `[Sn] <filename>` using the first-seen order to assign n.
+        # Downstream prompts ask the LLM to suffix factual claims with `[Sn]`;
+        # citation_validator strips invalid ones.
+        sources_map: Dict[int, str] = {}
+        filename_to_index: Dict[str, int] = {}
+        for fname in source_names:
+            if fname not in filename_to_index:
+                idx = len(filename_to_index) + 1
+                filename_to_index[fname] = idx
+                sources_map[idx] = fname
+        for fname, n in filename_to_index.items():
+            context = context.replace(f"## Source: {fname}", f"[S{n}] {fname}")
+
         build_time = int((time.time() - start_time) * 1000)
-        
+
         # Build relevance scores dict
         relevance_scores = {}
         for s in ranked_sources:
             if s.get("id") and s.get("_relevance_score") is not None:
                 relevance_scores[s["id"]] = s["_relevance_score"]
-        
+
         result = BuiltContext(
             context=context,
             sources_used=len(source_names),
@@ -245,6 +282,7 @@ class ContextBuilder:
             total_chars=len(context),
             strategy_used=profile.strategy,
             profile_used=skill_id,
+            sources_map=sources_map,
             topic_relevance_scores=relevance_scores,
             build_time_ms=build_time
         )

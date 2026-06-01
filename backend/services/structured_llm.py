@@ -40,11 +40,16 @@ class QuizQuestion(BaseModel):
     answer: str = Field(description="The correct answer")
     explanation: str = Field(description="Why this answer is correct")
     difficulty: str = Field(default="medium", description="easy, medium, or hard")
-    question_type: str = Field(default="multiple_choice", description="multiple_choice, true_false, short_answer, fill_in_the_blank, spot_the_error, or visual_diagram")
+    question_type: str = Field(default="multiple_choice", description="multiple_choice, true_false, short_answer, fill_in_the_blank, spot_the_error, justify, or visual_diagram")
     options: Optional[List[str]] = Field(default=None, description="Answer options - required for multiple_choice, ['True', 'False'] for true_false")
     source_reference: Optional[str] = Field(default=None, description="Name of the source document this question is from")
     visual_svg: Optional[str] = Field(default=None, description="SVG diagram code for visual_diagram questions (one label replaced with ???)")
     visual_labels: Optional[VisualLabels] = Field(default=None, description="Labels shown vs hidden for visual_diagram questions")
+    # Tier 2.5 (2026-06-01) — citation contract + difficulty schema.
+    evidence_quote: Optional[str] = Field(default=None, description="Verbatim source span (≤200 chars) that grounds the answer. Validated against context.")
+    citation_tag: Optional[str] = Field(default=None, description="Source tag like [S1] identifying the chunk this question came from.")
+    applied_scenario: Optional[str] = Field(default=None, description="Required for difficulty='medium' — a NEW scenario (not in the source) the learner must apply the concept to.")
+    chunks_combined: Optional[List[str]] = Field(default=None, description="Required for difficulty='hard' — list of source tags like ['S1','S3'] whose claims must be combined to answer.")
 
 
 class QuizOutput(BaseModel):
@@ -357,11 +362,15 @@ Output a valid JSON object with this structure:
         {{
             "question": "clear, unambiguous question text",
             "answer": "the correct answer",
-            "explanation": "why this is correct, with a direct quote from the source",
+            "explanation": "why this is correct — concise standalone teaching statement",
             "difficulty": "{difficulty}",
             "question_type": "one of: {types_str}",
             "options": "array of 4 options for multiple_choice, ['True','False'] for true_false, null for others",
-            "source_reference": "exact name of the source document this fact comes from"
+            "source_reference": "exact name of the source document this fact comes from",
+            "evidence_quote": "verbatim ≤200-char span from the source that grounds the answer — must be a literal substring of the content provided",
+            "citation_tag": "the [Sn] tag of the source chunk this question came from",
+            "applied_scenario": "ONLY for difficulty='medium' — a NEW scenario not in the source where the learner applies the concept; null otherwise",
+            "chunks_combined": "ONLY for difficulty='hard' — array like ['S1','S3'] of the source tags whose claims must be combined; null otherwise"
         }}
     ],
     "topic": "main topic being tested",
@@ -373,65 +382,60 @@ Output a valid JSON object with this structure:
 2. Do NOT use outside knowledge. If the source text does not contain enough info to form a question, generate FEWER questions rather than guessing.
 3. For multiple_choice: the "answer" field must be the EXACT CHARACTER-FOR-CHARACTER copy of one of the four "options" strings. No paraphrasing.
 4. For true_false: the statement must be unambiguously true or false ACCORDING TO THE SOURCE TEXT, not general knowledge.
-5. Distractors (wrong options) must be clearly wrong according to the source — not trick questions.
+5. Distractors must be drawn from sibling concepts that APPEAR in the same chunk as the correct answer (close-but-wrong), not random unrelated entities. A good distractor is something the learner would plausibly believe; a bad distractor is something they'd never consider.
 6. The "explanation" must be a concise teaching statement (1-2 sentences). It may reference a specific fact from the source, but it must NEVER start with "The source states", "Remember we said", "The text explains", or similar meta-phrases. Write it as a standalone explanation a tutor would say.
+7. evidence_quote MUST be a verbatim substring of the content provided. Do NOT paraphrase. If you can't find a literal source quote that grounds your answer, drop the question.
 
 SELF-CHECK BEFORE OUTPUTTING:
 - Verify every answer is explicitly stated in the source text.
 - For multiple_choice: confirm the "answer" string is IDENTICAL to one of the four "options" strings (copy-paste exact).
 - Confirm no question or explanation references "the source", "the passage", "the text", or "the article".
 - Confirm each explanation is a concise standalone statement, not a raw truncated quote.
-- Confirm every short_answer answer is ≤ 6 words. If the answer needs to be longer, change the question_type to multiple_choice.
+- Confirm evidence_quote is ≤ 200 characters and appears VERBATIM in the source content.
+- For difficulty='medium': confirm applied_scenario describes a situation NOT in the source.
+- For difficulty='hard': confirm chunks_combined contains AT LEAST TWO distinct [Sn] tags AND your question stem genuinely requires combining their claims (not just citing them in parallel).
 - If any question fails these checks, fix it or remove it and generate fewer total questions.
 
 QUESTION TYPE SELECTION — choose the BEST type for each fact:
-- multiple_choice: Use when you can write 4 clearly distinct options and the answer is a single term, name, or short phrase (≤ 6 words). This is the DEFAULT and preferred type.
-- fill_in_the_blank: Use for specific key terms, dates, names, or short phrases that fit naturally in a sentence with a blank.
-- short_answer: Use ONLY when the answer is a very short phrase (1-6 words) that the user can type quickly. NEVER use short_answer for paragraph-length answers. If the concept requires a longer response, use multiple_choice instead.
-- true_false: Use for unambiguous factual statements.
-- spot_the_error: Use for subtle factual mistakes that test deep understanding.
+- multiple_choice: 4 distinct options; the DEFAULT for any factual recall.
+- fill_in_the_blank: specific key terms, dates, names that fit naturally as a blank.
+- short_answer: very short typed response (1-6 words). Use for easy difficulty only.
+- true_false: unambiguous factual statements.
+- spot_the_error: a statement with a subtle factual mistake; tests deep understanding.
+- justify: a 2-4 sentence explanation answer. Required path for "explain why", "compare these", "apply this concept" questions. The /quiz/grade endpoint LLM-judges these.
 
 ANSWER LENGTH RULES:
-- multiple_choice answer: must be ≤ 6 words, and must be an EXACT COPY of one option.
-- fill_in_the_blank answer: 1-3 words (a specific term).
-- short_answer answer: 1-6 words maximum. If you need more, use multiple_choice.
+- multiple_choice answer: ≤ 6 words, EXACT COPY of one option.
+- fill_in_the_blank answer: 1-3 words.
+- short_answer answer: 1-6 words.
 - true_false answer: "True" or "False".
-- NEVER write paragraph-length answers. Flashcard answers must be quick to read and type.
+- justify answer: 2-4 sentences. The CORRECT answer the grader will compare against — include the key facts a good response needs.
+- spot_the_error answer: the corrected version of the misstatement.
 
 QUESTION TYPE RULES:
-- multiple_choice: 4 plausible options; "answer" must be EXACT COPY of one option string
-- true_false: statement unambiguously true or false; options=["True","False"]
-- fill_in_the_blank: sentence with ___ replacing a key term; "answer" is the missing word/phrase; options=null
-  Example: "The process by which plants convert sunlight to energy is called ___." answer: "photosynthesis"
-- short_answer: open-ended question requiring a SHORT answer (1-6 words); options=null
-  Example: "What metal is the primary component of steel?" answer: "iron"
-  BAD: "Explain the economic impacts of the 2008 financial crisis." — too long; use multiple_choice instead.
-- spot_the_error: show a statement containing a deliberate factual mistake; "answer" is the corrected version; options=null
-  Example question: "Marie Curie won the Nobel Prize in Physics and Chemistry, becoming the first person to win two Nobels in the same field."
-  Example answer: "She won in different fields (Physics 1903, Chemistry 1911), not the same field."
+- multiple_choice: 4 plausible options; "answer" must be EXACT COPY of one option string.
+- true_false: options=["True","False"].
+- fill_in_the_blank: sentence with ___ replacing a key term; "answer" is the missing word/phrase; options=null.
+- short_answer: open-ended question requiring a SHORT typed answer; options=null.
+- justify: open-ended question requiring a 2-4 sentence explanation; "answer" is the model answer the grader will compare against; options=null. Use for "Why does X work?", "How would you apply Y to Z?", "Compare A and B."
+- spot_the_error: a statement with a deliberate factual mistake; "answer" is the corrected version; options=null.
 {visual_diagram_rules}{source_list_str}{mix_str}
 
+DIFFICULTY SCHEMA (this is a STRUCTURAL constraint, not a label):
+
+- easy: pure recall. The answer is a literal term, date, name, or fact stated explicitly in the source. evidence_quote is the source sentence; no applied_scenario or chunks_combined needed.
+
+- medium: applied understanding. The QUESTION STEM must reference a NEW scenario the learner has to apply the source concept to — a scenario not described in the source. Set applied_scenario to that new scenario. Example: source explains how staged rollouts work in deployment; medium question presents a scenario about classroom teaching and asks how the same staged-rollout principle would apply. If you can't write a fresh scenario, drop down to easy.
+
+- hard: cross-chunk synthesis. The QUESTION STEM must require combining claims from TWO OR MORE distinct source chunks (different [Sn] tags). The answer cannot be derived from any single chunk alone. Set chunks_combined to the list of [Sn] tags involved (at least 2). Often paired with question_type='justify' because the synthesis requires explanation. If you cannot find two chunks whose combination produces a question, drop down to medium.
+
+If a question's difficulty value doesn't structurally match its content, the question gets dropped by the sanitizer. So choose difficulty honestly based on what the question actually requires.
+
 LEARNING BEST PRACTICES:
-- Vary the format: if a concept appears twice, use different types (e.g., MC then fill_in_the_blank)
-- Interleave topics: don't cluster all questions about one concept together
-- Prefer "why" and "how" questions over "what is X" when possible
-- Use concrete, specific details rather than vague generalizations
-
-QUALITY REQUIREMENTS:
-1. Test UNDERSTANDING, not trivial recall
-2. Distractors for multiple_choice should represent common misconceptions
-3. fill_in_the_blank answers should be specific key terms, not vague phrases
-4. short_answer answers must be 1-6 words maximum — if longer, redesign as multiple_choice
-5. spot_the_error mistakes should be subtle and plausible, not obvious
-6. Explanations should teach in 1-2 concise sentences, not dump raw source text
-7. Questions should be specific and fact-based, not vague or interpretive
-8. Every question must be answerable without seeing the source text
-9. Questions should span different topics from the source material
-
-DIFFICULTY GUIDELINES:
-- easy: Basic recall and comprehension
-- medium: Application and analysis
-- hard: Synthesis and evaluation across concepts"""
+- Vary the format: if a concept appears twice, use different types.
+- Interleave topics: don't cluster all questions about one concept together.
+- Prefer "why" and "how" questions (use justify type) over "what is X" when the concept warrants depth.
+- Distractors should be drawn from the same chunk as the correct answer."""
 
         best_quiz: Optional[QuizOutput] = None  # Track best attempt across retries
         for attempt in range(self.max_retries):
@@ -478,7 +482,12 @@ Return ONLY a JSON object like this:
                     logger.info(f"[Quiz] Attempt {attempt+1}: parsed {len(quiz.questions)} raw questions")
                     # Lightweight deterministic sanity check (fast, no extra LLM call)
                     # Pass question_types so sanitizer won't auto-convert to types the user didn't ask for
-                    sanitized = self._sanitize_quiz(quiz.questions, allowed_types=question_types)
+                    sanitized = self._sanitize_quiz(
+                        quiz.questions,
+                        allowed_types=question_types,
+                        source_content=content,
+                        requested_difficulty=difficulty,
+                    )
                     # Emergency fallback: if sanitizer killed everything, keep raw questions
                     if not sanitized and quiz.questions and attempt == self.max_retries - 1:
                         logger.warning(f"[Quiz] Sanitizer dropped all {len(quiz.questions)} questions — returning raw as emergency fallback")
@@ -736,24 +745,42 @@ Return ONLY a JSON object like this:
             source_summary=result.get('source_summary', result.get('summary', '')),
         )
 
-    def _sanitize_quiz(self, questions: List[QuizQuestion], allowed_types: Optional[List[str]] = None) -> List[QuizQuestion]:
+    def _sanitize_quiz(
+        self,
+        questions: List[QuizQuestion],
+        allowed_types: Optional[List[str]] = None,
+        source_content: Optional[str] = None,
+        requested_difficulty: Optional[str] = None,
+    ) -> List[QuizQuestion]:
         """Fast deterministic filter — drops structurally-invalid questions.
 
         This replaces the heavy LLM-based _verify_quiz_answers with cheap
         checks that catch the most common generation mistakes:
         empty text, answer-not-in-options, questions that are too short,
         or answers that are too long for the chosen question type.
-        It runs in microseconds and never blocks on a second model call.
-        
+
+        Tier 2.5 (2026-06-01) additions:
+          - evidence_quote MUST be a verbatim substring of source_content
+            (when source_content is provided). Drops questions where the
+            model invented or paraphrased the grounding quote.
+          - difficulty='medium' requires non-empty applied_scenario.
+          - difficulty='hard' requires chunks_combined with ≥2 distinct tags.
+
         allowed_types: if provided, only convert to types in this list.
         Otherwise drop rather than convert (preserves variety).
         """
         # Default to a permissive set if none provided (backwards compat)
         allowed = set(allowed_types) if allowed_types else {
             'multiple_choice', 'true_false', 'fill_in_the_blank',
-            'short_answer', 'spot_the_error', 'visual_diagram'
+            'short_answer', 'spot_the_error', 'justify', 'visual_diagram'
         }
         can_fallback_short = 'short_answer' in allowed
+        # Normalize source content for substring search (case-insensitive,
+        # whitespace-collapsed) so evidence_quote validation isn't defeated
+        # by trivial formatting differences.
+        normalized_source = None
+        if source_content:
+            normalized_source = re.sub(r"\s+", " ", source_content).strip().lower()
         kept: List[QuizQuestion] = []
         for q in questions:
             # Must have non-empty question and answer
@@ -763,6 +790,43 @@ Return ONLY a JSON object like this:
             if not q.answer or len(str(q.answer).strip()) < 1:
                 logger.info(f"[Quiz Sanitize] Dropped — empty answer for question: '{q.question[:40]}'")
                 continue
+
+            # Tier 2.5 (2026-06-01) — citation contract: evidence_quote must
+            # appear verbatim in the source content. If the model invented or
+            # paraphrased the quote, the question is fabricated and gets dropped.
+            if normalized_source and q.evidence_quote:
+                normalized_quote = re.sub(r"\s+", " ", q.evidence_quote).strip().lower()
+                if len(normalized_quote) > 10 and normalized_quote not in normalized_source:
+                    logger.info(
+                        f"[Quiz Sanitize] Dropped — evidence_quote not in source: "
+                        f"'{q.evidence_quote[:60]}...' (q: '{q.question[:40]}')"
+                    )
+                    continue
+                if len(q.evidence_quote) > 200:
+                    # Soft cap — truncate the field, keep the question.
+                    q.evidence_quote = q.evidence_quote[:200].rsplit(" ", 1)[0] + "…"
+
+            # Tier 2.5 — difficulty schema enforcement.
+            effective_difficulty = (q.difficulty or "medium").lower()
+            if requested_difficulty:
+                # If caller asked for a specific difficulty, structurally
+                # require it. Model may have labeled some questions easier
+                # than asked; that's an honest downgrade and we let it pass
+                # only when caller asked for "easy" or "any".
+                if requested_difficulty.lower() == "medium" and effective_difficulty == "medium":
+                    if not q.applied_scenario or len(q.applied_scenario.strip()) < 20:
+                        logger.info(
+                            f"[Quiz Sanitize] Dropped medium-difficulty q without applied_scenario: '{q.question[:40]}'"
+                        )
+                        continue
+                if requested_difficulty.lower() == "hard" and effective_difficulty == "hard":
+                    chunks = q.chunks_combined or []
+                    distinct = {str(c).strip().upper() for c in chunks if str(c).strip()}
+                    if len(distinct) < 2:
+                        logger.info(
+                            f"[Quiz Sanitize] Dropped hard-difficulty q without ≥2 chunks_combined: '{q.question[:40]}'"
+                        )
+                        continue
 
             # multiple_choice: answer must be in options (should already be true
             # from parsing, but re-check as a safety net)
@@ -2287,38 +2351,106 @@ Rules:
             unique_to_second=[], synthesis="Failed"
         )
     
+    # Tier 2.6 (2026-06-01): per-task system prompts. The old single-prompt
+    # approach used the same instructions for improve / summarize / expand /
+    # rewrite / proofread / simplify — so "improve" defaulted to flattening
+    # the author's voice into generic LinkedIn cadence. Each task now has
+    # its own concrete brief. Voice-preservation is the DEFAULT for tasks
+    # that aren't supposed to overhaul voice; "rewrite" is the only task
+    # explicitly licensed to do so.
+    _WRITING_TASK_PROMPTS: Dict[str, str] = {
+        "improve": (
+            "You are an experienced editor. Fix the THREE highest-leverage issues in the user's text — "
+            "no more. Typical issues to look for: muddy openings that bury the lede, repeated information, "
+            "weak verbs, sentences that say two unrelated things. PRESERVE the author's voice, sentence rhythm, "
+            "and any deliberate stylistic choices (lists, fragments, em-dashes, casual phrasing). Do NOT flatten "
+            "their writing into generic professional cadence. Return the revised text in the `content` field, "
+            "and list the specific changes you made in `suggestions` (one entry per change, format: "
+            "'Changed X to Y because Z'). If the text is already in good shape, return it unchanged and say so "
+            "in suggestions."
+        ),
+        "summarize": (
+            "Summarize the user's text into the requested format style. Preserve the most important claims, "
+            "drop hedges, redundancy, and connective tissue. If the text has data (numbers, dates, named "
+            "entities), the summary MUST retain them. Return the summary in `content`. Use `suggestions` to "
+            "note anything you deliberately omitted that the author may want to keep."
+        ),
+        "expand": (
+            "Expand the user's text by ADDING substantive content — examples, evidence, counter-considerations, "
+            "specifics. Do NOT pad with filler ('In today's fast-paced world', 'It is important to note'). "
+            "Each sentence you add must carry information the original lacked. Preserve the author's voice. "
+            "Return expanded text in `content` and list each substantive addition in `suggestions`."
+        ),
+        "rewrite": (
+            "You are licensed to overhaul the user's text — voice, structure, emphasis are all on the table. "
+            "Use the requested format style as the target. State the rewrite's strategy in the first line of "
+            "`suggestions` (e.g., 'Restructured around the conclusion-first principle', 'Shifted to second-person "
+            "address'). Return the rewritten text in `content`."
+        ),
+        "proofread": (
+            "You are a copy editor. Fix ONLY mechanical errors: spelling, grammar, punctuation, agreement, "
+            "obvious typos. Do NOT rewrite sentences, restructure paragraphs, or change word choice for style. "
+            "Do NOT change the author's voice. Return the corrected text in `content`. List each fix in "
+            "`suggestions` (format: 'p2: corrected typo X→Y', 'p4: fixed subject-verb agreement')."
+        ),
+        "simplify": (
+            "Rewrite the user's text for a non-expert reader. Replace jargon with everyday language, break long "
+            "sentences into shorter ones, prefer concrete verbs. Do NOT drop information — preserve every claim, "
+            "just say it more plainly. Return the simplified text in `content`. In `suggestions`, list each "
+            "jargon term you replaced and what you replaced it with."
+        ),
+    }
+
     async def assist_writing(
-        self, 
-        content: str, 
+        self,
+        content: str,
         task: str = "improve",
         format_style: str = "professional"
     ) -> WritingAssistance:
-        """Assist with writing tasks."""
-        
-        system_prompt = f"""You are a writing assistant. Your task is to {task} the provided content.
-        
-Use this format style: {format_style}
+        """Assist with writing tasks. See _WRITING_TASK_PROMPTS for per-task briefs."""
+
+        task_brief = self._WRITING_TASK_PROMPTS.get(
+            task, self._WRITING_TASK_PROMPTS["improve"]
+        )
+
+        system_prompt = f"""{task_brief}
+
+FORMAT STYLE for this task: {format_style}
+- professional: Clear, formal, suitable for business
+- academic: Scholarly, with proper structure
+- casual: Friendly, conversational
+- technical: Precise, detailed
+- blog: Engaging, readable
+- email: Concise, action-oriented
 
 Output a valid JSON object with this structure:
 {{
-    "content": "the improved/generated content",
+    "content": "the result text",
     "format_used": "{format_style}",
-    "suggestions": ["additional improvement suggestions"],
+    "suggestions": ["changes made or notes for the author — one entry per change"],
     "word_count": number
 }}
 
-Available format styles:
-- professional: Clear, formal, suitable for business
-- academic: Scholarly, with proper structure and citations style
-- casual: Friendly, conversational
-- technical: Precise, detailed, for technical audiences
-- blog: Engaging, readable, with good flow
-- email: Concise, clear, action-oriented"""
+Output ONLY the JSON object. No markdown, no commentary."""
+
+        # Surface the truncation to the caller via suggestions instead of
+        # silently dropping characters past 6000.
+        truncated = len(content) > 6000
+        working_content = content[:6000] if truncated else content
 
         for attempt in range(self.max_retries):
             try:
-                result = await self._call_ollama_json(system_prompt, f"Content to work with:\n{content[:6000]}")
-                return WritingAssistance(**result)
+                result = await self._call_ollama_json(
+                    system_prompt,
+                    f"Content to work with:\n{working_content}",
+                )
+                response = WritingAssistance(**result)
+                if truncated:
+                    response.suggestions = list(response.suggestions or []) + [
+                        f"Note: input was {len(content)} chars; truncated to 6000 for processing. "
+                        f"Re-run on the remaining portion separately if needed."
+                    ]
+                return response
             except Exception as e:
                 if attempt == self.max_retries - 1:
                     return WritingAssistance(
@@ -2328,7 +2460,7 @@ Available format styles:
                         word_count=len(content.split())
                     )
                 await asyncio.sleep(1)
-        
+
         return WritingAssistance(
             content=content, format_used="none", suggestions=[], word_count=0
         )

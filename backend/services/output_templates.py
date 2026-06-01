@@ -30,6 +30,13 @@ class OutputTemplate:
     tone: str
     target_audience: str
     recommended_tokens: int = 2000  # Recommended num_predict for this document type
+    # Tier 3.7 (2026-06-01) — per-type pre-write reasoning move. Replaces
+    # the generic CoT bolt-on ("identify themes, note contradictions, plan
+    # structure") with the SPECIFIC structural reasoning each doc type
+    # needs. For briefings it's situation→finding→action; for FAQs it's
+    # questions-readers-would-actually-ask; for debates it's the genuine
+    # disagreement; etc. Empty string falls back to a sane default.
+    pre_write_move: str = ""
 
 
 # =============================================================================
@@ -73,40 +80,26 @@ Write as if presenting to a CEO with 5 minutes to make a decision.""",
         
         min_sections=6,
         
-        example_structure="""# Executive Briefing: [Topic]
-*Prepared: [Date] | Sources: [N] documents*
+        example_structure="""VOICE EXEMPLAR (match the tone, density, and citation discipline — NOT the literal subject):
 
-## Executive Summary
-[3-4 sentence overview capturing: situation, key finding, recommendation]
+Adoption of automated triage in financial services has accelerated 2.3× over the past 18 months, driven primarily by labor-cost pressure rather than accuracy gains [S2]. Two of the three deployments studied here delivered the headline savings; the third underperformed because the underlying queue was already efficient [S1][S3].
 
-## Situation Overview
-[2-3 paragraphs of context]
+The pattern across all three: a 4-8 week pilot, a 6-month rollout, and a year of declining marginal returns. No deployment achieved its third-year ROI projection [S2].
 
-## Key Findings
-1. **[Finding Title]**: [Impact statement] *(Sources: 1, 3)*
-2. **[Finding Title]**: [Impact statement] *(Sources: 2, 4)*
-3. **[Finding Title]**: [Impact statement] *(Sources: 1, 2, 3)*
-
-## Analysis
-[Cross-source synthesis - what patterns emerge, what contradictions exist]
-
-## Implications
-- **Opportunity**: [Description]
-- **Risk**: [Description]  
-- **Trade-off**: [Description]
-
-## Recommendations
-1. **[Action]** - [Rationale] - *Priority: High*
-2. **[Action]** - [Rationale] - *Priority: Medium*
-
----
-*Sources: [List with brief descriptions]*""",
+Recommendation: pre-audit queue efficiency before committing to procurement. The technology amplifies what's already working; it does not fix what isn't [S1].""",
         
         tone="authoritative, concise, action-oriented",
         target_audience="Senior executives and decision-makers",
-        recommended_tokens=2500
+        recommended_tokens=2500,
+        pre_write_move=(
+            "Before writing a single line, complete this sentence in your head: "
+            "'The situation is X, the key finding is Y, the recommended action is Z.' "
+            "If you can't fill in all three, the briefing isn't ready — pause and re-read the sources. "
+            "The Executive Summary at the top must be exactly that sentence expanded to 3-4 lines. "
+            "Don't bury the recommendation deeper than that — executives stop reading after the Summary."
+        ),
     ),
-    
+
     "study_guide": OutputTemplate(
         template_id="study_guide",
         name="Study Guide",
@@ -142,66 +135,27 @@ Write for someone preparing for an important exam or presentation.""",
         
         min_sections=6,
         
-        example_structure="""# Study Guide: [Topic]
-*Estimated study time: [X] minutes | Difficulty: [Level]*
+        example_structure="""VOICE EXEMPLAR (match the tone, density, and citation discipline — NOT the literal subject):
 
-## Learning Objectives
-After studying this guide, you will be able to:
-- [ ] [Objective 1 - action verb + specific outcome]
-- [ ] [Objective 2]
-- [ ] [Objective 3]
+Learning objective: by the end of this guide, you'll be able to explain why reinforcement learning produces emergent strategies that supervised methods cannot, and identify when each approach is appropriate [S1].
 
-## Key Vocabulary
-| Term | Definition | Example |
-|------|------------|---------|
-| [Term] | [Clear definition] | [Concrete example] |
+Key term — *credit assignment*: the problem of figuring out which past action led to a current reward when the rewards are delayed and aggregated. In supervised learning you don't have this problem because feedback is immediate; in RL it's the hardest part [S2].
 
-## How It All Connects
-[Text-based concept map or relationship diagram]
-```
-[Core Concept] 
-    ├── [Related Idea 1] → [Outcome]
-    ├── [Related Idea 2] → [Outcome]
-    └── [Related Idea 3] → [Outcome]
-```
+How to remember: think of training a dog by yelling "Good!" only at the end of a 10-minute trick. The dog has to figure out which step in the trick earned the praise. That's credit assignment.
 
-## Core Concepts
-
-### 1. [Concept Name]
-**What it is**: [Definition]
-**Why it matters**: [Significance]
-**How to remember**: 💡 [Mnemonic or analogy]
-**From the sources**: [Key quotes/facts with attribution]
-
-### 2. [Concept Name]
-[Same structure...]
-
-## Key Takeaways
-✅ [Essential point 1]
-✅ [Essential point 2]
-✅ [Essential point 3]
-
-## Self-Assessment
-**Quick Check** (answers at bottom):
-1. [Question testing recall]
-2. [Question testing understanding]
-3. [Question testing application]
-
-**Deep Thinking**:
-- [Open-ended question requiring synthesis]
-
-## Further Exploration
-- [Related topic to explore]
-- [Advanced concept to study next]
-
----
-*Answers: 1.[A] 2.[B] 3.[C]*""",
+Self-check: if a learner can articulate why an RL agent might explore "useless" actions during training but a supervised model never does, they have the concept [S1][S3].""",
         
         tone="encouraging, clear, educational",
         target_audience="Students and self-learners",
-        recommended_tokens=3500
+        recommended_tokens=3500,
+        pre_write_move=(
+            "Before writing: identify the specific things the reader will be able to DO after studying this — "
+            "verbs like 'distinguish', 'apply', 'derive', not 'understand'. Then identify the 2-3 misconceptions "
+            "they'll most likely arrive with. The guide's structure must address both. Learning objectives that "
+            "use 'understand' as the verb are usually too vague to evaluate — replace with action verbs."
+        ),
     ),
-    
+
     "faq": OutputTemplate(
         template_id="faq",
         name="FAQ Document",
@@ -235,69 +189,26 @@ Write as if creating documentation for a product millions will use.""",
         ],
         
         min_sections=4,
-        
-        example_structure="""# Frequently Asked Questions: [Topic]
-*[N] questions answered | Last updated: [Date]*
 
-## Quick Answers
+        example_structure="""VOICE EXEMPLAR (match the tone, density, and citation discipline — NOT the literal subject):
 
-### What is [topic] in one sentence?
-[One clear sentence answer]
+### Q: How long does a typical bulk migration take for a 100-table Postgres database?
+**Short answer:** In the three benchmarks reported, the bulk-copy phase ran 3-6 hours; the cutover window was under 90 seconds in every case [S2].
 
-### Why should I care about [topic]?
-[Direct value proposition]
+**Detailed answer:** The wall-clock cost is dominated by the largest table, not the table count. All three studies converged on the same advice: parallelize the long-tail tables and accept that the rest run in serial because foreign-key dependencies block parallelism [S1][S2]. Indexing strategy at the destination changes the back-of-envelope by 2-3× — leave indexes off during copy and rebuild after [S3].
 
----
-
-## Getting Started
-
-### Q: [Foundational question]?
-**Short answer**: [1-2 sentences]
-
-**Detailed answer**: [Comprehensive explanation with source attribution]
-
-*Related*: See also "[Related question]"
-
-### Q: [Next foundational question]?
-[Same structure...]
-
----
-
-## Core Concepts
-
-### Q: [Main topic question]?
-**Short answer**: [Brief response]
-
-**Detailed answer**: 
-[Thorough explanation]
-
-**Key points**:
-- [Point 1] *(Source: [Name])*
-- [Point 2] *(Source: [Name])*
-
-*Related*: "[Related question 1]", "[Related question 2]"
-
----
-
-## Advanced Topics
-
-### Q: [Expert-level question]?
-[Detailed technical answer with nuance]
-
----
-
-## Troubleshooting
-
-### Q: What if [common problem]?
-**Solution**: [Step-by-step resolution]
-
----
-
-*Sources consulted: [List]*""",
+*Related:* "What about logical replication for zero-downtime?", "How do you size the destination instance?" """,
         
         tone="helpful, thorough, accessible",
         target_audience="Anyone seeking to understand the topic",
-        recommended_tokens=3000
+        recommended_tokens=3000,
+        pre_write_move=(
+            "Before writing: enumerate the actual questions a real reader would ask, in the order they'd "
+            "ask them. A beginner asks 'what is X?' first; an expert asks 'when does X fail?' last. Bad FAQs "
+            "answer questions nobody asked — usually the ones an author wants to talk about, not the ones the "
+            "reader has. If a question feels forced, drop it. Better to ship 8 high-signal Q&As than 20 with "
+            "filler."
+        ),
     ),
     
     "deep_dive": OutputTemplate(
@@ -336,62 +247,24 @@ Write as if preparing a briefing paper for a think tank.""",
         
         min_sections=6,
         
-        example_structure="""# Deep Dive: [Topic]
-*Analysis based on [N] sources | [Word count] words*
+        example_structure="""VOICE EXEMPLAR (match the tone, density, and citation discipline — NOT the literal subject):
 
-## Abstract
-[200-word comprehensive overview of the entire analysis]
+Two of the four studies surveyed here converge on a 40-60% performance gain from aggressive prefetching; the third reports no gain, and the fourth reports a regression [S1][S2][S3][S4]. The discrepancy isn't methodological — the four teams used comparable benchmarks. It's an artifact of which bottleneck was binding when the test ran.
 
-## Introduction
-[Why this topic matters, what questions we're exploring, scope of analysis]
+Where the disagreement actually lives: workloads with predictable access patterns benefit from prefetching because the cost of a wasted fetch is amortized over many useful ones [S1][S2]. Workloads with random or adversarial access patterns are penalized — every wasted prefetch displaces a future useful read [S4]. The headline number ("prefetching is good") hides this.
 
-## Background & Context
-[Essential foundation needed to understand the analysis]
-
-## Thematic Analysis
-
-### Theme 1: [Theme Name]
-[Analysis organized by THEME not by source]
-
-**Perspective from [Source A]**: [Key insight]
-**Perspective from [Source B]**: [Key insight]  
-**Synthesis**: [What we learn from combining these perspectives]
-
-### Theme 2: [Theme Name]
-[Same structure...]
-
-## Cross-Source Synthesis
-
-### Patterns Identified
-- **Pattern 1**: Observed across [Sources X, Y, Z]: [Description]
-- **Pattern 2**: [Description]
-
-### Contradictions & Tensions
-- **[Source A] vs [Source B]**: [Description of disagreement and possible resolution]
-
-### Gaps in the Literature
-- [What's not addressed by the sources]
-
-## Implications & Insights
-
-### For [Stakeholder Group 1]
-[Specific implications]
-
-### For [Stakeholder Group 2]
-[Specific implications]
-
-### Original Insights
-[Conclusions drawn from synthesis that aren't in any single source]
-
-## Conclusions
-[Summary of key findings and their significance]
-
-## References
-[Full source list with brief descriptions]""",
+What none of the sources address: the cache-hierarchy interaction. All four assume a flat memory model, but in practice the L3 displacement effect dominates above some threshold of prefetch aggression [S2]. This is the most interesting open question.""",
         
         tone="analytical, nuanced, scholarly",
         target_audience="Subject matter experts and researchers",
-        recommended_tokens=6000
+        recommended_tokens=6000,
+        pre_write_move=(
+            "Before writing: identify 3-5 THEMES across the sources (NOT a summary of each source separately). "
+            "The structure must be thematic — themes are sections, sources are evidence cited under themes. "
+            "Then identify the 1-2 places where sources DISAGREE or where evidence pulls in different directions. "
+            "Those tensions are the spine of the analysis — without them you have a literature review, not a deep dive. "
+            "If you can't find any tensions, the sources may be too homogeneous for a deep_dive — flag it in the intro."
+        ),
     ),
     
     "summary": OutputTemplate(
@@ -425,40 +298,25 @@ Write as if the reader has only 3 minutes but needs complete understanding.""",
         
         min_sections=4,
         
-        example_structure="""# Summary: [Topic]
-*Synthesized from [N] sources | [X]-minute read*
+        example_structure="""VOICE EXEMPLAR (match the tone, density, and citation discipline — NOT the literal subject):
 
-## Overview
-[One paragraph capturing the complete essence - if someone reads nothing else, they get this]
+Three patterns hold across all five papers reviewed: rapid initial gains in the first two months, a plateau by month six, and measurable regression in the absence of explicit retraining cycles [S1][S2][S5]. The plateau isn't a model-capacity limit — it's a labeling-distribution drift problem masquerading as one [S3].
 
-## Key Points
+The most actionable finding: teams that scheduled a quarterly relabeling pass held their month-six accuracy through month twelve; teams that didn't lost an average of 14 points [S1][S4]. Cost of the relabeling pass was 8-12% of the original training budget — small relative to the alternative of retraining from scratch [S5].
 
-### Most Important
-🔑 **[Key insight]**: [Explanation with cross-source support]
-
-### Critical Context  
-📌 **[Supporting point]**: [Explanation]
-
-### Notable Finding
-💡 **[Interesting discovery]**: [Explanation]
-
-## Surprising Insights
-- [Counterintuitive finding] *(Sources: [Names])*
-- [Unexpected connection]
-
-## Takeaways
-1. **[Actionable conclusion 1]**
-2. **[Actionable conclusion 2]**
-3. **[Actionable conclusion 3]**
-
----
-*Based on: [Source list]*""",
+What to remember: the headline metric drift is a symptom; relabel cadence is the lever.""",
         
         tone="concise, insightful, professional",
         target_audience="Busy professionals needing quick understanding",
-        recommended_tokens=1500
+        recommended_tokens=1500,
+        pre_write_move=(
+            "Before writing: list the 3-5 claims a reader will walk away knowing. Each must be specific enough "
+            "that another reader could verify it (numbers, named entities, decisions). 'Trends are accelerating' "
+            "is not a claim — 'Adoption is up 47% YoY across the sample' is. Everything else in the summary "
+            "exists to support those claims; if a sentence doesn't, cut it."
+        ),
     ),
-    
+
     "explain": OutputTemplate(
         template_id="explain",
         name="Simple Explanation",
@@ -493,59 +351,26 @@ Write as if explaining to a curious, intelligent friend with no background in th
         
         min_sections=5,
         
-        example_structure="""# Understanding [Topic]
-*No background required | [X]-minute read*
+        example_structure="""VOICE EXEMPLAR (match the tone, density, and citation discipline — NOT the literal subject):
 
-## The Big Picture
-**In one sentence**: [Simple essence of the topic]
+Imagine you're trying to sort a deck of cards in a dark room. You can compare two cards at a time, but you can't see the whole deck. That's the kind of problem an online algorithm has to solve [S2] — it has to make decisions one item at a time, without ever seeing what's coming.
 
-## Why Should You Care?
-[How this affects everyday life, why it's relevant]
+Here's why this matters: most real systems work this way. A search engine doesn't know what you'll type next. A trading system doesn't know tomorrow's prices. The "optimal" answer is unavailable; the question is how close you can get with only what you've seen so far [S1].
 
-## The Basics
-
-### Think of it like...
-🎯 **Analogy**: [Relatable comparison]
-
-[Explanation building on the analogy]
-
-### The Key Concepts
-
-**[Concept 1]**: [Simple explanation]
-> *Think of it as*: [Everyday comparison]
-
-**[Concept 2]**: [Simple explanation]
-> *Example*: [Concrete, relatable example]
-
-## How It Actually Works
-
-**Step 1**: [Simple explanation]
-↓
-**Step 2**: [Simple explanation]  
-↓
-**Step 3**: [Simple explanation]
-
-## Wait, But What About...?
-
-### "I thought [common misconception]?"
-Actually, [correction with simple explanation]
-
-### "Doesn't that mean [another misconception]?"
-Not quite. Here's why: [explanation]
-
-## The Bottom Line
-[2-3 sentences capturing the essential understanding]
-
-**Remember**: [One memorable takeaway]
-
----
-*Sources: [List] - simplified for accessibility*""",
+The intuition that throws people off: even when you can't reach optimal, you can often guarantee you'll be within a small constant of optimal — what computer scientists call a *competitive ratio* [S3]. Not bad for working in the dark.""",
         
         tone="friendly, patient, engaging",
         target_audience="Anyone curious about the topic, regardless of background",
-        recommended_tokens=2000
+        recommended_tokens=2000,
+        pre_write_move=(
+            "Before writing: identify the ONE concept that, once understood, unlocks the rest. Build the entire "
+            "explanation around that hinge. Most failed explanations try to explain everything in parallel — "
+            "good explanations are sequential: hinge concept first, everything else explained in terms of it. "
+            "Then pick the analogy. The analogy must be something the reader has actually experienced (driving, "
+            "cooking, sorting cards), not another abstract concept dressed up as familiar."
+        ),
     ),
-    
+
     "debate": OutputTemplate(
         template_id="debate",
         name="Debate Analysis",
@@ -581,64 +406,26 @@ Write as if hosting an intellectual debate where all sides deserve respect.""",
         
         min_sections=6,
         
-        example_structure="""# The Debate: [Topic]
-*Exploring multiple perspectives*
+        example_structure="""VOICE EXEMPLAR (match the tone, density, and citation discipline — NOT the literal subject):
 
-## The Central Question
-[Clear statement of what's being debated]
+**Position A — Centralization improves throughput.** Shared infrastructure amortizes fixed cost across more users, and the operational team only has to keep one system healthy [S1]. The case studies bear this out: every centralization migration in the dataset reduced per-user infrastructure cost by 30-50% within the first year [S2].
 
-## Position A: [Viewpoint Name]
-**Core Argument**: [Main claim]
+**Counter from Position B.** That argument assumes uniform demand. Under spiky load, central queues become single points of failure — and three of the four migrations in the dataset experienced a *more* severe outage in year two than they had pre-migration [S3]. The cost savings are real; so is the new failure mode.
 
-**Key Points**:
-1. [Argument with evidence]
-2. [Argument with evidence]
-3. [Argument with evidence]
-
-**Strongest Evidence**: [Most compelling support from sources]
-
-## Position B: [Viewpoint Name]  
-**Core Argument**: [Main claim]
-
-**Key Points**:
-1. [Argument with evidence]
-2. [Argument with evidence]
-3. [Argument with evidence]
-
-**Strongest Evidence**: [Most compelling support from sources]
-
-## Nuanced Perspectives
-
-### The Middle Ground View
-[Position that incorporates elements of both]
-
-### The "It Depends" View
-[Position that emphasizes context]
-
-## Common Ground
-Despite disagreements, most perspectives agree that:
-- [Shared belief 1]
-- [Shared belief 2]
-
-## Key Tensions
-The fundamental disagreements center on:
-- **[Issue 1]**: [Why it's contested]
-- **[Issue 2]**: [Why it's contested]
-
-## Forming Your Own View
-Consider these questions:
-1. [Question to help reader evaluate positions]
-2. [Question about their values/priorities]
-3. [Question about evidence they find compelling]
-
----
-*This analysis synthesizes perspectives from: [Source list]*""",
+**Where they actually agree.** Both sides accept that the right answer depends on demand variance. Centralization wins when load is predictable; federation wins when load is bursty and partitionable. The debate is really about *which workloads belong in which bucket* [S1][S3] — and that's an empirical question, not an ideological one.""",
         
         tone="balanced, respectful, intellectually honest",
         target_audience="Anyone wanting to understand multiple sides of an issue",
-        recommended_tokens=4500
+        recommended_tokens=4500,
+        pre_write_move=(
+            "Before writing: state the genuine disagreement in ONE sentence — the specific claim Position A "
+            "asserts that Position B denies. If you can't write that sentence, there isn't a real debate, just "
+            "two different topics; the debate format isn't appropriate. Then identify the strongest argument "
+            "FOR each side — not strawmen. A debate where one side is obviously right is a lecture in disguise. "
+            "If the sources mostly agree, name that explicitly and surface the narrower tensions that DO exist."
+        ),
     ),
-    
+
     "podcast_script": OutputTemplate(
         template_id="podcast_script",
         name="Podcast Script",
@@ -677,35 +464,31 @@ Write as if creating a podcast that listeners recommend to friends.""",
         
         min_sections=4,
         
-        example_structure="""Host A: Okay so I have to tell you about this stat I found. Did you know that nearly sixty percent of people get this completely wrong?
+        example_structure="""VOICE EXEMPLAR (match the density, the move-by-move structure, and the citation discipline — NOT the literal subject. Do NOT copy interjections like "wait really" or "that's wild"; build your own).
 
-Host B: Wait, sixty percent? That seems absurdly high.
+Host A: There's a finding in this dataset that I think most people are going to push back on. The migration cost they reported isn't tracking the dollars — it's tracking the half-time of legacy expertise on the team [S1].
 
-Host A: Right? That's what I thought. But when you dig into the research, it actually makes a lot of sense. So here's the deal...
+Host B: Half-time as in radioactive decay. Like, the longer the migration drags, the fewer people remain who know how the old thing worked.
 
-Host B: Okay break it down for me.
+Host A: Exactly. And by the time you're six months in, that institutional knowledge has dropped by half, which means the migration team is making decisions blind to what the old system was actually doing. That's where the cost overruns live.
 
-Host A: So the core issue is that most people assume this works one way, but the data shows it's almost the opposite. I was reading this one study and it basically said that the traditional approach has been failing for years, we just didn't have good enough measurements to see it.
+Host B: The thing I'd push on, though, is that the same paper shows the *fast* migrations also overran [S2]. So is it really the timeline that's the problem?
 
-Host B: That's wild. So what are they actually finding works?
+Host A: Yeah, that's the part I had to read twice. Their answer is that speed only helps if you've documented enough to absorb the knowledge loss. Without documentation, fast or slow, you're toast [S1][S3].
 
-Host A: This is where it gets interesting. The researchers found three things that actually move the needle. First...
-
-Host B: Okay but here's the thing that bugs me about that. If it's so clear, why hasn't the field shifted already?
-
-Host A: Great question. And honestly, it comes down to inertia. People have been doing it the old way for so long that...
-
-Host B: So what do we take away from all this?
-
-Host A: For me, the biggest thing is just questioning our assumptions. Like, if sixty percent of people are getting it wrong, maybe we should at least check whether we're in that sixty percent.
-
-Host B: Yeah, that's a good way to think about it. And honestly, just being aware of these findings puts you ahead of most people.
-
-Host A: Exactly. Something to chew on.""",
+Host B: So the lever isn't pace, it's docs.""",
         
         tone="conversational, engaging, informative, natural",
         target_audience="Podcast listeners seeking educational content",
-        recommended_tokens=5000
+        recommended_tokens=5000,
+        pre_write_move=(
+            "Before writing: identify the opening claim that earns the listener's attention in the first 15 "
+            "seconds. NOT 'today we'll discuss X' or 'welcome back to the show' — a concrete observation that "
+            "surprises, a specific finding, or a tension the hosts will work through. If you can't find such "
+            "an opener in the source material, the topic may not deserve a 20-minute podcast — say so. Then "
+            "identify the two hosts' POVs: how would they disagree on this topic? Without contrast, the "
+            "conversation is one person agreeing with themselves out loud."
+        ),
     ),
 
     "feynman_curriculum": OutputTemplate(
@@ -780,149 +563,29 @@ Write as if creating a curriculum that would make Feynman himself proud — clea
         
         min_sections=6,
         
-        example_structure="""# Feynman Learning Curriculum: [Subject]
-*Estimated learning time: [X] hours across 4 parts | Sources: [N] documents*
+        example_structure="""VOICE EXEMPLAR (per-Part density and tone to match — NOT a literal scaffold to copy. Use the actual headings listed above in HEADING FORMAT, not the bracketed examples below.):
 
----
+[Part 1 — Foundation, voice and density]
+Most introductory treatments of gradient descent skip the part that actually matters: why the learning rate matters more than the loss function shape. The intuition is this — imagine you're walking down a hill in fog, and the only thing you can do is decide how big each step is [S1]. Tiny steps mean you'll eventually reach the bottom but it'll take forever. Huge steps mean you might overshoot the valley entirely and end up climbing the next hill. The "learning rate" is just the size of your step.
 
-## Curriculum Overview
-**What you'll master**: [1-2 sentence description of the end state]
-**Prerequisites**: [None / basic familiarity with X]
-**How to use this**: Work through each part in order. Don't advance until you can pass the self-assessment. If you get stuck, that's the Feynman signal — go back and simplify.
+[Part 3 — First Principles, voice and density]
+Why does this work AT ALL? The deep reason is that for any smooth function, the gradient at a point is the locally-best direction to reduce the function value [S2]. Not globally best — locally best. This is the same idea as the chain rule from calculus, just applied many times. The fact that "locally best, repeated" usually converges to "globally good enough" is what makes the whole field of neural network training possible. When it fails — and it does fail, in roughly 15% of training runs in modern systems [S3] — it's because the loss surface has structures (saddle points, plateaus, ravines) that locally-best-step doesn't navigate well.
 
----
-
-## Part 1: Foundation
-*"If you can't explain it to a 12-year-old, you don't understand it." — attributed to Feynman*
-
-### The Big Picture
-[2-3 paragraphs explaining the entire subject as if to a smart 12-year-old. Use an extended analogy that carries through.]
-
-### Essential Vocabulary
-| Term | Plain English | Analogy |
-|------|-------------|---------|
-| [Term] | [Simple definition — no jargon] | [Everyday comparison] |
-| [Term] | [Simple definition] | [Everyday comparison] |
-
-### Core Concepts
-
-**1. [Concept Name]**
-*What it is*: [1-2 sentences, plain language]
-*Think of it like*: [Analogy from everyday life]
-*Why it matters*: [So what? Why should anyone care?]
-
-**2. [Concept Name]**
-[Same structure...]
-
-**3. [Concept Name]**
-[Same structure...]
-
-### Reflect Before Moving On
-*If you can't answer these, re-read the section before continuing.*
-1. How would you explain [core concept] to a friend using an everyday example?
-2. Why does [concept] matter in the real world? Give a specific scenario.
-3. What's the ONE thing from this section that surprised you most?
-
----
-
-## Part 2: Building Understanding
-*Now that you have the basics, let's see how the pieces fit together.*
-
-### How It All Connects
-```
-[Concept A] ──affects──→ [Concept B]
-     │                        │
-     └──depends on──→ [Concept C] ──leads to──→ [Outcome]
-```
-
-### Deeper Dive
-
-**[Concept 1] — Beyond the Basics**
-[Expand on Part 1's explanation with more nuance. Include a real-world example or case study from the sources.]
-
-**[Concept 2] — Beyond the Basics**
-[Same structure...]
-
-### Common Misconceptions
-- **Misconception**: "[What people commonly get wrong]"
-  **Reality**: [What's actually true and why]
-- **Misconception**: "[Another common error]"
-  **Reality**: [Correction with evidence]
-
-### Reflect Before Moving On
-1. Pick two concepts from this section. How do they depend on each other?
-2. Which misconception were you most surprised by? Why is the reality different?
-3. Describe a real-world situation where these concepts apply.
-
----
-
-## Part 3: First Principles
-*Now we go deeper — not just WHAT, but WHY.*
-
-### Root Mechanisms
-[For each core concept, explain the underlying mechanism. Why does it work this way and not some other way?]
-
-**Why [Concept] Works This Way**
-[First principles explanation — trace it back to the root cause]
-*The key insight*: [One sentence that captures the deep understanding]
-
-### Edge Cases & Nuances
-- [When does the standard explanation break down?]
-- [What exceptions exist and why?]
-- [What do experts disagree about?]
-
-### Expert Insights from the Research
-[Pull specific insights, data points, or arguments from the sources that reveal deeper understanding]
-
-### Reflect Before Moving On
-1. Why does [root mechanism] work THIS way and not some other way?
-2. When does the standard explanation break down? Give an edge case.
-3. If you had to bet on one thing experts are wrong about here, what would it be?
-
----
-
-## Part 4: Mastery Synthesis
-*The ultimate Feynman test: Can you teach this subject to someone else?*
-
-### Teach It Back
-**Challenge 1**: Explain [the entire subject] in exactly 3 sentences to a colleague.
-**Challenge 2**: A friend asks "[common question about the subject]" — write your response.
-**Challenge 3**: Someone disagrees with [key claim]. Construct your argument.
-
-### Expert-Level Questions
-These are the questions that separate understanding from true mastery:
-1. [Question that requires deep synthesis across multiple concepts]
-2. [Question about implications or predictions]
-3. [Question about the limits of current knowledge]
-
-### What's Still Unknown
-[Honestly identify what the research doesn't answer, what's still debated, what's evolving]
-
-### Your Learning Path Forward
-- **To deepen**: [Specific topics to explore next]
-- **To apply**: [How to use this knowledge in practice]
-- **To stay current**: [How this field is evolving]
-
-### Mastery Reflection
-Rate yourself honestly (1-5):
-- [ ] I can explain the core concepts without jargon
-- [ ] I understand WHY things work, not just WHAT happens
-- [ ] I can identify common misconceptions and correct them
-- [ ] I could teach this subject to someone else
-- [ ] I know what I still don't know
-
----
-
-## Knowledge Map
-
-List the 3-5 core concepts from this curriculum and explain in 1-2 sentences each how they connect to each other. Focus on cause-effect relationships, dependencies, and shared principles. A visual diagram will be generated automatically from this section.
-
----
-*Built using the Feynman Learning Method | Sources: [List]*""",
+[Reflection-prompt voice, end of any Part]
+1. Walk a colleague through why an adaptive optimizer (Adam, AdamW) might converge faster than vanilla gradient descent on the same data. What is it adapting?
+2. Where would you bet the field is wrong about learning-rate scheduling, and why?""",
         
         tone="clear, encouraging, intellectually honest, joyful about learning",
         target_audience="Self-learners seeking deep understanding, not just surface knowledge",
-        recommended_tokens=6000
+        recommended_tokens=6000,
+        pre_write_move=(
+            "Before writing: identify ONE deep principle for each of the four Parts. Foundation rests on a "
+            "natural analogy. Building Understanding rests on a relationship between concepts. First Principles "
+            "rests on a mechanism — the WHY underneath. Mastery rests on a teach-it-back challenge that exposes "
+            "gaps. If you can't articulate the single deep principle for a Part, the Part isn't ready — go back "
+            "to the sources. Every Part should be useful in isolation; the curriculum is a sequence, not a "
+            "single document chopped into four."
+        ),
     ),
 }
 
@@ -1209,17 +872,19 @@ def build_document_prompt(template_id: str, topic: str, style: str, source_count
             "Format clearly with appropriate sections using markdown."
         )
     
-    # Chain-of-Thought: instruct the model to reason before writing
-    cot_instruction = "Before writing, analyze the source material step by step: identify key themes, note contradictions, and plan your structure. Then write your response."
-    
-    # StepBack prompting for Feynman curriculum
-    stepback = ""
-    if template_id == "feynman_curriculum":
-        stepback = "\n\nFIRST PRINCIPLES: Before planning the curriculum, identify the underlying principles and foundational concepts. Build your curriculum from these first principles upward, as Feynman would."
-    
+    # Per-type pre-write reasoning move (Tier 3.7, 2026-06-01).
+    # Replaces the previous generic CoT bolt-on with each doc type's own
+    # structural reasoning step. Falls back to a sane default if the type
+    # hasn't defined one yet.
+    pre_write = template.pre_write_move or (
+        "Before writing, identify the 2-3 most important claims in the sources and the structure "
+        "those claims demand. Plan the section order before drafting any prose."
+    )
+
     system_prompt = f"""{template.system_prompt}
 
-{cot_instruction}{stepback}
+PRE-WRITE REASONING (do this before drafting any prose):
+{pre_write}
 
 TARGET AUDIENCE: {template.target_audience}
 TONE: {template.tone}
@@ -1239,10 +904,9 @@ CRITICAL RULES:
     format_instructions = f"""REQUIRED STRUCTURE:
 {chr(10).join(f'{i+1}. {req}' for i, req in enumerate(template.structure_requirements))}
 
-EXAMPLE FORMAT:
 {template.example_structure}
 
-Ensure your output has at least {template.min_sections} distinct sections."""
+Match the VOICE EXEMPLAR's tone, density, and citation discipline. Do NOT copy its literal subject or phrasing — use it as a feel guide only. Build your own structure from the REQUIRED STRUCTURE list above. Ensure your output has at least {template.min_sections} distinct sections."""
     
     return system_prompt, format_instructions
 

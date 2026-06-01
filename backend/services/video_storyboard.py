@@ -45,6 +45,12 @@ class Scene:
     narration: str            # Text that will be spoken by TTS
     visual: SceneVisual       # What to render on the slide
     duration_hint: str = "auto"  # "auto" = derive from narration length, or seconds
+    # Tier 2.4 (2026-06-01): scene-role schema. Each scene now has a
+    # narrative function — not just a slide type. The role drives both
+    # the narration prompt (what work does this scene do?) and the
+    # arc-validator (does the storyboard form a real beginning-middle-end?).
+    # Valid values: hook / stakes / evidence / contrast / turn / synthesis / payoff
+    role: str = "evidence"
 
 
 @dataclass
@@ -79,6 +85,79 @@ VISUAL_TYPE_EFFECTS = {
     "timeline_point": ["drift_right", "pan_right"],
     "closing": ["zoom_out_slow", "zoom_out"],
 }
+
+# Tier 3.8 (2026-06-01) — Narration-style blueprints, parallel to the
+# audio pipeline's per-style script prompts. Each blueprint shapes both
+# Phase 1 (storyboard structure) and Phase 2 (narration register). When
+# the API doesn't specify a style, falls back to "explainer".
+VIDEO_BLUEPRINTS = {
+    "explainer": {
+        "label": "Explainer",
+        "storyboard_brief": (
+            "Structured educational arc: hook → stakes → evidence (with contrast in the middle) "
+            "→ synthesis → payoff. Scenes deliver concrete claims with supporting data. "
+            "Tone is patient, clear, gives the viewer credit for being smart."
+        ),
+        "narration_brief": (
+            "REGISTER: clear, patient, gives the viewer credit. Use second-person sparingly. "
+            "Drop jargon when you can; define it when you can't. The narrator is a knowledgeable "
+            "guide who has done the reading and is walking the viewer through what matters."
+        ),
+    },
+    "narrative": {
+        "label": "Narrative",
+        "storyboard_brief": (
+            "Story-shaped arc: open on a specific person/situation, build to a turning point, "
+            "land on a takeaway that reframes the opening. Each scene is a beat in the story. "
+            "Stat callouts appear only when they're the punchline of a beat, not as standalone slides. "
+            "Title slide opens with a name, place, or stake — never a generic topic title."
+        ),
+        "narration_brief": (
+            "REGISTER: storyteller. Concrete nouns, present tense for narrated scenes, past tense "
+            "for research findings. Name a person, time, place when possible. The data isn't the "
+            "subject — the people affected by it are. Find the human stakes in the source material "
+            "and tell THAT story."
+        ),
+    },
+    "journalistic": {
+        "label": "Journalistic",
+        "storyboard_brief": (
+            "Investigative arc: open by stating the question or claim being examined; middle scenes "
+            "present evidence and counter-evidence; closing scene states what the evidence actually "
+            "supports — including where it's ambiguous. Treat every claim with skepticism the viewer "
+            "would. Cite every datum to its [Sn] tag."
+        ),
+        "narration_brief": (
+            "REGISTER: investigative reporter. Specific, attributed, skeptical without being snide. "
+            "Distinguishes 'the data shows' from 'the authors argue' from 'this is my read'. Comfortable "
+            "saying 'the evidence is mixed' or 'we don't know yet' when that's the honest answer. The "
+            "viewer should feel they're being given the actual state of the knowledge, not a marketing pitch."
+        ),
+    },
+    "study_deep_dive": {
+        "label": "Study Deep-Dive",
+        "storyboard_brief": (
+            "Academic synthesis arc: open with the research question; show how different sources approach "
+            "it; surface the tensions; close with the integrated reading. More contrast scenes than "
+            "evidence scenes in the middle. Less hooked-up-front than the explainer style — assumes a "
+            "viewer who's already engaged with the topic."
+        ),
+        "narration_brief": (
+            "REGISTER: graduate-level seminar. Comfortable with technical vocabulary; uses it accurately. "
+            "Surfaces methodological details ('study size', 'measurement window', 'control condition') "
+            "when they matter for interpretation. Calls out where authors disagree. The narrator respects "
+            "the viewer's prior knowledge and doesn't over-explain."
+        ),
+    },
+}
+
+
+def get_video_blueprint(narration_style: Optional[str]) -> dict:
+    """Return the blueprint for a narration_style, defaulting to 'explainer'."""
+    if narration_style and narration_style in VIDEO_BLUEPRINTS:
+        return VIDEO_BLUEPRINTS[narration_style]
+    return VIDEO_BLUEPRINTS["explainer"]
+
 
 # Varied bridge phrases for padding thin scenes (NEVER repeat the same one)
 _BRIDGE_LONG = [
@@ -144,6 +223,7 @@ class VideoStoryboardGenerator:
         duration_minutes: int = 5,
         format_type: str = "explainer",
         chat_context: Optional[str] = None,
+        narration_style: str = "explainer",
     ) -> Storyboard:
         """Generate a storyboard from notebook sources.
 
@@ -153,6 +233,9 @@ class VideoStoryboardGenerator:
             duration_minutes: Target video duration (1-10 min)
             format_type: "explainer" (structured, 3-7 min) or "brief" (bite-sized, 1-2 min)
             chat_context: Recent chat conversation for "From Chat" mode
+            narration_style: Tier 3.8 — register/arc preset. One of
+                "explainer" (default), "narrative", "journalistic",
+                "study_deep_dive". See VIDEO_BLUEPRINTS for behavior.
 
         Returns:
             Storyboard with scenes ready for slide rendering
@@ -205,6 +288,9 @@ class VideoStoryboardGenerator:
             f"{total_word_budget} words, {target_scenes} scenes, ~{words_per_scene} words/scene"
         )
 
+        # Resolve narration_style → blueprint once; threaded into both phases.
+        blueprint = get_video_blueprint(narration_style)
+
         # ── Phase 1: Main LLM generates storyboard structure ──
         # Uses the deeper model (olmo-3:7b) for visual design + narrative arc
         storyboard_json = await self._generate_storyboard_structure(
@@ -215,6 +301,7 @@ class VideoStoryboardGenerator:
             format_type=format_type,
             total_word_budget=total_word_budget,
             words_per_scene=words_per_scene,
+            blueprint=blueprint,
         )
 
         # Parse structure into scenes (narration may be guide-only at this point)
@@ -240,14 +327,14 @@ class VideoStoryboardGenerator:
                 target_scenes=min(5, target_scenes),
             )
 
-        # ── Phase 2: Fast LLM generates narration per-scene in parallel ──
-        # Uses phi4-mini for natural spoken language — all scenes concurrently
+        # ── Phase 2: sequential per-scene narration (Tier 2.4) ──
         scenes = await self._generate_narration_parallel(
             scenes=scenes,
             topic=topic or "the main topics from the research",
             context_excerpt=context_with_chat[:4000],
             words_per_scene=words_per_scene,
             duration_minutes=duration_minutes,
+            blueprint=blueprint,
         )
 
         # Strip repeated filler phrases the LLM may have added across scenes
@@ -258,13 +345,18 @@ class VideoStoryboardGenerator:
         min_acceptable = int(total_word_budget * 0.50)  # At least 50% of target
 
         if total_words < min_acceptable:
+            # Tier 2.4 (2026-06-01): _pad_thin_scenes appended from a fixed
+            # 8-phrase boilerplate pool — those phrases showed up in every
+            # video the user generated. Better to log the shortfall, accept
+            # a shorter video, and let the user re-generate if needed than
+            # ship identical-across-videos filler. The pad method is kept
+            # in the file for now but is no longer called.
             logger.warning(
-                f"[VideoStoryboard] Narration too short: {total_words} words "
-                f"(need ≥{min_acceptable} for {duration_minutes}min). "
-                f"Padding thin scenes..."
+                f"[VideoStoryboard] Narration short: {total_words} words "
+                f"(target ≥{min_acceptable} for {duration_minutes}min). "
+                f"Accepting shorter video — padding bank is disabled to avoid "
+                f"repeating canned filler across generations."
             )
-            scenes = self._pad_thin_scenes(scenes, min_words_per_scene)
-            total_words = sum(len(s.narration.split()) for s in scenes)
 
         # Estimate duration from actual word count
         est_duration = int((total_words / WORDS_PER_MINUTE) * 60)
@@ -299,6 +391,7 @@ class VideoStoryboardGenerator:
         format_type: str,
         total_word_budget: int,
         words_per_scene: int,
+        blueprint: Optional[Dict] = None,
     ) -> str:
         """Phase 1: Main LLM (olmo-3:7b) generates storyboard structure and visual content.
 
@@ -306,27 +399,54 @@ class VideoStoryboardGenerator:
         extracting real data, structuring the narrative arc. Produces a
         narration_guide per scene (brief description of what narration should cover)
         rather than full spoken prose — that's handled by Phase 2.
+
+        Tier 3.8 (2026-06-01): `blueprint` injects per-style storyboard
+        brief — see VIDEO_BLUEPRINTS for the registered styles.
         """
         from services.rag_engine import rag_engine
         from config import settings
 
+        style_brief = ""
+        if blueprint and blueprint.get("storyboard_brief"):
+            style_brief = (
+                f"\n\nNARRATION STYLE — {blueprint.get('label', 'Explainer')}:\n"
+                f"{blueprint['storyboard_brief']}\n"
+            )
+
         if format_type == "brief":
-            format_guidance = f"""FORMAT: BRIEF — {duration_minutes} minute{'s' if duration_minutes > 1 else ''}, {target_scenes} slides, punchy overview."""
+            format_guidance = f"""FORMAT: BRIEF — {duration_minutes} minute{'s' if duration_minutes > 1 else ''}, {target_scenes} slides, punchy overview.{style_brief}"""
         else:
             format_guidance = f"""FORMAT: EXPLAINER — {duration_minutes} minute{'s' if duration_minutes > 1 else ''}, {target_scenes} slides, structured educational video.
-Build progressively: introduce topic → explain key concepts → provide evidence → synthesize."""
+Build progressively: introduce topic → explain key concepts → provide evidence → synthesize.{style_brief}"""
 
-        system_prompt = f"""You are an expert video storyboard designer. Your job is to design the VISUAL STRUCTURE
-of a narrated slide video — choosing the right slide types, extracting real data for each slide,
-and planning what the narrator should discuss.
+        system_prompt = f"""You are an expert video storyboard designer. Your job is to design the NARRATIVE STRUCTURE
+of a narrated slide video — choosing the right slide types AND the dramatic role each scene plays in the arc,
+extracting real data for each slide, and planning what the narrator should say.
 
 {format_guidance}
 
-YOUR OUTPUT: A JSON array of scene objects. Each scene has exactly three keys:
+YOUR OUTPUT: A JSON array of scene objects. Each scene has exactly FOUR keys:
 - "visual_type" (string): The type of slide to show
+- "role" (string): The dramatic function the scene plays in the arc (see SCENE ROLES below)
 - "content" (object): The data displayed ON the slide — must be real, specific data from the research
 - "narration_guide" (string): A 1-2 sentence description of what the narrator should explain for this slide.
   Include specific facts, numbers, or insights the narrator should mention. This guides the narration writer.
+
+SCENE ROLES (every scene must declare one):
+- "hook" — opens with a concrete question, surprising fact, or unresolved tension that earns the viewer's attention. NOT "Today we will discuss...". Reserved for scene 1 (after title_slide).
+- "stakes" — establishes WHY this matters. What changes if the viewer doesn't know this?
+- "evidence" — delivers a specific finding, statistic, quote, or piece of data. Most middle scenes are this role.
+- "contrast" — introduces a counter-finding, edge case, or limitation that complicates the picture.
+- "turn" — the moment the apparent answer gets revised by what we just learned.
+- "synthesis" — pulls together evidence + contrast into a coherent reading.
+- "payoff" — answers the hook from scene 1. Reserved for the closing scene.
+
+ARC REQUIREMENTS:
+- Scene 1 is title_slide with role "hook".
+- Scene 2's role MUST be "hook" or "stakes" — it has to earn attention.
+- Middle scenes alternate between "evidence" and "contrast" — never 3 evidence scenes in a row.
+- At least one "turn" scene in the second half.
+- Final scene's role MUST be "payoff" — it directly answers what the hook posed.
 
 CONTENT QUALITY:
 1. ONLY use facts, data, and quotes from the provided research. Never invent statistics.
@@ -337,8 +457,9 @@ CONTENT QUALITY:
 
 STRUCTURE:
 1. Output ONLY valid JSON — no markdown, no commentary, no code fences.
-2. First scene MUST be "title_slide". Last scene MUST be "closing" with 3-4 substantive takeaways.
+2. First scene MUST be "title_slide" with role "hook". Last scene MUST be "closing" with role "payoff".
 3. Exactly {target_scenes} scenes. Vary visual types — never repeat the same type 3 times in a row.
+4. NEVER begin scene 1's narration_guide with "Welcome", "Today", "Let's explore", "In this video" — those are AI-script tells.
 
 {VISUAL_TYPE_DOCS}
 
@@ -498,19 +619,42 @@ Output a JSON array of exactly {target_scenes} scenes. First scene must be title
         context_excerpt: str,
         words_per_scene: int,
         duration_minutes: int,
+        blueprint: Optional[Dict] = None,
     ) -> List[Scene]:
-        """Phase 2: Fast LLM (phi4-mini) generates narration for each scene in parallel.
+        """Phase 2: generate narration SEQUENTIALLY with running context.
 
-        Each scene gets its own focused prompt with the slide content as context.
-        All scenes are generated concurrently via asyncio.gather for speed.
+        Tier 2.4 (2026-06-01): the parallel version (asyncio.gather) meant
+        each scene was blind to its neighbors — so transitions, callbacks,
+        and tension-building were structurally impossible. Sequential adds
+        ~10s on a 5-min video (trivial vs. the 60-180s TTS stage) and
+        unlocks real narrative flow.
+
+        Each scene now sees:
+          - its own slide content + role + narration_guide
+          - the last 1-2 sentences of the PREVIOUS scene's narration
+          - the next scene's role + visual_type (so it can set up transitions)
+          - [Sn] citation legend from the research context
         """
         from services.rag_engine import rag_engine
         from config import settings
 
         total_scenes = len(scenes)
 
-        async def _narrate_scene(scene: Scene, scene_idx: int) -> Scene:
-            """Generate narration for a single scene."""
+        # Role-specific instructions tell the narrator what dramatic work
+        # each scene has to do. Without these, every scene defaults to "say
+        # something + show something" — interchangeable units.
+        role_briefs = {
+            "hook": "Open with a concrete question, surprising number, or unresolved tension. DO NOT start with 'Welcome', 'Today', 'Let's explore', 'In this video'. Earn the viewer's attention in the first sentence.",
+            "stakes": "Establish why this matters. What changes if the viewer doesn't know this? Make the cost of ignorance specific.",
+            "evidence": "Deliver a specific finding, statistic, quote, or piece of research. Anchor the claim with the [Sn] tag of the source.",
+            "contrast": "Introduce a counter-finding, edge case, or limitation that complicates the picture. Use a transitional move like 'But the same paper also...' or 'The exception is...'.",
+            "turn": "The moment the apparent answer gets revised. Signal it: 'Here's the surprise', 'But this is where it changes', 'The clean story breaks down here'.",
+            "synthesis": "Pull together what evidence and contrast together imply. State the integrated reading.",
+            "payoff": "Close the loop on what the hook posed. Answer it directly. Leave one memorable line.",
+        }
+
+        results: List[Scene] = []
+        for scene_idx, scene in enumerate(scenes):
             # Title slides and closings get shorter narration
             if scene.visual.visual_type == "title_slide":
                 target_words = max(20, words_per_scene // 2)
@@ -519,34 +663,70 @@ Output a JSON array of exactly {target_scenes} scenes. First scene must be title
             else:
                 target_words = words_per_scene
 
-            # Build a description of what's on the slide
             slide_description = self._describe_slide(scene.visual)
-
-            # Use the narration_guide if available (from Phase 1), else the existing narration
             guide = scene.narration if scene.narration else "Explain this slide to the viewer."
+            role = scene.role or "evidence"
+            role_brief = role_briefs.get(role, role_briefs["evidence"])
 
-            system_prompt = f"""You are a professional video narrator. Write the spoken narration for ONE slide
-in a {duration_minutes}-minute educational video about "{topic}".
+            # Build running-context blocks from already-generated narrations.
+            prev_block = ""
+            if results:
+                prev = results[-1]
+                # Last 1-2 sentences — enough to chain a callback without
+                # bloating the prompt.
+                prev_tail = re.split(r"(?<=[.!?])\s+", prev.narration.strip())[-2:]
+                prev_text = " ".join(prev_tail).strip()
+                if prev_text:
+                    prev_block = (
+                        f"PREVIOUS SCENE just said: \"{prev_text}\"\n"
+                        f"Your scene must build on this — use a transition, callback, or contrast. "
+                        f"Do not restart the topic.\n\n"
+                    )
+
+            next_block = ""
+            if scene_idx + 1 < total_scenes:
+                next_scene = scenes[scene_idx + 1]
+                next_role = next_scene.role or "evidence"
+                next_visual = next_scene.visual.visual_type
+                next_block = (
+                    f"NEXT SCENE will be a {next_visual} in role '{next_role}'. "
+                    f"You can set it up implicitly, but do NOT preview its content directly.\n\n"
+                )
+
+            style_register_block = ""
+            if blueprint and blueprint.get("narration_brief"):
+                style_register_block = (
+                    f"\nNARRATION STYLE — {blueprint.get('label', 'Explainer')}:\n"
+                    f"{blueprint['narration_brief']}\n"
+                )
+
+            system_prompt = f"""You are a professional video narrator. Write the spoken narration for ONE scene
+in a {duration_minutes}-minute video about "{topic}".
 
 Your narration will be converted to speech via TTS. Write natural, engaging spoken language.
+{style_register_block}
+SCENE ROLE: {role}
+ROLE BRIEF: {role_brief}
 
 RULES:
 1. Write 2-4 sentences of substantial narration. Be thorough, not brief.
 2. Be specific and substantive — reference the actual data shown on the slide.
-3. Speak directly to the viewer. Vary your tone: use questions, insights, transitions.
-4. Do NOT describe the slide itself ("As you can see..."). Instead, EXPLAIN the content.
-5. Output ONLY the narration text — no labels, no quotes, no formatting, no word counts."""
+3. When making a factual claim grounded in the research, append the source tag from the RESEARCH CONTEXT in brackets — example: "...adoption rose 47% [S2]."
+4. Speak directly to the viewer. Vary your tone with questions, insights, transitions.
+5. Do NOT describe the slide itself ("As you can see..."). EXPLAIN the content.
+6. Do NOT use AI-narrator clichés: "Pay attention to the nuance", "This reshapes how we understand", "What stands out here", "Consider how this connects to the bigger story". Earn the line you write.
+7. Output ONLY the narration text — no labels, no quotes, no formatting, no word counts."""
 
-            prompt = f"""Scene {scene_idx + 1} of {total_scenes}.
+            prompt = f"""Scene {scene_idx + 1} of {total_scenes}. Role: {role}.
 
-SLIDE CONTENT: {slide_description}
+{prev_block}{next_block}SLIDE CONTENT: {slide_description}
 
 NARRATION GUIDE: {guide}
 
-RESEARCH CONTEXT (use for specific details):
+RESEARCH CONTEXT (each source is preceded by its [Sn] tag — use those tags when citing):
 {context_excerpt[:2000]}
 
-Write 2-4 sentences of spoken narration for this slide. Output ONLY the narration text."""
+Write 2-4 sentences of spoken narration for this scene. Output ONLY the narration text."""
 
             try:
                 narration = await rag_engine._call_ollama(
@@ -557,33 +737,28 @@ Write 2-4 sentences of spoken narration for this slide. Output ONLY the narratio
                     temperature=0.7,
                     repeat_penalty=1.1
                 )
-
-                # Clean up: strip any quotes, labels, or formatting the LLM added
                 narration = narration.strip().strip('"').strip("'")
                 narration = re.sub(r'^(Narration|Scene \d+|Slide \d+)[:\s]*', '', narration, flags=re.IGNORECASE).strip()
 
                 if narration and len(narration.split()) >= 10:
-                    return Scene(
+                    results.append(Scene(
                         scene_id=scene.scene_id,
                         narration=narration,
                         visual=scene.visual,
                         duration_hint=scene.duration_hint,
-                    )
+                        role=role,
+                    ))
+                    continue
             except Exception as e:
                 logger.warning(f"[VideoStoryboard] Narration generation failed for scene {scene_idx}: {e}")
 
             # Fallback: keep original narration/guide
-            return scene
-
-        # Run all narration tasks in parallel
-        logger.info(f"[VideoStoryboard] Generating narration for {total_scenes} scenes in parallel (fast LLM)...")
-        tasks = [_narrate_scene(scene, i) for i, scene in enumerate(scenes)]
-        results = await asyncio.gather(*tasks)
+            results.append(scene)
 
         total_words = sum(len(s.narration.split()) for s in results)
-        logger.info(f"[VideoStoryboard] Parallel narration complete: {total_words} words across {total_scenes} scenes")
+        logger.info(f"[VideoStoryboard] Sequential narration complete: {total_words} words across {total_scenes} scenes")
 
-        return list(results)
+        return results
 
     def _describe_slide(self, visual: SceneVisual) -> str:
         """Create a text description of a slide's visual content for the narration LLM."""
@@ -648,6 +823,11 @@ Write 2-4 sentences of spoken narration for this slide. Output ONLY the narratio
             "title_slide", "stat_callout", "bullet_list", "quote",
             "key_point", "comparison", "timeline_point", "closing"
         }
+        # Valid scene roles per Tier 2.4 schema. Unknown roles fall back
+        # to "evidence" (the most common middle role).
+        valid_roles = {
+            "hook", "stakes", "evidence", "contrast", "turn", "synthesis", "payoff"
+        }
 
         scenes = []
         for i, scene_data in enumerate(scenes_data):
@@ -659,6 +839,7 @@ Write 2-4 sentences of spoken narration for this slide. Output ONLY the narratio
                          scene_data.get("narration", "") or "")
             visual_type = scene_data.get("visual_type", "key_point")
             content = scene_data.get("content", {})
+            role = (scene_data.get("role") or "").strip().lower()
 
             if not narration.strip() and not content:
                 logger.debug(f"[VideoStoryboard] Skipping scene {i}: empty narration and content")
@@ -667,6 +848,16 @@ Write 2-4 sentences of spoken narration for this slide. Output ONLY the narratio
             # Normalize visual type — drop diagram_placeholder (unreliable)
             if visual_type not in valid_types or visual_type == "diagram_placeholder":
                 visual_type = "key_point"
+
+            # Normalize role with structural defaults: scene 0 = hook (title),
+            # final scene = payoff (closing), everything else defaults to evidence.
+            if role not in valid_roles:
+                if visual_type == "title_slide":
+                    role = "hook"
+                elif visual_type == "closing":
+                    role = "payoff"
+                else:
+                    role = "evidence"
 
             # Ensure content is a dict
             if not isinstance(content, dict):
@@ -690,7 +881,8 @@ Write 2-4 sentences of spoken narration for this slide. Output ONLY the narratio
                     content=content,
                     ken_burns=kb
                 ),
-                duration_hint="auto"
+                duration_hint="auto",
+                role=role,
             ))
 
         logger.info(f"[VideoStoryboard] Parsed {len(scenes)} valid scenes from LLM output")

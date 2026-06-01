@@ -294,35 +294,122 @@ class AudioGenerator:
 
         target_words = duration_minutes * self.TTS_WORDS_PER_MINUTE
         target_exchanges = max(8, target_words // 35)  # ~35 words per exchange pair
+
+        # Citation contract (Tier 2.3, 2026-06-01): each source in the
+        # research context is prefixed with [Sn]. The script must anchor
+        # specific claims to those tags. Speaker turns surface citations
+        # naturally — never as "according to source 1", which is
+        # robotic. Suffix the tag right after the claim instead.
+        legend = built.citation_legend() if built else ""
+        legend_block = ""
+        if legend:
+            legend_block = f"""SOURCE LEGEND (use these [Sn] tags when anchoring claims):
+{legend}
+"""
+
         _GROUNDING = f"""LENGTH: Write a LONG conversation — {duration_minutes} minutes of audio.
 Do NOT wrap up early. Do NOT summarize. Keep exploring new angles and reactions.
 Every section needs many back-and-forth exchanges — keep the conversation going!
 
 GROUNDING: ONLY discuss facts from the provided research. Do NOT invent statistics or quotes.
+{legend_block}When citing a specific fact, statistic, finding, or quote, append the source tag in brackets at the end of the sentence — "[S2]". Anchor AT LEAST 4 turns per section to concrete sourced material this way. Connective conversation between cited turns doesn't need tags.
 Topic: {topic or 'the main topics and insights from the research'}"""
 
-        # ── Few-shot example (anchors format AND length expectation) ──
-        # Longer example = model produces longer output. This is the #1 lever for 7B models.
-        _EXAMPLE = f"""EXAMPLE of the exact format, style, and LENGTH to follow (write at LEAST this many exchanges per section):
-{name_a}: So I was reading through this research and one thing really jumped out at me.
-{name_b}: Yeah? What caught your eye?
-{name_a}: Well, it turns out that most people completely misunderstand how this works. The data shows something really counterintuitive.
-{name_b}: Wait, really? Like what exactly?
-{name_a}: So get this — the study found that the opposite of what everyone assumes is actually true. And it's not even close.
-{name_b}: That's wild. I mean, I had no idea. So what does that mean practically?
-{name_a}: Right, so the implication is pretty significant. It basically means we need to rethink the whole approach from the ground up.
-{name_b}: Okay hold on, I need you to break that down for me. Give me the specifics.
-{name_a}: Sure. So think of it this way — imagine you've been driving to work the same route every day for ten years. Then someone shows you data that a completely different route saves you thirty minutes.
-{name_b}: Oh wow, so it's like we've all just been stuck in our habits without even questioning them?
-{name_a}: Exactly! And here's the kicker — the researchers found that even when people are shown the evidence, most of them still stick with the old way.
-{name_b}: No way. That's actually kind of fascinating from a psychology perspective too, right?
-{name_a}: One hundred percent. And that ties into another finding from the research that I think is even more surprising.
-{name_b}: Alright, hit me with it. What else did they find?"""
+        # ── Per-style few-shot examples ──
+        # Each example demonstrates the structural MOVE that defines the style,
+        # not just two people taking polite turns. 7B models clone tone and
+        # shape from few-shots far more reliably than from prose rules, so
+        # this is the highest-leverage lever for style differentiation.
+        # Canned reactions ("Wait, really?", "That's wild", "No way!") are
+        # deliberately absent — they ended up in every generated podcast.
+
+        _EXAMPLE_PODCAST = f"""EXAMPLE — match the length, the citation-anchoring discipline, and the analytical move. Do NOT copy the literal phrases.
+{name_a}: There's something in the data I want to start with, because I think most people would guess wrong. The finding is that adoption isn't tracking budget — it's tracking the half-life of legacy expertise on the team [S1].
+{name_b}: Half-life as in radioactive decay. So the longer the migration drags, the fewer people remain who know how the old thing worked.
+{name_a}: Exactly. And by month six the institutional knowledge has dropped by half, which means the migration team is making decisions blind to what the old system was actually doing. That's where the cost overruns live [S1].
+{name_b}: The part I'd push on, though, is that the same paper shows the fast migrations also overran [S2]. So is it really the timeline that's the problem?
+{name_a}: That's the part I had to read twice. Their answer is that speed only helps if you've documented enough to absorb the knowledge loss. Without documentation, fast or slow, you're toast.
+{name_b}: So the lever isn't pace, it's docs.
+{name_a}: And there's a stronger version of that claim later in the paper — teams that documented as they went, day by day, had zero overruns. None [S1].
+{name_b}: Zero is striking. Did they say anything about WHY that worked when other interventions didn't?
+{name_a}: The hypothesis is that documentation forces the migrating team to externalize the model. Once it's outside their head, it survives them leaving.
+{name_b}: It's like the team becomes its own backup.
+{name_a}: That's a clean way to put it. Now, the second study pushes back on this — they argue documentation is necessary but nowhere near sufficient [S3].
+{name_b}: Necessary but not sufficient is doing a lot of work in that sentence. What's the missing piece?
+{name_a}: Cross-team review of the docs as they're being written. Without that loop, the docs accumulate but they don't actually capture what an outside team needs."""
+
+        _EXAMPLE_DEBATE = f"""EXAMPLE — match the length, the explicit rebuttal moves, and the citation-anchoring discipline. Do NOT copy the literal phrases.
+{name_a}: My position is that centralization improves throughput because shared infrastructure amortizes fixed cost across more users. Every centralization migration in the study reduced per-user cost by 30 to 50 percent within twelve months [S1].
+{name_b}: That argument has a hole in it. Your own source — the same paper — also reports that three of those four migrations experienced more severe outages in year two than they had pre-migration [S1]. You're cherry-picking the cost line and ignoring the reliability line.
+{name_a}: I'm not ignoring it, I'm saying the reliability hit is a transitional artifact. The team is still learning the new operational model.
+{name_b}: That's exactly the kind of hand-wave I want to push on. The paper measures year-two outage severity, not month-three. By year two the team is past the learning curve. The reliability hit isn't transitional — it's structural [S1].
+{name_a}: Fair, but consider what the second study found: federations of independent systems carry their own coordination tax that scales with the number of teams. Centralization eliminates that [S2].
+{name_b}: Eliminates one tax and creates another. You're trading distributed coordination overhead for centralized single-point-of-failure risk. The math only favors centralization if your demand is predictable.
+{name_a}: That's actually a concession I'll take. Under predictable demand, centralization wins. The argument is about where the threshold is.
+{name_b}: Then we're not really disagreeing about whether centralization works — we're disagreeing about how often a real workload actually meets the predictability bar. And I'd argue almost never [S3].
+{name_a}: I think that's where you and I genuinely part. I read the same paper and I see two-thirds of workloads in the "predictable enough" range [S3].
+{name_b}: We can't both be reading that table the same way. What's your column?
+{name_a}: Steady-state requests per second over rolling thirty-day windows.
+{name_b}: That's the wrong column. Peak-to-trough ratio is the column that matters for centralization risk. By that measure it's the opposite — two-thirds are unpredictable.
+{name_a}: Then the disagreement isn't about evidence, it's about which metric matters."""
+
+        _EXAMPLE_INTERVIEW = f"""EXAMPLE — match the length, the follow-the-thread pattern, and the citation-anchoring discipline. Do NOT copy the literal phrases.
+{name_a}: The thing I want to start with is something you mentioned in passing in the paper but didn't develop — the half-life of legacy expertise [S1]. Can you unpack what you actually meant by that?
+{name_b}: Sure. We were looking at why migration projects went over budget, and we kept hitting a pattern: the team that started the project wasn't the team that finished it. People left, got rotated, the original architects moved on. By month six, half the institutional knowledge of what the legacy system actually did had walked out the door.
+{name_a}: That's a striking framing. Did you find any team that escaped it?
+{name_b}: Three teams in the sample. They all did the same thing — they documented as they went. Not afterward, not in a final write-up. Daily. The act of writing it down forced the team to externalize the model [S1].
+{name_a}: Was that something they did intentionally, or did it emerge from the constraints they were under?
+{name_b}: Two of the three said it was intentional from day one. The third — and this is the more interesting case — it emerged because they had a regulatory requirement to produce a paper trail. So they got the benefit accidentally.
+{name_a}: That accidental case is actually the strongest evidence for the mechanism, isn't it? You can't argue it was a placebo effect if they didn't know it was supposed to help.
+{name_b}: Exactly. That's why we lean on it in the discussion section.
+{name_a}: I want to come back to the cost overrun number for a second. You report a wide range — 1.4x to 3.2x [S1]. What predicts where in that range a given team lands?
+{name_b}: The honest answer is we don't fully know yet. The documentation variable explains roughly half the variance. The rest is signal we can see but haven't isolated.
+{name_a}: Any speculation on what's in that residual?
+{name_b}: My personal guess is the depth of original architectural review — but that's speculation, not finding.
+{name_a}: That's exactly the kind of thing follow-up work could test."""
+
+        _EXAMPLE_STORYTELLING = f"""EXAMPLE — match the length, the narrative arc, and the citation-anchoring discipline. Do NOT copy the literal phrases.
+{name_a}: A small team at a mid-size bank — I'll call it Continental — agreed to a database migration that everyone on the floor knew was impossible. The original architects had moved on years earlier. The system had been holding together on tribal knowledge and three people who knew where the bodies were buried. Two of those three had given notice.
+{name_b}: So they were starting the project with the institutional memory already walking out the door.
+{name_a}: Exactly. And the project lead — Maya — knew it. She'd watched two similar migrations fail at her last job. She sat down on day one and wrote a memo to the team: every conversation about the legacy system gets written up the same day. Not next week. Not at the end. That day. Six months later, the migration completed under budget — the only one in the sample of fourteen that did [S1].
+{name_b}: What was in the memo? What did people actually write down?
+{name_a}: That's the interesting part. The team thought they were documenting the system. They were really documenting their own confusion. Every time someone said "I don't know why it does this" — that went into the file. By month three the file was eight hundred pages, and it had become the actual map.
+{name_a}: The researchers studying this called it "externalizing the model" [S1] — but Maya called it something different. She called it "writing down what you'll forget by Friday."
+{name_b}: That's the line, isn't it? That's the actual lesson.
+{name_a}: It is. And the second study took the principle further — they argued that documentation alone isn't enough; you need outside review of the documentation as it's written [S2]. Maya's team did that too, almost by accident. She'd send the day's file to the team that owned the new system. Read this and tell me what doesn't make sense.
+{name_b}: So the new-system team was effectively pressure-testing the legacy-system docs in real time.
+{name_a}: Right. And when they came back with questions, those questions were exactly the gaps the legacy team hadn't realized they had. The migration didn't fail because they'd already simulated all the failure modes on paper.
+{name_b}: That's the kind of thing that sounds obvious in retrospect.
+{name_a}: Every good practice sounds obvious in retrospect. The point of these papers is to make obvious before the disaster instead of after it [S1][S2]."""
+
+        _EXAMPLE_FEYNMAN = f"""EXAMPLE — match the length, the explain-then-check pattern, the analogy density, and the citation-anchoring discipline. Do NOT copy the literal phrases.
+{name_a}: I want to start with something that confuses everyone. The idea is called "credit assignment" and it's the heart of reinforcement learning. So here's the picture — imagine you're training a dog. You yell "Good!" only at the end of a ten-minute trick. The dog has to figure out which step earned the praise. Which step? That's credit assignment [S1].
+{name_b}: Wait. So the dog isn't told step three was the bad one. It just knows the whole sequence was bad or good.
+{name_a}: Exactly. And the question — for the dog AND for the algorithm — is how to assign credit, or blame, to the individual steps when you only get feedback at the end.
+{name_b}: Let me try to play it back. In supervised learning you get told the answer at every step. In reinforcement learning you only get told at the end. So the algorithm has to backpropagate the reward across all the actions that led to it.
+{name_a}: Almost. Backpropagate is the right intuition but the wrong term — in RL we call it "temporal difference learning" or "Monte Carlo estimation" depending on flavor [S2]. The deeper question is: how MUCH credit does each action deserve?
+{name_b}: The last action probably deserves more than the first one, because the first one was so long ago.
+{name_a}: That's the standard intuition. And it's where most introductory treatments stop. But here's what makes it interesting — the first action might actually deserve MORE credit, because it set up the entire chain. Without action one, action ten couldn't have happened.
+{name_b}: So the credit isn't just about recency.
+{name_a}: Right. It's about counterfactual contribution. And we don't know how to compute that exactly, so we approximate.
+{name_b}: Let me see if I can teach this back to you. Credit assignment is the problem of deciding which past action caused a delayed reward. We approximate it by some mix of recency weighting and counterfactual estimation. The hard part is that the truly important action might be the one furthest from the reward, not the closest.
+{name_a}: That's the cleanest summary I've heard. One last piece: the failure mode of RL — when it doesn't converge — is almost always credit assignment going wrong. Either the algorithm credits the wrong actions, or it credits them at the wrong scale [S3].
+{name_b}: So a debugging session is essentially asking "did the algorithm assign credit to actions that actually mattered, or just actions that happened close to the reward?"
+{name_a}: That's exactly the question. Now you understand it."""
+
+        _EXAMPLES = {
+            "feynman_curriculum": _EXAMPLE_FEYNMAN,
+            "debate": _EXAMPLE_DEBATE,
+            "interview": _EXAMPLE_INTERVIEW,
+            "storytelling": _EXAMPLE_STORYTELLING,
+            "podcast_script": _EXAMPLE_PODCAST,
+        }
+        _EXAMPLE = _EXAMPLES.get(skill_id, _EXAMPLE_PODCAST)
 
         # ── Character intro rule (all styles) ──
-        _INTRO_RULE = f"""OPENING: Both speakers introduce themselves by name in the first 2-3 lines.
-{name_a}: Hey, I'm {name_a}, and today we're diving into something fascinating.
-{name_b}: And I'm {name_b}. I've been looking into this all week and I can't wait to dig in."""
+        # Concise prompt with no canned opener — let each style's few-shot
+        # demonstrate the actual opening move.
+        _INTRO_RULE = f"""OPENING: Both speakers introduce themselves by name in the first 2-3 lines. Do not use generic show-host openers like "Welcome to the show" or "Today we're diving into" — the introductions should sound like two people about to talk, not a podcast intro template."""
 
         # ── Style-specific prompts ──
         is_feynman = skill_id == 'feynman_curriculum'
@@ -332,13 +419,11 @@ Topic: {topic or 'the main topics and insights from the research'}"""
 
 {_TTS_RULES}
 
-HOST ROLES:
-- {name_a} is the TEACHER — explains concepts simply using everyday analogies (like explaining to a 12-year-old)
-- {name_b} is the LEARNER — asks genuine questions, requests simpler explanations, connects ideas to things they know
+HOST POV:
+- {name_a} is the TEACHER — explains by building from a concrete everyday analogy, then layers nuance on top. Uses "imagine you're..." constructions. Quizzes {name_b} mid-stream: "Can you play that back to me?" or "What do you think happens next?" When {name_b} gets something slightly wrong, corrects it gently and shows WHY the right framing matters.
+- {name_b} is the LEARNER — attempts to restate concepts in their own words. Gets things partly wrong on purpose so the teacher can correct. Asks "Is this right: ...?" rather than "Can you explain?". The structural move of Feynman style is the LEARNER TEACHING BACK and getting corrected — every section MUST contain at least one such attempt.
 
 {_INTRO_RULE}
-
-STYLE: {name_a} teaches, {name_b} asks questions and occasionally says "Wait, can you explain that differently?" Include moments where {name_a} quizzes {name_b}: "So what do you think happens next?" Use concrete examples for every concept.
 
 {_EXAMPLE}
 
@@ -349,15 +434,18 @@ STYLE: {name_a} teaches, {name_b} asks questions and occasionally says "Wait, ca
 
 {_TTS_RULES}
 
-HOST ROLES:
-- {name_a} argues FOR the main thesis — passionate, evidence-based
-- {name_b} argues AGAINST — challenges, pushes back, presents counter-evidence
+HOST POV:
+- {name_a} argues FOR the main thesis — leads with the strongest evidence, anchors each major claim to a specific [Sn] source, accepts a partial concession when forced.
+- {name_b} argues AGAINST — does NOT just disagree; specifically REBUTS by either (a) showing {name_a}'s own source undermines their point, or (b) introducing a counter-finding with citation. Avoid generic "I disagree" — every rebuttal must name what is wrong with the argument and why.
 
 OPENING:
-{name_a}: I'm {name_a}, and I believe the research makes an overwhelming case that this changes everything.
-{name_b}: And I'm {name_b}. I think that's a dangerous oversimplification, and I'm going to push back hard.
+{name_a}: I'm {name_a}, and I want to defend a position that I think the data actually supports more than people realize.
+{name_b}: I'm {name_b}, and I'm going to push on the position because I think the same data shows the opposite when you read it carefully.
 
-STYLE: They respond to EACH OTHER's points directly — "But that ignores...", "Fair point, but consider...", "You're cherry-picking...". Build intensity through the debate. Neither side wins cleanly.
+STRUCTURAL REQUIREMENTS:
+- AT LEAST 2 explicit rebuttals where one host points out a flaw in the other's specific argument — not just stating a contrary view.
+- AT LEAST 1 moment where one host concedes a partial point (debate without concessions feels rigged).
+- Neither side wins cleanly; the conversation surfaces where the genuine disagreement lives.
 
 {_EXAMPLE}
 
@@ -368,15 +456,17 @@ STYLE: They respond to EACH OTHER's points directly — "But that ignores...", "
 
 {_TTS_RULES}
 
-HOST ROLES:
-- {name_a} is the INTERVIEWER — curious, asks probing follow-up questions, says "Wait, explain that" when things get complex
-- {name_b} is the EXPERT — authoritative but accessible, uses examples and analogies, shares surprising insights
+HOST POV:
+- {name_a} is the INTERVIEWER — listens for the offhand remark and digs in. Builds questions FROM things {name_b} just said ("You mentioned X — can you unpack what you actually meant?"). Avoids prepared-list questions. The signature move is the callback — picking up something said 2-3 turns ago and asking about it now.
+- {name_b} is the EXPERT — answers with specificity, owns uncertainty when it's there ("we don't fully know yet"), distinguishes finding from speculation. Drops one or two ideas in passing that {name_a} can pick up later.
 
 OPENING:
-{name_a}: I'm {name_a}, and today I'm sitting down with {name_b}, who knows more about this than just about anyone.
-{name_b}: Thanks for having me, {name_a}. I've been deep in this research and there's so much to unpack.
+{name_a}: I'm {name_a}. Today I'm sitting down with {name_b}, who's been deep in this work, and I want to start with something you said in passing in the paper.
+{name_b}: Thanks for having me. Happy to unpack any of it.
 
-STYLE: {name_a} follows the thread — picks up on interesting things {name_b} says and digs deeper. Mix big-picture questions with specific details. End with: "What's the one thing you want listeners to take away?"
+STRUCTURAL REQUIREMENTS:
+- AT LEAST 1 explicit callback: {name_a} picks up something {name_b} said earlier and asks about it.
+- AT LEAST 1 moment where {name_b} admits the limits of the finding ("we don't know yet", "that's speculation").
 
 {_EXAMPLE}
 
@@ -387,13 +477,16 @@ STYLE: {name_a} follows the thread — picks up on interesting things {name_b} s
 
 {_TTS_RULES}
 
-HOST ROLES:
-- {name_a} is the STORYTELLER — weaves research into a compelling narrative with vivid scenes and suspense
-- {name_b} is the engaged LISTENER — reacts, asks "Then what happened?", "No way!", "That changes everything"
+HOST POV:
+- {name_a} is the STORYTELLER — sets a concrete scene with a named person, place, and stakes. Builds toward a turning point. Drops the research findings as part of the narrative ("the researchers later called this..."), not as a separate "and now for the data" section.
+- {name_b} is the engaged LISTENER — asks the question a curious friend would ask, not the question a producer wants asked. Reflects back what stood out: "That's the lesson, isn't it?" or "So the actual lever was X."
 
 {_INTRO_RULE}
 
-STYLE: Open with a hook ("Picture this..." or "Here's something nobody saw coming..."). Build suspense: "But here's where it gets interesting..." {name_b}'s reactions drive the story forward. End by connecting back to the opening hook.
+STRUCTURAL REQUIREMENTS:
+- Open with a concrete scene — a named person facing a specific problem at a specific time. NEVER open with "Picture this..." or "Here's something nobody saw coming..." (those are AI-script tells).
+- One clear turning point in the middle where the situation changes.
+- Final beat callbacks the opening — a phrase, a person, or the original stakes — so the story closes on itself.
 
 {_EXAMPLE}
 
@@ -405,13 +498,13 @@ STYLE: Open with a hook ("Picture this..." or "Here's something nobody saw comin
 
 {_TTS_RULES}
 
-HOST ROLES:
-- {name_a} is the EXPLAINER — knowledgeable, breaks down complex ideas, uses analogies ("It's like...")
-- {name_b} is the QUESTIONER — curious, asks follow-ups, reacts genuinely ("Wait, really?", "That's wild", "Okay but here's the thing...")
+HOST POV:
+- {name_a} is suspicious of headline framing and looks for the part of the finding that contradicts the obvious read. Pushes for what the data actually says when you read it twice. Specific by default — names the study, names the number, names the limit.
+- {name_b} pushes for the practical implication and the failure mode. Asks "what breaks?" and "where does this not apply?". Plays back what {name_a} said in their own words and tests it against an edge case.
+
+DO NOT USE THESE PHRASES — they appear in every AI-generated script and signal slop: "Wait, really?", "That's wild", "No way!", "Okay but here's the thing", "Then what happened?", "Hold on", "I had no idea". Build reactions from the actual content instead.
 
 {_INTRO_RULE}
-
-STYLE: After intros, jump into a surprising fact or hook. Use natural transitions ("So here's what gets me...", "Right, and building on that..."). Reference sources naturally ("I was reading this piece that said..."). React to each other — don't just take turns monologuing.
 
 {_EXAMPLE}
 
