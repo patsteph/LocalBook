@@ -299,12 +299,6 @@ async def upload_source(
                 content, filename, notebook_id, source_id,
             )
 
-            # Record engagement
-            try:
-                from services.collection_history import record_engagement
-                record_engagement(notebook_id, "source_upload")
-            except Exception as _e:
-                logger.debug(f"[sources] {type(_e).__name__}: {_e}")
             try:
                 log_document_captured(notebook_id, filename, filename, "upload")
             except Exception as _e:
@@ -373,13 +367,6 @@ async def upload_source(
         # Log document capture event
         try:
             log_document_captured(notebook_id, filename, filename, "upload")
-        except Exception as _e:
-            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
-        
-        # Record engagement to suppress stale-research tombstone
-        try:
-            from services.collection_history import record_engagement
-            record_engagement(notebook_id, "source_upload")
         except Exception as _e:
             logger.debug(f"[sources] {type(_e).__name__}: {_e}")
         
@@ -472,14 +459,9 @@ async def _run_upload_with_reporter(
                         name=f"image-ocr-{source_id}",
                     )
 
-        # Log & engagement (non-fatal)
+        # Log (non-fatal)
         try:
             log_document_captured(notebook_id, filename, filename, "upload")
-        except Exception as _e:
-            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
-        try:
-            from services.collection_history import record_engagement
-            record_engagement(notebook_id, "source_upload")
         except Exception as _e:
             logger.debug(f"[sources] {type(_e).__name__}: {_e}")
 

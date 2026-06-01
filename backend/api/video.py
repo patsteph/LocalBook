@@ -29,6 +29,9 @@ class VideoGenerateRequest(BaseModel):
     # Tier 3.8 (2026-06-01): narration register/arc preset. See
     # services/video_storyboard.VIDEO_BLUEPRINTS for the registered styles.
     narration_style: Literal["explainer", "narrative", "journalistic", "study_deep_dive"] = "explainer"
+    # Tier 4.3 (2026-06-01): optional voice-register override for narration.
+    # When None, video_storyboard picks the per-narration_style default.
+    register: Optional[str] = None
     chat_context: Optional[str] = None  # Recent chat conversation for "From Chat" mode
 
 
@@ -138,6 +141,7 @@ async def generate_video(request: VideoGenerateRequest):
             format_type=request.format_type,
             chat_context=request.chat_context,
             narration_style=request.narration_style,
+            register=request.register,
         )
         logger.info(f"[STUDIO] Video generation queued: video_id={result.get('video_id', 'unknown')}")
         log_content_generated(request.notebook_id, "video", request.format_type, request.topic or "")

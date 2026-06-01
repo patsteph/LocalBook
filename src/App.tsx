@@ -465,7 +465,7 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, [showViewMenu, showUtilMenu]);
 
-  const MAIN_VIEWS: PanelView[] = ['chat', 'constellation', 'timeline', 'findings', 'curator'];
+  const MAIN_VIEWS: PanelView[] = ['chat', 'constellation', 'timeline', 'curator'];
   const primaryPanelId = findFirstLeafId(layout);
   const primaryLeaf = findLeaf(layout, primaryPanelId);
   const currentView = primaryLeaf?.view || 'chat';

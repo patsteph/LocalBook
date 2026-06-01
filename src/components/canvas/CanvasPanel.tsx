@@ -6,7 +6,6 @@ import { Timeline } from '../Timeline';
 import { Constellation3D } from '../Constellation3D';
 import { ThemesPanel } from '../ThemesPanel';
 import { ExplorationPanel } from '../ExplorationPanel';
-import { FindingsPanel } from '../FindingsPanel';
 import { CuratorPanel } from '../CuratorPanel';
 import { Settings } from '../Settings';
 import { LLMSelector } from '../LLMSelector';
@@ -103,9 +102,6 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
 
       case 'timeline':
         return <Timeline notebookId={ctx.selectedNotebookId} sourcesRefreshTrigger={ctx.refreshSources} />;
-
-      case 'findings':
-        return <FindingsPanel notebookId={ctx.selectedNotebookId} />;
 
       case 'curator':
         return <CuratorPanel notebookId={ctx.selectedNotebookId} morningBrief={ctx.curatorBriefData} />;

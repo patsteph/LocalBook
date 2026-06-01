@@ -348,43 +348,6 @@ def last_activity(notebook_id: str) -> Optional[str]:
         return None
 
 
-def detect_stagnation(notebook_id: str) -> Dict[str, Any]:
-    """Combined view used by the Collector panel + Phase D triggers.
-
-    Stagnation = collector_dry AND NOT engagement_active. Mirrors the
-    legacy detect_stagnation return shape so existing callers keep working.
-    """
-    dry = collector_dry(notebook_id)
-    eng = engagement_active(notebook_id)
-
-    if dry["dry"] and not eng["active"]:
-        return {
-            "stagnating": True,
-            "severity": dry["severity"],
-            "days_since_growth": dry["days_since_growth"],
-            "engagement_suppressed": False,
-            "last_engagement_kind": eng["last_kind"],
-            "last_engagement_days": eng["days_since"],
-        }
-    if dry["dry"] and eng["active"]:
-        return {
-            "stagnating": False,
-            "severity": None,
-            "days_since_growth": dry["days_since_growth"],
-            "engagement_suppressed": True,
-            "last_engagement_kind": eng["last_kind"],
-            "last_engagement_days": eng["days_since"],
-        }
-    return {
-        "stagnating": False,
-        "severity": None,
-        "days_since_growth": dry["days_since_growth"],
-        "engagement_suppressed": False,
-        "last_engagement_kind": eng["last_kind"],
-        "last_engagement_days": eng["days_since"],
-    }
-
-
 def recent_events(
     notebook_id: str,
     limit: int = 50,

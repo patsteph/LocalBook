@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { useCanvas } from '../canvas/CanvasContext';
 import { useGenerateVisualToCanvas } from '../../hooks/useGenerateVisualToCanvas';
+import { StudioDrawer } from '../studio/StudioDrawer';
 import { CanvasItem } from '../canvas/types';
 import { CanvasActionPopover } from '../canvas/CanvasActionPopover';
 import { contentService } from '../../services/content';
@@ -117,6 +118,7 @@ interface ChatActionBarProps {
 
 export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expanded = true, onToggleExpand }) => {
   const ctx = useCanvas();
+  const [studioDrawerOpen, setStudioDrawerOpen] = useState(false);
   // Shared visual generation — keeps Studio bar in lock-step with VisualPanel
   // and CanvasWorkspaceOverlay (identical params, identical output shape).
   const generateVisualToCanvas = useGenerateVisualToCanvas();
@@ -187,6 +189,18 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
   const [showMoreVideoLanguages, setShowMoreVideoLanguages] = useState(false);
   const [videoFormat, setVideoFormat] = useState<'explainer' | 'brief'>(() => (localStorage.getItem('lb-bar-video-format') as any) || 'explainer');
   const [videoStyles, setVideoStyles] = useState<VisualStyle[]>([]);
+
+  // ── Voice register (Tier 4 — depth/emotion) ─────────────────────────────
+  // "auto" = let the backend pick the per-type default. Otherwise override.
+  // Same dropdown UX across docs / audio / video — each surface persists
+  // independently so users can dial each one to taste.
+  type Register = 'auto' | 'measured' | 'engaged' | 'warm' | 'urgent';
+  const [docsRegister, setDocsRegister] = useState<Register>(() => (localStorage.getItem('lb-bar-docs-register') as Register) || 'auto');
+  const [audioRegister, setAudioRegister] = useState<Register>(() => (localStorage.getItem('lb-bar-audio-register') as Register) || 'auto');
+  const [videoRegister, setVideoRegister] = useState<Register>(() => (localStorage.getItem('lb-bar-video-register') as Register) || 'auto');
+  useEffect(() => { localStorage.setItem('lb-bar-docs-register', docsRegister); }, [docsRegister]);
+  useEffect(() => { localStorage.setItem('lb-bar-audio-register', audioRegister); }, [audioRegister]);
+  useEffect(() => { localStorage.setItem('lb-bar-video-register', videoRegister); }, [videoRegister]);
 
   // ── Discover config ─────────────────────────────────────────────────────
   const [discoverQuery, setDiscoverQuery] = useState('');
@@ -291,6 +305,7 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
         topic: stripAtChat(docsTopic) || undefined,
         style: docsStyle,
         ...(ctx.chatContext ? { chat_context: ctx.chatContext } : {}),
+        ...(docsRegister !== 'auto' ? { register: docsRegister } : {}),
       });
       // Phase 7.5 capture (chat entry point).
       captureEngagement('curator_feature', 'invoked', {
@@ -397,6 +412,7 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
         host2_gender: h2,
         accent: audioAccent,
         ...(ctx.chatContext ? { chat_context: ctx.chatContext } : {}),
+        ...(audioRegister !== 'auto' ? { register: audioRegister } : {}),
       });
       // Update with real audio_id so the inline player can poll
       ctx.updateCanvasItem(itemId, {
@@ -627,6 +643,7 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
         accent: videoAccent,
         format_type: videoFormat,
         ...(ctx.chatContext ? { chat_context: ctx.chatContext } : {}),
+        ...(videoRegister !== 'auto' ? { register: videoRegister } : {}),
       });
       ctx.updateCanvasItem(itemId, {
         title: `Video: ${topic || formatLabel}`,
@@ -804,6 +821,14 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
                   </div>
                 )}
                 <div>
+                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Voice <span className="text-gray-400">(auto = pick per type)</span></label>
+                  <div className="flex flex-wrap gap-1">
+                    {(['auto','measured','engaged','warm','urgent'] as const).map(r => (
+                      <button key={r} onClick={() => setDocsRegister(r)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors capitalize ${docsRegister === r ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{r}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
                   <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Topic <span className="text-gray-400">(optional)</span></label>
                   <input type="text" value={docsTopic} onChange={e => setDocsTopic(e.target.value)} placeholder={ctx.chatContext ? 'e.g., @chat transformers attention' : 'e.g., AI use cases in healthcare'} className={`w-full px-2.5 py-1.5 text-xs border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-400 ${hasAtChatDocs ? 'border-purple-400 dark:border-purple-500 ring-1 ring-purple-300 dark:ring-purple-600' : 'border-gray-200 dark:border-gray-600'}`} />
                   {hasAtChatDocs && (
@@ -930,6 +955,14 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
                   )}
                 </div>
                 <div>
+                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Voice <span className="text-gray-400">(auto = pick per style)</span></label>
+                  <div className="flex flex-wrap gap-1">
+                    {(['auto','measured','engaged','warm','urgent'] as const).map(r => (
+                      <button key={r} onClick={() => setAudioRegister(r)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors capitalize ${audioRegister === r ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{r}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
                   <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Topic <span className="text-gray-400">(optional)</span></label>
                   <input type="text" value={audioTopic} onChange={e => setAudioTopic(e.target.value)} placeholder={ctx.chatContext ? 'e.g., @chat transformers attention' : 'Leave blank to use notebook content'} className={`w-full px-2.5 py-1.5 text-xs border rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-400 ${hasAtChatAudio ? 'border-purple-400 dark:border-purple-500 ring-1 ring-purple-300 dark:ring-purple-600' : 'border-gray-200 dark:border-gray-600'}`} />
                   {hasAtChatAudio && (
@@ -997,6 +1030,14 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
                   <div className="flex gap-1">
                     {([['explainer', 'Explainer (3-7 min)'], ['brief', 'Brief (1-2 min)']] as const).map(([val, label]) => (
                       <button key={val} onClick={() => setVideoFormat(val)} className={`flex-1 px-2 py-1.5 text-[11px] rounded-lg border transition-colors text-center ${videoFormat === val ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Voice <span className="text-gray-400">(auto = pick per style)</span></label>
+                  <div className="flex flex-wrap gap-1">
+                    {(['auto','measured','engaged','warm','urgent'] as const).map(r => (
+                      <button key={r} onClick={() => setVideoRegister(r)} className={`px-2 py-1 text-[11px] rounded-lg border transition-colors capitalize ${videoRegister === r ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>{r}</button>
                     ))}
                   </div>
                 </div>
@@ -1323,6 +1364,17 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
 
           {/* ── Pill row ─────────────────────────────────────────────────── */}
           <div className="flex items-center gap-1.5 px-3 py-1.5 overflow-x-auto scrollbar-hide">
+            {/* New unified Studio drawer entry (Tier 5). Sits at the start of the pill row.
+               Old pills remain as fallback until the drawer is verified. */}
+            <button
+              onClick={() => setStudioDrawerOpen(true)}
+              disabled={!notebookId}
+              className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-full border border-amber-400 dark:border-amber-500 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              title="Open the unified Studio drawer (new)"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Studio</span>
+            </button>
             {ACTIONS.map(action => {
               const enabled = action.enabled(ctx.canvasItems, notebookId);
               const loading = actionLoading === action.id;
@@ -1371,6 +1423,15 @@ export const ChatActionBar: React.FC<ChatActionBarProps> = ({ notebookId, expand
           </div>
         </>
       )}
+
+      {/* Tier 5 unified Studio drawer (parallel surface until verified). */}
+      <StudioDrawer
+        notebookId={notebookId}
+        open={studioDrawerOpen}
+        onClose={() => setStudioDrawerOpen(false)}
+        chatContext={ctx.chatContext}
+        onToast={(kind, title, msg) => ctx.addToast({ type: kind === 'success' ? 'info' : kind, title, message: msg, duration: 4000 })}
+      />
     </div>
   );
 };

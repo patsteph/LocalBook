@@ -109,7 +109,7 @@ from storage.findings_store import init_findings_store
 init_findings_store(settings.data_dir)
 
 # NOW import API modules — stores will read the (possibly corrected) use_sqlite flag
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, findings, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api
 from api.capture import capture_router
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
@@ -547,7 +547,6 @@ app.include_router(health_portal.router, tags=["health-portal"])
 app.include_router(jobs.router, tags=["jobs"])
 app.include_router(agent_browser.router, tags=["agent-browser"])
 app.include_router(rlm.router, tags=["rlm"])
-app.include_router(findings.router, tags=["findings"])
 app.include_router(curator.router, tags=["curator"])
 app.include_router(canvas_notes_api.router, tags=["canvas-notes"])
 app.include_router(collector.router, tags=["collector"])

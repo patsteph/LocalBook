@@ -188,6 +188,9 @@ export interface AudioGenerateRequest {
   host2_gender: string;
   accent: string;
   chat_context?: string;
+  // Tier 4 voice register override (measured / engaged / warm / urgent).
+  // When omitted, audio_generator picks the per-style default.
+  register?: string;
 }
 
 export interface Highlight {

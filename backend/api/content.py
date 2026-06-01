@@ -1468,6 +1468,10 @@ class ContentGenerateRequest(BaseModel):
     topic: Optional[str] = None
     style: Optional[str] = "professional"  # Output style: professional, casual, academic, etc.
     chat_context: Optional[str] = None  # Recent chat conversation for "From Chat" mode
+    # Tier 4.1 (2026-06-01) — optional voice-register override. When None,
+    # build_document_prompt uses the doc type's default_register. Valid:
+    # measured / engaged / warm / urgent.
+    register: Optional[str] = None
 
 
 class ContentGenerateResponse(BaseModel):
@@ -1537,7 +1541,8 @@ CITATION CONTRACT — required for every factual claim:
                 request.skill_id,
                 topic_focus,
                 request.style or "professional",
-                built.sources_used
+                built.sources_used,
+                register=request.register,
             )
             system_prompt = f"""{template_system}
 
@@ -1742,7 +1747,8 @@ CITATION CONTRACT — required for every factual claim:
                 request.skill_id,
                 topic_focus,
                 request.style or "professional",
-                built.sources_used
+                built.sources_used,
+                register=request.register,
             )
             system_prompt = f"""{template_system}
 

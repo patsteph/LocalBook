@@ -37,6 +37,75 @@ class OutputTemplate:
     # questions-readers-would-actually-ask; for debates it's the genuine
     # disagreement; etc. Empty string falls back to a sane default.
     pre_write_move: str = ""
+    # Tier 4.1 (2026-06-01) — default voice register. Controls how much
+    # emotional texture / stake-feeling the prose carries. The user can
+    # override per-generation via the /content/generate `register` param.
+    # See REGISTER_BRIEFS for valid values: measured, engaged, warm, urgent.
+    default_register: str = "measured"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Voice register briefs (Tier 4.1, 2026-06-01)
+# ──────────────────────────────────────────────────────────────────────
+# What separates an "AI summary" from "something I want to read" is rarely
+# missing information — it's missing felt-stake. The writer doesn't seem
+# to care. These briefs give the generator a CONCRETE perspective rather
+# than abstract tone labels ("authoritative", "balanced") that 7B models
+# can't reliably translate to register. Each brief reads like the back of
+# the persona's business card: who they are, what they've seen, how they
+# write.
+#
+# Documents, audio, and video all share these briefs — the same `measured`
+# voice should sound consistent across an exec briefing and a podcast.
+# Audio additionally appends prosody-affecting punctuation guidance via
+# `AUDIO_PROSODY_OVERLAY` (see audio_generator.py).
+
+REGISTER_BRIEFS: Dict[str, str] = {
+    "measured": (
+        "VOICE REGISTER — MEASURED.\n"
+        "Write as someone who has been wrong before and learned to be careful. "
+        "Distinguish what the evidence supports from what you're inferring. "
+        "Avoid certainty words ('clearly', 'obviously', 'undoubtedly') unless the evidence is overwhelming. "
+        "Conviction comes from precision, not volume. When uncertainty is real, name it once and move on — don't bury claims under hedges. "
+        "Sentence rhythm: balanced, mid-length. No theatrical flourishes."
+    ),
+    "engaged": (
+        "VOICE REGISTER — ENGAGED.\n"
+        "You have stake in this. Write as someone who has seen the situation the sources describe play out — sometimes well, sometimes badly — and is writing for someone about to face it. "
+        "Convey conviction without overclaim: anchor stakes-claims to specific evidence. "
+        "Vary sentence length deliberately. A short sentence after three long ones is emotional emphasis — use it when the topic earns it. "
+        "Use em-dashes for thought-breaks. Be direct when the situation calls for directness. "
+        "The reader should finish thinking 'this writer cared whether I understood' — because you did."
+    ),
+    "warm": (
+        "VOICE REGISTER — WARM.\n"
+        "Write as a knowledgeable friend, not a textbook. The reader should feel respected, not lectured. "
+        "Use concrete everyday examples; pick analogies the reader has actually experienced (driving, cooking, sorting cards), not other abstract concepts dressed up as familiar. "
+        "Short questions are welcome. Sentence rhythm: conversational variety. "
+        "When you correct a misconception, do it gently — explain why someone would naturally believe the wrong thing FIRST. Earn the correction by understanding why the mistake makes sense."
+    ),
+    "urgent": (
+        "VOICE REGISTER — URGENT.\n"
+        "Stakes are high and time is short. Sentences are tight. Verbs are decisive. Throat-clearing is out. "
+        "Lead with the conclusion, then the evidence. Avoid hedge words. "
+        "When you must qualify, do it once, briefly, and move on. "
+        "The reader should finish the document knowing exactly what to do."
+    ),
+}
+
+
+def get_register_brief(register: Optional[str], fallback: str = "measured") -> str:
+    """Return the brief for a register, defaulting to `fallback`. Unknown
+    values fall back rather than raising — the override knob shouldn't be
+    able to break generation."""
+    if register and register in REGISTER_BRIEFS:
+        return REGISTER_BRIEFS[register]
+    return REGISTER_BRIEFS.get(fallback, REGISTER_BRIEFS["measured"])
+
+
+def list_registers() -> List[str]:
+    """Available register values for UI dropdowns."""
+    return list(REGISTER_BRIEFS.keys())
 
 
 # =============================================================================
@@ -98,6 +167,7 @@ Recommendation: pre-audit queue efficiency before committing to procurement. The
             "The Executive Summary at the top must be exactly that sentence expanded to 3-4 lines. "
             "Don't bury the recommendation deeper than that — executives stop reading after the Summary."
         ),
+        default_register="engaged",  # Executives need to feel the stakes, not just see them
     ),
 
     "study_guide": OutputTemplate(
@@ -154,6 +224,7 @@ Self-check: if a learner can articulate why an RL agent might explore "useless" 
             "they'll most likely arrive with. The guide's structure must address both. Learning objectives that "
             "use 'understand' as the verb are usually too vague to evaluate — replace with action verbs."
         ),
+        default_register="warm",  # Learners feel respected, not lectured
     ),
 
     "faq": OutputTemplate(
@@ -209,6 +280,7 @@ Write as if creating documentation for a product millions will use.""",
             "reader has. If a question feels forced, drop it. Better to ship 8 high-signal Q&As than 20 with "
             "filler."
         ),
+        default_register="measured",  # FAQ readers want accuracy over emotion
     ),
     
     "deep_dive": OutputTemplate(
@@ -265,6 +337,7 @@ What none of the sources address: the cache-hierarchy interaction. All four assu
             "Those tensions are the spine of the analysis — without them you have a literature review, not a deep dive. "
             "If you can't find any tensions, the sources may be too homogeneous for a deep_dive — flag it in the intro."
         ),
+        default_register="measured",  # Scholarly analysis — precision over conviction
     ),
     
     "summary": OutputTemplate(
@@ -315,6 +388,7 @@ What to remember: the headline metric drift is a symptom; relabel cadence is the
             "is not a claim — 'Adoption is up 47% YoY across the sample' is. Everything else in the summary "
             "exists to support those claims; if a sentence doesn't, cut it."
         ),
+        default_register="measured",  # Summaries earn trust through precision
     ),
 
     "explain": OutputTemplate(
@@ -369,6 +443,7 @@ The intuition that throws people off: even when you can't reach optimal, you can
             "Then pick the analogy. The analogy must be something the reader has actually experienced (driving, "
             "cooking, sorting cards), not another abstract concept dressed up as familiar."
         ),
+        default_register="warm",  # Explanations land when the reader feels respected
     ),
 
     "debate": OutputTemplate(
@@ -424,6 +499,7 @@ Write as if hosting an intellectual debate where all sides deserve respect.""",
             "FOR each side — not strawmen. A debate where one side is obviously right is a lecture in disguise. "
             "If the sources mostly agree, name that explicitly and surface the narrower tensions that DO exist."
         ),
+        default_register="engaged",  # Each side must actually argue its case
     ),
 
     "podcast_script": OutputTemplate(
@@ -489,6 +565,7 @@ Host B: So the lever isn't pace, it's docs.""",
             "identify the two hosts' POVs: how would they disagree on this topic? Without contrast, the "
             "conversation is one person agreeing with themselves out loud."
         ),
+        default_register="engaged",  # Hosts must sound invested
     ),
 
     "feynman_curriculum": OutputTemplate(
@@ -586,6 +663,7 @@ Why does this work AT ALL? The deep reason is that for any smooth function, the 
             "to the sources. Every Part should be useful in isolation; the curriculum is a sequence, not a "
             "single document chopped into four."
         ),
+        default_register="warm",  # Feynman taught with warmth, not authority
     ),
 }
 
@@ -857,21 +935,35 @@ def get_all_visual_types() -> List[str]:
     return list(VISUAL_TEMPLATES.keys())
 
 
-def build_document_prompt(template_id: str, topic: str, style: str, source_count: int) -> tuple[str, str]:
+def build_document_prompt(
+    template_id: str,
+    topic: str,
+    style: str,
+    source_count: int,
+    register: Optional[str] = None,
+) -> tuple[str, str]:
     """Build complete system and user prompts for document generation.
-    
+
+    Args:
+        template_id: doc type key
+        topic: focus topic for this generation
+        style: format style (professional / academic / casual / ...)
+        source_count: number of source documents
+        register: optional voice-register override (measured / engaged /
+            warm / urgent). When None, uses the doc type's default_register.
+
     Returns:
         Tuple of (system_prompt, format_instructions)
     """
     template = DOCUMENT_TEMPLATES.get(template_id)
-    
+
     if not template:
         # Fallback for unknown template
         return (
             "Create high-quality, well-structured content based on the provided sources.",
             "Format clearly with appropriate sections using markdown."
         )
-    
+
     # Per-type pre-write reasoning move (Tier 3.7, 2026-06-01).
     # Replaces the previous generic CoT bolt-on with each doc type's own
     # structural reasoning step. Falls back to a sane default if the type
@@ -881,10 +973,19 @@ def build_document_prompt(template_id: str, topic: str, style: str, source_count
         "those claims demand. Plan the section order before drafting any prose."
     )
 
+    # Voice register (Tier 4.1, 2026-06-01). Caller can override; otherwise
+    # use the doc type's default. Unknown registers fall back to "measured".
+    register_brief = get_register_brief(
+        register or template.default_register,
+        fallback=template.default_register or "measured",
+    )
+
     system_prompt = f"""{template.system_prompt}
 
 PRE-WRITE REASONING (do this before drafting any prose):
 {pre_write}
+
+{register_brief}
 
 TARGET AUDIENCE: {template.target_audience}
 TONE: {template.tone}

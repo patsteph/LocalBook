@@ -65,8 +65,7 @@ class CollectorConfig(BaseModel):
     company_profile: Dict[str, Any] = Field(default_factory=dict)  # Cached company profile from discovery
     collection_mode: CollectionMode = CollectionMode.HYBRID
     approval_mode: ApprovalMode = ApprovalMode.MIXED
-    auto_expand: bool = True  # Auto-widen search when collection stagnates (5+ days no growth)
-    
+
     sources: Dict[str, Any] = Field(default_factory=lambda: {
         "rss_feeds": [],
         "web_pages": [],
@@ -622,29 +621,40 @@ class CollectorAgent:
 
         return gap_keywords[:5]
 
-    async def auto_discover_sources(self, stagnation_report: Optional[Dict] = None) -> Dict[str, Any]:
-        """Phase 3: Smart source auto-discovery from approved content patterns.
-        
-        Analyzes recently approved items to find:
+    # Caps per run so a single sweep never floods the config with too many
+    # auto-discovered sources. Conservative — the collector "wanders" gently.
+    AUTO_EXPAND_MAX_DOMAINS_PER_RUN = 3
+    AUTO_EXPAND_MAX_RSS_PER_RUN = 3
+    AUTO_EXPAND_MIN_DOMAIN_HITS = 3  # Domain must appear in ≥N approved items.
+
+    async def auto_discover_sources(self) -> Dict[str, Any]:
+        """Smart source auto-discovery — the collector's wander reflex.
+
+        Analyzes recently approved items in this notebook to find:
         1. New domains that consistently produce approved content
         2. RSS feed URLs discovered in approved article content
         3. Outbound links from high-quality approved sources
-        
-        When stagnation is detected, automatically expands the source config
-        with discovered sources. Otherwise, returns suggestions.
+
+        Always-on (no plateau gate, no user toggle). Auto-adds the top
+        few new domains as site-scoped news_keywords and the top few new
+        RSS feeds to the config. Capped per-run so this is a gentle
+        wander rather than a flood — the collector finds new territory
+        over time, not all at once.
+
+        Skips when the notebook has < 5 sources (not enough signal yet).
         """
         from storage.source_store import source_store
         from urllib.parse import urlparse
-        
+
         sources = await source_store.list(self.notebook_id)
         if len(sources) < 5:
-            return {"discovered": 0, "reason": "too_few_sources"}
-        
+            return {"discovered": 0, "auto_expanded": False, "reason": "too_few_sources"}
+
         # Analyze domains of approved sources
         domain_counts: Dict[str, int] = {}
         existing_domains: set = set()
         rss_candidates: List[str] = []
-        
+
         for src in sources:
             url = src.get("url", "")
             if not url:
@@ -656,7 +666,7 @@ class CollectorAgent:
                 existing_domains.add(domain)
             except Exception:
                 continue
-            
+
             # Check content for RSS/feed links (outbound references)
             content = src.get("content", "")[:3000]
             if content:
@@ -668,62 +678,75 @@ class CollectorAgent:
                 for feed_url in feed_patterns[:3]:
                     if feed_url not in [f for f in self.config.sources.get("rss_feeds", [])]:
                         rss_candidates.append(feed_url)
-        
-        # Find domains that appear 3+ times but aren't in configured sources
+
+        # Find domains that appear ≥N times but aren't in configured sources
         configured_domains = set()
         for page_url in self.config.sources.get("web_pages", []):
             try:
                 configured_domains.add(urlparse(page_url).netloc.lower().replace("www.", ""))
             except Exception as _e:
                 logger.debug(f"[collector] {type(_e).__name__}: {_e}")
-        
+
         new_domains = []
+        skip = {"twitter.com", "x.com", "facebook.com", "linkedin.com",
+                "reddit.com", "google.com", "t.co", "bit.ly", "youtube.com"}
         for domain, count in sorted(domain_counts.items(), key=lambda x: -x[1]):
-            if count >= 3 and domain not in configured_domains:
-                skip = {"twitter.com", "x.com", "facebook.com", "linkedin.com",
-                        "reddit.com", "google.com", "t.co", "bit.ly", "youtube.com"}
-                if domain not in skip:
-                    new_domains.append({"domain": domain, "count": count})
-        
+            if count >= self.AUTO_EXPAND_MIN_DOMAIN_HITS and domain not in configured_domains and domain not in skip:
+                new_domains.append({"domain": domain, "count": count})
+
         unique_rss = list(set(rss_candidates))[:5]
-        
+
         discovered = {
             "new_domains": new_domains[:8],
             "rss_candidates": unique_rss,
             "discovered": len(new_domains) + len(unique_rss),
+            "auto_expanded": False,
         }
-        
-        # Auto-expand on stagnation: add discovered sources to config
-        is_stagnating = stagnation_report and stagnation_report.get("stagnating")
-        if is_stagnating and (new_domains or unique_rss):
+
+        # Auto-add top discoveries to config — the "wander" reflex. Capped
+        # per run so the collector explores gradually rather than dumping
+        # 20 new sources in one cycle. Stale or low-quality additions
+        # naturally drop out over time because they generate fewer
+        # approved items than the strong ones.
+        if new_domains or unique_rss:
             expanded = False
             config_sources = dict(self.config.sources)
-            
-            # Add top 3 new domains as site-scoped news keywords
+            added_domains: List[str] = []
+            added_feeds: List[str] = []
+
             if new_domains:
                 news_kw = list(config_sources.get("news_keywords", []))
-                for nd in new_domains[:3]:
+                for nd in new_domains[:self.AUTO_EXPAND_MAX_DOMAINS_PER_RUN]:
                     site_kw = f"site:{nd['domain']} {self.config.subject}"
                     if site_kw not in news_kw:
                         news_kw.append(site_kw)
+                        added_domains.append(nd['domain'])
                         expanded = True
                 config_sources["news_keywords"] = news_kw
-            
-            # Add discovered RSS feeds
+
             if unique_rss:
                 rss_list = list(config_sources.get("rss_feeds", []))
-                for feed in unique_rss[:3]:
+                for feed in unique_rss[:self.AUTO_EXPAND_MAX_RSS_PER_RUN]:
                     if feed not in rss_list:
                         rss_list.append(feed)
+                        added_feeds.append(feed)
                         expanded = True
                 config_sources["rss_feeds"] = rss_list
-            
+
             if expanded:
                 self.update_config({"sources": config_sources})
                 discovered["auto_expanded"] = True
-                print(f"[COLLECTOR] 🔍 Auto-expanded sources: +{len(new_domains[:3])} domains, +{len(unique_rss[:3])} RSS feeds")
-                logger.info(f"[SourceDiscovery] Auto-expanded sources for {self.notebook_id[:8]} (stagnation recovery)")
-        
+                discovered["added_domains"] = added_domains
+                discovered["added_feeds"] = added_feeds
+                print(
+                    f"[COLLECTOR] 🔍 Auto-expanded sources for {self.notebook_id[:8]}: "
+                    f"+{len(added_domains)} domains, +{len(added_feeds)} RSS feeds"
+                )
+                logger.info(
+                    f"[SourceDiscovery] Auto-expanded {self.notebook_id[:8]} — "
+                    f"domains: {added_domains}; feeds: {added_feeds}"
+                )
+
         return discovered
 
     async def cross_reference_validate(self, items: List['CollectedItem']) -> List['CollectedItem']:

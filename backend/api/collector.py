@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from agents.collector import get_collector, CollectionMode, ApprovalMode
 from services.collection_scheduler import collection_scheduler
-from services.collection_history import get_collection_history, get_collection_stats, record_engagement
+from services.collection_history import get_collection_history, get_collection_stats
 from services.stock_price import get_stock_quote
 from services.key_dates import get_key_dates
 from services.event_logger import log_source_approved, log_source_rejected
@@ -62,7 +62,6 @@ async def update_collector_config(notebook_id: str, request: CollectorConfigUpda
         updates["approval_mode"] = ApprovalMode(updates["approval_mode"])
     
     config = collector.update_config(updates)
-    record_engagement(notebook_id, "config_update")
     return {"success": True, "config": config.model_dump()}
 
 
@@ -85,7 +84,6 @@ async def collect_now(notebook_id: str, specific_query: Optional[str] = None):
     
     try:
         print(f"[COLLECT-NOW] Starting collection for notebook {notebook_id}")
-        record_engagement(notebook_id, "manual_collect")
         from agents.curator import curator
         print("[COLLECT-NOW] Curator imported, calling assign_immediate_collection")
         
@@ -157,48 +155,6 @@ async def get_pending_approvals(notebook_id: str):
         "pending": pending,
         "total": len(pending),
         "expiring_soon": len(expiring)
-    }
-
-
-@router.get("/{notebook_id}/stagnation")
-async def get_stagnation_status(notebook_id: str):
-    """Get stagnation status for a notebook — used by the frontend tombstone banner.
-
-    Also returns `recent_items_found` (sum of items_found across collection
-    runs in the last 7 days). The frontend uses this to suppress the
-    "Expanding search scope" / "Collection has plateaued" suggestions when
-    the collector is actively bringing items in in the background — the
-    user already sees activity and doesn't need a redundant nag banner.
-    """
-    from services.collection_history import detect_stagnation, _load_history
-    from datetime import datetime, timedelta
-
-    collector = get_collector(notebook_id)
-    config = collector.get_config()
-    pending = collector.get_pending_approvals()
-    report = detect_stagnation(notebook_id)
-
-    # Sum items_found across runs in the last 7 days. Best-effort — any
-    # parsing error just yields 0 and lets the banner behave as before.
-    recent_items_found = 0
-    try:
-        cutoff = datetime.utcnow() - timedelta(days=7)
-        for entry in _load_history(notebook_id):
-            ts_raw = entry.get("timestamp", "")
-            try:
-                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00").replace("+00:00", ""))
-            except (ValueError, TypeError):
-                continue
-            if ts >= cutoff:
-                recent_items_found += int(entry.get("items_found", 0) or 0)
-    except Exception:
-        recent_items_found = 0
-
-    return {
-        "stagnation": report,
-        "auto_expand": getattr(config, 'auto_expand', True),
-        "pending_count": len(pending),
-        "recent_items_found": recent_items_found,
     }
 
 
@@ -518,7 +474,6 @@ async def get_collector_profile(notebook_id: str):
             "approval_mode": config_dict["approval_mode"],
             "name": config.name,
         },
-        "auto_expand": getattr(config, 'auto_expand', True),
         "stats": stats,
         "feedback": feedback,
         "created_at": config.created_at.isoformat() if hasattr(config.created_at, "isoformat") else str(config.created_at),

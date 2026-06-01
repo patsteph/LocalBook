@@ -26,7 +26,6 @@ export interface CollectorConfig {
     min_relevance: number;
     language: string;
   };
-  auto_expand: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -138,25 +137,6 @@ class CollectorService {
   }> {
     const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/pending`);
     if (!response.ok) throw new Error('Failed to fetch pending approvals');
-    return response.json();
-  }
-
-  /**
-   * Get stagnation status for tombstone banner
-   */
-  async getStagnationStatus(notebookId: string): Promise<{
-    stagnation: {
-      stagnating: boolean;
-      severity: string | null;
-      days_since_growth: number;
-      total_dry_runs: number;
-      dominant_rejection_reasons: Record<string, number>;
-    };
-    auto_expand: boolean;
-    pending_count: number;
-  }> {
-    const response = await localFetch(`${API_BASE_URL}/collector/${notebookId}/stagnation`);
-    if (!response.ok) throw new Error('Failed to fetch stagnation status');
     return response.json();
   }
 

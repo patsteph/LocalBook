@@ -194,6 +194,7 @@ class AudioGenerator:
         host2_gender: str = "female",
         accent: str = "us",
         chat_context: Optional[str] = None,
+        register: Optional[str] = None,
     ) -> Dict:
         """Generate podcast audio.
         
@@ -232,6 +233,7 @@ class AudioGenerator:
                 accent=accent,
                 is_two_host=is_two_host,
                 chat_context=chat_context,
+                register=register,
             ),
             name=f"audio-pipeline-{generation['audio_id']}"
         )
@@ -241,6 +243,31 @@ class AudioGenerator:
 
         return generation
 
+    # Tier 4.2 (2026-06-01) — per-style default register for audio.
+    # Used when the caller doesn't specify an explicit register override.
+    _AUDIO_DEFAULT_REGISTER = {
+        "podcast_script": "engaged",
+        "debate": "engaged",
+        "interview": "measured",
+        "storytelling": "warm",
+        "feynman_curriculum": "warm",
+    }
+
+    # Audio-specific addendum: punctuation conventions that the TTS engine
+    # reflects as prosody. Appended to the shared register brief so the
+    # script-writer knows the TTS will pick up these cues.
+    _AUDIO_PROSODY_OVERLAY = (
+        "\nTTS PROSODY (Kokoro reflects these in audible output):\n"
+        "- Em-dashes ( — ) produce a slight pause; use them for thought-breaks and asides.\n"
+        "- Ellipses (...) produce a longer pause + slight trailing-off; use for unfinished thoughts.\n"
+        "- Question marks even mid-clause produce a rising intonation; use when the speaker is "
+        "genuinely puzzled.\n"
+        "- ALL-CAPS on a single emphasized word produces audible stress — use SPARINGLY (one or two "
+        "per turn, never more) and only on words that genuinely carry the weight.\n"
+        "- Sentence length variety matters as much as punctuation. A short clipped sentence after "
+        "three long ones produces audible emphasis the listener will feel."
+    )
+
     async def _generate_script(
         self,
         notebook_id: str,
@@ -249,6 +276,7 @@ class AudioGenerator:
         skill_id: Optional[str],
         host_names: Optional[Tuple[str, str]] = None,
         chat_context: Optional[str] = None,
+        register: Optional[str] = None,
     ) -> str:
         """Generate podcast script from notebook sources.
         
@@ -307,13 +335,21 @@ class AudioGenerator:
 {legend}
 """
 
+        # Voice register (Tier 4.2). Caller override > per-style default >
+        # "engaged" floor. Brief gets the TTS prosody overlay appended.
+        from services.output_templates import get_register_brief
+        effective_register = register or self._AUDIO_DEFAULT_REGISTER.get(skill_id or "podcast_script", "engaged")
+        register_brief = get_register_brief(effective_register, fallback="engaged") + self._AUDIO_PROSODY_OVERLAY
+
         _GROUNDING = f"""LENGTH: Write a LONG conversation — {duration_minutes} minutes of audio.
 Do NOT wrap up early. Do NOT summarize. Keep exploring new angles and reactions.
 Every section needs many back-and-forth exchanges — keep the conversation going!
 
 GROUNDING: ONLY discuss facts from the provided research. Do NOT invent statistics or quotes.
 {legend_block}When citing a specific fact, statistic, finding, or quote, append the source tag in brackets at the end of the sentence — "[S2]". Anchor AT LEAST 4 turns per section to concrete sourced material this way. Connective conversation between cited turns doesn't need tags.
-Topic: {topic or 'the main topics and insights from the research'}"""
+Topic: {topic or 'the main topics and insights from the research'}
+
+{register_brief}"""
 
         # ── Per-style few-shot examples ──
         # Each example demonstrates the structural MOVE that defines the style,
@@ -1828,6 +1864,7 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         accent: str,
         is_two_host: bool = True,
         chat_context: Optional[str] = None,
+        register: Optional[str] = None,
     ):
         """Full background pipeline: script generation → audio synthesis.
 
@@ -1877,6 +1914,7 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
                 skill_id=skill_id,
                 host_names=host_names,
                 chat_context=chat_context,
+                register=register,
             )
             
             if not script or len(script.strip()) < 20:

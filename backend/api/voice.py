@@ -161,14 +161,6 @@ async def transcribe_audio(
             )
             source_id = result_src["source_id"]
 
-            # B-fix (2026-05-21): record engagement so stagnation grace period
-            # kicks in when user adds voice-note sources.
-            try:
-                from services.collection_history import record_engagement
-                record_engagement(notebook_id, "source_add")
-            except Exception as _eng_err:
-                print(f"[voice] record_engagement failed (non-fatal): {_eng_err}")
-        
         return TranscriptionResult(
             text=text,
             duration_seconds=duration,

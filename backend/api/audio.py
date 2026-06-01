@@ -25,6 +25,10 @@ class AudioGenerateRequest(BaseModel):
     host2_gender: str = "female"
     accent: str = "us"
     chat_context: Optional[str] = None  # Recent chat conversation for "From Chat" mode
+    # Tier 4.2 (2026-06-01) — optional voice-register override. When None,
+    # audio_generator picks the per-style default. Valid: measured /
+    # engaged / warm / urgent.
+    register: Optional[str] = None
 
 
 class AudioGeneration(BaseModel):
@@ -53,6 +57,7 @@ async def generate_audio(request: AudioGenerateRequest):
             host2_gender=request.host2_gender,
             accent=request.accent,
             chat_context=request.chat_context,
+            register=request.register,
         )
         logger.info(f"[STUDIO] Podcast generation completed: audio_id={result.get('audio_id', 'unknown')}")
         log_content_generated(request.notebook_id, "audio", request.skill_id or "podcast", request.topic or "")

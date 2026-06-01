@@ -316,15 +316,6 @@ class CuratorEventBus:
                         except Exception as e:
                             logger.debug(f"[event_bus] connection_discovered handler: {e}")
 
-                # Stagnation severity escalation (mild→moderate→plateau).
-                # Phase A.1 (2026-05-22): no longer queues a chat aside. Stagnation
-                # is a collector-health signal, not a notebook-wide one — surfacing
-                # it on every chat reads as a notebook-wide alarm to the user. The
-                # event is still persisted by the default handler, and the Collector
-                # panel reads detect_stagnation() directly to show the badge.
-                if action == "stagnation_escalated" and nb:
-                    self._dispatch_counts[action] = self._dispatch_counts.get(action, 0) + 1
-
                 # User-visible plan completed — low-priority aside.
                 # We only fire when there was meaningful output (steps that
                 # produced anything user-visible). Avoids "plan completed"

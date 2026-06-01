@@ -224,6 +224,7 @@ class VideoStoryboardGenerator:
         format_type: str = "explainer",
         chat_context: Optional[str] = None,
         narration_style: str = "explainer",
+        register: Optional[str] = None,
     ) -> Storyboard:
         """Generate a storyboard from notebook sources.
 
@@ -290,6 +291,17 @@ class VideoStoryboardGenerator:
 
         # Resolve narration_style → blueprint once; threaded into both phases.
         blueprint = get_video_blueprint(narration_style)
+        # Tier 4.3: pick the effective voice register — caller override or
+        # the narration_style's default.
+        _video_default_register = {
+            "explainer": "engaged",
+            "narrative": "warm",
+            "journalistic": "measured",
+            "study_deep_dive": "measured",
+        }
+        effective_register = register or _video_default_register.get(
+            narration_style, "engaged"
+        )
 
         # ── Phase 1: Main LLM generates storyboard structure ──
         # Uses the deeper model (olmo-3:7b) for visual design + narrative arc
@@ -335,6 +347,7 @@ class VideoStoryboardGenerator:
             words_per_scene=words_per_scene,
             duration_minutes=duration_minutes,
             blueprint=blueprint,
+            register=effective_register,
         )
 
         # Strip repeated filler phrases the LLM may have added across scenes
@@ -620,6 +633,7 @@ Output a JSON array of exactly {target_scenes} scenes. First scene must be title
         words_per_scene: int,
         duration_minutes: int,
         blueprint: Optional[Dict] = None,
+        register: Optional[str] = None,
     ) -> List[Scene]:
         """Phase 2: generate narration SEQUENTIALLY with running context.
 
@@ -700,11 +714,24 @@ Output a JSON array of exactly {target_scenes} scenes. First scene must be title
                     f"{blueprint['narration_brief']}\n"
                 )
 
+            # Voice register (Tier 4.3): caller already resolved the
+            # effective register via the `register` param. Reuses the
+            # audio prosody overlay since video narration goes through
+            # the same Kokoro TTS path.
+            from services.output_templates import get_register_brief
+            from services.audio_generator import AudioGenerator
+            register_block = (
+                "\nVOICE REGISTER:\n"
+                + get_register_brief(register or "engaged", fallback="engaged")
+                + AudioGenerator._AUDIO_PROSODY_OVERLAY
+                + "\n"
+            )
+
             system_prompt = f"""You are a professional video narrator. Write the spoken narration for ONE scene
 in a {duration_minutes}-minute video about "{topic}".
 
 Your narration will be converted to speech via TTS. Write natural, engaging spoken language.
-{style_register_block}
+{style_register_block}{register_block}
 SCENE ROLE: {role}
 ROLE BRIEF: {role_brief}
 

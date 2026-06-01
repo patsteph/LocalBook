@@ -32,6 +32,11 @@ export interface VideoGenerateRequest {
   voice?: string;            // Legacy: direct Kokoro voice ID override
   format_type?: 'explainer' | 'brief';
   chat_context?: string;     // Recent chat conversation for "From Chat" mode
+  // Tier 3.8: narration register/arc preset.
+  narration_style?: 'explainer' | 'narrative' | 'journalistic' | 'study_deep_dive';
+  // Tier 4 voice register override (measured / engaged / warm / urgent).
+  // When omitted, video_storyboard picks the per-narration_style default.
+  register?: string;
 }
 
 export interface VisualStyle {

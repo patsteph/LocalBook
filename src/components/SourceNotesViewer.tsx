@@ -3,7 +3,7 @@ import DOMPurify from 'dompurify';
 import { sourceViewerService, SourceContent } from '../services/sourceViewer';
 import { sourceService } from '../services/sources';
 import { highlightService } from '../services/highlights';
-import { findingsService } from '../services/findings';
+import { localFetch, API_BASE_URL } from '../services/api';
 import { Highlight } from '../types';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
@@ -190,20 +190,28 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
       });
 
       setHighlights([...highlights, newHighlight]);
-      
-      // Also save to Findings for unified bookmark view
-      await findingsService.saveHighlight(
-        notebookId,
-        annotationText || pendingHighlight.text.substring(0, 50) + (pendingHighlight.text.length > 50 ? '...' : ''),
-        {
-          text: pendingHighlight.text,
-          source_id: sourceId,
-          source_name: sourceName,
-        }
-      );
-      
-      // Dispatch event to refresh Findings panel
-      window.dispatchEvent(new CustomEvent('findingsUpdated'));
+
+      // Tier 5: save highlight as a Note instead of a Finding.
+      const title = annotationText || pendingHighlight.text.substring(0, 50) + (pendingHighlight.text.length > 50 ? '...' : '');
+      const body = `> ${pendingHighlight.text}\n\n— ${sourceName}` + (annotationText ? `\n\n${annotationText}` : '');
+      try {
+        await localFetch(`${API_BASE_URL}/canvas-notes`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            notebook_id: notebookId,
+            title,
+            content_markdown: body,
+            source_type: 'highlight',
+            note_type: 'note',
+            tags: ['highlight', `source:${sourceId}`],
+          }),
+        });
+        window.dispatchEvent(new CustomEvent('notesUpdated'));
+        window.dispatchEvent(new CustomEvent('sourcesUpdated'));
+      } catch (highlightErr) {
+        console.error('Failed to save highlight as Note:', highlightErr);
+      }
       
       setShowAnnotationModal(false);
       setPendingHighlight(null);

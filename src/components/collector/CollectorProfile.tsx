@@ -107,7 +107,6 @@ interface ProfileData {
   schedule: { frequency: string; max_items_per_run: number };
   filters: { max_age_days: number; min_relevance: number; language: string };
   settings: { collection_mode: string; approval_mode: string; name: string };
-  auto_expand: boolean;
   stats: CollectionStats;
   feedback: FeedbackData;
   created_at: string;
@@ -331,12 +330,7 @@ export const CollectorProfile: React.FC<CollectorProfileProps> = ({
             <div className="text-center py-8 text-red-500 dark:text-red-400">{error}</div>
           ) : profile ? (
             <>
-              {activeTab === 'overview' && <OverviewTab profile={profile} notebookId={notebookId} onToggleAutoExpand={async (val) => {
-                try {
-                  await collectorService.updateConfig(notebookId, { auto_expand: val });
-                  setProfile({ ...profile, auto_expand: val });
-                } catch {}
-              }} />}
+              {activeTab === 'overview' && <OverviewTab profile={profile} notebookId={notebookId} />}
               {activeTab === 'sources' && (
                 <SourcesTab
                   sources={profile.sources}
@@ -356,7 +350,7 @@ export const CollectorProfile: React.FC<CollectorProfileProps> = ({
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-const OverviewTab: React.FC<{ profile: ProfileData; notebookId: string; onToggleAutoExpand: (val: boolean) => void }> = ({ profile, onToggleAutoExpand }) => {
+const OverviewTab: React.FC<{ profile: ProfileData; notebookId: string }> = ({ profile }) => {
   const { subject, stock, key_dates, focus_areas, schedule, filters, settings, stats } = profile;
 
   return (
@@ -477,22 +471,6 @@ const OverviewTab: React.FC<{ profile: ProfileData; notebookId: string; onToggle
           <div className="text-sm font-semibold text-gray-900 dark:text-gray-100 mt-1">
             {filters.max_age_days}d max · {(filters.min_relevance * 100).toFixed(0)}% relevance
           </div>
-        </div>
-        <div className="col-span-2 bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 border border-gray-200 dark:border-gray-700 flex items-center justify-between">
-          <div>
-            <div className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Auto-Expand on Stagnation</div>
-            <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">Widen search after 5+ days with no new content</div>
-          </div>
-          <button
-            onClick={() => onToggleAutoExpand(!profile.auto_expand)}
-            className={`relative w-9 h-5 rounded-full transition-colors ${
-              profile.auto_expand ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'
-            }`}
-          >
-            <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-              profile.auto_expand ? 'translate-x-4' : ''
-            }`} />
-          </button>
         </div>
       </div>
 

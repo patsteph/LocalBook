@@ -8,7 +8,6 @@ export type PanelView =
   | 'chat'
   | 'constellation'
   | 'timeline'
-  | 'findings'
   | 'curator'
   | 'settings'
   | 'llm-selector'
@@ -38,7 +37,6 @@ export const VIEW_LABELS: Record<PanelView, string> = {
   'chat': 'Chat',
   'constellation': 'Constellation',
   'timeline': 'Timeline',
-  'findings': 'Findings',
   'curator': 'Curator',
   'settings': 'Settings',
   'llm-selector': 'AI Brain',
@@ -55,7 +53,6 @@ export const VIEW_ICONS: Record<PanelView, React.ReactNode> = {
   'chat': <MessageSquare className={iconClass} />,
   'constellation': <Sparkles className={iconClass} />,
   'timeline': <CalendarDays className={iconClass} />,
-  'findings': <Bookmark className={iconClass} />,
   'curator': <Lightbulb className={iconClass} />,
   'settings': <Settings className={iconClass} />,
   'llm-selector': <Brain className={iconClass} />,

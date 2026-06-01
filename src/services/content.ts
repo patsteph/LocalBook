@@ -12,6 +12,9 @@ export interface ContentGenerateRequest {
     topic?: string;
     style?: string;  // Output style: professional, casual, academic, etc.
     chat_context?: string;  // Recent chat conversation for "From Chat" mode
+    // Tier 4 voice register override. Backend picks the per-doc-type default
+    // when omitted. Valid: measured / engaged / warm / urgent.
+    register?: string;
 }
 
 export interface ContentGenerateResponse {

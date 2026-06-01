@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { visualService } from '../../services/visual';
-import { findingsService } from '../../services/findings';
+import { localFetch, API_BASE_URL } from '../../services/api';
 import { ChatMessage, InlineVisualData } from '../../types';
 
 type SetMessages = React.Dispatch<React.SetStateAction<ChatMessage[]>>;
@@ -97,23 +97,30 @@ export function useVisualActions(
     }));
   }, []);
 
-  // Save visual to Findings
+  // Save visual as Note (was: Save visual to Findings — Tier 5 refactor)
   const saveVisualToFindings = useCallback(async (visual: InlineVisualData) => {
     if (!notebookId || !visual) return;
-    
+
+    const title = visual.title || 'Saved Visual';
+    const body = `# ${title}\n\nType: ${visual.type}\nTemplate: ${visual.template_id || 'auto'}\n\n\`\`\`${visual.type}\n${(visual.code || '').slice(0, 8000)}\n\`\`\``;
+
     try {
-      await findingsService.saveVisual(
-        notebookId,
-        visual.title || 'Saved Visual',
-        {
-          type: visual.type,
-          code: visual.code,
-          template_id: visual.template_id,
-        }
-      );
-      window.dispatchEvent(new CustomEvent('findingsUpdated'));
+      await localFetch(`${API_BASE_URL}/canvas-notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          notebook_id: notebookId,
+          title,
+          content_markdown: body,
+          source_type: 'typed',
+          note_type: 'note',
+          tags: ['saved-visual', 'saved-from-chat'],
+        }),
+      });
+      window.dispatchEvent(new CustomEvent('notesUpdated'));
+      window.dispatchEvent(new CustomEvent('sourcesUpdated'));
     } catch (err) {
-      console.error('Failed to save visual:', err);
+      console.error('Failed to save visual as Note:', err);
     }
   }, [notebookId]);
 

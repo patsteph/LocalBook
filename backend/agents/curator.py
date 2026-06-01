@@ -183,9 +183,6 @@ class NotebookSummary(BaseModel):
     emerging_topics: List[str] = []
     # Temporal lookback — "this day in your research"
     one_week_ago_items: List[str] = []
-    # Stagnation status — adaptive collection awareness
-    stagnation_severity: Optional[str] = None  # None, 'mild', 'moderate', 'plateau'
-    stagnation_days: int = 0
     # Notes — user's own thinking and ideas
     notes_created: int = 0  # notes created since last seen
     note_titles: List[str] = []  # titles of recent notes
@@ -1094,8 +1091,6 @@ Be concise and cite which notebook each insight comes from."""
                     unfinished_threads=stats.get("unfinished_threads", []),
                     emerging_topics=stats.get("emerging_topics", []),
                     one_week_ago_items=stats.get("one_week_ago_items", []),
-                    stagnation_severity=stats.get("stagnation_severity"),
-                    stagnation_days=stats.get("stagnation_days", 0),
                     notes_created=stats.get("notes_created", 0),
                     note_titles=stats.get("note_titles", []),
                     total_notes=stats.get("total_notes", 0),
@@ -2030,16 +2025,6 @@ Write the weekly wrap up now:"""
         except Exception as _e:
             logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
-        # Stagnation status — adaptive collection awareness
-        try:
-            from services.collection_history import detect_stagnation
-            stag = detect_stagnation(notebook_id)
-            if stag.get("stagnating"):
-                stats["stagnation_severity"] = stag["severity"]
-                stats["stagnation_days"] = stag["days_since_growth"]
-        except Exception as _e:
-            logger.debug(f"[curator] {type(_e).__name__}: {_e}")
-        
         return stats
     
     async def _synthesize_brief_narrative(
@@ -2257,15 +2242,6 @@ Write the weekly wrap up now:"""
             # Emerging topics — topic drift detection
             if nb.emerging_topics:
                 details.append(f"  - Emerging topics (new this week): {', '.join(nb.emerging_topics)}")
-            
-            # Stagnation status — adaptive collection awareness
-            if nb.stagnation_severity:
-                if nb.stagnation_severity == "plateau":
-                    details.append(f"  - ⚠️ COLLECTION PLATEAU: No new content discovered in {nb.stagnation_days} days. The topic space may be saturated — consider expanding scope or adding new sources.")
-                elif nb.stagnation_severity == "moderate":
-                    details.append(f"  - 📊 Collection has stagnated ({nb.stagnation_days} days without growth). Search criteria have been expanded to explore adjacent topics and cross-notebook connections.")
-                elif nb.stagnation_severity == "mild":
-                    details.append(f"  - 🔭 Collection is exploring wider — no new content in {nb.stagnation_days} days, so search scope has been expanded to find fresh material.")
             
             # Temporal lookback — "one week ago"
             if nb.one_week_ago_items:
@@ -3325,35 +3301,7 @@ Respond with ONLY a JSON array of strings, no other text:
         except Exception as _e:
             logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
-        # ── Stagnation detection ──
-        stagnation_report = None
         cross_notebook_seeds = []
-        try:
-            from services.collection_history import detect_stagnation
-            stagnation_report = detect_stagnation(notebook_id)
-            auto_expand = getattr(config, 'auto_expand', True)
-
-            if stagnation_report.get("stagnating") and auto_expand:
-                severity = stagnation_report["severity"]
-                days = stagnation_report["days_since_growth"]
-                task["_stagnation"] = stagnation_report
-                print(f"[CURATOR] 📊 Stagnation detected: severity={severity}, {days} days without growth")
-
-                # Pull cross-notebook seeds from shared entities (shared-entity only)
-                try:
-                    shared_insights = await self.discover_cross_notebook_patterns()
-                    for insight in shared_insights:
-                        if notebook_id in insight.notebooks and insight.entity:
-                            cross_notebook_seeds.append(insight.entity)
-                    cross_notebook_seeds = cross_notebook_seeds[:5]
-                    if cross_notebook_seeds:
-                        print(f"[CURATOR] 🔗 Cross-notebook seeds for expansion: {cross_notebook_seeds}")
-                except Exception as xnb_err:
-                    logger.debug(f"Cross-notebook seed fetch failed (non-fatal): {xnb_err}")
-            elif stagnation_report.get("stagnating") and not auto_expand:
-                print(f"[CURATOR] 📊 Stagnation detected but auto_expand disabled — skipping expansion")
-        except Exception as stag_err:
-            logger.debug(f"Stagnation detection failed (non-fatal): {stag_err}")
 
         # ── Build a knowledge snapshot of what we already have ──
         source_titles = []
@@ -3445,26 +3393,6 @@ QUERY PATTERNS THAT ALWAYS FAILED (avoid these styles):
             except Exception as _e:
                 logger.debug(f"[curator] {type(_e).__name__}: {_e}")
             
-            # Build stagnation context for the prompt if applicable
-            stagnation_prompt_block = ""
-            if stagnation_report and stagnation_report.get("stagnating") and getattr(config, 'auto_expand', True):
-                days = stagnation_report["days_since_growth"]
-                severity = stagnation_report["severity"]
-                reasons = stagnation_report.get("dominant_rejection_reasons", {})
-                reasons_text = ", ".join(f"{k}: {v}" for k, v in reasons.items()) if reasons else "unknown"
-                
-                stagnation_prompt_block = f"""
-IMPORTANT — EXPANSION MODE: This notebook has NOT found any new content in {days} days.
-Recent items were rejected because: {reasons_text}
-You MUST generate queries that explore ADJACENT and TANGENTIAL topics — not more of the same.
-Think: what would a smart colleague suggest looking at from a different angle?"""
-                
-                if cross_notebook_seeds:
-                    stagnation_prompt_block += f"""
-CROSS-NOTEBOOK CONNECTIONS (topics from the user's OTHER notebooks that may link here):
-{chr(10).join(f'  → {seed}' for seed in cross_notebook_seeds)}
-Include at least 1-2 queries that bridge these cross-notebook topics with this notebook's subject."""
-            
             prompt = f"""You are a research librarian planning the next collection run for a research notebook.
 
 NOTEBOOK PURPOSE: {config.intent}
@@ -3473,7 +3401,6 @@ FOCUS AREAS: {focus_areas_str}
 {existing_context}
 {avoid_queries_text}
 {adaptive_block}
-{stagnation_prompt_block}
 
 Generate 6-8 SPECIFIC search queries that would find NEW, valuable content not already covered.
 
@@ -3841,15 +3768,8 @@ Respond with ONLY a JSON array of strings, no other text:
         filtered = 0
         approved_titles = []
         filtered_titles = []
-        rejection_reasons: Dict[str, int] = {}  # Track why items fail for stagnation analysis
-        
-        # Adaptive confidence floor: lower when stagnating to surface borderline items for user review
-        stagnation = task.get("_stagnation")
-        if stagnation and stagnation.get("stagnating"):
-            CONFIDENCE_FLOOR = 0.40  # Expansion mode — let borderline items through to queue
-            print(f"[CURATOR] 📊 Using lowered confidence floor (0.40) for expansion mode")
-        else:
-            CONFIDENCE_FLOOR = 0.50  # Normal — nothing below 50% is ever added
+        rejection_reasons: Dict[str, int] = {}  # Track why items fail
+        CONFIDENCE_FLOOR = 0.50  # Nothing below 50% is ever added
         
         # Pre-fetch existing URLs once for dedup (avoids N × source_store.list() calls)
         from storage.source_store import source_store
@@ -3883,15 +3803,6 @@ Respond with ONLY a JSON array of strings, no other text:
                     "reason": reason
                 })
                 rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
-                continue
-            
-            # In expansion mode, items between 0.40-0.50 always go to queue (never auto-approve)
-            if stagnation and stagnation.get("stagnating") and item.overall_confidence < 0.50:
-                queue_result = await collector._add_to_approval_queue(item)
-                if queue_result == 'queued':
-                    pending += 1
-                else:
-                    filtered += 1
                 continue
             
             if judgment.decision == JudgmentDecision.APPROVE:
@@ -4057,7 +3968,25 @@ Respond with ONLY a JSON array of strings, no other text:
             
         except Exception as p4_err:
             logger.debug(f"Phase 4 recording failed (non-fatal): {p4_err}")
-        
+
+        # ── Auto-expand source discovery (the collector's wander reflex) ──
+        # After every sweep, look at recently approved items for patterns —
+        # new domains that keep showing up, RSS feeds hiding in article
+        # content — and add a capped handful to the config. Always-on so
+        # the collector gradually widens its net without nagging the user
+        # to manually add sources. Non-fatal: any failure is logged and
+        # the sweep result is still returned.
+        try:
+            discovery = await collector.auto_discover_sources()
+            if discovery.get("auto_expanded"):
+                logger.info(
+                    f"[curator] auto-expand applied to {notebook_id[:8]}: "
+                    f"+{len(discovery.get('added_domains', []))} domains, "
+                    f"+{len(discovery.get('added_feeds', []))} feeds"
+                )
+        except Exception as exp_err:
+            logger.debug(f"[curator] auto-expand discovery failed (non-fatal): {exp_err}")
+
         return {
             "items_collected": len(collected_items),
             "items_approved": approved,
@@ -4177,24 +4106,6 @@ Respond with ONLY a JSON array of strings, no other text:
             except Exception as _e:
                 logger.debug(f"[curator] {type(_e).__name__}: {_e}")
         
-        # Stagnation awareness for current notebook
-        stagnation_context = ""
-        if notebook_id:
-            try:
-                from services.collection_history import detect_stagnation
-                stag = detect_stagnation(notebook_id)
-                if stag.get("stagnating"):
-                    sev = stag["severity"]
-                    days = stag["days_since_growth"]
-                    if sev == "plateau":
-                        stagnation_context = f"\n⚠️ This notebook's collection has PLATEAUED — no new content in {days} days. The topic space may be saturated. Suggest expanding scope or adding new sources."
-                    elif sev == "moderate":
-                        stagnation_context = f"\n📊 This notebook's collection has stagnated ({days} days without growth). Search criteria have been automatically expanded to adjacent topics."
-                    elif sev == "mild":
-                        stagnation_context = f"\n🔭 This notebook's collection is in expansion mode — no new content in {days} days, exploring wider search criteria."
-            except Exception as _e:
-                logger.debug(f"[curator] {type(_e).__name__}: {_e}")
-
         # Curator Phase 3a: mental-model context injection. When the
         # current notebook has an inferred mental model with reasonable
         # confidence, surface it so the curator's reply can lean on
@@ -4351,7 +4262,6 @@ Your role:
 {notebook_context}
 {search_context}
 {cross_context}
-{stagnation_context}
 {mental_model_context}
 {dissent_context}
 

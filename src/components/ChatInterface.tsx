@@ -17,7 +17,6 @@ import { CanvasItemCard } from './chat/CanvasItemCard';
 import { RichNoteEditor } from './RichNoteEditor';
 import { useCanvasItems, useAppShell } from './canvas/CanvasContext';
 import { CanvasItem } from './canvas/types';
-import { CollectionTombstone } from './collector/CollectionTombstone';
 import { useEngagement } from '../hooks/useEngagement';
 
 interface ChatInterfaceProps {
@@ -28,7 +27,7 @@ interface ChatInterfaceProps {
 }
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmProvider, onOpenWebSearch, prefillQuery }) => {
-  const { openCollector } = useAppShell();
+  useAppShell();  // ensures shell context is mounted; no fields used after plateau-tombstone removal
   const { capture: captureEngagement } = useEngagement();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -803,8 +802,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
 
       {/* Messages area — hidden when note is active */}
       <div className={`flex-1 overflow-y-auto px-4 py-6 space-y-4 ${activeNote ? 'hidden' : ''}`}>
-        {/* Collection tombstone — pending items & stagnation status */}
-        <CollectionTombstone notebookId={notebookId} onOpenCollector={openCollector} />
         {messages.length === 0 && notebookCanvasItems.length === 0 && (
           <div className="flex flex-col items-center justify-center text-center px-6 py-12 max-w-md mx-auto animate-fade-in">
             {!notebookId && showWelcome ? (
