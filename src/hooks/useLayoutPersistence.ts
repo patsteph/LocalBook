@@ -41,25 +41,33 @@ function loadJSON<T>(key: string, fallback: T): T {
   }
 }
 
-// Sanitize a persisted layout — replace any leaves whose `view` was removed
-// from the PanelView union with the safe default ('chat'). Without this,
-// users who previously navigated to a now-removed view (e.g., the
-// 'web-research' canvas panel, 'findings') would see their saved layout
-// keep restoring those views even after the code path that creates them
-// is gone. 2026-06-02.
+// Sanitize a persisted layout. Two responsibilities:
+// 1. Replace any leaves whose `view` was removed from the PanelView union
+//    with the safe default ('chat'). Stops removed views (e.g., the
+//    'web-research' canvas panel, 'findings') from being restored.
+// 2. Collapse any split nodes back to a single leaf — the multi-panel
+//    split layout was deprecated when Library + the unified canvas
+//    replaced the side-by-side workflow. Some users have splits from
+//    older sessions that come back on every launch and break the
+//    "single canvas, no bottom-up disruption" design goal. We pick the
+//    first leaf as the survivor since that's what the user originally
+//    started in. 2026-06-02.
 const REMOVED_VIEWS = new Set(['web-research', 'findings']);
+
+function firstLeaf(node: LayoutNode): LayoutNode {
+  return node.type === 'leaf' ? node : firstLeaf(node.children[0]);
+}
+
 function sanitizeLayout(node: LayoutNode): LayoutNode {
-  if (node.type === 'leaf') {
-    if (REMOVED_VIEWS.has(node.view as string)) {
-      return { ...node, view: 'chat' as any, props: undefined };
-    }
-    return node;
+  if (node.type === 'split') {
+    // Collapse the whole subtree to its first leaf, then re-sanitize that
+    // leaf in case it had a removed view.
+    return sanitizeLayout(firstLeaf(node));
   }
-  // Split node — recurse
-  return {
-    ...node,
-    children: [sanitizeLayout(node.children[0]), sanitizeLayout(node.children[1])],
-  };
+  if (REMOVED_VIEWS.has(node.view as string)) {
+    return { ...node, view: 'chat' as any, props: undefined };
+  }
+  return node;
 }
 
 function saveJSON(key: string, value: any): void {

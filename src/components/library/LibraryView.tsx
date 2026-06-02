@@ -96,7 +96,20 @@ async function downloadByKind(item: LibraryItem): Promise<void> {
       const src = item.raw as any;
       const notebookId = src.notebook_id;
       const sourceId = src.id || src.source_id;
-      window.open(`${API_BASE_URL}/sources/${notebookId}/${sourceId}/download`, '_blank');
+      // Use localFetch (token-auth'd) → blob; window.open() would send a
+      // tokenless GET and hit 401 from the auth middleware.
+      const { localFetch } = await import('../../services/api');
+      const resp = await localFetch(`${API_BASE_URL}/sources/${notebookId}/${sourceId}/download`);
+      if (!resp.ok) throw new Error('Failed to download note');
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(item.title || 'note').replace(/[^a-z0-9-_ ]/gi, '_')}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
       return;
     }
     case 'audio': {

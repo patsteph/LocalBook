@@ -55,6 +55,10 @@ EXEMPT_PATHS = frozenset({
 # specific UUID to fetch anything meaningful.
 EXEMPT_PREFIXES = (
     "/audio/download/",
+    # Same reasoning as /audio/download/ — the canvas <video> element loads
+    # via plain HTML5 src and can't attach the X-LocalBook-Token header.
+    # UUID-keyed user content; an attacker would need to know the video_id.
+    "/video/stream/",
 )
 
 HEADER_NAME = "x-localbook-token"

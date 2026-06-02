@@ -177,21 +177,10 @@ function App() {
       setCanvasItems([newItem]);
       return;
     }
+    // Non-canvas-viewer views replace the current leaf in place — splitting
+    // the canvas into a top/bottom layout was the old multi-panel workflow
+    // and caused unexpected bottom-up UI disruption. Single-leaf only now.
     setLayout(prev => {
-      if (countLeaves(prev) < 4) {
-        const mainId = findFirstLeafId(prev);
-        const currentLeaf = findLeaf(prev, mainId);
-        const newId = `panel-${Date.now()}`;
-        return replaceLeaf(prev, mainId, {
-          type: 'split',
-          direction: 'vertical',
-          sizes: [50, 50],
-          children: [
-            { type: 'leaf', id: mainId, view: currentLeaf?.view || 'chat' },
-            { type: 'leaf', id: newId, view, props },
-          ],
-        });
-      }
       const mainId = findFirstLeafId(prev);
       return replaceLeaf(prev, mainId, { type: 'leaf', id: mainId, view, props });
     });
@@ -512,6 +501,7 @@ function App() {
   useEffect(() => {
     const handler = (e: Event) => {
       const item = (e as CustomEvent).detail || {};
+      const raw = item.raw || {};
       // Map LibraryItemKind → CanvasItem type. These mostly mirror.
       const kindToType: Record<string, string> = {
         document: 'document',
@@ -522,19 +512,60 @@ function App() {
         note: 'note',
       };
       const type = kindToType[item.kind] || 'document';
+
+      // Per-kind content + metadata. Each tombstone renderer expects
+      // different fields (audio/video want the id in metadata; document/
+      // visual/quiz want the actual content). Passing only `libraryItemId`
+      // left the media players stuck on their "Starting…" placeholders.
+      let content = '';
+      const metadata: Record<string, any> = {
+        notebookId: selectedNotebookId,
+        libraryKind: item.kind,
+        libraryItemId: item.id,
+        source: 'library',
+      };
+
+      switch (item.kind) {
+        case 'document':
+          content = raw.content || '';
+          metadata.contentId = raw.content_id;
+          metadata.skillName = raw.skill_name;
+          break;
+        case 'audio':
+          metadata.audioId = raw.audio_id;
+          break;
+        case 'video':
+          metadata.videoId = raw.video_id;
+          break;
+        case 'visual':
+          // v2 stores svg_markup; legacy template path stores mermaid_code.
+          content = raw.svg_markup || raw.mermaid_code || '';
+          metadata.templateId = raw.template_id;
+          metadata.v2Path = raw.v2_path;
+          metadata.originalPrompt = raw.topic || raw.prompt;
+          if (raw.critic_overall != null) {
+            metadata.criticScore = { overall: raw.critic_overall };
+          }
+          break;
+        case 'quiz':
+          // CanvasItemCard renders quiz from item.content (JSON array string).
+          content = JSON.stringify(raw.questions || []);
+          metadata.quiz = raw;
+          break;
+        case 'note':
+          content = raw.content || '';
+          metadata.sourceId = raw.id || raw.source_id;
+          break;
+      }
+
       addCanvasItem({
         id: `library-${item.kind}-${item.id}`,
         type: type as any,
         title: item.title || 'Library item',
-        content: item.preview || '',
+        content,
         collapsed: false,
         status: 'complete',
-        metadata: {
-          notebookId: selectedNotebookId,
-          libraryKind: item.kind,
-          libraryItemId: item.id,
-          source: 'library',
-        } as any,
+        metadata: metadata as any,
       });
       // Return to chat so the user sees the canvas with their new item.
       changePanelView(primaryPanelId, 'chat');
