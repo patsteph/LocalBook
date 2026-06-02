@@ -301,3 +301,22 @@ html:not(.dark) .rich-note-editor-wrapper .bn-editor {
 .dark .rich-note-editor-wrapper th {
   background-color: #1f2937;
 }
+
+/* Main-nav pulse — one cycle, gentle. Tier 5 nav (2026-06-02).
+   The pulse signals "something happened in this view" without nagging.
+   Animation: a soft blue ring fades in and out over ~1.8s. The CSS variable
+   --pulse-color can be overridden per-view if we ever want per-section
+   colors (e.g., emerald for Curator). */
+@keyframes lb-nav-pulse-keyframes {
+  0%   { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.0); transform: scale(1.00); }
+  20%  { box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35); transform: scale(1.03); }
+  60%  { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0.0); transform: scale(1.00); }
+  100% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0.0); transform: scale(1.00); }
+}
+.lb-nav-pulse {
+  animation: lb-nav-pulse-keyframes 1.8s ease-out 1;
+}
+.lb-nav-pulse-ring {
+  /* No-op for now — the ring class is wired in JSX in case we want a separate
+     ring element. The pulse itself runs on the button via .lb-nav-pulse. */
+}

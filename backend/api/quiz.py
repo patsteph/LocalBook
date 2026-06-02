@@ -280,7 +280,32 @@ async def generate_quiz(request: GenerateQuizRequest):
                 "created": datetime.utcnow().isoformat()
             }
         _save_cards(request.notebook_id, cards_data)
-        
+
+        # Tier 5 (2026-06-02): persist the quiz so it appears in Library.
+        # The spaced-repetition card store above is separate (per-question
+        # scheduling) — this row preserves the original quiz as a unit so
+        # the user can revisit / download / delete the whole quiz later.
+        try:
+            from storage.quiz_store import quiz_store
+            saved_quiz = await quiz_store.create(
+                notebook_id=request.notebook_id,
+                topic=quiz_output.topic or request.topic or "",
+                difficulty=request.difficulty or "medium",
+                num_questions=len(questions),
+                questions=[q.model_dump() for q in questions],
+                source_summary=quiz_output.source_summary,
+                sources_used=built.sources_used,
+            )
+            # Use the persisted ID so the response matches what shows up in Library.
+            if saved_quiz.get("quiz_id"):
+                quiz_id = saved_quiz["quiz_id"]
+                # Re-attach the new ID to question.id (which was a short prefix earlier).
+                for i, q in enumerate(questions):
+                    q.id = f"{quiz_id}_q{i}"
+        except Exception as _persist_err:
+            # Non-fatal — the user still gets the quiz inline, it just won't be in Library.
+            logger.warning(f"[STUDIO] quiz_store.create failed (non-fatal): {_persist_err}")
+
         logger.info(f"[STUDIO] Quiz generated successfully: {len(questions)} questions")
         return QuizResponse(
             quiz_id=quiz_id,
@@ -591,3 +616,92 @@ Respond in JSON:
             score=1.0 if is_correct else 0.0,
             feedback="Correct!" if is_correct else f"Expected: {request.correct_answer}",
         )
+
+
+# ─── Library endpoints (Tier 5, 2026-06-02) ──────────────────────────────────
+
+@router.get("/list/{notebook_id}")
+async def list_quizzes(notebook_id: str):
+    """List persisted quizzes for a notebook (newest first). Used by Library."""
+    from storage.quiz_store import quiz_store
+    return await quiz_store.list(notebook_id)
+
+
+@router.get("/{quiz_id}")
+async def get_quiz(quiz_id: str):
+    """Fetch a single persisted quiz by ID."""
+    from storage.quiz_store import quiz_store
+    quiz = await quiz_store.get(quiz_id)
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    return quiz
+
+
+@router.delete("/{quiz_id}")
+async def delete_quiz(quiz_id: str):
+    """Delete a persisted quiz row (Library trash action)."""
+    from storage.quiz_store import quiz_store
+    ok = await quiz_store.delete(quiz_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    return {"deleted": True, "quiz_id": quiz_id}
+
+
+@router.get("/{quiz_id}/download")
+async def download_quiz(quiz_id: str):
+    """Download the quiz as a markdown file — questions, options, answers,
+    explanations. Format the user picked: Markdown (Tier 5, 2026-06-02)."""
+    from fastapi.responses import Response
+    from storage.quiz_store import quiz_store
+
+    quiz = await quiz_store.get(quiz_id)
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    lines = []
+    title = quiz.get("topic") or "Quiz"
+    lines.append(f"# {title}")
+    lines.append("")
+    diff = quiz.get("difficulty") or "medium"
+    n = quiz.get("num_questions", 0)
+    lines.append(f"*Difficulty: {diff}  ·  {n} questions  ·  generated {quiz.get('created_at', '')}*")
+    lines.append("")
+    if quiz.get("source_summary"):
+        lines.append(f"**Source summary:** {quiz['source_summary']}")
+        lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    for i, q in enumerate(quiz.get("questions", []), start=1):
+        lines.append(f"## Question {i}")
+        lines.append("")
+        lines.append(q.get("question", ""))
+        lines.append("")
+        opts = q.get("options")
+        if opts:
+            for j, opt in enumerate(opts):
+                marker = chr(ord("A") + j)
+                lines.append(f"- **{marker}.** {opt}")
+            lines.append("")
+        lines.append(f"**Answer:** {q.get('answer', '')}")
+        if q.get("explanation"):
+            lines.append("")
+            lines.append(f"**Why:** {q['explanation']}")
+        if q.get("evidence_quote"):
+            lines.append("")
+            lines.append(f"> {q['evidence_quote']}")
+        if q.get("source_reference"):
+            lines.append("")
+            lines.append(f"*Source: {q['source_reference']}*")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    md = "\n".join(lines)
+    safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in title).strip()[:60] or "quiz"
+    filename = f"{safe_title}.md"
+    return Response(
+        content=md,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

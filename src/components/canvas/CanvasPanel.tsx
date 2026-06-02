@@ -10,8 +10,7 @@ import { CuratorPanel } from '../CuratorPanel';
 import { Settings } from '../Settings';
 import { LLMSelector } from '../LLMSelector';
 import { EmbeddingSelector } from '../EmbeddingSelector';
-import { WebSearchResults } from '../WebSearchResults';
-import { SiteSearch } from '../SiteSearch';
+import { LibraryView } from '../library/LibraryView';
 
 interface CanvasPanelProps {
   panelId: string;
@@ -21,7 +20,6 @@ interface CanvasPanelProps {
 
 export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelProps }) => {
   const ctx = useAppShell();
-  const [webSearchTab, setWebSearchTab] = useState<'web' | 'site'>('web');
   const [insightTab, setInsightTab] = useState<'themes' | 'journey'>('themes');
   const [highlightedTopicId, setHighlightedTopicId] = useState<number | null>(null);
 
@@ -30,6 +28,20 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
       case 'chat':
         // Chat is always mounted below — this case just returns null
         return null;
+
+      case 'library':
+        // Library: archive view of generated content + saved notes.
+        // Clicking an item dispatches a custom event that the app shell
+        // listens for: opens a tombstone on the canvas + switches the
+        // panel back to 'chat' so the canvas comes back into view.
+        return (
+          <LibraryView
+            notebookId={ctx.selectedNotebookId}
+            onOpenItem={(item) => {
+              window.dispatchEvent(new CustomEvent('lb:openLibraryItem', { detail: item }));
+            }}
+          />
+        );
 
       case 'constellation':
         return (
@@ -136,50 +148,10 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
           </div>
         );
 
-      case 'web-research':
-        return (
-          <div className="flex flex-col h-full">
-            <div className="flex border-b border-gray-200 dark:border-gray-700">
-              <button
-                onClick={() => setWebSearchTab('web')}
-                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                  webSearchTab === 'web'
-                    ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'
-                }`}
-              >
-                🌐 Web Search
-              </button>
-              <button
-                onClick={() => setWebSearchTab('site')}
-                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                  webSearchTab === 'site'
-                    ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'
-                }`}
-              >
-                🎯 Site Search
-              </button>
-            </div>
-            <div className="flex-1 overflow-hidden">
-              {ctx.selectedNotebookId && (
-                webSearchTab === 'web' ? (
-                  <WebSearchResults
-                    notebookId={ctx.selectedNotebookId}
-                    onSourceAdded={() => { ctx.triggerSourcesRefresh(); ctx.triggerNotebooksRefresh(); }}
-                    initialQuery={panelProps?.initialQuery || ''}
-                  />
-                ) : (
-                  <SiteSearch
-                    notebookId={ctx.selectedNotebookId}
-                    onSourceAdded={() => { ctx.triggerSourcesRefresh(); ctx.triggerNotebooksRefresh(); }}
-                    initialQuery={panelProps?.initialQuery || ''}
-                  />
-                )
-              )}
-            </div>
-          </div>
-        );
+      // 'web-research' as a panel view was removed 2026-06-02. Web search
+      // lives in the LeftNav Web Research drawer's Modal only. Both the
+      // LeftNav button and the chat-triggered "Yes, search the web" now
+      // open the same modal via the lb:openWebResearch event.
 
       case 'content-viewer':
       case 'quiz-viewer':

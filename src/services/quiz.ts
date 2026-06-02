@@ -120,6 +120,34 @@ export const quizService = {
     return response.json();
   },
 
+  // Library: list persisted quizzes for a notebook, newest first (Tier 5).
+  async list(notebookId: string): Promise<any[]> {
+    const response = await localFetch(`${API_BASE}/quiz/list/${notebookId}`);
+    if (!response.ok) throw new Error('Failed to list quizzes');
+    return response.json();
+  },
+
+  // Library: delete a persisted quiz (Tier 5).
+  async delete(quizId: string): Promise<void> {
+    const response = await localFetch(`${API_BASE}/quiz/${quizId}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error('Failed to delete quiz');
+  },
+
+  // Library: download a quiz as markdown (Tier 5). Triggers a browser save.
+  async download(quizId: string): Promise<void> {
+    const response = await localFetch(`${API_BASE}/quiz/${quizId}/download`);
+    if (!response.ok) throw new Error('Failed to download quiz');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `quiz-${quizId}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
+
   async getDueCards(notebookId: string, limit: number = 20): Promise<ReviewCard[]> {
     const response = await localFetch(`${API_BASE}/quiz/due/${notebookId}?limit=${limit}`);
     if (!response.ok) throw new Error('Failed to get due cards');

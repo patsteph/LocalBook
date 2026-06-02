@@ -210,7 +210,56 @@ class Database:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_content_notebook ON content_generations(notebook_id)
         """)
-        
+
+        # -- quiz_generations (Tier 5, 2026-06-02) --
+        # Persists generated quizzes so they appear in the Library archive.
+        # Questions live as a JSON blob — they're heterogeneous (different
+        # types, different fields per type) and querying individual questions
+        # is rare so JSON is the simpler tradeoff.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_generations (
+                quiz_id TEXT PRIMARY KEY,
+                notebook_id TEXT NOT NULL,
+                topic TEXT,
+                difficulty TEXT,
+                num_questions INTEGER DEFAULT 0,
+                questions_json TEXT NOT NULL,
+                source_summary TEXT,
+                sources_used INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_quiz_notebook ON quiz_generations(notebook_id)
+        """)
+
+        # -- visual_generations (Tier 5, 2026-06-02) --
+        # Persists generated visuals (SVG or Mermaid). Either svg_markup or
+        # mermaid_code is populated, never both. critic_overall is nullable
+        # because the legacy template path doesn't produce a critic score.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS visual_generations (
+                visual_id TEXT PRIMARY KEY,
+                notebook_id TEXT NOT NULL,
+                topic TEXT,
+                title TEXT,
+                svg_markup TEXT,
+                mermaid_code TEXT,
+                template_id TEXT,
+                v2_path TEXT,
+                critic_overall REAL,
+                prompt TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_visual_notebook ON visual_generations(notebook_id)
+        """)
+
         # -- exploration --
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS exploration_queries (

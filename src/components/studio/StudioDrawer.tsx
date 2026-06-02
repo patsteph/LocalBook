@@ -29,6 +29,15 @@ import { useGenerateVisualToCanvas } from '../../hooks/useGenerateVisualToCanvas
 import { useCanvasItems } from '../canvas/CanvasContext';
 import { Skill } from '../../types';
 
+// Audio skill_id → human-readable format label (used for canvas-item titles).
+const AUDIO_FORMAT_LABELS: Record<string, string> = {
+  podcast_script: 'Conversation',
+  debate: 'Debate Format',
+  interview: 'Interview Format',
+  storytelling: 'Story Format',
+  feynman_curriculum: 'Feynman Lesson',
+};
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 type StudioType = 'docs' | 'audio' | 'video' | 'visual' | 'quiz';
 type Register = 'auto' | 'measured' | 'engaged' | 'warm' | 'urgent';
@@ -133,6 +142,11 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
   }, [open]);
 
   const generateVisualToCanvas = useGenerateVisualToCanvas();
+  // Canvas item methods — every generation from the drawer drops a tombstone
+  // on the canvas with status='generating' BEFORE the API call returns, so
+  // the user has something to watch progress on. Without this, long-running
+  // generations (especially video) feel like the app froze.
+  const { addCanvasItem, updateCanvasItem } = useCanvasItems();
 
   const handleGenerate = useCallback(async () => {
     if (!notebookId) return;
@@ -140,63 +154,194 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
 
     const trimmedTopic = topic.trim() || undefined;
     const regOverride = register !== 'auto' ? register : undefined;
+    const titleTopic = trimmedTopic
+      ? (trimmedTopic.length > 50 ? trimmedTopic.substring(0, 47).trim() + '…' : trimmedTopic)
+      : '';
 
     try {
       switch (type) {
-        case 'docs':
-          await contentService.generate({
-            notebook_id: notebookId,
-            skill_id: docsSkill,
-            topic: trimmedTopic,
-            style: docsStyle,
-            ...(chatContext ? { chat_context: chatContext } : {}),
-            ...(regOverride ? { register: regOverride } : {}),
+        case 'docs': {
+          const skillName = textSkills.find(s => s.skill_id === docsSkill)?.name || 'Document';
+          const itemId = `doc-${Date.now()}`;
+          addCanvasItem({
+            id: itemId,
+            type: 'document' as any,
+            title: titleTopic ? `${skillName}: ${titleTopic}` : `Document: ${skillName}`,
+            content: '',
+            collapsed: true,
+            status: 'generating',
+            metadata: { notebookId, source: 'studio_drawer' } as any,
           });
-          onToast?.('success', 'Document started');
+          try {
+            const result = await contentService.generate({
+              notebook_id: notebookId,
+              skill_id: docsSkill,
+              topic: trimmedTopic,
+              style: docsStyle,
+              ...(chatContext ? { chat_context: chatContext } : {}),
+              ...(regOverride ? { register: regOverride } : {}),
+            });
+            updateCanvasItem(itemId, {
+              title: result.skill_name || skillName,
+              content: result.content,
+              status: 'complete',
+              metadata: { notebookId, contentId: (result as any).content_id, source: 'studio_drawer' } as any,
+            });
+            window.dispatchEvent(new CustomEvent('contentUpdated'));
+            onToast?.('success', 'Document ready');
+          } catch (err) {
+            updateCanvasItem(itemId, {
+              status: 'error',
+              metadata: { notebookId, errorMessage: err instanceof Error ? err.message : 'Generation failed', source: 'studio_drawer' } as any,
+            });
+            throw err;
+          }
           break;
+        }
         case 'audio': {
           const voiceMap: Record<string, [string, string]> = { mf: ['male', 'female'], fm: ['female', 'male'], mm: ['male', 'male'], ff: ['female', 'female'] };
           const [h1, h2] = voiceMap[audioVoices] || ['male', 'female'];
-          await audioService.generate({
-            notebook_id: notebookId,
-            topic: trimmedTopic,
-            duration_minutes: audioDuration,
-            skill_id: audioSkill,
-            host1_gender: h1,
-            host2_gender: h2,
-            accent: audioAccent,
-            ...(chatContext ? { chat_context: chatContext } : {}),
-            ...(regOverride ? { register: regOverride } : {}),
+          const formatLabel = AUDIO_FORMAT_LABELS[audioSkill] || 'Audio';
+          const itemId = `audio-${Date.now()}`;
+          addCanvasItem({
+            id: itemId,
+            type: 'audio' as any,
+            title: titleTopic ? `${formatLabel}: ${titleTopic}` : `Podcast: ${formatLabel}`,
+            content: '',
+            collapsed: true,
+            status: 'generating',
+            metadata: { notebookId, source: 'studio_drawer' } as any,
           });
-          onToast?.('success', 'Podcast started');
+          try {
+            const result = await audioService.generate({
+              notebook_id: notebookId,
+              topic: trimmedTopic,
+              duration_minutes: audioDuration,
+              skill_id: audioSkill,
+              host1_gender: h1,
+              host2_gender: h2,
+              accent: audioAccent,
+              ...(chatContext ? { chat_context: chatContext } : {}),
+              ...(regOverride ? { register: regOverride } : {}),
+            });
+            updateCanvasItem(itemId, {
+              status: 'processing',
+              metadata: { audioId: result.audio_id, notebookId, source: 'studio_drawer' } as any,
+            });
+            window.dispatchEvent(new CustomEvent('audioUpdated'));
+            onToast?.('success', 'Podcast generating');
+          } catch (err) {
+            updateCanvasItem(itemId, {
+              status: 'error',
+              metadata: { notebookId, errorMessage: err instanceof Error ? err.message : 'Generation failed', source: 'studio_drawer' } as any,
+            });
+            throw err;
+          }
           break;
         }
-        case 'video':
-          await videoService.generate({
-            notebook_id: notebookId,
-            topic: trimmedTopic,
-            duration_minutes: videoDuration,
-            visual_style: 'classic',
-            narrator_gender: videoNarratorGender,
-            accent: 'us',
-            format_type: videoFormat,
-            narration_style: videoNarrationStyle,
-            ...(chatContext ? { chat_context: chatContext } : {}),
-            ...(regOverride ? { register: regOverride } : {}),
+        case 'video': {
+          const itemId = `video-${Date.now()}`;
+          const formatLabel = videoFormat === 'brief' ? 'Brief' : 'Explainer';
+          addCanvasItem({
+            id: itemId,
+            type: 'video' as any,
+            title: titleTopic ? `Video: ${titleTopic}` : `Video: ${formatLabel}`,
+            content: '',
+            collapsed: true,
+            status: 'generating',
+            metadata: { notebookId, source: 'studio_drawer' } as any,
           });
-          onToast?.('success', 'Video started');
+          try {
+            const result = await videoService.generate({
+              notebook_id: notebookId,
+              topic: trimmedTopic,
+              duration_minutes: videoDuration,
+              visual_style: 'classic',
+              narrator_gender: videoNarratorGender,
+              accent: 'us',
+              format_type: videoFormat,
+              narration_style: videoNarrationStyle,
+              ...(chatContext ? { chat_context: chatContext } : {}),
+              ...(regOverride ? { register: regOverride } : {}),
+            });
+            updateCanvasItem(itemId, {
+              status: 'processing',
+              metadata: { videoId: result.video_id, notebookId, source: 'studio_drawer' } as any,
+            });
+            // Poll for completion — video runs in the background on the server.
+            const pollInterval = setInterval(async () => {
+              try {
+                const status = await videoService.getStatus(result.video_id);
+                if (status.status === 'completed') {
+                  clearInterval(pollInterval);
+                  updateCanvasItem(itemId, {
+                    status: 'complete',
+                    metadata: { videoId: result.video_id, notebookId, source: 'studio_drawer', errorMessage: null } as any,
+                  });
+                  window.dispatchEvent(new CustomEvent('videoUpdated'));
+                } else if (status.status === 'failed') {
+                  clearInterval(pollInterval);
+                  updateCanvasItem(itemId, {
+                    status: 'error',
+                    metadata: { videoId: result.video_id, notebookId, source: 'studio_drawer', errorMessage: status.error_message || 'Video generation failed' } as any,
+                  });
+                } else {
+                  updateCanvasItem(itemId, {
+                    metadata: { videoId: result.video_id, notebookId, source: 'studio_drawer', errorMessage: status.error_message } as any,
+                  });
+                }
+              } catch (pollErr) {
+                console.warn('[StudioDrawer] video status poll failed (non-fatal):', pollErr);
+              }
+            }, 4000);
+            onToast?.('success', 'Video generating');
+          } catch (err) {
+            updateCanvasItem(itemId, {
+              status: 'error',
+              metadata: { notebookId, errorMessage: err instanceof Error ? err.message : 'Generation failed', source: 'studio_drawer' } as any,
+            });
+            throw err;
+          }
           break;
+        }
         case 'visual':
           if (!trimmedTopic) {
             onToast?.('error', 'Topic required for visual');
             return;
           }
+          // generateVisualToCanvas already drops its own canvas item.
           await generateVisualToCanvas(notebookId, trimmedTopic, { source: 'studio_bar' });
           break;
-        case 'quiz':
-          await quizService.generate(notebookId, quizCount, quizDifficulty, trimmedTopic, chatContext);
-          onToast?.('success', 'Quiz started');
+        case 'quiz': {
+          const itemId = `quiz-${Date.now()}`;
+          addCanvasItem({
+            id: itemId,
+            type: 'quiz' as any,
+            title: titleTopic ? `Quiz: ${titleTopic}` : `Quiz (${quizCount} questions)`,
+            content: '',
+            collapsed: true,
+            status: 'generating',
+            metadata: { notebookId, source: 'studio_drawer' } as any,
+          });
+          try {
+            const result = await quizService.generate(notebookId, quizCount, quizDifficulty, trimmedTopic, chatContext);
+            updateCanvasItem(itemId, {
+              status: 'complete',
+              content: '',
+              metadata: { notebookId, quiz: result, source: 'studio_drawer' } as any,
+            });
+            // Library auto-refresh hook (Tier 5).
+            window.dispatchEvent(new CustomEvent('quizzesUpdated'));
+            onToast?.('success', 'Quiz ready');
+          } catch (err) {
+            updateCanvasItem(itemId, {
+              status: 'error',
+              metadata: { notebookId, errorMessage: err instanceof Error ? err.message : 'Generation failed', source: 'studio_drawer' } as any,
+            });
+            throw err;
+          }
           break;
+        }
       }
       onClose();
     } catch (err) {
@@ -205,7 +350,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
     } finally {
       setGenerating(false);
     }
-  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoFormat, videoNarrationStyle, videoNarratorGender, quizCount, quizDifficulty, chatContext, onClose, onToast, generateVisualToCanvas]);
+  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoFormat, videoNarrationStyle, videoNarratorGender, quizCount, quizDifficulty, chatContext, onClose, onToast, generateVisualToCanvas, addCanvasItem, updateCanvasItem, textSkills]);
 
   if (!open) return null;
 

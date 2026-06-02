@@ -671,6 +671,27 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
                         "v2_generation_ms": visual.generation_ms,
                         "suggested_overlay_position": visual.suggested_overlay_position,
                     }
+                    # Tier 5 (2026-06-02): persist to visual_store so the
+                    # generated visual appears in the Library archive view.
+                    # Non-fatal — failure here doesn't break the stream.
+                    try:
+                        from storage.visual_store import visual_store
+                        saved = await visual_store.create(
+                            notebook_id=request.notebook_id,
+                            topic=request.topic or "",
+                            title=visual.title or "Visual",
+                            svg_markup=visual.svg_markup,
+                            mermaid_code=visual.mermaid_code,
+                            template_id=visual.template_id,
+                            v2_path=visual.path.value if visual.path else None,
+                            critic_overall=visual.critic_score.overall if visual.critic_score else None,
+                            prompt=request.topic,
+                        )
+                        if saved.get("visual_id"):
+                            primary["visual_id"] = saved["visual_id"]
+                    except Exception as _vs_err:
+                        print(f"[Visual Stream] visual_store.create failed (non-fatal): {_vs_err}")
+
                     yield f"event: primary\ndata: {json_module.dumps(primary)}\n\n"
                     yield f"event: done\ndata: {json_module.dumps({'total': 1, 'v2': True})}\n\n"
                     return
@@ -1269,6 +1290,28 @@ async def v2_compose(request: V2ComposeRequest):
     except Exception as e:
         logger.debug(f"[v2_compose] telemetry log failed: {e}")
 
+    # Tier 5 (2026-06-02): persist to visual_store so the generated visual
+    # appears in the Library archive. Non-fatal — failure logs but the
+    # response still ships the visual to the user.
+    if visual.success and (visual.svg_markup or visual.mermaid_code):
+        try:
+            from storage.visual_store import visual_store
+            saved = await visual_store.create(
+                notebook_id=request.notebook_id,
+                topic=request.topic or "",
+                title=visual.title or "Visual",
+                svg_markup=visual.svg_markup,
+                mermaid_code=visual.mermaid_code,
+                template_id=visual.template_id,
+                v2_path=visual.path.value if visual.path else None,
+                critic_overall=visual.critic_score.overall if visual.critic_score else None,
+                prompt=request.topic,
+            )
+            if saved.get("visual_id"):
+                payload["visual_id"] = saved["visual_id"]
+        except Exception as _vs_err:
+            logger.warning(f"[v2_compose] visual_store.create failed (non-fatal): {_vs_err}")
+
     return payload
 
 
@@ -1340,3 +1383,78 @@ async def v2_render_png(payload: dict):
     if not png:
         raise HTTPException(status_code=500, detail="SVG render failed")
     return Response(content=png, media_type="image/png")
+
+
+# ─── Library endpoints (Tier 5, 2026-06-02) ──────────────────────────────────
+
+@router.get("/list/{notebook_id}")
+async def list_visuals(notebook_id: str):
+    """List persisted visuals for a notebook (newest first). Used by Library."""
+    from storage.visual_store import visual_store
+    return await visual_store.list(notebook_id)
+
+
+@router.get("/item/{visual_id}")
+async def get_visual(visual_id: str):
+    """Fetch a single persisted visual by ID."""
+    from storage.visual_store import visual_store
+    visual = await visual_store.get(visual_id)
+    if not visual:
+        raise HTTPException(status_code=404, detail="Visual not found")
+    return visual
+
+
+@router.delete("/item/{visual_id}")
+async def delete_visual(visual_id: str):
+    """Delete a persisted visual row (Library trash action)."""
+    from storage.visual_store import visual_store
+    ok = await visual_store.delete(visual_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Visual not found")
+    return {"deleted": True, "visual_id": visual_id}
+
+
+@router.get("/item/{visual_id}/download")
+async def download_visual(visual_id: str, format: str = "svg"):
+    """Download a visual as SVG (default) or PNG.
+
+    Mermaid-only visuals fall back to a markdown export of the code, since
+    they need a Mermaid renderer to become an image.
+    """
+    from fastapi.responses import Response
+    from storage.visual_store import visual_store
+
+    visual = await visual_store.get(visual_id)
+    if not visual:
+        raise HTTPException(status_code=404, detail="Visual not found")
+
+    title = visual.get("title") or "visual"
+    safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in title).strip()[:60] or "visual"
+
+    svg = visual.get("svg_markup") or ""
+    mermaid = visual.get("mermaid_code") or ""
+
+    if svg and format.lower() != "png":
+        return Response(
+            content=svg,
+            media_type="image/svg+xml",
+            headers={"Content-Disposition": f'attachment; filename="{safe_title}.svg"'},
+        )
+    if svg and format.lower() == "png":
+        from services.svg_renderer import render_svg_to_png
+        png = await render_svg_to_png(svg, width=1600, height=900)
+        if not png:
+            raise HTTPException(status_code=500, detail="SVG → PNG render failed")
+        return Response(
+            content=png,
+            media_type="image/png",
+            headers={"Content-Disposition": f'attachment; filename="{safe_title}.png"'},
+        )
+    if mermaid:
+        md = f"# {title}\n\n```mermaid\n{mermaid}\n```\n"
+        return Response(
+            content=md,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="{safe_title}.md"'},
+        )
+    raise HTTPException(status_code=404, detail="Visual has no renderable content")

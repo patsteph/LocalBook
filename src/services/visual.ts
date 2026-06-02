@@ -237,6 +237,43 @@ export const visualService = {
     return response.json();
   },
 
+  // Library: list persisted visuals for a notebook, newest first (Tier 5).
+  async list(notebookId: string): Promise<any[]> {
+    const response = await localFetch(`${API_BASE}/visual/list/${notebookId}`);
+    if (!response.ok) throw new Error('Failed to list visuals');
+    return response.json();
+  },
+
+  // Library: fetch one persisted visual (used to re-hydrate canvas item).
+  async getItem(visualId: string): Promise<any> {
+    const response = await localFetch(`${API_BASE}/visual/item/${visualId}`);
+    if (!response.ok) throw new Error('Failed to fetch visual');
+    return response.json();
+  },
+
+  // Library: delete a persisted visual.
+  async deleteItem(visualId: string): Promise<void> {
+    const response = await localFetch(`${API_BASE}/visual/item/${visualId}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error('Failed to delete visual');
+  },
+
+  // Library: download a visual. SVG visuals export as .svg; Mermaid falls
+  // back to markdown since the backend can't render without a renderer.
+  async download(visualId: string, format: 'svg' | 'png' = 'svg'): Promise<void> {
+    const response = await localFetch(`${API_BASE}/visual/item/${visualId}/download?format=${format}`);
+    if (!response.ok) throw new Error('Failed to download visual');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const ext = format === 'png' ? 'png' : (blob.type.includes('markdown') ? 'md' : 'svg');
+    a.download = `visual-${visualId}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
+
   async checkCacheStatus(notebookId: string): Promise<{ ready: boolean; theme_count?: number; age_seconds?: number; reason?: string }> {
     const response = await localFetch(`${API_BASE}/visual/cache/status/${notebookId}`);
     if (!response.ok) return { ready: false, reason: 'fetch_error' };

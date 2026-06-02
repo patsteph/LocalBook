@@ -958,3 +958,37 @@ async def get_sources_by_tag(notebook_id: str, tag: str):
     """Get all sources with a specific tag"""
     sources = await source_store.get_sources_by_tag(notebook_id, tag)
     return sources
+
+
+@router.get("/{notebook_id}/{source_id}/download")
+async def download_source(notebook_id: str, source_id: str):
+    """Download a source's content as a file.
+
+    Tier 5 (2026-06-02): primarily used by the Library's note rows. For
+    source_type='note' the content is already markdown; we ship it as a
+    .md file. Other source types fall back to .txt so the download path
+    works universally without needing per-type renderers here.
+    """
+    from fastapi.responses import Response
+    src = await source_store.get(source_id)
+    if not src or src.get("notebook_id") != notebook_id:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    content_data = await source_store.get_content(notebook_id, source_id) or {}
+    content = content_data.get("content") or src.get("content") or ""
+    title = src.get("filename") or src.get("title") or "source"
+    safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in title).strip()[:80] or "source"
+
+    is_note = (src.get("metadata", {}) or {}).get("type") == "note" or src.get("type") == "note"
+    if is_note:
+        return Response(
+            content=content,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="{safe_title}.md"'},
+        )
+
+    return Response(
+        content=content,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{safe_title}.txt"'},
+    )

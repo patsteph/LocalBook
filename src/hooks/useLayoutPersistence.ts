@@ -41,6 +41,27 @@ function loadJSON<T>(key: string, fallback: T): T {
   }
 }
 
+// Sanitize a persisted layout — replace any leaves whose `view` was removed
+// from the PanelView union with the safe default ('chat'). Without this,
+// users who previously navigated to a now-removed view (e.g., the
+// 'web-research' canvas panel, 'findings') would see their saved layout
+// keep restoring those views even after the code path that creates them
+// is gone. 2026-06-02.
+const REMOVED_VIEWS = new Set(['web-research', 'findings']);
+function sanitizeLayout(node: LayoutNode): LayoutNode {
+  if (node.type === 'leaf') {
+    if (REMOVED_VIEWS.has(node.view as string)) {
+      return { ...node, view: 'chat' as any, props: undefined };
+    }
+    return node;
+  }
+  // Split node — recurse
+  return {
+    ...node,
+    children: [sanitizeLayout(node.children[0]), sanitizeLayout(node.children[1])],
+  };
+}
+
 function saveJSON(key: string, value: any): void {
   try {
     localStorage.setItem(key, JSON.stringify(value));
@@ -54,7 +75,7 @@ export function useCanvasLayout(notebookId: string | null) {
 
   const [layout, setLayoutState] = useState<LayoutNode>(() => {
     if (!storageKey) return makeDefaultLayout();
-    return loadJSON<LayoutNode>(storageKey, makeDefaultLayout());
+    return sanitizeLayout(loadJSON<LayoutNode>(storageKey, makeDefaultLayout()));
   });
 
   // Reload layout when notebook changes
@@ -63,7 +84,7 @@ export function useCanvasLayout(notebookId: string | null) {
       setLayoutState(makeDefaultLayout());
       return;
     }
-    setLayoutState(loadJSON<LayoutNode>(storageKey, makeDefaultLayout()));
+    setLayoutState(sanitizeLayout(loadJSON<LayoutNode>(storageKey, makeDefaultLayout())));
   }, [storageKey]);
 
   const setLayout = useCallback((updater: LayoutNode | ((prev: LayoutNode) => LayoutNode)) => {

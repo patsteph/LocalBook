@@ -112,6 +112,9 @@ export function useGenerateVisualToCanvas() {
                 suggestedOverlayPosition: diagram.suggested_overlay_position,
               },
             });
+            // Library auto-refresh hook (Tier 5) — visual now persisted
+            // via visual_store on the backend; ping Library to re-fetch.
+            window.dispatchEvent(new CustomEvent('visualsUpdated'));
             options.onComplete?.(canvasItemId);
           },
           // onAlternative — ignored; canvas shows the primary only

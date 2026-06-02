@@ -6,13 +6,13 @@ import {
 
 export type PanelView =
   | 'chat'
+  | 'library'
   | 'constellation'
   | 'timeline'
   | 'curator'
   | 'settings'
   | 'llm-selector'
   | 'embedding-selector'
-  | 'web-research'
   | 'content-viewer'
   | 'quiz-viewer'
   | 'visual-viewer';
@@ -35,13 +35,13 @@ export type LayoutNode = SplitNode | LeafNode;
 
 export const VIEW_LABELS: Record<PanelView, string> = {
   'chat': 'Chat',
+  'library': 'Library',
   'constellation': 'Constellation',
   'timeline': 'Timeline',
   'curator': 'Curator',
   'settings': 'Settings',
   'llm-selector': 'AI Brain',
   'embedding-selector': 'Embedding Model',
-  'web-research': 'Web Research',
   'content-viewer': 'Document',
   'quiz-viewer': 'Quiz',
   'visual-viewer': 'Visual',
@@ -51,13 +51,13 @@ const iconClass = 'w-3.5 h-3.5';
 
 export const VIEW_ICONS: Record<PanelView, React.ReactNode> = {
   'chat': <MessageSquare className={iconClass} />,
+  'library': <FileText className={iconClass} />,
   'constellation': <Sparkles className={iconClass} />,
   'timeline': <CalendarDays className={iconClass} />,
   'curator': <Lightbulb className={iconClass} />,
   'settings': <Settings className={iconClass} />,
   'llm-selector': <Brain className={iconClass} />,
   'embedding-selector': <BarChart3 className={iconClass} />,
-  'web-research': <Globe className={iconClass} />,
   'content-viewer': <FileText className={iconClass} />,
   'quiz-viewer': <Target className={iconClass} />,
   'visual-viewer': <Palette className={iconClass} />,

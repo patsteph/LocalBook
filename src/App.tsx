@@ -7,7 +7,11 @@ import { LeftNavColumn } from './components/layout/LeftNavColumn';
 import { CanvasWorkspace } from './components/canvas/CanvasWorkspace';
 import { AppShellProvider, CanvasItemsProvider, AppShellContextValue, CanvasItemsContextValue } from './components/canvas/CanvasContext';
 import { CanvasItem } from './components/canvas/types';
-import { LayoutNode, PanelView, countLeaves, replaceLeaf, removeLeaf, findLeaf, VIEW_LABELS, VIEW_ICONS } from './components/canvas/types';
+import { LayoutNode, PanelView, countLeaves, replaceLeaf, removeLeaf, findLeaf } from './components/canvas/types';
+import { useMainViewShortcuts } from './hooks/useMainViewShortcuts';
+import { CommandPalette } from './components/CommandPalette';
+import { MainNavStrip } from './components/MainNavStrip';
+import { pulseView } from './lib/viewPulse';
 import { useCanvasLayout, useDrawerState, useStudioState } from './hooks/useLayoutPersistence';
 import { ToastContainer, ToastMessage } from './components/shared/Toast';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
@@ -56,9 +60,8 @@ function App() {
   const [canvasItems, setCanvasItems] = useState<CanvasItem[]>([]);
   const [generationStatus, setGenerationStatusRaw] = useState<'idle' | 'generating' | 'complete' | 'error'>('idle');
   const [chatContext, setChatContext] = useState<string>('');
-  const [showViewMenu, setShowViewMenu] = useState(false);
+  // showViewMenu/viewMenuRef removed 2026-06-02 — main nav is now a word-button strip.
   const [showUtilMenu, setShowUtilMenu] = useState(false);
-  const viewMenuRef = useRef<HTMLDivElement>(null);
   const utilMenuRef = useRef<HTMLDivElement>(null);
   const health = useSystemHealth();
   const [backendHealthStatus, setBackendHealthStatus] = useState<'ok' | 'crashed' | 'restarting' | 'recovered' | 'failed'>('ok');
@@ -462,20 +465,83 @@ function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [backendReady, morningBrief, weeklyWrap]);
 
-  // Outside-click handlers for unified top bar menus
+  // Outside-click handler for the utility menu (the view menu was removed
+  // 2026-06-02 — main nav is a persistent word-button strip with no popover).
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      if (viewMenuRef.current && !viewMenuRef.current.contains(e.target as Node)) setShowViewMenu(false);
       if (utilMenuRef.current && !utilMenuRef.current.contains(e.target as Node)) setShowUtilMenu(false);
     };
-    if (showViewMenu || showUtilMenu) document.addEventListener('mousedown', handleClick);
+    if (showUtilMenu) document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
-  }, [showViewMenu, showUtilMenu]);
+  }, [showUtilMenu]);
 
-  const MAIN_VIEWS: PanelView[] = ['chat', 'constellation', 'timeline', 'curator'];
+  // Nav order: Chat is the root/home, Library next (user's output),
+  // then exploration (Constellation, Timeline), then intelligence (Curator).
+  // 2026-06-02: replaced dropdown with horizontal word-button strip; added Library.
+  const MAIN_VIEWS: PanelView[] = ['chat', 'library', 'constellation', 'timeline', 'curator'];
   const primaryPanelId = findFirstLeafId(layout);
   const primaryLeaf = findLeaf(layout, primaryPanelId);
   const currentView = primaryLeaf?.view || 'chat';
+
+  // ⌘K command palette state.
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+
+  // Keyboard shortcuts for main views: ⌘1-⌘5 jumps; ⌘[ smart back; ⌘K palette.
+  useMainViewShortcuts({
+    currentView: currentView as PanelView,
+    onSwitchView: (v) => changePanelView(primaryPanelId, v),
+    onOpenCommandPalette: () => setCommandPaletteOpen(true),
+  });
+
+  // Library pulse — when something lands in the user's library archive
+  // (a finished generation, a saved-as-note, a new uploaded source), gently
+  // hint at the Library tab. Coalesced + suppressed-for-active-view in the
+  // viewPulse module, so subscribing here doesn't risk strobe-flashing the
+  // user even if multiple sources fire in quick succession.
+  useEffect(() => {
+    const onChange = () => pulseView('library');
+    const events = ['sourcesUpdated', 'notesUpdated', 'contentUpdated', 'audioUpdated', 'videoUpdated'];
+    events.forEach(e => window.addEventListener(e, onChange));
+    return () => events.forEach(e => window.removeEventListener(e, onChange));
+  }, []);
+
+  // Library → Canvas: when the user clicks an item in Library, drop a
+  // canvas tombstone with the item's content + flip back to the Chat view
+  // so the canvas comes back into focus. Library's "browse" is always a
+  // detour from the canvas; this listener completes the round-trip.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const item = (e as CustomEvent).detail || {};
+      // Map LibraryItemKind → CanvasItem type. These mostly mirror.
+      const kindToType: Record<string, string> = {
+        document: 'document',
+        audio: 'audio',
+        video: 'video',
+        visual: 'visual',
+        quiz: 'quiz',
+        note: 'note',
+      };
+      const type = kindToType[item.kind] || 'document';
+      addCanvasItem({
+        id: `library-${item.kind}-${item.id}`,
+        type: type as any,
+        title: item.title || 'Library item',
+        content: item.preview || '',
+        collapsed: false,
+        status: 'complete',
+        metadata: {
+          notebookId: selectedNotebookId,
+          libraryKind: item.kind,
+          libraryItemId: item.id,
+          source: 'library',
+        } as any,
+      });
+      // Return to chat so the user sees the canvas with their new item.
+      changePanelView(primaryPanelId, 'chat');
+    };
+    window.addEventListener('lb:openLibraryItem', handler as EventListener);
+    return () => window.removeEventListener('lb:openLibraryItem', handler as EventListener);
+  }, [addCanvasItem, changePanelView, primaryPanelId, selectedNotebookId]);
 
   // Listen for "Open in Canvas" events from chat visual actions
   useEffect(() => {
@@ -1080,51 +1146,22 @@ function App() {
             <Panel id="canvas" defaultSize="75%" minSize="50%">
               <div className="flex flex-col h-full">
               {/* Canvas panel header — view selector + controls */}
-              <div className="flex items-center justify-between px-3 h-8 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-                <div className="relative" ref={viewMenuRef}>
-                  <button
-                    onClick={() => setShowViewMenu(!showViewMenu)}
-                    className="relative flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                  >
-                    <span>{VIEW_ICONS[currentView as PanelView]}</span>
-                    <span>{VIEW_LABELS[currentView as PanelView]}</span>
-                    <svg className="w-3 h-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                    {/* Fix #3 (2026-05-23): draft-ready dot. Renders when a
-                        notebook anticipatory draft is queued AND the user is
-                        currently on a non-curator view. Click reveals the
-                        Curator entry in the menu where the full draft pill
-                        will be visible. */}
-                    {hasPendingDraft && currentView !== 'curator' && (
+              <div className="flex items-center justify-between px-3 h-9 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+                {/* Main view nav strip — extracted into MainNavStrip so the
+                   pulse logic + active-view bookkeeping live in one place. */}
+                <MainNavStrip
+                  views={MAIN_VIEWS}
+                  currentView={currentView as PanelView}
+                  onSwitchView={(v) => changePanelView(primaryPanelId, v)}
+                  badges={{
+                    curator: hasPendingDraft && currentView !== 'curator' ? (
                       <span
-                        className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-indigo-500 ring-2 ring-white dark:ring-gray-900"
+                        className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-indigo-500"
                         title="Curator drafted something for this notebook"
                       />
-                    )}
-                  </button>
-                  {showViewMenu && (
-                    <div className="absolute top-full left-0 mt-1 w-48 bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-lg shadow-lg z-50 py-1">
-                      <div className="px-2 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">Views</div>
-                      {MAIN_VIEWS.map(v => (
-                        <button
-                          key={v}
-                          onClick={() => { changePanelView(primaryPanelId, v); setShowViewMenu(false); }}
-                          className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-gray-700 ${
-                            v === currentView ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-gray-700 dark:text-gray-300'
-                          }`}
-                        >
-                          <span>{VIEW_ICONS[v]}</span> {VIEW_LABELS[v]}
-                          {/* Fix #3: also flag the curator item in the menu
-                              so the badge story is consistent everywhere. */}
-                          {v === 'curator' && hasPendingDraft && (
-                            <span className="ml-auto text-[10px] text-indigo-500 font-medium">✨ draft</span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                    ) : null,
+                  }}
+                />
                 <div className="flex items-center gap-0.5">
                   {selectedNotebookId && (
                     <span className="text-xs font-medium text-gray-500 dark:text-gray-400 truncate max-w-[180px] mr-1" title={selectedNotebookName}>
@@ -1206,6 +1243,11 @@ function App() {
         </Modal>
       </div>
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onSwitchView={(v) => changePanelView(primaryPanelId, v)}
+      />
     </CanvasItemsProvider>
     </AppShellProvider>
   );
