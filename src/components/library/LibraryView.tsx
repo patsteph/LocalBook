@@ -14,7 +14,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   FileText, Mic, Video, Palette, Target, StickyNote, Search,
-  ChevronDown, ChevronRight, Trash2, ExternalLink, Download,
+  ChevronDown, ChevronRight, Trash2, Download,
 } from 'lucide-react';
 import { contentService, ContentGeneration } from '../../services/content';
 import { audioService } from '../../services/audio';
@@ -459,9 +459,21 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
                         </div>
                       ) : (
                         sectionItems.map(it => (
+                          // Whole row is the primary affordance — click anywhere
+                          // (except the action buttons) to open on the canvas.
+                          // Action buttons stopPropagation so they don't double-fire.
                           <div
                             key={`${it.kind}:${it.id}`}
-                            className="group flex items-start gap-2 px-3 py-2 border-t border-gray-100 dark:border-gray-800 hover:bg-blue-50/30 dark:hover:bg-blue-900/10 transition-colors"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => onOpenItem(it)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                onOpenItem(it);
+                              }
+                            }}
+                            className="group flex items-start gap-2 px-3 py-2 border-t border-gray-100 dark:border-gray-800 hover:bg-blue-50/30 dark:hover:bg-blue-900/10 transition-colors cursor-pointer focus:outline-none focus:bg-blue-50/40 dark:focus:bg-blue-900/15"
                           >
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center justify-between gap-2">
@@ -476,26 +488,21 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
                                 </p>
                               )}
                             </div>
-                            {/* Actions — visible on hover so they don't clutter
-                               the at-a-glance browse view. Tab/keyboard users
-                               can still reach them via focus. */}
+                            {/* Secondary actions — visible on hover. The row
+                               itself opens; these handle download + delete. */}
                             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex-shrink-0">
                               <button
-                                onClick={() => onOpenItem(it)}
-                                className="p-1 rounded text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                                title="Open on canvas"
-                              >
-                                <ExternalLink className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                onClick={() => { downloadByKind(it).catch(e => console.error('[library] download failed:', e)); }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  downloadByKind(it).catch(err => console.error('[library] download failed:', err));
+                                }}
                                 className="p-1 rounded text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"
                                 title="Download"
                               >
                                 <Download className="w-3.5 h-3.5" />
                               </button>
                               <button
-                                onClick={() => handleDelete(it)}
+                                onClick={(e) => { e.stopPropagation(); handleDelete(it); }}
                                 className="p-1 rounded text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
                                 title="Delete"
                               >
