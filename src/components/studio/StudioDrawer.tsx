@@ -369,13 +369,16 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop — covers only the parent positioning context (the canvas
+          area), not the whole viewport. This keeps LeftNav + top nav
+          visible and interactive while the drawer is open. */}
       <div
-        className="fixed inset-0 z-40 bg-black/30 dark:bg-black/50 transition-opacity"
+        className="absolute inset-0 z-40 bg-black/20 dark:bg-black/40 transition-opacity"
         onClick={onClose}
       />
-      {/* Drawer */}
-      <div className="fixed inset-x-0 bottom-0 z-50 max-h-[80vh] overflow-y-auto bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 shadow-2xl rounded-t-2xl">
+      {/* Drawer — slides up from the bottom of the parent (the canvas
+          area), capped at 85% of the parent's height. Not fixed-viewport. */}
+      <div className="absolute inset-x-0 bottom-0 z-50 max-h-[85%] overflow-y-auto bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 shadow-2xl rounded-t-2xl">
         <div className="mx-auto max-w-3xl p-4 space-y-3">
           {/* Header */}
           <div className="flex items-center justify-between">

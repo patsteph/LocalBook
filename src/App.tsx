@@ -78,6 +78,18 @@ function App() {
   const { layout, setLayout } = useCanvasLayout(selectedNotebookId);
   const { drawers, toggleDrawer } = useDrawerState();
 
+  // Studio drawer (Tier 5 unified UI) — both the chat-area Studio bar and
+  // the LeftNav Studio section now launch this single drawer. Each surface
+  // shows the same 5 type chips; clicking a chip opens the drawer with that
+  // type preselected. No more per-surface duplicated popovers.
+  const [studioDrawerOpen, setStudioDrawerOpen] = useState(false);
+  const [studioInitialType, setStudioInitialType] = useState<'docs' | 'audio' | 'video' | 'visual' | 'quiz'>('docs');
+  const openStudio = useCallback((type: 'docs' | 'audio' | 'video' | 'visual' | 'quiz' = 'docs') => {
+    setStudioInitialType(type);
+    setStudioDrawerOpen(true);
+  }, []);
+  const closeStudio = useCallback(() => setStudioDrawerOpen(false), []);
+
   // Toast management
   const addToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
     const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -320,6 +332,10 @@ function App() {
     setGenerationStatus,
     chatContext,
     setChatContext,
+    openStudio,
+    closeStudio,
+    studioDrawerOpen,
+    studioInitialType,
   }), [
     selectedNotebookId, selectedNotebookName, selectedSourceId, selectedLLMProvider,
     refreshSources, refreshNotebooks, collectorRefreshKey, addToast,
@@ -327,7 +343,8 @@ function App() {
     openCollector, openWebResearch, openSettings, openLLMSelector, openEmbeddingSelector,
     chatPrefillQuery, navigateToChat, darkMode, toggleDarkMode,
     morningBrief, curatorBriefData, generationStatus, setGenerationStatus,
-    chatContext, setChatContext,
+    chatContext, setChatContext, openStudio, closeStudio,
+    studioDrawerOpen, studioInitialType,
   ]);
 
   // Fetch notebook name when selection changes
@@ -1158,6 +1175,7 @@ function App() {
                 drawers={drawers}
                 toggleDrawer={toggleDrawer}
                 selectedNotebookName={selectedNotebookName}
+                onOpenStudio={openStudio}
               />
               </ErrorBoundary>
               </div>

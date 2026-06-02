@@ -9,6 +9,7 @@ import { CollectorPanel } from '../CollectorPanel';
 import { Modal } from '../shared/Modal';
 import { WebSearchResults } from '../WebSearchResults';
 import { SiteSearch } from '../SiteSearch';
+import { StudioLauncher } from '../studio/StudioLauncher';
 
 interface LeftNavColumnProps {
   selectedNotebookId: string | null;
@@ -24,6 +25,9 @@ interface LeftNavColumnProps {
   drawers: DrawerState;
   toggleDrawer: (drawer: keyof DrawerState) => void;
   selectedNotebookName: string;
+  /** Reserved for future direct-launch from this surface (currently the
+   *  StudioLauncher component reaches openStudio via context). */
+  onOpenStudio?: (type?: 'docs' | 'audio' | 'video' | 'visual' | 'quiz') => void;
 }
 
 interface DrawerSectionProps {
@@ -217,6 +221,9 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
 
       </div>
 
+      {/* Studio launcher — 5 chips at the bottom of the column. Opens
+          the unified StudioDrawer with the chosen type preselected. */}
+      <StudioLauncher variant="leftnav" />
 
       {/* Web Research Modal Popup */}
       <Modal

@@ -13,6 +13,7 @@ import { ChatMessageBubble } from './chat/ChatMessageBubble';
 import { useVisualActions } from './chat/useVisualActions';
 import { WritingAssistBar } from './WritingAssistBar';
 import { CanvasItemCard } from './chat/CanvasItemCard';
+import { StudioLauncher } from './studio/StudioLauncher';
 import { RichNoteEditor } from './RichNoteEditor';
 import { useCanvasItems, useAppShell } from './canvas/CanvasContext';
 import { CanvasItem } from './canvas/types';
@@ -953,6 +954,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
         })}
 
         <div ref={messagesEndRef} />
+      </div>
+
+      {/* Studio launcher — 5 chips that open the unified StudioDrawer */}
+      <div className="border-t dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/40 flex-shrink-0">
+        <StudioLauncher variant="bar" />
       </div>
 
       {/* Input area */}

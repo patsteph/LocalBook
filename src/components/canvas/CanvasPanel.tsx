@@ -11,6 +11,7 @@ import { Settings } from '../Settings';
 import { LLMSelector } from '../LLMSelector';
 import { EmbeddingSelector } from '../EmbeddingSelector';
 import { LibraryView } from '../library/LibraryView';
+import { StudioDrawer } from '../studio/StudioDrawer';
 
 interface CanvasPanelProps {
   panelId: string;
@@ -169,7 +170,10 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-gray-800 overflow-hidden">
-      {/* Panel content — header now lives in unified top bar in App.tsx */}
+      {/* Panel content — header now lives in unified top bar in App.tsx.
+          The `relative` here is also the positioning anchor for the Studio
+          drawer; the drawer is `absolute inset-x-0 bottom-0` so it overlays
+          only this canvas area (not the LeftNav or top nav). */}
       <div className="flex-1 overflow-hidden relative">
         {/* Chat is always mounted to preserve state; hidden when another view is active */}
         <div className={`absolute inset-0 ${view === 'chat' ? '' : 'invisible pointer-events-none'}`}>
@@ -183,6 +187,19 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
           </div>
         </div>
         {view !== 'chat' && renderContent()}
+
+        {/* Studio drawer — overlays the canvas area only. Slides up from
+            the bottom of this panel; LeftNav + top nav stay visible. */}
+        {ctx.studioDrawerOpen && (
+          <StudioDrawer
+            notebookId={ctx.selectedNotebookId}
+            open={ctx.studioDrawerOpen}
+            onClose={ctx.closeStudio}
+            initialType={ctx.studioInitialType}
+            chatContext={ctx.chatContext}
+            onToast={(kind, title, msg) => ctx.addToast({ type: kind, title, message: msg })}
+          />
+        )}
       </div>
     </div>
   );
