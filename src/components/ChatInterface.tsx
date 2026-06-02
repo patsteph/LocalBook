@@ -12,7 +12,6 @@ import { SourceNotesViewer } from './SourceNotesViewer';
 import { ChatMessageBubble } from './chat/ChatMessageBubble';
 import { useVisualActions } from './chat/useVisualActions';
 import { WritingAssistBar } from './WritingAssistBar';
-import { ChatActionBar } from './chat/ChatActionBar';
 import { CanvasItemCard } from './chat/CanvasItemCard';
 import { RichNoteEditor } from './RichNoteEditor';
 import { useCanvasItems, useAppShell } from './canvas/CanvasContext';
@@ -763,17 +762,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     items.sort((a, b) => a.ts - b.ts);
     return items;
   }, [messages, notebookCanvasItems]);
-  const [actionBarExpanded, setActionBarExpanded] = useState(() => {
-    const saved = localStorage.getItem('lb-action-bar-expanded');
-    return saved !== null ? saved === '1' : true;
-  });
-  const toggleActionBar = () => {
-    setActionBarExpanded(prev => {
-      localStorage.setItem('lb-action-bar-expanded', !prev ? '1' : '0');
-      return !prev;
-    });
-  };
-
   return (
     <div className="flex flex-col h-full">
       {error && (
@@ -966,13 +954,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
 
         <div ref={messagesEndRef} />
       </div>
-
-      {/* Studio action bar — pills + popovers */}
-      <ChatActionBar
-        notebookId={notebookId}
-        expanded={actionBarExpanded}
-        onToggleExpand={toggleActionBar}
-      />
 
       {/* Input area */}
       <div className="border-t dark:border-gray-700 px-2.5 py-1.5 bg-white dark:bg-gray-800 flex-shrink-0">

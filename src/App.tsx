@@ -12,7 +12,7 @@ import { useMainViewShortcuts } from './hooks/useMainViewShortcuts';
 import { CommandPalette } from './components/CommandPalette';
 import { MainNavStrip } from './components/MainNavStrip';
 import { pulseView } from './lib/viewPulse';
-import { useCanvasLayout, useDrawerState, useStudioState } from './hooks/useLayoutPersistence';
+import { useCanvasLayout, useDrawerState } from './hooks/useLayoutPersistence';
 import { ToastContainer, ToastMessage } from './components/shared/Toast';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { Modal } from './components/shared/Modal';
@@ -46,7 +46,6 @@ function App() {
   const [chatPrefillQuery, setChatPrefillQuery] = useState<string>('');
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const [visualContent] = useState<string>('');
   const [morningBrief, setMorningBrief] = useState<any>(null);
   // Fix #3 (2026-05-23): track whether the curator has a queued anticipatory
   // draft for the active notebook. Surfaces as a badge on the panel-view
@@ -75,10 +74,9 @@ function App() {
     }
   }, []);
 
-  // Canvas layout, drawer, and studio state (persisted to localStorage)
+  // Canvas layout + drawer state (persisted to localStorage)
   const { layout, setLayout } = useCanvasLayout(selectedNotebookId);
   const { drawers, toggleDrawer } = useDrawerState();
-  const { studio, toggleStudio, setStudioTab } = useStudioState();
 
   // Toast management
   const addToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
@@ -1160,10 +1158,6 @@ function App() {
                 drawers={drawers}
                 toggleDrawer={toggleDrawer}
                 selectedNotebookName={selectedNotebookName}
-                studio={studio}
-                toggleStudio={toggleStudio}
-                setStudioTab={setStudioTab}
-                visualContent={visualContent}
               />
               </ErrorBoundary>
               </div>

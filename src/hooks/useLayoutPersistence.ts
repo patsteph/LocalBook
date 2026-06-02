@@ -3,7 +3,6 @@ import { LayoutNode, makeDefaultLayout } from '../components/canvas/types';
 
 const STORAGE_KEY_PREFIX = 'localbook-layout-';
 const DRAWER_KEY = 'localbook-drawers';
-const STUDIO_KEY = 'localbook-studio';
 
 export interface DrawerState {
   notebooks: boolean;
@@ -13,22 +12,12 @@ export interface DrawerState {
   people: boolean;
 }
 
-export interface StudioState {
-  expanded: boolean;
-  activeTab: 'documents' | 'audio' | 'video' | 'quiz' | 'visual' | 'writing';
-}
-
 const DEFAULT_DRAWERS: DrawerState = {
   notebooks: true,
   webResearch: false,
   sources: false,
   collector: false,
   people: false,
-};
-
-const DEFAULT_STUDIO: StudioState = {
-  expanded: false,
-  activeTab: 'documents',
 };
 
 function loadJSON<T>(key: string, fallback: T): T {
@@ -132,26 +121,3 @@ export function useDrawerState() {
   return { drawers, setDrawers, toggleDrawer };
 }
 
-export function useStudioState() {
-  const [studio, setStudioState] = useState<StudioState>(() =>
-    loadJSON(STUDIO_KEY, DEFAULT_STUDIO)
-  );
-
-  const setStudio = useCallback((updater: StudioState | ((prev: StudioState) => StudioState)) => {
-    setStudioState(prev => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      saveJSON(STUDIO_KEY, next);
-      return next;
-    });
-  }, []);
-
-  const toggleStudio = useCallback(() => {
-    setStudio(prev => ({ ...prev, expanded: !prev.expanded }));
-  }, [setStudio]);
-
-  const setStudioTab = useCallback((tab: StudioState['activeTab']) => {
-    setStudio(prev => ({ ...prev, activeTab: tab, expanded: true }));
-  }, [setStudio]);
-
-  return { studio, setStudio, toggleStudio, setStudioTab };
-}
