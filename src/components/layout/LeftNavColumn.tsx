@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FileText, Mic, Video, Target, Brain, PenTool, Globe, BookOpen, Search, FileBox, Archive, ChevronDown } from 'lucide-react';
 import { DrawerState, StudioState } from '../../hooks/useLayoutPersistence';
 import { useCanvas } from '../canvas/CanvasContext';
@@ -129,6 +129,21 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
 }) => {
   const ctx = useCanvas();
   const [webResearchModal, setWebResearchModal] = useState<'web' | 'site' | null>(null);
+  const [webResearchInitialQuery, setWebResearchInitialQuery] = useState<string>('');
+
+  // Bug fix (2026-06-01): chat-triggered "Yes, search the web" used to swap
+  // the canvas panel for a web-research view. Now both the chat path and the
+  // LeftNav drawer open the SAME modal via this event listener so behavior is
+  // consistent across entry points.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {};
+      setWebResearchInitialQuery(detail.query || '');
+      setWebResearchModal(detail.tab || 'web');
+    };
+    window.addEventListener('lb:openWebResearch', handler as EventListener);
+    return () => window.removeEventListener('lb:openWebResearch', handler as EventListener);
+  }, []);
 
   return (
     <div className="flex flex-col h-full w-full bg-white dark:bg-gray-800 overflow-hidden">
@@ -346,6 +361,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
           {webResearchModal === 'web' && selectedNotebookId && (
             <WebSearchResults
               notebookId={selectedNotebookId}
+              initialQuery={webResearchInitialQuery}
               onSourceAdded={() => { ctx.triggerSourcesRefresh(); ctx.triggerNotebooksRefresh(); }}
             />
           )}

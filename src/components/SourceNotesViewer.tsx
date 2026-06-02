@@ -191,24 +191,18 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
 
       setHighlights([...highlights, newHighlight]);
 
-      // Tier 5: save highlight as a Note instead of a Finding.
+      // Tier 5: save highlight as a Note. POST /sources/{nb}/note creates a
+      // real Source that appears in the Sources panel + is RAG-indexed.
       const title = annotationText || pendingHighlight.text.substring(0, 50) + (pendingHighlight.text.length > 50 ? '...' : '');
       const body = `> ${pendingHighlight.text}\n\n— ${sourceName}` + (annotationText ? `\n\n${annotationText}` : '');
       try {
-        await localFetch(`${API_BASE_URL}/canvas-notes`, {
+        await localFetch(`${API_BASE_URL}/sources/${notebookId}/note`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            notebook_id: notebookId,
-            title,
-            content_markdown: body,
-            source_type: 'highlight',
-            note_type: 'note',
-            tags: ['highlight', `source:${sourceId}`],
-          }),
+          body: JSON.stringify({ title, content: body }),
         });
-        window.dispatchEvent(new CustomEvent('notesUpdated'));
         window.dispatchEvent(new CustomEvent('sourcesUpdated'));
+        window.dispatchEvent(new CustomEvent('notesUpdated'));
       } catch (highlightErr) {
         console.error('Failed to save highlight as Note:', highlightErr);
       }

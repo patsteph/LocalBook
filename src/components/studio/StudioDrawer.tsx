@@ -26,6 +26,7 @@ import { videoService } from '../../services/video';
 import { quizService } from '../../services/quiz';
 import { skillsService } from '../../services/skills';
 import { useGenerateVisualToCanvas } from '../../hooks/useGenerateVisualToCanvas';
+import { useCanvasItems } from '../canvas/CanvasContext';
 import { Skill } from '../../types';
 
 // ─── Types ──────────────────────────────────────────────────────────────────

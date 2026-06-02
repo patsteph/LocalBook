@@ -105,20 +105,16 @@ export function useVisualActions(
     const body = `# ${title}\n\nType: ${visual.type}\nTemplate: ${visual.template_id || 'auto'}\n\n\`\`\`${visual.type}\n${(visual.code || '').slice(0, 8000)}\n\`\`\``;
 
     try {
-      await localFetch(`${API_BASE_URL}/canvas-notes`, {
+      // POST /sources/{nb}/note creates a real source (visible in the Sources
+      // panel, RAG-indexed, searchable) rather than a canvas_note that only
+      // lives in the canvas store and doesn't appear in Sources.
+      await localFetch(`${API_BASE_URL}/sources/${notebookId}/note`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          notebook_id: notebookId,
-          title,
-          content_markdown: body,
-          source_type: 'typed',
-          note_type: 'note',
-          tags: ['saved-visual', 'saved-from-chat'],
-        }),
+        body: JSON.stringify({ title, content: body }),
       });
-      window.dispatchEvent(new CustomEvent('notesUpdated'));
       window.dispatchEvent(new CustomEvent('sourcesUpdated'));
+      window.dispatchEvent(new CustomEvent('notesUpdated'));
     } catch (err) {
       console.error('Failed to save visual as Note:', err);
     }

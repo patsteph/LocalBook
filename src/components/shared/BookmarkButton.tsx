@@ -89,27 +89,30 @@ export const BookmarkButton: React.FC<BookmarkButtonProps> = ({
     try {
       const body = contentToMarkdown(type, title, content);
       const noteTitle = title || `Saved ${type}`;
-      const noteTags = [...(tags || []), 'saved-from-chat'];
-      const sourceType = type === 'answer' ? 'chat_answer' : 'typed';
 
-      const response = await localFetch(`${API_BASE_URL}/canvas-notes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          notebook_id: notebookId,
-          title: noteTitle,
-          content_markdown: body,
-          source_type: sourceType,
-          note_type: 'note',
-          tags: noteTags,
-        }),
-      });
+      // Bug fix (2026-06-01): the previous version called /canvas-notes which
+      // wrote to the canvas_notes table — but the Sources panel reads from
+      // source_store, so the saved item never appeared in the user's Sources
+      // list. POST /sources/{notebook_id}/note creates a real source AND
+      // ingests it into RAG so the saved content is searchable + editable
+      // from the Sources panel like any uploaded document.
+      const response = await localFetch(
+        `${API_BASE_URL}/sources/${notebookId}/note`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: noteTitle,
+            content: body,
+          }),
+        },
+      );
 
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setSaved(true);
-      // Notify Notes panel + Sources panel to refresh.
-      window.dispatchEvent(new CustomEvent('notesUpdated'));
+      // Notify Sources panel to refresh — the saved item appears immediately.
       window.dispatchEvent(new CustomEvent('sourcesUpdated'));
+      window.dispatchEvent(new CustomEvent('notesUpdated'));
     } catch (err) {
       console.error('Failed to save as Note:', err);
     } finally {

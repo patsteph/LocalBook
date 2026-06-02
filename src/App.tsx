@@ -254,8 +254,15 @@ function App() {
   }, [selectedNotebookId]);
 
   const openWebResearch = useCallback((query?: string) => {
-    openPanel('web-research', query ? { initialQuery: query } : undefined);
-  }, [openPanel]);
+    // Bug fix (2026-06-01): the chat-triggered "Yes, search the web" used to
+    // call openPanel('web-research', ...) which REPLACED the chat panel with
+    // the web-research view. The LeftNav drawer opens a Modal instead — those
+    // two paths should behave the same. Dispatch a global event that the
+    // LeftNav modal listens for so both surfaces converge on the same UX.
+    window.dispatchEvent(new CustomEvent('lb:openWebResearch', {
+      detail: { tab: 'web', query: query || '' },
+    }));
+  }, []);
 
   const openSettings = useCallback(() => setShowSettingsModal(true), []);
   const openLLMSelector = useCallback(() => setShowLLMModal(true), []);
