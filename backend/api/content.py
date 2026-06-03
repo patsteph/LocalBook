@@ -403,7 +403,7 @@ def _get_section_temperature(base_temp: float, requirement: str) -> float:
 from storage.skills_store import skills_store
 from storage.content_store import content_store
 from services.rag_engine import rag_engine
-from services.output_templates import build_document_prompt, DOCUMENT_TEMPLATES
+from services.output_templates import build_document_prompt, DOCUMENT_TEMPLATES, PRESENTATION_QUALITY
 from services.context_builder import context_builder
 from services.citation_validator import strip_invalid_citations, enforce_citations
 from config import settings
@@ -1563,6 +1563,8 @@ Do not make up information."""
 
 {format_instructions}
 
+{PRESENTATION_QUALITY}
+
 {style_instructions}
 
 Focus on: {topic_focus}
@@ -1767,6 +1769,8 @@ Do not make up information."""
             system_prompt = f"""{skill_prompt}
 
 {format_instructions}
+
+{PRESENTATION_QUALITY}
 
 {style_instructions}
 

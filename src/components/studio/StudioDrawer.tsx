@@ -18,7 +18,7 @@
  */
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  FileText, Mic, Video, Palette, Target, X, Sparkles,
+  FileText, Mic, Video, Palette, Target, Layers, X, Sparkles,
 } from 'lucide-react';
 import { contentService } from '../../services/content';
 import { audioService } from '../../services/audio';
@@ -39,7 +39,7 @@ const AUDIO_FORMAT_LABELS: Record<string, string> = {
 };
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-type StudioType = 'docs' | 'audio' | 'video' | 'visual' | 'quiz';
+type StudioType = 'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards';
 type Register = 'auto' | 'measured' | 'engaged' | 'warm' | 'urgent';
 
 interface StudioDrawerProps {
@@ -66,9 +66,26 @@ const TYPE_DEFS: Array<{
   { id: 'video', icon: <Video className="w-3.5 h-3.5" />, label: 'Video', accent: 'red' },
   { id: 'visual', icon: <Palette className="w-3.5 h-3.5" />, label: 'Visual', accent: 'amber' },
   { id: 'quiz', icon: <Target className="w-3.5 h-3.5" />, label: 'Quiz', accent: 'emerald' },
+  { id: 'cards', icon: <Layers className="w-3.5 h-3.5" />, label: 'Cards', accent: 'fuchsia' },
 ];
 
 const REGISTERS: Register[] = ['auto', 'measured', 'engaged', 'warm', 'urgent'];
+
+// Accent / Language options shared by Audio and Video. Values match Kokoro
+// voice catalog locale codes; labels show language name for non-English so
+// the dropdown reads naturally ("Spanish" beats "ES").
+const ACCENT_LANGUAGE_OPTIONS: ReadonlyArray<readonly [string, string]> = [
+  ['us', 'American'],
+  ['uk', 'British'],
+  ['es', 'Spanish'],
+  ['fr', 'French'],
+  ['de', 'German'],
+  ['hi', 'Hindi'],
+  ['it', 'Italian'],
+  ['ja', 'Japanese'],
+  ['pt', 'Portuguese'],
+  ['zh', 'Chinese'],
+] as const;
 
 // ─── Component ──────────────────────────────────────────────────────────────
 export const StudioDrawer: React.FC<StudioDrawerProps> = ({
@@ -98,11 +115,32 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
   const [videoNarrationStyle, setVideoNarrationStyle] = useState<'explainer' | 'narrative' | 'journalistic' | 'study_deep_dive'>(
     () => (localStorage.getItem('lb-studio-video-narration') as any) || 'explainer'
   );
-  // Narrator gender stays at the user's last setting from the legacy bar
-  // for now; we don't expose it in the MVP drawer to keep the surface clean.
-  const videoNarratorGender = localStorage.getItem('lb-studio-video-narrator') || localStorage.getItem('lb-bar-video-narrator') || 'female';
+  const [videoNarratorGender, setVideoNarratorGender] = useState<'female' | 'male'>(
+    () => (localStorage.getItem('lb-studio-video-narrator') || localStorage.getItem('lb-bar-video-narrator')) === 'male' ? 'male' : 'female'
+  );
+  const [videoAccent, setVideoAccent] = useState(
+    () => localStorage.getItem('lb-studio-video-accent') || localStorage.getItem('lb-bar-video-accent') || 'us'
+  );
   const [quizCount, setQuizCount] = useState(() => parseInt(localStorage.getItem('lb-studio-quiz-count') || '5'));
   const [quizDifficulty, setQuizDifficulty] = useState(() => localStorage.getItem('lb-studio-quiz-difficulty') || 'medium');
+  // Cards (flash cards). Tutor accent kept as us/uk only — the underlying
+  // flashcards TTS pipeline only ships those two voices.
+  const [cardsCount, setCardsCount] = useState(() => parseInt(localStorage.getItem('lb-studio-cards-count') || localStorage.getItem('lb-bar-cards-count') || '10'));
+  const [cardsDifficulty, setCardsDifficulty] = useState<'easy' | 'medium' | 'hard'>(
+    () => (localStorage.getItem('lb-studio-cards-diff') || localStorage.getItem('lb-bar-cards-diff') || 'medium') as any
+  );
+  const [cardsTutorGender, setCardsTutorGender] = useState<'female' | 'male'>(
+    () => ((localStorage.getItem('lb-studio-cards-tutor-gender') || localStorage.getItem('lb-bar-cards-tutor-gender')) === 'male' ? 'male' : 'female')
+  );
+  const [cardsTutorAccent, setCardsTutorAccent] = useState<'us' | 'uk'>(
+    () => ((localStorage.getItem('lb-studio-cards-tutor-accent') || localStorage.getItem('lb-bar-cards-tutor-accent')) === 'uk' ? 'uk' : 'us')
+  );
+  const [cardsTutorAutoplay, setCardsTutorAutoplay] = useState(
+    () => (localStorage.getItem('lb-studio-cards-tutor-autoplay') ?? localStorage.getItem('lb-bar-cards-tutor-autoplay')) !== 'false'
+  );
+  const [cardsIncludeVisuals, setCardsIncludeVisuals] = useState(
+    () => (localStorage.getItem('lb-studio-cards-visuals') || localStorage.getItem('lb-bar-cards-visuals')) === 'true'
+  );
 
   const [textSkills, setTextSkills] = useState<Skill[]>([]);
   const [audioSkills, setAudioSkillList] = useState<Skill[]>([]);
@@ -118,8 +156,16 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
   useEffect(() => { localStorage.setItem('lb-studio-video-dur', String(videoDuration)); }, [videoDuration]);
   useEffect(() => { localStorage.setItem('lb-studio-video-format', videoFormat); }, [videoFormat]);
   useEffect(() => { localStorage.setItem('lb-studio-video-narration', videoNarrationStyle); }, [videoNarrationStyle]);
+  useEffect(() => { localStorage.setItem('lb-studio-video-narrator', videoNarratorGender); }, [videoNarratorGender]);
+  useEffect(() => { localStorage.setItem('lb-studio-video-accent', videoAccent); }, [videoAccent]);
   useEffect(() => { localStorage.setItem('lb-studio-quiz-count', String(quizCount)); }, [quizCount]);
   useEffect(() => { localStorage.setItem('lb-studio-quiz-difficulty', quizDifficulty); }, [quizDifficulty]);
+  useEffect(() => { localStorage.setItem('lb-studio-cards-count', String(cardsCount)); }, [cardsCount]);
+  useEffect(() => { localStorage.setItem('lb-studio-cards-diff', cardsDifficulty); }, [cardsDifficulty]);
+  useEffect(() => { localStorage.setItem('lb-studio-cards-tutor-gender', cardsTutorGender); }, [cardsTutorGender]);
+  useEffect(() => { localStorage.setItem('lb-studio-cards-tutor-accent', cardsTutorAccent); }, [cardsTutorAccent]);
+  useEffect(() => { localStorage.setItem('lb-studio-cards-tutor-autoplay', String(cardsTutorAutoplay)); }, [cardsTutorAutoplay]);
+  useEffect(() => { localStorage.setItem('lb-studio-cards-visuals', String(cardsIncludeVisuals)); }, [cardsIncludeVisuals]);
 
   // Load skills lists.
   useEffect(() => {
@@ -258,7 +304,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
               duration_minutes: videoDuration,
               visual_style: 'classic',
               narrator_gender: videoNarratorGender,
-              accent: 'us',
+              accent: videoAccent,
               format_type: videoFormat,
               narration_style: videoNarrationStyle,
               ...(chatContext ? { chat_context: chatContext } : {}),
@@ -312,6 +358,39 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
           // generateVisualToCanvas already drops its own canvas item.
           await generateVisualToCanvas(notebookId, trimmedTopic, { source: 'studio_bar' });
           break;
+        case 'cards': {
+          // Cards drop a flashcards canvas item with status='generating';
+          // FlashcardsCanvasTile.tsx reads the metadata and self-generates
+          // the deck. Same contract the old ChatActionBar used.
+          const itemId = `flashcards-${Date.now()}`;
+          const cardTopic = trimmedTopic || titleTopic || '';
+          const title = cardTopic
+            ? `Flash Cards: ${cardTopic.length > 50 ? cardTopic.substring(0, 47).trim() + '…' : cardTopic}`
+            : `Flash Cards (${cardsCount} ${cardsDifficulty})`;
+          addCanvasItem({
+            id: itemId,
+            type: 'flashcards' as any,
+            title,
+            content: '',
+            collapsed: false,
+            status: 'generating',
+            metadata: {
+              notebookId,
+              topic: cardTopic,
+              difficulty: cardsDifficulty,
+              count: cardsCount,
+              tutorGender: cardsTutorGender,
+              tutorAccent: cardsTutorAccent,
+              tutorAutoplay: cardsTutorAutoplay,
+              includeVisuals: cardsIncludeVisuals,
+              source: 'studio_drawer',
+              ...(chatContext ? { chatContext } : {}),
+            } as any,
+          });
+          // No await — the tile owns its lifecycle from here.
+          onToast?.('success', 'Flash cards generating');
+          break;
+        }
         case 'quiz': {
           const itemId = `quiz-${Date.now()}`;
           addCanvasItem({
@@ -350,7 +429,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
     } finally {
       setGenerating(false);
     }
-  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoFormat, videoNarrationStyle, videoNarratorGender, quizCount, quizDifficulty, chatContext, onClose, onToast, generateVisualToCanvas, addCanvasItem, updateCanvasItem, textSkills]);
+  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoFormat, videoNarrationStyle, videoNarratorGender, videoAccent, quizCount, quizDifficulty, cardsCount, cardsDifficulty, cardsTutorGender, cardsTutorAccent, cardsTutorAutoplay, cardsIncludeVisuals, chatContext, onClose, onToast, generateVisualToCanvas, addCanvasItem, updateCanvasItem, textSkills]);
 
   if (!open) return null;
 
@@ -364,6 +443,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
       red: 'border-red-500 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300',
       amber: 'border-amber-500 bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
       emerald: 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300',
+      fuchsia: 'border-fuchsia-500 bg-fuchsia-50 dark:bg-fuchsia-900/30 text-fuchsia-700 dark:text-fuchsia-300',
     }[a] || '';
   };
 
@@ -531,14 +611,14 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
                   </div>
                 </div>
                 <div>
-                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Accent</label>
+                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Accent / Language</label>
                   <select
                     value={audioAccent}
                     onChange={(e) => setAudioAccent(e.target.value)}
                     className="w-full px-2 py-1.5 text-xs border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
                   >
-                    {['us', 'uk', 'es', 'fr', 'de', 'it', 'pt', 'ja', 'zh'].map((a) => (
-                      <option key={a} value={a}>{a.toUpperCase()}</option>
+                    {ACCENT_LANGUAGE_OPTIONS.map(([val, label]) => (
+                      <option key={val} value={val}>{label}</option>
                     ))}
                   </select>
                 </div>
@@ -598,6 +678,38 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
                   ))}
                 </div>
               </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Narrator</label>
+                  <div className="flex gap-1">
+                    {(['female', 'male'] as const).map((g) => (
+                      <button
+                        key={g}
+                        onClick={() => setVideoNarratorGender(g)}
+                        className={`flex-1 px-2 py-1 text-[10px] rounded-lg border transition-colors capitalize ${
+                          videoNarratorGender === g
+                            ? 'border-red-500 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300'
+                            : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Accent / Language</label>
+                  <select
+                    value={videoAccent}
+                    onChange={(e) => setVideoAccent(e.target.value)}
+                    className="w-full px-2 py-1.5 text-xs border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                  >
+                    {ACCENT_LANGUAGE_OPTIONS.map(([val, label]) => (
+                      <option key={val} value={val}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </div>
           )}
 
@@ -640,6 +752,101 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
                     </button>
                   ))}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {type === 'cards' && (
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Cards ({cardsCount})</label>
+                  <input
+                    type="range"
+                    min={3}
+                    max={30}
+                    step={1}
+                    value={cardsCount}
+                    onChange={(e) => setCardsCount(parseInt(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Difficulty</label>
+                  <div className="flex gap-1">
+                    {(['easy', 'medium', 'hard'] as const).map((d) => (
+                      <button
+                        key={d}
+                        onClick={() => setCardsDifficulty(d)}
+                        className={`flex-1 px-2 py-1 text-[10px] rounded-lg border transition-colors capitalize ${
+                          cardsDifficulty === d
+                            ? 'border-fuchsia-500 bg-fuchsia-50 dark:bg-fuchsia-900/20 text-fuchsia-700 dark:text-fuchsia-300'
+                            : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Tutor</label>
+                  <div className="flex gap-1">
+                    {(['female', 'male'] as const).map((g) => (
+                      <button
+                        key={g}
+                        onClick={() => setCardsTutorGender(g)}
+                        className={`flex-1 px-2 py-1 text-[10px] rounded-lg border transition-colors capitalize ${
+                          cardsTutorGender === g
+                            ? 'border-fuchsia-500 bg-fuchsia-50 dark:bg-fuchsia-900/20 text-fuchsia-700 dark:text-fuchsia-300'
+                            : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Accent</label>
+                  <div className="flex gap-1">
+                    {(['us', 'uk'] as const).map((a) => (
+                      <button
+                        key={a}
+                        onClick={() => setCardsTutorAccent(a)}
+                        className={`flex-1 px-2 py-1 text-[10px] rounded-lg border transition-colors uppercase ${
+                          cardsTutorAccent === a
+                            ? 'border-fuchsia-500 bg-fuchsia-50 dark:bg-fuchsia-900/20 text-fuchsia-700 dark:text-fuchsia-300'
+                            : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        {a}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cardsTutorAutoplay}
+                    onChange={(e) => setCardsTutorAutoplay(e.target.checked)}
+                    className="rounded border-gray-300 dark:border-gray-600"
+                  />
+                  Tutor autoplay
+                </label>
+                <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cardsIncludeVisuals}
+                    onChange={(e) => setCardsIncludeVisuals(e.target.checked)}
+                    className="rounded border-gray-300 dark:border-gray-600"
+                  />
+                  Include visual cards
+                </label>
               </div>
             </div>
           )}

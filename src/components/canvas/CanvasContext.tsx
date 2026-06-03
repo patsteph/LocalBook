@@ -86,10 +86,10 @@ export interface AppShellContextValue {
   // so it overlays only the canvas area, not the whole app. App-level state
   // is the source of truth; the bars trigger via openStudio(), the drawer
   // closes via closeStudio().
-  openStudio: (type?: 'docs' | 'audio' | 'video' | 'visual' | 'quiz') => void;
+  openStudio: (type?: 'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards') => void;
   closeStudio: () => void;
   studioDrawerOpen: boolean;
-  studioInitialType: 'docs' | 'audio' | 'video' | 'visual' | 'quiz';
+  studioInitialType: 'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards';
 }
 
 const AppShellCtx = createContext<AppShellContextValue | null>(null);

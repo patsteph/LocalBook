@@ -83,8 +83,8 @@ function App() {
   // shows the same 5 type chips; clicking a chip opens the drawer with that
   // type preselected. No more per-surface duplicated popovers.
   const [studioDrawerOpen, setStudioDrawerOpen] = useState(false);
-  const [studioInitialType, setStudioInitialType] = useState<'docs' | 'audio' | 'video' | 'visual' | 'quiz'>('docs');
-  const openStudio = useCallback((type: 'docs' | 'audio' | 'video' | 'visual' | 'quiz' = 'docs') => {
+  const [studioInitialType, setStudioInitialType] = useState<'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards'>('docs');
+  const openStudio = useCallback((type: 'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards' = 'docs') => {
     setStudioInitialType(type);
     setStudioDrawerOpen(true);
   }, []);
@@ -588,6 +588,48 @@ function App() {
     window.addEventListener('lb:openLibraryItem', handler as EventListener);
     return () => window.removeEventListener('lb:openLibraryItem', handler as EventListener);
   }, [addCanvasItem, changePanelView, primaryPanelId, selectedNotebookId]);
+
+  // createFlashcardsDeck — dispatched from FlashcardsCanvasTile's gap-analysis
+  // "Quiz me on this" button when the user wants a focused follow-on deck.
+  // Lives at App level since the old ChatActionBar listener was deleted in
+  // the Studio-bars rewrite; without this, the gap-analysis button is a no-op.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail || {};
+      const targetNotebook = detail.notebookId;
+      if (!targetNotebook || targetNotebook !== selectedNotebookId) return;
+      const topic = (detail.topic as string) || '';
+      if (!topic) return;
+      const difficulty: 'easy' | 'medium' | 'hard' = ['easy', 'medium', 'hard'].includes(detail.difficulty)
+        ? detail.difficulty
+        : 'medium';
+      const countRaw = Number(detail.count);
+      const count = Number.isFinite(countRaw) ? Math.max(3, Math.min(50, Math.round(countRaw))) : 8;
+      const shortTopic = topic.length > 50 ? topic.substring(0, 47).trim() + '…' : topic;
+      addCanvasItem({
+        id: `flashcards-${Date.now()}`,
+        type: 'flashcards' as any,
+        title: `Gap study: ${shortTopic}`,
+        content: '',
+        collapsed: false,
+        status: 'generating',
+        metadata: {
+          notebookId: targetNotebook,
+          topic,
+          difficulty,
+          count,
+          source: 'gap_analysis',
+        } as any,
+      });
+      addToast({
+        type: 'info',
+        title: 'New focused deck',
+        message: `${count} ${difficulty} cards on: ${topic}`,
+      });
+    };
+    window.addEventListener('createFlashcardsDeck', handler);
+    return () => window.removeEventListener('createFlashcardsDeck', handler);
+  }, [addCanvasItem, addToast, selectedNotebookId]);
 
   // Listen for "Open in Canvas" events from chat visual actions
   useEffect(() => {

@@ -103,6 +103,36 @@ def get_register_brief(register: Optional[str], fallback: str = "measured") -> s
     return REGISTER_BRIEFS.get(fallback, REGISTER_BRIEFS["measured"])
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Presentation quality (2026-06-03) — explicit markdown formatting brief
+# ──────────────────────────────────────────────────────────────────────
+# 7B models reliably follow EXPLICIT markdown instructions and unreliably
+# infer them from voice exemplars. The chat side (rag_generation.py) has
+# had a `PRESENTATION QUALITY` + `FORMAT REQUIREMENTS (mandatory)` pair
+# for a while, which is why chat answers read like a well-formatted doc.
+# Studio outputs were missing this block — the prompt told the model what
+# to write (structure_requirements, voice exemplar) but not how to format
+# it visually, so plain-prose-with-no-headings became the failure mode.
+#
+# Apply this to every document-generation prompt. The block is render-
+# layer guidance only — it does NOT change what to write, only the
+# markdown texture the model emits.
+
+PRESENTATION_QUALITY = """PRESENTATION QUALITY (mandatory — apply throughout):
+- Use markdown headers (## for major sections, ### for sub-sections). Every required section above MUST have its own header.
+- Use **bold** for key terms, names, definitions, and load-bearing findings. Not every sentence — pick the words that carry meaning.
+- Use *italics* sparingly: emphasis, foreign/technical terms on first use, or short scene-setting.
+- Use bullet or numbered lists when enumerating 3+ items. Avoid hiding lists inside long paragraphs.
+- Use tables for side-by-side comparisons (2-4 columns max). Don't simulate a table with bullets.
+- Use `>` blockquotes (sparingly) for sourced quotes or a single high-impact callout.
+- Use `---` horizontal rules only between major top-level sections, never inside a section.
+- Use `inline code` for literal values: filenames, identifiers, exact strings, error messages, model/version names.
+- Keep paragraphs short: 2-4 sentences. Long monoliths kill scan-ability.
+- Lead each major section with a one-line takeaway, then evidence below it.
+- Open the document with a direct, scannable lede — not a "this document will..." preamble.
+- Every paragraph should pass the scan test: can a busy reader pull the point from the first sentence and the bolded terms?"""
+
+
 def list_registers() -> List[str]:
     """Available register values for UI dropdowns."""
     return list(REGISTER_BRIEFS.keys())
@@ -960,7 +990,7 @@ def build_document_prompt(
     if not template:
         # Fallback for unknown template
         return (
-            "Create high-quality, well-structured content based on the provided sources.",
+            f"Create high-quality, well-structured content based on the provided sources.\n\n{PRESENTATION_QUALITY}",
             "Format clearly with appropriate sections using markdown."
         )
 
@@ -993,6 +1023,8 @@ STYLE: {style}
 
 QUALITY REQUIREMENTS:
 {chr(10).join(f'- {check}' for check in template.quality_checklist)}
+
+{PRESENTATION_QUALITY}
 
 You are working with {source_count} source document(s). Synthesize across ALL sources.
 

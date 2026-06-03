@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import DOMPurify from 'dompurify';
 import {
   FileText, Palette, Target, Layers, Mic, MessageSquare, PenLine,
-  BookOpen, ChevronDown, X, Video,
+  BookOpen, ChevronDown, X, Video, MoreHorizontal, Download, Presentation,
 } from 'lucide-react';
 import { useCanvas } from '../canvas/CanvasContext';
 import { CanvasItem } from '../canvas/types';
+import { contentService } from '../../services/content';
 import ReactMarkdown from 'react-markdown';
 import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { SVGRenderer } from '../shared/SVGRenderer';
@@ -179,10 +180,89 @@ interface CanvasItemCardProps {
   isOnly?: boolean;
 }
 
+// ExportMenu — small ⋯ menu for document/note/chat-response cards.
+// Replaces the old ChatActionBar's standalone PDF + PPTX pills with a
+// per-item affordance: the user is already looking at what they want
+// to export. Click outside or pick an item to close.
+const ExportMenu: React.FC<{ item: CanvasItem }> = ({ item }) => {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
+  const title = item.title || 'document';
+  const filename = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'document';
+
+  const handlePdf = async () => {
+    if (!item.content) return;
+    setBusy(true);
+    try {
+      await contentService.downloadAsPDF(item.content, title, filename, 'clean');
+    } catch (err) {
+      console.error('PDF download failed:', err);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
+  const handlePptx = () => {
+    if (!item.content) return;
+    window.dispatchEvent(new CustomEvent('openExportModal', {
+      detail: { content: item.content, title, theme: 'light' },
+    }));
+    setOpen(false);
+  };
+
+  return (
+    <div ref={ref} className="relative" onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+        className="p-1 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+        title="Export"
+        disabled={busy || !item.content}
+      >
+        <MoreHorizontal className="w-3.5 h-3.5" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-50 w-44 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg py-1">
+          <button
+            onClick={handlePdf}
+            disabled={busy}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-wait"
+          >
+            <Download className="w-3.5 h-3.5" />
+            {busy ? 'Saving…' : 'Download PDF'}
+          </button>
+          <button
+            onClick={handlePptx}
+            disabled={busy}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+          >
+            <Presentation className="w-3.5 h-3.5" />
+            Export to Slides
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
   const ctx = useCanvas();
   const [visualThumbsDown, setVisualThumbsDown] = useState(false);
   const hasUnsavedNote = item.type === 'note' && item.content.trim().length > 0;
+  const isExportable = (item.type === 'document' || item.type === 'note' || item.type === 'chat-response')
+    && item.status === 'complete'
+    && !!item.content;
 
   const handleRemove = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -307,6 +387,7 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
             <span className="text-[10px] text-gray-400 dark:text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity">
               Collapse
             </span>
+            {isExportable && <ExportMenu item={item} />}
             <button
               onClick={handleRemove}
               className="p-1 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"

@@ -27,7 +27,7 @@ interface LeftNavColumnProps {
   selectedNotebookName: string;
   /** Reserved for future direct-launch from this surface (currently the
    *  StudioLauncher component reaches openStudio via context). */
-  onOpenStudio?: (type?: 'docs' | 'audio' | 'video' | 'visual' | 'quiz') => void;
+  onOpenStudio?: (type?: 'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards') => void;
 }
 
 interface DrawerSectionProps {

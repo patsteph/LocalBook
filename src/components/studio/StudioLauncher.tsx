@@ -21,10 +21,10 @@
  * — LeftNav and top nav stay visible/interactive.
  */
 import React from 'react';
-import { FileText, Mic, Video, Palette, Target, ChevronUp } from 'lucide-react';
+import { FileText, Mic, Video, Palette, Target, Layers, ChevronUp } from 'lucide-react';
 import { useAppShell, useCanvasItems } from '../canvas/CanvasContext';
 
-type StudioType = 'docs' | 'audio' | 'video' | 'visual' | 'quiz';
+type StudioType = 'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards';
 
 const TAB_ICONS: Array<{ id: StudioType; icon: React.ReactNode; label: string }> = [
   { id: 'docs',   icon: <FileText className="w-3 h-3" />, label: 'Docs' },
@@ -32,6 +32,7 @@ const TAB_ICONS: Array<{ id: StudioType; icon: React.ReactNode; label: string }>
   { id: 'video',  icon: <Video className="w-3 h-3" />,    label: 'Video' },
   { id: 'visual', icon: <Palette className="w-3 h-3" />,  label: 'Visual' },
   { id: 'quiz',   icon: <Target className="w-3 h-3" />,   label: 'Quiz' },
+  { id: 'cards',  icon: <Layers className="w-3 h-3" />,   label: 'Cards' },
 ];
 
 interface StudioLauncherProps {
@@ -64,12 +65,12 @@ export const StudioLauncher: React.FC<StudioLauncherProps> = ({ variant = 'bar' 
       <button
         onClick={() => open('docs')}
         disabled={disabled}
-        className="w-full flex items-center justify-center gap-1.5 py-1 text-[10px] font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 border-t border-gray-100 dark:border-gray-700/50 bg-white dark:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="w-full flex items-center justify-center gap-1 py-0.5 text-[10px] leading-none font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 border-t border-gray-100 dark:border-gray-700/50 bg-white dark:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         title={disabled ? 'Select a notebook first' : 'Open Studio'}
       >
-        <ChevronUp className="w-3 h-3" />
+        <ChevronUp className="w-2.5 h-2.5" />
         <span>{studioDrawerOpen ? 'Hide Studio' : 'Studio'}</span>
-        <ChevronUp className="w-3 h-3" />
+        <ChevronUp className="w-2.5 h-2.5" />
       </button>
     );
   }
