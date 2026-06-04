@@ -1,7 +1,7 @@
 import React from 'react';
 import {
-  MessageSquare, Sparkles, CalendarDays, Bookmark, Lightbulb,
-  Settings, Brain, BarChart3, Globe, FileText, Target, Palette
+  MessageSquare, Sparkles, CalendarDays, Lightbulb,
+  Settings, Brain, BarChart3, FileText, Target, Palette
 } from 'lucide-react';
 
 export type PanelView =

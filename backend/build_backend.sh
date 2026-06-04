@@ -431,40 +431,72 @@ BACKEND_INTERNAL="$OUTPUT_DIR/localbook-backend/_internal"
 BACKEND_EXE="$OUTPUT_DIR/localbook-backend/localbook-backend"
 ROOT_ENTITLEMENTS="../src-tauri/entitlements.plist"
 
+# ─── Strip unsignable test fixtures before signing ──────────────────────────
+# PyInstaller's data-collection pulls joblib's test/ directory (compressed-
+# pickle test fixtures with magic-byte sequences that Apple's notary flags
+# as "binary not signed with valid Developer ID"). These have no business
+# in a production bundle. Apply to both Developer ID and adhoc paths since
+# the adhoc bundle is still inspected by `codesign --verify --deep --strict`.
+if [ -d "$BACKEND_INTERNAL/joblib/test" ]; then
+    rm -rf "$BACKEND_INTERNAL/joblib/test"
+    echo -e "${YELLOW}  Stripped joblib/test/ fixtures (not for production)${NC}"
+fi
+
+# Identify every Mach-O binary inside the PyInstaller bundle. Notarization
+# fails on the FIRST unsigned Mach-O it finds — `.so` + `.dylib` are not
+# enough: PyInstaller also embeds the Python interpreter (no extension),
+# the full Python.framework, plus per-package CLI binaries (torch's
+# protoc / torch_shm_manager, playwright's bundled node, etc.). We use
+# `file -b` to find them all by content type rather than enumerating names.
+#
+# Skip the main backend executable here — it gets signed LAST with the app
+# entitlements attached.
+find_macho_files() {
+    # `-type f` excludes symlinks (they're signed via their target).
+    # The `printf` + read loop tolerates filenames with spaces.
+    find "$BACKEND_INTERNAL" -type f -print0 | while IFS= read -r -d '' f; do
+        if file -b "$f" 2>/dev/null | grep -q "Mach-O"; then
+            printf '%s\0' "$f"
+        fi
+    done
+}
+
 if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
-    echo -e "${YELLOW}Signing binaries with Developer ID (release mode)...${NC}"
-    echo -e "${YELLOW}  Identity: $APPLE_SIGNING_IDENTITY${NC}"
-
-    if [ ! -f "$ROOT_ENTITLEMENTS" ]; then
-        echo -e "${RED}✗ Expected entitlements file not found: $ROOT_ENTITLEMENTS${NC}"
-        exit 1
+    # Developer ID mode: Adhoc-sign everything here, then let build.sh
+    # do the REAL Developer ID + entitlements + timestamp + runtime signing
+    # AFTER Tauri's bundler runs.
+    #
+    # Why: Tauri's `tauri build` bundles `src-tauri/resources/backend/...`
+    # into `LocalBook.app/Contents/Resources/resources/backend/...`. PyInstaller
+    # creates `_internal/Python` as a SYMLINK to `Python.framework/Versions/3.13/Python`.
+    # Tauri's copy dereferences the symlink into a standalone file, breaking
+    # any signature that was applied to the symlink in place. So per-file
+    # Developer ID signing here is wasted work — Tauri throws it away.
+    #
+    # Solution: produce an adhoc-signed, runnable bundle here. Tauri can
+    # bundle it (Tauri's --deep signing on the .app preserves inner adhoc
+    # sigs). Then build.sh re-signs the backend inside the .app with the
+    # real Developer ID + entitlements + runtime + timestamp, using the
+    # post-deref file structure. See build.sh after `npm run tauri build`.
+    echo -e "${YELLOW}Signing binaries with adhoc identity (real signing happens post-Tauri)...${NC}"
+    find_macho_files | while IFS= read -r -d '' f; do
+        codesign --force --sign - "$f" >/dev/null 2>&1 || true
+    done
+    if [ -d "$BACKEND_INTERNAL/Python.framework" ]; then
+        codesign --force --sign - "$BACKEND_INTERNAL/Python.framework" 2>/dev/null || true
     fi
-
-    # Sign inner dylibs/sofiles FIRST (inside-out signing required by codesign).
-    # Use --options runtime + --timestamp so notarization will accept them.
-    find "$BACKEND_INTERNAL" -name "*.so" -exec \
-        codesign --force --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" {} \; 2>/dev/null
-    find "$BACKEND_INTERNAL" -name "*.dylib" -exec \
-        codesign --force --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" {} \; 2>/dev/null
-
-    # Sign the main executable LAST, with entitlements attached.
-    codesign --force --options runtime --timestamp \
-        --entitlements "$ROOT_ENTITLEMENTS" \
-        --sign "$APPLE_SIGNING_IDENTITY" \
-        "$BACKEND_EXE"
-
-    # Verify the outer executable so failures surface here, not at notarization.
-    if ! codesign --verify --strict "$BACKEND_EXE" 2>/dev/null; then
-        echo -e "${RED}✗ codesign --verify failed on $BACKEND_EXE${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}✓ Developer ID signing complete (notarization-ready)${NC}"
+    codesign --force --sign - "$BACKEND_EXE" 2>/dev/null
+    echo -e "${GREEN}✓ Adhoc signing complete (release.sh will Developer-ID-sign post-Tauri)${NC}"
 else
     echo -e "${YELLOW}Signing binaries with adhoc identity (local/dev mode)...${NC}"
-    find "$BACKEND_INTERNAL" -name "*.so" -exec codesign --force --sign - {} \; 2>/dev/null
-    find "$BACKEND_INTERNAL" -name "*.dylib" -exec codesign --force --sign - {} \; 2>/dev/null
+    # Adhoc signing — also covers all Mach-O, not just .so/.dylib, so the
+    # adhoc bundle has the same structural validity as the signed one.
+    find_macho_files | while IFS= read -r -d '' f; do
+        codesign --force --sign - "$f" >/dev/null 2>&1 || true
+    done
+    if [ -d "$BACKEND_INTERNAL/Python.framework" ]; then
+        codesign --force --sign - "$BACKEND_INTERNAL/Python.framework" 2>/dev/null || true
+    fi
     codesign --force --sign - "$BACKEND_EXE" 2>/dev/null
     echo -e "${GREEN}✓ Adhoc signing complete${NC}"
 fi

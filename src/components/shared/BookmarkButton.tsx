@@ -75,7 +75,6 @@ export const BookmarkButton: React.FC<BookmarkButtonProps> = ({
   type,
   title,
   content,
-  tags,
   className = '',
   compact = false,
 }) => {

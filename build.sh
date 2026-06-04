@@ -203,11 +203,187 @@ rm -rf dist/
 # Use release.sh when you need a notarization-ready DMG.
 npm run tauri build -- --bundles app
 
-# Copy app to easy location
 APP_PATH="src-tauri/target/release/bundle/macos/LocalBook.app"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Post-Tauri Developer ID signing pass (release mode only)
+# ═══════════════════════════════════════════════════════════════════════════
+# The reason this lives here and not in build_backend.sh:
+#
+# PyInstaller creates `_internal/Python` as a SYMLINK to
+# `Python.framework/Versions/3.13/Python`. When Tauri bundles the backend
+# into the .app, its copier dereferences the symlink — so `_internal/Python`
+# becomes a standalone regular file at a new path. Any signature applied
+# to that symlink (in `src-tauri/resources/backend/...`) is invalid once
+# the file moves to its post-deref location: the signed identifier
+# (`org.python.python`) is now ambiguous between two physical files at
+# different paths, and codesign verify reports "invalid Info.plist
+# (plist or signature have been modified)" at runtime.
+#
+# Solution: do all the Developer ID work AFTER Tauri bundles, against
+# the post-deref file structure. This pass is idempotent — run it as
+# many times as you like; each run re-signs cleanly with --force.
+#
+# Triggers only when APPLE_SIGNING_IDENTITY is set (release builds);
+# dev builds keep their adhoc signatures from build_backend.sh.
+if [ -d "$APP_PATH" ] && [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+    echo -e "\n${YELLOW}Post-Tauri signing: Developer ID + entitlements + runtime...${NC}"
+    echo -e "${YELLOW}  Identity: $APPLE_SIGNING_IDENTITY${NC}"
+
+    BACKEND_IN_APP="$APP_PATH/Contents/Resources/resources/backend/localbook-backend"
+    BACKEND_INTERNAL_IN_APP="$BACKEND_IN_APP/_internal"
+    BACKEND_EXE_IN_APP="$BACKEND_IN_APP/localbook-backend"
+    ROOT_ENTITLEMENTS="src-tauri/entitlements.plist"
+
+    if [ ! -f "$ROOT_ENTITLEMENTS" ]; then
+        echo -e "${RED}✗ Expected entitlements file not found: $ROOT_ENTITLEMENTS${NC}"
+        exit 1
+    fi
+
+    # 0. Restore Python.framework canonical symlink structure.
+    #    PyInstaller produces a normal macOS framework layout:
+    #
+    #      Python.framework/
+    #      ├── Python -> Versions/Current/Python  (symlink)
+    #      ├── Resources -> Versions/Current/Resources  (symlink)
+    #      └── Versions/
+    #          ├── Current -> 3.13  (symlink)
+    #          └── 3.13/
+    #              ├── Python  (real file)
+    #              └── Resources/
+    #
+    #    Tauri's bundler dereferences every symlink during the copy, so
+    #    the .app ships with:
+    #      - Python.framework/Python as a REAL FILE (5 MB duplicate)
+    #      - Python.framework/Versions/Current MISSING
+    #      - _internal/Python as a REAL FILE (5 MB duplicate of the
+    #        framework's inner Python)
+    #
+    #    Apple's notary rejects this with "The signature of the binary
+    #    is invalid" on Python.framework/Python — a regular file at a
+    #    framework root path is structurally invalid for codesign.
+    #
+    #    Restore the symlinks before signing so the framework presents
+    #    the canonical layout that codesign + notary understand.
+    PFW="$BACKEND_INTERNAL_IN_APP/Python.framework"
+    if [ -d "$PFW" ]; then
+        echo -e "${YELLOW}  [0] Restoring Python.framework symlink structure (Tauri deref'd)...${NC}"
+        # Versions/Current → 3.13 (must exist before relative symlinks below)
+        if [ ! -L "$PFW/Versions/Current" ]; then
+            rm -rf "$PFW/Versions/Current" 2>/dev/null || true
+            (cd "$PFW/Versions" && ln -s 3.13 Current)
+        fi
+        # Python.framework/Python → Versions/Current/Python
+        if [ ! -L "$PFW/Python" ]; then
+            rm -f "$PFW/Python"
+            (cd "$PFW" && ln -s Versions/Current/Python Python)
+        fi
+        # Python.framework/Resources → Versions/Current/Resources
+        # (skip if the target doesn't exist — some Tauri builds drop it.)
+        if [ ! -e "$PFW/Resources" ] && [ -d "$PFW/Versions/3.13/Resources" ]; then
+            (cd "$PFW" && ln -s Versions/Current/Resources Resources)
+        fi
+        # _internal/Python → Python.framework/Versions/3.13/Python
+        # (the symlink PyInstaller put at the top of _internal/)
+        if [ ! -L "$BACKEND_INTERNAL_IN_APP/Python" ] && [ -f "$BACKEND_INTERNAL_IN_APP/Python" ]; then
+            rm -f "$BACKEND_INTERNAL_IN_APP/Python"
+            (cd "$BACKEND_INTERNAL_IN_APP" && ln -s Python.framework/Versions/3.13/Python Python)
+        fi
+        # Wipe any prior _CodeSignature directories from a previous
+        # half-attempt — codesign --force will recreate them cleanly.
+        rm -rf "$PFW/_CodeSignature" 2>/dev/null || true
+        rm -rf "$PFW/Versions/3.13/_CodeSignature" 2>/dev/null || true
+        echo -e "${GREEN}  ✓ Framework symlinks restored${NC}"
+    fi
+
+    # 1. Sign every Mach-O file inside the post-Tauri backend bundle,
+    #    EXCLUDING anything inside Python.framework (framework signing
+    #    handles those atomically in step 2).
+    echo -e "${YELLOW}  [1/4] Scanning + signing Mach-O files inside _internal...${NC}"
+    find "$BACKEND_INTERNAL_IN_APP" -type f \
+        -not -path "*/Python.framework/*" -print0 | \
+    while IFS= read -r -d '' f; do
+        if file -b "$f" 2>/dev/null | grep -q "Mach-O"; then
+            codesign --force --options runtime --timestamp \
+                --sign "$APPLE_SIGNING_IDENTITY" "$f" >/dev/null 2>&1 || {
+                echo -e "${RED}✗ codesign failed on $f${NC}"
+                exit 1
+            }
+        fi
+    done
+
+    # 2. Sign Python.framework. Two-step process:
+    #    a) Sign the inner Mach-O binary explicitly with Developer ID +
+    #       runtime + timestamp. `codesign Path/To/Framework` does NOT
+    #       propagate these flags into the inner executable — it only
+    #       seals the framework's bundle structure (CodeResources). So
+    #       without this explicit step, the inner Python binary retains
+    #       whatever signature it had before (adhoc from build_backend.sh),
+    #       and notarization rejects it: "not signed with valid Developer
+    #       ID" + "signature does not include a secure timestamp".
+    #    b) Sign the framework as a unit to update CodeResources to match
+    #       the newly-signed inner binary.
+    if [ -d "$BACKEND_INTERNAL_IN_APP/Python.framework" ]; then
+        echo -e "${YELLOW}  [2a] Signing Python.framework inner binary (Versions/*/Python)...${NC}"
+        find "$BACKEND_INTERNAL_IN_APP/Python.framework/Versions" \
+                -mindepth 2 -maxdepth 2 -name "Python" -type f -print0 | \
+        while IFS= read -r -d '' f; do
+            codesign --force --options runtime --timestamp \
+                --sign "$APPLE_SIGNING_IDENTITY" "$f" || {
+                echo -e "${RED}✗ codesign failed on $f${NC}"
+                exit 1
+            }
+        done
+
+        echo -e "${YELLOW}  [2b] Signing Python.framework as framework (seals inner)...${NC}"
+        codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            "$BACKEND_INTERNAL_IN_APP/Python.framework" || {
+            echo -e "${RED}✗ codesign failed on Python.framework${NC}"
+            exit 1
+        }
+    fi
+
+    # 3. Sign the backend main executable with the app's entitlements
+    #    (JIT, library validation disable, etc. — see entitlements.plist).
+    echo -e "${YELLOW}  [3/4] Signing backend executable with entitlements...${NC}"
+    codesign --force --options runtime --timestamp \
+        --entitlements "$ROOT_ENTITLEMENTS" \
+        --sign "$APPLE_SIGNING_IDENTITY" \
+        "$BACKEND_EXE_IN_APP" || {
+        echo -e "${RED}✗ codesign failed on backend executable${NC}"
+        exit 1
+    }
+
+    # 4. Re-sign the outer .app. Tauri signed it during `tauri build`, but
+    #    we modified inner contents above — that broke the outer signature.
+    #    Sign the .app last so the outer signature covers all inner files
+    #    we just touched. Use the main app's entitlements via tauri.conf.json
+    #    bundle.macOS (already in place via release.sh's identity injection).
+    echo -e "${YELLOW}  [4/4] Re-signing outer .app...${NC}"
+    codesign --force --options runtime --timestamp \
+        --sign "$APPLE_SIGNING_IDENTITY" \
+        "$APP_PATH" || {
+        echo -e "${RED}✗ codesign failed on outer .app${NC}"
+        exit 1
+    }
+
+    # Deep verify: catches any Mach-O we missed BEFORE we waste a 10-minute
+    # notary round-trip. --strict is mandatory here; --verbose=1 prints
+    # the chain.
+    echo -e "${YELLOW}  Deep-verifying .app signature...${NC}"
+    if ! codesign --verify --deep --strict --verbose=1 "$APP_PATH" 2>&1 | tail -5; then
+        echo -e "${RED}✗ codesign --verify --deep --strict failed on $APP_PATH${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Post-Tauri Developer ID signing complete (notarization-ready)${NC}"
+fi
+
+# Copy app to easy location. ditto preserves all metadata (extended
+# attributes, code signatures, symlinks) which a plain `cp -r` may not.
 if [ -d "$APP_PATH" ]; then
     rm -rf "./LocalBook.app"
-    cp -r "$APP_PATH" "./LocalBook.app"
+    ditto "$APP_PATH" "./LocalBook.app"
 fi
 
 echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

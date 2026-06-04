@@ -8,11 +8,10 @@
  * The capture session is created lazily on mount, so the QR is immediately
  * ready when the user opens a note — zero clicks to start scanning.
  */
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { AlertCircle, Camera, ChevronDown, Loader2, X } from 'lucide-react';
+import { AlertCircle, Loader2, X } from 'lucide-react';
 import { captureService, CaptureSession, CapturePageEvent } from '../services/captureService';
-import { API_BASE_URL } from '../services/api';
 
 interface ScanQRBadgeProps {
   /** Async callback to insert OCR'd markdown into the active note. */
@@ -33,7 +32,6 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
   const [session, setSession] = useState<CaptureSession | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [pages, setPages] = useState<PageStatus[]>([]);
-  const [showFileMenu, setShowFileMenu] = useState(false);
   const [totalChars, setTotalChars] = useState(0);
   // Latest backend error — typed so the banner can render category-
   // specific guidance ("Vision model X failed" vs. a generic message)
@@ -45,7 +43,6 @@ export function ScanQRBadge({ onCaptureReceived, onFileScan, compact }: ScanQRBa
   } | null>(null);
   const wsCleanupRef = useRef<(() => void) | null>(null);
   const badgeRef = useRef<HTMLDivElement>(null);
-  const fileMenuRef = useRef<HTMLDivElement>(null);
 
   // Stable ref for the parent-supplied insert callback. We deliberately do
   // NOT depend on `onCaptureReceived` in the WebSocket effect: the parent

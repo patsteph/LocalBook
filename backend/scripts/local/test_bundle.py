@@ -17,13 +17,33 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 
-def fetch(base_url: str, path: str, timeout: int = 10, expect_status: int = 200) -> dict:
+# Per-launch app token (see backend/utils/auth_middleware.py). All non-exempt
+# endpoints require X-LocalBook-Token. We read it from the same file the
+# backend writes at startup so this smoke test can authenticate.
+TOKEN_PATH = Path.home() / "Library" / "Application Support" / "LocalBook" / ".app_token"
+
+
+def load_app_token() -> str | None:
+    """Return the running backend's app token, or None if the file is missing/empty."""
+    try:
+        token = TOKEN_PATH.read_text().strip()
+        return token or None
+    except OSError:
+        return None
+
+
+def fetch(base_url: str, path: str, timeout: int = 10, expect_status: int = 200,
+          app_token: str | None = None) -> dict:
     """GET {base_url}{path}, return parsed JSON. Raises RuntimeError on any failure."""
     url = f"{base_url}{path}"
+    req = urllib.request.Request(url)
+    if app_token:
+        req.add_header("X-LocalBook-Token", app_token)
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status != expect_status:
                 raise RuntimeError(f"status {resp.status}, expected {expect_status}")
             raw = resp.read()
@@ -52,6 +72,12 @@ def main() -> int:
     base = args.base_url.rstrip("/")
     print(f"Bundle smoke test → {base}")
 
+    app_token = load_app_token()
+    if app_token:
+        print(f"  [auth] using app token from {TOKEN_PATH.name} ({len(app_token)} chars)")
+    else:
+        print(f"  [auth] no app token at {TOKEN_PATH} — auth-protected endpoints will 401")
+
     # Each check: (label, path, optional response validator)
     # Validators receive the parsed JSON and return None on success or an error string.
     checks = [
@@ -72,23 +98,25 @@ def main() -> int:
     for label, path, validator in checks:
         t0 = time.time()
         try:
-            data = fetch(base, path, timeout=args.timeout)
+            data = fetch(base, path, timeout=args.timeout, app_token=app_token)
             err = validator(data) if validator else None
             if err:
-                print(f"  FAIL  {label:<22} ({path}): {err}")
+                print(f"  [FAIL] {label:<22} ({path}): {err}")
                 failures += 1
             else:
                 dt_ms = int((time.time() - t0) * 1000)
-                print(f"  OK    {label:<22} ({path})  {dt_ms}ms")
+                print(f"  [OK]   {label:<22} ({path})  {dt_ms}ms")
         except Exception as e:
-            print(f"  FAIL  {label:<22} ({path}): {e}")
+            print(f"  [FAIL] {label:<22} ({path}): {e}")
             failures += 1
 
     print()
     if failures:
-        print(f"Bundle smoke test FAILED — {failures} check(s) failed")
+        # Wording matched to release.sh's filter / failure detection.
+        print(f"Bundle verification FAILED — Failed: {failures} check(s)")
         return 1
-    print("Bundle smoke test PASSED")
+    # Wording matched to release.sh's success-string check.
+    print(f"Bundle verification passed — Passed: {len(checks)} checks")
     return 0
 
 

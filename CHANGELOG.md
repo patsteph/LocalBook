@@ -2,7 +2,39 @@
 
 All notable changes to LocalBook will be documented in this file.
 
-## v1.9.0 — iPhone Scan Capture + Signed/Notarized Releases (in progress)
+## v1.8.0 — Studio UI Redesign, iPhone Scan Capture, Sidecar Lifecycle, Multi-Provider LLM
+
+### Highlights
+- **Studio redesigned** — One unified drawer + two slim entry bars (chat-area slim strip + LeftNav rainbow) replaces the old 9-pill ActionBar and tabbed Studio panel. 6 generation types including Cards (Flash Cards).
+- **Studio documents now read like the chat** — Explicit markdown presentation brief (headers, bold, lists, tables, scan-ability) added to every doc generation prompt.
+- **iPhone Scan Capture** — Continuity Camera fully integrated in-process via `AVCaptureDevice` + multi-page Scan Documents sessions. Portrait preview by default, rotate button, Return-to-capture.
+- **Memory steward** — New module that owns Ollama RAM hygiene, evicts non-essential models before each scan so the vision working set fits a 16 GB box.
+- **Signed + notarized releases** — `release.sh` now does codesign + `xcrun notarytool` + stapler + Gatekeeper verify end-to-end with safe identity injection (never committed).
+- **Multi-provider LLM foundation** — New `services/llm_provider.py` routes models to Ollama or `llama_server`; Ollama↔OpenAI translator covers generate + chat + streaming.
+- **Sidecar lifecycle + one-click swap** — `SidecarManager` spawns `llama-server` as a child process with health polling + graceful shutdown. Bonsai-8B is selectable from the Health Portal Locker.
+- **Library main view** — New type-grouped accordion + universal Download per kind. Per-item PDF / PPTX export menu on canvas cards.
+- **Main nav redesign** — Word-button strip (Chat / Library / Constellation / Timeline / Curator) + ⌘1-⌘5 / ⌘K command palette + pulse-on-change.
+- **Voice Profile robust to LLM shape drift** — Settings → Voice no longer crashes when the LLM that builds the profile returns an object where the UI expected a string (React #31).
+
+---
+
+### Studio UI redesign — chat-area slim bar, LeftNav rainbow, canvas-contained drawer
+- **`src/components/studio/StudioLauncher.tsx` + `StudioDrawer.tsx`** — Replaced the 1437-line `ChatActionBar` 9-pill row, the inline per-type popovers, and the tabbed `Studio.tsx` panel with one unified drawer + two slim entry bars. Chat-area variant is a near-flush `⌃ Studio ⌃` strip above the chat input; LeftNav variant has a rainbow accent line (animates during generation) + STUDIO label + 5 tab icons. Drawer mounts inside `CanvasPanel` with `absolute` positioning so it overlays only the canvas — LeftNav and top nav stay interactive.
+- **6th drawer type: Cards (Flash Cards)** — Layers icon, fuchsia accent. Per-type config: count slider, difficulty, tutor gender, tutor accent (us/uk), autoplay toggle, include-visuals toggle. Drops a `flashcards` canvas item; `FlashcardsCanvasTile` self-generates the deck on mount.
+- **Audio: "Accent" → "Accent / Language"** — Dropdown contains real languages, not just US/UK accents. Restored Hindi (regression from earlier rewrite), added German. Extracted to a shared `ACCENT_LANGUAGE_OPTIONS` constant.
+- **Video: Accent/Language + Narrator gender** — Previously hardcoded `accent: 'us'` with no UI for narrator gender. Both controls now in the drawer, persisted to localStorage.
+- **Per-item export menu on canvas cards** — `⋯` menu in the expanded header of `document` / `note` / `chat-response` cards: Download PDF (`contentService.downloadAsPDF`, layout='clean') and Export to Slides (dispatches `openExportModal`). Replaces the old standalone PPTX + PDF pills with a contextual affordance.
+- **`createFlashcardsDeck` listener restored in `App.tsx`** — Silent regression: `FlashcardsCanvasTile` dispatches this event for gap-analysis "Quiz me on this" follow-on decks, but the listener died with `ChatActionBar`. New listener mounted next to `lb:openLibraryItem`.
+- **Library main view (`src/components/Library.tsx` + `quiz_store.py` + `visual_store.py`)** — Type-grouped accordion, click-to-open canvas tombstones, universal Download per kind.
+- **Main nav redesign (`src/components/layout/MainNav.tsx`)** — Replaced view-selector dropdown with word-button strip (Chat | Library | Constellation | Timeline | Curator). Added ⌘1-⌘5 / ⌘[ / ⌘K shortcuts, command palette, subtle pulse-on-change.
+- **Save-as-Note refactor** — Collapsed the parallel Findings surface into Sources/Notes with a one-time migration so saved items are visible + RAG-indexed.
+
+### Studio document output quality — explicit markdown presentation brief
+- **`backend/services/output_templates.py`** — Added `PRESENTATION_QUALITY` constant: ~13-line brief covering `##` / `###` headers, `**bold**` for key terms, `*italics*` sparingly, lists for 3+ enumerated items, tables for side-by-side comparisons, blockquotes for sourced quotes, `---` between major sections only, `` `inline code` `` for literals, short paragraphs, one-line takeaway-then-evidence section openings, no preamble lede, scan-test. Injected into `build_document_prompt` (both template + no-template paths) — covers every `DOCUMENT_TEMPLATES` doc type automatically.
+- **`backend/api/content.py`** — Imported `PRESENTATION_QUALITY` and injected into both custom-skill fallback paths (streaming + non-streaming). Root cause: chat-side `rag_generation.py` has had an explicit `PRESENTATION QUALITY` block for a while, which is why chat answers read like well-formatted docs; Studio's prompt builder was missing the equivalent so flat-prose-with-no-headings became the failure mode. 7B models reliably follow EXPLICIT format instructions; they unreliably infer them from voice exemplars.
+
+### Voice Profile defensive coercion — fix React #31 from LLM shape drift
+- **`src/components/settings/VoiceProfileSection.tsx`** — Settings → Voice was crashing on one of three machines because the LLM that builds the profile (`phi4-mini` in `voice_engine.py`) produced an object (e.g. `{"vocabulary": {"type": "academic"}}`) where the UI expected a string. `json.loads()`-only validation let it through; React refused to render the object. Frontend now types every field as `unknown`, coerces via `renderField()` (strings pass, objects `JSON.stringify`, nullish → fallback) and `renderInterests()` (flattens any shape into `string[]`, peels common object keys: `name` / `topic` / `interest` / `label`). UI is robust to any backend shape.
 
 ### Sprint 9.10 — Vision pipeline reliability (memory steward + working vision default)
 - **Diagnosed silent capture failure** — Captures uploaded from the QR-flow iPhone page were getting stuck at "processing" with `ollama ps` never showing the vision model. Root cause was twofold: (a) `ibm/granite3.3-vision:2b` reliably segfaults the Ollama 0.23 llama-runner on Apple Silicon (same fault address `0x18c0a25e8` every call → it's a model-runner / model-file bug, not OOM), and (b) when running the original `granite3.2-vision` flow alongside `olmo-3:7b-instruct + phi4-mini + snowflake-arctic-embed2` the runner did legitimately OOM because the working set exceeds ~13 GB.
@@ -80,10 +112,6 @@ All notable changes to LocalBook will be documented in this file.
 - **Source organization (NotebookLM-style sort)** — New sort dropdown above each notebook's source list, persisted to `localStorage` (`localbook.sourcesList.sort`). Modes: Recently added (default), Oldest first, Title A→Z, Title Z→A, By type (groups note / collected / format), Largest first. Implemented client-side in `SourcesList.tsx` so it's instant; backend already returned `created_at` so no server change was needed beyond surfacing the field on the `Source` TS type.
 - **Continuity Camera: per-machine camera picker** — When more than one camera is available (paired iPhone + iPad + built-in FaceTime + leftover virtual cams), the user can now pick which one to scan with. New sidecar `--list` mode enumerates every device AVFoundation sees as JSON; new `--camera <uniqueID>` flag forces a specific device; new `--include-non-continuity` flag lets a built-in / external camera be used as a fallback when no iPhone is around. New Tauri command `list_continuity_cameras` and an updated `trigger_continuity_camera(camera_id, include_non_continuity)`. New React `CameraPickerModal` with iconography per device type, a "Remember this choice" toggle, and persistence to `localStorage` (`localbook.continuityCamera.preferredId`) so subsequent scans skip the picker. Strict iPhone-only behaviour is preserved when no camera is explicitly chosen — virtual / built-in cams are still excluded by default.
 
----
-
-## v1.8.0 — Sidecar Lifecycle + One-Click Bonsai Swap (Phase 2)
-
 ### Sidecar process management
 - **`services/sidecar_manager.py`** — New `SidecarManager` singleton that spawns `llama-server` as a child process, polls `/health` until ready (45 s default timeout), and terminates cleanly on shutdown (SIGTERM → SIGKILL fallback). Layered config: env vars → `user_preferences.json → sidecar` → built-in defaults (binary at `~/src/llama.cpp/build/bin/llama-server` or PATH, model at `~/.localbook/models/bonsai/Bonsai-8B-Q1_0.gguf`, port 8090).
 - **Binary + model auto-discovery** — Checks source-built llama.cpp location first (needed for Q1_0 since Homebrew's formula lags), falls back to `/opt/homebrew/bin/llama-server`, then `PATH`.
@@ -121,11 +149,7 @@ The user story `Bonsai benchmark in five clicks` now works:
 - Model picker in the sidecar card (Phase 1 registers exactly one sidecar model — Bonsai; picker only matters once there are multiple).
 - Evaluator per-run model override (today you must swap first; a future "run with" dropdown would let you benchmark without touching the active config).
 
----
-
-## v1.7.0 — Multi-Provider LLM Infrastructure (Phase 1)
-
-### Foundation for non-Ollama backends
+### Foundation for non-Ollama backends (multi-provider LLM)
 - **`services/llm_provider.py`** — New routing layer with a `Provider` enum (`ollama`, `llama_server`), a `ProviderRoute` dataclass, async/sync health checks with a 10-second TTL cache, and an Ollama↔OpenAI payload translator covering generate + chat, streaming + non-streaming, token usage, and stop sequences. Unknown models fall back to the Ollama route byte-for-byte, so existing behavior is preserved.
 - **`ModelInfo.provider`** — New registry field on entries in `known_models.json` (default `"ollama"`). Entries can now be tagged `"provider": "llama_server"` to route them through a locally running sidecar that speaks the OpenAI chat API.
 - **`model_registry.refresh_installed_status()`** — Ollama models still checked via `/api/tags`; sidecar models are now marked installed iff the llama-server `/health` endpoint returns 200.
