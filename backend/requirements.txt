@@ -14,6 +14,8 @@ aiohttp==3.13.3
     #   huggingface-hub
 aiosignal==1.4.0
     # via aiohttp
+aiosmtplib==3.0.2
+    # via -r requirements.in
 altgraph==0.17.5
     # via
     #   macholib
@@ -266,6 +268,8 @@ idna==3.11
     #   httpx
     #   requests
     #   yarl
+imap-tools==1.6.0
+    # via -r requirements.in
 importlib-metadata==8.7.1
     # via opentelemetry-api
 invoke==2.2.1
@@ -371,6 +375,8 @@ lxml-html-clean==0.4.3
     # via lxml
 macholib==1.16.4
     # via pyinstaller
+mail-parser==3.15.0
+    # via -r requirements.in
 markdown-it-py==4.0.0
     # via rich
 markupsafe==3.0.3
@@ -813,6 +819,8 @@ sgmllib3k==1.0.0
     # via feedparser
 shellingham==1.5.4
     # via typer
+simplejson==3.19.3
+    # via mail-parser
 six==1.17.0
     # via
     #   ebooklib
