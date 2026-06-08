@@ -9,7 +9,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     from services.ollama_client import ollama_client
     from config import settings
     
-    main_model = getattr(settings, 'ollama_model', 'olmo-3:7b-instruct')
+    main_model = getattr(settings, 'ollama_model', 'gemma4:e4b')
     tests = config.get("prompt_safety_test", [])
     
     if not tests:

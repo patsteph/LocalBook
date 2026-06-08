@@ -31,8 +31,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const { capture: captureEngagement } = useEngagement();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
-  const [deepThink, setDeepThink] = useState(false);  // Deep Think mode toggle
-  const [showDeepThinkTip, setShowDeepThinkTip] = useState(() => !localStorage.getItem('lb-deepthink-tip-seen'));
+  const [deepThink] = useState(false);  // Toggle removed (2026-06-07); state retained so existing send paths still get a defined value.
   const [showWelcome, setShowWelcome] = useState(() => !localStorage.getItem('lb-welcome-seen'));
   const [showMentionMenu, setShowMentionMenu] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
@@ -965,51 +964,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       <div className="border-t dark:border-gray-700 px-2.5 py-1.5 bg-white dark:bg-gray-800 flex-shrink-0">
         <form onSubmit={handleSubmit}>
           <div className="flex gap-1.5 items-center">
-            {/* Quick/Deep Toggle - Rabbit vs Brain */}
-            <div 
-              className="relative flex items-center bg-gray-100 dark:bg-gray-700 rounded-full p-0.5 h-9"
-              title={deepThink ? "Deep Think: Thorough analysis (slower)" : "Quick: Fast, concise responses"}
-            >
-              {showDeepThinkTip && (
-                <div className="absolute bottom-full left-0 mb-2 w-52 p-2.5 bg-gray-900 dark:bg-gray-700 text-white text-xs rounded-lg shadow-lg z-50 animate-slide-up">
-                  <p className="font-medium mb-1">Response Mode</p>
-                  <p className="text-gray-300"><span className="text-base">🐇</span> <strong>Quick</strong> — Fast, concise answers</p>
-                  <p className="text-gray-300 mt-0.5"><span className="text-base">🧠</span> <strong>Deep Think</strong> — Step-by-step analysis</p>
-                  <button
-                    type="button"
-                    onClick={() => { setShowDeepThinkTip(false); localStorage.setItem('lb-deepthink-tip-seen', '1'); }}
-                    className="mt-1.5 text-blue-400 hover:text-blue-300 font-medium"
-                  >
-                    Got it
-                  </button>
-                  <div className="absolute top-full left-4 -mt-px border-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => setDeepThink(false)}
-                disabled={!notebookId || loading}
-                className={`px-2 py-1.5 rounded-full text-sm transition-all ${
-                  !deepThink
-                    ? 'bg-white dark:bg-gray-600 shadow-sm'
-                    : 'hover:bg-gray-200 dark:hover:bg-gray-600'
-                } disabled:opacity-50`}
-              >
-                🐇
-              </button>
-              <button
-                type="button"
-                onClick={() => setDeepThink(true)}
-                disabled={!notebookId || loading}
-                className={`px-2 py-1.5 rounded-full text-sm transition-all ${
-                  deepThink
-                    ? 'bg-purple-500 shadow-sm'
-                    : 'hover:bg-gray-200 dark:hover:bg-gray-600'
-                } disabled:opacity-50`}
-              >
-                🧠
-              </button>
-            </div>
+            {/* Quick/Deep toggle removed (v2.0 polish) — `deepThink` state
+                stays false; chat sends use the standard path. */}
             {input.trim().length > 20 && (
               <WritingAssistBar
                 text={input}

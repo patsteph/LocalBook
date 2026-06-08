@@ -310,6 +310,12 @@ async def query_stream(chat_query: ChatQuery):
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
+    if chat_query.target == "correspondent":
+        return StreamingResponse(
+            _dispatch_multi_intent(chat_query, "correspondent", _stream_correspondent),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
     
     # Fallback intent detection: auto-route cross-notebook queries to Curator
     # Uses fast regex first; only invokes LLM classifier if regex is inconclusive
@@ -692,14 +698,29 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
                     except Exception as _e:
                         logger.warning(f"[chat] Failed to parse saved wrap-up: {_e}")
 
-                if saved_wrap and saved_wrap.get("narrative"):
-                    reply = saved_wrap["narrative"]
-                    if saved_wrap.get("cross_notebook_insight"):
+                # Phase 14 (2026-06-08) — prefer the HTML dashboard
+                # variant when available; falls back to narrative-only.
+                # The frontend MarkdownArtifactRenderer's `html` fence
+                # routes this through the strict HtmlArtifactRenderer.
+                if saved_wrap and (saved_wrap.get("narrative_html") or saved_wrap.get("narrative")):
+                    html_variant = (saved_wrap.get("narrative_html") or "").strip()
+                    if html_variant:
+                        reply = f"```html\n{html_variant}\n```"
+                        if saved_wrap.get("narrative"):
+                            reply += "\n\n" + saved_wrap["narrative"]
+                    else:
+                        reply = saved_wrap["narrative"]
+                    if saved_wrap.get("cross_notebook_insight") and "Cross-Notebook Insight" not in reply:
                         reply += f"\n\n**Cross-Notebook Insight:** {saved_wrap['cross_notebook_insight']}"
                 else:
                     wrap = await curator.generate_weekly_wrap_up()
-                    reply = wrap.narrative if wrap.narrative else "Not enough activity this week for a wrap up."
-                    if wrap.cross_notebook_insight:
+                    if wrap.narrative_html:
+                        reply = f"```html\n{wrap.narrative_html}\n```"
+                        if wrap.narrative:
+                            reply += "\n\n" + wrap.narrative
+                    else:
+                        reply = wrap.narrative if wrap.narrative else "Not enough activity this week for a wrap up."
+                    if wrap.cross_notebook_insight and "Cross-Notebook Insight" not in reply:
                         reply += f"\n\n**Cross-Notebook Insight:** {wrap.cross_notebook_insight}"
                 follow_ups = ['What were the key themes?', 'Show me collector discoveries', 'Compare to last week']
             except Exception as we:
@@ -716,9 +737,24 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
                 if not insights:
                     reply = "No strong cross-notebook patterns detected yet. Add more sources to different notebooks and try again."
                 else:
+                    # Phase 14 (2026-06-08) — render each insight with the
+                    # visual that fits its type (cross_reference → Mermaid
+                    # graph; temporal_pattern → json-chart; coverage_gap →
+                    # mindmap). Falls back to text bullet on failure so the
+                    # reply is never blank.
                     lines = [f"**Cross-Notebook Patterns ({len(insights)} found):**\n"]
-                    for ins in insights[:8]:
-                        lines.append(f"- **{ins.entity}** ({ins.insight_type}): {ins.summary} — notebooks: {', '.join(ins.notebooks[:3])}")
+                    for ins in insights[:6]:
+                        lines.append(
+                            f"### {ins.entity}\n"
+                            f"_{ins.insight_type.replace('_', ' ')}_ — {ins.summary}"
+                        )
+                        try:
+                            viz = await curator._compose_insight_visual(ins.model_dump())
+                            if viz:
+                                lines.append(viz)
+                        except Exception as _v_e:
+                            logger.debug(f"[chat.discover_patterns] viz skipped: {_v_e}")
+                        lines.append("")  # spacer
                     reply = "\n".join(lines)
                 follow_ups = ['Tell me more about the first pattern', 'Synthesize insights', 'Play devil\'s advocate']
             except Exception as pe:
@@ -744,6 +780,44 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
                         lines.append(f"- {cp}")
                 reply = "\n".join(lines) if lines else "I couldn't find strong counterarguments. Your thesis may be well-supported!"
                 follow_ups = ['Strengthen my thesis', 'Find supporting evidence', 'Show related patterns']
+
+                # Phase 14 (2026-06-08) — append a Mermaid quadrant chart
+                # plotting the notebook's stance distribution (supports vs
+                # contradicts × confidence) so the user sees the shape of
+                # the disagreement, not just a counterpoint list.
+                try:
+                    from services.curator_brain import curator_brain as _cb
+                    import re as _re
+
+                    def _q_label(s: str, n: int = 32) -> str:
+                        s = _re.sub(r"[\[\]\"`:,]+", " ", str(s or ""))
+                        s = _re.sub(r"\s+", " ", s).strip()
+                        return s[:n] or "source"
+
+                    supports = _cb.get_supporting_sources(chat_query.notebook_id, limit=4)
+                    dissents = _cb.get_dissenting_sources(chat_query.notebook_id, limit=4)
+                    if supports or dissents:
+                        qlines = [
+                            "quadrantChart",
+                            "  title Stance vs confidence",
+                            "  x-axis Low conf --> High conf",
+                            "  y-axis Contradicts --> Supports",
+                            "  quadrant-1 Strong support",
+                            "  quadrant-2 Weak support",
+                            "  quadrant-3 Weak contradiction",
+                            "  quadrant-4 Strong contradiction",
+                        ]
+                        for i, s in enumerate(supports or []):
+                            x = round(min(0.95, max(0.05, float(s.get("confidence") or 0.7))), 2)
+                            y = round(0.75 + (i * 0.04), 2)
+                            qlines.append(f"  {_q_label(s.get('source_id') or f'support{i}')}: [{x}, {y}]")
+                        for i, d in enumerate(dissents or []):
+                            x = round(min(0.95, max(0.05, float(d.get("confidence") or 0.6))), 2)
+                            y = round(0.25 - (i * 0.04), 2)
+                            qlines.append(f"  {_q_label(d.get('source_id') or f'dissent{i}')}: [{x}, {y}]")
+                        reply = reply + "\n\n```mermaid\n" + "\n".join(qlines) + "\n```"
+                except Exception as _v_e:
+                    logger.debug(f"[chat.devils_advocate] quadrant skipped: {_v_e}")
             except Exception as de:
                 reply = f"Counterargument analysis failed: {de}"
             handled = True
@@ -803,6 +877,37 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
                     lines.append("\nYour collector's focus areas already cover these themes well.")
                 else:
                     lines.append("No strong themes found — try adding more notes first.")
+
+                # Phase 14 (2026-06-08) — append a Mermaid mindmap of
+                # themes + suggestions so the user sees the structure at
+                # a glance instead of reading three bullet lists. Skipped
+                # when there's nothing meaningful to visualize.
+                if themes or suggestions:
+                    try:
+                        import re as _re
+
+                        def _mm_label(s: str, n: int = 50) -> str:
+                            s = _re.sub(r"[\(\)\[\]\{\}\"`:,]+", " ", str(s or ""))
+                            s = _re.sub(r"\s+", " ", s).strip()
+                            return s[:n] or "—"
+
+                        mm_lines = ["mindmap", "  root((Notes))"]
+                        if themes:
+                            mm_lines.append("    Themes")
+                            for t in themes[:6]:
+                                mm_lines.append(f"      {_mm_label(t)}")
+                        if current:
+                            mm_lines.append("    Current focus")
+                            for c in current[:5]:
+                                mm_lines.append(f"      {_mm_label(c)}")
+                        if suggestions:
+                            mm_lines.append("    Suggested keywords")
+                            for s in suggestions[:6]:
+                                mm_lines.append(f"      {_mm_label(s)}")
+                        lines.append("\n```mermaid\n" + "\n".join(mm_lines) + "\n```")
+                    except Exception as _v_e:
+                        logger.debug(f"[chat.note_themes] mindmap skipped: {_v_e}")
+
                 reply = "\n".join(lines)
                 follow_ups = ['Discover patterns', 'Show your profile', 'What themes connect my notebooks?']
             except Exception as e:
@@ -907,6 +1012,69 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
                         strength_bar = "▓" * int(s * 5) + "░" * (5 - int(s * 5))
                         lines.append(f"{i}. [{strength_bar}] **{tier_label}** — {c['description']}")
                     lines.append("\n*Say **\"dismiss connection 2\"** or **\"connection 3 is useful\"** to give me feedback.*")
+
+                    # Phase 14 (2026-06-08) — append a Mermaid constellation
+                    # so users see the cross-notebook structure as a network,
+                    # not just a numbered list. Routed via mermaid fence in
+                    # MarkdownArtifactRenderer. Strong = solid thick edge,
+                    # related = solid, possible = dashed.
+                    try:
+                        from storage.notebook_store import notebook_store as _nbs
+                        import re as _re
+
+                        def _node_label(s: str, n: int = 28) -> str:
+                            s = _re.sub(r"[\(\)\[\]\{\}\"`]+", " ", str(s or ""))
+                            s = _re.sub(r"\s+", " ", s).strip()
+                            return s[:n] or "—"
+
+                        # Build a unique notebook-id → display name map for the
+                        # nodes that appear in the top 8 connections.
+                        ids_in_play: List[str] = []
+                        for c in connections[:8]:
+                            for k in ("notebook_a", "notebook_b"):
+                                nb_id = c.get(k)
+                                if nb_id and nb_id not in ids_in_play:
+                                    ids_in_play.append(nb_id)
+                        name_by_id: Dict[str, str] = {}
+                        for nb_id in ids_in_play:
+                            try:
+                                nb = await _nbs.get(nb_id) or {}
+                                name_by_id[nb_id] = nb.get("title") or nb.get("name") or nb_id[:8]
+                            except Exception:
+                                name_by_id[nb_id] = str(nb_id)[:8]
+
+                        if len(name_by_id) >= 2:
+                            graph_lines = ["graph LR"]
+                            # Node declarations with stable short IDs
+                            node_id_by_nb: Dict[str, str] = {}
+                            for i, (nb_id, name) in enumerate(name_by_id.items()):
+                                short = f"n{i}"
+                                node_id_by_nb[nb_id] = short
+                                graph_lines.append(f'  {short}["{_node_label(name)}"]')
+                            # Edges, tier-styled
+                            strong_edges: List[str] = []
+                            related_edges: List[str] = []
+                            possible_edges: List[str] = []
+                            for c in connections[:8]:
+                                a = node_id_by_nb.get(c.get("notebook_a", ""))
+                                b = node_id_by_nb.get(c.get("notebook_b", ""))
+                                if not a or not b:
+                                    continue
+                                s = c.get("strength") or 0
+                                if s >= 0.7:
+                                    strong_edges.append(f"  {a} === {b}")
+                                elif s >= 0.4:
+                                    related_edges.append(f"  {a} --- {b}")
+                                else:
+                                    possible_edges.append(f"  {a} -.-> {b}")
+                            graph_lines.extend(strong_edges + related_edges + possible_edges)
+                            graph_lines.append("  classDef nb fill:#ede9fe,stroke:#7c3aed,stroke-width:1.5px,color:#4c1d95;")
+                            for short in node_id_by_nb.values():
+                                graph_lines.append(f"  class {short} nb;")
+                            lines.append("\n```mermaid\n" + "\n".join(graph_lines) + "\n```")
+                    except Exception as _vis_e:
+                        # Visualization failure never blocks the text reply.
+                        logger.debug(f"[curator] brain_status constellation skipped: {_vis_e}")
                 elif stats.get('digests_total', 0) > 0:
                     lines.append("\n*No cross-notebook connections detected yet. More sources needed across notebooks.*")
                 else:
@@ -2790,6 +2958,114 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
         import traceback
         traceback.print_exc()
         yield f"data: {json.dumps({'error': f'Collector error: {e}'})}\n\n"
+
+
+async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional[Dict[str, Any]] = None):
+    """Stream a Correspondent (IMAP) agent response in SSE format.
+
+    Surface the same operations available from the Correspondent Settings
+    panel via natural language: status / sync_now / show_queue / pause /
+    resume / show_accounts.
+    """
+    from services.intent_classifier import classify_intent
+    from services.ollama_client import ollama_client
+    from services.credential_locker import list_imap_accounts, update_imap_state
+    from agents.correspondent import correspondent_agent
+
+    name = "Correspondent"
+    q = chat_query.question
+
+    yield f"data: {json.dumps({'type': 'status', 'message': f'{name} processing...', 'query_type': 'correspondent'})}\n\n"
+
+    follow_ups = [
+        "Show the approval queue",
+        "Sync now",
+        "What's the status of my inboxes?",
+    ]
+
+    def _done():
+        return f"data: {json.dumps({'type': 'done', 'follow_up_questions': follow_ups, 'agent_name': name, 'agent_type': 'correspondent'})}\n\n"
+
+    def _reply(text: str):
+        return f"data: {json.dumps({'type': 'reply_chunk', 'content': text})}\n\n"
+
+    try:
+        if injected_action:
+            intent = injected_action.get("intent") or "show_status"
+            params = injected_action.get("params") or {}
+        else:
+            cls = await classify_intent(q, "correspondent", ollama_client=ollama_client)
+            intent = (cls or {}).get("intent") or "show_status"
+            params = (cls or {}).get("params") or {}
+
+        if intent == "sync_now":
+            summary = await correspondent_agent.poll_all()
+            totals = summary.get("totals", {})
+            yield _reply(
+                f"📬 Synced **{len(summary.get('accounts', {}))}** inbox(es). "
+                f"**{totals.get('ingested', 0)}** ingested, "
+                f"**{totals.get('queued', 0)}** queued, "
+                f"**{totals.get('personal', 0)}** personal, "
+                f"**{totals.get('transactional', 0)}** transactional."
+            )
+        elif intent == "show_queue":
+            items = correspondent_agent.list_queue()
+            if not items:
+                yield _reply("Queue is empty.")
+            else:
+                lines = [f"**{len(items)} item(s) pending:**\n"]
+                for i in items[:10]:
+                    top = i.get("top_candidate") or {}
+                    lines.append(
+                        f"- *{i.get('subject', '(no subject)')}* from {i.get('sender', '?')} "
+                        f"→ best match `{top.get('notebook_name', '—')}` ({(top.get('confidence', 0) * 100):.0f}%)"
+                    )
+                yield _reply("\n".join(lines))
+        elif intent in ("pause", "resume"):
+            email = params.get("email")
+            accounts = await list_imap_accounts()
+            target = next((a for a in accounts if not email or a.email == email), None)
+            if not target:
+                yield _reply("Couldn't find an account to update.")
+            else:
+                await update_imap_state(email=target.email, enabled=(intent == "resume"))
+                yield _reply(f"{intent.title()}d **{target.email}**.")
+        elif intent == "show_accounts":
+            accounts = await list_imap_accounts()
+            if not accounts:
+                yield _reply("No inboxes connected. Add one in Settings → Correspondent.")
+            else:
+                lines = [f"**{len(accounts)} connected inbox(es):**"]
+                for a in accounts:
+                    state = "enabled" if a.enabled else "paused"
+                    lines.append(f"- {a.email} ({a.imap_host}, {state}, last polled {a.last_polled_at or 'never'})")
+                yield _reply("\n".join(lines))
+        else:
+            # show_status (default)
+            status = correspondent_agent.status() or {}
+            accounts = status.get("accounts") or {}
+            if not accounts:
+                yield _reply("No polling activity yet. Add an inbox in Settings → Correspondent.")
+            else:
+                lines = ["**Recent Correspondent activity:**"]
+                for email, info in accounts.items():
+                    res = info.get("last_result") or {}
+                    err = info.get("last_error")
+                    line = (
+                        f"- **{email}**: last polled {info.get('last_polled_at', '?')}; "
+                        f"{res.get('ingested', 0)} ingested, {res.get('queued', 0)} queued, "
+                        f"{res.get('personal', 0)} personal."
+                    )
+                    if err:
+                        line += f" ⚠️ {err}"
+                    lines.append(line)
+                yield _reply("\n".join(lines))
+
+        yield _done()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        yield f"data: {json.dumps({'error': f'Correspondent error: {e}'})}\n\n"
 
 
 async def _stream_research(chat_query: ChatQuery, injected_action: Optional[Dict[str, Any]] = None):

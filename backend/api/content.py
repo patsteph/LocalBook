@@ -1677,6 +1677,15 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
                     f"of invalid [Sn] tags from {request.skill_id} output"
                 )
 
+        # Phase 4 mixed-medium: resolve inline visualization fences
+        # (`lb-chart`, `lb-visual-hint`) before persistence so cached docs
+        # carry already-resolved chart JSON / SVG payloads.
+        try:
+            from services.visual_resolver import resolve as resolve_visuals
+            content = await resolve_visuals(content)
+        except Exception as _e:
+            logger.debug(f"[STUDIO] visual_resolver skipped: {_e}")
+
         # Save to content store for persistence
         await content_store.create(
             notebook_id=request.notebook_id,

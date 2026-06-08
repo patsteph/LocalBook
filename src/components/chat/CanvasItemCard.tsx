@@ -2,18 +2,16 @@ import React, { useState, useRef, useEffect } from 'react';
 import DOMPurify from 'dompurify';
 import {
   FileText, Palette, Target, Layers, Mic, MessageSquare, PenLine,
-  BookOpen, ChevronDown, X, Video, MoreHorizontal, Download, Presentation,
+  BookOpen, ChevronDown, X, Video, MoreHorizontal, Download, Presentation, Code, GitCompare,
 } from 'lucide-react';
 import { useCanvas } from '../canvas/CanvasContext';
 import { CanvasItem } from '../canvas/types';
 import { contentService } from '../../services/content';
-import ReactMarkdown from 'react-markdown';
-import { MermaidRenderer } from '../shared/MermaidRenderer';
-import { SVGRenderer } from '../shared/SVGRenderer';
+import { exportService, canvasItemToArtifact } from '../../services/export';
 import { VisualHeroOverlay, OverlayPosition } from '../shared/VisualHeroOverlay';
 import { VisualRegenerateButton } from '../shared/VisualRegenerateButton';
 import { VisualEditRegenerateButton } from '../shared/VisualEditRegenerateButton';
-import { FeynmanQuizBlock, FeynmanAudioBlock, StudioQuizBlock, isFeynmanBlock } from '../shared/FeynmanBlocks';
+import { StudioQuizBlock } from '../shared/FeynmanBlocks';
 import { AudioCanvasPlayer } from './AudioCanvasPlayer';
 import { FlashcardsCanvasTile } from './FlashcardsCanvasTile';
 import { API_BASE_URL } from '../../services/api';
@@ -21,6 +19,7 @@ import { RichNoteEditor } from '../RichNoteEditor';
 import { FeedbackThumbs } from '../shared/FeedbackThumbs';
 import { VisualCriticBadge, VisualFeedbackBar } from '../shared/VisualCriticBadge';
 import { VisualIdiomSwap } from '../shared/VisualIdiomSwap';
+import { ArtifactRender } from '../artifact/RendererRegistry';
 
 // ─── Type icons ────────────────────────────────────────────────────────────
 const iconSm = 'w-3.5 h-3.5';
@@ -33,6 +32,8 @@ const TYPE_ICONS: Record<CanvasItem['type'], React.ReactNode> = {
   'video': <Video className={iconSm} />,
   'chat-response': <MessageSquare className={iconSm} />,
   'note': <PenLine className={iconSm} />,
+  'html': <Code className={iconSm} />,
+  'comparison': <GitCompare className={iconSm} />,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -58,6 +59,8 @@ const TYPE_ACCENTS: Record<CanvasItem['type'], string> = {
   'video': 'border-l-rose-500',
   'chat-response': 'border-l-gray-400',
   'note': 'border-l-indigo-400',
+  'html': 'border-l-emerald-500',
+  'comparison': 'border-l-cyan-500',
 };
 
 const TYPE_LABELS: Record<CanvasItem['type'], string> = {
@@ -69,6 +72,8 @@ const TYPE_LABELS: Record<CanvasItem['type'], string> = {
   'video': 'Video',
   'chat-response': 'Response',
   'note': 'Note',
+  'html': 'HTML',
+  'comparison': 'Comparison',
 };
 
 // VisualChatInlineContent — SVG renderer + thumbs row + critic badge for v2
@@ -112,7 +117,11 @@ const VisualChatInlineContent: React.FC<{
           initialSubtitle={(item.metadata as any)?.overlaySubtitle}
         />
       ) : (
-        <SVGRenderer svg={item.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+        <ArtifactRender
+          artifact={{ id: item.id, type: 'svg', payload: item.content }}
+          context="chat-inline"
+          className="border border-gray-200 dark:border-gray-600 rounded-lg"
+        />
       )}
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
@@ -201,13 +210,34 @@ const ExportMenu: React.FC<{ item: CanvasItem }> = ({ item }) => {
   const title = item.title || 'document';
   const filename = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'document';
 
+  // Phase 5: try the backend Playwright path first (works for any Artifact-
+  // renderable canvas item). Fall back to the legacy jsPDF path for
+  // markdown-y types if the artifact mapping fails (defensive).
+  const artifact = canvasItemToArtifact(item);
+
   const handlePdf = async () => {
-    if (!item.content) return;
     setBusy(true);
     try {
-      await contentService.downloadAsPDF(item.content, title, filename, 'clean');
+      if (artifact) {
+        await exportService.downloadArtifact(artifact, 'pdf', filename);
+      } else if (item.content) {
+        await contentService.downloadAsPDF(item.content, title, filename, 'clean');
+      }
     } catch (err) {
       console.error('PDF download failed:', err);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
+  const handlePng = async () => {
+    if (!artifact) return;
+    setBusy(true);
+    try {
+      await exportService.downloadArtifact(artifact, 'png', filename);
+    } catch (err) {
+      console.error('PNG download failed:', err);
     } finally {
       setBusy(false);
       setOpen(false);
@@ -242,14 +272,26 @@ const ExportMenu: React.FC<{ item: CanvasItem }> = ({ item }) => {
             <Download className="w-3.5 h-3.5" />
             {busy ? 'Saving…' : 'Download PDF'}
           </button>
-          <button
-            onClick={handlePptx}
-            disabled={busy}
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
-          >
-            <Presentation className="w-3.5 h-3.5" />
-            Export to Slides
-          </button>
+          {artifact && (
+            <button
+              onClick={handlePng}
+              disabled={busy}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-wait"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Download PNG
+            </button>
+          )}
+          {(item.type === 'document' || item.type === 'chat-response' || item.type === 'note') && (
+            <button
+              onClick={handlePptx}
+              disabled={busy}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+            >
+              <Presentation className="w-3.5 h-3.5" />
+              Export to Slides
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -260,9 +302,14 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
   const ctx = useCanvas();
   const [visualThumbsDown, setVisualThumbsDown] = useState(false);
   const hasUnsavedNote = item.type === 'note' && item.content.trim().length > 0;
-  const isExportable = (item.type === 'document' || item.type === 'note' || item.type === 'chat-response')
+  // Phase 5: extended export coverage. Anything Artifact-renderable
+  // (html, comparison, visual on top of the legacy doc / note / chat-
+  // response) gets the ⋮ menu so users can grab PDF / PNG via the
+  // unified backend pipeline.
+  const isExportable =
+    (item.type === 'document' || item.type === 'note' || item.type === 'chat-response' || item.type === 'html' || item.type === 'comparison' || item.type === 'visual')
     && item.status === 'complete'
-    && !!item.content;
+    && (!!item.content || item.type === 'comparison');
 
   const handleRemove = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -436,66 +483,52 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
               <span className="text-xs">Generation failed — try again</span>
             </div>
           )}
-          {item.type === 'document' && item.content && (
-            <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-headings:mt-4 prose-headings:mb-1 prose-ul:my-2 prose-li:my-0 prose-hr:my-4">
-              <ReactMarkdown components={{
-                a: ({ href, children, ...props }) => {
-                  // Intercept Feynman quiz links: #feynman-quiz:difficulty:label
-                  if (href?.startsWith('#feynman-quiz:')) {
-                    const parts = href.replace('#feynman-quiz:', '').split(':');
-                    const difficulty = parts[0] || 'medium';
-                    const label = parts.slice(1).join(':') || 'Quiz';
-                    return (
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          const topic = item.title?.replace(/^Document:\s*/i, '').replace(/^Feynman.*?:\s*/i, '') || '';
-                          window.dispatchEvent(new CustomEvent('feynmanQuizNav', {
-                            detail: { topic: `${label}: ${topic}`.trim(), difficulty }
-                          }));
-                        }}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg no-underline cursor-pointer transition-colors bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-800/50 border border-purple-300 dark:border-purple-700"
-                      >
-                        <Target className="w-4 h-4" />
-                        {children}
-                      </button>
-                    );
-                  }
-                  return <a href={href} {...props}>{children}</a>;
-                },
-                code: ({ className, children, ...props }) => {
-                  const raw = String(children).replace(/\n$/, '');
-                  if (/language-mermaid/.test(className || '')) {
-                    return (
-                      <div className="not-prose my-4">
-                        <MermaidRenderer code={raw} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
-                      </div>
-                    );
-                  }
-                  if (/language-feynman-quiz/.test(className || '')) {
-                    return <FeynmanQuizBlock json={raw} docTitle={item.title} />;
-                  }
-                  if (/language-feynman-audio/.test(className || '')) {
-                    return <FeynmanAudioBlock json={raw} />;
-                  }
-                  if (/language-feynman-knowledge-map/.test(className || '')) {
-                    return (
-                      <div className="not-prose my-4">
-                        <SVGRenderer svg={raw} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
-                      </div>
-                    );
-                  }
-                  return <code className={className} {...props}>{children}</code>;
-                },
-                pre: ({ children, ...props }) => {
-                  const child = children as any;
-                  if (child?.props?.className && (isFeynmanBlock(child.props.className) || /language-mermaid/.test(child.props.className) || /language-feynman-knowledge-map/.test(child.props.className))) {
-                    return <>{children}</>;
-                  }
-                  return <pre {...props}>{children}</pre>;
-                }
-              }}>{item.content}</ReactMarkdown>
-            </div>
+          {/* Phase 12 — Perspectives synthesis HTML. Uses the strict
+              HtmlArtifactRenderer; lives on metadata.synthesis_html so
+              it doesn't collide with Phase 11's metadata.interactive_html. */}
+          {item.type === 'document' && item.metadata?.synthesis_html && (
+            <ArtifactRender
+              artifact={{
+                id: item.id,
+                type: 'html',
+                payload: item.metadata.synthesis_html as string,
+                title: item.title,
+              }}
+              context="canvas-full"
+            />
+          )}
+          {item.type === 'document' && !item.metadata?.synthesis_html && item.content && (
+            <ArtifactRender
+              artifact={{
+                id: item.id,
+                type: 'markdown',
+                payload: item.content,
+                title: item.title,
+              }}
+              context="canvas-full"
+            />
+          )}
+          {item.type === 'html' && item.content && (
+            <ArtifactRender
+              artifact={{
+                id: item.id,
+                type: 'html',
+                payload: item.content,
+                title: item.title,
+              }}
+              context="canvas-full"
+            />
+          )}
+          {item.type === 'comparison' && item.metadata?.comparison && (
+            <ArtifactRender
+              artifact={{
+                id: item.id,
+                type: 'json:comparison',
+                payload: item.metadata.comparison,
+                title: item.title,
+              }}
+              context="canvas-full"
+            />
           )}
           {item.type === 'visual' && (
             item.content ? (
@@ -508,13 +541,32 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
                   onThumbsDown={() => setVisualThumbsDown(true)}
                 />
               ) : (
-                <MermaidRenderer code={item.content} className="border border-gray-200 dark:border-gray-600 rounded-lg" />
+                <ArtifactRender
+                  artifact={{ id: item.id, type: 'mermaid', payload: item.content }}
+                  context="chat-inline"
+                  className="border border-gray-200 dark:border-gray-600 rounded-lg"
+                />
               )
             ) : !isGenerating && !isError ? (
               <p className="text-gray-400 text-sm">No visual content</p>
             ) : null
           )}
-          {item.type === 'quiz' && item.content && (
+          {/* Phase 11 — when an interactive HTML composition is present
+              (Studio drawer "Render as interactive HTML" toggle), dispatch
+              via the sandboxed-iframe renderer. Otherwise fall back to the
+              existing StudioQuizBlock path. */}
+          {item.type === 'quiz' && item.metadata?.interactive_html && (
+            <ArtifactRender
+              artifact={{
+                id: item.id,
+                type: 'interactive-html',
+                payload: item.metadata.interactive_html as string,
+                title: item.title,
+              }}
+              context="canvas-full"
+            />
+          )}
+          {item.type === 'quiz' && !item.metadata?.interactive_html && item.content && (
             item.content.trimStart().startsWith('[')
               ? <StudioQuizBlock json={item.content} />
               : <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(item.content) }} />
@@ -620,9 +672,15 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
             )
           )}
           {item.type === 'chat-response' && item.content && (
-            <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-headings:mt-3 prose-headings:mb-1">
-              <ReactMarkdown>{item.content}</ReactMarkdown>
-            </div>
+            <ArtifactRender
+              artifact={{
+                id: item.id,
+                type: 'markdown',
+                payload: item.content,
+                title: item.title,
+              }}
+              context="chat-inline"
+            />
           )}
 
           {/* Source attribution */}

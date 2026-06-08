@@ -18,16 +18,19 @@
  */
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  FileText, Mic, Video, Palette, Target, Layers, X, Sparkles,
+  FileText, Mic, Video, Palette, Target, Layers, X, Sparkles, GitCompare, Telescope,
 } from 'lucide-react';
 import { contentService } from '../../services/content';
 import { audioService } from '../../services/audio';
 import { videoService } from '../../services/video';
 import { quizService } from '../../services/quiz';
 import { skillsService } from '../../services/skills';
+import { sourceService } from '../../services/sources';
+import { comparisonService } from '../../services/comparison';
+import { synthesisService } from '../../services/synthesis';
 import { useGenerateVisualToCanvas } from '../../hooks/useGenerateVisualToCanvas';
 import { useCanvasItems } from '../canvas/CanvasContext';
-import { Skill } from '../../types';
+import { Skill, Source } from '../../types';
 
 // Audio skill_id → human-readable format label (used for canvas-item titles).
 const AUDIO_FORMAT_LABELS: Record<string, string> = {
@@ -39,7 +42,7 @@ const AUDIO_FORMAT_LABELS: Record<string, string> = {
 };
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-type StudioType = 'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards';
+type StudioType = 'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards' | 'comparison' | 'perspectives' | 'dashboard' | 'deep-dive';
 type Register = 'auto' | 'measured' | 'engaged' | 'warm' | 'urgent';
 
 interface StudioDrawerProps {
@@ -67,6 +70,10 @@ const TYPE_DEFS: Array<{
   { id: 'visual', icon: <Palette className="w-3.5 h-3.5" />, label: 'Visual', accent: 'amber' },
   { id: 'quiz', icon: <Target className="w-3.5 h-3.5" />, label: 'Quiz', accent: 'emerald' },
   { id: 'cards', icon: <Layers className="w-3.5 h-3.5" />, label: 'Cards', accent: 'fuchsia' },
+  { id: 'comparison', icon: <GitCompare className="w-3.5 h-3.5" />, label: 'Compare', accent: 'cyan' },
+  { id: 'perspectives', icon: <Telescope className="w-3.5 h-3.5" />, label: 'Perspectives', accent: 'sky' },
+  { id: 'dashboard', icon: <Sparkles className="w-3.5 h-3.5" />, label: 'Dashboard', accent: 'indigo' },
+  { id: 'deep-dive', icon: <Telescope className="w-3.5 h-3.5" />, label: 'Deep dive', accent: 'violet' },
 ];
 
 const REGISTERS: Register[] = ['auto', 'measured', 'engaged', 'warm', 'urgent'];
@@ -123,6 +130,8 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
   );
   const [quizCount, setQuizCount] = useState(() => parseInt(localStorage.getItem('lb-studio-quiz-count') || '5'));
   const [quizDifficulty, setQuizDifficulty] = useState(() => localStorage.getItem('lb-studio-quiz-difficulty') || 'medium');
+  // Phase 11 — opt-in interactive HTML quiz (iframe sandbox + postMessage).
+  const [quizInteractive, setQuizInteractive] = useState(() => localStorage.getItem('lb-studio-quiz-interactive') === '1');
   // Cards (flash cards). Tutor accent kept as us/uk only — the underlying
   // flashcards TTS pipeline only ships those two voices.
   const [cardsCount, setCardsCount] = useState(() => parseInt(localStorage.getItem('lb-studio-cards-count') || localStorage.getItem('lb-bar-cards-count') || '10'));
@@ -145,6 +154,22 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
   const [textSkills, setTextSkills] = useState<Skill[]>([]);
   const [audioSkills, setAudioSkillList] = useState<Skill[]>([]);
 
+  // Phase 4 comparison drawer state.
+  const [availableSources, setAvailableSources] = useState<Source[]>([]);
+  const [compareSourceA, setCompareSourceA] = useState<string>('');
+  const [compareSourceB, setCompareSourceB] = useState<string>('');
+  const [compareFocus, setCompareFocus] = useState<string>('');
+  // Phase 12 perspectives drawer state.
+  const [perspectivesQuery, setPerspectivesQuery] = useState<string>(() => localStorage.getItem('lb-studio-perspectives-query') || '');
+  const [perspectivesCrossNotebook, setPerspectivesCrossNotebook] = useState<boolean>(() => localStorage.getItem('lb-studio-perspectives-cross') === '1');
+  useEffect(() => { localStorage.setItem('lb-studio-perspectives-query', perspectivesQuery); }, [perspectivesQuery]);
+  useEffect(() => { localStorage.setItem('lb-studio-perspectives-cross', perspectivesCrossNotebook ? '1' : '0'); }, [perspectivesCrossNotebook]);
+  // Phase 13 — deep-dive drawer state.
+  const [deepDiveEntity, setDeepDiveEntity] = useState<string>(() => localStorage.getItem('lb-studio-deepdive-entity') || '');
+  const [deepDiveCrossNotebook, setDeepDiveCrossNotebook] = useState<boolean>(() => localStorage.getItem('lb-studio-deepdive-cross') !== '0');
+  useEffect(() => { localStorage.setItem('lb-studio-deepdive-entity', deepDiveEntity); }, [deepDiveEntity]);
+  useEffect(() => { localStorage.setItem('lb-studio-deepdive-cross', deepDiveCrossNotebook ? '1' : '0'); }, [deepDiveCrossNotebook]);
+
   // Persist prefs whenever they change.
   useEffect(() => { localStorage.setItem('lb-studio-register', register); }, [register]);
   useEffect(() => { localStorage.setItem('lb-studio-docs-skill', docsSkill); }, [docsSkill]);
@@ -160,6 +185,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
   useEffect(() => { localStorage.setItem('lb-studio-video-accent', videoAccent); }, [videoAccent]);
   useEffect(() => { localStorage.setItem('lb-studio-quiz-count', String(quizCount)); }, [quizCount]);
   useEffect(() => { localStorage.setItem('lb-studio-quiz-difficulty', quizDifficulty); }, [quizDifficulty]);
+  useEffect(() => { localStorage.setItem('lb-studio-quiz-interactive', quizInteractive ? '1' : '0'); }, [quizInteractive]);
   useEffect(() => { localStorage.setItem('lb-studio-cards-count', String(cardsCount)); }, [cardsCount]);
   useEffect(() => { localStorage.setItem('lb-studio-cards-diff', cardsDifficulty); }, [cardsDifficulty]);
   useEffect(() => { localStorage.setItem('lb-studio-cards-tutor-gender', cardsTutorGender); }, [cardsTutorGender]);
@@ -178,6 +204,14 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
       // Skills service failure isn't fatal — user can still pick a default.
     });
   }, [open]);
+
+  // Phase 4 — fetch the notebook's sources when the comparison type opens.
+  useEffect(() => {
+    if (!open || type !== 'comparison' || !notebookId) return;
+    sourceService.list(notebookId).then(setAvailableSources).catch(() => {
+      // Non-fatal — user sees an empty dropdown and a fallback hint.
+    });
+  }, [open, type, notebookId]);
 
   // Reset transient state on close.
   useEffect(() => {
@@ -391,6 +425,152 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
           onToast?.('success', 'Flash cards generating');
           break;
         }
+        case 'dashboard': {
+          const itemId = `dashboard-${Date.now()}`;
+          addCanvasItem({
+            id: itemId,
+            type: 'document' as any,
+            title: 'Notebook dashboard',
+            content: '',
+            collapsed: false,
+            status: 'generating',
+            metadata: { notebookId, source: 'studio_drawer' } as any,
+          });
+          try {
+            const result = await synthesisService.getNotebookDashboard(notebookId);
+            updateCanvasItem(itemId, {
+              status: 'complete',
+              metadata: { notebookId, source: 'studio_drawer', synthesis_html: result.html } as any,
+            });
+            onToast?.('success', 'Dashboard ready');
+          } catch (err) {
+            updateCanvasItem(itemId, {
+              status: 'error',
+              metadata: { notebookId, errorMessage: err instanceof Error ? err.message : 'Generation failed', source: 'studio_drawer' } as any,
+            });
+            throw err;
+          }
+          break;
+        }
+        case 'deep-dive': {
+          const ent = deepDiveEntity.trim();
+          if (!ent) {
+            onToast?.('error', 'Entity required', 'Type the name of the person, paper, podcast, or topic to deep-dive on.');
+            return;
+          }
+          const itemId = `deepdive-${Date.now()}`;
+          addCanvasItem({
+            id: itemId,
+            type: 'document' as any,
+            title: `Deep dive: ${ent.slice(0, 60)}${ent.length > 60 ? '…' : ''}`,
+            content: '',
+            collapsed: false,
+            status: 'generating',
+            metadata: { notebookId, source: 'studio_drawer' } as any,
+          });
+          try {
+            const result = await synthesisService.findDeepDive(ent, notebookId, deepDiveCrossNotebook);
+            updateCanvasItem(itemId, {
+              status: 'complete',
+              metadata: { notebookId, source: 'studio_drawer', synthesis_html: result.html, perspectives: result.perspectives } as any,
+            });
+            onToast?.('success', 'Deep dive ready');
+          } catch (err) {
+            updateCanvasItem(itemId, {
+              status: 'error',
+              metadata: { notebookId, errorMessage: err instanceof Error ? err.message : 'Generation failed', source: 'studio_drawer' } as any,
+            });
+            throw err;
+          }
+          break;
+        }
+        case 'perspectives': {
+          const q = perspectivesQuery.trim();
+          if (!q) {
+            onToast?.('error', 'Topic required', 'Type a topic or question to gather perspectives on.');
+            return;
+          }
+          const itemId = `perspectives-${Date.now()}`;
+          addCanvasItem({
+            id: itemId,
+            type: 'document' as any,
+            title: `Perspectives: ${q.slice(0, 60)}${q.length > 60 ? '…' : ''}`,
+            content: '',
+            collapsed: false,
+            status: 'generating',
+            metadata: { notebookId, source: 'studio_drawer' } as any,
+          });
+          try {
+            const result = await synthesisService.findPerspectives(
+              q, notebookId, perspectivesCrossNotebook,
+            );
+            updateCanvasItem(itemId, {
+              status: 'complete',
+              content: '',
+              metadata: {
+                notebookId,
+                source: 'studio_drawer',
+                synthesis_html: result.html,
+                perspectives: result.perspectives,
+              } as any,
+            });
+            onToast?.('success', 'Perspectives ready');
+          } catch (err) {
+            updateCanvasItem(itemId, {
+              status: 'error',
+              metadata: { notebookId, errorMessage: err instanceof Error ? err.message : 'Generation failed', source: 'studio_drawer' } as any,
+            });
+            throw err;
+          }
+          break;
+        }
+        case 'comparison': {
+          if (!compareSourceA || !compareSourceB) {
+            onToast?.('error', 'Pick two sources', 'Both Source A and Source B are required.');
+            return;
+          }
+          if (compareSourceA === compareSourceB) {
+            onToast?.('error', 'Pick different sources', 'Source A and Source B must differ.');
+            return;
+          }
+          const itemId = `comparison-${Date.now()}`;
+          const titleA = availableSources.find(s => s.id === compareSourceA)?.filename || 'Source A';
+          const titleB = availableSources.find(s => s.id === compareSourceB)?.filename || 'Source B';
+          addCanvasItem({
+            id: itemId,
+            type: 'comparison' as any,
+            title: `${titleA} vs ${titleB}`,
+            content: '',
+            collapsed: false,
+            status: 'generating',
+            metadata: { notebookId, source: 'studio_drawer' } as any,
+          });
+          try {
+            const artifact = await comparisonService.generate(
+              notebookId,
+              compareSourceA,
+              compareSourceB,
+              compareFocus.trim() || undefined,
+            );
+            updateCanvasItem(itemId, {
+              status: 'complete',
+              metadata: {
+                notebookId,
+                source: 'studio_drawer',
+                comparison: artifact.payload,
+                artifact,
+              } as any,
+            });
+            onToast?.('success', 'Comparison ready');
+          } catch (err) {
+            updateCanvasItem(itemId, {
+              status: 'error',
+              metadata: { notebookId, errorMessage: err instanceof Error ? err.message : 'Generation failed', source: 'studio_drawer' } as any,
+            });
+            throw err;
+          }
+          break;
+        }
         case 'quiz': {
           const itemId = `quiz-${Date.now()}`;
           addCanvasItem({
@@ -404,10 +584,28 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
           });
           try {
             const result = await quizService.generate(notebookId, quizCount, quizDifficulty, trimmedTopic, chatContext);
+            // Phase 11 — when the interactive toggle is on, compose the
+            // sandbox-iframe HTML page server-side and stash on metadata.
+            // CanvasItemCard dispatches via the InteractiveHtml renderer
+            // when this field is present; otherwise falls back to the
+            // existing StudioQuizBlock path (back-compat).
+            let interactiveHtml: string | undefined;
+            if (quizInteractive) {
+              try {
+                interactiveHtml = await quizService.toInteractiveHtml(result.questions, result.topic);
+              } catch (e) {
+                console.warn('[StudioDrawer] interactive quiz compose failed; falling back:', e);
+              }
+            }
             updateCanvasItem(itemId, {
               status: 'complete',
               content: '',
-              metadata: { notebookId, quiz: result, source: 'studio_drawer' } as any,
+              metadata: {
+                notebookId,
+                quiz: result,
+                source: 'studio_drawer',
+                ...(interactiveHtml ? { interactive_html: interactiveHtml } : {}),
+              } as any,
             });
             // Library auto-refresh hook (Tier 5).
             window.dispatchEvent(new CustomEvent('quizzesUpdated'));
@@ -429,7 +627,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
     } finally {
       setGenerating(false);
     }
-  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoFormat, videoNarrationStyle, videoNarratorGender, videoAccent, quizCount, quizDifficulty, cardsCount, cardsDifficulty, cardsTutorGender, cardsTutorAccent, cardsTutorAutoplay, cardsIncludeVisuals, chatContext, onClose, onToast, generateVisualToCanvas, addCanvasItem, updateCanvasItem, textSkills]);
+  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoFormat, videoNarrationStyle, videoNarratorGender, videoAccent, quizCount, quizDifficulty, quizInteractive, cardsCount, cardsDifficulty, cardsTutorGender, cardsTutorAccent, cardsTutorAutoplay, cardsIncludeVisuals, perspectivesQuery, perspectivesCrossNotebook, deepDiveEntity, deepDiveCrossNotebook, compareSourceA, compareSourceB, compareFocus, availableSources, chatContext, onClose, onToast, generateVisualToCanvas, addCanvasItem, updateCanvasItem, textSkills]);
 
   if (!open) return null;
 
@@ -475,19 +673,32 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
             </button>
           </div>
 
-          {/* Type row */}
-          <div className="flex flex-wrap gap-1.5">
-            {TYPE_DEFS.map((td) => (
-              <button
-                key={td.id}
-                onClick={() => setType(td.id)}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] rounded-lg border transition-colors ${accentClasses(td.id, type === td.id)}`}
-              >
-                {td.icon}
-                <span>{td.label}</span>
-              </button>
-            ))}
-          </div>
+          {/* Type rows — legacy generators on row 1, v2.0 synthesis types on row 2. */}
+          {(() => {
+            const LEGACY_IDS: StudioType[] = ['docs', 'audio', 'video', 'visual', 'quiz', 'cards'];
+            const legacy = TYPE_DEFS.filter(td => LEGACY_IDS.includes(td.id));
+            const synthesis = TYPE_DEFS.filter(td => !LEGACY_IDS.includes(td.id));
+            const renderRow = (defs: typeof TYPE_DEFS) => (
+              <div className="flex flex-wrap gap-1.5">
+                {defs.map((td) => (
+                  <button
+                    key={td.id}
+                    onClick={() => setType(td.id)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] rounded-lg border transition-colors ${accentClasses(td.id, type === td.id)}`}
+                  >
+                    {td.icon}
+                    <span>{td.label}</span>
+                  </button>
+                ))}
+              </div>
+            );
+            return (
+              <div className="space-y-1.5">
+                {renderRow(legacy)}
+                {renderRow(synthesis)}
+              </div>
+            );
+          })()}
 
           {/* Shared: Topic */}
           <div>
@@ -722,37 +933,48 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
           )}
 
           {type === 'quiz' && (
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Questions ({quizCount})</label>
-                <input
-                  type="range"
-                  min={3}
-                  max={20}
-                  step={1}
-                  value={quizCount}
-                  onChange={(e) => setQuizCount(parseInt(e.target.value))}
-                  className="w-full"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Difficulty</label>
-                <div className="flex gap-1">
-                  {['easy', 'medium', 'hard'].map((d) => (
-                    <button
-                      key={d}
-                      onClick={() => setQuizDifficulty(d)}
-                      className={`flex-1 px-2 py-1 text-[10px] rounded-lg border transition-colors capitalize ${
-                        quizDifficulty === d
-                          ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300'
-                          : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
-                      }`}
-                    >
-                      {d}
-                    </button>
-                  ))}
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Questions ({quizCount})</label>
+                  <input
+                    type="range"
+                    min={3}
+                    max={20}
+                    step={1}
+                    value={quizCount}
+                    onChange={(e) => setQuizCount(parseInt(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Difficulty</label>
+                  <div className="flex gap-1">
+                    {['easy', 'medium', 'hard'].map((d) => (
+                      <button
+                        key={d}
+                        onClick={() => setQuizDifficulty(d)}
+                        className={`flex-1 px-2 py-1 text-[10px] rounded-lg border transition-colors capitalize ${
+                          quizDifficulty === d
+                            ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300'
+                            : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
+              <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={quizInteractive}
+                  onChange={(e) => setQuizInteractive(e.target.checked)}
+                  className="rounded border-gray-300 dark:border-gray-600"
+                />
+                Render as interactive HTML (sandbox iframe)
+              </label>
             </div>
           )}
 
@@ -848,6 +1070,111 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
                   Include visual cards
                 </label>
               </div>
+            </div>
+          )}
+
+          {type === 'comparison' && (
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Source A</label>
+                  <select
+                    value={compareSourceA}
+                    onChange={(e) => setCompareSourceA(e.target.value)}
+                    className="w-full px-2 py-1 text-xs rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                  >
+                    <option value="">— pick a source —</option>
+                    {availableSources.map((s) => (
+                      <option key={s.id} value={s.id}>{s.filename}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Source B</label>
+                  <select
+                    value={compareSourceB}
+                    onChange={(e) => setCompareSourceB(e.target.value)}
+                    className="w-full px-2 py-1 text-xs rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                  >
+                    <option value="">— pick a source —</option>
+                    {availableSources.map((s) => (
+                      <option key={s.id} value={s.id}>{s.filename}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Focus (optional)</label>
+                <input
+                  type="text"
+                  value={compareFocus}
+                  onChange={(e) => setCompareFocus(e.target.value)}
+                  placeholder="e.g. methodology, conclusions, terminology"
+                  className="w-full px-2 py-1 text-xs rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400"
+                />
+              </div>
+              {availableSources.length < 2 && (
+                <p className="text-[11px] italic text-gray-500 dark:text-gray-400">
+                  Comparison needs at least two sources in the notebook.
+                </p>
+              )}
+            </div>
+          )}
+
+          {type === 'dashboard' && (
+            <p className="text-[11px] italic text-gray-500 dark:text-gray-400">
+              Generate a one-shot HTML overview of the active notebook — digest, themes, recent activity, what's converging this week.
+            </p>
+          )}
+
+          {type === 'deep-dive' && (
+            <div className="space-y-2">
+              <div>
+                <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Entity</label>
+                <input
+                  type="text"
+                  value={deepDiveEntity}
+                  onChange={(e) => setDeepDiveEntity(e.target.value)}
+                  placeholder="e.g. Patrick Collison, the LK-99 paper, Hard Fork podcast"
+                  className="w-full px-2 py-1 text-sm rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400"
+                />
+              </div>
+              <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={deepDiveCrossNotebook}
+                  onChange={(e) => setDeepDiveCrossNotebook(e.target.checked)}
+                  className="rounded border-gray-300 dark:border-gray-600"
+                />
+                Include all notebooks
+              </label>
+            </div>
+          )}
+
+          {type === 'perspectives' && (
+            <div className="space-y-2">
+              <div>
+                <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Topic</label>
+                <input
+                  type="text"
+                  value={perspectivesQuery}
+                  onChange={(e) => setPerspectivesQuery(e.target.value)}
+                  placeholder="e.g. how each source frames the Fed decision"
+                  className="w-full px-2 py-1 text-sm rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400"
+                />
+              </div>
+              <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={perspectivesCrossNotebook}
+                  onChange={(e) => setPerspectivesCrossNotebook(e.target.checked)}
+                  className="rounded border-gray-300 dark:border-gray-600"
+                />
+                Include all notebooks (cross-notebook scope)
+              </label>
+              <p className="text-[11px] italic text-gray-500 dark:text-gray-400">
+                Returns up to 8 sources' takes side-by-side, plus where they agree and diverge.
+              </p>
             </div>
           )}
 

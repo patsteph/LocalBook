@@ -11,7 +11,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     from services.rag_engine import rag_engine
     from config import settings
 
-    main_model = getattr(settings, 'ollama_model', 'olmo-3:7b-instruct')
+    main_model = getattr(settings, 'ollama_model', 'gemma4:e4b')
     test_config = config.get("needle_haystack_test", {})
 
     needle = test_config.get("needle", "The secret database override passphrase is 'Tangerine-Sky-44'.")

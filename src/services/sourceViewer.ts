@@ -5,6 +5,8 @@ export interface SourceContent {
   id: string;
   filename: string;
   content: string;
+  /** Phase 9 — sanitized inline-style HTML for in-app rendering (Correspondent newsletters). */
+  content_html?: string;
   format: string;
   url?: string;
 }

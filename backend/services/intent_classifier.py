@@ -79,6 +79,16 @@ COLLECTOR_INTENTS: List[Dict[str, str]] = [
     {"id": "show_history", "desc": "User wants to see recent collection run history or when the last run happened", "params": "none"},
 ]
 
+CORRESPONDENT_INTENTS: List[Dict[str, str]] = [
+    {"id": "show_status", "desc": "User wants a status overview — last poll time, message counts, account health (default for vague messages)", "params": "none"},
+    {"id": "sync_now", "desc": "User wants to trigger an immediate IMAP poll across all enabled accounts", "params": "none"},
+    {"id": "show_queue", "desc": "User wants to see pending low-confidence routing approvals", "params": "none"},
+    {"id": "pause", "desc": "User wants to pause polling without removing the account", "params": "email: account email if specified"},
+    {"id": "resume", "desc": "User wants to resume a paused account", "params": "email: account email if specified"},
+    {"id": "show_accounts", "desc": "User wants to list connected inboxes", "params": "none"},
+]
+
+
 _SYSTEM_PROMPT = """You are an intent classifier for a research notebook app. Given a user message directed at an AI agent, classify the intent(s) and extract parameters.
 
 Available intents:
@@ -133,6 +143,9 @@ async def classify_intent(
     elif agent_type == "studio":
         intents = STUDIO_INTENTS
         fallback = "generate_document"
+    elif agent_type == "correspondent":
+        intents = CORRESPONDENT_INTENTS
+        fallback = "show_status"
     else:
         intents = COLLECTOR_INTENTS
         fallback = "show_status"

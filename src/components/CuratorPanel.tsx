@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { MarkdownArtifactRenderer } from './artifact/renderers/MarkdownArtifactRenderer';
 import { curatorService, type BrainStatus, type AnticipatoryDraftStatus, type VoiceScoreboard, type StudioScoreboard, type SourceReputationRow } from '../services/curatorApi';
 import { useEngagement } from '../hooks/useEngagement';
 import { MentalModelPanel } from './curator/MentalModelPanel';
 import { FeedbackThumbs } from './shared/FeedbackThumbs';
 import { useReadTime } from '../hooks/useReadTime';
+import { ArtifactRender } from './artifact/RendererRegistry';
 
 interface CuratorConfig {
   name: string;
@@ -48,6 +49,10 @@ interface CuratorMessage {
   // voice + brief_id metadata Phase 7.2 (self-evaluating briefs) needs.
   isBrief?: boolean;
   briefId?: string;
+  // Phase 10 — sanitized HTML dashboard variant. When present, the
+  // message renders via <ArtifactRender type='html'> instead of the
+  // markdown bubble.
+  contentHtml?: string;
 }
 
 interface BriefStory {
@@ -86,6 +91,10 @@ interface MorningBriefData {
   notebooks?: BriefNotebook[];
   cross_notebook_insight?: string | null;
   narrative?: string;
+  // Phase 10 — server-composed HTML dashboard variant + consensus audit.
+  narrative_html?: string | null;
+  consensus_clusters?: unknown[];
+  deep_reads_triggered?: { topic_label?: string; notebook_id?: string; query?: string; cluster_id?: string }[];
 }
 
 interface CuratorPanelProps {
@@ -157,9 +166,15 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
       !narrative.startsWith('Error:');
     
     if (isValidNarrative) {
+      // Phase 10 — when the backend supplied an HTML dashboard, attach it
+      // alongside the markdown content. The chat bubble renders the HTML
+      // variant via ArtifactRender when present, falls back to markdown
+      // otherwise.
+      const htmlVariant = (morningBrief.narrative_html || '').trim();
       setMessages([{
         role: 'curator',
         content: `Good ${greeting}! You've been away for ${morningBrief.away_duration}.\n\n${narrative}\n\n---\n*Ask me anything about what happened while you were away.*`,
+        contentHtml: htmlVariant || undefined,
         timestamp: new Date(),
         isBrief: true,
         briefId: briefKey,
@@ -767,9 +782,26 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
                 </div>
               )}
               {msg.role === 'curator' ? (
-                <div className="text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:mt-4 prose-headings:mb-1 prose-ul:my-1 prose-li:my-0 prose-hr:my-4">
-                  <ReactMarkdown>{msg.content}</ReactMarkdown>
-                </div>
+                msg.contentHtml ? (
+                  // Phase 10 — HTML dashboard variant. Dispatches via the
+                  // artifact registry (strict HtmlArtifactRenderer, since
+                  // the dashboard is server-composed and we want the
+                  // strict sanitization guarantees).
+                  <ArtifactRender
+                    artifact={{
+                      id: msg.briefId || msg.timestamp.toISOString(),
+                      type: 'html',
+                      payload: msg.contentHtml,
+                      title: 'Morning brief',
+                    }}
+                    context="canvas-full"
+                  />
+                ) : (
+                  <MarkdownArtifactRenderer
+                    artifact={{ id: msg.timestamp.toISOString(), type: 'markdown', payload: msg.content }}
+                    context="chat-inline"
+                  />
+                )
               ) : (
                 <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
               )}

@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 
-Actor = Literal["@collector", "@research", "@curator", "@mcp", "user", "system"]
+Actor = Literal["@collector", "@research", "@curator", "@correspondent", "@mcp", "user", "system"]
 
 
 class CuratorEvent(BaseModel):

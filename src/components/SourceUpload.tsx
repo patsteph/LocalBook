@@ -273,6 +273,7 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
       try {
         const { getCurrentWebview } = await import('@tauri-apps/api/webview');
         const webview = getCurrentWebview();
+        console.debug('[SourceUpload] Tauri drag-drop listener attached');
         const unlisten = await webview.onDragDropEvent((event) => {
           // event.payload.type: 'enter' | 'over' | 'drop' | 'leave'
           const payload: any = event.payload;
@@ -283,7 +284,10 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
           const y = (payload?.position?.y ?? 0) / dpr;
 
           const dropZone = dropZoneRef.current;
-          if (!dropZone) return;
+          if (!dropZone) {
+            if (type === 'drop') console.debug('[SourceUpload] drop ignored: dropZoneRef is null (Sources drawer collapsed?)');
+            return;
+          }
           const rect = dropZone.getBoundingClientRect();
           const inside = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 
@@ -298,9 +302,24 @@ export const SourceUpload: React.FC<SourceUploadProps> = ({
           }
           if (type === 'drop') {
             setIsDragging(false);
-            if (uploading || !inside) return;
             const paths: string[] = Array.isArray(payload?.paths) ? payload.paths : [];
-            if (paths.length === 0) return;
+            console.debug('[SourceUpload] Tauri drop event', {
+              inside, uploading, pathCount: paths.length,
+              dropZoneRect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+              dropPos: { x, y }, dpr,
+            });
+            if (uploading) {
+              console.debug('[SourceUpload] drop ignored: another upload in progress');
+              return;
+            }
+            if (!inside) {
+              console.debug('[SourceUpload] drop ignored: outside dropzone — drop ON the dashed-border dropzone area');
+              return;
+            }
+            if (paths.length === 0) {
+              console.debug('[SourceUpload] drop ignored: payload had no file paths');
+              return;
+            }
             (async () => {
               const items = await pathsToItems(paths);
               await processItems(items);

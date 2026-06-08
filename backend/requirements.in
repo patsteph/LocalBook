@@ -48,6 +48,12 @@ beautifulsoup4>=4.12.0
 feedparser>=6.0.0  # RSS feed parsing for collector
 aiohttp>=3.9.0  # Async HTTP for curator, auto-tagger, etc.
 
+# Correspondent (Phase 6 — IMAP-based email ingestion). Both Apache-2.0;
+# do NOT swap to aioimaplib (GPL-3.0) — bundled .app license constraint.
+imap-tools>=1.4.0  # Sync IMAP client, runs in asyncio.to_thread()
+mail-parser>=3.14.0  # RFC-compliant MIME parsing
+aiosmtplib>=3.0.0  # MIT — async SMTP for Correspondent confirmation replies + weekly auto-journal
+
 # YouTube
 youtube-transcript-api>=0.6.0
 

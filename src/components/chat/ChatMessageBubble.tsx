@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
 import { ChatMessage, Citation as CitationType, InlineVisualData, ResearchResult } from '../../types';
 import { Citation, CitationList } from '../Citation';
-import { MermaidRenderer } from '../shared/MermaidRenderer';
 import { InlineVisual } from '../visual';
 import { BookmarkButton } from '../shared/BookmarkButton';
 import { Radio, Compass, Search, ExternalLink, Plus, Check, Wand2, ThumbsUp, ThumbsDown } from 'lucide-react';
@@ -10,6 +8,7 @@ import { PlanCard } from '../curator/PlanCard';
 import { useEngagement } from '../../hooks/useEngagement';
 import { curatorService } from '../../services/curatorApi';
 import { FeedbackThumbs } from '../shared/FeedbackThumbs';
+import { MarkdownArtifactRenderer } from '../artifact/renderers/MarkdownArtifactRenderer';
 
 interface ChatMessageBubbleProps {
   message: ChatMessage;
@@ -82,13 +81,15 @@ const processChildren = (
   });
 };
 
-// Build ReactMarkdown component overrides that inject citations into rendered text
-const buildCitationComponents = (
+// Build citation-injection overrides (p/li/td wrappers) for the canonical
+// MarkdownArtifactRenderer. The renderer handles all code-fence dispatch
+// (mermaid, svg, json-chart, klein, html, feynman) so this only adds
+// citation wrapping for text-bearing tags.
+const buildCitationOverrides = (
   citations: CitationType[] | undefined,
   onViewSource: (sourceId: string, sourceName: string, searchTerm: string) => void
 ): Record<string, React.FC<any>> | undefined => {
   if (!citations || citations.length === 0) return undefined;
-  // Wrap common text-bearing elements so [N] becomes clickable
   const wrap = (Tag: string) => {
     const Comp: React.FC<any> = ({ children, ...props }) => {
       const processed = processChildren(children, citations, onViewSource, Tag);
@@ -97,68 +98,24 @@ const buildCitationComponents = (
     Comp.displayName = `Cite_${Tag}`;
     return Comp;
   };
-  return {
-    p: wrap('p'),
-    li: wrap('li'),
-    td: wrap('td'),
-    // Mermaid code blocks → MermaidRenderer; everything else normal
-    code: ({ className, children, ...props }: any) => {
-      if (className === 'language-mermaid') {
-        return (
-          <MermaidRenderer
-            code={String(children).trim()}
-            className="border border-gray-200 dark:border-gray-600 rounded-lg my-3"
-          />
-        );
-      }
-      return <code className={className} {...props}>{children}</code>;
-    },
-    // Prevent <pre> wrapping around mermaid blocks (renders inside code override)
-    pre: ({ children, ...props }: any) => {
-      const child = React.Children.toArray(children)[0];
-      if (React.isValidElement(child) && (child.props as any)?.className === 'language-mermaid') {
-        return <>{children}</>;
-      }
-      return <pre {...props}>{children}</pre>;
-    },
-  };
+  return { p: wrap('p'), li: wrap('li'), td: wrap('td') };
 };
 
-// Render message content with Markdown formatting, inline citations, and mermaid
+// Render chat message content via the canonical artifact renderer so
+// every fence type (mermaid, svg, klein, json-chart, html) renders
+// automatically. Optional citation overrides wrap p/li/td.
 const renderMessageWithCitations = (
   content: string,
   citations: CitationType[] | undefined,
-  onViewSource: (sourceId: string, sourceName: string, searchTerm: string) => void
-) => {
-  const components: Record<string, React.FC<any>> = {
-    // Mermaid code blocks
-    code: ({ className, children, ...props }: any) => {
-      if (className === 'language-mermaid') {
-        return (
-          <MermaidRenderer
-            code={String(children).trim()}
-            className="border border-gray-200 dark:border-gray-600 rounded-lg my-3"
-          />
-        );
-      }
-      return <code className={className} {...props}>{children}</code>;
-    },
-    pre: ({ children, ...props }: any) => {
-      const child = React.Children.toArray(children)[0];
-      if (React.isValidElement(child) && (child.props as any)?.className === 'language-mermaid') {
-        return <>{children}</>;
-      }
-      return <pre {...props}>{children}</pre>;
-    },
-    ...(buildCitationComponents(citations, onViewSource) || {}),
-  };
-
-  return (
-    <div className="text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-headings:mt-3 prose-headings:mb-1 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0 prose-hr:my-3 prose-blockquote:my-2">
-      <ReactMarkdown components={components}>{content}</ReactMarkdown>
-    </div>
-  );
-};
+  onViewSource: (sourceId: string, sourceName: string, searchTerm: string) => void,
+  index: number
+) => (
+  <MarkdownArtifactRenderer
+    artifact={{ id: `msg-${index}`, type: 'markdown', payload: content }}
+    context="chat-inline"
+    componentOverrides={buildCitationOverrides(citations, onViewSource)}
+  />
+);
 
 /**
  * Detect logical sections in a long answer for per-section visual generation.
@@ -359,7 +316,7 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
             
             {/* Answer */}
             {message.content && (
-              renderMessageWithCitations(message.content, message.citations, onViewSource)
+              renderMessageWithCitations(message.content, message.citations, onViewSource, index)
             )}
             
             {/* Phase A.2 (2026-05-22, F8): persistent badge when the answer
@@ -657,9 +614,17 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                     </div>
                   )}
                 </div>
-                <p className="text-xs text-indigo-800 dark:text-indigo-200 leading-relaxed">
-                  {message.curatorAside}
-                </p>
+                {/* Phase 14 (2026-06-08) — route aside text through
+                    MarkdownArtifactRenderer so embedded code-fences
+                    (mermaid, svg, json-chart, klein, html) render as
+                    actual visuals. Plain text asides still render fine
+                    as a paragraph. */}
+                <div className="text-xs text-indigo-800 dark:text-indigo-200 leading-relaxed [&_p]:text-xs [&_p]:my-1 [&_p:last-child]:mb-0">
+                  <MarkdownArtifactRenderer
+                    artifact={{ id: `aside-${index}`, type: 'markdown', payload: message.curatorAside }}
+                    context="chat-inline"
+                  />
+                </div>
               </div>
             )}
             {message.lowConfidenceQuery && (

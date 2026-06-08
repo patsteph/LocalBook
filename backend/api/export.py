@@ -276,6 +276,134 @@ async def export_notebook(request: ExportRequest):
 
 
 # =============================================================================
+# Phase 5 — Unified artifact export endpoint
+# =============================================================================
+
+class ArtifactExportRequest(BaseModel):
+    """Render an Artifact envelope to PNG / PDF / HTML.
+
+    Format dispatch:
+      - png/pdf → services.artifact_renderer (Playwright)
+      - html    → standalone HTML page wrapping the same skeleton (no
+                  Playwright; the frontend can save it directly)
+
+    PPTX is intentionally not in this endpoint — the existing /pptx/*
+    pipeline (SlideData + python-pptx) is the right tool and stays as-is.
+    """
+
+    format: str  # 'png' | 'pdf' | 'html'
+    artifact: dict
+    filename: Optional[str] = None
+
+
+@router.post("/artifact")
+async def export_artifact(request: ArtifactExportRequest):
+    fmt = (request.format or "").lower()
+    safe_name = (request.filename or request.artifact.get("title") or "artifact").replace("/", "_")[:120]
+
+    if fmt == "png":
+        from services.artifact_renderer import render_artifact_to_png
+        png = await render_artifact_to_png(request.artifact)
+        if not png:
+            raise HTTPException(status_code=500, detail="PNG render failed")
+        return Response(
+            content=png,
+            media_type="image/png",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}.png"'},
+        )
+
+    if fmt == "pdf":
+        from services.artifact_renderer import render_artifact_to_pdf
+        pdf = await render_artifact_to_pdf(request.artifact)
+        if not pdf:
+            raise HTTPException(status_code=500, detail="PDF render failed")
+        return Response(
+            content=pdf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'},
+        )
+
+    if fmt == "html":
+        # Standalone HTML — uses the same skeleton as the Playwright path
+        # so PNG/PDF/HTML of the same artifact look identical.
+        from services.artifact_renderer import _build_artifact_page
+        html = _build_artifact_page(request.artifact)
+        return Response(
+            content=html,
+            media_type="text/html",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}.html"'},
+        )
+
+    raise HTTPException(status_code=400, detail=f"Unsupported artifact format: {request.format}")
+
+
+class FindingExportRequest(BaseModel):
+    notebook_id: str
+    finding_id: str
+
+
+@router.post("/finding")
+async def export_finding(request: FindingExportRequest):
+    """Export a single Finding as a self-contained HTML page (Phase 5).
+
+    Reuses the artifact_renderer skeleton so the visual identity matches
+    the canvas + PDF + PNG paths. The finding's content shape varies by
+    type ('visual' | 'answer' | 'highlight' | 'source' | 'note'); we
+    render the most useful representation per type.
+    """
+    from storage.findings_store import get_findings_store
+    from services.artifact_renderer import _build_artifact_page
+
+    store = get_findings_store()
+    finding = await store.get_finding(request.notebook_id, request.finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail="Finding not found")
+
+    notebook = await notebook_store.get(request.notebook_id)
+    notebook_title = (notebook or {}).get("title", "Notebook")
+
+    # Map the finding's content into an artifact envelope per type.
+    c = finding.content or {}
+    if finding.type == "visual" and (c.get("svg") or c.get("mermaid_code")):
+        body_md = (
+            f"## {finding.title}\n\n"
+            + (f"```svg\n{c.get('svg')}\n```\n\n" if c.get("svg") else f"```mermaid\n{c.get('mermaid_code')}\n```\n\n")
+            + (c.get("description") or "")
+        )
+    elif finding.type == "answer":
+        q = c.get("question") or finding.title
+        a = c.get("answer") or ""
+        body_md = f"## Question\n\n{q}\n\n## Answer\n\n{a}"
+    elif finding.type == "highlight":
+        quote = c.get("highlighted_text") or finding.title
+        note = c.get("annotation") or ""
+        source = c.get("source_filename") or ""
+        body_md = f"> {quote}\n\n— *{source}*\n\n{note}".strip()
+    elif finding.type == "note":
+        body_md = f"## {finding.title}\n\n{c.get('body') or c.get('content') or ''}"
+    else:
+        # Generic fallback — show title + the content dict as a list.
+        kv = "\n".join(f"- **{k}**: {v}" for k, v in c.items())
+        body_md = f"## {finding.title}\n\n{kv}"
+
+    tag_line = ", ".join(finding.tags) if finding.tags else None
+    artifact = {
+        "id": finding.id,
+        "type": "markdown",
+        "payload": body_md,
+        "title": f"{finding.title} — {notebook_title}",
+        "tagline": tag_line,
+    }
+    html = _build_artifact_page(artifact)
+    safe = finding.title.lower().replace("/", "-").replace(" ", "-")[:80] or "finding"
+    return Response(
+        content=html,
+        media_type="text/html",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.html"'},
+    )
+
+
+# =============================================================================
 # PPTX Prompt-Based Revision Endpoints
 # =============================================================================
 

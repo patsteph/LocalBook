@@ -31,6 +31,31 @@ class GeneratedVisual:
     alternatives: List[Dict[str, str]]
     error: Optional[str] = None
 
+    def to_artifact(self, *, artifact_id: Optional[str] = None) -> Dict[str, Any]:
+        """Serialize to the v2.0 Artifact envelope shape.
+
+        Per `READFIRST/in-progress/v2-information-cortex.md` Phase 1.E.
+        Returns a plain dict (Pydantic-validated) so it drops cleanly into
+        a JSON response alongside the legacy fields during the transition.
+        Frontend dispatches via the renderer registry (`'mermaid'` type).
+        """
+        from uuid import uuid4
+        from services.artifact_spec import mermaid_artifact
+        return mermaid_artifact(
+            id=artifact_id or str(uuid4()),
+            code=self.mermaid_code,
+            title=self.title,
+            tagline=self.description,
+            metadata={
+                "template_id": self.template_id,
+                "template_name": self.template_name,
+                "key_points": self.key_points,
+                "alternatives": self.alternatives,
+                "success": self.success,
+                "error": self.error,
+            },
+        ).model_dump()
+
 
 # Template-specific system prompts for high-quality output
 TEMPLATE_PROMPTS = {

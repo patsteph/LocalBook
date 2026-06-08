@@ -2792,6 +2792,42 @@ class CuratorBrain:
             logger.warning(f"[CuratorBrain] get_dissenting_sources failed: {e}")
             return []
 
+    def get_supporting_sources(
+        self,
+        notebook_id: str,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Top supporting sources for a notebook, highest confidence first.
+
+        Mirror of `get_dissenting_sources` — used by visualizations that
+        plot the stance distribution (e.g. Curator dissent overwatch
+        quadrant chart).
+        """
+        try:
+            cur = self._conn.execute(
+                """SELECT source_id, notebook_id, stance, confidence,
+                          rationale, scored_at
+                   FROM source_stances
+                   WHERE notebook_id = ? AND stance = 'supports'
+                   ORDER BY confidence DESC, scored_at DESC
+                   LIMIT ?""",
+                (notebook_id, limit),
+            )
+            return [
+                {
+                    "source_id": r["source_id"],
+                    "notebook_id": r["notebook_id"],
+                    "stance": r["stance"],
+                    "confidence": r["confidence"],
+                    "rationale": r["rationale"] or "",
+                    "scored_at": r["scored_at"],
+                }
+                for r in cur.fetchall()
+            ]
+        except Exception as e:
+            logger.warning(f"[CuratorBrain] get_supporting_sources failed: {e}")
+            return []
+
     def clear_stances_for_notebook(self, notebook_id: str) -> int:
         """Delete all stance rows for a notebook. Returns count deleted."""
         try:

@@ -511,7 +511,7 @@ async def generate_visual(
     content = "\n\n".join([s.get("content", "")[:3000] for s in sources[:5]])
     
     result = await visual_generator.generate(content, template_id)
-    
+
     return {
         "success": result.success,
         "notebook_id": notebook_id,
@@ -527,6 +527,11 @@ async def generate_visual(
         "key_points": result.key_points,
         "alternatives": result.alternatives,
         "error": result.error,
+        # v2.0 Phase 1.E: also emit the unified Artifact envelope alongside
+        # the legacy fields. Frontend can opt into dispatching via the
+        # renderer registry (`'mermaid'` type) without breaking the old
+        # shape during the transition.
+        "artifact": result.to_artifact() if result.success else None,
     }
 
 
@@ -561,6 +566,8 @@ async def generate_batch(
                 } if r.success else None,
                 "key_points": r.key_points,
                 "error": r.error,
+                # v2.0 Phase 1.E: Artifact envelope alongside legacy fields.
+                "artifact": r.to_artifact() if r.success else None,
             }
             for r in results
         ],

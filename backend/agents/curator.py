@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from storage.memory_store import memory_store, AgentNamespace
 from storage.notebook_store import notebook_store
@@ -195,6 +195,12 @@ class MorningBrief(BaseModel):
     cross_notebook_insight: Optional[str] = None
     narrative: str = ""  # LLM-generated newsletter-quality summary
     generated_at: datetime
+    # Phase 10 — HTML dashboard variant. None when generation fails or the
+    # CuratorConfig has html_dashboard disabled; frontend falls back to the
+    # markdown narrative in that case.
+    narrative_html: Optional[str] = None
+    consensus_clusters: List[Dict[str, Any]] = Field(default_factory=list)
+    deep_reads_triggered: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class WeeklyWrapUp(BaseModel):
@@ -205,6 +211,9 @@ class WeeklyWrapUp(BaseModel):
     notebook_summaries: List[NotebookSummary]
     cross_notebook_insight: Optional[str] = None
     narrative: str = ""
+    # Phase 14 — server-composed HTML variant (matches MorningBrief shape).
+    # None when generation fails; chat fallback uses plain narrative.
+    narrative_html: Optional[str] = None
     generated_at: datetime
     # Weekly aggregate stats
     total_sources_added: int = 0
@@ -1160,13 +1169,40 @@ Be concise and cite which notebook each insight comes from."""
             summaries, duration_str, cross_insight, temporal_block,
             understanding_diff=understanding_diff_block,
         )
-        
+
+        # Phase 10 — consensus detection + deep-read trigger + HTML dashboard.
+        # Always runs after the markdown narrative so the existing path is
+        # unaffected if any new piece fails.
+        consensus_clusters: List[Dict[str, Any]] = []
+        deep_reads_triggered: List[Dict[str, Any]] = []
+        narrative_html: Optional[str] = None
+        try:
+            from services.consensus_detector import detect_consensus
+            clusters = await detect_consensus(since_days=3, min_cluster_size=3)
+            consensus_clusters = [c.model_dump() for c in clusters]
+            deep_reads_triggered = self._fire_deep_reads_for_clusters(clusters)
+            total_recent_ingests = sum(c.size for c in clusters) if clusters else 0
+            narrative_html = self._compose_brief_html(
+                duration_str=duration_str,
+                summaries=summaries,
+                narrative=narrative,
+                cross_insight=cross_insight,
+                clusters=clusters,
+                deep_reads=deep_reads_triggered,
+                total_recent_ingests=total_recent_ingests,
+            )
+        except Exception as _e:
+            logger.debug(f"[curator] Phase 10 dashboard skipped (non-fatal): {_e}")
+
         return MorningBrief(
             away_duration=duration_str,
             notebook_summaries=summaries,
             cross_notebook_insight=cross_insight,
             narrative=narrative,
-            generated_at=now
+            generated_at=now,
+            narrative_html=narrative_html,
+            consensus_clusters=consensus_clusters,
+            deep_reads_triggered=deep_reads_triggered,
         )
     
     async def generate_weekly_wrap_up(self) -> WeeklyWrapUp:
@@ -1338,12 +1374,35 @@ Be concise and cite which notebook each insight comes from."""
             total_user, total_convos, total_audio, total_docs
         )
         
+        # Phase 14 — compose HTML variant so the wrap can render as a
+        # dashboard card via the ```html fence handler (parallels Phase 10
+        # morning brief). Non-blocking; falls back to narrative-only on
+        # any failure.
+        narrative_html: Optional[str] = None
+        try:
+            narrative_html = self._compose_weekly_wrap_html(
+                week_start=week_start.strftime("%Y-%m-%d"),
+                week_end=week_end.strftime("%Y-%m-%d"),
+                summaries=summaries,
+                narrative=narrative,
+                cross_insight=cross_insight,
+                total_sources=total_sources,
+                total_collector=total_collector,
+                total_user=total_user,
+                total_convos=total_convos,
+                total_audio=total_audio,
+                total_docs=total_docs,
+            )
+        except Exception as e:
+            logger.debug(f"[curator] weekly wrap HTML composition skipped: {e}")
+
         return WeeklyWrapUp(
             week_start=week_start.strftime("%Y-%m-%d"),
             week_end=week_end.strftime("%Y-%m-%d"),
             notebook_summaries=summaries,
             cross_notebook_insight=cross_insight,
             narrative=narrative,
+            narrative_html=narrative_html,
             generated_at=now,
             total_sources_added=total_sources,
             total_collector_added=total_collector,
@@ -1560,7 +1619,9 @@ Write the weekly wrap up now:"""
                 system_prompt="You are a concise, insightful research assistant. Write engaging weekly summaries that help people reflect on their research progress.",
                 prompt=prompt,
                 model=settings.ollama_model,
-                temperature=0.7,
+                # 2026-06-08: dropped 0.7 → 0.55 for gemma4 (better
+                # instruction-following than olmo; CLAUDE.md doc-gen range).
+                temperature=0.55,
                 num_predict=2000,
                 voice_modifier=False,
             )
@@ -2522,7 +2583,9 @@ Write the brief now:"""
                 ),
                 prompt=prompt,
                 model=settings.ollama_model,
-                temperature=0.7,
+                # 2026-06-08: dropped 0.7 → 0.55 for gemma4 (better
+                # instruction-following than olmo; CLAUDE.md doc-gen range).
+                temperature=0.55,
                 num_predict=1500,
                 voice_modifier=False,
             )
@@ -2700,6 +2763,98 @@ Return ONLY valid JSON, no explanation."""
                 )
                 insights.append(insight)
 
+        # Phase 14 (2026-06-08) — temporal_pattern producer. An entity
+        # with a recent mention spike (≥3 in last 7d AND ≥2x its prior
+        # 14d cadence) is worth surfacing. Cheap: scans existing event
+        # payloads, no new LLM calls. Bounded to top 3 to avoid
+        # flooding the insights table.
+        try:
+            from services.curator_brain import curator_brain as _cb
+            from datetime import timedelta as _td
+            from collections import Counter as _Counter
+
+            now = datetime.utcnow()
+            since_recent = (now - _td(days=7)).isoformat()
+            since_baseline = (now - _td(days=21)).isoformat()
+
+            recent_ev = _cb.recent_events(limit=2000, since_iso=since_recent)
+            baseline_ev = _cb.recent_events(limit=4000, since_iso=since_baseline)
+
+            # Mention count = case-insensitive substring hit in payload JSON
+            # of an entity-string. We use the candidate-entity set we
+            # already extracted above so we don't pay for a second pass.
+            candidate_entities = [e for e in shared_entities.keys() if e and len(e) >= 3]
+            if candidate_entities:
+                recent_counts: Dict[str, int] = {}
+                baseline_counts: Dict[str, int] = {}
+                for ev in recent_ev:
+                    blob = json.dumps(ev.get("payload") or {}).lower()
+                    for ent in candidate_entities:
+                        if ent.lower() in blob:
+                            recent_counts[ent] = recent_counts.get(ent, 0) + 1
+                for ev in baseline_ev:
+                    blob = json.dumps(ev.get("payload") or {}).lower()
+                    for ent in candidate_entities:
+                        if ent.lower() in blob:
+                            baseline_counts[ent] = baseline_counts.get(ent, 0) + 1
+
+                spikes: List[tuple] = []
+                for ent, recent_n in recent_counts.items():
+                    if recent_n < 3:
+                        continue
+                    # Mentions in days 8-21 (baseline-window minus recent-window).
+                    prior_n = max(0, baseline_counts.get(ent, 0) - recent_n)
+                    # Spike: recent rate ≥ 2x prior rate (compare per-week).
+                    # prior is 14 days, recent is 7 days; multiply prior by 0.5.
+                    prior_per_week = prior_n * 0.5
+                    if recent_n >= 2 * max(1.0, prior_per_week):
+                        spikes.append((ent, recent_n, prior_per_week))
+
+                spikes.sort(key=lambda x: x[1], reverse=True)
+                for ent, recent_n, prior_per_week in spikes[:3]:
+                    ctxs = shared_entities.get(ent, [])
+                    nb_ids = [c["notebook_id"] for c in ctxs] if ctxs else []
+                    insights.append(ProactiveInsight(
+                        insight_type="temporal_pattern",
+                        entity=ent,
+                        notebooks=nb_ids,
+                        summary=(
+                            f"'{ent}' mentions spiked recently — {recent_n} in the "
+                            f"last 7 days vs ~{prior_per_week:.1f}/week before. "
+                            f"Worth checking what's driving the surge."
+                        ),
+                        confidence=0.65,
+                    ))
+        except Exception as _t_e:
+            logger.debug(f"[curator] temporal_pattern detection skipped: {_t_e}")
+
+        # Phase 14 (2026-06-08) — coverage_gap producer. Surfaces
+        # notebooks where the user's mental model declares a `blocked_on`
+        # area (curated data; the user told us what's missing) and the
+        # notebook has the thesis but few sources covering that gap.
+        try:
+            from services.curator_brain import curator_brain as _cb2
+            for nb in notebooks:
+                nb_id = nb["id"]
+                mm = _cb2.get_mental_model(nb_id) or {}
+                thesis = (mm.get("thesis") or "").strip()
+                blocked = (mm.get("blocked_on") or "").strip()
+                if not thesis or not blocked or len(blocked) < 8:
+                    continue
+                insights.append(ProactiveInsight(
+                    insight_type="coverage_gap",
+                    entity=thesis[:80],
+                    notebooks=[nb_id],
+                    summary=(
+                        f"Notebook '{nb.get('title', '(unnamed)')}' is light on "
+                        f"coverage around: {blocked}. The thesis would be "
+                        f"stronger with sources addressing this gap."
+                    ),
+                    confidence=0.7,
+                ))
+        except Exception as _c_e:
+            logger.debug(f"[curator] coverage_gap detection skipped: {_c_e}")
+
         # Write the fresh batch to the brain. Brain preserves user signal
         # (thumbs_up / dismissed) when replacing the active set.
         try:
@@ -2738,6 +2893,15 @@ Return ONLY valid JSON, no explanation."""
         """
         Check if any active brain insights relate to the current user query.
         If so, mention it naturally and record the surface event.
+
+        Phase 14 (2026-06-08): the returned string is markdown — it may
+        include trailing code-fences (mermaid / json-chart / klein) that
+        the frontend ChatMessageBubble routes through
+        MarkdownArtifactRenderer for actual visuals. Insight types map to:
+          - cross_reference  → Mermaid graph LR (entity ↔ notebooks)
+          - temporal_pattern → json-chart line (mentions over time)
+          - coverage_gap     → Mermaid mindmap (covered + dashed missing)
+        Other types (contradiction etc.) fall back to plain prose.
         """
         try:
             from services.curator_brain import curator_brain
@@ -2763,7 +2927,119 @@ Return ONLY valid JSON, no explanation."""
             prefix = "💡 By the way:"
         else:
             prefix = "💡 Possibly relevant (low-confidence):"
-        return f"{prefix} {insight['summary']}"
+
+        base = f"{prefix} {insight['summary']}"
+        visual = await self._compose_insight_visual(insight)
+        return f"{base}\n\n{visual}" if visual else base
+
+    async def _compose_insight_visual(self, insight: Dict[str, Any]) -> Optional[str]:
+        """Build a code-fence visual for an insight based on its type.
+
+        Returns the fence string (including ```), or None on failure.
+        Always best-effort — visualizations are additive, never blocking.
+        """
+        import re as _re
+        from datetime import timedelta as _td
+
+        insight_type = insight.get("insight_type") or ""
+        entity = (insight.get("entity") or "").strip()
+        notebook_ids = insight.get("notebooks") or []
+
+        def _label(s: str, n: int = 40) -> str:
+            s = _re.sub(r"[\(\)\[\]\{\}\"`:,]+", " ", str(s or ""))
+            s = _re.sub(r"\s+", " ", s).strip()
+            return s[:n] or "—"
+
+        async def _nb_names(ids: List[str], limit: int = 6) -> List[str]:
+            names: List[str] = []
+            for nb_id in (ids or [])[:limit]:
+                try:
+                    nb = await notebook_store.get(nb_id) or {}
+                    names.append(nb.get("title") or nb.get("name") or nb_id[:8])
+                except Exception:
+                    names.append(str(nb_id)[:8])
+            return names
+
+        try:
+            if insight_type == "cross_reference":
+                if not entity or not notebook_ids:
+                    return None
+                names = await _nb_names(notebook_ids, limit=6)
+                lines = ["graph LR"]
+                root = f'root["{_label(entity, 60)}"]'
+                lines.append(f"  {root}")
+                for i, n in enumerate(names):
+                    nid = f"nb{i}"
+                    lines.append(f'  {nid}["{_label(n)}"]')
+                    lines.append(f"  root --- {nid}")
+                lines.append(f"  classDef hub fill:#ede9fe,stroke:#7c3aed,stroke-width:2px;")
+                lines.append(f"  classDef leaf fill:#eff6ff,stroke:#3b82f6;")
+                lines.append(f"  class root hub;")
+                for i in range(len(names)):
+                    lines.append(f"  class nb{i} leaf;")
+                return "```mermaid\n" + "\n".join(lines) + "\n```"
+
+            if insight_type == "temporal_pattern":
+                # Derive a weekly mention series from recent_events. Best-
+                # effort: if events are empty or entity didn't appear, skip.
+                from services.curator_brain import curator_brain as _cb
+                since_iso = (datetime.utcnow() - _td(days=56)).isoformat()
+                try:
+                    events = _cb.recent_events(limit=2000, since_iso=since_iso)
+                except Exception:
+                    events = []
+                if not events or not entity:
+                    return None
+                entity_lower = entity.lower()
+                # Bucket by ISO week.
+                buckets: Dict[str, int] = {}
+                for ev in events:
+                    payload_blob = json.dumps(ev.get("payload") or {}).lower()
+                    if entity_lower in payload_blob:
+                        ts = ev.get("ts") or ""
+                        try:
+                            dt = datetime.fromisoformat(ts.replace("Z", ""))
+                            iso = dt.strftime("%Y-W%V")
+                            buckets[iso] = buckets.get(iso, 0) + 1
+                        except Exception:
+                            continue
+                if len(buckets) < 2:
+                    return None
+                labels = sorted(buckets.keys())[-8:]
+                data = [buckets[w] for w in labels]
+                chart = {
+                    "kind": "line",
+                    "title": f"Mentions of {entity} per week",
+                    "labels": labels,
+                    "series": [{"label": "mentions", "data": data}],
+                }
+                return "```json-chart\n" + json.dumps(chart) + "\n```"
+
+            if insight_type == "coverage_gap":
+                if not entity:
+                    return None
+                names = await _nb_names(notebook_ids, limit=4)
+                summary = insight.get("summary") or ""
+                # Try to lift "missing X" / "gap on X" phrases out of the
+                # summary as the dashed branch. Falls back to a generic
+                # "underexplored" leaf when extraction fails.
+                m = _re.search(r"(?:gap|missing|underexplor|lack(?:s|ing)?)[^.]*?(?:in|on|around)\s+([A-Za-z0-9 ,\-]{4,60})", summary, _re.I)
+                missing_label = _label(m.group(1).strip(), 50) if m else "underexplored area"
+                lines = ["mindmap", f"  root(({_label(entity, 60)}))"]
+                if names:
+                    lines.append("    Covered")
+                    for n in names:
+                        lines.append(f"      {_label(n)}")
+                lines.append("    Missing")
+                lines.append(f"      {missing_label}")
+                lines.append(f"      ::icon(fa fa-question)")
+                return "```mermaid\n" + "\n".join(lines) + "\n```"
+
+        except Exception as e:
+            logger.debug(f"[curator] _compose_insight_visual({insight_type}) failed: {e}")
+            return None
+
+        return None
     
     # =========================================================================
     # Devil's Advocate Mode (Enhancement #9)
@@ -4013,9 +4289,60 @@ Respond with ONLY a JSON array of strings, no other text:
         play devil's advocate, and discuss research strategy.
         """
         history = history or []
-        
+
         # Intent detection: morning brief recall
         msg_lower = message.lower().strip()
+
+        # 2026-06-07 — direct shortcut for the anticipatory-draft pill.
+        # The CuratorPanel sends `'show draft'` / `'discard draft'` straight
+        # through this conversational endpoint, which previously fell
+        # through to the generic LLM clarifier. Match the keyword and route
+        # to the brain directly, mirroring the `_stream_curator` intent
+        # handlers in chat.py.
+        draft_show_triggers = (
+            "show draft", "show me the draft", "open the draft",
+            "what did you draft", "show the draft", "view draft",
+        )
+        draft_discard_triggers = (
+            "discard draft", "discard the draft", "trash that draft",
+            "don't want that draft", "no thanks on the draft", "reject draft",
+        )
+        if any(trigger in msg_lower for trigger in draft_show_triggers) and notebook_id:
+            try:
+                from services.curator_brain import curator_brain
+                draft = curator_brain.get_latest_unconsumed_draft(notebook_id)
+                if not draft:
+                    return (
+                        "No pending draft for this notebook. Curator pre-drafts "
+                        "Studio content for notebooks with ≥15 sources, a stable "
+                        "thesis, and no recent Studio output — yours might not "
+                        "qualify yet."
+                    )
+                curator_brain.mark_draft_consumed(draft["id"])
+                return (
+                    f"Here's the draft I prepared (**{draft['kind']}**):\n\n"
+                    f"---\n\n{draft['content_markdown']}\n\n---\n\n"
+                    f"Say *@curator discard draft* if it's not useful — "
+                    f"I'll back off on this notebook for a couple weeks."
+                )
+            except Exception as _e:
+                logger.debug(f"[curator.conversational_reply] show_draft shortcut failed: {_e}")
+                return f"Couldn't fetch the draft: {_e}"
+        if any(trigger in msg_lower for trigger in draft_discard_triggers) and notebook_id:
+            try:
+                from services.curator_brain import curator_brain
+                draft = curator_brain.get_latest_unconsumed_draft(notebook_id) or curator_brain.get_latest_draft(notebook_id)
+                if not draft:
+                    return "No recent draft for this notebook."
+                curator_brain.mark_draft_discarded(draft["id"])
+                return (
+                    "Discarded. I won't draft for this notebook for the next "
+                    "14 days — say *@curator show draft* again after that."
+                )
+            except Exception as _e:
+                logger.debug(f"[curator.conversational_reply] discard_draft shortcut failed: {_e}")
+                return f"Couldn't discard the draft: {_e}"
+
         brief_triggers = [
             "morning brief", "show brief", "show me the brief",
             "today's brief", "todays brief", "daily brief",
@@ -4459,6 +4786,74 @@ Rules:
                 )
                 return None
 
+            # For mind_map kind, prepend an actual Mermaid mindmap visual
+            # built from digest data (themes + entities). The frontend
+            # MarkdownArtifactRenderer dispatches mermaid code-fences to
+            # MermaidRenderer, so the user sees the diagram alongside the
+            # prose instead of just prose describing one.
+            if kind == "mind_map":
+                try:
+                    import re
+                    digest = _cb.get_digest(notebook_id) or {}
+                    themes_raw = digest.get("key_themes") or "[]"
+                    entities_raw = digest.get("key_entities") or "[]"
+                    themes = json.loads(themes_raw) if isinstance(themes_raw, str) else (themes_raw or [])
+                    entities = json.loads(entities_raw) if isinstance(entities_raw, str) else (entities_raw or [])
+
+                    def _mm_label(s: str, n: int = 60) -> str:
+                        # Mermaid mindmap node text is line-sensitive and
+                        # chokes on parens/brackets. Keep it boring.
+                        s = str(s or "").strip()
+                        s = re.sub(r"[\(\)\[\]\{\}\"`]+", "", s)
+                        s = re.sub(r"\s+", " ", s)
+                        return s[:n].strip() or "—"
+
+                    root_label = _mm_label(thesis, 80)
+                    lines = ["mindmap", f"  root(({root_label}))"]
+                    theme_list = [t for t in (themes or []) if t][:6]
+                    entity_list = [e for e in (entities or []) if e][:6]
+
+                    if theme_list:
+                        lines.append("    Key themes")
+                        for t in theme_list:
+                            lines.append(f"      {_mm_label(t)}")
+                    if entity_list:
+                        lines.append("    Key entities")
+                        for e in entity_list:
+                            lines.append(f"      {_mm_label(e)}")
+                    if not theme_list and not entity_list:
+                        # Fall back to recent source titles so the mindmap
+                        # is never empty when digest hasn't been built yet.
+                        lines.append("    Recent sources")
+                        for s in recent_sources[:5]:
+                            title = (s.get("filename") or s.get("title") or s.get("url") or "Untitled")
+                            lines.append(f"      {_mm_label(title)}")
+
+                    mermaid_block = "```mermaid\n" + "\n".join(lines) + "\n```"
+                    content = f"{mermaid_block}\n\n{content}"
+                except Exception as e:
+                    # Never block the draft on a visualization failure —
+                    # the prose is still useful on its own.
+                    logger.debug(
+                        f"[curator] mind_map mermaid composition failed (non-fatal): {e}"
+                    )
+
+            # For executive_brief kind, prepend the Phase 13 notebook
+            # dashboard HTML so the user lands on a structured overview
+            # (cornerstone summary + themes/entities chips + activity grid
+            # + consensus cards) rather than walls of prose. The ```html
+            # fence (Phase 14, 2026-06-08) routes through
+            # HtmlArtifactRenderer's Shadow DOM + DOMPurify strict.
+            if kind == "executive_brief":
+                try:
+                    dashboard_html = await self.compose_notebook_dashboard_html(notebook_id)
+                    if dashboard_html and len(dashboard_html) > 100:
+                        content = f"```html\n{dashboard_html}\n```\n\n{content}"
+                except Exception as e:
+                    logger.debug(
+                        f"[curator] executive_brief dashboard composition failed (non-fatal): {e}"
+                    )
+
             # Persist + record nag fire so daily cap counts it
             draft_id = _cb.queue_draft(
                 notebook_id=notebook_id,
@@ -4554,6 +4949,53 @@ Rules:
                 f"Heads up — \"{str(title)[:120]}\" actually contradicts the notebook's thesis: "
                 f"{top.get('rationale', '')[:200]}"
             )
+
+            # Phase 14 (2026-06-08) — append a Mermaid quadrantChart so the
+            # user sees this dissenter plotted against the notebook's
+            # existing stance distribution. Renders via MarkdownArtifact-
+            # Renderer's mermaid fence handler. Skipped silently on any
+            # failure — prose aside still surfaces.
+            try:
+                import re as _re
+
+                def _clean(s: str, n: int = 40) -> str:
+                    s = _re.sub(r"[\[\]\"`:,]+", " ", str(s or ""))
+                    s = _re.sub(r"\s+", " ", s).strip()
+                    return s[:n] or "source"
+
+                top_conf = float(top.get("confidence") or 0)
+                # Stance is contradicting here; lower-right quadrant.
+                # x-axis = confidence (0-1), y-axis = supports vs contradicts.
+                new_point = (_clean(title), round(min(0.95, max(0.05, top_conf)), 2), 0.15)
+                support_dots: List[tuple] = []
+                # Plot up to 3 supporting sources as upper-area dots.
+                try:
+                    supports = _cb.get_supporting_sources(notebook_id, limit=3)
+                except Exception:
+                    supports = []
+                for i, s in enumerate(supports or []):
+                    sc = float(s.get("confidence") or 0.7)
+                    sx = round(min(0.95, max(0.05, sc)), 2)
+                    sy = round(0.75 + (i * 0.05), 2)
+                    label = _clean(s.get("source_id") or f"src{i}", 28)
+                    support_dots.append((label, sx, sy))
+
+                lines = [
+                    "quadrantChart",
+                    "  title Stance vs confidence",
+                    "  x-axis Low conf --> High conf",
+                    "  y-axis Contradicts --> Supports",
+                    "  quadrant-1 Strong support",
+                    "  quadrant-2 Weak support",
+                    "  quadrant-3 Weak contradiction",
+                    "  quadrant-4 Strong contradiction",
+                    f"  {new_point[0]}: [{new_point[1]}, {new_point[2]}]",
+                ]
+                for label, x, y in support_dots:
+                    lines.append(f"  {label}: [{x}, {y}]")
+                aside = aside + "\n\n```mermaid\n" + "\n".join(lines) + "\n```"
+            except Exception as _e:
+                logger.debug(f"[curator] dissent quadrant composition failed (non-fatal): {_e}")
 
             # Record + queue
             nag_id = _cb.record_nag(
@@ -4779,6 +5221,503 @@ Respond with JSON only:
                     "source_types": rejected_types
                 }
             )
+
+    # ==================================================================
+    # Phase 10 — HTML brief dashboard + deep-read trigger + skip-digest.
+    # ==================================================================
+
+    # Hardcoded defaults — promote to CuratorConfig when the user-tuning
+    # surface lands.
+    _AUTO_DEEP_READ = True
+    _MAX_DEEP_READS_PER_BRIEF = 2
+
+    def _fire_deep_reads_for_clusters(self, clusters: List[Any]) -> List[Dict[str, Any]]:
+        """For the top consensus clusters, fire research_engine.deep_dive
+        as fire-and-forget. Returns a list of {topic_label, notebook_id,
+        query, cluster_id} dicts describing what was triggered.
+
+        Honors `_AUTO_DEEP_READ` switch + max-per-brief cap. Never blocks
+        the brief assembly path; any per-cluster failure is debug-logged.
+        """
+        triggered: List[Dict[str, Any]] = []
+        if not self._AUTO_DEEP_READ or not clusters:
+            return triggered
+        try:
+            from services.research_engine import research_engine
+            from services.curator_event_bus import event_bus
+        except Exception as e:
+            logger.debug(f"[curator.fire_deep_reads] import failed: {e}")
+            return triggered
+
+        for cl in clusters[: self._MAX_DEEP_READS_PER_BRIEF]:
+            try:
+                if not cl.primary_notebook_id or not cl.topic_label:
+                    continue
+                query = cl.topic_label
+                asyncio.create_task(
+                    research_engine.deep_dive(
+                        query=query,
+                        notebook_id=cl.primary_notebook_id,
+                    )
+                )
+                event_bus.emit_now(
+                    actor="@curator",
+                    action="deep_read_triggered",
+                    notebook_id=cl.primary_notebook_id,
+                    payload={
+                        "cluster_id": cl.cluster_id,
+                        "query": query,
+                        "cluster_size": cl.size,
+                    },
+                    outcome="success",
+                )
+                triggered.append({
+                    "cluster_id": cl.cluster_id,
+                    "topic_label": cl.topic_label,
+                    "notebook_id": cl.primary_notebook_id,
+                    "query": query,
+                })
+            except Exception as e:
+                logger.debug(f"[curator.fire_deep_reads] cluster fire failed: {e}")
+        return triggered
+
+    def _compose_brief_html(
+        self,
+        *,
+        duration_str: str,
+        summaries: List["NotebookSummary"],
+        narrative: str,
+        cross_insight: Optional[str],
+        clusters: List[Any],
+        deep_reads: List[Dict[str, Any]],
+        total_recent_ingests: int,
+    ) -> Optional[str]:
+        """Compose the HTML dashboard variant of the morning brief.
+
+        Server-side composition (not LLM-generated HTML) — for a layout
+        this structured, deterministic assembly is more reliable than
+        prompting gemma4 to produce dashboard HTML reliably. The LLM-
+        authored prose (`narrative`) sits inside the dashboard wrapper.
+
+        Strict mode: output uses the Tailwind subset that
+        HtmlArtifactRenderer's Shadow DOM injects. No <script>, no inline
+        styles requiring url(), no <img>.
+        """
+        import html as _html
+
+        # Skip-digest path: quiet morning (P10.D). The check happens here
+        # so the HTML output stays in lockstep with the skip-digest
+        # decision in the markdown narrative.
+        meaningful = any(
+            nb.items_added > 0 or nb.pending_approval > 0
+            or nb.collection_items_approved > 0 or nb.highlights_since > 0
+            or nb.notes_created > 0 or nb.interactions_since > 0
+            or nb.emerging_topics or nb.recent_stories
+            for nb in summaries
+        )
+        if not clusters and total_recent_ingests < 5 and not meaningful:
+            return (
+                '<div class="lb-html-artifact p-6 max-w-2xl mx-auto">'
+                '<h3 class="text-lg font-semibold text-gray-800 mb-2">Quiet morning</h3>'
+                f'<p class="text-sm text-gray-600">'
+                f'{total_recent_ingests} items came in across your notebooks. '
+                'Nothing converging yet — your notebooks are where you left them.'
+                '</p>'
+                '</div>'
+            )
+
+        parts: List[str] = []
+        parts.append('<div class="lb-html-artifact p-4 max-w-3xl mx-auto">')
+
+        # Cornerstone / header
+        parts.append('<div class="mb-6">')
+        parts.append(
+            f'<p class="text-xs uppercase tracking-wide text-gray-500 mb-1">'
+            f'You\'ve been away for {_html.escape(duration_str)}'
+            '</p>'
+        )
+        if cross_insight:
+            parts.append(
+                '<p class="text-sm text-gray-700 italic">'
+                + _html.escape(cross_insight)
+                + '</p>'
+            )
+        parts.append('</div>')
+
+        # Narrative prose (sanitized — escape, then convert paragraph breaks)
+        if narrative:
+            paras = [p.strip() for p in narrative.split("\n\n") if p.strip()]
+            parts.append('<div class="mb-6">')
+            for p in paras:
+                parts.append(
+                    '<p class="text-sm text-gray-800 mb-3">' + _html.escape(p) + '</p>'
+                )
+            parts.append('</div>')
+
+        # Consensus clusters
+        if clusters:
+            parts.append(
+                '<h3 class="text-base font-semibold text-gray-800 mb-2">What\'s converging</h3>'
+            )
+            parts.append('<div class="grid grid-cols-2 gap-3 mb-6">')
+            for cl in clusters[:6]:
+                top_senders = sorted(
+                    (cl.sender_counts or {}).items(), key=lambda x: x[1], reverse=True
+                )[:4]
+                notebooks_count = len(cl.notebook_counts or {})
+
+                # Phase 14 (2026-06-08) — per-cluster sender share bars.
+                # CSS-only (no scripts) so it renders inside the strict
+                # HtmlArtifactRenderer Shadow DOM. Bars are normalized to
+                # the strongest sender in the cluster so visual weight
+                # tracks agenda concentration. Empty senders → fall back
+                # to "various sources" prose.
+                # Bucket continuous pct → twelfths because the strict
+                # HtmlArtifactRenderer Shadow DOM strips `style` attributes
+                # via DOMPurify. Tailwind subset (export_assets +
+                # htmlArtifactTailwindSubset) defines w-1/12 .. w-11/12 so
+                # bars render proportionally with class names only. The CSS
+                # selectors escape the slash; the class attribute emits a
+                # literal `/`.
+                def _bucket_class(p: int) -> str:
+                    twelfths = max(1, min(12, round(p / 8.333)))
+                    return "w-full" if twelfths >= 12 else f"w-{twelfths}/12"
+                bars_html = ""
+                max_n = max((n for _, n in top_senders if n), default=0)
+                if max_n > 0:
+                    rows = []
+                    for s, n in top_senders:
+                        if not s:
+                            continue
+                        pct = max(8, int((n / max_n) * 100))
+                        width_cls = _bucket_class(pct)
+                        rows.append(
+                            '<div class="flex items-center gap-2 mb-1">'
+                            f'<div class="text-xs text-gray-700 w-24 truncate" title="{_html.escape(s)}">{_html.escape(s)}</div>'
+                            '<div class="flex-1 bg-blue-100 rounded h-2 overflow-hidden">'
+                            f'<div class="bg-blue-500 h-2 rounded {width_cls}"></div>'
+                            '</div>'
+                            f'<div class="text-xs text-gray-600 w-6 text-right">{n}</div>'
+                            '</div>'
+                        )
+                    bars_html = "".join(rows)
+                else:
+                    bars_html = '<p class="text-xs text-gray-500 italic">various sources</p>'
+
+                parts.append(
+                    '<div class="rounded-lg border border-blue-200 bg-blue-50 p-3">'
+                    f'<p class="text-xs uppercase tracking-wide text-blue-700 mb-1">'
+                    f'{cl.size} sources across {notebooks_count} notebook'
+                    f'{"s" if notebooks_count != 1 else ""}</p>'
+                    f'<p class="text-sm font-medium text-gray-800 mb-2">'
+                    f'{_html.escape(cl.topic_label or "(unlabeled)")}</p>'
+                    f'<div class="mt-2">{bars_html}</div>'
+                    '</div>'
+                )
+            parts.append('</div>')
+
+        # Deep reads triggered
+        if deep_reads:
+            parts.append(
+                '<h3 class="text-base font-semibold text-gray-800 mb-2">Deep reads triggered</h3>'
+            )
+            parts.append('<ul class="mb-6">')
+            for dr in deep_reads:
+                parts.append(
+                    f'<li class="text-sm text-gray-700">'
+                    f'Researching <strong>{_html.escape(dr.get("topic_label", "topic"))}</strong> '
+                    '— will surface results in the notebook shortly.'
+                    '</li>'
+                )
+            parts.append('</ul>')
+
+        # Per-notebook activity
+        active = [nb for nb in summaries if (
+            nb.items_added or nb.pending_approval or nb.notes_created
+            or nb.highlights_since or nb.interactions_since
+            or nb.collection_items_approved or nb.emerging_topics or nb.recent_stories
+        )]
+        if active:
+            parts.append(
+                '<h3 class="text-base font-semibold text-gray-800 mb-2">Today across your notebooks</h3>'
+            )
+            parts.append('<div class="flex flex-col gap-2">')
+            for nb in active[:8]:
+                bits: List[str] = []
+                if nb.items_added:
+                    bits.append(f"{nb.items_added} new")
+                if nb.pending_approval:
+                    bits.append(f"{nb.pending_approval} pending")
+                if nb.notes_created:
+                    bits.append(f"{nb.notes_created} note{'s' if nb.notes_created != 1 else ''}")
+                if nb.highlights_since:
+                    bits.append(f"{nb.highlights_since} highlight{'s' if nb.highlights_since != 1 else ''}")
+                summary_bits = " · ".join(bits) if bits else "activity"
+                parts.append(
+                    '<div class="rounded-md border border-gray-200 bg-white p-3">'
+                    f'<p class="text-sm font-medium text-gray-800">{_html.escape(nb.name)}</p>'
+                    f'<p class="text-xs text-gray-500">{summary_bits}</p>'
+                    '</div>'
+                )
+            parts.append('</div>')
+
+        parts.append('</div>')
+        return "".join(parts)
+
+
+    def _compose_weekly_wrap_html(
+        self,
+        *,
+        week_start: str,
+        week_end: str,
+        summaries: List["NotebookSummary"],
+        narrative: str,
+        cross_insight: Optional[str],
+        total_sources: int,
+        total_collector: int,
+        total_user: int,
+        total_convos: int,
+        total_audio: int,
+        total_docs: int,
+    ) -> Optional[str]:
+        """Server-composed HTML dashboard for the weekly wrap-up.
+
+        Same Tailwind subset / strict-HTML constraints as Phase 10's
+        morning brief composer — no scripts, no inline styles, no <img>.
+        Renders via the Phase 14 ```html fence handler in chat replies.
+        """
+        import html as _html
+
+        parts: List[str] = []
+        parts.append('<div class="lb-html-artifact p-4 max-w-3xl mx-auto">')
+
+        # Header
+        parts.append(
+            '<div class="mb-6">'
+            '<p class="text-xs uppercase tracking-wide text-gray-500 mb-1">Weekly wrap-up</p>'
+            f'<p class="text-lg font-semibold text-gray-900 mb-1">{_html.escape(week_start)} → {_html.escape(week_end)}</p>'
+            '</div>'
+        )
+
+        if cross_insight:
+            parts.append(
+                '<p class="text-sm text-gray-700 italic mb-4">'
+                + _html.escape(cross_insight)
+                + '</p>'
+            )
+
+        # Aggregate stats grid — 6 tiles, 3 columns
+        stats = [
+            ("Sources added", total_sources),
+            ("Collected", total_collector),
+            ("Added by you", total_user),
+            ("Conversations", total_convos),
+            ("Audio created", total_audio),
+            ("Docs created", total_docs),
+        ]
+        parts.append(
+            '<h3 class="text-base font-semibold text-gray-800 mb-2">This week at a glance</h3>'
+            '<div class="grid grid-cols-3 gap-2 mb-6">'
+        )
+        for label, value in stats:
+            parts.append(
+                '<div class="rounded-lg border border-gray-200 bg-gray-50 p-3 text-center">'
+                f'<p class="text-xl font-semibold text-gray-900">{value}</p>'
+                f'<p class="text-xs text-gray-500 mt-1">{_html.escape(label)}</p>'
+                '</div>'
+            )
+        parts.append('</div>')
+
+        # Narrative (sanitized prose paragraphs)
+        if narrative:
+            paras = [p.strip() for p in narrative.split("\n\n") if p.strip()]
+            parts.append(
+                '<h3 class="text-base font-semibold text-gray-800 mb-2">The story</h3>'
+                '<div class="mb-6">'
+            )
+            for p in paras[:10]:
+                parts.append(
+                    '<p class="text-sm text-gray-800 mb-3">' + _html.escape(p) + '</p>'
+                )
+            parts.append('</div>')
+
+        # Per-notebook activity
+        active = [nb for nb in summaries if (
+            nb.items_added or nb.notes_created or nb.highlights_since
+            or nb.interactions_since or nb.collection_items_approved
+            or nb.emerging_topics or nb.recent_stories
+        )]
+        if active:
+            parts.append(
+                '<h3 class="text-base font-semibold text-gray-800 mb-2">Across your notebooks</h3>'
+                '<div class="flex flex-col gap-2">'
+            )
+            for nb in active[:8]:
+                bits: List[str] = []
+                if nb.items_added:
+                    bits.append(f"{nb.items_added} sources")
+                if nb.notes_created:
+                    bits.append(f"{nb.notes_created} note{'s' if nb.notes_created != 1 else ''}")
+                if nb.highlights_since:
+                    bits.append(f"{nb.highlights_since} highlight{'s' if nb.highlights_since != 1 else ''}")
+                if nb.interactions_since:
+                    bits.append(f"{nb.interactions_since} chat{'s' if nb.interactions_since != 1 else ''}")
+                summary_bits = " · ".join(bits) if bits else "activity"
+                parts.append(
+                    '<div class="rounded-md border border-gray-200 bg-white p-3">'
+                    f'<p class="text-sm font-medium text-gray-800">{_html.escape(nb.name)}</p>'
+                    f'<p class="text-xs text-gray-500">{summary_bits}</p>'
+                    '</div>'
+                )
+            parts.append('</div>')
+
+        parts.append('</div>')
+        return "".join(parts)
+
+    # ==================================================================
+    # Phase 13 — per-notebook dashboard (A1).
+    # ==================================================================
+
+    async def compose_notebook_dashboard_html(self, notebook_id: str) -> str:
+        """Server-composed HTML overview for a single notebook.
+
+        Reuses the same digest + activity pipeline that powers Phase 10's
+        morning brief but scoped to one notebook. Includes consensus
+        clusters from the last 7 days filtered to this notebook.
+        """
+        import html as _html
+        from datetime import timedelta as _td
+
+        def esc(s: Any) -> str:
+            return _html.escape(str(s or ""), quote=True)
+
+        # 1. Digest
+        try:
+            from services.curator_brain import curator_brain
+            digest = curator_brain.get_digest(notebook_id) or {}
+        except Exception:
+            digest = {}
+
+        # 2. Notebook record (for name)
+        notebook = await notebook_store.get(notebook_id) or {}
+        nb_name = notebook.get("title", "Notebook")
+
+        # 3. Recent activity (last 7 days)
+        try:
+            from storage.source_store import source_store as _src_store
+            all_sources_by_nb = await _src_store.list_all()
+            sources_for_nb = all_sources_by_nb.get(notebook_id, [])
+        except Exception:
+            sources_for_nb = []
+        since = datetime.utcnow() - _td(days=7)
+        try:
+            activity = await self._get_activity_since(notebook_id, since, sources_for_nb)
+        except Exception as e:
+            logger.debug(f"[curator.dashboard] activity fetch failed: {e}")
+            activity = {}
+
+        # 4. Filtered consensus
+        consensus: List[Any] = []
+        try:
+            from services.consensus_detector import detect_consensus
+            all_clusters = await detect_consensus(since_days=7, min_cluster_size=2)
+            consensus = [c for c in all_clusters if c.primary_notebook_id == notebook_id]
+        except Exception as e:
+            logger.debug(f"[curator.dashboard] consensus fetch failed: {e}")
+
+        # Decode key_themes / key_entities (stored as JSON strings)
+        def _decode_json_list(s: Any) -> List[str]:
+            if not s:
+                return []
+            if isinstance(s, list):
+                return [str(x) for x in s]
+            try:
+                v = json.loads(s) if isinstance(s, str) else []
+                return [str(x) for x in v] if isinstance(v, list) else []
+            except Exception:
+                return []
+
+        themes = _decode_json_list(digest.get("key_themes"))[:8]
+        entities = _decode_json_list(digest.get("key_entities"))[:10]
+        summary = digest.get("current_summary") or "Notebook still warming up — generate some content to see synthesis."
+
+        parts: List[str] = []
+        parts.append('<div class="lb-html-artifact p-4 max-w-3xl mx-auto">')
+        # Header
+        parts.append(
+            '<div class="mb-6">'
+            '<p class="text-xs uppercase tracking-wide text-gray-500 mb-1">Notebook dashboard</p>'
+            f'<p class="text-lg font-semibold text-gray-900 mb-1">{esc(nb_name)}</p>'
+            f'<p class="text-sm text-gray-700">{esc(summary)}</p>'
+            '</div>'
+        )
+
+        # Themes + entities chips
+        if themes or entities:
+            parts.append('<div class="mb-6 grid grid-cols-2 gap-3">')
+            if themes:
+                chips = "".join(
+                    f'<span class="text-xs rounded-full px-2 py-0.5 bg-blue-50 text-blue-700 mr-1 mb-1 inline-block">{esc(t)}</span>'
+                    for t in themes
+                )
+                parts.append(
+                    '<div class="rounded-lg border border-gray-200 bg-white p-3">'
+                    '<p class="text-xs uppercase tracking-wide text-gray-500 mb-2">Key themes</p>'
+                    f'<div>{chips}</div></div>'
+                )
+            if entities:
+                chips = "".join(
+                    f'<span class="text-xs rounded-full px-2 py-0.5 bg-purple-50 text-purple-700 mr-1 mb-1 inline-block">{esc(e)}</span>'
+                    for e in entities
+                )
+                parts.append(
+                    '<div class="rounded-lg border border-gray-200 bg-white p-3">'
+                    '<p class="text-xs uppercase tracking-wide text-gray-500 mb-2">Key entities</p>'
+                    f'<div>{chips}</div></div>'
+                )
+            parts.append('</div>')
+
+        # Activity grid (last 7 days)
+        items_added = activity.get("items_added", 0)
+        pending = activity.get("pending_approval", 0)
+        notes_created = activity.get("notes_created", 0)
+        highlights = activity.get("highlights_since", 0)
+        if any([items_added, pending, notes_created, highlights]):
+            parts.append(
+                '<h3 class="text-base font-semibold text-gray-800 mb-2">This week\'s activity</h3>'
+                '<div class="grid grid-cols-4 gap-2 mb-6">'
+            )
+            for label, value in (
+                ("New sources", items_added),
+                ("Pending", pending),
+                ("Notes", notes_created),
+                ("Highlights", highlights),
+            ):
+                parts.append(
+                    '<div class="rounded-lg border border-gray-200 bg-gray-50 p-3 text-center">'
+                    f'<p class="text-xl font-semibold text-gray-900">{value}</p>'
+                    f'<p class="text-xs text-gray-500 mt-1">{esc(label)}</p>'
+                    '</div>'
+                )
+            parts.append('</div>')
+
+        # Consensus
+        if consensus:
+            parts.append(
+                '<h3 class="text-base font-semibold text-gray-800 mb-2">What\'s converging in this notebook</h3>'
+                '<div class="grid grid-cols-2 gap-3 mb-6">'
+            )
+            for cl in consensus[:6]:
+                parts.append(
+                    '<div class="rounded-lg border border-blue-200 bg-blue-50 p-3">'
+                    f'<p class="text-xs uppercase tracking-wide text-blue-700 mb-1">{cl.size} sources</p>'
+                    f'<p class="text-sm font-medium text-gray-800">{esc(cl.topic_label or "(unlabeled)")}</p>'
+                    '</div>'
+                )
+            parts.append('</div>')
+
+        parts.append('</div>')
+        return "".join(parts)
 
 
 # Singleton instance

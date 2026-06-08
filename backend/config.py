@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     # LLM settings
     llm_provider: str = "ollama"  # ollama, openai, or anthropic
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "olmo-3:7b-instruct"  # System 2: Main model - 64K context, chat/synthesis, streams properly
+    ollama_model: str = "gemma4:e4b"  # System 2: Main model - 8B Q4, native vision + JSON-mode + thinking control; per FINAL_CODE_REVIEW_Gemma4_Migration.md, replaces olmo-3:7b-instruct
     ollama_fast_model: str = "phi4-mini:latest"  # System 1: Fast model - Microsoft Phi-4 mini, better than llama3.2:3b
     # Vision model used by scan pipeline + multimodal PDF extraction.
     # The pipeline is model-agnostic: it loads whatever name is

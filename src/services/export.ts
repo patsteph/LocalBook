@@ -6,6 +6,46 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import { jsPDF } from 'jspdf';
 import { API_BASE_URL, localFetch } from './api';
+import type { CanvasItem } from '../components/canvas/types';
+
+// ── Phase 5 — unified artifact export ─────────────────────────────────────
+export type ArtifactDownloadFormat = 'png' | 'pdf' | 'html';
+
+export interface ArtifactEnvelope {
+    id: string;
+    type: string;
+    payload: unknown;
+    title?: string;
+    tagline?: string;
+    metadata?: Record<string, unknown>;
+}
+
+/** Map a CanvasItem into the Artifact envelope the backend renderer expects.
+ *  Mirrors the dispatch branches inside CanvasItemCard. Returns null for
+ *  item types that aren't Artifact-renderable for export (audio / video /
+ *  quiz / flashcards). */
+export function canvasItemToArtifact(item: CanvasItem): ArtifactEnvelope | null {
+    const base = { id: item.id, title: item.title };
+    switch (item.type) {
+        case 'document':
+        case 'chat-response':
+        case 'note':
+            return item.content ? { ...base, type: 'markdown', payload: item.content } : null;
+        case 'html':
+            return item.content ? { ...base, type: 'html', payload: item.content } : null;
+        case 'visual':
+            if (!item.content) return null;
+            return item.content.trimStart().startsWith('<svg')
+                ? { ...base, type: 'svg', payload: item.content }
+                : { ...base, type: 'mermaid', payload: item.content };
+        case 'comparison':
+            return item.metadata?.comparison
+                ? { ...base, type: 'json:comparison', payload: item.metadata.comparison }
+                : null;
+        default:
+            return null;
+    }
+}
 
 const API_BASE = API_BASE_URL;
 
@@ -350,5 +390,38 @@ export const exportService = {
     async deleteTemplate(templateId: string): Promise<void> {
         const response = await localFetch(`${API_BASE}/export/templates/${templateId}`, { method: 'DELETE' });
         if (!response.ok) throw new Error('Failed to delete template');
+    },
+
+    /**
+     * Phase 5 — render an Artifact envelope to PNG / PDF / HTML via the
+     * unified backend pipeline and trigger a browser download.
+     */
+    async downloadArtifact(
+        artifact: ArtifactEnvelope,
+        format: ArtifactDownloadFormat,
+        filename?: string,
+    ): Promise<void> {
+        const response = await localFetch(`${API_BASE}/export/artifact`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ artifact, format, filename }),
+        });
+        if (!response.ok) {
+            throw new Error(`Artifact export failed: HTTP ${response.status}`);
+        }
+        const blob = await response.blob();
+        const ext = format === 'pdf' ? 'pdf' : format === 'png' ? 'png' : 'html';
+        const safe = (filename || artifact.title || 'artifact')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '') || 'artifact';
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${safe}.${ext}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     },
 };

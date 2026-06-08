@@ -62,7 +62,9 @@ async def get_source_content(notebook_id: str, source_id: str):
 async def get_notes(notebook_id: str, source_id: str):
     """Get notes for a source"""
     notes = await source_store.get_notes(notebook_id, source_id)
-    return {"notes": notes}
+    # Defensive: never return null for `notes` — clients auto-save the
+    # value back, and a null round-trip 422s Pydantic on save.
+    return {"notes": notes or ""}
 
 
 @router.post("/notes")

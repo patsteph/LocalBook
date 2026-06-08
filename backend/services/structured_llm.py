@@ -2310,6 +2310,76 @@ Rules:
         
         return TimelineOutput(events=[], time_span="Unknown", context="Failed")
     
+    async def generate_chart(
+        self,
+        content_summary: str,
+        intent: str,
+        chart_type_hint: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Generate a ChartConfig JSON from a content summary + intent.
+
+        Phase 4 mixed-medium docs: called either by the doc generator post-
+        processor (via `visual_resolver`) when an `lb-chart` fence needs to
+        be regenerated, OR directly by other callers that want a chart
+        artifact from structured data.
+
+        Returns the validated ChartConfig as a plain dict (suitable for
+        embedding in a `json-chart` code fence), or None on failure.
+
+        Failure is the right answer; the doc renderer is built to skip
+        malformed/missing chart fences silently rather than crash on bad
+        data.
+        """
+        from services.chart_spec import ChartConfig
+
+        type_hint = (
+            f"Use chart_type='{chart_type_hint}' if that's a good fit."
+            if chart_type_hint
+            else "Pick the chart_type that best fits the data (line/bar/area/composed/scatter/pie)."
+        )
+
+        system_prompt = (
+            "You generate Recharts chart configs as JSON.\n\n"
+            "Output ONLY a JSON object matching this exact schema (no prose, no markdown):\n"
+            "{\n"
+            '  "chart_type": "line"|"bar"|"area"|"composed"|"scatter"|"pie",\n'
+            '  "title": "string (optional)",\n'
+            '  "x_axis": {"label": "string", "key": "field name in data"},\n'
+            '  "y_axis": {"label": "string"},\n'
+            '  "series": [{"key": "field name", "label": "Display Label", "color": "#hex (optional)"}],\n'
+            '  "data": [{"<x key>": <x value>, "<series key>": <number>}, ...]\n'
+            "}\n\n"
+            "Rules:\n"
+            "- `data` keys must match the `key` values in `series` (and the x_axis key).\n"
+            "- Keep data ≤ 12 points. Round numbers to ≤2 decimals.\n"
+            "- Use 1–3 series. More than 3 clutters.\n"
+            "- If the content has no clear quantitative pattern, return {} (empty object).\n"
+            f"- {type_hint}"
+        )
+
+        user_prompt = (
+            f"INTENT: {intent}\n\n"
+            f"CONTENT TO CHART:\n{content_summary[:3000]}"
+        )
+
+        for attempt in range(self.max_retries):
+            try:
+                result = await self._call_ollama_json(
+                    system_prompt, user_prompt, temperature=0.2, num_predict=800
+                )
+                if not result or not isinstance(result, dict) or not result.get("chart_type"):
+                    return None
+                # Strict validation; reject if shape doesn't match.
+                cfg = ChartConfig(**result)
+                return cfg.model_dump(exclude_none=True)
+            except Exception as e:
+                logger.debug(f"[StructuredLLM.generate_chart] attempt {attempt+1} failed: {e}")
+                if attempt == self.max_retries - 1:
+                    return None
+                await asyncio.sleep(0.5)
+
+        return None
+
     async def compare_documents(self, doc1_content: str, doc2_content: str) -> DocumentComparison:
         """Compare two documents and identify similarities/differences."""
         

@@ -386,12 +386,22 @@ class SourceStore:
         """Get source content for viewing"""
         source = await self.get(source_id)
         if source and source.get("notebook_id") == notebook_id:
+            # Phase 9 — content_html is set by Correspondent newsletter
+            # ingestion (sanitized inline-style HTML for the Source Viewer).
+            # Other source types leave it empty; the frontend back-compat
+            # path renders text when content_html is empty.
+            content_html = source.get("content_html") or ""
+            if not content_html:
+                meta = source.get("metadata") or {}
+                if isinstance(meta, dict):
+                    content_html = meta.get("content_html") or ""
             # Return source with content field - format matches frontend SourceContent interface
             return {
                 "id": source["id"],
                 "filename": source.get("filename", "Unknown"),
                 "format": source.get("format", source.get("type", "unknown")),
                 "content": source.get("content", ""),
+                "content_html": content_html,
                 "url": source.get("url"),
                 "author": source.get("author"),
                 "date": source.get("date")

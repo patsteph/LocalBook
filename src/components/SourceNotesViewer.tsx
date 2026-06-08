@@ -8,6 +8,8 @@ import { Highlight } from '../types';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 import { ErrorMessage } from './shared/ErrorMessage';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { ArtifactRender } from './artifact/RendererRegistry';
+import { sourceFormatToArtifactType } from '../lib/sourceFormatToArtifact';
 
 interface SourceNotesViewerProps {
   notebookId: string;
@@ -55,6 +57,11 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
     loadData();
   }, [notebookId, sourceId]);
 
+  // 2026-06-07 — guard against the auto-save firing before loadData
+  // completes (was POSTing `notes: ''` on every source open) AND against
+  // server returning a null notes field (was POSTing `notes: null` → 422).
+  const notesLoadedRef = useRef(false);
+
   const loadData = async () => {
     setLoading(true);
     setError(null);
@@ -68,9 +75,12 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
       ]);
 
       setContent(contentData);
-      setNotes(notesData);
+      // Coerce: backend may return null/undefined when no notes exist.
+      setNotes(typeof notesData === 'string' ? notesData : '');
       setHighlights(highlightsData);
       setTags(tagsData);
+      // Mark notes as loaded after state is set; auto-save now allowed.
+      notesLoadedRef.current = true;
     } catch (err: any) {
       console.error('Failed to load source data:', err);
       setError(err.response?.data?.detail || 'Failed to load source data');
@@ -93,10 +103,12 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
   }, [notebookId, sourceId]);
 
   useEffect(() => {
+    // Don't auto-save until the initial server-side notes have loaded;
+    // otherwise we POST `''` over whatever's on the server.
+    if (!notesLoadedRef.current) return;
+    if (typeof notes !== 'string') return;
     const timer = setTimeout(() => {
-      if (notes !== undefined) {
-        saveNotes(notes);
-      }
+      saveNotes(notes);
     }, 1000); // Auto-save after 1 second of inactivity
 
     return () => clearTimeout(timer);
@@ -417,57 +429,145 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
           </div>
         ) : (
           <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Source Content Section */}
-            <div className="flex-1 border-b dark:border-gray-700 overflow-hidden flex flex-col">
-              <div className="p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Source Content</h3>
-                  <input
-                    type="text"
-                    placeholder="Search in document..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="flex-1 px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  {totalMatches > 0 && (
-                    <>
-                      <span className="text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">
-                        {currentMatchIndex + 1} of {totalMatches}
-                      </span>
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => navigateMatch('prev')}
-                          className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg transition-colors"
-                          title="Previous match"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          onClick={() => navigateMatch('next')}
-                          className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg transition-colors"
-                          title="Next match"
-                        >
-                          ↓
-                        </button>
+            {/* Source Content Section
+                Phase 3 of v2-information-cortex: markdown / HTML sources
+                dispatch via the artifact registry for prose rendering. All
+                other formats (PDF text, web, YouTube, txt, code) stay on
+                the raw-text path because the in-document search input and
+                user-highlight selection are character-offset-anchored to
+                the raw string — rendered output shifts those offsets. */}
+            {(() => {
+              // Phase 13 (2026-06-08) — `entity-watch` sources are tiny
+              // placeholders created when the user approves a Correspondent
+              // entity-watch proposal. Render a dedicated card with the
+              // entity name + context + research CTA instead of falling
+              // through to the raw-text path (which would just show the
+              // 600-char context blob).
+              if (content?.format === 'entity-watch') {
+                const rawName = content.filename || '';
+                const entityName = rawName.replace(/\s*\(watch\)\s*$/i, '').trim() || 'Entity';
+                const context = content.content || '';
+                return (
+                  <div className="flex-1 border-b dark:border-gray-700 overflow-hidden flex flex-col">
+                    <div className="p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Source Content</h3>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-6 bg-white dark:bg-gray-800">
+                      <div className="max-w-2xl mx-auto">
+                        <div className="flex items-center gap-2 mb-3">
+                          <span className="text-[10px] uppercase tracking-wide text-purple-700 bg-purple-100 dark:bg-purple-900/40 rounded px-2 py-0.5">
+                            entity watch
+                          </span>
+                        </div>
+                        <h2 className="text-2xl font-semibold text-gray-900 dark:text-gray-100 mb-4">
+                          {entityName}
+                        </h2>
+                        {context ? (
+                          <blockquote className="border-l-4 border-purple-300 dark:border-purple-700 pl-4 py-2 mb-6 text-sm text-gray-700 dark:text-gray-300 italic">
+                            {context}
+                          </blockquote>
+                        ) : (
+                          <p className="text-sm italic text-gray-500 mb-6">
+                            No context was captured when this watch was created.
+                          </p>
+                        )}
+                        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">
+                            Next step
+                          </p>
+                          <p className="text-sm text-gray-700 dark:text-gray-300 mb-3">
+                            Run a deep-dive search to gather real material about <strong>{entityName}</strong>. Open chat and try:
+                          </p>
+                          <code className="block px-3 py-2 rounded bg-gray-100 dark:bg-gray-800 text-xs text-gray-800 dark:text-gray-200 font-mono">
+                            @research deep dive {entityName}
+                          </code>
+                        </div>
                       </div>
-                    </>
-                  )}
+                    </div>
+                  </div>
+                );
+              }
+              const artifactType = sourceFormatToArtifactType(content?.format);
+              // Phase 9 — Correspondent newsletters render via the
+              // Newsletter renderer only when sanitized HTML was
+              // preserved at ingest. Older email sources have no
+              // content_html and fall through to the raw-text path.
+              const usingArtifact = !!artifactType
+                && (artifactType !== 'newsletter' || !!content?.content_html);
+              const artifactPayload = artifactType === 'newsletter'
+                ? (content?.content_html || '')
+                : (content?.content || '');
+              return (
+                <div className="flex-1 border-b dark:border-gray-700 overflow-hidden flex flex-col">
+                  <div className="p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Source Content</h3>
+                      {!usingArtifact && (
+                        <>
+                          <input
+                            type="text"
+                            placeholder="Search in document..."
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="flex-1 px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                          {totalMatches > 0 && (
+                            <>
+                              <span className="text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                                {currentMatchIndex + 1} of {totalMatches}
+                              </span>
+                              <div className="flex gap-1">
+                                <button
+                                  onClick={() => navigateMatch('prev')}
+                                  className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg transition-colors"
+                                  title="Previous match"
+                                >
+                                  ↑
+                                </button>
+                                <button
+                                  onClick={() => navigateMatch('next')}
+                                  className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-lg transition-colors"
+                                  title="Next match"
+                                >
+                                  ↓
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4 bg-white dark:bg-gray-800">
+                    {usingArtifact && content ? (
+                      <ArtifactRender
+                        artifact={{
+                          id: content.id,
+                          type: artifactType!,
+                          payload: artifactPayload,
+                          title: content.filename,
+                        }}
+                        context="source-viewer"
+                      />
+                    ) : (
+                      <>
+                        <div
+                          ref={contentRef}
+                          className="prose dark:prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap font-mono select-text text-gray-900 dark:text-gray-100"
+                          onMouseUp={handleTextSelection}
+                          dangerouslySetInnerHTML={{
+                            __html: content ? DOMPurify.sanitize(renderContentWithHighlights(content.content)) : '',
+                          }}
+                        />
+                        <div className="mt-4 text-xs text-gray-500">
+                          💡 Tip: Select any text to highlight it
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4 bg-white dark:bg-gray-800">
-                <div
-                  ref={contentRef}
-                  className="prose dark:prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap font-mono select-text text-gray-900 dark:text-gray-100"
-                  onMouseUp={handleTextSelection}
-                  dangerouslySetInnerHTML={{
-                    __html: content ? DOMPurify.sanitize(renderContentWithHighlights(content.content)) : '',
-                  }}
-                />
-                <div className="mt-4 text-xs text-gray-500">
-                  💡 Tip: Select any text to highlight it
-                </div>
-              </div>
-            </div>
+              );
+            })()}
 
             {/* Notes Section */}
             <div className="h-1/3 flex flex-col overflow-hidden">

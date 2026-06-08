@@ -133,6 +133,30 @@ PRESENTATION_QUALITY = """PRESENTATION QUALITY (mandatory — apply throughout):
 - Every paragraph should pass the scan test: can a busy reader pull the point from the first sentence and the bolded terms?"""
 
 
+# Phase 4 of v2-information-cortex — mixed-medium injection.
+# Authorizes (does not require) the model to emit inline visualization
+# fences. The post-processor in `services/visual_resolver.py` resolves
+# `lb-chart` fences (Pydantic-validate ChartConfig) and `lb-visual-hint`
+# fences (call visual_composer for SVG) before the doc reaches the user.
+# Failure policy: dropped silently with an italic "*chart unavailable*"
+# / "*visual unavailable*" placeholder. Skills that already plan their
+# own visuals (Feynman knowledge-map) keep emitting their own fences;
+# this generic injection sits below the skill-specific instructions.
+
+VISUAL_INTERLEAVE = """VISUAL INTERLEAVING (optional but encouraged when content warrants):
+- For quantitative comparisons, trends, or magnitudes, emit a chart inline:
+  ```lb-chart
+  {"chart_type": "bar", "title": "Quarterly Revenue", "x_axis": {"key": "q"}, "series": [{"key": "rev", "label": "Revenue ($M)"}], "data": [{"q": "Q1", "rev": 1.0}, {"q": "Q2", "rev": 1.5}]}
+  ```
+- For processes, mind-maps, or hero illustrations, request a visual:
+  ```lb-visual-hint
+  flowchart: ingestion → embedding → retrieval → answer
+  ```
+- Use sparingly: at most one visual per major section, and only when the visual carries information the prose can't.
+- The chart JSON must be valid ChartConfig (chart_type, series, data keys aligned). Empty objects ({}) are dropped silently.
+- Never wrap the fences in extra prose; place them on their own block."""
+
+
 def list_registers() -> List[str]:
     """Available register values for UI dropdowns."""
     return list(REGISTER_BRIEFS.keys())
@@ -198,6 +222,70 @@ Recommendation: pre-audit queue efficiency before committing to procurement. The
             "Don't bury the recommendation deeper than that — executives stop reading after the Summary."
         ),
         default_register="engaged",  # Executives need to feel the stakes, not just see them
+    ),
+
+    "research_dossier": OutputTemplate(
+        template_id="research_dossier",
+        name="Research Dossier",
+        description="McKinsey-style research report — cornerstone summary, evidence-driven sections, risks, sources appendix. Built for printing or PDF export as a deliverable.",
+        system_prompt="""You are a senior research partner writing a dossier that will be circulated to a board or executive committee. Your reader has 10 minutes for the summary and may read the body sections selectively.
+
+Your dossier must:
+1. Open with a single-sentence cornerstone summary that compresses the entire dossier into one declarative claim.
+2. Follow with an EXECUTIVE SUMMARY of ≤ 4 sentences that expands the cornerstone with evidence.
+3. Order body sections from highest-leverage insight to lowest. Each section leads with a one-line takeaway, then the evidence below it.
+4. Cite every factual claim with the [Sn] tag of the source it came from. Never invent citations.
+5. End with an honest assessment of risks, open questions, and what the evidence does NOT yet show.
+6. Close with a sources appendix that names each [Sn] tag with the file/URL it maps to.
+
+Voice: authoritative, neutral, evidence-first. Avoid hedging like "it could be argued" or "some might say"; either state the finding with its citation or leave it out. Avoid marketing language. Avoid stacking adjectives.
+
+Match the visual rhythm of a McKinsey deliverable: bolded takeaways at the top of each section, supporting bullets below, a chart or table in any section where the data warrants it (use the inline visual fences from VISUAL INTERLEAVING below).""",
+
+        structure_requirements=[
+            "CORNERSTONE SUMMARY (a single declarative sentence — the whole dossier in one claim)",
+            "EXECUTIVE SUMMARY (≤ 4 sentences expanding the cornerstone with evidence and citations)",
+            "KEY FINDINGS (3-5 findings, each a one-line takeaway followed by 2-4 evidence bullets with citations)",
+            "DETAILED ANALYSIS (deep-dive sections — one per finding, cross-source synthesis, charts/tables where they earn their keep)",
+            "RISKS & OPEN QUESTIONS (what could change the conclusion; what the evidence does not yet establish)",
+            "SOURCES APPENDIX ([S1] filename → one-line description for each source consulted)",
+        ],
+
+        quality_checklist=[
+            "Does the cornerstone summary stand alone as a defensible claim, or does it need the dossier to make sense?",
+            "Does every factual claim end with a [Sn] tag pointing to a real source?",
+            "Does each body section open with a one-line takeaway bolded at the top?",
+            "Are charts or tables used wherever the data is comparison- or magnitude-driven?",
+            "Are risks and open questions written honestly, not as a checklist filler?",
+            "Could a board member skim only the takeaways and still walk away with the right mental model?",
+        ],
+
+        min_sections=6,
+
+        example_structure="""VOICE EXEMPLAR (match the tone, density, and citation discipline — NOT the literal subject):
+
+**Cornerstone**: The shift to local-first AI tooling has been driven not by privacy ideology but by latency and unit-economics — both of which are now structural, not transient [S2][S4].
+
+**Executive Summary**: Across the three deployments studied, the move from hosted inference to on-device inference reduced per-task latency by 8-12× and per-task cost by 60-95% [S1][S2]. Two of the three deployments retained or improved retrieval quality despite running on consumer hardware [S1][S3]. The third deployment underperformed because the corpus exceeded the embedding model's optimal chunk-budget — a tuning issue, not a structural ceiling [S3]. Adoption is therefore likely to continue tracking the trajectory of consumer-hardware ML acceleration, not the trajectory of privacy regulation [S4].
+
+**Key Findings**:
+
+**1. Latency improvements are structural, not transient.**
+- Median end-to-end response time fell from 1.8s (hosted) to 0.18s (local) across the three deployments [S1][S2].
+- The gap widened, not narrowed, as the corpus grew beyond 50k chunks [S2].
+- Apple Silicon's unified memory architecture is the primary driver; commodity GPUs did not show the same gains [S1].""",
+
+        tone="authoritative, neutral, evidence-first",
+        target_audience="C-suite executives, board members, senior research partners",
+        recommended_tokens=4000,
+        pre_write_move=(
+            "Before writing a single line, write down the cornerstone summary as a single declarative sentence. "
+            "Test it: if a reader saw ONLY that sentence, would they walk away with the right mental model? "
+            "If no, the sources don't yet support a defensible cornerstone — pause and re-read. "
+            "Then list the 3-5 load-bearing claims that defend the cornerstone, and for each one, identify the specific [Sn] evidence. "
+            "Only then start drafting. The cornerstone goes at the very top; the Executive Summary expands it; every body section traces back to it."
+        ),
+        default_register="measured",  # Dossier is read; it doesn't perform.
     ),
 
     "study_guide": OutputTemplate(
@@ -990,7 +1078,7 @@ def build_document_prompt(
     if not template:
         # Fallback for unknown template
         return (
-            f"Create high-quality, well-structured content based on the provided sources.\n\n{PRESENTATION_QUALITY}",
+            f"Create high-quality, well-structured content based on the provided sources.\n\n{PRESENTATION_QUALITY}\n\n{VISUAL_INTERLEAVE}",
             "Format clearly with appropriate sections using markdown."
         )
 
@@ -1025,6 +1113,8 @@ QUALITY REQUIREMENTS:
 {chr(10).join(f'- {check}' for check in template.quality_checklist)}
 
 {PRESENTATION_QUALITY}
+
+{VISUAL_INTERLEAVE}
 
 You are working with {source_count} source document(s). Synthesize across ALL sources.
 

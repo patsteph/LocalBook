@@ -105,7 +105,7 @@ export function makeDefaultLayout(): LayoutNode {
 // Canvas workspace item — content stacked in the universal canvas
 export interface CanvasItem {
   id: string;
-  type: 'document' | 'visual' | 'quiz' | 'flashcards' | 'audio' | 'video' | 'chat-response' | 'note';
+  type: 'document' | 'visual' | 'quiz' | 'flashcards' | 'audio' | 'video' | 'chat-response' | 'note' | 'html' | 'comparison';
   title: string;
   content: string;       // markdown, mermaid code, quiz HTML, audio URL, chat markdown, or editable note text
   collapsed: boolean;

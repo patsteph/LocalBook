@@ -153,17 +153,29 @@ async def synthesize_across_notebooks(request: SynthesisRequest):
     return result
 
 
+@router.get("/notebook-dashboard/{notebook_id}")
+async def get_notebook_dashboard(notebook_id: str):
+    """Phase 13 — per-notebook dashboard HTML."""
+    from datetime import datetime as _dt
+    html = await curator.compose_notebook_dashboard_html(notebook_id)
+    return {"html": html, "generated_at": _dt.utcnow().isoformat()}
+
+
 @router.get("/morning-brief")
 async def get_morning_brief(hours_away: int = 8):
     """Generate morning brief based on time away"""
     last_seen = datetime.utcnow() - timedelta(hours=hours_away)
     brief = await curator.generate_morning_brief(last_seen)
-    
+
     return {
         "away_duration": brief.away_duration,
         "notebooks": [s.model_dump() for s in brief.notebook_summaries],
         "cross_notebook_insight": brief.cross_notebook_insight,
         "narrative": brief.narrative,
+        # Phase 10 — HTML dashboard variant + consensus + deep-read audit.
+        "narrative_html": brief.narrative_html,
+        "consensus_clusters": brief.consensus_clusters,
+        "deep_reads_triggered": brief.deep_reads_triggered,
         "generated_at": brief.generated_at.isoformat()
     }
 

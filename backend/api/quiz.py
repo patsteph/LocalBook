@@ -569,6 +569,26 @@ class GradeAnswerResponse(BaseModel):
     feedback: str
 
 
+class InteractiveQuizRequest(BaseModel):
+    """Phase 11 — wrap an already-generated quiz as a sandboxed interactive
+    HTML page. Accepts either a quiz_id (looked up server-side) or the raw
+    questions list (frontend already has the data and avoids a round-trip).
+    """
+    questions: Optional[List[Dict[str, Any]]] = None
+    title: Optional[str] = None
+
+
+@router.post("/interactive-html")
+async def quiz_interactive_html(request: InteractiveQuizRequest):
+    """Compose a self-contained interactive HTML page from a quiz."""
+    from services.interactive_quiz_renderer import quiz_to_interactive_html
+    questions = request.questions or []
+    if not questions:
+        raise HTTPException(status_code=400, detail="No questions supplied")
+    html = quiz_to_interactive_html(questions=questions, title=request.title)
+    return {"html": html}
+
+
 @router.post("/grade", response_model=GradeAnswerResponse)
 async def grade_open_ended_answer(request: GradeAnswerRequest):
     """LLM-grade an open-ended answer (short_answer, spot_the_error, fill_in_the_blank).

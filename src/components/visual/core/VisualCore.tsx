@@ -6,10 +6,10 @@
  */
 
 import React from 'react';
-import { SVGRenderer } from '../../shared/SVGRenderer';
-import { MermaidRenderer } from '../../shared/MermaidRenderer';
-import { ChartRenderer, type ChartConfig } from '../../shared/ChartRenderer';
+import { type ChartConfig } from '../../shared/ChartRenderer';
 import { DesignSystem, type PaletteId } from '../design/DesignSystem';
+import { ArtifactRender } from '../../artifact/RendererRegistry';
+import type { Artifact, ArtifactType } from '../../../types/artifact';
 
 export interface VisualData {
   id: string;
@@ -52,12 +52,28 @@ export const VisualCore: React.FC<VisualCoreProps> = ({
     ? `visual-core visual-core--compact rounded-lg overflow-hidden ${className}`
     : `visual-core rounded-lg overflow-hidden ${className}`;
 
-  // Determine which renderer to use
+  // Map VisualData to an Artifact and dispatch through the registry.
+  // Legacy behavior preserved: chart wins if chart_config present; else
+  // SVG wins if the type says so OR the code contains an <svg root; else
+  // mermaid.
   const isChart = visual.type === 'chart' && visual.chart_config;
   const isSVG = !isChart && (visual.type === 'svg' || visual.code.includes('<svg'));
+  const artifactType: ArtifactType = isChart ? 'json:chart' : isSVG ? 'svg' : 'mermaid';
+  const artifactPayload = isChart ? visual.chart_config : visual.code;
+  const artifact: Artifact = {
+    id: visual.id,
+    type: artifactType,
+    payload: artifactPayload,
+    title: visual.title,
+    metadata: {
+      templateId: visual.template_id,
+      pattern: visual.pattern,
+      tagline: visual.tagline,
+    },
+  };
 
   return (
-    <div 
+    <div
       className={containerClasses}
       style={{
         '--visual-primary': colors.primary,
@@ -69,7 +85,7 @@ export const VisualCore: React.FC<VisualCoreProps> = ({
     >
       {/* Optional title header */}
       {showTitle && visual.title && !compact && (
-        <div 
+        <div
           className="px-3 py-2 border-b border-gray-700 bg-gray-800/50"
           style={{ borderColor: colors.border }}
         >
@@ -82,25 +98,14 @@ export const VisualCore: React.FC<VisualCoreProps> = ({
         </div>
       )}
 
-      {/* Visual content */}
+      {/* Visual content — registry dispatch. Compact path uses chat-inline
+         context (gives ChartRenderer the 200px height to match legacy). */}
       <div className={compact ? 'p-2' : 'p-4'}>
-        {isChart ? (
-          <ChartRenderer
-            config={visual.chart_config!}
-            className="w-full"
-            height={compact ? 200 : 350}
-          />
-        ) : isSVG ? (
-          <SVGRenderer 
-            svg={visual.code}
-            className="w-full"
-          />
-        ) : (
-          <MermaidRenderer 
-            code={visual.code}
-            className="w-full"
-          />
-        )}
+        <ArtifactRender
+          artifact={artifact}
+          context={compact ? 'chat-inline' : 'canvas-full'}
+          className="w-full"
+        />
       </div>
 
     </div>
