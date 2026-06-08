@@ -101,16 +101,22 @@ async def smtp_hint(email: str):
     return {"found": True, **hint}
 
 
-def _validate_imap_login(host: str, port: int, user: str, password: str, use_ssl: bool) -> bool:
-    """Best-effort login probe. Returns True if we can log in, False on
-    any auth or network failure (caller raises 4xx)."""
+def _validate_imap_login(host: str, port: int, user: str, password: str, use_ssl: bool) -> tuple[bool, Optional[str]]:
+    """Best-effort login probe. Returns (ok, error_message) — error_message
+    is None on success or the actual provider exception text on failure.
+    The caller surfaces error_message in the 401 detail so the UI can show
+    a useful toast instead of a generic "login failed."""
     try:
         from imap_tools import MailBox
         with MailBox(host).login(user, password, initial_folder="INBOX"):
-            return True
+            return True, None
     except Exception as e:
         logger.info(f"[correspondent.validate_login] {user}@{host}:{port} failed: {e}")
-        return False
+        # The imap_tools / imaplib exception message often includes the
+        # raw server response (e.g. "AUTHENTICATIONFAILED: Invalid
+        # credentials" from Gmail). Pass it through so the user sees
+        # which gate actually failed.
+        return False, str(e)[:200]
 
 
 @router.post("/accounts")
@@ -121,11 +127,25 @@ async def add_account(request: AddAccountRequest):
     if not host:
         raise HTTPException(status_code=400, detail="Could not determine IMAP host; please provide imap_host.")
 
-    ok = await asyncio.to_thread(
-        _validate_imap_login, host, request.imap_port, user, request.imap_password, request.use_ssl,
+    # Strip ALL whitespace from the app password. Gmail/Fastmail/iCloud
+    # display app passwords with spaces (`abcd efgh ijkl mnop`) and users
+    # paste them as-is — IMAP servers reject the spaced form. Doing this
+    # server-side means every client gets the fix; the user's saved value
+    # is the clean one too.
+    cleaned_password = "".join((request.imap_password or "").split())
+    if not cleaned_password:
+        raise HTTPException(status_code=400, detail="App password is required.")
+
+    ok, login_err = await asyncio.to_thread(
+        _validate_imap_login, host, request.imap_port, user, cleaned_password, request.use_ssl,
     )
     if not ok:
-        raise HTTPException(status_code=401, detail="IMAP login failed. Check the app password and host/port.")
+        detail = (
+            f"IMAP login failed: {login_err}"
+            if login_err
+            else "IMAP login failed. Check the app password and host/port."
+        )
+        raise HTTPException(status_code=401, detail=detail)
 
     # SMTP host: fall back to per-provider default when not supplied.
     smtp_host = request.smtp_host
@@ -143,7 +163,7 @@ async def add_account(request: AddAccountRequest):
         imap_host=host,
         imap_port=request.imap_port,
         imap_user=user,
-        imap_password=request.imap_password,
+        imap_password=cleaned_password,
         use_ssl=request.use_ssl,
         smtp_host=smtp_host,
         smtp_port=smtp_port,
