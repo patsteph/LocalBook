@@ -538,10 +538,13 @@ async def ingest_newsletter(
     """Three-step source ingestion + curator event emission.
 
     Returns the created source_id on success, None on failure.
+    Returns the EXISTING source_id when a cross-notebook dedup match is
+    found — caller treats that as "already done" (delete from IMAP, etc).
     """
     from storage.source_store import source_store
     from services.rag_engine import rag_engine
     from services.curator_event_bus import event_bus
+    import hashlib as _hashlib
 
     text = parsed.text_body or html_to_clean_text(parsed.html_body)
     if not text.strip():
@@ -549,6 +552,28 @@ async def ingest_newsletter(
         return None
     text = sanitize_for_llm(text)
     filename = (parsed.subject or "newsletter")[:200]
+
+    # F4 (2026-06-08) — persistent cross-notebook dedup. Belt-and-
+    # suspenders: Message-ID is RFC-unique, content_hash catches
+    # forwards/resends with mangled headers. If either matches, return
+    # the existing source so the caller's success path (IMAP delete,
+    # counts) runs without a dup ingest.
+    content_hash = _hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+    if parsed.message_id:
+        prior = await source_store.find_by_message_id(parsed.message_id)
+        if prior:
+            logger.info(
+                f"[correspondent.ingest_newsletter] dedup hit by message_id "
+                f"({parsed.message_id[:40]}) → existing source {prior.get('id')}"
+            )
+            return prior.get("id")
+    prior_hash = await source_store.find_by_content_hash(content_hash)
+    if prior_hash:
+        logger.info(
+            f"[correspondent.ingest_newsletter] dedup hit by content_hash "
+            f"→ existing source {prior_hash.get('id')}"
+        )
+        return prior_hash.get("id")
 
     # Phase 9 — preserve sanitized HTML alongside text so the Source
     # Viewer can render the original layout (trackers + scripts stripped).
@@ -569,6 +594,7 @@ async def ingest_newsletter(
             "sender": parsed.sender,
             "subject": parsed.subject,
             "message_id": parsed.message_id,
+            "content_hash": content_hash,
             "date": parsed.date,
             "summary": classification.summary,
             "topic_tags": classification.topic_tags,
@@ -836,12 +862,31 @@ async def ingest_forward(
     from storage.source_store import source_store
     from services.rag_engine import rag_engine
     from services.curator_event_bus import event_bus
+    import hashlib as _hashlib
 
     body = payload.original_body or ""
     if not body.strip():
         logger.debug("[correspondent.ingest_forward] empty body — skipping")
         return None
     filename = (payload.original_subject or _strip_fwd(parsed.subject or "") or "forwarded email")[:200]
+
+    # F4 (2026-06-08) — same persistent dedup as ingest_newsletter.
+    content_hash = _hashlib.sha256(body.encode("utf-8", errors="replace")).hexdigest()
+    if parsed.message_id:
+        prior = await source_store.find_by_message_id(parsed.message_id)
+        if prior:
+            logger.info(
+                f"[correspondent.ingest_forward] dedup hit by message_id "
+                f"→ existing source {prior.get('id')}"
+            )
+            return prior.get("id")
+    prior_hash = await source_store.find_by_content_hash(content_hash)
+    if prior_hash:
+        logger.info(
+            f"[correspondent.ingest_forward] dedup hit by content_hash "
+            f"→ existing source {prior_hash.get('id')}"
+        )
+        return prior_hash.get("id")
 
     source = await source_store.create(
         notebook_id=notebook_id,
@@ -860,6 +905,7 @@ async def ingest_forward(
             "original_subject": payload.original_subject,
             "original_date": payload.original_date,
             "message_id": parsed.message_id,
+            "content_hash": content_hash,
         },
     )
     source_id = source["id"]

@@ -10,6 +10,8 @@
 import React, { useEffect, useState } from 'react';
 import { Trash2, RefreshCw, CheckCircle, AlertCircle, Check, X } from 'lucide-react';
 import { correspondentService, IMAPAccount, QueueItem, SubscriptionProposal } from '../services/correspondent';
+import { notebookService } from '../services/notebooks';
+import type { Notebook } from '../types';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 const PROVIDER_HINTS: { domain: string; label: string; host: string; appPwUrl: string }[] = [
@@ -28,11 +30,15 @@ export const CorrespondentSettings: React.FC = () => {
   const [accounts, setAccounts] = useState<IMAPAccount[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [subscriptions, setSubscriptions] = useState<SubscriptionProposal[]>([]);
+  const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [busyItem, setBusyItem] = useState<string | null>(null);
+  // F5a (2026-06-08) — per-queue-item override notebook so users can
+  // redirect a mis-routed item before approving. Keyed by item_id.
+  const [overrideNotebook, setOverrideNotebook] = useState<Record<string, string>>({});
 
   // Add-account form state.
   const [email, setEmail] = useState('');
@@ -65,14 +71,16 @@ export const CorrespondentSettings: React.FC = () => {
   const load = async () => {
     setLoading(true);
     try {
-      const [list, q, subs] = await Promise.all([
+      const [list, q, subs, nbs] = await Promise.all([
         correspondentService.listAccounts(),
         correspondentService.listQueue().catch(() => []),
         correspondentService.listSubscriptionQueue().catch(() => []),
+        notebookService.list().catch(() => []),
       ]);
       setAccounts(list);
       setQueue(q);
       setSubscriptions(subs);
+      setNotebooks(nbs);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load accounts');
     } finally {
@@ -108,7 +116,13 @@ export const CorrespondentSettings: React.FC = () => {
   const handleApprove = async (item: QueueItem) => {
     setBusyItem(item.item_id);
     try {
-      await correspondentService.approveQueueItem(item.item_id);
+      // F5a (2026-06-08) — pass override notebook if user picked one.
+      // Backend's approve_queued accepts an optional notebook_id; falls
+      // back to top_candidate when not supplied. Backend also records
+      // the sender → notebook signal so future emails from same sender
+      // bias toward this choice (F5b).
+      const override = overrideNotebook[item.item_id];
+      await correspondentService.approveQueueItem(item.item_id, override || undefined);
       load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Approve failed');
@@ -411,13 +425,41 @@ export const CorrespondentSettings: React.FC = () => {
                         {q.decision_reason && <span className="text-gray-400"> · {q.decision_reason}</span>}
                       </p>
                     )}
+                    {/* F5a (2026-06-08) — override picker so the user can
+                        redirect to any notebook. Defaults to the top_candidate.
+                        Approval below uses overrideNotebook[item_id] when set. */}
+                    {notebooks.length > 0 && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <label className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          Route to
+                        </label>
+                        <select
+                          value={overrideNotebook[q.item_id] ?? (q.top_candidate?.notebook_id || '')}
+                          onChange={(e) =>
+                            setOverrideNotebook((prev) => ({ ...prev, [q.item_id]: e.target.value }))
+                          }
+                          className="text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-gray-800 dark:text-gray-200 flex-1 min-w-0"
+                        >
+                          {!q.top_candidate && <option value="">— pick a notebook —</option>}
+                          {notebooks.map((nb) => (
+                            <option key={nb.id} value={nb.id}>
+                              {nb.title}
+                              {q.top_candidate?.notebook_id === nb.id ? ' (best match)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </div>
                   <div className="flex flex-col gap-1">
                     <button
                       onClick={() => handleApprove(q)}
-                      disabled={busyItem === q.item_id || !q.top_candidate}
+                      disabled={
+                        busyItem === q.item_id
+                        || (!q.top_candidate && !overrideNotebook[q.item_id])
+                      }
                       className="px-2 py-1 text-xs rounded-lg bg-green-600 hover:bg-green-700 text-white disabled:opacity-50 flex items-center gap-1"
-                      title="Ingest into the top-match notebook"
+                      title="Ingest into the selected notebook (Correspondent learns from this choice)"
                     >
                       <Check className="w-3 h-3" /> Approve
                     </button>

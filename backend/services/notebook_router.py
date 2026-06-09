@@ -65,13 +65,18 @@ async def _embed(text: str) -> List[float]:
 
 
 async def route(classification_summary: str, *, topic_tags: Optional[List[str]] = None,
-                threshold: float = ROUTING_THRESHOLD) -> RoutingDecision:
+                threshold: float = ROUTING_THRESHOLD,
+                sender: Optional[str] = None) -> RoutingDecision:
     """Decide which notebook this newsletter belongs to.
 
     Args:
         classification_summary: the LLM's one-line summary of the email body.
         topic_tags: optional tags to combine with the summary for embedding.
         threshold: cosine similarity cutoff (default ROUTING_THRESHOLD).
+        sender: F5b (2026-06-08) — RFC-formatted From: header. When supplied,
+            cosine scores get a per-notebook bias based on prior user
+            corrections (+0.25 per redirect from this sender, capped +0.50).
+            Lets one manual correction dominate routing for that sender.
 
     Returns:
         RoutingDecision with the chosen notebook, runner-up, and decision
@@ -115,15 +120,31 @@ async def route(classification_summary: str, *, topic_tags: Optional[List[str]] 
     if not scored:
         return RoutingDecision(decision="no_match", reason="no notebooks embeddable")
 
+    # F5b (2026-06-08) — apply sender→notebook learning. Bonus added on
+    # top of cosine score for each notebook the user has previously
+    # corrected this sender into.
+    bias_applied = False
+    if sender:
+        try:
+            from agents.correspondent import get_sender_routing_bias
+            for c in scored:
+                bonus = get_sender_routing_bias(sender, c.notebook_id)
+                if bonus > 0:
+                    c.confidence = min(1.0, c.confidence + bonus)
+                    bias_applied = True
+        except Exception as e:
+            logger.debug(f"[notebook_router] sender bias skipped: {e}")
+
     scored.sort(key=lambda c: c.confidence, reverse=True)
     top = scored[0]
     alternatives = scored[1:3]
 
+    reason_suffix = " (sender-bias applied)" if bias_applied else ""
     if top.confidence >= threshold:
         return RoutingDecision(decision="route", top=top, alternatives=alternatives,
-                              reason=f"cosine {top.confidence:.2f} ≥ {threshold:.2f}")
+                              reason=f"cosine {top.confidence:.2f} ≥ {threshold:.2f}{reason_suffix}")
     return RoutingDecision(decision="queue", top=top, alternatives=alternatives,
-                          reason=f"cosine {top.confidence:.2f} < {threshold:.2f}")
+                          reason=f"cosine {top.confidence:.2f} < {threshold:.2f}{reason_suffix}")
 
 
 # ---------------------------------------------------------------------------

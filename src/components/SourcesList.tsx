@@ -23,6 +23,20 @@ interface SourcesListProps {
 // sessions and notebooks. NotebookLM-style options: recency, alpha, type, size.
 type SortMode = 'recent' | 'oldest' | 'title_asc' | 'title_desc' | 'type' | 'size';
 
+// 2026-06-08 — friendly label for source format chip shown in the list.
+// `email`/`forward` come from Correspondent; "EMAIL" reads wrong because the
+// content isn't really an email anymore — it's a curated source. Other formats
+// pass through uppercased.
+function formatLabel(source: Source): string {
+  if (source.type === 'note') return '📝 NOTE';
+  if (source.collected_by === 'collector') return 'COLLECTED';
+  if (source.type === 'youtube' || source.format === 'youtube') return '▶️ YOUTUBE';
+  if (source.format === 'email') return '📬 CORRESPONDENT';
+  if (source.format === 'forward') return '↩️ FORWARD';
+  if (source.format === 'entity-watch') return '🎯 ENTITY WATCH';
+  return source.format?.toUpperCase() || 'FILE';
+}
+
 const SORT_LABELS: Record<SortMode, string> = {
   recent: 'Recently added',
   oldest: 'Oldest first',
@@ -547,7 +561,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                   </div>
                 )}
                 <div className="flex items-center gap-1.5 mt-0.5 text-xs text-gray-500 dark:text-gray-400 overflow-hidden min-w-0">
-                  <span className="shrink-0">{source.type === 'note' ? '📝 NOTE' : isCollectorSource ? 'COLLECTED' : (source.type === 'youtube' || source.format === 'youtube') ? '▶️ YOUTUBE' : (source.format?.toUpperCase() || 'FILE')}</span>
+                  <span className="shrink-0">{isCollectorSource ? 'COLLECTED' : formatLabel(source)}</span>
                   <span className="shrink-0 opacity-30">·</span>
                   <span className="shrink-0">{((source.char_count || source.characters || 0) / 1000).toFixed(1)}k</span>
                   {source.status !== 'completed' && (

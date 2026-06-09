@@ -29,7 +29,10 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_POLL_INTERVAL_MINUTES = 5
+# Poll interval: 8 hours (2026-06-08). Newsletters arrive irregularly; the
+# 5-minute default was wasteful and hammered the user's inbox. 3 syncs a day
+# is plenty for the use case.
+DEFAULT_POLL_INTERVAL_MINUTES = 8 * 60
 PERSONAL_FOLDER = "LocalBook/Personal"
 
 
@@ -97,6 +100,67 @@ def _load_status() -> Dict[str, Any]:
 
 def _save_status(status: Dict[str, Any]) -> None:
     _status_file().write_text(json.dumps(status, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# F5b (2026-06-08) — sender→notebook routing learning. Persisted to JSON so
+# manual corrections feed back into the auto-router on subsequent syncs.
+# Schema: {normalized_sender: {notebook_id: correction_count}}
+# Normalization: lowercase, take only the angle-bracketed email if present
+# ("Alice <alice@news.io>" → "alice@news.io").
+# ---------------------------------------------------------------------------
+
+
+def _sender_routing_file() -> Path:
+    return _data_dir() / "sender_routing.json"
+
+
+def _normalize_sender(sender: str) -> str:
+    s = (sender or "").strip()
+    if not s:
+        return ""
+    if "<" in s and ">" in s:
+        s = s[s.index("<") + 1 : s.index(">")]
+    return s.lower()
+
+
+def _load_sender_routing() -> Dict[str, Dict[str, int]]:
+    p = _sender_routing_file()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text()) or {}
+    except Exception:
+        return {}
+
+
+def _save_sender_routing(routing: Dict[str, Dict[str, int]]) -> None:
+    _sender_routing_file().write_text(json.dumps(routing, indent=2))
+
+
+def _record_sender_routing(sender: str, notebook_id: str) -> None:
+    """Increment the (sender, notebook) correction count. Called from
+    approve_queued so the user's choice biases future auto-routing."""
+    norm = _normalize_sender(sender)
+    if not norm or not notebook_id:
+        return
+    routing = _load_sender_routing()
+    bucket = routing.setdefault(norm, {})
+    bucket[notebook_id] = int(bucket.get(notebook_id, 0)) + 1
+    _save_sender_routing(routing)
+
+
+def get_sender_routing_bias(sender: str, notebook_id: str) -> float:
+    """Public helper — returns the similarity bonus to apply to
+    `notebook_id` for `sender`. +0.25 per prior correction, capped at
+    +0.50 so two corrections lock the sender to the chosen notebook.
+    Imported by services/notebook_router."""
+    norm = _normalize_sender(sender)
+    if not norm:
+        return 0.0
+    routing = _load_sender_routing()
+    count = int((routing.get(norm) or {}).get(notebook_id, 0))
+    return min(0.50, 0.25 * count)
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +260,26 @@ def _imap_mark_seen(
         return True
     except Exception as e:
         logger.debug(f"[correspondent.imap] mark-seen failed: {e}")
+        return False
+
+
+def _imap_delete(
+    *, host: str, port: int, user: str, password: str, use_ssl: bool, uid: int,
+) -> bool:
+    """Delete a single message by UID. Uses imap_tools' default delete +
+    expunge (the message is moved to Trash on Gmail/iCloud, hard-removed
+    on other providers). Called after successful ingest so the next sync
+    doesn't re-process the same message.
+
+    Best-effort: returns False on any failure but never raises — the
+    source has already been ingested either way."""
+    from imap_tools import MailBox
+    try:
+        with MailBox(host).login(user, password, initial_folder="INBOX") as box:
+            box.delete([str(uid)])
+        return True
+    except Exception as e:
+        logger.debug(f"[correspondent.imap] delete failed for uid={uid}: {e}")
         return False
 
 
@@ -368,6 +452,16 @@ class CorrespondentAgent:
                         account=account, parsed=parsed, payload=payload,
                         notebook_id=target_nb, source_filename=payload.original_subject or "forwarded email",
                     ))
+                    # F3 (2026-06-08) — delete from IMAP after successful
+                    # ingest so the next sync doesn't re-process. Fire-and-
+                    # forget on a worker thread; never blocks the loop.
+                    asyncio.create_task(asyncio.to_thread(
+                        _imap_delete,
+                        host=account["imap_host"], port=account["imap_port"],
+                        user=account["imap_user"], password=account["imap_password"],
+                        use_ssl=account.get("use_ssl", True),
+                        uid=msg["uid"],
+                    ))
                 else:
                     counts["errors"] += 1
             else:
@@ -432,12 +526,22 @@ class CorrespondentAgent:
         decision = await route_email(
             classification_summary=classification.summary,
             topic_tags=classification.topic_tags,
+            sender=parsed.sender,
         )
 
         if decision.decision == "route" and decision.top:
             source_id = await ingest_newsletter(decision.top.notebook_id, parsed, classification)
             if source_id:
                 counts["ingested"] += 1
+                # F3 (2026-06-08) — delete from IMAP after successful
+                # ingest. Same fire-and-forget pattern as the forward path.
+                asyncio.create_task(asyncio.to_thread(
+                    _imap_delete,
+                    host=account["imap_host"], port=account["imap_port"],
+                    user=account["imap_user"], password=account["imap_password"],
+                    use_ssl=account.get("use_ssl", True),
+                    uid=msg["uid"],
+                ))
             else:
                 counts["errors"] += 1
         else:
@@ -498,6 +602,36 @@ class CorrespondentAgent:
             return {"ok": False, "reason": "ingest failed"}
         items = [i for i in items if i["item_id"] != item_id]
         _save_queue(items)
+
+        # F5b (2026-06-08) — record this routing as a learning signal.
+        # The notebook the user picked at approval time wins future
+        # routing for this sender. _record_sender_routing is a no-op
+        # if sender is empty.
+        try:
+            _record_sender_routing(
+                sender=item.get("sender") or "",
+                notebook_id=target_nb,
+            )
+        except Exception as _e:
+            logger.debug(f"[correspondent.approve_queued] sender routing record skipped: {_e}")
+
+        # F3 (2026-06-08) — delete from IMAP after successful approval.
+        # Look up the account from the credential locker since the queue
+        # item only stores the email address, not credentials.
+        try:
+            from services.credential_locker import get_imap_account
+            account = await get_imap_account(item.get("email_account") or "")
+            if account and item.get("message_uid"):
+                asyncio.create_task(asyncio.to_thread(
+                    _imap_delete,
+                    host=account["imap_host"], port=account["imap_port"],
+                    user=account["imap_user"], password=account["imap_password"],
+                    use_ssl=account.get("use_ssl", True),
+                    uid=int(item["message_uid"]),
+                ))
+        except Exception as _e:
+            logger.debug(f"[correspondent.approve_queued] IMAP delete skipped: {_e}")
+
         return {"ok": True, "source_id": source_id, "notebook_id": target_nb}
 
     async def _send_forward_confirmation(

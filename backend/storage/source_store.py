@@ -114,9 +114,66 @@ class SourceStore:
                 grouped[nb_id].append(source)
         return grouped
 
+    async def find_by_message_id(self, message_id: str) -> Optional[Dict]:
+        """Find an existing source by its `message_id` metadata field.
+
+        Used by Correspondent for cross-notebook dedup: if a newsletter
+        Message-ID was ingested anywhere before, skip re-ingestion. The
+        Message-ID is RFC-mandated unique-per-message, so the false-
+        positive rate is effectively zero.
+
+        Returns the source dict (with `notebook_id` populated) or None.
+        Added 2026-06-08.
+        """
+        if not message_id:
+            return None
+        if self._use_sqlite:
+            # Stored in metadata_json blob — fall back to scanning rows
+            # since SQLite doesn't index JSON columns by default. Cheap
+            # enough at the source-count scales LocalBook targets.
+            rows = self._get_db().execute(
+                "SELECT * FROM sources WHERE metadata_json LIKE ?",
+                (f'%"message_id": "{message_id}"%',),
+            ).fetchall()
+            for row in rows:
+                src = self._row_to_source(row)
+                if src.get("message_id") == message_id:
+                    return src
+            return None
+        data = self._load_data()
+        for source in data["sources"].values():
+            if source.get("message_id") == message_id:
+                return source
+        return None
+
+    async def find_by_content_hash(self, content_hash: str) -> Optional[Dict]:
+        """Find an existing source by its content sha256 hash.
+
+        Belt-and-suspenders dedup for Correspondent — different IMAP
+        Message-IDs can still wrap the same forwarded content. Caller
+        is responsible for computing the hash. Added 2026-06-08.
+        """
+        if not content_hash:
+            return None
+        if self._use_sqlite:
+            rows = self._get_db().execute(
+                "SELECT * FROM sources WHERE metadata_json LIKE ?",
+                (f'%"content_hash": "{content_hash}"%',),
+            ).fetchall()
+            for row in rows:
+                src = self._row_to_source(row)
+                if src.get("content_hash") == content_hash:
+                    return src
+            return None
+        data = self._load_data()
+        for source in data["sources"].values():
+            if source.get("content_hash") == content_hash:
+                return source
+        return None
+
     async def count_by_notebook(self) -> Dict[str, int]:
         """Get source counts per notebook (single file read).
-        
+
         Use this instead of looping over notebooks calling len(list(nb)) individually.
         Returns {notebook_id: count}
         """
