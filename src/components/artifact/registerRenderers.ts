@@ -25,6 +25,8 @@ import { HtmlArtifactRenderer } from './renderers/HtmlArtifactRenderer';
 import { NewsletterArtifactRenderer } from './renderers/NewsletterArtifactRenderer';
 import { InteractiveHtmlArtifactRenderer } from './renderers/InteractiveHtmlArtifactRenderer';
 import { ComparisonArtifactRenderer } from './renderers/ComparisonArtifactRenderer';
+import { CorrespondentQueueRenderer } from './renderers/CorrespondentQueueRenderer';
+import { CorrespondentSubscriptionsRenderer } from './renderers/CorrespondentSubscriptionsRenderer';
 
 let registered = false;
 
@@ -48,6 +50,11 @@ export function registerBuiltInRenderers(): void {
   // Structured `json:<kind>` types
   rendererRegistry.register('json:chart', ChartArtifactRenderer);
   rendererRegistry.register('json:comparison', ComparisonArtifactRenderer);
+  // I/J (2026-06-09) — interactive Correspondent cards. The reply uses
+  // ```json-correspondent-queue / ```json-correspondent-subscriptions
+  // code fences in MarkdownArtifactRenderer to dispatch to these.
+  rendererRegistry.register('json:correspondent-queue', CorrespondentQueueRenderer);
+  rendererRegistry.register('json:correspondent-subscriptions', CorrespondentSubscriptionsRenderer);
 }
 
 // Auto-register on import so consumers don't have to remember to call.

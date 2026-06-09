@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Compass, Radio, Search, BookOpen, Upload, MessageCircle, Sparkles, Wand2, X } from 'lucide-react';
+import { Compass, Radio, Search, BookOpen, Upload, MessageCircle, Sparkles, Wand2, X, Mail } from 'lucide-react';
 import { chatService } from '../services/chat';
 import { explorationService } from '../services/exploration';
 import { voiceService } from '../services/voice';
 import { ChatMessage, Citation as CitationType } from '../types';
 import { curatorService } from '../services/curatorApi';
+import { correspondentService } from '../services/correspondent';
 import { sourceService } from '../services/sources';
 import { Button } from './shared/Button';
 import { ErrorMessage } from './shared/ErrorMessage';
@@ -36,7 +37,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const [showMentionMenu, setShowMentionMenu] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
-  const [activeMention, setActiveMention] = useState<'curator' | 'collector' | 'research' | 'studio' | null>(null);
+  const [activeMention, setActiveMention] = useState<'curator' | 'collector' | 'research' | 'studio' | 'correspondent' | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   
   // Auto-dismiss welcome once a notebook is selected (user is no longer a first-timer)
@@ -155,6 +156,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   const MENTION_OPTIONS: { key: string; icon: React.ReactNode; desc: string }[] = [
     { key: 'curator', icon: <Compass className="w-3.5 h-3.5" />, desc: 'Cross-notebook synthesis' },
     { key: 'collector', icon: <Radio className="w-3.5 h-3.5" />, desc: 'Collection status & commands' },
+    { key: 'correspondent', icon: <Mail className="w-3.5 h-3.5" />, desc: 'Inbox status, queue, hot topics' },
     { key: 'research', icon: <Search className="w-3.5 h-3.5" />, desc: 'Web, site, or deep-dive research' },
     { key: 'studio', icon: <Wand2 className="w-3.5 h-3.5" />, desc: 'Create content from conversation' },
   ];
@@ -165,7 +167,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       return { target: activeMention, cleanQuestion: text.trim() };
     }
     // Fallback: parse manually typed @mention
-    const match = text.match(/^@(curator|collector|research|studio)\s+([\s\S]*)$/i);
+    const match = text.match(/^@(curator|collector|correspondent|research|studio)\s+([\s\S]*)$/i);
     if (match) {
       return { target: match[1].toLowerCase(), cleanQuestion: match[2].trim() };
     }
@@ -176,9 +178,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     let val = e.target.value;
 
     // If user manually types @collector/@curator and space, promote to activeMention
-    const manualMention = val.match(/^@(curator|collector|research|studio)\s+$/i);
+    const manualMention = val.match(/^@(curator|collector|correspondent|research|studio)\s+$/i);
     if (manualMention && !activeMention) {
-      setActiveMention(manualMention[1].toLowerCase() as 'curator' | 'collector' | 'research' | 'studio');
+      setActiveMention(manualMention[1].toLowerCase() as 'curator' | 'collector' | 'research' | 'studio' | 'correspondent');
       val = '';
     }
 
@@ -241,7 +243,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   };
 
   const insertMention = (key: string) => {
-    setActiveMention(key as 'curator' | 'collector' | 'research' | 'studio');
+    setActiveMention(key as 'curator' | 'collector' | 'research' | 'studio' | 'correspondent');
     setInput('');
     setShowMentionMenu(false);
     setMentionFilter('');
@@ -259,7 +261,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       role: 'user',
       content: currentQuestion,
       timestamp: new Date(),
-      ...(target ? { agentType: target as 'curator' | 'collector' | 'research' | 'studio' } : {}),
+      ...(target ? { agentType: target as 'curator' | 'collector' | 'research' | 'studio' | 'correspondent' } : {}),
     };
 
     setMessages((prev) => [...prev, userMessage]);
@@ -287,7 +289,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       content: '',
       citations: [],
       timestamp: new Date(),
-      ...(target ? { agentType: target as 'curator' | 'collector' | 'research' | 'studio' } : {}),
+      ...(target ? { agentType: target as 'curator' | 'collector' | 'research' | 'studio' | 'correspondent' } : {}),
     };
     
     // Add the streaming message placeholder
@@ -541,7 +543,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                   lowConfidenceQuery,
                   ...(curatorName ? { curatorName } : {}),
                   ...(agentName ? { agentName } : {}),
-                  ...(agentType ? { agentType: agentType as 'curator' | 'collector' | 'research' | 'studio' } : {}),
+                  ...(agentType ? { agentType: agentType as 'curator' | 'collector' | 'research' | 'studio' | 'correspondent' } : {}),
                 };
               }
               return updated;
@@ -593,6 +595,30 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                       }
                       return updated;
                     });
+                  } else {
+                    // I5 (2026-06-09) — only ask Correspondent when curator
+                    // didn't have a stronger aside. Asides slot is one-per-
+                    // message; curator gets priority since it has more
+                    // synthesis context.
+                    correspondentService.aside().then(corrData => {
+                      const text = corrData?.aside;
+                      if (!text) return;
+                      setMessages(prev => {
+                        const updated = [...prev];
+                        for (let i = updated.length - 1; i >= 0; i--) {
+                          if (updated[i].role === 'assistant' && updated[i].content) {
+                            updated[i] = {
+                              ...updated[i],
+                              curatorAside: text,
+                              curatorAsideKind: corrData.kind ?? undefined,
+                              curatorName: corrData.curator_name || 'Correspondent',
+                            };
+                            break;
+                          }
+                        }
+                        return updated;
+                      });
+                    }).catch(() => {});
                   }
                 })
                 .catch(() => {});
@@ -849,7 +875,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                     <Upload className="w-3 h-3" /> Upload sources in sidebar
                   </span>
                   <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-gray-700/60 text-xs text-gray-600 dark:text-gray-400">
-                    <Sparkles className="w-3 h-3" /> Try @curator or @collector
+                    <Sparkles className="w-3 h-3" /> Try @curator, @correspondent, or @collector
                   </span>
                 </div>
               </>

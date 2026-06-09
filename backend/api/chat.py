@@ -2963,14 +2963,19 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
 async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional[Dict[str, Any]] = None):
     """Stream a Correspondent (IMAP) agent response in SSE format.
 
-    Surface the same operations available from the Correspondent Settings
-    panel via natural language: status / sync_now / show_queue / pause /
-    resume / show_accounts.
+    Surface every Correspondent capability via natural language: status,
+    queue actions, subscription proposals, sender learning, hot/cold
+    trends, summaries. See READFIRST/CORRESPONDENT_CAPABILITIES.md for
+    the canonical function matrix.
     """
     from services.intent_classifier import classify_intent
     from services.ollama_client import ollama_client
     from services.credential_locker import list_imap_accounts, update_imap_state
-    from agents.correspondent import correspondent_agent
+    from agents.correspondent import (
+        correspondent_agent, _load_sender_routing, _save_sender_routing,
+        _normalize_sender,
+    )
+    import re as _re
 
     name = "Correspondent"
     q = chat_query.question
@@ -2979,8 +2984,8 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
 
     follow_ups = [
         "Show the approval queue",
-        "Sync now",
-        "What's the status of my inboxes?",
+        "What's hot this week?",
+        "Show learned sender routings",
     ]
 
     def _done():
@@ -2988,6 +2993,11 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
 
     def _reply(text: str):
         return f"data: {json.dumps({'type': 'reply_chunk', 'content': text})}\n\n"
+
+    def _mm_label(s: str, n: int = 40) -> str:
+        s = _re.sub(r"[\(\)\[\]\{\}\"`:,]+", " ", str(s or ""))
+        s = _re.sub(r"\s+", " ", s).strip()
+        return s[:n] or "—"
 
     try:
         if injected_action:
@@ -2998,6 +3008,9 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
             intent = (cls or {}).get("intent") or "show_status"
             params = (cls or {}).get("params") or {}
 
+        # ─────────────────────────────────────────────────────────────
+        # SYNC + STATUS
+        # ─────────────────────────────────────────────────────────────
         if intent == "sync_now":
             summary = await correspondent_agent.poll_all()
             totals = summary.get("totals", {})
@@ -3008,19 +3021,7 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                 f"**{totals.get('personal', 0)}** personal, "
                 f"**{totals.get('transactional', 0)}** transactional."
             )
-        elif intent == "show_queue":
-            items = correspondent_agent.list_queue()
-            if not items:
-                yield _reply("Queue is empty.")
-            else:
-                lines = [f"**{len(items)} item(s) pending:**\n"]
-                for i in items[:10]:
-                    top = i.get("top_candidate") or {}
-                    lines.append(
-                        f"- *{i.get('subject', '(no subject)')}* from {i.get('sender', '?')} "
-                        f"→ best match `{top.get('notebook_name', '—')}` ({(top.get('confidence', 0) * 100):.0f}%)"
-                    )
-                yield _reply("\n".join(lines))
+
         elif intent in ("pause", "resume"):
             email = params.get("email")
             accounts = await list_imap_accounts()
@@ -3030,6 +3031,7 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
             else:
                 await update_imap_state(email=target.email, enabled=(intent == "resume"))
                 yield _reply(f"{intent.title()}d **{target.email}**.")
+
         elif intent == "show_accounts":
             accounts = await list_imap_accounts()
             if not accounts:
@@ -3040,25 +3042,412 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                     state = "enabled" if a.enabled else "paused"
                     lines.append(f"- {a.email} ({a.imap_host}, {state}, last polled {a.last_polled_at or 'never'})")
                 yield _reply("\n".join(lines))
+
+        # ─────────────────────────────────────────────────────────────
+        # APPROVAL QUEUE
+        # ─────────────────────────────────────────────────────────────
+        elif intent == "show_queue":
+            items = correspondent_agent.list_queue()
+            sub_count = len(correspondent_agent.list_subscription_queue())
+            # Resolve notebook list once so the inline picker has options
+            from storage.notebook_store import notebook_store
+            nbs_full = await notebook_store.list() or []
+            notebooks_payload = [{"id": nb["id"], "title": nb.get("title", "(unnamed)")} for nb in nbs_full]
+            empty_msg = "Approval queue is empty."
+            if sub_count:
+                empty_msg += f" {sub_count} subscription proposal(s) still waiting — say `show subscriptions`."
+            payload = {
+                "items": items,
+                "notebooks": notebooks_payload,
+                "empty_message": empty_msg,
+            }
+            yield _reply("```json-correspondent-queue\n" + json.dumps(payload) + "\n```")
+
+        elif intent == "approve_queued":
+            try:
+                idx = int(params.get("index", 0)) - 1
+            except (TypeError, ValueError):
+                idx = -1
+            items = correspondent_agent.list_queue()
+            if idx < 0 or idx >= len(items):
+                yield _reply(f"Couldn't find item {params.get('index')}. Say `show queue` to see what's pending.")
+            else:
+                item = items[idx]
+                result = await correspondent_agent.approve_queued(item["item_id"], notebook_id=None)
+                if result.get("ok"):
+                    deleted = result.get("imap_deleted")
+                    tail = " · removed from inbox" if deleted else (" · couldn't delete from inbox" if deleted is False else "")
+                    yield _reply(
+                        f"✓ Approved *{item.get('subject', '(no subject)')[:80]}* → "
+                        f"`{(item.get('top_candidate') or {}).get('notebook_name', 'notebook')}`{tail}."
+                    )
+                else:
+                    yield _reply(f"⚠ Approve failed: {result.get('reason', 'unknown')}")
+
+        elif intent == "reroute_queued":
+            try:
+                idx = int(params.get("index", 0)) - 1
+            except (TypeError, ValueError):
+                idx = -1
+            notebook_hint = (params.get("notebook") or "").strip().lower()
+            items = correspondent_agent.list_queue()
+            if idx < 0 or idx >= len(items):
+                yield _reply(f"Couldn't find item {params.get('index')}. Say `show queue` to see what's pending.")
+            elif not notebook_hint:
+                yield _reply("Tell me which notebook — e.g. `reroute 2 to AI Research`.")
+            else:
+                from storage.notebook_store import notebook_store
+                nbs = await notebook_store.list()
+                target = next((nb for nb in nbs if notebook_hint in (nb.get("title") or "").lower()), None)
+                if not target:
+                    yield _reply(f"Couldn't match a notebook for `{notebook_hint}`.")
+                else:
+                    item = items[idx]
+                    result = await correspondent_agent.approve_queued(item["item_id"], notebook_id=target["id"])
+                    if result.get("ok"):
+                        yield _reply(
+                            f"✓ Rerouted to **{target['title']}**. Sender `{item.get('sender', '?')[:50]}` learned this preference — "
+                            f"future emails from them will bias toward this notebook."
+                        )
+                    else:
+                        yield _reply(f"⚠ Reroute failed: {result.get('reason', 'unknown')}")
+
+        elif intent == "dismiss_queued":
+            try:
+                idx = int(params.get("index", 0)) - 1
+            except (TypeError, ValueError):
+                idx = -1
+            items = correspondent_agent.list_queue()
+            if idx < 0 or idx >= len(items):
+                yield _reply(f"Couldn't find item {params.get('index')}.")
+            else:
+                item = items[idx]
+                result = await correspondent_agent.dismiss_queued(item["item_id"])
+                if result.get("ok"):
+                    yield _reply(f"🗑 Dismissed *{item.get('subject', '(no subject)')[:80]}*.")
+                else:
+                    yield _reply(f"⚠ Dismiss failed: {result.get('reason', 'unknown')}")
+
+        # ─────────────────────────────────────────────────────────────
+        # SUBSCRIPTION + ENTITY PROPOSALS
+        # ─────────────────────────────────────────────────────────────
+        elif intent == "show_subscriptions":
+            subs = correspondent_agent.list_subscription_queue()
+            payload = {
+                "items": subs,
+                "empty_message": "No subscription or entity-watch proposals waiting.",
+            }
+            yield _reply("```json-correspondent-subscriptions\n" + json.dumps(payload) + "\n```")
+
+        elif intent == "approve_subscription":
+            try:
+                idx = int(params.get("index", 0)) - 1
+            except (TypeError, ValueError):
+                idx = -1
+            subs = correspondent_agent.list_subscription_queue()
+            if idx < 0 or idx >= len(subs):
+                yield _reply(f"Couldn't find proposal {params.get('index')}.")
+            else:
+                s = subs[idx]
+                result = await correspondent_agent.approve_subscription(s["id"])
+                if result.get("ok"):
+                    if s.get("kind") == "entity":
+                        yield _reply(f"✓ Watching `{s.get('entity_name', s.get('title', '?'))}`. Source created.")
+                    else:
+                        yield _reply(f"✓ Subscribed to *{s.get('title', '?')[:80]}*. Feed added to the Collector.")
+                else:
+                    yield _reply(f"⚠ Subscribe failed: {result.get('reason', 'unknown')}")
+
+        elif intent == "dismiss_subscription":
+            try:
+                idx = int(params.get("index", 0)) - 1
+            except (TypeError, ValueError):
+                idx = -1
+            subs = correspondent_agent.list_subscription_queue()
+            if idx < 0 or idx >= len(subs):
+                yield _reply(f"Couldn't find proposal {params.get('index')}.")
+            else:
+                s = subs[idx]
+                result = await correspondent_agent.dismiss_subscription(s["id"])
+                if result.get("ok"):
+                    yield _reply(f"🗑 Dropped proposal *{s.get('title', '?')[:80]}*.")
+                else:
+                    yield _reply(f"⚠ Dismiss failed: {result.get('reason', 'unknown')}")
+
+        # ─────────────────────────────────────────────────────────────
+        # SENDER LEARNING
+        # ─────────────────────────────────────────────────────────────
+        elif intent == "show_senders":
+            routing = _load_sender_routing()
+            if not routing:
+                yield _reply("No sender learnings yet — every routing is by similarity. Approve a few queued items and I'll start learning.")
+            else:
+                from storage.notebook_store import notebook_store
+                nbs = {nb["id"]: nb.get("title") or "(unnamed)" for nb in (await notebook_store.list() or [])}
+                lines = [f"**📚 Learned sender routings ({len(routing)} sender(s)):**\n"]
+                # Mermaid graph: senders → notebooks, edge weight = correction count
+                mm = ["graph LR"]
+                sender_idx = 0
+                edges = []
+                for sender, bucket in list(routing.items())[:8]:
+                    sid = f"s{sender_idx}"
+                    sender_idx += 1
+                    mm.append(f'  {sid}["{_mm_label(sender, 28)}"]')
+                    for nb_id, count in bucket.items():
+                        nb_name = nbs.get(nb_id, nb_id[:8])
+                        nid = f"n_{nb_id[:8]}"
+                        mm.append(f'  {nid}["{_mm_label(nb_name, 24)}"]')
+                        weight = "===" if count >= 2 else "---"
+                        edges.append(f"  {sid} {weight}|{count}| {nid}")
+                        lines.append(f"- `{sender}` → **{nb_name}** ({count} correction{'s' if count != 1 else ''})")
+                mm.extend(edges)
+                mm.append("  classDef sender fill:#fef3c7,stroke:#d97706,color:#78350f;")
+                mm.append("  classDef nb fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;")
+                for i in range(sender_idx):
+                    mm.append(f"  class s{i} sender;")
+                lines.append("\n```mermaid\n" + "\n".join(mm) + "\n```")
+                yield _reply("\n".join(lines))
+
+        elif intent == "forget_sender":
+            email = (params.get("email") or "").strip().lower()
+            if not email:
+                yield _reply("Tell me which sender — e.g. `forget alice@news.io`.")
+            else:
+                routing = _load_sender_routing()
+                norm = _normalize_sender(email)
+                if norm in routing:
+                    del routing[norm]
+                    _save_sender_routing(routing)
+                    yield _reply(f"🧹 Forgot what I learned about `{email}`. Next email from them routes by similarity again.")
+                else:
+                    yield _reply(f"I had no learnings for `{email}` to forget.")
+
+        # ─────────────────────────────────────────────────────────────
+        # DISCOVERY + AUDIT (J4 — 2026-06-09)
+        # ─────────────────────────────────────────────────────────────
+        elif intent == "show_recent":
+            try:
+                limit = int(params.get("limit") or 10)
+            except (TypeError, ValueError):
+                limit = 10
+            from services.correspondent_trends import _gather_newsletter_sources
+            from datetime import timedelta as _td
+            from storage.notebook_store import notebook_store
+            sources = await _gather_newsletter_sources(datetime.utcnow() - _td(days=30))
+            sources.sort(key=lambda s: s.get("created_at") or "", reverse=True)
+            sources = sources[:limit]
+            if not sources:
+                yield _reply("📭 No newsletters ingested in the last 30 days.")
+            else:
+                nbs = {nb["id"]: nb.get("title") or "(unnamed)" for nb in (await notebook_store.list() or [])}
+                lines = [f"**📬 Last {len(sources)} newsletter(s) ingested:**\n"]
+                for s in sources:
+                    nb_name = nbs.get(s.get("notebook_id"), "?")
+                    when = (s.get("created_at") or "")[:10]
+                    lines.append(
+                        f"- **{when}** — *{(s.get('subject') or '(no subject)')[:70]}* "
+                        f"from `{(s.get('sender') or '?')[:50]}` → **{nb_name}**"
+                    )
+                yield _reply("\n".join(lines))
+
+        elif intent == "show_sender":
+            query = (params.get("email_or_name") or "").strip().lower()
+            if not query:
+                yield _reply("Tell me which sender — e.g. `show me Stratechery` or `tell me about alice@news.io`.")
+            else:
+                from services.correspondent_trends import _gather_newsletter_sources
+                from agents.correspondent import _load_sender_routing, _normalize_sender
+                from datetime import timedelta as _td
+                from storage.notebook_store import notebook_store
+                sources = await _gather_newsletter_sources(datetime.utcnow() - _td(days=90))
+                matches = [s for s in sources if query in (s.get("sender") or "").lower()]
+                if not matches:
+                    yield _reply(f"No newsletters from `{query}` in the last 90 days.")
+                else:
+                    matches.sort(key=lambda s: s.get("created_at") or "", reverse=True)
+                    nbs = {nb["id"]: nb.get("title") or "(unnamed)" for nb in (await notebook_store.list() or [])}
+                    # Routing distribution
+                    nb_counts: Dict[str, int] = {}
+                    for s in matches:
+                        nb_id = s.get("notebook_id") or ""
+                        nb_counts[nb_id] = nb_counts.get(nb_id, 0) + 1
+                    # Learning state
+                    routing = _load_sender_routing()
+                    learned: Dict[str, int] = {}
+                    sender_addr = matches[0].get("sender") or ""
+                    norm = _normalize_sender(sender_addr)
+                    if norm in routing:
+                        learned = routing[norm]
+
+                    lines = [f"**📬 Deep dive: `{matches[0].get('sender', query)}`**\n"]
+                    lines.append(f"- **Volume:** {len(matches)} newsletter(s) in last 90 days")
+                    lines.append(f"- **Most recent:** {(matches[0].get('created_at') or '?')[:10]}")
+                    if nb_counts:
+                        nb_str = ", ".join(f"`{nbs.get(nb_id, nb_id[:8])}` ({n})" for nb_id, n in sorted(nb_counts.items(), key=lambda x: -x[1]))
+                        lines.append(f"- **Where it lands:** {nb_str}")
+                    if learned:
+                        learn_str = ", ".join(f"`{nbs.get(nb_id, nb_id[:8])}` (+{n})" for nb_id, n in learned.items())
+                        lines.append(f"- **Learned routing:** {learn_str}")
+                    else:
+                        lines.append(f"- **Learned routing:** _none yet — approvals will teach the router_")
+                    # Recent subjects
+                    lines.append("\n**Recent subjects:**")
+                    for s in matches[:5]:
+                        when = (s.get("created_at") or "")[:10]
+                        lines.append(f"- {when} — *{(s.get('subject') or '(no subject)')[:80]}*")
+                    yield _reply("\n".join(lines))
+
+        elif intent == "quiet_senders":
+            try:
+                days_silent = int(params.get("days") or 21)
+            except (TypeError, ValueError):
+                days_silent = 21
+            from services.correspondent_trends import _gather_newsletter_sources
+            from datetime import timedelta as _td
+            sources = await _gather_newsletter_sources(datetime.utcnow() - _td(days=180))
+            if not sources:
+                yield _reply("Not enough ingest history to compute quiet senders yet.")
+            else:
+                # Group by sender, find last_seen
+                last_seen: Dict[str, str] = {}
+                counts: Dict[str, int] = {}
+                for s in sources:
+                    sender = s.get("sender") or ""
+                    if not sender:
+                        continue
+                    created = s.get("created_at") or ""
+                    if created > last_seen.get(sender, ""):
+                        last_seen[sender] = created
+                    counts[sender] = counts.get(sender, 0) + 1
+                threshold = (datetime.utcnow() - _td(days=days_silent)).isoformat()
+                quiet = [
+                    (sender, last_seen[sender], counts[sender])
+                    for sender in last_seen
+                    if last_seen[sender] < threshold and counts[sender] >= 2  # ignore one-offs
+                ]
+                quiet.sort(key=lambda x: x[1])
+                if not quiet:
+                    yield _reply(f"📭 No senders quiet for {days_silent}+ days. Everyone you've heard from recently is still active.")
+                else:
+                    lines = [f"**🌙 {len(quiet)} sender(s) silent for {days_silent}+ days:**\n"]
+                    for sender, last, n in quiet[:12]:
+                        lines.append(
+                            f"- `{sender[:60]}` — last heard {last[:10]} ({n} email{'s' if n != 1 else ''} total). "
+                            f"Consider unsubscribing if you no longer need them."
+                        )
+                    yield _reply("\n".join(lines))
+
+        elif intent == "move_source":
+            source_query = (params.get("source_query") or "").strip().lower()
+            notebook_hint = (params.get("notebook") or "").strip().lower()
+            if not source_query or not notebook_hint:
+                yield _reply("Tell me which source and which notebook — e.g. `move the McKinsey newsletter to AI Research`.")
+            else:
+                from services.correspondent_trends import _gather_newsletter_sources
+                from datetime import timedelta as _td
+                from storage.notebook_store import notebook_store
+                from storage.source_store import source_store
+                sources = await _gather_newsletter_sources(datetime.utcnow() - _td(days=60))
+                matches = [
+                    s for s in sources
+                    if source_query in (s.get("subject") or "").lower()
+                    or source_query in (s.get("sender") or "").lower()
+                ]
+                if not matches:
+                    yield _reply(f"Couldn't find a recent newsletter matching `{source_query}`.")
+                else:
+                    nbs = await notebook_store.list() or []
+                    target = next((nb for nb in nbs if notebook_hint in (nb.get("title") or "").lower()), None)
+                    if not target:
+                        yield _reply(f"Couldn't match a notebook for `{notebook_hint}`.")
+                    else:
+                        src = matches[0]
+                        src_id = src.get("id")
+                        old_nb_id = src.get("notebook_id")
+                        # Source store doesn't have a direct move; we update notebook_id
+                        try:
+                            ok = await source_store.update(old_nb_id, src_id, {"notebook_id": target["id"]})
+                            if ok:
+                                # Record the sender→notebook learning
+                                from agents.correspondent import _record_sender_routing
+                                _record_sender_routing(sender=src.get("sender") or "", notebook_id=target["id"])
+                                yield _reply(
+                                    f"✓ Moved *{(src.get('subject') or '(no subject)')[:80]}* → **{target['title']}**. "
+                                    f"Recorded sender preference so future emails from `{(src.get('sender') or '?')[:50]}` favor this notebook."
+                                )
+                            else:
+                                yield _reply("⚠ Source move failed.")
+                        except Exception as _move_e:
+                            yield _reply(f"⚠ Source move failed: {_move_e}")
+
+        # ─────────────────────────────────────────────────────────────
+        # HOT / COLD + SUMMARIES (I6)
+        # ─────────────────────────────────────────────────────────────
+        elif intent in ("whats_hot", "whats_cold", "summarize_recent"):
+            try:
+                days = int(params.get("days") or 7)
+            except (TypeError, ValueError):
+                days = 7
+            from services.correspondent_trends import compute_topic_trends, summarize_recent_intake
+            if intent == "summarize_recent":
+                lines = await summarize_recent_intake(days=days)
+                yield _reply(lines)
+            else:
+                trends = await compute_topic_trends(days=days)
+                if not trends:
+                    yield _reply(f"Not enough newsletter data in the last {days * 2} days to compute trends. Add more sources and try again.")
+                else:
+                    polarity = "hot" if intent == "whats_hot" else "cold"
+                    items = [t for t in trends if (t["delta"] > 0 if polarity == "hot" else t["delta"] < 0)]
+                    items.sort(key=lambda t: abs(t["delta"]), reverse=True)
+                    items = items[:8]
+                    if not items:
+                        yield _reply(f"Nothing notably {polarity} right now over the last {days} days.")
+                    else:
+                        title = "Topics gaining momentum" if polarity == "hot" else "Topics cooling off"
+                        lines = [f"**🌡 {title} (last {days}d vs prior {days}d):**\n"]
+                        for t in items:
+                            arrow = "↑" if t["delta"] > 0 else "↓"
+                            lines.append(f"- `{t['topic']}` — {arrow} {t['recent']} (was {t['baseline']})")
+                        chart = {
+                            "kind": "bar",
+                            "title": title,
+                            "labels": [t["topic"][:30] for t in items],
+                            "series": [
+                                {"label": f"last {days}d", "data": [t["recent"] for t in items]},
+                                {"label": f"prior {days}d", "data": [t["baseline"] for t in items]},
+                            ],
+                        }
+                        lines.append("\n```json-chart\n" + json.dumps(chart) + "\n```")
+                        yield _reply("\n".join(lines))
+
+        # ─────────────────────────────────────────────────────────────
+        # SHOW_STATUS (default)
+        # ─────────────────────────────────────────────────────────────
         else:
-            # show_status (default)
             status = correspondent_agent.status() or {}
             accounts = status.get("accounts") or {}
+            queue = correspondent_agent.list_queue()
+            subs = correspondent_agent.list_subscription_queue()
             if not accounts:
                 yield _reply("No polling activity yet. Add an inbox in Settings → Correspondent.")
             else:
-                lines = ["**Recent Correspondent activity:**"]
+                lines = ["**📬 Correspondent status**\n"]
+                lines.append(f"- **Pending approvals:** {len(queue)}")
+                lines.append(f"- **Subscription proposals:** {len(subs)}")
+                lines.append("\n**Inboxes:**")
                 for email, info in accounts.items():
                     res = info.get("last_result") or {}
                     err = info.get("last_error")
                     line = (
-                        f"- **{email}**: last polled {info.get('last_polled_at', '?')}; "
-                        f"{res.get('ingested', 0)} ingested, {res.get('queued', 0)} queued, "
-                        f"{res.get('personal', 0)} personal."
+                        f"- `{email}` — last sync {info.get('last_polled_at', '?')[:19].replace('T', ' ')}: "
+                        f"{res.get('ingested', 0)} auto-routed, {res.get('queued', 0)} queued"
                     )
                     if err:
-                        line += f" ⚠️ {err}"
+                        line += f" · ⚠ {err[:80]}"
                     lines.append(line)
+                if queue:
+                    lines.append("\n_Say `show queue` to triage pending items, or `what's hot` for trends._")
                 yield _reply("\n".join(lines))
 
         yield _done()

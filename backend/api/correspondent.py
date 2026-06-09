@@ -224,6 +224,57 @@ async def list_queue():
     return {"items": correspondent_agent.list_queue()}
 
 
+@router.get("/aside")
+async def aside():
+    """I5 (2026-06-09) — proactive aside for ChatInterface.
+
+    Returns a short prompt the user can see after any chat turn:
+      - queue ≥ 3 items
+      - any pending subscription/entity proposal
+      - any inbox in last_error state
+
+    Returns `{aside: null}` when nothing is worth surfacing — caller
+    quietly drops it (no toast, no UI bump). Anti-nag throttling is
+    intentionally NOT here; the cost of building the reply is one JSON
+    file read so the frontend dropping it is fine.
+    """
+    from agents.correspondent import correspondent_agent
+    queue = correspondent_agent.list_queue()
+    subs = correspondent_agent.list_subscription_queue()
+    status = correspondent_agent.status() or {}
+    accounts = status.get("accounts") or {}
+
+    # Priority: errors first, then queue threshold, then proposals
+    errored = [(em, info) for em, info in accounts.items() if info.get("last_error")]
+    if errored:
+        em, info = errored[0]
+        return {
+            "aside": f"📬 Correspondent: `{em}` is in an error state — `{(info.get('last_error') or '')[:80]}`. Check Settings → Correspondent.",
+            "kind": "correspondent_error",
+            "curator_name": "Correspondent",
+        }
+    if len(queue) >= 3:
+        return {
+            "aside": f"📬 Correspondent: **{len(queue)}** newsletter(s) waiting for routing. Say `@correspondent show queue` to triage.",
+            "kind": "correspondent_queue",
+            "curator_name": "Correspondent",
+        }
+    if subs:
+        kinds = sum(1 for s in subs if s.get("kind") == "entity")
+        subscriptions_n = len(subs) - kinds
+        bits = []
+        if subscriptions_n:
+            bits.append(f"{subscriptions_n} newsletter proposal{'s' if subscriptions_n != 1 else ''}")
+        if kinds:
+            bits.append(f"{kinds} entity watch{'es' if kinds != 1 else ''}")
+        return {
+            "aside": f"📬 Correspondent has {' and '.join(bits)} waiting. Say `@correspondent show subscriptions`.",
+            "kind": "correspondent_subscription",
+            "curator_name": "Correspondent",
+        }
+    return {"aside": None, "kind": None, "curator_name": "Correspondent"}
+
+
 @router.post("/queue/{item_id}/approve")
 async def approve_queue_item(item_id: str, request: ApproveRequest):
     from agents.correspondent import correspondent_agent

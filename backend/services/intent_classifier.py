@@ -80,12 +80,33 @@ COLLECTOR_INTENTS: List[Dict[str, str]] = [
 ]
 
 CORRESPONDENT_INTENTS: List[Dict[str, str]] = [
-    {"id": "show_status", "desc": "User wants a status overview — last poll time, message counts, account health (default for vague messages)", "params": "none"},
+    # Status + sync
+    {"id": "show_status", "desc": "User wants a status overview — last poll time, message counts, account health, recent activity (default for vague messages)", "params": "none"},
     {"id": "sync_now", "desc": "User wants to trigger an immediate IMAP poll across all enabled accounts", "params": "none"},
-    {"id": "show_queue", "desc": "User wants to see pending low-confidence routing approvals", "params": "none"},
+    {"id": "show_accounts", "desc": "User wants to list connected inboxes and their state", "params": "none"},
     {"id": "pause", "desc": "User wants to pause polling without removing the account", "params": "email: account email if specified"},
     {"id": "resume", "desc": "User wants to resume a paused account", "params": "email: account email if specified"},
-    {"id": "show_accounts", "desc": "User wants to list connected inboxes", "params": "none"},
+    # Approval queue
+    {"id": "show_queue", "desc": "User wants to see pending low-confidence routing approvals", "params": "none"},
+    {"id": "approve_queued", "desc": "User wants to approve a queued item by its numeric position (e.g. 'approve 3', 'approve item 2', 'accept the first one')", "params": "index: 1-based numeric position of the item to approve"},
+    {"id": "reroute_queued", "desc": "User wants to approve a queued item but into a different notebook than the suggested one (e.g. 'send item 2 to AI Research', 'reroute 3 to my Cisco notebook')", "params": "index: 1-based position; notebook: notebook name or fragment"},
+    {"id": "dismiss_queued", "desc": "User wants to drop a queued item without ingesting (e.g. 'dismiss 3', 'skip item 2', 'delete the first one')", "params": "index: 1-based numeric position"},
+    # Subscription + entity proposals
+    {"id": "show_subscriptions", "desc": "User wants to see sister-newsletter or entity-watch proposals waiting for approval", "params": "none"},
+    {"id": "approve_subscription", "desc": "User wants to accept a subscription proposal by its position (e.g. 'subscribe to 2', 'accept proposal 1')", "params": "index: 1-based position"},
+    {"id": "dismiss_subscription", "desc": "User wants to reject a subscription proposal by position", "params": "index: 1-based position"},
+    # Trend + intelligence
+    {"id": "whats_hot", "desc": "User wants to see which topics, senders, or themes are trending up across recently-ingested newsletters", "params": "days: lookback window in days, default 7"},
+    {"id": "whats_cold", "desc": "User wants to see which topics or senders have gone quiet (declining mentions)", "params": "days: lookback window in days, default 7"},
+    {"id": "summarize_recent", "desc": "User wants a summary of newsletters ingested over a period", "params": "days: lookback window in days, default 7"},
+    # Sender routing learning
+    {"id": "show_senders", "desc": "User wants to see which senders have learned-routing preferences (sender → notebook mappings the system has built up)", "params": "none"},
+    {"id": "forget_sender", "desc": "User wants to reset the learned routing for a specific sender so future emails route by similarity again (e.g. 'forget what you learned about alice@news.io')", "params": "email: sender email address"},
+    # Discovery + audit (added 2026-06-09)
+    {"id": "show_recent", "desc": "User wants to see the most recent newsletters ingested chronologically (e.g. 'show recent', 'what came in today', 'list the latest')", "params": "limit: how many items, default 10"},
+    {"id": "show_sender", "desc": "User wants a deep dive on one sender: how much they send, which notebook(s) they route to, recent topics (e.g. 'show me alice@news.io', 'tell me about Stratechery')", "params": "email_or_name: sender email or display-name fragment"},
+    {"id": "quiet_senders", "desc": "User wants to see which senders have gone silent — haven't sent anything in 21+ days (helps decide who to unsubscribe from)", "params": "days: silence threshold in days, default 21"},
+    {"id": "move_source", "desc": "User wants to re-route a source that was already ingested to a different notebook (e.g. 'move that source to AI Research', 'this should be in Cisco notebook')", "params": "source_query: title/subject fragment to find the source; notebook: target notebook name"},
 ]
 
 

@@ -145,6 +145,35 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
                 return null;
               }
             }
+            // Phase I/J (2026-06-09) — interactive Correspondent cards.
+            // ```json-correspondent-queue and ```json-correspondent-subscriptions
+            // dispatch to the React renderers that mirror the Settings UI.
+            if (/language-json-correspondent-queue/.test(codeClass || '')) {
+              try {
+                const payload = JSON.parse(raw);
+                return (
+                  <ArtifactRender
+                    artifact={{ id: `inline-corq-${raw.length}`, type: 'json:correspondent-queue', payload }}
+                    context={context}
+                  />
+                );
+              } catch {
+                return null;
+              }
+            }
+            if (/language-json-correspondent-subscriptions/.test(codeClass || '')) {
+              try {
+                const payload = JSON.parse(raw);
+                return (
+                  <ArtifactRender
+                    artifact={{ id: `inline-corsub-${raw.length}`, type: 'json:correspondent-subscriptions', payload }}
+                    context={context}
+                  />
+                );
+              } catch {
+                return null;
+              }
+            }
             // Phase 14 (2026-06-08) — `html` code-fence routes to the
             // HtmlArtifactRenderer (Shadow DOM + DOMPurify strict). Lets
             // Curator asides, anticipatory drafts, and any markdown surface
@@ -175,6 +204,8 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
                 /language-svg/.test(cls) ||
                 /language-klein/.test(cls) ||
                 /language-json-chart/.test(cls) ||
+                /language-json-correspondent-queue/.test(cls) ||
+                /language-json-correspondent-subscriptions/.test(cls) ||
                 /language-html\b/.test(cls)
               )
             ) {

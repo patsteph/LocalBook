@@ -151,6 +151,12 @@ export const correspondentService = {
     return res.json();
   },
 
+  async aside(): Promise<{ aside: string | null; kind: string | null; curator_name: string }> {
+    const res = await localFetch(`${API_BASE_URL}/correspondent/aside`);
+    if (!res.ok) return { aside: null, kind: null, curator_name: 'Correspondent' };
+    return res.json();
+  },
+
   async status(): Promise<CorrespondentStatus> {
     const res = await localFetch(`${API_BASE_URL}/correspondent/status`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

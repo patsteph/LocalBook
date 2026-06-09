@@ -3,7 +3,7 @@ import { ChatMessage, Citation as CitationType, InlineVisualData, ResearchResult
 import { Citation, CitationList } from '../Citation';
 import { InlineVisual } from '../visual';
 import { BookmarkButton } from '../shared/BookmarkButton';
-import { Radio, Compass, Search, ExternalLink, Plus, Check, Wand2, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Radio, Compass, Search, ExternalLink, Plus, Check, Wand2, ThumbsUp, ThumbsDown, Mail } from 'lucide-react';
 import { PlanCard } from '../curator/PlanCard';
 import { useEngagement } from '../../hooks/useEngagement';
 import { curatorService } from '../../services/curatorApi';
@@ -220,25 +220,29 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                   ? 'bg-emerald-600 text-white'
                   : message.agentType === 'studio'
                     ? 'bg-amber-600 text-white'
-                    : 'bg-blue-600 text-white'
+                    : message.agentType === 'correspondent'
+                      ? 'bg-orange-600 text-white'
+                      : 'bg-blue-600 text-white'
             : message.agentType === 'collector'
               ? 'bg-teal-50 dark:bg-teal-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-teal-500'
               : message.agentType === 'research'
                 ? 'bg-emerald-50 dark:bg-emerald-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-emerald-500'
                 : message.agentType === 'studio'
                   ? 'bg-amber-50 dark:bg-amber-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-amber-500'
-                  : message.agentType === 'curator'
-                    ? 'bg-purple-50 dark:bg-purple-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-purple-500'
-                    : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+                  : message.agentType === 'correspondent'
+                    ? 'bg-orange-50 dark:bg-orange-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-orange-500'
+                    : message.agentType === 'curator'
+                      ? 'bg-purple-50 dark:bg-purple-900/20 text-gray-900 dark:text-gray-100 border-l-4 border-purple-500'
+                      : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100'
         }`}
       >
         {message.role === 'user' ? (
           <>
             {message.agentType && (
               <div className={`flex items-center gap-1.5 mb-1.5 text-[10px] font-semibold uppercase tracking-wide ${
-                message.agentType === 'collector' ? 'text-teal-200' : message.agentType === 'research' ? 'text-emerald-200' : message.agentType === 'studio' ? 'text-amber-200' : 'text-purple-200'
+                message.agentType === 'collector' ? 'text-teal-200' : message.agentType === 'research' ? 'text-emerald-200' : message.agentType === 'studio' ? 'text-amber-200' : message.agentType === 'correspondent' ? 'text-orange-200' : 'text-purple-200'
               }`}>
-                {message.agentType === 'collector' ? <Radio className="w-3 h-3" /> : message.agentType === 'research' ? <Search className="w-3 h-3" /> : message.agentType === 'studio' ? <Wand2 className="w-3 h-3" /> : <Compass className="w-3 h-3" />}
+                {message.agentType === 'collector' ? <Radio className="w-3 h-3" /> : message.agentType === 'research' ? <Search className="w-3 h-3" /> : message.agentType === 'studio' ? <Wand2 className="w-3 h-3" /> : message.agentType === 'correspondent' ? <Mail className="w-3 h-3" /> : <Compass className="w-3 h-3" />}
                 @{message.agentType}
               </div>
             )}
@@ -246,10 +250,15 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
           </>
         ) : (
           <>
-            {/* Agent badge — collector, curator, or research */}
+            {/* Agent badge — collector, curator, research, or correspondent */}
             {message.agentType === 'collector' && (
               <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-teal-600 dark:text-teal-400">
                 <Radio className="w-3.5 h-3.5" /> {message.agentName || 'Collector'}
+              </div>
+            )}
+            {message.agentType === 'correspondent' && (
+              <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-orange-600 dark:text-orange-400">
+                <Mail className="w-3.5 h-3.5" /> {message.agentName || 'Correspondent'}
               </div>
             )}
             {message.agentType === 'research' && (
@@ -564,14 +573,32 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                 </div>
               </div>
             )}
-            {/* Curator Overwatch Aside */}
-            {message.curatorAside && (
-              <div className="mt-3 p-2.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 border-l-3 border-indigo-500 dark:border-indigo-400">
+            {/* Curator/Correspondent Overwatch Aside.
+                Phase I5 (2026-06-09): Correspondent asides reuse this slot
+                (since curator gets priority + only one aside at a time)
+                but switch to orange/Mail tint when kind starts with
+                'correspondent_'. Keeps thumbs UI and behavior identical. */}
+            {message.curatorAside && (() => {
+              const isCorrespondent = (message.curatorAsideKind || '').startsWith('correspondent_');
+              const bg = isCorrespondent
+                ? 'bg-orange-50 dark:bg-orange-900/20 border-l-3 border-orange-500 dark:border-orange-400'
+                : 'bg-indigo-50 dark:bg-indigo-900/20 border-l-3 border-indigo-500 dark:border-indigo-400';
+              const accent = isCorrespondent
+                ? 'text-orange-600 dark:text-orange-400'
+                : 'text-indigo-600 dark:text-indigo-400';
+              const dot = isCorrespondent
+                ? 'bg-orange-600 dark:bg-orange-500'
+                : 'bg-indigo-600 dark:bg-indigo-500';
+              const body = isCorrespondent
+                ? 'text-orange-800 dark:text-orange-200'
+                : 'text-indigo-800 dark:text-indigo-200';
+              return (
+              <div className={`mt-3 p-2.5 rounded-lg ${bg}`}>
                 <div className="flex items-center gap-1.5 mb-1">
-                  <div className="w-4 h-4 rounded-full bg-indigo-600 dark:bg-indigo-500 flex items-center justify-center text-white text-[7px] font-bold flex-shrink-0">
+                  <div className={`w-4 h-4 rounded-full ${dot} flex items-center justify-center text-white text-[7px] font-bold flex-shrink-0`}>
                     {(message.curatorName || 'C').charAt(0).toUpperCase()}
                   </div>
-                  <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wide">
+                  <span className={`text-xs font-semibold ${accent} uppercase tracking-wide`}>
                     {message.curatorName || 'Curator'}
                   </span>
                   {/* Fix #5 (2026-05-23): thumbs feedback — only renders when
@@ -619,14 +646,15 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = ({
                     (mermaid, svg, json-chart, klein, html) render as
                     actual visuals. Plain text asides still render fine
                     as a paragraph. */}
-                <div className="text-xs text-indigo-800 dark:text-indigo-200 leading-relaxed [&_p]:text-xs [&_p]:my-1 [&_p:last-child]:mb-0">
+                <div className={`text-xs ${body} leading-relaxed [&_p]:text-xs [&_p]:my-1 [&_p:last-child]:mb-0`}>
                   <MarkdownArtifactRenderer
                     artifact={{ id: `aside-${index}`, type: 'markdown', payload: message.curatorAside }}
                     context="chat-inline"
                   />
                 </div>
               </div>
-            )}
+              );
+            })()}
             {message.lowConfidenceQuery && (
               <div className="mt-3 pt-2 border-t border-gray-200 dark:border-gray-700">
                 <div className="flex gap-2">

@@ -117,7 +117,7 @@ export interface ChatMessage {
   refinementReason?: 'bibliography_cleanup' | 'carr_retry';  // Phase A.2: replace_answer attribution (F8)
   autoRoutedTo?: 'curator';  // Phase A.3: implicit-routing attribution (F5)
   agentName?: string;    // Agent identity: display name (e.g. "Scout", "Curator")
-  agentType?: 'curator' | 'collector' | 'research' | 'studio';  // Agent identity: type for color coding
+  agentType?: 'curator' | 'collector' | 'research' | 'studio' | 'correspondent';  // Agent identity: type for color coding
   researchResults?: ResearchResult[];  // @research: structured results for approval UI
   planId?: string;       // Curator Phase 2b: when present, renders an inline PlanCard
 }
