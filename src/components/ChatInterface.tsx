@@ -1010,9 +1010,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                       ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
                       : activeMention === 'studio'
                         ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-                        : 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300'
+                        : activeMention === 'correspondent'
+                          ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300'
+                          : 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300'
                 }`} onClick={() => setActiveMention(null)} title="Click or press Backspace to remove">
-                  {activeMention === 'collector' ? <Radio className="w-3 h-3" /> : activeMention === 'research' ? <Search className="w-3 h-3" /> : activeMention === 'studio' ? <Wand2 className="w-3 h-3" /> : <Compass className="w-3 h-3" />}
+                  {activeMention === 'collector' ? <Radio className="w-3 h-3" /> : activeMention === 'research' ? <Search className="w-3 h-3" /> : activeMention === 'studio' ? <Wand2 className="w-3 h-3" /> : activeMention === 'correspondent' ? <Mail className="w-3 h-3" /> : <Compass className="w-3 h-3" />}
                   @{activeMention}
                 </span>
               )}
@@ -1026,7 +1028,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
                 disabled={!notebookId || loading || isTranscribing}
                 rows={1}
                 className={`w-full h-9 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 dark:disabled:bg-gray-700 bg-white dark:bg-gray-700 text-gray-900 dark:text-white resize-none max-h-[100px] ${
-                  activeMention ? 'pl-[7.5rem] pr-4' : 'px-4'
+                  activeMention
+                    // L1 (2026-06-09) — pl-[7.5rem] (120px) was tuned for
+                    // @collector. @correspondent is 15 chars and overflows
+                    // the padding, hiding the start of user text behind
+                    // the chip. Widen to 10rem (160px) so the longest
+                    // mention pill always clears the input area.
+                    ? (activeMention === 'correspondent' ? 'pl-[10rem] pr-4' : 'pl-[7.5rem] pr-4')
+                    : 'px-4'
                 }`}
               />
               {/* @mention autocomplete dropdown */}

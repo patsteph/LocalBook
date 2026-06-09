@@ -47,17 +47,18 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
   componentOverrides,
 }) => {
   const text = typeof artifact.payload === 'string' ? artifact.payload : '';
-  if (!text) {
-    return null;
-  }
-
   const docTitle = artifact.title;
 
-  return (
-    <div className={`${proseClasses[context]} ${className}`.trim()}>
-      <ReactMarkdown
-        components={{
-          a: ({ href, children, ...props }) => {
+  // L2 (2026-06-09) — memoize the components prop so React keeps
+  // component identity across renders. The previous inline object was
+  // re-allocated on every render of the parent (chat bubble), which
+  // made ReactMarkdown see a "new" code component and unmount the
+  // entire fenced subtree. Stateless fences (mermaid, svg, chart) hid
+  // the issue, but the interactive Correspondent queue card was losing
+  // its useState (override, busy/approved, error) every time the
+  // parent re-rendered for any reason.
+  const components = React.useMemo(() => ({
+    a: ({ href, children, ...props }: any) => {
             // Intercept Feynman quiz links: #feynman-quiz:difficulty:label
             if (href?.startsWith('#feynman-quiz:')) {
               const parts = href.replace('#feynman-quiz:', '').split(':');
@@ -81,7 +82,7 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
             }
             return <a href={href} {...props}>{children}</a>;
           },
-          code: ({ className: codeClass, children, ...props }) => {
+          code: ({ className: codeClass, children, ...props }: any) => {
             const raw = String(children).replace(/\n$/, '');
             if (/language-mermaid/.test(codeClass || '')) {
               return (
@@ -193,7 +194,7 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
             }
             return <code className={codeClass} {...props}>{children}</code>;
           },
-          pre: ({ children, ...props }) => {
+          pre: ({ children, ...props }: any) => {
             const child = children as any;
             const cls = child?.props?.className || '';
             if (
@@ -217,8 +218,15 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
           // wrappers (chat) on p/li/td. Caller is responsible for not
           // clobbering code/pre/a unless they intend to.
           ...(componentOverrides || {}),
-        }}
-      >
+  }), [context, docTitle, componentOverrides]);
+
+  if (!text) {
+    return null;
+  }
+
+  return (
+    <div className={`${proseClasses[context]} ${className}`.trim()}>
+      <ReactMarkdown components={components}>
         {text}
       </ReactMarkdown>
     </div>

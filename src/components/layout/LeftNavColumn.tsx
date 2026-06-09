@@ -40,13 +40,22 @@ interface DrawerSectionProps {
   flexible?: boolean;
 }
 
-const DrawerSection: React.FC<DrawerSectionProps> = ({ title, icon, isOpen, onToggle, children, badge, flexible }) => (
-  <div className={`border-t border-gray-200 dark:border-gray-700 ${
-    flexible && isOpen ? 'flex-1 min-h-0 flex flex-col overflow-hidden' : 'flex-shrink-0'
-  }`}>
+// L4 (2026-06-09): unified scroll for the left nav. The previous design
+// had "flexible" drawers (Sources, Collector) claim flex-1 + their own
+// inner scroll container. When multiple drawers were open, fixed-size
+// drawers (Notebooks, Web Research) pushed the flexible ones down with
+// no way to scroll the *whole* nav as a single column.
+//
+// Now: every drawer renders at its natural content size, and the outer
+// drawers container scrolls. The `flexible` prop is still accepted for
+// backward compat but is no longer load-bearing — sticky section
+// headers (a future polish) would let us re-introduce per-drawer
+// behavior without breaking the unified scroll.
+const DrawerSection: React.FC<DrawerSectionProps> = ({ title, icon, isOpen, onToggle, children, badge }) => (
+  <div className="border-t border-gray-200 dark:border-gray-700 flex-shrink-0">
     <button
       onClick={onToggle}
-      className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors flex-shrink-0"
+      className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors sticky top-0 bg-white dark:bg-gray-800 z-10"
     >
       <div className="flex items-center gap-1.5">
         <span className="text-gray-400 dark:text-gray-500">{icon}</span>
@@ -62,9 +71,7 @@ const DrawerSection: React.FC<DrawerSectionProps> = ({ title, icon, isOpen, onTo
       />
     </button>
     {isOpen && (
-      <div className={`animate-slide-down ${
-        flexible ? 'flex-1 min-h-0 overflow-y-auto' : ''
-      }`}>
+      <div className="animate-slide-down">
         {children}
       </div>
     )}
@@ -132,8 +139,12 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
 
   return (
     <div className="flex flex-col h-full w-full bg-white dark:bg-gray-800 overflow-hidden">
-      {/* Drawers area — fills remaining space, scrolls when content exceeds available space */}
-      <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+      {/* Drawers area — L4 (2026-06-09): switched from per-section
+          internal scroll to single outer scroll so users with multiple
+          drawers open can scroll the whole nav as one column instead
+          of being trapped at the bottom of a non-scrolling notebook
+          list. Drawer headers stick to the top while content scrolls. */}
+      <div className="flex-1 flex flex-col overflow-y-auto min-h-0">
       {/* Notebooks drawer */}
       <DrawerSection
         title="Notebooks"

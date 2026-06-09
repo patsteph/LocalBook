@@ -485,8 +485,14 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                   </div>
                 </div>
                 {moveTarget === source.id && (
-                  <div className="mt-1 p-1.5 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg border border-indigo-200 dark:border-indigo-700" onClick={(e) => e.stopPropagation()}>
-                    <p className="text-[10px] font-medium text-indigo-600 dark:text-indigo-400 mb-1 flex items-center gap-1">
+                  // L3 (2026-06-09) — was 11px text + truncate, which made
+                  // notebook names illegible in the narrow left-nav
+                  // column. Now 12px text + break-words so long names
+                  // wrap across multiple lines instead of being cut off.
+                  // Buttons get a bit taller but the user can actually
+                  // read which notebook they're picking.
+                  <div className="mt-1 p-2 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg border border-indigo-200 dark:border-indigo-700" onClick={(e) => e.stopPropagation()}>
+                    <p className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400 mb-1.5 flex items-center gap-1">
                       {moving ? (
                         <>
                           <Loader2 size={10} className="animate-spin" />
@@ -497,9 +503,9 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                       )}
                     </p>
                     {moveNotebooks.length === 0 ? (
-                      <p className="text-[10px] text-gray-500">No other notebooks</p>
+                      <p className="text-[11px] text-gray-500">No other notebooks</p>
                     ) : (
-                      <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto py-0.5">
+                      <div className="flex flex-col gap-1.5 max-h-60 overflow-y-auto py-0.5">
                         {moveNotebooks.map(nb => {
                           const isThisTarget = movingToId === nb.id;
                           // While a move is running we disable every option,
@@ -528,18 +534,18 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                                   setMovingToId(null);
                                 }
                               }}
-                              className={`relative overflow-hidden text-left px-2.5 py-1.5 text-[11px] rounded-md transition-colors truncate ${
+                              className={`relative overflow-hidden text-left px-2.5 py-1.5 text-xs rounded-md transition-colors leading-snug ${
                                 isThisTarget
                                   ? 'bg-indigo-200 dark:bg-indigo-700/60 text-indigo-900 dark:text-indigo-100 ring-1 ring-indigo-400 dark:ring-indigo-500'
                                   : moving
                                     ? 'opacity-40 cursor-not-allowed text-gray-700 dark:text-gray-300'
-                                    : 'hover:bg-indigo-100 dark:hover:bg-indigo-800/40 text-gray-700 dark:text-gray-300'
+                                    : 'hover:bg-indigo-100 dark:hover:bg-indigo-800/40 text-gray-800 dark:text-gray-200'
                               }`}
                             >
-                              <span className="flex items-center gap-1.5">
-                                {isThisTarget && <Loader2 size={11} className="animate-spin shrink-0" />}
-                                <span className="truncate">{nb.title}</span>
-                                {isThisTarget && <span className="ml-auto text-[10px] opacity-80 shrink-0">Moving…</span>}
+                              <span className="flex items-start gap-1.5">
+                                {isThisTarget && <Loader2 size={11} className="animate-spin shrink-0 mt-0.5" />}
+                                <span className="break-words">{nb.title}</span>
+                                {isThisTarget && <span className="ml-auto text-[10px] opacity-80 shrink-0 mt-0.5">Moving…</span>}
                               </span>
                               {/* Indeterminate progress bar: a small bar that
                                   slides L→R repeatedly under the active
