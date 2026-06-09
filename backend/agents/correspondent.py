@@ -74,6 +74,28 @@ def _save_queue(items: List[Dict[str, Any]]) -> None:
     _queue_file().write_text(json.dumps(items, indent=2))
 
 
+def _append_queue_item(queue_item: Dict[str, Any]) -> bool:
+    """H2 (2026-06-08) — append to the approval queue, deduping on
+    `message_id`. Belt-and-suspenders dedup for the queue surface — F4
+    catches dups at INGEST, but items can pile up in the queue (waiting
+    for user approval) and concurrent polls would otherwise double-queue
+    them. Returns True if appended, False if a same-Message-ID item was
+    already pending."""
+    items = _load_queue()
+    mid = (queue_item.get("message_id") or "").strip()
+    if mid:
+        for existing in items:
+            if (existing.get("message_id") or "").strip() == mid:
+                logger.info(
+                    f"[correspondent] queue dedup hit by message_id "
+                    f"({mid[:40]}) — skipping duplicate insert"
+                )
+                return False
+    items.append(queue_item)
+    _save_queue(items)
+    return True
+
+
 def _load_subscriptions() -> List[Dict[str, Any]]:
     p = _subscription_queue_file()
     if not p.exists():
@@ -266,16 +288,42 @@ def _imap_mark_seen(
 def _imap_delete(
     *, host: str, port: int, user: str, password: str, use_ssl: bool, uid: int,
 ) -> bool:
-    """Delete a single message by UID. Uses imap_tools' default delete +
-    expunge (the message is moved to Trash on Gmail/iCloud, hard-removed
-    on other providers). Called after successful ingest so the next sync
-    doesn't re-process the same message.
+    """Delete a single message by UID. Called after successful ingest so
+    the next sync doesn't re-process the same message.
+
+    Gmail-aware (2026-06-08, G3): plain IMAP delete on Gmail removes the
+    "Inbox" label but the message remains in "All Mail" — and depending
+    on the user's view, it may still appear in their inbox-like surfaces.
+    Moving explicitly to [Gmail]/Trash matches user expectation that
+    "deleted = gone." iCloud has an analogous "Deleted Messages" folder.
+    Other providers fall through to the standard delete+expunge.
 
     Best-effort: returns False on any failure but never raises — the
     source has already been ingested either way."""
     from imap_tools import MailBox
+    host_lower = (host or "").lower()
+    # Provider-specific trash folder. None → fall through to plain delete.
+    trash_folder: Optional[str] = None
+    if "gmail" in host_lower or "googlemail" in host_lower:
+        trash_folder = "[Gmail]/Trash"
+    elif "me.com" in host_lower or "mac.com" in host_lower or "icloud" in host_lower:
+        trash_folder = "Deleted Messages"
+
     try:
         with MailBox(host).login(user, password, initial_folder="INBOX") as box:
+            if trash_folder:
+                # Try the trash-move first. If the folder name is wrong for
+                # this user's locale (e.g. localized Gmail folders), fall
+                # back to plain delete so we still get the email out of
+                # the inbox view.
+                try:
+                    box.move([str(uid)], trash_folder)
+                    return True
+                except Exception as move_err:
+                    logger.debug(
+                        f"[correspondent.imap] move to {trash_folder} failed for "
+                        f"uid={uid} ({move_err}); falling back to delete"
+                    )
             box.delete([str(uid)])
         return True
     except Exception as e:
@@ -295,6 +343,12 @@ class CorrespondentAgent:
     def __init__(self) -> None:
         self._task: Optional[asyncio.Task] = None
         self._running = False
+        # H1 (2026-06-08) — per-account asyncio.Lock so the auto-poller
+        # and the manual /sync endpoint can't both fetch the same UIDs
+        # at the same time. Without this, concurrent polls each saw
+        # `uid > last_uid` against the SAME stale last_uid, ingested
+        # the same emails twice, and queued duplicate cards for the user.
+        self._account_locks: Dict[str, asyncio.Lock] = {}
         self.poll_interval_seconds = DEFAULT_POLL_INTERVAL_MINUTES * 60
         self.personal_folder = PERSONAL_FOLDER
 
@@ -360,6 +414,25 @@ class CorrespondentAgent:
         email = account["email"]
         result = {"ingested": 0, "queued": 0, "personal": 0, "transactional": 0, "forwards": 0, "errors": 0}
 
+        # H1 — serialize concurrent polls for the same account. If the
+        # lock is already held, we exit immediately rather than queueing
+        # — duplicate /sync clicks shouldn't pile up syncs in the
+        # background; the user expects "click sync" → "syncs now or no-op."
+        lock = self._account_locks.setdefault(email, asyncio.Lock())
+        if lock.locked():
+            logger.info(f"[correspondent.poll_account] {email}: already syncing — skip")
+            return {**result, "skipped": True}
+
+        async with lock:
+            return await self._poll_account_impl(account, email, result, update_imap_state)
+
+    async def _poll_account_impl(
+        self,
+        account: Dict[str, Any],
+        email: str,
+        result: Dict[str, Any],
+        update_imap_state,
+    ) -> Dict[str, Any]:
         try:
             fetch = await asyncio.to_thread(
                 _imap_fetch_new,
@@ -487,10 +560,8 @@ class CorrespondentAgent:
                     "raw_bytes_b64": _b64(msg.get("raw_bytes") or b""),
                     "created_at": datetime.utcnow().isoformat(),
                 }
-                items = _load_queue()
-                items.append(queue_item)
-                _save_queue(items)
-                counts["queued"] += 1
+                if _append_queue_item(queue_item):
+                    counts["queued"] += 1
 
             _remember_message_id(parsed.message_id)
             return
@@ -562,10 +633,8 @@ class CorrespondentAgent:
                 "raw_bytes_b64": _b64(msg.get("raw_bytes") or b""),
                 "created_at": datetime.utcnow().isoformat(),
             }
-            items = _load_queue()
-            items.append(queue_item)
-            _save_queue(items)
-            counts["queued"] += 1
+            if _append_queue_item(queue_item):
+                counts["queued"] += 1
 
         _remember_message_id(parsed.message_id)
 
@@ -615,24 +684,32 @@ class CorrespondentAgent:
         except Exception as _e:
             logger.debug(f"[correspondent.approve_queued] sender routing record skipped: {_e}")
 
-        # F3 (2026-06-08) — delete from IMAP after successful approval.
-        # Look up the account from the credential locker since the queue
-        # item only stores the email address, not credentials.
+        # F3 + G4 (2026-06-08) — delete from IMAP after successful approval.
+        # Awaited (not fire-and-forget) so we can return delete success to
+        # the UI. Approval got slightly slower but the user gets honest
+        # feedback that the email left both queue AND inbox.
+        imap_deleted: Optional[bool] = None
         try:
             from services.credential_locker import get_imap_account
             account = await get_imap_account(item.get("email_account") or "")
             if account and item.get("message_uid"):
-                asyncio.create_task(asyncio.to_thread(
+                imap_deleted = await asyncio.to_thread(
                     _imap_delete,
                     host=account["imap_host"], port=account["imap_port"],
                     user=account["imap_user"], password=account["imap_password"],
                     use_ssl=account.get("use_ssl", True),
                     uid=int(item["message_uid"]),
-                ))
+                )
         except Exception as _e:
             logger.debug(f"[correspondent.approve_queued] IMAP delete skipped: {_e}")
+            imap_deleted = False
 
-        return {"ok": True, "source_id": source_id, "notebook_id": target_nb}
+        return {
+            "ok": True,
+            "source_id": source_id,
+            "notebook_id": target_nb,
+            "imap_deleted": imap_deleted,
+        }
 
     async def _send_forward_confirmation(
         self,
@@ -691,7 +768,22 @@ class CorrespondentAgent:
     def list_queue(self) -> List[Dict[str, Any]]:
         items = _load_queue()
         # Strip raw_bytes_b64 from the listing — too large for the UI.
-        return [{k: v for k, v in i.items() if k != "raw_bytes_b64"} for i in items]
+        # Phase 14.G1 (2026-06-08) — also surface the sender_corrections
+        # count so the UI can show "after 1 more approval this sender will
+        # auto-route." Cheap: one JSON read shared across all items.
+        routing = _load_sender_routing()
+        out: List[Dict[str, Any]] = []
+        for i in items:
+            slim = {k: v for k, v in i.items() if k != "raw_bytes_b64"}
+            sender_norm = _normalize_sender(i.get("sender") or "")
+            sender_bucket = routing.get(sender_norm) or {}
+            slim["sender_corrections"] = (
+                int(sender_bucket.get(i.get("top_candidate", {}).get("notebook_id") or "", 0))
+                if i.get("top_candidate") else 0
+            )
+            slim["sender_correction_total"] = sum(int(v) for v in sender_bucket.values())
+            out.append(slim)
+        return out
 
     def status(self) -> Dict[str, Any]:
         return _load_status()

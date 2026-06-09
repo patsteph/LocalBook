@@ -26,11 +26,36 @@ function detectProvider(email: string) {
   return PROVIDER_HINTS.find((p) => p.domain === dom);
 }
 
+// 2026-06-08 — relative time helper for queue items + last-poll display.
+// Returns "5m ago" / "3h ago" / "2d ago" / "(never)" / ISO for old items.
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return '(never)';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '(unknown)';
+  const diffMs = Date.now() - t;
+  const seconds = Math.floor(diffMs / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
 export const CorrespondentSettings: React.FC = () => {
   const [accounts, setAccounts] = useState<IMAPAccount[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [subscriptions, setSubscriptions] = useState<SubscriptionProposal[]>([]);
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
+  // G2 (2026-06-08) — last poll status per account so the user can see
+  // sync activity (ingested / queued / etc).
+  const [statusByAccount, setStatusByAccount] = useState<Record<string, {
+    last_polled_at?: string;
+    last_error?: string | null;
+    last_result?: { ingested: number; queued: number; personal: number; transactional: number; errors: number };
+  }>>({});
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,16 +96,18 @@ export const CorrespondentSettings: React.FC = () => {
   const load = async () => {
     setLoading(true);
     try {
-      const [list, q, subs, nbs] = await Promise.all([
+      const [list, q, subs, nbs, status] = await Promise.all([
         correspondentService.listAccounts(),
         correspondentService.listQueue().catch(() => []),
         correspondentService.listSubscriptionQueue().catch(() => []),
         notebookService.list().catch(() => []),
+        correspondentService.status().catch(() => ({ accounts: {} } as any)),
       ]);
       setAccounts(list);
       setQueue(q);
       setSubscriptions(subs);
       setNotebooks(nbs);
+      setStatusByAccount((status as any)?.accounts || {});
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load accounts');
     } finally {
@@ -115,6 +142,8 @@ export const CorrespondentSettings: React.FC = () => {
 
   const handleApprove = async (item: QueueItem) => {
     setBusyItem(item.item_id);
+    setError(null);
+    setSuccess(null);
     try {
       // F5a (2026-06-08) — pass override notebook if user picked one.
       // Backend's approve_queued accepts an optional notebook_id; falls
@@ -122,7 +151,15 @@ export const CorrespondentSettings: React.FC = () => {
       // the sender → notebook signal so future emails from same sender
       // bias toward this choice (F5b).
       const override = overrideNotebook[item.item_id];
-      await correspondentService.approveQueueItem(item.item_id, override || undefined);
+      const result = await correspondentService.approveQueueItem(item.item_id, override || undefined);
+      // G4 (2026-06-08) — surface whether the email actually left the
+      // user's inbox. If imap_deleted is false, the source was ingested
+      // but the mailbox still has it — likely a permissions/folder issue.
+      if (result.imap_deleted === false) {
+        setSuccess('Approved and ingested — but couldn\'t remove from inbox. Check your mailbox manually.');
+      } else {
+        setSuccess('Approved. Source ingested, email cleared from inbox.');
+      }
       load();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Approve failed');
@@ -349,13 +386,16 @@ export const CorrespondentSettings: React.FC = () => {
           <p className="text-xs italic text-gray-500 dark:text-gray-400">No inboxes connected yet.</p>
         ) : (
           <div className="space-y-2">
-            {accounts.map((a) => (
+            {accounts.map((a) => {
+              const st = statusByAccount[a.email] || {};
+              const lr = st.last_result;
+              return (
               <div key={a.email} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 bg-white dark:bg-gray-800">
                 <div className="flex items-center justify-between">
-                  <div className="flex flex-col">
+                  <div className="flex flex-col min-w-0">
                     <span className="text-sm font-medium text-gray-800 dark:text-gray-100">{a.email}</span>
                     <span className="text-xs text-gray-500 dark:text-gray-400">
-                      {a.imap_host}:{a.imap_port} · last polled: {a.last_polled_at || '(never)'}
+                      {a.imap_host}:{a.imap_port}
                     </span>
                   </div>
                   <button
@@ -366,6 +406,26 @@ export const CorrespondentSettings: React.FC = () => {
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
+                {/* G2 (2026-06-08) — sync activity tile. Shows when the
+                    last poll happened + what it produced. Auto-routes are
+                    silent; this is the only visibility into them. */}
+                <div className="mt-2 flex items-center gap-3 text-xs text-gray-600 dark:text-gray-300">
+                  <span title={st.last_polled_at || a.last_polled_at || ''}>
+                    Last sync: <span className="font-medium">{relativeTime(st.last_polled_at || a.last_polled_at)}</span>
+                  </span>
+                  {lr && (
+                    <span className="text-gray-500 dark:text-gray-400">
+                      {lr.ingested > 0 && <>· <span className="text-emerald-700 dark:text-emerald-400">{lr.ingested} auto-routed</span></>}
+                      {lr.queued > 0 && <>· <span className="text-amber-700 dark:text-amber-400">{lr.queued} queued</span></>}
+                      {lr.personal > 0 && <>· {lr.personal} personal</>}
+                      {lr.transactional > 0 && <>· {lr.transactional} ignored</>}
+                      {lr.errors > 0 && <>· <span className="text-red-600 dark:text-red-400">{lr.errors} errors</span></>}
+                    </span>
+                  )}
+                </div>
+                {st.last_error && (
+                  <p className="mt-1 text-xs text-red-600 dark:text-red-400">⚠ {st.last_error}</p>
+                )}
                 {/* Phase 13 — weekly auto-journal toggle. Backend scheduler
                     composes a Sunday evening "what you learned this week"
                     HTML email per enabled account. Default on; user opts
@@ -388,7 +448,8 @@ export const CorrespondentSettings: React.FC = () => {
                   <span>Send me a weekly journal of what I learned</span>
                 </label>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -414,7 +475,9 @@ export const CorrespondentSettings: React.FC = () => {
                       )}
                       <p className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">{q.subject}</p>
                     </div>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">from {q.sender}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                      from {q.sender} · <span title={q.created_at}>{relativeTime(q.created_at)}</span>
+                    </p>
                     {q.summary && (
                       <p className="text-xs text-gray-600 dark:text-gray-300 mt-1 italic">{q.summary}</p>
                     )}
@@ -425,6 +488,18 @@ export const CorrespondentSettings: React.FC = () => {
                         {q.decision_reason && <span className="text-gray-400"> · {q.decision_reason}</span>}
                       </p>
                     )}
+                    {/* G1 (2026-06-08) — sender learning hint. Shows the
+                        user that the next email from this sender will
+                        auto-route after enough approvals accumulate. */}
+                    {(q.sender_corrections ?? 0) > 0 ? (
+                      <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-1">
+                        ✓ {q.sender_corrections} prior approval{q.sender_corrections === 1 ? '' : 's'} for this sender — should auto-route soon.
+                      </p>
+                    ) : (q.sender_correction_total ?? 0) === 0 ? (
+                      <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                        First time seeing this sender. Your choice teaches the router.
+                      </p>
+                    ) : null}
                     {/* F5a (2026-06-08) — override picker so the user can
                         redirect to any notebook. Defaults to the top_candidate.
                         Approval below uses overrideNotebook[item_id] when set. */}

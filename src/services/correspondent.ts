@@ -41,6 +41,11 @@ export interface QueueItem {
   alternatives?: { notebook_id: string; notebook_name: string; confidence: number }[];
   decision_reason: string;
   created_at: string;
+  // Phase 14.G1 (2026-06-08) — sender→notebook learning signal. Surfaces
+  // how many prior corrections this sender has accumulated so the user
+  // can see "1 more approval and this auto-routes."
+  sender_corrections?: number;
+  sender_correction_total?: number;
 }
 
 export interface CorrespondentStatus {
@@ -159,7 +164,7 @@ export const correspondentService = {
     return data.items || [];
   },
 
-  async approveQueueItem(itemId: string, notebookId?: string): Promise<{ source_id: string; notebook_id: string }> {
+  async approveQueueItem(itemId: string, notebookId?: string): Promise<{ source_id: string; notebook_id: string; imap_deleted?: boolean | null }> {
     const res = await localFetch(`${API_BASE_URL}/correspondent/queue/${itemId}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
