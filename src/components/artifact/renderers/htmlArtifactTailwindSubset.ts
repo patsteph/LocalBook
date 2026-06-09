@@ -23,11 +23,14 @@ export const HTML_ARTIFACT_TAILWIND_SUBSET = `
 
 .lb-html-artifact {
   /* Base typography + box-model reset. Matches the host page so nothing
-     looks foreign when shadow root mounts. */
+     looks foreign when shadow root mounts. K2 (2026-06-09): explicit
+     background-color so we always have correct contrast — defaults
+     ride the OS prefers-color-scheme which drifts from the app theme. */
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 14px;
   line-height: 1.5;
   color: #111827;
+  background-color: #ffffff;
   box-sizing: border-box;
 }
 .lb-html-artifact *,
@@ -229,38 +232,41 @@ export const HTML_ARTIFACT_TAILWIND_SUBSET = `
 .lb-html-artifact img { max-width: 100%; height: auto; }
 
 /* ────────────────────────────────────────────────────────────────────────
-   Dark mode — matched via prefers-color-scheme since the shadow root
-   has no access to the host's dark class. Inversions only — no new colors.
+   Dark mode — K2 (2026-06-09): driven by the explicit .lb-dark class
+   the host sets at mount time based on the app html.dark state, NOT
+   by OS prefers-color-scheme. The OS-based variant drifted from the
+   app theme and left users staring at unreadable text.
    ──────────────────────────────────────────────────────────────────────── */
-@media (prefers-color-scheme: dark) {
-  .lb-html-artifact { color: #e5e7eb; }
-  .lb-html-artifact code,
-  .lb-html-artifact pre { background: rgba(255,255,255,0.08); }
-  .lb-html-artifact th,
-  .lb-html-artifact td { border-bottom-color: #374151; }
-  .lb-html-artifact th { background: rgba(255,255,255,0.04); }
-  .lb-html-artifact hr { border-top-color: #374151; }
-  .lb-html-artifact blockquote { border-left-color: #4b5563; color: #9ca3af; }
-
-  .lb-html-artifact .text-gray-400 { color: #6b7280; }
-  .lb-html-artifact .text-gray-500 { color: #9ca3af; }
-  .lb-html-artifact .text-gray-600 { color: #d1d5db; }
-  .lb-html-artifact .text-gray-700 { color: #e5e7eb; }
-  .lb-html-artifact .text-gray-800 { color: #f3f4f6; }
-  .lb-html-artifact .text-gray-900 { color: #f9fafb; }
-
-  .lb-html-artifact .border,
-  .lb-html-artifact .border-gray-200,
-  .lb-html-artifact .border-gray-300 { border-color: #374151; }
-
-  .lb-html-artifact .bg-white { background-color: #1f2937; }
-  .lb-html-artifact .bg-gray-50 { background-color: #111827; }
-  .lb-html-artifact .bg-gray-100 { background-color: #1f2937; }
-  .lb-html-artifact .bg-blue-50 { background-color: #1e3a8a; }
-  .lb-html-artifact .bg-blue-100 { background-color: #1e40af; }
-  .lb-html-artifact .bg-green-50 { background-color: #064e3b; }
-  .lb-html-artifact .bg-amber-50 { background-color: #78350f; }
-  .lb-html-artifact .bg-emerald-50 { background-color: #064e3b; }
-  .lb-html-artifact .bg-red-50 { background-color: #7f1d1d; }
+.lb-html-artifact.lb-dark {
+  color: #e5e7eb;
+  background-color: #1f2937;
 }
+.lb-html-artifact.lb-dark code,
+.lb-html-artifact.lb-dark pre { background: rgba(255,255,255,0.08); }
+.lb-html-artifact.lb-dark th,
+.lb-html-artifact.lb-dark td { border-bottom-color: #374151; }
+.lb-html-artifact.lb-dark th { background: rgba(255,255,255,0.04); }
+.lb-html-artifact.lb-dark hr { border-top-color: #374151; }
+.lb-html-artifact.lb-dark blockquote { border-left-color: #4b5563; color: #9ca3af; }
+
+.lb-html-artifact.lb-dark .text-gray-400 { color: #6b7280; }
+.lb-html-artifact.lb-dark .text-gray-500 { color: #9ca3af; }
+.lb-html-artifact.lb-dark .text-gray-600 { color: #d1d5db; }
+.lb-html-artifact.lb-dark .text-gray-700 { color: #e5e7eb; }
+.lb-html-artifact.lb-dark .text-gray-800 { color: #f3f4f6; }
+.lb-html-artifact.lb-dark .text-gray-900 { color: #f9fafb; }
+
+.lb-html-artifact.lb-dark .border,
+.lb-html-artifact.lb-dark .border-gray-200,
+.lb-html-artifact.lb-dark .border-gray-300 { border-color: #374151; }
+
+.lb-html-artifact.lb-dark .bg-white { background-color: #1f2937; }
+.lb-html-artifact.lb-dark .bg-gray-50 { background-color: #111827; }
+.lb-html-artifact.lb-dark .bg-gray-100 { background-color: #1f2937; }
+.lb-html-artifact.lb-dark .bg-blue-50 { background-color: #1e3a8a; }
+.lb-html-artifact.lb-dark .bg-blue-100 { background-color: #1e40af; }
+.lb-html-artifact.lb-dark .bg-green-50 { background-color: #064e3b; }
+.lb-html-artifact.lb-dark .bg-amber-50 { background-color: #78350f; }
+.lb-html-artifact.lb-dark .bg-emerald-50 { background-color: #064e3b; }
+.lb-html-artifact.lb-dark .bg-red-50 { background-color: #7f1d1d; }
 `;

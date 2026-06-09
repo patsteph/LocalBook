@@ -500,31 +500,6 @@ export const CorrespondentSettings: React.FC = () => {
                         First time seeing this sender. Your choice teaches the router.
                       </p>
                     ) : null}
-                    {/* F5a (2026-06-08) — override picker so the user can
-                        redirect to any notebook. Defaults to the top_candidate.
-                        Approval below uses overrideNotebook[item_id] when set. */}
-                    {notebooks.length > 0 && (
-                      <div className="mt-2 flex items-center gap-2">
-                        <label className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                          Route to
-                        </label>
-                        <select
-                          value={overrideNotebook[q.item_id] ?? (q.top_candidate?.notebook_id || '')}
-                          onChange={(e) =>
-                            setOverrideNotebook((prev) => ({ ...prev, [q.item_id]: e.target.value }))
-                          }
-                          className="text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-gray-800 dark:text-gray-200 flex-1 min-w-0"
-                        >
-                          {!q.top_candidate && <option value="">— pick a notebook —</option>}
-                          {notebooks.map((nb) => (
-                            <option key={nb.id} value={nb.id}>
-                              {nb.title}
-                              {q.top_candidate?.notebook_id === nb.id ? ' (best match)' : ''}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
                   </div>
                   <div className="flex flex-col gap-1">
                     <button
@@ -547,6 +522,32 @@ export const CorrespondentSettings: React.FC = () => {
                     </button>
                   </div>
                 </div>
+                {/* K4 (2026-06-09) — full-width dropdown on its own row so
+                    long notebook titles aren't cut off by a sibling-flex
+                    layout. Was previously crammed inside the left column
+                    alongside the buttons. */}
+                {notebooks.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-700 flex items-center gap-2">
+                    <label className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 flex-shrink-0">
+                      Route to
+                    </label>
+                    <select
+                      value={overrideNotebook[q.item_id] ?? (q.top_candidate?.notebook_id || '')}
+                      onChange={(e) =>
+                        setOverrideNotebook((prev) => ({ ...prev, [q.item_id]: e.target.value }))
+                      }
+                      className="text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1.5 text-gray-800 dark:text-gray-200 flex-1 min-w-0"
+                    >
+                      {!q.top_candidate && <option value="">— pick a notebook —</option>}
+                      {notebooks.map((nb) => (
+                        <option key={nb.id} value={nb.id}>
+                          {nb.title}
+                          {q.top_candidate?.notebook_id === nb.id ? ' (best match)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
             ))}
           </div>

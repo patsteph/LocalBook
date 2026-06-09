@@ -787,15 +787,27 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
                   // artifact registry (strict HtmlArtifactRenderer, since
                   // the dashboard is server-composed and we want the
                   // strict sanitization guarantees).
-                  <ArtifactRender
-                    artifact={{
-                      id: msg.briefId || msg.timestamp.toISOString(),
-                      type: 'html',
-                      payload: msg.contentHtml,
-                      title: 'Morning brief',
-                    }}
-                    context="canvas-full"
-                  />
+                  // K3 (2026-06-09): the dashboard no longer contains
+                  // the LLM narrative (markdown was being rendered as
+                  // raw text). We render the markdown narrative *below*
+                  // the dashboard so headings + emphasis work properly.
+                  <>
+                    <ArtifactRender
+                      artifact={{
+                        id: msg.briefId || msg.timestamp.toISOString(),
+                        type: 'html',
+                        payload: msg.contentHtml,
+                        title: 'Morning brief',
+                      }}
+                      context="canvas-full"
+                    />
+                    <div className="mt-4">
+                      <MarkdownArtifactRenderer
+                        artifact={{ id: `${msg.timestamp.toISOString()}-narrative`, type: 'markdown', payload: msg.content }}
+                        context="chat-inline"
+                      />
+                    </div>
+                  </>
                 ) : (
                   <MarkdownArtifactRenderer
                     artifact={{ id: msg.timestamp.toISOString(), type: 'markdown', payload: msg.content }}

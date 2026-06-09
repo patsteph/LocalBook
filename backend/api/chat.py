@@ -2992,7 +2992,14 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
         return f"data: {json.dumps({'type': 'done', 'follow_up_questions': follow_ups, 'agent_name': name, 'agent_type': 'correspondent'})}\n\n"
 
     def _reply(text: str):
-        return f"data: {json.dumps({'type': 'reply_chunk', 'content': text})}\n\n"
+        # K1 fix (2026-06-09) — emit a single `token` event matching the
+        # pattern every other agent stream uses (curator, collector,
+        # research). The frontend chat consumer doesn't handle
+        # `reply_chunk`; using it silently dropped the reply and left
+        # the stream stuck at "processing" forever. Single-shot token
+        # is fine — chunking is only useful for word-by-word streaming
+        # which Correspondent doesn't do.
+        return f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
 
     def _mm_label(s: str, n: int = 40) -> str:
         s = _re.sub(r"[\(\)\[\]\{\}\"`:,]+", " ", str(s or ""))

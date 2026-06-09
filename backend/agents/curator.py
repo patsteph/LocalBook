@@ -5344,15 +5344,12 @@ Respond with JSON only:
             )
         parts.append('</div>')
 
-        # Narrative prose (sanitized — escape, then convert paragraph breaks)
-        if narrative:
-            paras = [p.strip() for p in narrative.split("\n\n") if p.strip()]
-            parts.append('<div class="mb-6">')
-            for p in paras:
-                parts.append(
-                    '<p class="text-sm text-gray-800 mb-3">' + _html.escape(p) + '</p>'
-                )
-            parts.append('</div>')
+        # Narrative prose intentionally omitted from the HTML dashboard
+        # (K3, 2026-06-09). The LLM-generated narrative often contains
+        # markdown (### headings, **bold**) which renders as raw text
+        # when shoved through html.escape + <p> wrapping. CuratorPanel
+        # now renders the narrative as a separate Markdown artifact
+        # below the dashboard so heading styles + emphasis work properly.
 
         # Consensus clusters
         if clusters:

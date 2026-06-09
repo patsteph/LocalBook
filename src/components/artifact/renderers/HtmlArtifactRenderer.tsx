@@ -59,10 +59,20 @@ export const HtmlArtifactRenderer: React.FC<RendererProps<string>> = ({
     const shadow = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
     const clean = DOMPurify.sanitize(html, SANITIZE_CONFIG);
 
+    // K2 (2026-06-09) — read the app's current theme from the root
+    // element so Shadow DOM doesn't drift from the parent. Tailwind's
+    // dark: prefix keys off `<html class="dark">`; we mirror that as
+    // `.lb-html-artifact.lb-dark` inside the shadow tree. Without
+    // this, an app in light mode + OS in dark mode renders pale text
+    // on a white card and the user can't read anything.
+    const isDark = typeof document !== 'undefined'
+      && document.documentElement.classList.contains('dark');
+    const themeClass = isDark ? 'lb-html-artifact lb-dark' : 'lb-html-artifact';
+
     // Replace the entire shadow content on every payload change. Cheaper
     // than diffing for the small-card sizes we target in Phase 2, and
     // guarantees no stale nodes survive a sanitization-config tightening.
-    shadow.innerHTML = `<style>${HTML_ARTIFACT_TAILWIND_SUBSET}</style><div class="lb-html-artifact">${clean}</div>`;
+    shadow.innerHTML = `<style>${HTML_ARTIFACT_TAILWIND_SUBSET}</style><div class="${themeClass}">${clean}</div>`;
   }, [html]);
 
   // Pass-through styling — see SvgArtifactRenderer for rationale.
