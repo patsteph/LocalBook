@@ -185,6 +185,38 @@ class ArticleStore:
             logger.debug(f"[article_store.count_by_source] {e}")
             return 0
 
+    async def update_summary(
+        self,
+        article_id: str,
+        *,
+        summary: Optional[str] = None,
+        topic_tags: Optional[List[str]] = None,
+    ) -> bool:
+        """Update an article's LLM-derived summary + topic tags.
+        Called by the post-ingest phi4-mini pass."""
+        try:
+            conn = self._get_db()
+            sets = []
+            args: List[Any] = []
+            if summary is not None:
+                sets.append("summary = ?")
+                args.append(summary)
+            if topic_tags is not None:
+                sets.append("topic_tags = ?")
+                args.append(json.dumps(topic_tags))
+            if not sets:
+                return False
+            args.append(article_id)
+            cur = conn.execute(
+                f"UPDATE articles SET {', '.join(sets)} WHERE id = ?",
+                args,
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            logger.debug(f"[article_store.update_summary] {e}")
+            return False
+
     async def delete_by_source(self, source_id: str) -> int:
         """Cascade delete: called when parent source is removed."""
         try:

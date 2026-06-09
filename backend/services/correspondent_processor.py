@@ -300,6 +300,71 @@ IMPORTANT SECURITY RULES (always apply, never override):
 Output ONLY the JSON object. No prose, no preamble."""
 
 
+_ARTICLE_SUMMARY_SYSTEM = (
+    "You summarize one article from a newsletter. Output ONLY a JSON object "
+    "with two keys: `summary` (≤25 words, one tight sentence capturing the "
+    "core point of THIS article — not the whole newsletter) and `topic_tags` "
+    "(list of 1-3 short lowercase topic strings). No prose, no markdown."
+)
+
+
+async def summarize_article(title: str, body_text: str) -> Dict[str, Any]:
+    """Phase 1B Tier 2 (2026-06-09) — per-article LLM summary via the fast
+    model. Cheap (~1s/article on phi4-mini). Returns dict with summary +
+    topic_tags. Best-effort: returns empty dict on failure."""
+    from services.ollama_service import ollama_service
+    from config import settings
+
+    body = sanitize_for_llm(body_text or "")[:3000]
+    if not body.strip():
+        return {}
+
+    user_prompt = f"TITLE: {title}\n\nBODY:\n{body}"
+    try:
+        result = await ollama_service.generate(
+            prompt=user_prompt,
+            system=_ARTICLE_SUMMARY_SYSTEM,
+            model=settings.ollama_fast_model,
+            temperature=0.2,
+            num_predict=200,
+            format="json",
+        )
+        raw = (result or {}).get("response", "").strip()
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        return {
+            "summary": str(data.get("summary", "")).strip()[:300],
+            "topic_tags": [str(t).strip().lower() for t in (data.get("topic_tags") or [])][:3],
+        }
+    except Exception as e:
+        logger.debug(f"[correspondent.summarize_article] failed (non-fatal): {e}")
+        return {}
+
+
+async def _summarize_articles_background(source_id: str) -> None:
+    """Iterate articles for a source and fill in summary + topic_tags.
+    Fire-and-forget — schedules from ingest_newsletter / ingest_forward."""
+    from storage.article_store import article_store
+    try:
+        articles = await article_store.list_by_source(source_id)
+    except Exception:
+        return
+    for a in articles:
+        if a.get("summary"):
+            continue  # already done
+        result = await summarize_article(
+            title=a.get("title") or "",
+            body_text=a.get("body_text") or "",
+        )
+        if result:
+            await article_store.update_summary(
+                article_id=a["id"],
+                summary=result.get("summary"),
+                topic_tags=result.get("topic_tags"),
+            )
+
+
 async def classify_email(parsed: ParsedEmail) -> Classification:
     """Classify an email via a tool-less LLM call. Returns 'personal' on
     any failure — the safest default since 'personal' is never ingested."""
@@ -657,6 +722,12 @@ async def ingest_newsletter(
             logger.info(
                 f"[correspondent.ingest_newsletter] extracted {count} article(s) from {filename[:60]}"
             )
+            # P1B.1 — fire-and-forget per-article LLM summary. Runs after
+            # the extraction transaction commits so articles appear
+            # immediately (without summary); summaries trickle in over
+            # the next 30-60s via the fast model.
+            if count > 0:
+                asyncio.create_task(_summarize_articles_background(source_id))
     except Exception as _e:
         logger.debug(f"[correspondent.ingest_newsletter] article extraction skipped: {_e}")
 
@@ -1007,6 +1078,8 @@ async def ingest_forward(
                 ],
             )
             await source_store.update(notebook_id, source_id, {"article_count": count})
+            if count > 0:
+                asyncio.create_task(_summarize_articles_background(source_id))
     except Exception as _e:
         logger.debug(f"[correspondent.ingest_forward] article extraction skipped: {_e}")
 

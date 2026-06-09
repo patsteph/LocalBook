@@ -66,7 +66,8 @@ async def _embed(text: str) -> List[float]:
 
 async def route(classification_summary: str, *, topic_tags: Optional[List[str]] = None,
                 threshold: float = ROUTING_THRESHOLD,
-                sender: Optional[str] = None) -> RoutingDecision:
+                sender: Optional[str] = None,
+                source_entities: Optional[List[Dict[str, Any]]] = None) -> RoutingDecision:
     """Decide which notebook this newsletter belongs to.
 
     Args:
@@ -135,11 +136,48 @@ async def route(classification_summary: str, *, topic_tags: Optional[List[str]] 
         except Exception as e:
             logger.debug(f"[notebook_router] sender bias skipped: {e}")
 
+    # P1B.2 (2026-06-09) — entity-overlap bonus. Per design D: for each
+    # entity shared between the incoming source and a notebook's top
+    # entities, add +0.05 to that notebook's score, capped at +0.20.
+    # Helps disambiguate cases where cosine ties two notebooks but only
+    # one actually has shared subject-matter entities.
+    entity_bonus_applied = False
+    if source_entities:
+        try:
+            from services.entity_extractor import entity_extractor
+
+            def _entity_key(e: Dict[str, Any]) -> str:
+                return (e.get("type", ""), (e.get("name") or "").strip().lower())
+
+            source_keys = {_entity_key(e) for e in source_entities if e.get("name")}
+            if source_keys:
+                for c in scored:
+                    try:
+                        nb_entities = entity_extractor.get_entities(c.notebook_id) or []
+                    except Exception:
+                        nb_entities = []
+                    nb_keys = {
+                        (getattr(e, "type", ""), (getattr(e, "name", "") or "").strip().lower())
+                        for e in nb_entities[:100]
+                    }
+                    shared = len(source_keys & nb_keys)
+                    if shared:
+                        bonus = min(0.20, 0.05 * shared)
+                        c.confidence = min(1.0, c.confidence + bonus)
+                        entity_bonus_applied = True
+        except Exception as e:
+            logger.debug(f"[notebook_router] entity bonus skipped: {e}")
+
     scored.sort(key=lambda c: c.confidence, reverse=True)
     top = scored[0]
     alternatives = scored[1:3]
 
-    reason_suffix = " (sender-bias applied)" if bias_applied else ""
+    reasons = []
+    if bias_applied:
+        reasons.append("sender-bias")
+    if entity_bonus_applied:
+        reasons.append("entity-overlap")
+    reason_suffix = f" ({' + '.join(reasons)} applied)" if reasons else ""
     if top.confidence >= threshold:
         return RoutingDecision(decision="route", top=top, alternatives=alternatives,
                               reason=f"cosine {top.confidence:.2f} ≥ {threshold:.2f}{reason_suffix}")

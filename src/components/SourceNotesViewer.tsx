@@ -17,6 +17,11 @@ interface SourceNotesViewerProps {
   sourceName: string;
   onClose: () => void;
   initialSearchTerm?: string;
+  // P1B.3 (2026-06-09) — when set, scroll the content area to roughly
+  // the position of this article within the parent newsletter. Best-
+  // effort: rough proportional jump (we don't know the actual article
+  // boundary offsets without a heavier integration).
+  initialArticlePosition?: number;
 }
 
 export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
@@ -25,6 +30,7 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
   sourceName,
   onClose,
   initialSearchTerm = '',
+  initialArticlePosition,
 }) => {
   const [content, setContent] = useState<SourceContent | null>(null);
   const [notes, setNotes] = useState('');
@@ -36,6 +42,24 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   const [totalMatches, setTotalMatches] = useState(0);
   const contentRef = useRef<HTMLDivElement>(null);
+
+  // P1B.3 (2026-06-09) — proportional scroll to the requested article
+  // position when content finishes loading. The article boundary
+  // detection happens at extraction time but isn't reflected in the
+  // rendered text, so we approximate: scroll to (position / 5) of the
+  // scrollable area. 5 is a rough max-articles estimate. Tunable later
+  // once we wire actual byte offsets into the render layer.
+  useEffect(() => {
+    if (typeof initialArticlePosition !== 'number' || initialArticlePosition <= 0) return;
+    if (loading) return;
+    const id = setTimeout(() => {
+      const el = contentRef.current?.closest('[class*="overflow-y-auto"]') as HTMLElement | null;
+      if (!el) return;
+      const fraction = Math.min(0.85, initialArticlePosition * 0.2);
+      el.scrollTo({ top: el.scrollHeight * fraction, behavior: 'smooth' });
+    }, 150);
+    return () => clearTimeout(id);
+  }, [initialArticlePosition, loading, content]);
 
   // Highlighting state
   const [highlights, setHighlights] = useState<Highlight[]>([]);

@@ -594,10 +594,32 @@ class CorrespondentAgent:
             return
 
         # newsletter
+        # P1B.2 (2026-06-09) — quick regex entity extraction for the
+        # routing tiebreaker. Full LLM entity extraction runs post-ingest
+        # for storage; this pre-route pass is just fast enough to
+        # influence the routing decision.
+        source_entities = None
+        try:
+            from services.entity_extractor import entity_extractor, _RETAINED_ENTITY_TYPES, _GENERIC_ENTITY_DENYLIST
+            text_for_entities = (
+                parsed.text_body
+                or (parsed.html_body[:8000] if parsed.html_body else "")
+            )[:8000]
+            quick = entity_extractor._extract_with_regex(text_for_entities) or []
+            source_entities = [
+                {"name": e.name, "type": e.type}
+                for e in quick
+                if e.type in _RETAINED_ENTITY_TYPES
+                and e.name.strip().lower() not in _GENERIC_ENTITY_DENYLIST
+            ][:30]
+        except Exception as _e:
+            logger.debug(f"[correspondent] quick entity scan skipped: {_e}")
+
         decision = await route_email(
             classification_summary=classification.summary,
             topic_tags=classification.topic_tags,
             sender=parsed.sender,
+            source_entities=source_entities,
         )
 
         if decision.decision == "route" and decision.top:

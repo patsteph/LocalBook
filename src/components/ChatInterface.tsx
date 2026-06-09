@@ -82,7 +82,27 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     sourceId: string;
     sourceName: string;
     searchTerm: string;
+    articlePosition?: number;
   } | null>(null);
+
+  // P1B.3 (2026-06-09) — listen for lb:openSource events dispatched by
+  // the in-chat article cards. Lets renderers open the source viewer
+  // without prop drilling onViewSource through every nested artifact.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {};
+      if (!detail.sourceId) return;
+      setSelectedSource({
+        sourceId: detail.sourceId,
+        sourceName: detail.sourceName || '',
+        searchTerm: detail.searchTerm || '',
+        articlePosition: typeof detail.articlePosition === 'number' ? detail.articlePosition : undefined,
+      });
+      setSourceViewerOpen(true);
+    };
+    window.addEventListener('lb:openSource', handler);
+    return () => window.removeEventListener('lb:openSource', handler);
+  }, []);
 
 
   useEffect(() => {
@@ -1108,6 +1128,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
           sourceId={selectedSource.sourceId}
           sourceName={selectedSource.sourceName}
           initialSearchTerm={selectedSource.searchTerm}
+          initialArticlePosition={selectedSource.articlePosition}
           onClose={() => {
             setSourceViewerOpen(false);
             setSelectedSource(null);
