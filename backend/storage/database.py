@@ -386,6 +386,35 @@ class Database:
             )
         """)
 
+        # -- articles (Phase 1 Tier 2, 2026-06-09) --
+        # Per-article rows for Correspondent newsletters. Each newsletter
+        # source can have N articles. Lazy-populated on first source-viewer
+        # open for existing data; populated at ingest time for new data.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS articles (
+                id              TEXT PRIMARY KEY,
+                source_id       TEXT NOT NULL,
+                notebook_id     TEXT NOT NULL,
+                position        INTEGER NOT NULL,
+                title           TEXT,
+                body_text       TEXT NOT NULL,
+                body_html       TEXT,
+                summary         TEXT,
+                topic_tags      TEXT DEFAULT '[]',
+                sender          TEXT,
+                created_at      TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_articles_source ON articles(source_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_articles_notebook ON articles(notebook_id, created_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_articles_sender ON articles(sender, created_at DESC)
+        """)
+
         # -- migration tracking --
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS migration_meta (
@@ -393,7 +422,7 @@ class Database:
                 value TEXT NOT NULL
             )
         """)
-        
+
         conn.commit()
     
     def close(self):

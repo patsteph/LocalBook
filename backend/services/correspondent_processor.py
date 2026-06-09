@@ -627,6 +627,53 @@ async def ingest_newsletter(
         })
         return None
 
+    # Phase 1 Tier 2 (2026-06-09) — extract articles and persist. Done
+    # synchronously here (cheap heuristic, no LLM hop) so the source
+    # immediately has its article_count.
+    try:
+        from services.article_extractor import extract_articles
+        from storage.article_store import article_store
+        articles = extract_articles(
+            html_body=parsed.html_body or "",
+            text_body=text,
+            fallback_title=filename,
+        )
+        if articles:
+            count = await article_store.create_batch(
+                source_id=source_id,
+                notebook_id=notebook_id,
+                sender=parsed.sender,
+                articles=[
+                    {
+                        "position": a.position,
+                        "title": a.title,
+                        "body_text": a.body_text,
+                        "body_html": a.body_html,
+                    }
+                    for a in articles
+                ],
+            )
+            await source_store.update(notebook_id, source_id, {"article_count": count})
+            logger.info(
+                f"[correspondent.ingest_newsletter] extracted {count} article(s) from {filename[:60]}"
+            )
+    except Exception as _e:
+        logger.debug(f"[correspondent.ingest_newsletter] article extraction skipped: {_e}")
+
+    # Phase 1 Tier 2 (2026-06-09) — entity tagging at ingest (Phase D).
+    # Fire-and-forget; never blocks ingest. Filters generic entities via
+    # the global denylist baked into entity_extractor.
+    try:
+        from services.entity_extractor import entity_extractor
+        asyncio.create_task(entity_extractor.extract_from_text(
+            text=text,
+            notebook_id=notebook_id,
+            source_id=source_id,
+            use_llm=True,
+        ))
+    except Exception as _e:
+        logger.debug(f"[correspondent.ingest_newsletter] entity extraction kickoff skipped: {_e}")
+
     # Emit so the curator brain picks it up.
     try:
         event_bus.emit_now(
@@ -932,6 +979,47 @@ async def ingest_forward(
             "error_message": str(e),
         })
         return None
+
+    # Phase 1 Tier 2 (2026-06-09) — same extraction + entity hooks as
+    # ingest_newsletter, except forwards have no html_body usually so we
+    # fall through to text heuristics.
+    try:
+        from services.article_extractor import extract_articles
+        from storage.article_store import article_store
+        articles = extract_articles(
+            html_body=None,
+            text_body=body,
+            fallback_title=filename,
+        )
+        if articles:
+            count = await article_store.create_batch(
+                source_id=source_id,
+                notebook_id=notebook_id,
+                sender=payload.original_sender or parsed.sender,
+                articles=[
+                    {
+                        "position": a.position,
+                        "title": a.title,
+                        "body_text": a.body_text,
+                        "body_html": a.body_html,
+                    }
+                    for a in articles
+                ],
+            )
+            await source_store.update(notebook_id, source_id, {"article_count": count})
+    except Exception as _e:
+        logger.debug(f"[correspondent.ingest_forward] article extraction skipped: {_e}")
+
+    try:
+        from services.entity_extractor import entity_extractor
+        asyncio.create_task(entity_extractor.extract_from_text(
+            text=body,
+            notebook_id=notebook_id,
+            source_id=source_id,
+            use_llm=True,
+        ))
+    except Exception as _e:
+        logger.debug(f"[correspondent.ingest_forward] entity extraction kickoff skipped: {_e}")
 
     try:
         event_bus.emit_now(

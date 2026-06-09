@@ -27,6 +27,7 @@ import { InteractiveHtmlArtifactRenderer } from './renderers/InteractiveHtmlArti
 import { ComparisonArtifactRenderer } from './renderers/ComparisonArtifactRenderer';
 import { CorrespondentQueueRenderer } from './renderers/CorrespondentQueueRenderer';
 import { CorrespondentSubscriptionsRenderer } from './renderers/CorrespondentSubscriptionsRenderer';
+import { CorrespondentArticlesRenderer } from './renderers/CorrespondentArticlesRenderer';
 
 let registered = false;
 
@@ -55,6 +56,8 @@ export function registerBuiltInRenderers(): void {
   // code fences in MarkdownArtifactRenderer to dispatch to these.
   rendererRegistry.register('json:correspondent-queue', CorrespondentQueueRenderer);
   rendererRegistry.register('json:correspondent-subscriptions', CorrespondentSubscriptionsRenderer);
+  // Phase 1 Tier 2 (2026-06-09) — per-article list with deep-link to source viewer
+  rendererRegistry.register('json:correspondent-articles', CorrespondentArticlesRenderer);
 }
 
 // Auto-register on import so consumers don't have to remember to call.

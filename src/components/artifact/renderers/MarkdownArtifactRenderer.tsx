@@ -175,6 +175,20 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
                 return null;
               }
             }
+            // Phase 1 Tier 2 (2026-06-09) — article list
+            if (/language-json-correspondent-articles/.test(codeClass || '')) {
+              try {
+                const payload = JSON.parse(raw);
+                return (
+                  <ArtifactRender
+                    artifact={{ id: `inline-corart-${raw.length}`, type: 'json:correspondent-articles', payload }}
+                    context={context}
+                  />
+                );
+              } catch {
+                return null;
+              }
+            }
             // Phase 14 (2026-06-08) — `html` code-fence routes to the
             // HtmlArtifactRenderer (Shadow DOM + DOMPurify strict). Lets
             // Curator asides, anticipatory drafts, and any markdown surface
@@ -207,6 +221,7 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
                 /language-json-chart/.test(cls) ||
                 /language-json-correspondent-queue/.test(cls) ||
                 /language-json-correspondent-subscriptions/.test(cls) ||
+                /language-json-correspondent-articles/.test(cls) ||
                 /language-html\b/.test(cls)
               )
             ) {

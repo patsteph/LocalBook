@@ -87,10 +87,10 @@ CORRESPONDENT_INTENTS: List[Dict[str, str]] = [
     {"id": "pause", "desc": "User wants to pause polling without removing the account", "params": "email: account email if specified"},
     {"id": "resume", "desc": "User wants to resume a paused account", "params": "email: account email if specified"},
     # Approval queue
-    {"id": "show_queue", "desc": "User wants to see pending low-confidence routing approvals", "params": "none"},
-    {"id": "approve_queued", "desc": "User wants to approve a queued item by its numeric position (e.g. 'approve 3', 'approve item 2', 'accept the first one')", "params": "index: 1-based numeric position of the item to approve"},
-    {"id": "reroute_queued", "desc": "User wants to approve a queued item but into a different notebook than the suggested one (e.g. 'send item 2 to AI Research', 'reroute 3 to my Cisco notebook')", "params": "index: 1-based position; notebook: notebook name or fragment"},
-    {"id": "dismiss_queued", "desc": "User wants to drop a queued item without ingesting (e.g. 'dismiss 3', 'skip item 2', 'delete the first one')", "params": "index: 1-based numeric position"},
+    {"id": "show_queue", "desc": "User wants to SEE the list of pending newsletter routing approvals — synonyms include 'show queue', 'show approval queue', 'show pending', 'show approvals', 'what's in the queue', 'list queued items'. Pick this for any READ/DISPLAY query about queued items. Do NOT pick approve_queued unless the user explicitly names a specific item by number.", "params": "none"},
+    {"id": "approve_queued", "desc": "User wants to APPROVE a SPECIFIC queued item by its numeric position (e.g. 'approve 3', 'approve item 2', 'accept the first one'). REQUIRES an explicit number. Do NOT pick this for phrases like 'show approval queue' or 'show pending' — those are show_queue.", "params": "index: 1-based numeric position of the item to approve (REQUIRED — do not pick this intent without an explicit number)"},
+    {"id": "reroute_queued", "desc": "User wants to approve a queued item but into a different notebook than the suggested one (e.g. 'send item 2 to AI Research', 'reroute 3 to my Cisco notebook'). REQUIRES both an explicit index AND a notebook name.", "params": "index: 1-based position; notebook: notebook name or fragment"},
+    {"id": "dismiss_queued", "desc": "User wants to DROP/skip a SPECIFIC queued item by its numeric position (e.g. 'dismiss 3', 'skip item 2', 'delete the first one'). REQUIRES an explicit number.", "params": "index: 1-based numeric position"},
     # Subscription + entity proposals
     {"id": "show_subscriptions", "desc": "User wants to see sister-newsletter or entity-watch proposals waiting for approval", "params": "none"},
     {"id": "approve_subscription", "desc": "User wants to accept a subscription proposal by its position (e.g. 'subscribe to 2', 'accept proposal 1')", "params": "index: 1-based position"},
@@ -107,6 +107,11 @@ CORRESPONDENT_INTENTS: List[Dict[str, str]] = [
     {"id": "show_sender", "desc": "User wants a deep dive on one sender: how much they send, which notebook(s) they route to, recent topics (e.g. 'show me alice@news.io', 'tell me about Stratechery')", "params": "email_or_name: sender email or display-name fragment"},
     {"id": "quiet_senders", "desc": "User wants to see which senders have gone silent — haven't sent anything in 21+ days (helps decide who to unsubscribe from)", "params": "days: silence threshold in days, default 21"},
     {"id": "move_source", "desc": "User wants to re-route a source that was already ingested to a different notebook (e.g. 'move that source to AI Research', 'this should be in Cisco notebook')", "params": "source_query: title/subject fragment to find the source; notebook: target notebook name"},
+    # Phase 1 Tier 2 (added 2026-06-09)
+    {"id": "show_articles", "desc": "User wants to see individual articles extracted from recent newsletters (per-article, not per-newsletter; e.g. 'show articles', 'list articles', 'what articles came in', 'show me what was in the newsletters')", "params": "limit: how many items, default 10"},
+    {"id": "show_articles_from_sender", "desc": "User wants the article list filtered to one sender (e.g. 'articles from Stratechery', 'show articles from alice@news.io')", "params": "email_or_name: sender email or fragment"},
+    {"id": "show_entities", "desc": "User wants to see the top entities (people, companies, products) extracted from recent newsletters across all notebooks", "params": "limit: how many entities, default 20"},
+    {"id": "show_entities_for_sender", "desc": "User wants the top entities from one sender's newsletters (helps understand what a sender focuses on)", "params": "email_or_name: sender email or fragment"},
 ]
 
 

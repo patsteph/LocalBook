@@ -14,6 +14,33 @@ import httpx
 from config import settings
 
 
+# Phase 1 Tier 2 (2026-06-09) — applied at extraction time so over-generic
+# entities don't flood routing decisions. Lowercase for case-insensitive
+# membership check. Per-notebook custom denylists deferred to Phase 4+.
+_GENERIC_ENTITY_DENYLIST = frozenset(s.lower() for s in [
+    # Tech generic
+    "ai", "artificial intelligence", "machine learning", "ml",
+    "llm", "large language model", "chatgpt", "gpt", "gpt-4", "gpt-5",
+    "openai", "anthropic", "google", "microsoft", "apple", "meta",
+    "twitter", "x", "facebook", "amazon", "youtube", "tiktok",
+    "linkedin", "instagram", "reddit", "github", "discord",
+    "internet", "web", "cloud", "data", "software", "hardware",
+    "ios", "android", "macos", "windows", "linux",
+    # Newsletter generic
+    "newsletter", "subscriber", "subscribe", "unsubscribe", "click here",
+    "read more", "continue reading", "view in browser", "this week",
+    "this month", "today", "yesterday", "tomorrow",
+    # Vacuous
+    "ceo", "cto", "vp", "founder", "team", "company", "organization",
+    "industry", "sector", "market", "world", "global", "us", "usa",
+])
+
+# Per D.1 spec decision — highest-signal entity types only. Skip
+# location / concept / event / date / metric for routing purposes
+# (still useful elsewhere, but not what we want biasing notebook routing).
+_RETAINED_ENTITY_TYPES = frozenset(["person", "company", "product"])
+
+
 @dataclass
 class Entity:
     """A named entity extracted from text."""
@@ -77,20 +104,32 @@ class EntityExtractor:
         use_llm: bool = True
     ) -> List[Entity]:
         """Extract entities from text.
-        
+
         Args:
             text: Text to extract entities from
             notebook_id: Notebook ID for storage
             source_id: Source ID for tracking
             use_llm: Whether to use LLM for extraction (slower but more accurate)
-            
+
         Returns: List of extracted entities
         """
         if use_llm:
             entities = await self._extract_with_llm(text)
         else:
             entities = self._extract_with_regex(text)
-        
+
+        if not entities:
+            return []
+
+        # Phase 1 Tier 2 (2026-06-09) — global denylist + type filter.
+        # Per spec decision D.1: only retain person / org (company) / product.
+        # Per spec decision D.2: bake a global denylist of common generic
+        # entities so they don't flood entity-overlap routing scores.
+        entities = [
+            e for e in entities
+            if e.type in _RETAINED_ENTITY_TYPES
+            and e.name.strip().lower() not in _GENERIC_ENTITY_DENYLIST
+        ]
         if not entities:
             return []
         

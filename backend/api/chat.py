@@ -3015,6 +3015,34 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
             intent = (cls or {}).get("intent") or "show_status"
             params = (cls or {}).get("params") or {}
 
+        # M2 (2026-06-09) — graceful fallback when action intents land
+        # without their required parameter. Better to show the queue
+        # than crash with "Couldn't find item undefined." This catches
+        # both classifier misroutes and ambiguous phrasings like
+        # "show approval queue" (which should be show_queue but
+        # occasionally gets approve_queued).
+        if intent in ("approve_queued", "reroute_queued", "dismiss_queued") and not params.get("index"):
+            logger.info(
+                f"[correspondent.chat] intent={intent} missing required index — "
+                f"falling back to show_queue for query: {q[:80]!r}"
+            )
+            intent = "show_queue"
+            params = {}
+        elif intent in ("approve_subscription", "dismiss_subscription") and not params.get("index"):
+            logger.info(
+                f"[correspondent.chat] intent={intent} missing required index — "
+                f"falling back to show_subscriptions for query: {q[:80]!r}"
+            )
+            intent = "show_subscriptions"
+            params = {}
+
+        # M3 (2026-06-09) — log the chosen intent so debugging mis-routes
+        # is easy. INFO level so it shows in production logs.
+        logger.info(
+            f"[correspondent.chat] resolved intent={intent} params={params} "
+            f"for query: {q[:80]!r}"
+        )
+
         # ─────────────────────────────────────────────────────────────
         # SYNC + STATUS
         # ─────────────────────────────────────────────────────────────
@@ -3386,6 +3414,119 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                                 yield _reply("⚠ Source move failed.")
                         except Exception as _move_e:
                             yield _reply(f"⚠ Source move failed: {_move_e}")
+
+        # ─────────────────────────────────────────────────────────────
+        # ARTICLES + ENTITIES (Phase 1 Tier 2 — 2026-06-09)
+        # ─────────────────────────────────────────────────────────────
+        elif intent in ("show_articles", "show_articles_from_sender"):
+            from storage.article_store import article_store
+            try:
+                limit = int(params.get("limit") or 12)
+            except (TypeError, ValueError):
+                limit = 12
+            if intent == "show_articles_from_sender":
+                query = (params.get("email_or_name") or "").strip()
+                if not query:
+                    yield _reply("Tell me which sender — e.g. `articles from Stratechery`.")
+                else:
+                    articles = await article_store.list_by_sender(query, limit=limit)
+            else:
+                articles = await article_store.list_recent(limit=limit)
+            if not articles:
+                yield _reply(
+                    "📭 No extracted articles yet. Articles are pulled from new newsletters as they arrive — "
+                    "if you just added an inbox, wait for the next sync."
+                )
+            else:
+                payload_obj = {
+                    "items": [
+                        {
+                            "id": a.get("id"),
+                            "title": a.get("title") or "(untitled)",
+                            "sender": a.get("sender"),
+                            "summary": a.get("summary") or (a.get("body_text") or "")[:200],
+                            "position": a.get("position"),
+                            "source_id": a.get("source_id"),
+                            "notebook_id": a.get("notebook_id"),
+                            "created_at": a.get("created_at"),
+                            "topic_tags": a.get("topic_tags") or [],
+                        }
+                        for a in articles
+                    ],
+                    "empty_message": "No articles match that filter.",
+                }
+                yield _reply("```json-correspondent-articles\n" + json.dumps(payload_obj) + "\n```")
+
+        elif intent in ("show_entities", "show_entities_for_sender"):
+            try:
+                from services.entity_extractor import entity_extractor
+                try:
+                    limit = int(params.get("limit") or 20)
+                except (TypeError, ValueError):
+                    limit = 20
+
+                if intent == "show_entities_for_sender":
+                    sender_query = (params.get("email_or_name") or "").strip().lower()
+                    if not sender_query:
+                        yield _reply("Tell me which sender — e.g. `show entities for Stratechery`.")
+                        yield _done()
+                        return
+                    # Collect notebooks containing articles from this sender,
+                    # then aggregate their entities.
+                    from storage.article_store import article_store
+                    matched_articles = await article_store.list_by_sender(sender_query, limit=200)
+                    notebooks_seen = {a.get("notebook_id") for a in matched_articles if a.get("notebook_id")}
+                else:
+                    sender_query = None
+                    from storage.notebook_store import notebook_store
+                    nbs = await notebook_store.list() or []
+                    notebooks_seen = {nb["id"] for nb in nbs}
+
+                if not notebooks_seen:
+                    yield _reply("No entity data yet — new newsletter ingests will start populating this.")
+                else:
+                    counts: Dict[str, Dict[str, Any]] = {}
+                    for nb_id in notebooks_seen:
+                        try:
+                            entries = entity_extractor.get_entities(nb_id)
+                        except Exception:
+                            entries = []
+                        for e in (entries or [])[:200]:
+                            name = (e.name if hasattr(e, "name") else e.get("name", "")).strip()
+                            etype = e.type if hasattr(e, "type") else e.get("type")
+                            mentions = e.mentions if hasattr(e, "mentions") else e.get("mentions", 1)
+                            if not name:
+                                continue
+                            key = (etype, name.lower())
+                            if key in counts:
+                                counts[key]["mentions"] += int(mentions or 1)
+                            else:
+                                counts[key] = {
+                                    "name": name,
+                                    "type": etype,
+                                    "mentions": int(mentions or 1),
+                                }
+                    top = sorted(counts.values(), key=lambda c: c["mentions"], reverse=True)[:limit]
+                    if not top:
+                        yield _reply(
+                            f"No entities yet{' for that sender' if sender_query else ''}. "
+                            "New newsletter ingests will populate this."
+                        )
+                    else:
+                        scope_label = f"sender `{sender_query}`" if sender_query else "all notebooks"
+                        lines = [f"**📚 Top {len(top)} entities — {scope_label}:**\n"]
+                        # Bucket by type for readability
+                        by_type: Dict[str, List[str]] = {}
+                        for c in top:
+                            label = f"`{c['name']}` ({c['mentions']})"
+                            by_type.setdefault(c["type"], []).append(label)
+                        for etype in ("person", "company", "product"):
+                            if etype in by_type:
+                                lines.append(f"\n**{etype.capitalize()}s:** " + ", ".join(by_type[etype]))
+                        yield _reply("\n".join(lines))
+            except Exception as _ent_e:
+                logger.warning(f"[correspondent.show_entities] failed: {_ent_e}")
+                yield _reply(f"⚠ Couldn't load entities: {_ent_e}")
 
         # ─────────────────────────────────────────────────────────────
         # HOT / COLD + SUMMARIES (I6)
