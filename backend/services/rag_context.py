@@ -68,16 +68,44 @@ async def build_citations_and_context(
     
     Returns: (citations, sources_set, context_string, low_confidence)
     """
-    # Get source filenames for citations
+    # Get source filenames for citations.
+    # P1C.3 (2026-06-10) — `art-{article_id}` source_ids point to article-
+    # level LanceDB chunks (no real source_store row). Map them back to
+    # the parent newsletter's filename + article title so citations show
+    # something meaningful and clicking returns the user to the source
+    # viewer at the right place.
+    from services.article_rag import is_article_source_id, resolve_citation_source
     source_filenames = {}
+    article_mappings: Dict[str, Dict] = {}  # synthetic_id -> resolved info
     for result in results:
         sid = result["source_id"]
-        if sid not in source_filenames:
-            source_data = await source_store.get(sid)
-            filename = source_data.get("filename", "Unknown") if source_data else "Unknown"
-            # Lazy-fix YouTube fallback titles
-            filename = await _try_fix_youtube_title(filename, sid, source_data or {})
-            source_filenames[sid] = filename
+        if sid in source_filenames:
+            continue
+        if is_article_source_id(sid):
+            try:
+                mapping = await resolve_citation_source(sid)
+            except Exception:
+                mapping = None
+            if mapping:
+                article_mappings[sid] = mapping
+                # Rewrite the citation's source_id to point to the parent
+                # so source-viewer open and dedup logic downstream work
+                # transparently. Display name combines article + parent.
+                result["source_id"] = mapping["source_id"]
+                result["article_id"] = mapping.get("article_id")
+                result["article_position"] = mapping.get("article_position")
+                article_title = mapping.get("article_title") or "Article"
+                parent_name = mapping.get("filename") or "Newsletter"
+                source_filenames[mapping["source_id"]] = f"{article_title} — {parent_name}"
+                # Map the original synthetic id to the parent for any
+                # later lookup that didn't get the rewrite.
+                source_filenames[sid] = source_filenames[mapping["source_id"]]
+                continue
+        source_data = await source_store.get(sid)
+        filename = source_data.get("filename", "Unknown") if source_data else "Unknown"
+        # Lazy-fix YouTube fallback titles
+        filename = await _try_fix_youtube_title(filename, sid, source_data or {})
+        source_filenames[sid] = filename
 
     # Build citations from search results
     all_citations = []

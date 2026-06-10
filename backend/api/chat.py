@@ -2980,6 +2980,7 @@ def _quick_intent_for_correspondent(query: str) -> tuple:
     # Discovery + browse (no params)
     simple_patterns = [
         (r"^(show|list)\s+articles?$|show me articles", "show_articles"),
+        (r"^backfill(\s+articles?)?$|^extract\s+articles?\s+for\s+old\b|rebuild\s+article\s+index", "backfill_articles"),
         (r"^(show|list)\s+subscriptions?$|show.*proposals?$", "show_subscriptions"),
         (r"^(show|list)\s+(approval\s+)?queue$|^(show\s+)?pending$|^show\s+approvals?$", "show_queue"),
         (r"^(show|list)\s+accounts?$|^(show|list)\s+inboxes?$", "show_accounts"),
@@ -3502,6 +3503,21 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
         # ─────────────────────────────────────────────────────────────
         # ARTICLES + ENTITIES (Phase 1 Tier 2 — 2026-06-09)
         # ─────────────────────────────────────────────────────────────
+        elif intent == "backfill_articles":
+            yield _reply("🔄 Backfilling articles for older newsletters… this may take a few minutes.")
+            try:
+                # Direct call — endpoint logic lives in api/articles.py
+                from api.articles import backfill_all_articles
+                result = await backfill_all_articles()
+                yield _reply(
+                    f"✓ Backfill complete. Processed **{result['sources_processed']}** "
+                    f"older newsletter(s); extracted **{result['articles_created']}** article(s). "
+                    f"Per-article LLM summaries + embeddings are running in the background — "
+                    f"give it a couple minutes then try `show articles`."
+                )
+            except Exception as _bf_e:
+                yield _reply(f"⚠ Backfill failed: {_bf_e}")
+
         elif intent in ("show_articles", "show_articles_from_sender"):
             from storage.article_store import article_store
             try:

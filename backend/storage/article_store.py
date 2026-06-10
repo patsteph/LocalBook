@@ -80,7 +80,8 @@ class ArticleStore:
         articles: List[Dict[str, Any]],
     ) -> int:
         """Bulk insert. `articles` is a list of dicts with position, title,
-        body_text, body_html (optional). Returns count inserted."""
+        body_text, body_html (optional), body_text_offset (optional, -1 if
+        unknown). Returns count inserted."""
         if not articles:
             return 0
         conn = self._get_db()
@@ -99,12 +100,13 @@ class ArticleStore:
                 json.dumps(a.get("topic_tags") or []),
                 sender,
                 now,
+                int(a.get("body_text_offset", -1)),
             ))
         conn.executemany(
             """INSERT INTO articles
                (id, source_id, notebook_id, position, title, body_text, body_html,
-                summary, topic_tags, sender, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                summary, topic_tags, sender, created_at, body_text_offset)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         conn.commit()

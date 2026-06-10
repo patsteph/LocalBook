@@ -43,23 +43,74 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
   const [totalMatches, setTotalMatches] = useState(0);
   const contentRef = useRef<HTMLDivElement>(null);
 
-  // P1B.3 (2026-06-09) — proportional scroll to the requested article
-  // position when content finishes loading. The article boundary
-  // detection happens at extraction time but isn't reflected in the
-  // rendered text, so we approximate: scroll to (position / 5) of the
-  // scrollable area. 5 is a rough max-articles estimate. Tunable later
-  // once we wire actual byte offsets into the render layer.
+  // P1C.1+P1C.2 (2026-06-10) — on open: if source is a newsletter and
+  // has no articles yet, trigger lazy backfill on the backend. Then,
+  // once content is loaded and articles are known, scroll to the exact
+  // character offset of the requested article (real offsets, not the
+  // P1B proportional approximation).
   useEffect(() => {
-    if (typeof initialArticlePosition !== 'number' || initialArticlePosition <= 0) return;
-    if (loading) return;
-    const id = setTimeout(() => {
-      const el = contentRef.current?.closest('[class*="overflow-y-auto"]') as HTMLElement | null;
-      if (!el) return;
-      const fraction = Math.min(0.85, initialArticlePosition * 0.2);
-      el.scrollTo({ top: el.scrollHeight * fraction, behavior: 'smooth' });
-    }, 150);
-    return () => clearTimeout(id);
-  }, [initialArticlePosition, loading, content]);
+    if (typeof initialArticlePosition !== 'number' || initialArticlePosition < 0) return;
+    if (loading || !content) return;
+
+    const targetEl = contentRef.current?.closest('[class*="overflow-y-auto"]') as HTMLElement | null;
+    if (!targetEl) return;
+
+    // Try real-offset scroll via the /articles endpoint
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await localFetch(`${API_BASE_URL}/articles/by-source/${sourceId}`);
+        if (cancelled) return;
+        if (!res.ok) {
+          // Fall back to proportional scroll
+          const fraction = Math.min(0.85, initialArticlePosition * 0.2);
+          targetEl.scrollTo({ top: targetEl.scrollHeight * fraction, behavior: 'smooth' });
+          return;
+        }
+        const data = await res.json();
+        const articles = (data?.articles || []) as Array<{ position: number; body_text_offset: number }>;
+        const target = articles.find((a) => a.position === initialArticlePosition);
+        const offset = target?.body_text_offset;
+        const totalChars = (content.content || '').length;
+        if (typeof offset === 'number' && offset > 0 && totalChars > 0) {
+          // Translate character offset → scroll position. The rendered
+          // content area has the full text so the linear scale matches.
+          const fraction = Math.min(0.98, offset / totalChars);
+          targetEl.scrollTo({ top: targetEl.scrollHeight * fraction, behavior: 'smooth' });
+        } else {
+          // Fallback: proportional
+          const fraction = Math.min(0.85, initialArticlePosition * 0.2);
+          targetEl.scrollTo({ top: targetEl.scrollHeight * fraction, behavior: 'smooth' });
+        }
+      } catch {
+        const fraction = Math.min(0.85, initialArticlePosition * 0.2);
+        targetEl.scrollTo({ top: targetEl.scrollHeight * fraction, behavior: 'smooth' });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [initialArticlePosition, loading, content, sourceId]);
+
+  // P1C.1 (2026-06-10) — lazy backfill trigger. Fires once per source
+  // open. Backend no-ops if articles already exist.
+  useEffect(() => {
+    if (loading || !content) return;
+    const fmt = (content.format || '').toLowerCase();
+    if (fmt !== 'email' && fmt !== 'forward') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        // Check article count first to avoid an unnecessary POST.
+        const probe = await localFetch(`${API_BASE_URL}/articles/by-source/${sourceId}`);
+        if (cancelled || !probe.ok) return;
+        const data = await probe.json();
+        if ((data?.count || 0) > 0) return;
+        await localFetch(`${API_BASE_URL}/articles/backfill/${sourceId}`, { method: 'POST' });
+      } catch {
+        // non-fatal
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sourceId, loading, content]);
 
   // Highlighting state
   const [highlights, setHighlights] = useState<Highlight[]>([]);

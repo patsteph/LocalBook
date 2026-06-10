@@ -109,7 +109,7 @@ from storage.findings_store import init_findings_store
 init_findings_store(settings.data_dir)
 
 # NOW import API modules — stores will read the (possibly corrected) use_sqlite flag
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api, comparison, correspondent as correspondent_api, synthesis as synthesis_api
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api, comparison, correspondent as correspondent_api, synthesis as synthesis_api, articles as articles_api
 from api.capture import capture_router
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
@@ -525,6 +525,7 @@ app.add_middleware(
 app.include_router(comparison.router, prefix="/comparison", tags=["comparison"])
 app.include_router(correspondent_api.router, prefix="/correspondent", tags=["correspondent"])
 app.include_router(synthesis_api.router, prefix="/synthesis", tags=["synthesis"])
+app.include_router(articles_api.router, prefix="/articles", tags=["articles"])
 app.include_router(notebooks.router, prefix="/notebooks", tags=["notebooks"])
 app.include_router(sources.router, prefix="/sources", tags=["sources"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])

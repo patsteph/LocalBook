@@ -25,11 +25,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ExtractedArticle:
-    """Result of splitting a newsletter body. Position is 0-based."""
+    """Result of splitting a newsletter body. Position is 0-based.
+
+    `body_text_offset` (P1C.2, 2026-06-10) — character offset of this
+    article's body within the parent newsletter's flattened text body.
+    Used by SourceNotesViewer to scroll exactly to the article boundary
+    when a user clicks an article card in chat. -1 means "unknown" (the
+    splitter couldn't determine — fall back to proportional scroll)."""
     position: int
     title: str
     body_text: str
     body_html: Optional[str] = None
+    body_text_offset: int = -1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -249,8 +256,14 @@ def extract_articles(
         else:
             segments = [text]
 
+    # P1C.2 — compute the flattened parent text once so we can locate
+    # each article body's character offset within it. The viewer uses
+    # that offset to scroll precisely instead of guessing proportionally.
+    parent_flat_text = _strip_html_tags(html) if html else text
+
     # Build the ExtractedArticle list
     out: List[ExtractedArticle] = []
+    search_from = 0  # advance through parent text so duplicate substrings don't collide
     for pos, seg in enumerate(segments):
         if use_html:
             seg_text = _strip_html_tags(seg)
@@ -264,11 +277,28 @@ def extract_articles(
             continue
         if pos == 0 and (not title or title == "(untitled)"):
             title = fallback_title[:200]
+
+        # Find this article's body in the parent text starting from where
+        # the previous article ended. Use a probe — first 80 non-space
+        # chars of the article body — to dodge text-cleanup mismatches.
+        probe = re.sub(r"\s+", " ", seg_text[:200]).strip()[:80]
+        offset = -1
+        if probe and parent_flat_text:
+            flat_window = parent_flat_text[search_from:]
+            normalized_flat = re.sub(r"\s+", " ", flat_window)
+            found = normalized_flat.find(probe)
+            if found >= 0:
+                # Map back to original parent_flat_text index — close-enough
+                # since whitespace collapse is monotonic.
+                offset = search_from + found
+                search_from = offset + len(seg_text) // 2  # advance halfway through
+
         out.append(ExtractedArticle(
             position=pos,
             title=title,
             body_text=seg_text,
             body_html=seg_html,
+            body_text_offset=offset,
         ))
 
     # Ensure we always return ≥1 article

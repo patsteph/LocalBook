@@ -392,6 +392,27 @@ class SourceStore:
                     self._save_data(data)
                     deleted = True
 
+        # P1C.3 (2026-06-10) — cascade delete articles + their RAG chunks
+        # when their parent newsletter is removed. Best-effort: failures
+        # leave orphaned rows but don't block the parent deletion.
+        if deleted:
+            try:
+                from storage.article_store import article_store
+                from services.article_rag import synthetic_id_for_article
+                from services.rag_engine import rag_engine
+                article_rows = await article_store.list_by_source(source_id)
+                for ar in article_rows:
+                    ar_id = ar.get("id")
+                    if not ar_id:
+                        continue
+                    try:
+                        await rag_engine.delete_source(notebook_id, synthetic_id_for_article(ar_id))
+                    except Exception:
+                        pass
+                await article_store.delete_by_source(source_id)
+            except Exception as _e:
+                logger.debug(f"[source_store.delete] article cascade skipped: {_e}")
+
         # Fix #5 (2026-05-23): emit source_removed when the user explicitly
         # deletes a source. This is the strongest negative signal we get for
         # Phase 7.6 source reputation — "this source was useless enough to

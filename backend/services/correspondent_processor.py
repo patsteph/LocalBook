@@ -344,10 +344,12 @@ async def summarize_article(title: str, body_text: str) -> Dict[str, Any]:
 
 async def _summarize_articles_background(source_id: str) -> None:
     """Iterate articles for a source and fill in summary + topic_tags +
-    embedding. Fire-and-forget — schedules from ingest_newsletter /
-    ingest_forward. P2.1 adds the embedding step for clustering."""
+    embedding + RAG-index. Fire-and-forget — schedules from
+    ingest_newsletter / ingest_forward. P2.1 added embedding; P1C.3
+    adds independent RAG indexing per article."""
     from storage.article_store import article_store
     from services.ollama_service import ollama_service
+    from services.article_rag import index_pending_for_source
     import struct as _struct
 
     try:
@@ -384,6 +386,14 @@ async def _summarize_articles_background(source_id: str) -> None:
                     await article_store.update_embedding(a["id"], blob)
         except Exception as e:
             logger.debug(f"[correspondent.summarize_articles] embed failed (non-fatal): {e}")
+
+    # P1C.3 (2026-06-10) — index articles into LanceDB as their own
+    # retrievable entries. Runs after summaries + embeddings so the RAG
+    # chunks benefit from the title/summary metadata. Idempotent.
+    try:
+        await index_pending_for_source(source_id)
+    except Exception as e:
+        logger.debug(f"[correspondent.summarize_articles] RAG index failed (non-fatal): {e}")
 
 
 async def classify_email(parsed: ParsedEmail) -> Classification:
@@ -735,6 +745,7 @@ async def ingest_newsletter(
                         "title": a.title,
                         "body_text": a.body_text,
                         "body_html": a.body_html,
+                        "body_text_offset": a.body_text_offset,
                     }
                     for a in articles
                 ],
@@ -1094,6 +1105,7 @@ async def ingest_forward(
                         "title": a.title,
                         "body_text": a.body_text,
                         "body_html": a.body_html,
+                        "body_text_offset": a.body_text_offset,
                     }
                     for a in articles
                 ],

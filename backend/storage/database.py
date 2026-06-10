@@ -422,6 +422,21 @@ class Database:
         except sqlite3.OperationalError as _e:
             if "duplicate column" not in str(_e).lower():
                 raise
+        # P1C.2 (2026-06-10) — character offset of this article's body
+        # within the parent newsletter's flattened text. Used for exact
+        # scroll-to-article in the source viewer. -1 if unknown.
+        try:
+            cursor.execute("ALTER TABLE articles ADD COLUMN body_text_offset INTEGER DEFAULT -1")
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
+        # P1C.3 (2026-06-10) — rag_indexed flag so we know which articles
+        # already have their own LanceDB chunks (for skip-on-retry).
+        try:
+            cursor.execute("ALTER TABLE articles ADD COLUMN rag_indexed INTEGER DEFAULT 0")
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
 
         # -- topic_clusters (Phase 2.2 Tier 2, 2026-06-09) --
         # Output of the article-level hot/cold clustering pass.
