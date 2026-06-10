@@ -402,24 +402,23 @@ async def _summarize_articles_background(source_id: str) -> None:
                 )
         effective_summary = (new_summary or a.get("summary") or "").strip()
         current_title = (a.get("title") or "").strip()
-        # Q1.f (2026-06-10) — lighter summary gate. LLM summaries are
-        # already clean prose, so we accept them as titles even when
-        # they'd fail the strict tail-word / leading-lowercase rules
-        # (those rules target raw paragraph fragments, not summaries).
+        # Q1.h (2026-06-10) — always prefer the LLM summary as the title
+        # when summary is clean prose, regardless of what extraction
+        # picked. The summary is engineered to be a one-liner; the
+        # body's first line never will be.
         summary_bad = (
             not effective_summary
             or len(effective_summary) < 8
             or effective_summary.startswith("<")
             or effective_summary.lower().startswith(("view online", "sign up", "subscribe", "unsubscribe"))
         )
-        if not summary_bad and (
-            current_title == "(untitled)" or not _looks_like_title(current_title)
-        ):
+        if not summary_bad:
             first_sent = _re_ts.split(r"(?<=[.!?])\s+", effective_summary, maxsplit=1)[0].strip()
             if first_sent and len(first_sent) >= 8:
                 candidate = first_sent[:140].rstrip(". ")
-                await article_store.update_title(a["id"], candidate)
-                a["title"] = candidate  # so the embed pass below uses the clean title
+                if candidate != current_title:
+                    await article_store.update_title(a["id"], candidate)
+                    a["title"] = candidate  # so the embed pass below uses the clean title
 
         # P2.1 — embedding pass. Title + summary first, fall back to body
         # text. Stored as packed float32 bytes for cheap numpy.frombuffer.

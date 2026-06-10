@@ -3620,58 +3620,53 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                 d_first_sent_short = 0
                 sample_lines: list[str] = []
                 for a in articles:
+                    old = (a.get("title") or "").strip()
+                    # Q1.h (2026-06-10) — root-cause realization: the
+                    # 77/80 articles "passing the gate" were real prose
+                    # but visually inferior to the LLM-written summary
+                    # sitting next to them. The summary is engineered
+                    # to be a one-liner; the body's first line never
+                    # will be. So just always prefer the summary first
+                    # sentence when summary exists + isn't chrome/HTML.
+                    summary = (a.get("summary") or "").strip()
+                    candidate: Optional[str] = None
+                    if summary and len(summary) >= 8 and not summary.startswith("<") and not summary.lower().startswith(("view online", "sign up", "subscribe", "unsubscribe")):
+                        first_sent = _re_rt.split(r"(?<=[.!?])\s+", summary, maxsplit=1)[0].strip()
+                        if first_sent and len(first_sent) >= 8:
+                            candidate = first_sent[:140].rstrip(". ")
+                    if candidate and candidate != old:
+                        await article_store.update_title(a["id"], candidate)
+                        fixed += 1
+                        from_summary += 1
+                        d_summary_used += 1
+                        if len(sample_lines) < 5:
+                            sample_lines.append(f"  ✓ `{(old or '∅')[:50]}` → `{candidate[:60]}`")
+                        continue
+                    # No clean summary → fall back to extraction + strict
+                    # gate (kept for the edge cases summary doesn't cover)
                     new_title = _extract_title_from_segment(
                         text=a.get("body_text") or "",
                         html=a.get("body_html") or "",
                     )
-                    old = (a.get("title") or "").strip()
-                    came_from_summary = False
-                    # Q1.c (2026-06-10) — when extraction can't find a good
-                    # title AND the saved title is also bad, derive one from
-                    # the LLM summary (which is already clean prose). First
-                    # sentence, capped at 140 chars, no trailing period.
-                    # Diagnostic: which gate did `old` hit?
-                    old_passes = _looks_like_title(old)
-                    if old_passes:
-                        d_old_gate_passes += 1
                     if (
-                        (not new_title or new_title == "(untitled)")
-                        and not old_passes
+                        new_title
+                        and new_title != "(untitled)"
+                        and new_title != old
+                        and _looks_like_title(new_title)
                     ):
-                        summary = (a.get("summary") or "").strip()
-                        if not summary or len(summary) < 8:
-                            d_summary_missing += 1
-                            summary_bad = True
-                        elif summary.startswith("<"):
-                            d_summary_html += 1
-                            summary_bad = True
-                        elif summary.lower().startswith(("view online", "sign up", "subscribe", "unsubscribe")):
-                            d_summary_chrome += 1
-                            summary_bad = True
-                        else:
-                            summary_bad = False
-                        if not summary_bad:
-                            first_sent = _re_rt.split(r"(?<=[.!?])\s+", summary, maxsplit=1)[0].strip()
-                            if first_sent and len(first_sent) >= 8:
-                                candidate = first_sent[:140].rstrip(". ")
-                                new_title = candidate
-                                from_summary += 1
-                                came_from_summary = True
-                                d_summary_used += 1
-                            else:
-                                d_first_sent_short += 1
-                    elif new_title and new_title == old:
-                        d_extract_matched_old += 1
-                    # Q1.f — summary-derived titles bypass the strict gate
-                    title_acceptable = bool(new_title) and new_title != "(untitled)" and (
-                        came_from_summary or _looks_like_title(new_title)
-                    )
-                    if title_acceptable and new_title != old:
                         await article_store.update_title(a["id"], new_title)
                         fixed += 1
                         if len(sample_lines) < 5:
                             sample_lines.append(f"  ✓ `{(old or '∅')[:50]}` → `{new_title[:60]}`")
-                    elif old and not _looks_like_title(old) and old != "(untitled)":
+                        continue
+                    # Track which empty-summary bucket we're in for diag
+                    if not summary or len(summary) < 8:
+                        d_summary_missing += 1
+                    elif summary.startswith("<"):
+                        d_summary_html += 1
+                    elif summary.lower().startswith(("view online", "sign up", "subscribe", "unsubscribe")):
+                        d_summary_chrome += 1
+                    if old and not _looks_like_title(old) and old != "(untitled)":
                         await article_store.update_title(a["id"], "(untitled)")
                         d_force_cleared += 1
                         fixed += 1
@@ -3679,6 +3674,8 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                             sample_lines.append(f"  ⚠ `{old[:60]}` → cleared (no good replacement)")
                     else:
                         skipped += 1
+                        if _looks_like_title(old):
+                            d_old_gate_passes += 1
                 summary_note = f" ({from_summary} pulled from the article summary)" if from_summary else ""
                 diag_lines = [
                     f"\n\n✓ Refreshed **{fixed}** title(s){summary_note}; "

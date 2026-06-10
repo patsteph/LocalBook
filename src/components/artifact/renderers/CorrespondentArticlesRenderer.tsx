@@ -74,17 +74,19 @@ function _summaryLooksBad(s: string): boolean {
 }
 
 function pickDisplayTitle(a: ArticleItem): string {
-  const raw = (a.title || '').replace(/[\u200B-\u200D\u2060\uFEFF\u00A0]/g, '').trim();
-  if (!_titleLooksBad(raw)) return raw;
-  // Summary fallback \u2014 light gate only (the LLM already made it clean).
+  // Q1.h (2026-06-10) \u2014 prefer the LLM summary as title whenever it's
+  // not chrome/HTML. Mirrors the backend Q1.h decision: the summary is
+  // engineered one-liner prose; the saved title is whatever the body
+  // happened to start with.
   const summary = (a.summary || '').trim();
   if (summary && !_summaryLooksBad(summary)) {
     const firstSent = summary.split(/(?<=[.!?])\s+/)[0] || summary;
     const candidate = firstSent.replace(/[.\s]+$/, '').slice(0, 140);
     if (candidate.length >= 8) return candidate;
   }
-  // Q1.e (2026-06-10) \u2014 sender-anchored placeholder. Reserved for the
-  // genuinely unrecoverable cases (HTML-only body + HTML-echoed summary).
+  // No clean summary \u2192 fall back to the saved title if it passes
+  const raw = (a.title || '').replace(/[\u200B-\u200D\u2060\uFEFF\u00A0]/g, '').trim();
+  if (!_titleLooksBad(raw)) return raw;
   if (a.sender) {
     const senderDisplay = a.sender.includes('@') ? a.sender.split('@')[0] : a.sender;
     return `Article from ${senderDisplay}`;
