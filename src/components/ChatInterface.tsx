@@ -83,11 +83,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     sourceName: string;
     searchTerm: string;
     articlePosition?: number;
+    notebookId?: string;
   } | null>(null);
 
   // P1B.3 (2026-06-09) — listen for lb:openSource events dispatched by
   // the in-chat article cards. Lets renderers open the source viewer
   // without prop drilling onViewSource through every nested artifact.
+  // Q1.f (2026-06-10) — capture notebookId from the event detail.
+  // Article cards can dispatch from notebooks other than the currently-
+  // selected one (when a cluster spans multiple notebooks), so the
+  // viewer needs the article's own notebook to avoid 404s.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail || {};
@@ -97,6 +102,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
         sourceName: detail.sourceName || '',
         searchTerm: detail.searchTerm || '',
         articlePosition: typeof detail.articlePosition === 'number' ? detail.articlePosition : undefined,
+        notebookId: detail.notebookId || undefined,
       });
       setSourceViewerOpen(true);
     };
@@ -1142,9 +1148,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       </div>
 
       {/* Source Viewer Modal */}
-      {sourceViewerOpen && selectedSource && notebookId && (
+      {sourceViewerOpen && selectedSource && (selectedSource.notebookId || notebookId) && (
         <SourceNotesViewer
-          notebookId={notebookId}
+          notebookId={selectedSource.notebookId || notebookId!}
           sourceId={selectedSource.sourceId}
           sourceName={selectedSource.sourceName}
           initialSearchTerm={selectedSource.searchTerm}

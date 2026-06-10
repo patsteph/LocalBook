@@ -3612,6 +3612,7 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                         html=a.get("body_html") or "",
                     )
                     old = (a.get("title") or "").strip()
+                    came_from_summary = False
                     # Q1.c (2026-06-10) — when extraction can't find a good
                     # title AND the saved title is also bad, derive one from
                     # the LLM summary (which is already clean prose). First
@@ -3620,20 +3621,29 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                         (not new_title or new_title == "(untitled)")
                         and not _looks_like_title(old)
                     ):
+                        # Q1.f (2026-06-10) — lighter gate on the summary
+                        # fallback. The summary is already LLM-clean. Only
+                        # bail if it's obvious raw-HTML / chrome echo.
                         summary = (a.get("summary") or "").strip()
-                        if summary:
+                        summary_bad = (
+                            not summary
+                            or len(summary) < 8
+                            or summary.startswith("<")
+                            or summary.lower().startswith(("view online", "sign up", "subscribe", "unsubscribe"))
+                        )
+                        if not summary_bad:
                             first_sent = _re_rt.split(r"(?<=[.!?])\s+", summary, maxsplit=1)[0].strip()
                             if first_sent and len(first_sent) >= 8:
                                 candidate = first_sent[:140].rstrip(". ")
-                                if _looks_like_title(candidate):
-                                    new_title = candidate
-                                    from_summary += 1
-                    if (
-                        new_title
-                        and new_title != "(untitled)"
-                        and new_title != old
-                        and _looks_like_title(new_title)
-                    ):
+                                new_title = candidate
+                                from_summary += 1
+                                came_from_summary = True
+                    # Q1.f — summary-derived titles bypass the strict gate
+                    # (they naturally end in nouns the gate would flag).
+                    title_acceptable = bool(new_title) and new_title != "(untitled)" and (
+                        came_from_summary or _looks_like_title(new_title)
+                    )
+                    if title_acceptable and new_title != old:
                         await article_store.update_title(a["id"], new_title)
                         fixed += 1
                     elif old and not _looks_like_title(old) and old != "(untitled)":

@@ -58,18 +58,33 @@ function _titleLooksBad(raw: string): boolean {
   return false;
 }
 
+// Q1.f (2026-06-10) \u2014 much lighter gate for the SUMMARY fallback. The
+// summary is already LLM-clean prose. The only legit rejection is when
+// the LLM echoed raw HTML/template chrome back. Don't apply the strict
+// "mid-sentence tail" rules to summaries \u2014 they often end in normal
+// nouns that the strict gate flags.
+function _summaryLooksBad(s: string): boolean {
+  if (!s || s.length < 8) return true;
+  if (/^\s*</.test(s)) return true;          // HTML bleed
+  if (/^\s*(?:view\s+(?:online|in\s+browser)|sign\s+up|subscribe|unsubscribe|click\s+here)/i.test(s)) return true;
+  // \u226540% alphabetic content (catches all-emoji / all-punct strings)
+  const alpha = (s.match(/[a-zA-Z]/g) || []).length;
+  if (alpha / s.length < 0.4) return true;
+  return false;
+}
+
 function pickDisplayTitle(a: ArticleItem): string {
   const raw = (a.title || '').replace(/[\u200B-\u200D\u2060\uFEFF\u00A0]/g, '').trim();
   if (!_titleLooksBad(raw)) return raw;
-  // Summary fallback \u2014 but gate the candidate too.
+  // Summary fallback \u2014 light gate only (the LLM already made it clean).
   const summary = (a.summary || '').trim();
-  if (summary) {
-    const firstSent = summary.split(/(?<=[.!?])\s+/)[0] || '';
+  if (summary && !_summaryLooksBad(summary)) {
+    const firstSent = summary.split(/(?<=[.!?])\s+/)[0] || summary;
     const candidate = firstSent.replace(/[.\s]+$/, '').slice(0, 140);
-    if (candidate.length >= 8 && !_titleLooksBad(candidate)) return candidate;
+    if (candidate.length >= 8) return candidate;
   }
-  // Q1.e (2026-06-10) \u2014 sender-anchored placeholder rather than the
-  // generic "(untitled)" so the user can still tell articles apart.
+  // Q1.e (2026-06-10) \u2014 sender-anchored placeholder. Reserved for the
+  // genuinely unrecoverable cases (HTML-only body + HTML-echoed summary).
   if (a.sender) {
     const senderDisplay = a.sender.includes('@') ? a.sender.split('@')[0] : a.sender;
     return `Article from ${senderDisplay}`;
