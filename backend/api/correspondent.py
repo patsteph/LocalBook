@@ -272,6 +272,30 @@ async def aside():
             "kind": "correspondent_subscription",
             "curator_name": "Correspondent",
         }
+    # P3.5 (2026-06-10) — proactive unsubscribe-candidate surface.
+    # Per F.1 (locked): one at a time. We pick the worst candidate and
+    # surface only one per chat turn. Anti-nag throttling lives in the
+    # frontend by reusing the existing curator-aside slot (same-message
+    # priority means errors + queue + subs preempt this).
+    try:
+        from services.unsubscribe_suggestions import list_candidates
+        candidates = await list_candidates()
+        if candidates:
+            top = candidates[0]
+            sender = top.get("sender_email", "?")
+            grade = top.get("grade") or "—"
+            return {
+                "aside": (
+                    f"📬 Correspondent: `{sender}` has scored **{grade}** with "
+                    f"{top.get('lifetime_emails', 0)} email(s) ingested. "
+                    f"Worth dropping? Say `unsubscribe {sender}` or `unsubscribe {sender} snooze 30`."
+                ),
+                "kind": "correspondent_unsubscribe_candidate",
+                "curator_name": "Correspondent",
+            }
+    except Exception as _ce:
+        logger.debug(f"[correspondent.aside] unsubscribe candidate scan skipped: {_ce}")
+
     return {"aside": None, "kind": None, "curator_name": "Correspondent"}
 
 
@@ -291,6 +315,25 @@ async def dismiss_queue_item(item_id: str):
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail=result.get("reason", "not found"))
     return result
+
+
+class BatchApproveRequest(BaseModel):
+    """P3.1 (2026-06-10) — bulk approve. notebook_id optional; when set,
+    all items route there. When omitted, each item uses its own
+    top_candidate."""
+    item_ids: List[str]
+    notebook_id: Optional[str] = None
+
+
+@router.post("/queue/batch-approve")
+async def batch_approve_queue(request: BatchApproveRequest):
+    from agents.correspondent import correspondent_agent
+    if not request.item_ids:
+        raise HTTPException(status_code=400, detail="item_ids must not be empty")
+    return await correspondent_agent.approve_queued_batch(
+        item_ids=request.item_ids,
+        notebook_id=request.notebook_id,
+    )
 
 
 # ---------------------------------------------------------------------------

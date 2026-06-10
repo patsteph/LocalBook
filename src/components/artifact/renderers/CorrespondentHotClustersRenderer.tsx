@@ -99,19 +99,20 @@ export const CorrespondentHotClustersRenderer: React.FC<RendererProps<HotCluster
               </div>
               <div className="flex flex-col gap-1 flex-shrink-0">
                 <button
-                  onClick={() => fireChat(`@research deep dive ${c.label}`)}
+                  onClick={() => fireChat(`@correspondent deep read ${c.label}`)}
                   disabled={!senderDiversityOK && polarity === 'hot'}
                   className="px-2 py-1 text-xs rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
                   title={senderDiversityOK
-                    ? 'Kick off a multi-hop research deep dive on this theme'
+                    ? 'Combine your existing newsletter coverage with a fresh web sweep + LLM synthesis'
                     : 'Sender diversity too low — read first before deep dive'}
                 >
                   <Telescope className="w-3 h-3" /> Deep read
                 </button>
                 <button
-                  onClick={() => fireChat(`@correspondent show articles from ${c.sample_senders[0] || ''}`)}
-                  disabled={!c.sample_senders[0]}
+                  onClick={() => fireChat(`@correspondent show cluster ${c.label}`)}
+                  disabled={!c.label}
                   className="px-2 py-1 text-xs rounded-lg bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 disabled:opacity-50 flex items-center gap-1"
+                  title={`Show every article in this cluster — your existing newsletter coverage of "${c.label}"`}
                 >
                   <FileText className="w-3 h-3" /> Articles
                 </button>

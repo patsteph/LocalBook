@@ -291,6 +291,9 @@ def _imap_delete(
     """Delete a single message by UID. Called after successful ingest so
     the next sync doesn't re-process the same message.
 
+    P5.1 (2026-06-10) — logs result to correspondent_events for the
+    dashboard's IMAP delete success rate metric. Telemetry is best-effort.
+
     Gmail-aware (2026-06-08, G3): plain IMAP delete on Gmail removes the
     "Inbox" label but the message remains in "All Mail" — and depending
     on the user's view, it may still appear in their inbox-like surfaces.
@@ -309,6 +312,9 @@ def _imap_delete(
     elif "me.com" in host_lower or "mac.com" in host_lower or "icloud" in host_lower:
         trash_folder = "Deleted Messages"
 
+    success = False
+    method = "delete"
+    err: Optional[str] = None
     try:
         with MailBox(host).login(user, password, initial_folder="INBOX") as box:
             if trash_folder:
@@ -318,17 +324,30 @@ def _imap_delete(
                 # the inbox view.
                 try:
                     box.move([str(uid)], trash_folder)
-                    return True
+                    success = True
+                    method = f"move:{trash_folder}"
                 except Exception as move_err:
                     logger.debug(
                         f"[correspondent.imap] move to {trash_folder} failed for "
                         f"uid={uid} ({move_err}); falling back to delete"
                     )
-            box.delete([str(uid)])
-        return True
+            if not success:
+                box.delete([str(uid)])
+                success = True
     except Exception as e:
+        err = str(e)[:200]
         logger.debug(f"[correspondent.imap] delete failed for uid={uid}: {e}")
-        return False
+        success = False
+    finally:
+        try:
+            from services.correspondent_telemetry import log_event, EVENT_IMAP_DELETE
+            log_event(
+                event_type=EVENT_IMAP_DELETE,
+                payload={"ok": success, "method": method, "error": err, "host": host_lower},
+            )
+        except Exception:
+            pass
+    return success
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +521,37 @@ class CorrespondentAgent:
             counts["transactional"] += 1  # treat as already-handled
             return
 
+        # P3.4 (2026-06-10) — sender blocklist. User said "stop ingesting
+        # from this sender" so we drop the message silently. We DON'T
+        # delete from IMAP (the user controls that via real unsub) —
+        # just skip our own ingest path.
+        try:
+            from services.unsubscribe_suggestions import is_blocked
+            if is_blocked(parsed.sender):
+                counts["transactional"] += 1  # silent drop
+                _remember_message_id(parsed.message_id)
+                return
+        except Exception as _e:
+            logger.debug(f"[correspondent] blocklist check skipped: {_e}")
+
+        # P4.3 (2026-06-10) — frequency tuner. If the sender is in
+        # weekly_digest mode, buffer the raw bytes and skip live ingest.
+        # The weekly composer reads pending_digest on its scheduled day
+        # and produces a single summary newsletter.
+        try:
+            from services.sender_frequency import get_mode, queue_pending
+            if get_mode(parsed.sender) == "weekly_digest":
+                queue_pending(
+                    sender_email=parsed.sender,
+                    raw_bytes=raw,
+                    email_account=email,
+                )
+                counts["transactional"] += 1  # not live-ingested
+                _remember_message_id(parsed.message_id)
+                return
+        except Exception as _e:
+            logger.debug(f"[correspondent] digest-mode check skipped: {_e}")
+
         # Phase 8 — forwards bypass the LLM classifier. The heuristic is
         # cheap and forwards are explicit user intent: we'd rather ingest
         # the user's forward as a user-supplied source than spend an LLM
@@ -622,6 +672,21 @@ class CorrespondentAgent:
             source_entities=source_entities,
         )
 
+        # P4.1 (2026-06-10) — telemetry log so the user can audit the
+        # threshold via @correspondent show routing.
+        try:
+            from services.routing_telemetry import log_decision
+            log_decision(
+                sender=parsed.sender or "",
+                top_cosine=float(decision.top.confidence) if decision.top else 0.0,
+                threshold=0.75,
+                decision_verb=decision.decision,
+                top_notebook_id=(decision.top.notebook_id if decision.top else None),
+                bias_applied=decision.reason if "applied" in (decision.reason or "") else None,
+            )
+        except Exception as _t_e:
+            logger.debug(f"[correspondent] routing telemetry skipped: {_t_e}")
+
         if decision.decision == "route" and decision.top:
             source_id = await ingest_newsletter(decision.top.notebook_id, parsed, classification)
             if source_id:
@@ -726,11 +791,69 @@ class CorrespondentAgent:
             logger.debug(f"[correspondent.approve_queued] IMAP delete skipped: {_e}")
             imap_deleted = False
 
+        # P5.1 (2026-06-10) — telemetry for approval throughput.
+        try:
+            from services.correspondent_telemetry import log_event, EVENT_APPROVAL
+            from datetime import datetime as _dt
+            created = item.get("created_at") or ""
+            duration_ms = None
+            if created:
+                try:
+                    elapsed = (_dt.utcnow() - _dt.fromisoformat(created.replace("Z", ""))).total_seconds()
+                    duration_ms = int(elapsed * 1000)
+                except Exception:
+                    duration_ms = None
+            log_event(
+                event_type=EVENT_APPROVAL,
+                sender=item.get("sender"),
+                item_id=item_id,
+                duration_ms=duration_ms,
+                payload={"notebook_id": target_nb, "imap_deleted": imap_deleted},
+            )
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "source_id": source_id,
             "notebook_id": target_nb,
             "imap_deleted": imap_deleted,
+        }
+
+    async def approve_queued_batch(
+        self,
+        item_ids: List[str],
+        notebook_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """P3.1 (2026-06-10) — bulk approve. Processes items sequentially
+        via approve_queued so each gets the same sender-learning + IMAP
+        delete treatment as single-item approval.
+
+        notebook_id == None → each item routes to its own top_candidate.
+        notebook_id == X → all items route to X (and record sender bias).
+
+        Returns a per-item result list + aggregate counts. Failures do
+        not abort — partial success is honored."""
+        results: List[Dict[str, Any]] = []
+        approved = 0
+        failed = 0
+        for item_id in item_ids:
+            try:
+                r = await self.approve_queued(item_id, notebook_id=notebook_id)
+            except Exception as e:
+                r = {"ok": False, "reason": f"exception: {e}", "item_id": item_id}
+            r["item_id"] = item_id
+            results.append(r)
+            if r.get("ok"):
+                approved += 1
+            else:
+                failed += 1
+        return {
+            "ok": True,
+            "approved": approved,
+            "failed": failed,
+            "total": len(item_ids),
+            "results": results,
         }
 
     async def _send_forward_confirmation(

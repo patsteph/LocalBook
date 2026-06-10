@@ -170,6 +170,19 @@ export const correspondentService = {
     return data.items || [];
   },
 
+  async batchApproveQueue(itemIds: string[], notebookId?: string): Promise<{ approved: number; failed: number; total: number; results: Array<{ item_id: string; ok: boolean; reason?: string }> }> {
+    const res = await localFetch(`${API_BASE_URL}/correspondent/queue/batch-approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_ids: itemIds, notebook_id: notebookId || null }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
   async approveQueueItem(itemId: string, notebookId?: string): Promise<{ source_id: string; notebook_id: string; imap_deleted?: boolean | null }> {
     const res = await localFetch(`${API_BASE_URL}/correspondent/queue/${itemId}/approve`, {
       method: 'POST',

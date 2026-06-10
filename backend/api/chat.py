@@ -3012,7 +3012,12 @@ def _quick_intent_for_correspondent(query: str) -> tuple:
         (r"^sync(\s+now)?$|^poll(\s+now)?$|^refresh$", "sync_now"),
         (r"^(show\s+)?status$", "show_status"),
         (r"^summari[sz]e\s+recent$|^(weekly\s+)?summary$", "summarize_recent"),
-        (r"^quiet\s+senders?$|^silent\s+senders?$|^unsubscribe\s+candidates?$", "quiet_senders"),
+        (r"^quiet\s+senders?$|^silent\s+senders?$", "quiet_senders"),
+        (r"^(show|list|suggest)\s+unsubscribe(\s+candidates?)?$|^which\s+newsletters?\s+should\s+i\s+drop", "show_unsubscribe_candidates"),
+        (r"^(show|list)\s+blocklist$|^(show|list)\s+blocked\s+senders?$", "show_blocklist"),
+        (r"^(show\s+)?routing(\s+histogram)?$|^(show\s+)?confidence\s+distribution$|^show\s+thresholds?$", "show_routing"),
+        (r"^(show|list)\s+digest\s+mode$|^which\s+senders?\s+(?:are\s+)?in\s+digest", "show_digest_mode"),
+        (r"^(show|list)?\s*effectiveness$|^how\s+effective(\s+is\s+correspondent)?$|^score$|^show\s+score$", "show_score"),
     ]
     for pat, intent in simple_patterns:
         if _re_q.search(pat, q):
@@ -3029,6 +3034,29 @@ def _quick_intent_for_correspondent(query: str) -> tuple:
         if _re_q.search(r"\bdeep\b|\bcluster|\btheme", q):
             params["deep"] = True
         return ("whats_cold", params)
+
+    # Cluster articles
+    m = _re_q.search(r"(?:show|list)\s+cluster\s+(.+)", q)
+    if m:
+        return ("show_cluster_articles", {"label": m.group(1).strip()})
+    m = _re_q.search(r"articles?\s+in\s+cluster\s+(.+)", q)
+    if m:
+        return ("show_cluster_articles", {"label": m.group(1).strip()})
+
+    # Cluster deep-read (P5.3) — combined newsletter context + web briefing
+    m = _re_q.search(r"^deep[\s-]read\s+(.+)", q)
+    if m:
+        return ("cluster_deep_read", {"label": m.group(1).strip()})
+
+    # P5.5 — RFC 2369 unsubscribe with two-step confirmation
+    m = _re_q.search(r"^(?:try|really|force)\s+unsubscribe\s+(.+)", q)
+    if m:
+        return ("try_unsubscribe", {"email_or_name": m.group(1).strip()})
+    m = _re_q.search(r"^(?:confirm(?:\s+unsubscribe)?|yes\s+execute)\s+([a-f0-9]{8,16})", q)
+    if m:
+        return ("confirm_unsubscribe", {"token": m.group(1).strip()})
+    if _re_q.search(r"^(show|list)\s+unsub(?:scribe)?\s+(log|history|attempts?)$", q):
+        return ("show_unsubscribe_log", {})
 
     # Articles-from-sender pattern (preserve sender)
     m = _re_q.search(r"(?:show|list)\s+articles?\s+from\s+(.+)", q)
@@ -3054,6 +3082,22 @@ def _quick_intent_for_correspondent(query: str) -> tuple:
     m = _re_q.search(r"forget\s+(.+)", q)
     if m:
         return ("forget_sender", {"email": m.group(1).strip()})
+
+    # Unsubscribe / block / unblock
+    m = _re_q.search(r"^(?:unsubscribe|stop\s+ingesting|block|drop)\s+(.+)", q)
+    if m:
+        return ("unsubscribe_sender", {"email_or_name": m.group(1).strip()})
+    m = _re_q.search(r"^(?:unblock|resume\s+ingesting)\s+(.+)", q)
+    if m:
+        return ("unblock_sender", {"email_or_name": m.group(1).strip()})
+
+    # Frequency tuner (G)
+    m = _re_q.search(r"^(?:digest\s+mode|weekly\s+digest(?:\s+for)?|bundle)\s+(.+?)(?:\s+(?:into\s+)?weekly)?$", q)
+    if m:
+        return ("digest_mode", {"email_or_name": m.group(1).strip()})
+    m = _re_q.search(r"^(?:live\s+mode|live\s+ingest(?:\s+for)?)\s+(.+)", q)
+    if m:
+        return ("live_mode", {"email_or_name": m.group(1).strip()})
 
     return (None, {})
 
@@ -3576,6 +3620,108 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
             except Exception as _bs_e:
                 yield _reply(f"⚠ Couldn't read backfill status: {_bs_e}")
 
+        elif intent == "cluster_deep_read":
+            from services.cluster_deep_read import run as run_deep_read
+            label = (params.get("label") or "").strip()
+            if not label:
+                yield _reply("Tell me which topic — e.g. `deep read AI agents`.")
+            else:
+                yield _reply(f"🔭 Combining your newsletter coverage of **{label}** with a fresh web sweep…")
+                try:
+                    result = await run_deep_read(label=label, notebook_id=chat_query.notebook_id)
+                except Exception as _de:
+                    yield _reply(f"⚠ Deep-read failed: {_de}")
+                else:
+                    if not result.get("ok"):
+                        yield _reply(
+                            f"No cluster matching `{label}`. Say `whats hot deep` to see active clusters."
+                        )
+                    else:
+                        articles = result.get("articles") or []
+                        web = result.get("web_results") or []
+                        briefing = result.get("briefing") or "_(no briefing produced)_"
+                        skipped = result.get("skipped_domains") or []
+                        # Compose the multi-section reply
+                        lines: List[str] = []
+                        lines.append(briefing)
+                        lines.append("")
+                        # Embed the article cards inline so the user can
+                        # jump straight to the parent newsletter sources.
+                        if articles:
+                            articles_payload = {
+                                "items": [
+                                    {
+                                        "id": a.get("id"),
+                                        "title": a.get("title") or "(untitled)",
+                                        "sender": a.get("sender"),
+                                        "summary": a.get("summary") or (a.get("body_text") or "")[:200],
+                                        "position": a.get("position"),
+                                        "source_id": a.get("source_id"),
+                                        "notebook_id": a.get("notebook_id"),
+                                        "created_at": a.get("created_at"),
+                                        "topic_tags": a.get("topic_tags") or [],
+                                    }
+                                    for a in articles[:8]
+                                ],
+                                "empty_message": "No articles in this cluster.",
+                            }
+                            lines.append("---\n**Your existing coverage** (tap to open):")
+                            lines.append("```json-correspondent-articles\n" + json.dumps(articles_payload) + "\n```")
+                        if skipped:
+                            lines.append(
+                                f"_Filtered out web results from domains you already follow: "
+                                f"{', '.join(skipped[:5])}._"
+                            )
+                        yield _reply("\n".join(lines))
+
+        elif intent == "show_cluster_articles":
+            from storage.article_store import article_store
+            from storage.database import get_db
+            label = (params.get("label") or "").strip()
+            if not label:
+                yield _reply("Tell me which cluster — e.g. `show cluster AI agents`.")
+            else:
+                # Look up cluster by case-insensitive label match
+                row = get_db().get_connection().execute(
+                    "SELECT * FROM topic_clusters WHERE LOWER(label) LIKE ? LIMIT 1",
+                    (f"%{label.lower()}%",),
+                ).fetchone()
+                if not row:
+                    yield _reply(f"No cluster matching `{label}`. Say `whats hot deep` to see active clusters.")
+                else:
+                    try:
+                        article_ids = json.loads(row["article_ids"]) if row["article_ids"] else []
+                    except Exception:
+                        article_ids = []
+                    article_rows = []
+                    for aid in article_ids[:25]:
+                        a = await article_store.get(aid)
+                        if a:
+                            article_rows.append(a)
+                    payload_obj = {
+                        "items": [
+                            {
+                                "id": a.get("id"),
+                                "title": a.get("title") or "(untitled)",
+                                "sender": a.get("sender"),
+                                "summary": a.get("summary") or (a.get("body_text") or "")[:200],
+                                "position": a.get("position"),
+                                "source_id": a.get("source_id"),
+                                "notebook_id": a.get("notebook_id"),
+                                "created_at": a.get("created_at"),
+                                "topic_tags": a.get("topic_tags") or [],
+                            }
+                            for a in article_rows
+                        ],
+                        "empty_message": f"No articles in cluster `{label}` (it may have been re-clustered).",
+                    }
+                    intro = (
+                        f"**Cluster:** {row['label']} · "
+                        f"{len(article_ids)} article(s) across {len(json.loads(row['sender_counts']) or {})} sender(s) "
+                        f"and {len(json.loads(row['notebook_counts']) or {})} notebook(s).\n"
+                    )
+                    yield _reply(intro + "\n```json-correspondent-articles\n" + json.dumps(payload_obj) + "\n```")
+
         elif intent in ("show_articles", "show_articles_from_sender"):
             from storage.article_store import article_store
             try:
@@ -3685,6 +3831,352 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
             except Exception as _ent_e:
                 logger.warning(f"[correspondent.show_entities] failed: {_ent_e}")
                 yield _reply(f"⚠ Couldn't load entities: {_ent_e}")
+
+        # ─────────────────────────────────────────────────────────────
+        # LIST-UNSUBSCRIBE ACTION (Phase 5 Tier 2 / F follow-up — 2026-06-10)
+        # ─────────────────────────────────────────────────────────────
+        elif intent == "try_unsubscribe":
+            target = (params.get("email_or_name") or "").strip()
+            if not target:
+                yield _reply("Tell me which sender — e.g. `try unsubscribe Stratechery`.")
+            else:
+                from services.list_unsubscribe import find_unsub_target, create_pending
+                info = await find_unsub_target(target)
+                if not info:
+                    yield _reply(
+                        f"⚠ No valid List-Unsubscribe target found for `{target}`. Either they don't "
+                        f"include the RFC 2369 header, or the header URL fails our domain-suffix check "
+                        f"(no cross-domain unsubs allowed). Use `unsubscribe {target}` to block locally instead."
+                    )
+                else:
+                    token = create_pending(info)
+                    if not token:
+                        yield _reply("⚠ Couldn't stash the pending request. Try again in a moment.")
+                    else:
+                        kind = info["kind"]
+                        target_url = info["target"]
+                        action_label = (
+                            "HTTPS POST (one-click)" if info.get("one_click") and kind == "https_post"
+                            else "HTTPS POST" if kind == "https_post"
+                            else "send a mailto with 'unsubscribe' as the subject"
+                        )
+                        yield _reply(
+                            f"⚠️ **Confirm List-Unsubscribe for `{info['sender_email']}`**\n\n"
+                            f"- **Action:** {action_label}\n"
+                            f"- **Target:** `{target_url}`\n"
+                            f"- **Domain check:** `{info['sender_domain']}` (suffix match required ✓)\n\n"
+                            f"This will execute the action on the newsletter operator's side and add a permanent "
+                            f"entry to the audit log. Even if it succeeds, the sender will also be added to your "
+                            f"local blocklist as a safety net.\n\n"
+                            f"To execute, send: `confirm unsubscribe {token}` within the next 5 minutes. "
+                            f"Or do nothing — the token expires and no action is taken."
+                        )
+
+        elif intent == "confirm_unsubscribe":
+            from services.list_unsubscribe import execute
+            token = (params.get("token") or "").strip()
+            if not token:
+                yield _reply("I need the confirmation token — e.g. `confirm unsubscribe abc123def456`.")
+            else:
+                yield _reply(f"🔒 Executing unsubscribe request `{token}`…")
+                try:
+                    result = await execute(token)
+                except Exception as _ee:
+                    yield _reply(f"⚠ Execute failed: {_ee}")
+                else:
+                    if result.get("result") == "expired":
+                        yield _reply(f"⚠ Token expired or unknown. Run `try unsubscribe <sender>` again to get a fresh token.")
+                    elif result.get("ok"):
+                        yield _reply(
+                            f"✅ Unsubscribe sent for `{result['sender_email']}` "
+                            f"({result['target_type']}). {result.get('detail', '')}. "
+                            f"Local blocklist entry also added as a safety net."
+                        )
+                    else:
+                        yield _reply(
+                            f"⚠ Unsubscribe failed for `{result['sender_email']}`: "
+                            f"{result.get('detail', 'unknown error')}. "
+                            f"Local blocklist entry was added anyway so we stop ingesting."
+                        )
+
+        elif intent == "show_unsubscribe_log":
+            from services.list_unsubscribe import get_recent_log
+            log_rows = get_recent_log(limit=20)
+            if not log_rows:
+                yield _reply("📭 No List-Unsubscribe attempts logged yet.")
+            else:
+                lines = [f"**📋 List-Unsubscribe audit log ({len(log_rows)} entries):**\n"]
+                for r in log_rows:
+                    emoji = "✅" if r.get("result") == "sent" else "⚠"
+                    ts = (r.get("ts") or "")[:19].replace("T", " ")
+                    detail = r.get("result_detail") or ""
+                    lines.append(
+                        f"- {emoji} {ts} · `{r.get('sender_email', '?')}` "
+                        f"→ {r.get('target_type')} → **{r.get('result')}** ({detail[:80]})"
+                    )
+                yield _reply("\n".join(lines))
+
+        # ─────────────────────────────────────────────────────────────
+        # EFFECTIVENESS DASHBOARD (Phase 4 Tier 2 / I — 2026-06-10)
+        # ─────────────────────────────────────────────────────────────
+        elif intent == "show_score":
+            try:
+                from services.correspondent_dashboard import compute_dashboard, compose_dashboard_html
+                metrics_data = await compute_dashboard()
+                dashboard_html = compose_dashboard_html(metrics_data)
+                yield _reply("```html\n" + dashboard_html + "\n```")
+            except Exception as _de:
+                logger.warning(f"[correspondent.show_score] failed: {_de}")
+                yield _reply(f"⚠ Couldn't compute the dashboard: {_de}")
+
+        # ─────────────────────────────────────────────────────────────
+        # FREQUENCY TUNER (Phase 4 Tier 2 / G — 2026-06-10)
+        # ─────────────────────────────────────────────────────────────
+        elif intent == "digest_mode":
+            target = (params.get("email_or_name") or "").strip()
+            if not target:
+                yield _reply("Tell me which sender — e.g. `digest mode Stratechery`.")
+            else:
+                from services.sender_frequency import set_mode, detect_cadence_async
+                # Auto-align digest day with sender cadence (G.2 locked)
+                cadence = await detect_cadence_async(target)
+                day = cadence.get("suggested_digest_day", 1)
+                ok = set_mode(target, "weekly_digest", digest_day=day)
+                if not ok:
+                    yield _reply(f"⚠ Couldn't switch `{target}` to digest mode.")
+                else:
+                    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                    day_label = day_names[day - 1] if 1 <= day <= 7 else "Mon"
+                    rate = cadence.get("weekly_rate", 0.0)
+                    rate_str = f" (sends ~{rate:.1f}/week)" if rate else ""
+                    yield _reply(
+                        f"✅ Switched `{target}` to **weekly digest mode**{rate_str}. "
+                        f"New emails will be buffered; you'll get one summary on **{day_label}** mornings. "
+                        f"Reverse with `live mode {target}`."
+                    )
+
+        elif intent == "live_mode":
+            target = (params.get("email_or_name") or "").strip()
+            if not target:
+                yield _reply("Tell me which sender — e.g. `live mode Stratechery`.")
+            else:
+                from services.sender_frequency import set_mode, list_pending
+                # Switching back to live — if pending items exist, surface
+                # that we still have them (won't ingest until next digest tick).
+                pending = list_pending(target)
+                ok = set_mode(target, "live")
+                if not ok:
+                    yield _reply(f"⚠ Couldn't switch `{target}` to live mode.")
+                else:
+                    pending_msg = ""
+                    if pending:
+                        pending_msg = (
+                            f" There were **{len(pending)}** pending email(s) buffered — they'll wait until "
+                            f"the next digest cycle for that sender, or you can force-ship with "
+                            f"`@correspondent force digest {target}` (TODO)."
+                        )
+                    yield _reply(
+                        f"✅ Switched `{target}` back to **live ingest mode**.{pending_msg}"
+                    )
+
+        elif intent == "show_digest_mode":
+            from services.sender_frequency import list_settings, list_pending
+            settings_rows = list_settings()
+            digest_rows = [s for s in settings_rows if s.get("bundle_mode") == "weekly_digest"]
+            if not digest_rows:
+                yield _reply(
+                    "📭 No senders in digest mode. "
+                    "Switch one with `digest mode <sender>` to bundle their emails into a weekly summary."
+                )
+            else:
+                day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                lines = [f"**📨 {len(digest_rows)} sender(s) in weekly digest mode:**\n"]
+                for s in digest_rows:
+                    sender = s["sender_email"]
+                    day = int(s.get("digest_day") or 1)
+                    day_label = day_names[day - 1] if 1 <= day <= 7 else "Mon"
+                    pending_count = len(list_pending(sender))
+                    pending_label = f" · **{pending_count}** pending" if pending_count else ""
+                    lines.append(f"- `{sender}` → ships **{day_label}** mornings{pending_label}")
+                lines.append("\n_Switch back with `live mode <sender>`._")
+                yield _reply("\n".join(lines))
+
+        # ─────────────────────────────────────────────────────────────
+        # ROUTING HISTOGRAM (Phase 4 Tier 2 / J — 2026-06-10)
+        # ─────────────────────────────────────────────────────────────
+        elif intent == "show_routing":
+            from services.routing_telemetry import get_distribution
+            dist = get_distribution(days=14)
+            if dist["total"] == 0:
+                yield _reply(
+                    "📊 No routing decisions logged yet over the last 14 days. "
+                    "Once newsletters start arriving, this command shows the cosine-score "
+                    "distribution so you can decide if the 0.75 auto-route threshold is right."
+                )
+            else:
+                threshold = dist["threshold"]
+                auto_rate = dist["auto_rate"]
+                buckets = dist["buckets"]
+                # Build bar chart: 2 series (auto vs queued) per cosine bucket.
+                # Only render non-empty buckets to keep the chart legible.
+                non_empty = [b for b in buckets if (b["auto"] + b["queued"]) > 0]
+                labels = [f"{b['lo']:.2f}" for b in non_empty]
+                chart = {
+                    "kind": "bar",
+                    "title": f"Routing decisions — last {dist['window_days']}d",
+                    "labels": labels,
+                    "series": [
+                        {"label": "auto-routed", "data": [b["auto"] for b in non_empty]},
+                        {"label": "queued", "data": [b["queued"] for b in non_empty]},
+                    ],
+                }
+                # Threshold-tuning advice
+                above_thr = sum(b["auto"] + b["queued"] for b in non_empty if b["lo"] >= threshold)
+                below_thr = sum(b["auto"] + b["queued"] for b in non_empty if b["lo"] < threshold)
+                advice = ""
+                if dist["total"] >= 20:
+                    pct_at_thr = above_thr / dist["total"]
+                    if pct_at_thr > 0.9:
+                        advice = (
+                            f"\n_Most routes ({pct_at_thr:.0%}) clear the {threshold:.2f} threshold easily — "
+                            f"you could try raising it to 0.80 for tighter quality._"
+                        )
+                    elif pct_at_thr < 0.5:
+                        advice = (
+                            f"\n_Only {pct_at_thr:.0%} clear {threshold:.2f}. Most stuff goes to queue. "
+                            f"Lowering to 0.70 would auto-route more (risk: more mis-routes)._"
+                        )
+                lines = [
+                    f"**📊 Routing confidence — last {dist['window_days']} days**\n",
+                    f"- **Total decisions:** {dist['total']}",
+                    f"- **Auto-routed:** {dist['auto_rate']:.0%} ({sum(b['auto'] for b in non_empty)} of {dist['total']})",
+                    f"- **Threshold:** {threshold:.2f}",
+                    advice,
+                    "",
+                    "```json-chart",
+                    json.dumps(chart),
+                    "```",
+                ]
+                yield _reply("\n".join(lines))
+
+        # ─────────────────────────────────────────────────────────────
+        # UNSUBSCRIBE SURFACE (Phase 3 Tier 2 / F — 2026-06-10)
+        # ─────────────────────────────────────────────────────────────
+        elif intent == "show_unsubscribe_candidates":
+            from services.unsubscribe_suggestions import list_candidates, DEFAULT_GRADE_THRESHOLD
+            try:
+                cands = await list_candidates()
+            except Exception as _ue:
+                cands = []
+                logger.warning(f"[correspondent.unsub] candidate fetch failed: {_ue}")
+            if not cands:
+                yield _reply(
+                    f"✓ No senders are scoring at or below {DEFAULT_GRADE_THRESHOLD} with enough volume to drop. "
+                    f"Either every subscription is earning its keep or there's not enough history yet."
+                )
+            else:
+                lines = [
+                    f"**🌙 {len(cands)} unsubscribe candidate(s)** — scored {DEFAULT_GRADE_THRESHOLD} or worse for several weeks:\n"
+                ]
+                for c in cands[:8]:
+                    lines.append(
+                        f"- `{c['sender_email']}` — grade **{c.get('grade') or '—'}**, "
+                        f"composite **{c.get('composite_score', 0):.2f}**, "
+                        f"{c.get('lifetime_emails', 0)} email(s) ingested. "
+                        f"Drop with `unsubscribe {c['sender_email']}` (or `unsubscribe {c['sender_email']} snooze 30`)."
+                    )
+                lines.append(
+                    "\n_Reminder: this adds the sender to a local blocklist so we stop ingesting. "
+                    "It does NOT email-unsubscribe (use the link in your inbox for that). "
+                    "Reverse with `unblock <sender>`._"
+                )
+                yield _reply("\n".join(lines))
+
+        elif intent == "unsubscribe_sender":
+            from services.unsubscribe_suggestions import add_to_blocklist
+            target = (params.get("email_or_name") or "").strip()
+            snooze_days_param = params.get("snooze_days")
+            if not target:
+                yield _reply("Tell me which sender — e.g. `unsubscribe alice@news.io` or `unsubscribe Stratechery snooze 30`.")
+            else:
+                # Allow inline "snooze N" suffix in the natural-language input
+                snooze_days = None
+                if snooze_days_param:
+                    try:
+                        snooze_days = int(snooze_days_param)
+                    except (TypeError, ValueError):
+                        snooze_days = None
+                if snooze_days is None:
+                    import re as _re_sn
+                    m = _re_sn.search(r"(.+?)\s+snooze\s+(\d+)", target)
+                    if m:
+                        target = m.group(1).strip()
+                        snooze_days = int(m.group(2))
+                ok = add_to_blocklist(
+                    sender_email=target,
+                    reason="user requested via chat",
+                    snooze_days=snooze_days,
+                )
+                if not ok:
+                    yield _reply(f"⚠ Couldn't block `{target}`.")
+                elif snooze_days:
+                    yield _reply(
+                        f"😴 Snoozed `{target}` for **{snooze_days} day(s)**. Will resume ingestion after that. "
+                        f"Reverse anytime with `unblock {target}`."
+                    )
+                else:
+                    yield _reply(
+                        f"🛑 Stopped ingesting from `{target}`. New emails will be silently dropped. "
+                        f"To actually email-unsubscribe, use the link in your inbox. "
+                        f"Reverse with `unblock {target}`."
+                    )
+
+        elif intent == "show_blocklist":
+            from services.unsubscribe_suggestions import list_blocked
+            blocked = list_blocked()
+            if not blocked:
+                yield _reply("📭 Blocklist is empty.")
+            else:
+                now_iso = datetime.utcnow().isoformat()
+                active = []
+                snoozed = []
+                for b in blocked:
+                    if b.get("snooze_until") and b["snooze_until"] > now_iso:
+                        snoozed.append(b)
+                    else:
+                        active.append(b)
+                lines = []
+                if active:
+                    lines.append(f"**🛑 Blocked ({len(active)}):**")
+                    for b in active:
+                        lines.append(f"- `{b['sender_email']}` — blocked {b.get('blocked_at', '?')[:10]}")
+                if snoozed:
+                    lines.append(f"\n**😴 Snoozed ({len(snoozed)}):**")
+                    for b in snoozed:
+                        lines.append(f"- `{b['sender_email']}` — resumes {b.get('snooze_until', '?')[:10]}")
+                lines.append("\n_Reverse with `unblock <sender>`._")
+                yield _reply("\n".join(lines))
+
+        elif intent == "unblock_sender":
+            from services.unsubscribe_suggestions import remove_from_blocklist, list_blocked
+            target = (params.get("email_or_name") or "").strip()
+            if not target:
+                yield _reply("Tell me which sender — e.g. `unblock alice@news.io`.")
+            else:
+                # Allow LIKE match
+                all_blocked = list_blocked()
+                match = next(
+                    (b for b in all_blocked if target.lower() in b["sender_email"].lower()),
+                    None,
+                )
+                if not match:
+                    yield _reply(f"Couldn't find `{target}` on the blocklist.")
+                else:
+                    ok = remove_from_blocklist(match["sender_email"])
+                    if ok:
+                        yield _reply(f"✓ Resumed ingesting from `{match['sender_email']}`.")
+                    else:
+                        yield _reply(f"⚠ Couldn't remove `{match['sender_email']}`.")
 
         # ─────────────────────────────────────────────────────────────
         # SCORECARDS (Phase 2.5 Tier 2 — 2026-06-09)

@@ -457,6 +457,124 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_clusters_built ON topic_clusters(last_built_at DESC)
         """)
 
+        # -- correspondent_events (Phase 5 Tier 2 / I telemetry, 2026-06-10) --
+        # Generic event log for Correspondent operations. Powers the
+        # last three dashboard metrics: approval throughput, dedup hit
+        # rate, IMAP delete success rate. Best-effort writes — never
+        # blocks the hot path.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS correspondent_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts            TEXT NOT NULL,
+                event_type    TEXT NOT NULL,
+                sender        TEXT,
+                item_id       TEXT,
+                duration_ms   INTEGER,
+                payload_json  TEXT DEFAULT '{}'
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_correspondent_events_ts ON correspondent_events(ts DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_correspondent_events_type ON correspondent_events(event_type, ts DESC)
+        """)
+
+        # -- pending_unsubscribes (Phase 5 Tier 2 / F follow-up, 2026-06-10) --
+        # Tokens for the two-step unsubscribe confirmation flow.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pending_unsubscribes (
+                token         TEXT PRIMARY KEY,
+                sender_email  TEXT NOT NULL,
+                target        TEXT NOT NULL,
+                target_type   TEXT NOT NULL,
+                created_at    TEXT NOT NULL,
+                expires_at    TEXT NOT NULL
+            )
+        """)
+
+        # -- unsubscribe_log (Phase 5 Tier 2 / F follow-up, 2026-06-10) --
+        # Append-only audit of every unsubscribe attempt. Never deleted.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS unsubscribe_log (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts            TEXT NOT NULL,
+                sender_email  TEXT NOT NULL,
+                target        TEXT NOT NULL,
+                target_type   TEXT NOT NULL,
+                result        TEXT NOT NULL,
+                result_detail TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_unsubscribe_log_ts ON unsubscribe_log(ts DESC)
+        """)
+
+        # -- routing_decisions (Phase 4 Tier 2 / J, 2026-06-10) --
+        # One row per incoming newsletter routing decision. Powers the
+        # @correspondent show routing histogram so the user can see if
+        # their threshold (0.75 default) is tuned right.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS routing_decisions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts              TEXT NOT NULL,
+                sender          TEXT,
+                top_cosine      REAL NOT NULL,
+                threshold       REAL NOT NULL,
+                decision_verb   TEXT NOT NULL,
+                top_notebook_id TEXT,
+                bias_applied    TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_routing_decisions_ts ON routing_decisions(ts DESC)
+        """)
+
+        # -- sender_settings (Phase 4 Tier 2 / G, 2026-06-10) --
+        # Per-sender frequency tuner mode. Default 'live' (current
+        # behavior). 'weekly_digest' holds incoming messages in a buffer
+        # and the composer ingests one summary per week.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sender_settings (
+                sender_email   TEXT PRIMARY KEY,
+                bundle_mode    TEXT NOT NULL DEFAULT 'live',
+                digest_day     INTEGER NOT NULL DEFAULT 1,
+                digest_hour    INTEGER NOT NULL DEFAULT 8,
+                set_at         TEXT NOT NULL
+            )
+        """)
+
+        # -- pending_digest (Phase 4 Tier 2 / G, 2026-06-10) --
+        # Held messages for senders in weekly_digest mode.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pending_digest (
+                id             TEXT PRIMARY KEY,
+                sender_email   TEXT NOT NULL,
+                raw_bytes_b64  TEXT NOT NULL,
+                received_at    TEXT NOT NULL,
+                email_account  TEXT,
+                notebook_id    TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pending_digest_sender ON pending_digest(sender_email, received_at)
+        """)
+
+        # -- sender_blocklist (Phase 3 Tier 2, 2026-06-10) --
+        # Senders the user has decided to stop ingesting from. Doesn't
+        # actually unsubscribe (that requires List-Unsubscribe handling
+        # in a future polish pass); just stops new sources from being
+        # created for that sender.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sender_blocklist (
+                sender_email          TEXT PRIMARY KEY,
+                reason                TEXT,
+                blocked_at            TEXT NOT NULL,
+                snooze_until          TEXT,
+                last_unsubscribe_url  TEXT
+            )
+        """)
+
         # -- newsletter_scorecards (Phase 2.4 Tier 2, 2026-06-09) --
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS newsletter_scorecards (

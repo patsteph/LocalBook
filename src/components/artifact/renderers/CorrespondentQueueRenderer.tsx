@@ -10,10 +10,12 @@
  * Optimistic UI: dismissed/approved items fade out immediately; on
  * failure we restore them with an error chip.
  */
-import React, { useState } from 'react';
-import { Check, X, Mail } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Check, X, Mail, ChevronDown, ChevronRight } from 'lucide-react';
 import type { RendererProps } from '../../../types/artifact';
 import { correspondentService, type QueueItem } from '../../../services/correspondent';
+
+const GROUP_THRESHOLD = 3; // P3.1 (locked H.1): sender groups ≥3 collapse
 
 interface CorrespondentQueuePayload {
   items: QueueItem[];
@@ -47,6 +49,88 @@ export const CorrespondentQueueRenderer: React.FC<RendererProps<CorrespondentQue
   const [override, setOverride] = useState<Record<string, string>>({});
   const [state, setState] = useState<Record<string, ItemState>>({});
   const [errorMsg, setErrorMsg] = useState<Record<string, string>>({});
+  // P3.1 (2026-06-10) — per-sender-group expansion state
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [groupBusy, setGroupBusy] = useState<Record<string, boolean>>({});
+
+  // Group items by sender; groups ≥ GROUP_THRESHOLD are presented as a
+  // collapsible section with bulk actions (H.1 locked: ≥3 from same
+  // sender). Smaller groups + singletons render as today.
+  const { senderGroups, ungroupedItems } = useMemo(() => {
+    const bySender: Record<string, QueueItem[]> = {};
+    for (const it of items) {
+      const key = (it.sender || '').trim() || '(unknown sender)';
+      (bySender[key] ||= []).push(it);
+    }
+    const groups: Array<{ sender: string; items: QueueItem[] }> = [];
+    const ungrouped: QueueItem[] = [];
+    for (const [sender, group] of Object.entries(bySender)) {
+      if (group.length >= GROUP_THRESHOLD) {
+        groups.push({ sender, items: group });
+      } else {
+        ungrouped.push(...group);
+      }
+    }
+    // Sort groups largest-first
+    groups.sort((a, b) => b.items.length - a.items.length);
+    return { senderGroups: groups, ungroupedItems: ungrouped };
+  }, [items]);
+
+  const handleBulkApprove = async (groupSender: string, groupItems: QueueItem[]) => {
+    // Honor each item's individual override notebook if the user picked
+    // one in the inline picker; otherwise route each to its own top
+    // candidate by passing notebook_id=undefined per item.
+    setGroupBusy((prev) => ({ ...prev, [groupSender]: true }));
+    try {
+      // Determine if all items have a consistent target — either same
+      // override notebook OR same top_candidate notebook. If so, bulk-
+      // approve to that notebook (so backend records sender-bias once
+      // per item with the same target). Otherwise fall back to per-
+      // item processing where each goes to its own top_candidate.
+      const targets = groupItems.map((q) => override[q.item_id] || q.top_candidate?.notebook_id || '');
+      const allSame = targets.length > 0 && targets.every((t) => t && t === targets[0]);
+      const itemIds = groupItems.map((q) => q.item_id);
+      // Mark all items as busy
+      setState((prev) => {
+        const next = { ...prev };
+        for (const id of itemIds) next[id] = 'busy';
+        return next;
+      });
+      const result = await correspondentService.batchApproveQueue(
+        itemIds,
+        allSame ? targets[0] : undefined,
+      );
+      setState((prev) => {
+        const next = { ...prev };
+        for (const r of result.results || []) {
+          next[r.item_id] = r.ok ? 'approved' : 'error';
+        }
+        return next;
+      });
+      if ((result.failed || 0) > 0) {
+        setErrorMsg((prev) => {
+          const next = { ...prev };
+          for (const r of result.results || []) {
+            if (!r.ok && r.reason) next[r.item_id] = r.reason;
+          }
+          return next;
+        });
+      }
+    } catch (e) {
+      setErrorMsg((prev) => {
+        const next = { ...prev };
+        for (const q of groupItems) next[q.item_id] = e instanceof Error ? e.message : 'Bulk approve failed';
+        return next;
+      });
+      setState((prev) => {
+        const next = { ...prev };
+        for (const q of groupItems) next[q.item_id] = 'error';
+        return next;
+      });
+    } finally {
+      setGroupBusy((prev) => ({ ...prev, [groupSender]: false }));
+    }
+  };
 
   const setItemState = (id: string, s: ItemState) =>
     setState((prev) => ({ ...prev, [id]: s }));
@@ -99,33 +183,27 @@ export const CorrespondentQueueRenderer: React.FC<RendererProps<CorrespondentQue
     );
   }
 
-  return (
-    <div className="not-prose my-3 space-y-2">
-      <div className="flex items-center gap-2 text-xs font-semibold text-orange-700 dark:text-orange-300 uppercase tracking-wide">
-        <Mail className="w-3.5 h-3.5" />
-        Pending approvals · {items.length}
-      </div>
-      {items.map((q) => {
-        const s = state[q.item_id] || 'idle';
-        const err = errorMsg[q.item_id];
-        if (s === 'approved' || s === 'dismissed') {
-          const verb = s === 'approved' ? 'Approved' : 'Dismissed';
-          return (
-            <div
-              key={q.item_id}
-              className="p-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 text-xs text-gray-500 dark:text-gray-400"
-            >
-              <span className="line-through">{q.subject}</span>
-              <span className="ml-2 text-emerald-600 dark:text-emerald-400">✓ {verb}</span>
-              {err && <span className="ml-2 text-amber-600 dark:text-amber-400">· {err}</span>}
-            </div>
-          );
-        }
-        return (
-          <div
-            key={q.item_id}
-            className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 bg-white dark:bg-gray-800"
-          >
+  const renderItem = (q: QueueItem) => {
+    const s = state[q.item_id] || 'idle';
+    const err = errorMsg[q.item_id];
+    if (s === 'approved' || s === 'dismissed') {
+      const verb = s === 'approved' ? 'Approved' : 'Dismissed';
+      return (
+        <div
+          key={q.item_id}
+          className="p-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 text-xs text-gray-500 dark:text-gray-400"
+        >
+          <span className="line-through">{q.subject}</span>
+          <span className="ml-2 text-emerald-600 dark:text-emerald-400">✓ {verb}</span>
+          {err && <span className="ml-2 text-amber-600 dark:text-amber-400">· {err}</span>}
+        </div>
+      );
+    }
+    return (
+      <div
+        key={q.item_id}
+        className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 bg-white dark:bg-gray-800"
+      >
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -210,7 +288,76 @@ export const CorrespondentQueueRenderer: React.FC<RendererProps<CorrespondentQue
             </div>
           </div>
         );
+      };
+
+  return (
+    <div className="not-prose my-3 space-y-2">
+      <div className="flex items-center gap-2 text-xs font-semibold text-orange-700 dark:text-orange-300 uppercase tracking-wide">
+        <Mail className="w-3.5 h-3.5" />
+        Pending approvals · {items.length}
+      </div>
+
+      {/* Sender groups ≥3 — collapsible bulk-action sections (H.1 locked) */}
+      {senderGroups.map((group) => {
+        const groupKey = group.sender;
+        const isExpanded = !!expandedGroups[groupKey];
+        const isBusy = !!groupBusy[groupKey];
+        // Check if all items target the same notebook (for "approve all to X" label)
+        const targets = group.items.map((q) => override[q.item_id] || q.top_candidate?.notebook_id || '');
+        const sameTarget = targets.length > 0 && targets.every((t) => t && t === targets[0]);
+        const targetNotebook = sameTarget
+          ? group.items[0].top_candidate?.notebook_name || '—'
+          : null;
+        return (
+          <div
+            key={`group-${groupKey}`}
+            className="rounded-lg border border-orange-200 dark:border-orange-800 bg-orange-50/50 dark:bg-orange-900/10"
+          >
+            <div className="flex items-center justify-between p-3">
+              <button
+                onClick={() => setExpandedGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }))}
+                className="flex items-center gap-2 flex-1 min-w-0 text-left"
+              >
+                {isExpanded
+                  ? <ChevronDown className="w-4 h-4 text-orange-700 dark:text-orange-400 flex-shrink-0" />
+                  : <ChevronRight className="w-4 h-4 text-orange-700 dark:text-orange-400 flex-shrink-0" />}
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">
+                    {group.sender}
+                  </p>
+                  <p className="text-xs text-gray-600 dark:text-gray-300">
+                    {group.items.length} pending
+                    {targetNotebook && (
+                      <> · all → <span className="font-medium">{targetNotebook}</span></>
+                    )}
+                  </p>
+                </div>
+              </button>
+              <button
+                onClick={() => handleBulkApprove(groupKey, group.items)}
+                disabled={isBusy || !isExpanded}
+                className="ml-3 px-3 py-1.5 text-xs rounded-lg bg-green-600 hover:bg-green-700 text-white disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 flex-shrink-0"
+                title={isExpanded
+                  ? (targetNotebook
+                      ? `Approve all ${group.items.length} to ${targetNotebook}`
+                      : `Approve all ${group.items.length} — each routes to its own best match`)
+                  : 'Expand to view + bulk approve'}
+              >
+                <Check className="w-3 h-3" />
+                {isBusy ? '…' : `Approve all ${group.items.length}`}
+              </button>
+            </div>
+            {isExpanded && (
+              <div className="px-3 pb-3 space-y-2">
+                {group.items.map(renderItem)}
+              </div>
+            )}
+          </div>
+        );
       })}
+
+      {/* Ungrouped — singletons + small (<3) groups render as today */}
+      {ungroupedItems.map(renderItem)}
     </div>
   );
 };

@@ -281,6 +281,12 @@ async def _run_startup_tasks():
         from agents.weekly_journal_agent import weekly_journal_agent
         safe_create_task(weekly_journal_agent.start(), name="weekly-journal-scheduler")
         print("📅 Weekly journal scheduler started (6h cadence)")
+        # Phase 4 Tier 2 / G (2026-06-10) — weekly per-sender digest
+        # scheduler. Wakes every 6h and ships digests for senders in
+        # weekly_digest mode when their digest_day matches today.
+        from services.digest_composer import digest_scheduler
+        safe_create_task(digest_scheduler.start(), name="digest-scheduler")
+        print("📨 Digest scheduler started (6h cadence)")
         from services.coaching_insights import check_stale_insights_on_startup
         safe_create_task(check_stale_insights_on_startup(), name="coaching-insights-check")
         print("🧠 Coaching insights staleness check queued")

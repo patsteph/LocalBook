@@ -44,6 +44,12 @@ class ParsedEmail:
     text_body: str
     html_body: str
     attachments: List[Dict[str, Any]] = field(default_factory=list)
+    # P5.4 (2026-06-10) — RFC 2369 List-Unsubscribe header. Parsed eagerly
+    # so we have a target on the source record without re-reading raw
+    # bytes later. Value can include multiple entries separated by ", ".
+    list_unsubscribe: str = ""
+    # RFC 8058 — when present, signals one-click unsubscribe is supported.
+    list_unsubscribe_post: str = ""
 
 
 @dataclass
@@ -83,6 +89,17 @@ def parse_email(raw_bytes: bytes) -> ParsedEmail:
     try:
         import mailparser  # mail-parser package exports `mailparser`
         msg = mailparser.parse_from_bytes(raw_bytes)
+        # Pull List-Unsubscribe + List-Unsubscribe-Post from the mailparser
+        # headers dict (case-insensitive lookup).
+        hdrs = msg.headers or {}
+        lu = ""
+        lup = ""
+        for key in hdrs:
+            kl = str(key).lower()
+            if kl == "list-unsubscribe":
+                lu = str(hdrs[key])
+            elif kl == "list-unsubscribe-post":
+                lup = str(hdrs[key])
         return ParsedEmail(
             message_id=str(msg.message_id or "").strip("<>") or str(uuid4()),
             subject=(msg.subject or "(no subject)").strip(),
@@ -95,6 +112,8 @@ def parse_email(raw_bytes: bytes) -> ParsedEmail:
                 {"filename": a.get("filename", ""), "size": len(a.get("payload", ""))}
                 for a in (msg.attachments or [])
             ],
+            list_unsubscribe=lu.strip(),
+            list_unsubscribe_post=lup.strip(),
         )
     except Exception as e:
         logger.debug(f"[correspondent.parse_email] mail-parser failed, falling back to stdlib: {e}")
@@ -125,6 +144,8 @@ def parse_email(raw_bytes: bytes) -> ParsedEmail:
             date=str(msg.get("Date", "")),
             text_body=text_body.strip(),
             html_body=html_body.strip(),
+            list_unsubscribe=str(msg.get("List-Unsubscribe", "")).strip(),
+            list_unsubscribe_post=str(msg.get("List-Unsubscribe-Post", "")).strip(),
         )
 
 
@@ -655,6 +676,12 @@ async def ingest_newsletter(
     # the existing source so the caller's success path (IMAP delete,
     # counts) runs without a dup ingest.
     content_hash = _hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+    # P5.1 (2026-06-10) — telemetry: log every inflow then check dedup.
+    try:
+        from services.correspondent_telemetry import log_event, EVENT_INFLOW, EVENT_DEDUP_HIT
+        log_event(event_type=EVENT_INFLOW, sender=parsed.sender)
+    except Exception:
+        pass
     if parsed.message_id:
         prior = await source_store.find_by_message_id(parsed.message_id)
         if prior:
@@ -662,6 +689,12 @@ async def ingest_newsletter(
                 f"[correspondent.ingest_newsletter] dedup hit by message_id "
                 f"({parsed.message_id[:40]}) → existing source {prior.get('id')}"
             )
+            try:
+                from services.correspondent_telemetry import log_event, EVENT_DEDUP_HIT
+                log_event(event_type=EVENT_DEDUP_HIT, sender=parsed.sender,
+                          payload={"by": "message_id", "existing": prior.get("id")})
+            except Exception:
+                pass
             return prior.get("id")
     prior_hash = await source_store.find_by_content_hash(content_hash)
     if prior_hash:
@@ -669,6 +702,12 @@ async def ingest_newsletter(
             f"[correspondent.ingest_newsletter] dedup hit by content_hash "
             f"→ existing source {prior_hash.get('id')}"
         )
+        try:
+            from services.correspondent_telemetry import log_event, EVENT_DEDUP_HIT
+            log_event(event_type=EVENT_DEDUP_HIT, sender=parsed.sender,
+                      payload={"by": "content_hash", "existing": prior_hash.get("id")})
+        except Exception:
+            pass
         return prior_hash.get("id")
 
     # Phase 9 — preserve sanitized HTML alongside text so the Source
@@ -695,6 +734,9 @@ async def ingest_newsletter(
             "summary": classification.summary,
             "topic_tags": classification.topic_tags,
             "content_html": display_html,
+            # P5.4 (2026-06-10) — persist RFC 2369 unsubscribe targets
+            "list_unsubscribe": parsed.list_unsubscribe,
+            "list_unsubscribe_post": parsed.list_unsubscribe_post,
         },
     )
     source_id = source["id"]
@@ -1022,6 +1064,11 @@ async def ingest_forward(
 
     # F4 (2026-06-08) — same persistent dedup as ingest_newsletter.
     content_hash = _hashlib.sha256(body.encode("utf-8", errors="replace")).hexdigest()
+    try:
+        from services.correspondent_telemetry import log_event, EVENT_INFLOW
+        log_event(event_type=EVENT_INFLOW, sender=parsed.sender)
+    except Exception:
+        pass
     if parsed.message_id:
         prior = await source_store.find_by_message_id(parsed.message_id)
         if prior:
@@ -1029,6 +1076,12 @@ async def ingest_forward(
                 f"[correspondent.ingest_forward] dedup hit by message_id "
                 f"→ existing source {prior.get('id')}"
             )
+            try:
+                from services.correspondent_telemetry import log_event, EVENT_DEDUP_HIT
+                log_event(event_type=EVENT_DEDUP_HIT, sender=parsed.sender,
+                          payload={"by": "message_id", "kind": "forward"})
+            except Exception:
+                pass
             return prior.get("id")
     prior_hash = await source_store.find_by_content_hash(content_hash)
     if prior_hash:
@@ -1036,6 +1089,12 @@ async def ingest_forward(
             f"[correspondent.ingest_forward] dedup hit by content_hash "
             f"→ existing source {prior_hash.get('id')}"
         )
+        try:
+            from services.correspondent_telemetry import log_event, EVENT_DEDUP_HIT
+            log_event(event_type=EVENT_DEDUP_HIT, sender=parsed.sender,
+                      payload={"by": "content_hash", "kind": "forward"})
+        except Exception:
+            pass
         return prior_hash.get("id")
 
     source = await source_store.create(
