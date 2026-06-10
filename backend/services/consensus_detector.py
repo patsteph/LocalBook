@@ -134,8 +134,19 @@ async def detect_consensus(
 
     since_iso = (datetime.now(timezone.utc) - timedelta(days=since_days)).isoformat()
     raw = curator_brain.recent_events(limit=max_events, since_iso=since_iso) or []
+    # P14.C (2026-06-10) — also consume per-article ingest events. The
+    # 'source_ingested' path is still used for non-newsletter sources
+    # (PDFs, web captures) and for newsletters that only resolved to one
+    # article. 'article_ingested' carries the same payload shape so
+    # _coerce_event works unchanged. This is the key compounding move:
+    # a 12-article TLDR now contributes 12 cluster members instead of 1,
+    # so the consensus detector can actually see TOPIC convergence across
+    # newsletters rather than just NEWSLETTER convergence.
     events = [
-        m for m in (_coerce_event(e) for e in raw if (e.get("action") == "source_ingested"))
+        m for m in (
+            _coerce_event(e) for e in raw
+            if e.get("action") in ("source_ingested", "article_ingested")
+        )
         if m is not None
     ]
     if len(events) < min_cluster_size:

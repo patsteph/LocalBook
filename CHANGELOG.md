@@ -2,6 +2,57 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## Unreleased — v2.0.0 work-in-progress (Information Cortex)
+
+Tag gated on Phase 14 (article depth) per 2026-06-10 plan. Everything below
+is code-complete and user-verified unless explicitly noted as "awaiting test".
+
+### Highlights
+- **Universal Canvas** — single artifact spec + renderer registry routes markdown / strict HTML / interactive HTML (iframe sandbox) / SVG / Mermaid / Klein / `json:<kind>` through one dispatch. Mixed-medium documents interleave prose + Recharts + SVG via gemma4 `VISUAL_INTERLEAVE` injection + post-processor.
+- **Correspondent (email cortex)** — IMAP poller (Gmail / Fastmail / iCloud+ / Outlook via app password), tool-less LLM classification, cross-notebook auto-routing via embedding similarity, sister-newsletter auto-subscribe through Collector queue, reply-to-ingest, outbound SMTP via `aiosmtplib`, newsletter HTML rendered in source viewer.
+- **Synthesis layer** — Curator HTML morning brief with consensus detection + deep-read auto-trigger, interactive HTML artifacts (iframe `sandbox="allow-scripts"` + postMessage), cross-source perspectives view (consensus vs contested), per-notebook dashboards, entity-anchored topic deep-dives, source-graph entity proposals, weekly auto-journal via SMTP.
+- **Correspondent Tier 2 (all 10 capabilities)** — per-article extraction + summary + RAG indexing, hot/cold clusters via embedding agglomeration, deep-read with newsletter context, cross-notebook entity tagging at ingest, per-newsletter scorecard, RFC 2369 List-Unsubscribe one-click POST with two-step confirmation, frequency tuner, smart digest grouping, effectiveness dashboard, routing histogram with auto/manual/queued series.
+- **Gemma4 flip** — `ollama_model` default switched from `olmo-3:7b-instruct` to `gemma4:e4b`. Native vision absorbs the vision slot on 16 GB Macs.
+
+### Phase 14 — Article Depth (2026-06-10)
+
+The final pre-tag block. Until Phase 14, each newsletter was treated as
+one source — a 12-article TLDR contributed a single signal to the
+cortex. Phase 14 turns each content article into a first-class citizen
+across entities, sections, brain events, and the consensus detector.
+
+- **P14.A — Article skip classifier** (`backend/services/article_classifier.py`) — single phi4-mini JSON call per article returns `{kind ∈ content/sponsor/ad/jobs/navigation, reason, confidence}`. Three new columns on `articles`: `kind`, `kind_reason`, `kind_confidence`. Non-content articles stay in the DB (audit trail) but are skipped by the summary / embed / RAG-index / entity / sectioning / event-emission passes. Idempotent — `_summarize_articles_background` skips already-classified articles via the `confidence > 0` check. `list_recent` / `list_by_sender` / `list_with_embeddings` default to content-only with an `include_non_content` opt-in. Article-rag indexer adds a defense-in-depth kind gate. **Fixture-validated**: 5/5 of TLDR-style sample articles classified correctly at 0.95–1.00 confidence.
+- **P14.B — Per-article entity extraction → notebook KG** (`backend/services/correspondent_processor.py:_summarize_articles_background`) — each content article runs `entity_extractor.extract_from_text` independently using the article's synthetic `art-{uuid}` source_id, with title + summary + body[:2500] as input (LLM-clean summary informs the input, not just noisy body). The newsletter-level entity extraction in `ingest_newsletter` + `ingest_forward` skips when ≥2 articles were extracted (per-article passes own it; avoids double-counting). Source cascade-delete extended in `source_store.py` so per-article entities are cleaned up when the parent newsletter is removed. **Fixture-validated**: 10 entities landed on a 3-article fixture, all correctly tied to article `art-` IDs (`person: Eric Glyman`, `company: Ramp/DoorDash/Shopify/Stripe`, …).
+- **P14.C — Per-article curator brain events** (`backend/services/correspondent_processor.py`, `services/consensus_detector.py`, `services/weekly_journal.py`) — each content article emits an `article_ingested` event via `event_bus.emit_now` with the same payload shape as `source_ingested` (so `consensus_detector._coerce_event` works unchanged). Parent `source_ingested` for the wrapping newsletter omits the summary when ≥2 articles were extracted — the brain's dispatch handlers (mark_notebook_dirty / mental-model trigger / stance scoring / anticipatory drafts) still fire once per newsletter while consensus + journal skip the parent and only count per-article events. `consensus_detector.detect_consensus` now consumes both action types; `weekly_journal.compose_journal_html` reads them separately so the headline can frame "N articles from your newsletters plus M other sources" instead of the old "N new sources" understatement. Also fixed in-memory dict mirror bug — `a["summary"]` / `a["topic_tags"]` now propagate after the summary pass so downstream passes see new values. **Fixture-validated**: 2/3 events emitted on a 3-article fixture (sponsor correctly skipped), summaries populated, synthetic source_ids correct.
+- **P14.D — Per-article notebook section assignment** (`backend/services/article_sectioner.py`, `backend/storage/article_section_store.py`) — new `article_sections` table (notebook-scoped, distinct from the global left-nav `notebook_sections`). Three new `articles` columns: `section_id`, `section_proposal`, `section_confidence`. Single phi4-mini JSON call per content article: picks an existing section by id OR proposes a new section name (short noun phrase). Three paths: existing match + confidence ≥ 0.40 → assign + increment count; new proposal + confidence ≥ 0.85 → auto-create (idempotent on name → prevents sprawl from LLM hiccups) + assign; otherwise store proposal text for later review. Validates `match_existing_id` against the real ID list (LLM hallucination guard). The `article_ingested` event payload carries `section_id` so consensus + journal can group by section. **Fixture-validated**: 2 sections auto-created on a 4-article fixture ("AI Accounting", "Claude Innovations"), both at 0.90 confidence — clean noun-phrase names, no sentence fragments.
+
+### Polish + bug fixes (Q-batch, 2026-06-10)
+- **Q1 — Article titles** — Newsletter article cards were saving paragraph fragments / chrome / URLs / HTML soup as titles for ~90% of articles. Five iterations landed at the right architecture: the LLM-written summary's first sentence IS the title. Backend refresh handler + ingest pass + frontend renderer all prefer the summary unconditionally when summary is non-HTML non-chrome prose. Strict body-extraction gate is now the fallback. User-verified: 49/80 cards cleaned in the refresh run.
+- **Q2 — `refresh_titles` chat intent** — `@correspondent refresh titles` walks every article through the new logic. Handles `refresh titles / fix article titles / rebuild titles`.
+- **Q3 — Entity denylist expansion** — locations + newsletter chrome ("Sign Up", "View Online", country names) filtered at read-time so existing noisy rows clear without a purge.
+- **Q4 — Cluster fence rendering** — `whats_hot deep` + `cluster_deep_read` replies prefix the `json-correspondent-hot-clusters` fence with `\n\n`.
+- **Q5 — Sender-diversity gate** — Deep-read CTA threshold relaxed from `≥3` to `≥2` unique senders.
+- **Q6 — Manual approves logged to routing telemetry** — `approve_queued` records `decision_verb='manual_route'` + `bias_applied='user-override'`. Histogram gained a third "manual approve" series.
+- **Q7 — Dashboard empty states** — Per-tile fallback copy ("populates after next poll", "learns from your manual approves") + 5-bullet "why some tiles show —" explainer with `@correspondent sync now` trigger.
+- **Article click 404 fix** — `ChatInterface.tsx` listener was throwing away the `notebookId` from `lb:openSource` events; cross-notebook cluster clicks now open the article's actual notebook.
+
+### Process / docs
+- **Session housekeeping rules** added to `CLAUDE.md` — STATUS.md / capability docs / CHANGELOG / READFIRST memory are first-class deliverables, updated as milestones land, not at release-tag time.
+
+### Known gaps — closed by Phase 14 above
+*(Phase 14 was originally listed here as gating the tag; all four items shipped and are now logged under Phase 14.)*
+
+### Pre-tag punch list (small, not blocking)
+- `pip-compile` regen of `requirements.txt` for new deps (`imap-tools`, `mail-parser`, `aiosmtplib`).
+- Weekly journal toggle checkbox in `CorrespondentSettings.tsx`.
+- Version bumps in `package.json` / `tauri.conf.json` / `Cargo.toml` / `README.md`.
+
+### Deferred to post-v2.0
+- **F. Always-on synthesizer sidebar** — needs a new real-time UI surface; conscious scope cut.
+- Nightly cluster recompute scheduler, per-notebook entity denylist UI, Settings UI for unsubscribe blocklist, persistent entity watchlist.
+
+---
+
 ## v1.8.0 — Studio UI Redesign, iPhone Scan Capture, Sidecar Lifecycle, Multi-Provider LLM
 
 ### Highlights

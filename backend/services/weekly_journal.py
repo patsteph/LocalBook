@@ -40,9 +40,17 @@ async def compose_journal_html(account_email: str) -> Optional[str]:
         return None
 
     since_iso = (datetime.now(timezone.utc) - timedelta(days=JOURNAL_INTERVAL_DAYS)).isoformat()
+    # P14.C (2026-06-10) — articles are now first-class ingest signals.
+    # Pull both `source_ingested` (PDFs, web captures, single-article
+    # newsletters) AND `article_ingested` (multi-article newsletters →
+    # one event per content article). Track them separately so the
+    # journal can show "50 articles across 5 newsletters" instead of
+    # "5 new sources" which understates activity tenfold.
     events = curator_brain.recent_events(limit=500, since_iso=since_iso) or []
-    ingest_events = [e for e in events if e.get("action") == "source_ingested"]
+    raw_source_events = [e for e in events if e.get("action") == "source_ingested"]
+    article_events = [e for e in events if e.get("action") == "article_ingested"]
     deep_read_events = [e for e in events if e.get("action") == "deep_read_triggered"]
+    ingest_events = raw_source_events + article_events  # for downstream aggregation
 
     if not ingest_events and not deep_read_events:
         # Empty week — skip the send entirely.
@@ -72,11 +80,18 @@ async def compose_journal_html(account_email: str) -> Optional[str]:
     # Compose
     parts: List[str] = []
     parts.append('<div class="lb-html-artifact p-4 max-w-3xl mx-auto" style="font-family:-apple-system,BlinkMacSystemFont,Roboto,sans-serif">')
+    if article_events:
+        activity_line = (
+            f"{len(article_events)} article(s) from your newsletters, "
+            f"plus {len(raw_source_events)} other source(s), across {len(nb_counts)} notebook(s)."
+        )
+    else:
+        activity_line = f"{len(raw_source_events)} new source(s) across {len(nb_counts)} notebook(s)."
     parts.append(
         '<div class="mb-4">'
         '<p class="text-xs uppercase tracking-wide text-gray-500 mb-1">LocalBook · Weekly journal</p>'
         f'<p class="text-base font-semibold text-gray-900 mb-1">Here\'s what came through this week</p>'
-        f'<p class="text-sm text-gray-700">{len(ingest_events)} new sources across {len(nb_counts)} notebook(s).'
+        f'<p class="text-sm text-gray-700">{activity_line}'
         + (f' {len(deep_read_events)} deep-reads fired automatically.' if deep_read_events else '')
         + '</p></div>'
     )

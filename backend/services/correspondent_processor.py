@@ -367,23 +367,59 @@ async def _summarize_articles_background(source_id: str) -> None:
     """Iterate articles for a source and fill in summary + topic_tags +
     embedding + RAG-index. Fire-and-forget — schedules from
     ingest_newsletter / ingest_forward. P2.1 added embedding; P1C.3
-    adds independent RAG indexing per article."""
+    adds independent RAG indexing per article.
+
+    P14.A (2026-06-10) — first pass is now skip classification. Non-
+    content articles (sponsor / ad / jobs / navigation) get the kind
+    persisted then SKIPPED for everything downstream. They still live
+    in article_store for the audit trail and the "Show sponsors" filter
+    in the renderer; they just don't poison the intelligence layer.
+    """
     from storage.article_store import article_store
     from services.ollama_service import ollama_service
     from services.article_rag import index_pending_for_source
+    from services.article_classifier import classify_article, is_content
     import struct as _struct
 
     try:
         articles = await article_store.list_by_source(source_id)
     except Exception:
         return
-    # Q1.c (2026-06-10) — fallback path: when extracted title was
-    # rejected ('(untitled)') or looks bad post-rebuild, rewrite from
-    # the summary's first sentence after the summary pass lands.
     from services.article_extractor import _looks_like_title
     import re as _re_ts
 
+    skip_counts = {"sponsor": 0, "ad": 0, "jobs": 0, "navigation": 0}
     for a in articles:
+        # P14.A — classify first. Persist kind so downstream / future runs
+        # don't re-classify. Articles already classified (kind != default
+        # OR confidence > 0) are skipped to keep the loop idempotent.
+        existing_kind = (a.get("kind") or "content").strip().lower()
+        existing_confidence = float(a.get("kind_confidence") or 0.0)
+        if existing_confidence == 0.0:  # never classified — run it now
+            verdict = await classify_article(
+                title=a.get("title") or "",
+                body_text=a.get("body_text") or "",
+            )
+            existing_kind = verdict.get("kind", "content")
+            await article_store.update_kind(
+                a["id"],
+                kind=existing_kind,
+                reason=verdict.get("reason", ""),
+                confidence=float(verdict.get("confidence", 0.0)),
+            )
+            a["kind"] = existing_kind
+        if not is_content(existing_kind):
+            skip_counts[existing_kind] = skip_counts.get(existing_kind, 0) + 1
+            continue  # non-content articles bypass everything below
+
+        # P14.E (2026-06-10) — idempotency gate. If we've already run the
+        # full Phase 14 pipeline (classifier + summary + entity + section
+        # + event) on this article, skip the heavy work. Lets the
+        # `@correspondent reprocess articles` backfill be safely re-run
+        # without duplicating brain events or thrashing sections.
+        if int(a.get("intelligence_processed") or 0) == 1:
+            continue
+
         # Summary + topic_tags pass
         new_summary: Optional[str] = None
         new_tags: Optional[List[str]] = None
@@ -400,6 +436,12 @@ async def _summarize_articles_background(source_id: str) -> None:
                     summary=new_summary,
                     topic_tags=new_tags,
                 )
+                # Mirror to the in-memory dict so downstream passes
+                # (entity extraction, event emission) see the new values.
+                if new_summary:
+                    a["summary"] = new_summary
+                if new_tags is not None:
+                    a["topic_tags"] = new_tags
         effective_summary = (new_summary or a.get("summary") or "").strip()
         current_title = (a.get("title") or "").strip()
         # Q1.h (2026-06-10) — always prefer the LLM summary as the title
@@ -422,12 +464,14 @@ async def _summarize_articles_background(source_id: str) -> None:
 
         # P2.1 — embedding pass. Title + summary first, fall back to body
         # text. Stored as packed float32 bytes for cheap numpy.frombuffer.
+        # P14.E (2026-06-10) — skip if already embedded; saves tokens on
+        # the reprocess backfill of pre-Phase-14 articles.
         try:
             embed_input = (
                 f"{a.get('title') or ''}\n\n{a.get('summary') or ''}\n\n"
                 f"{(a.get('body_text') or '')[:2000]}"
             ).strip()
-            if embed_input:
+            if embed_input and not a.get("embedding"):
                 result = await ollama_service.embed(text=embed_input)
                 vecs = (result or {}).get("embeddings") or []
                 vec = vecs[0] if vecs and isinstance(vecs[0], list) else []
@@ -436,6 +480,84 @@ async def _summarize_articles_background(source_id: str) -> None:
                     await article_store.update_embedding(a["id"], blob)
         except Exception as e:
             logger.debug(f"[correspondent.summarize_articles] embed failed (non-fatal): {e}")
+
+        # P14.B (2026-06-10) — per-article entity extraction. Uses the
+        # article's synthetic `art-{uuid}` source_id so entities trace
+        # back to the article (not the wrapping newsletter). Runs AFTER
+        # the summary pass so we can feed the LLM clean title+summary+body
+        # rather than just noisy body. Fire-and-forget; never blocks.
+        try:
+            from services.entity_extractor import entity_extractor
+            from services.article_rag import synthetic_id_for_article
+            entity_input = (
+                f"{a.get('title') or ''}\n\n{a.get('summary') or ''}\n\n"
+                f"{(a.get('body_text') or '')[:2500]}"
+            ).strip()
+            if entity_input:
+                asyncio.create_task(entity_extractor.extract_from_text(
+                    text=entity_input,
+                    notebook_id=a["notebook_id"],
+                    source_id=synthetic_id_for_article(a["id"]),
+                    use_llm=True,
+                ))
+        except Exception as e:
+            logger.debug(f"[correspondent.summarize_articles] entity kickoff failed (non-fatal): {e}")
+
+        # P14.D (2026-06-10) — per-article notebook section assignment.
+        # phi4-mini picks an existing section OR proposes a new one;
+        # auto-creates when confidence ≥ 0.85, else stores proposal text
+        # for later review. Runs synchronously (not fire-and-forget) so
+        # the article_ingested event below can carry the section_id.
+        section_result: Optional[Dict[str, Any]] = None
+        try:
+            from services.article_sectioner import assign_section
+            if (a.get("summary") or "").strip():
+                section_result = await assign_section(
+                    article_id=a["id"],
+                    notebook_id=a["notebook_id"],
+                    title=a.get("title") or "",
+                    summary=a.get("summary") or "",
+                )
+        except Exception as e:
+            logger.debug(f"[correspondent.summarize_articles] section assign failed (non-fatal): {e}")
+
+        # P14.C (2026-06-10) — emit a per-article ingest event so the
+        # curator brain / consensus detector / weekly journal see each
+        # article as its own ingest signal. Without this, a 12-article
+        # TLDR newsletter shows up as ONE event and the cortex never
+        # learns that topic convergence is happening across newsletters.
+        # Payload mirrors `source_ingested` shape so consensus_detector's
+        # _coerce_event works unchanged.
+        try:
+            from services.curator_event_bus import event_bus
+            from services.article_rag import synthetic_id_for_article as _synth_id
+            event_bus.emit_now(
+                actor="@correspondent",
+                action="article_ingested",
+                notebook_id=a["notebook_id"],
+                payload={
+                    "source_id": _synth_id(a["id"]),
+                    "parent_source_id": source_id,
+                    "article_id": a["id"],
+                    "filename": (a.get("title") or "")[:200],
+                    "format": "article",
+                    "sender": a.get("sender"),
+                    "summary": (a.get("summary") or "")[:300],
+                    "topic_tags": a.get("topic_tags") or [],
+                    "position": a.get("position"),
+                    "section_id": (section_result or {}).get("section_id"),
+                },
+                outcome="success",
+            )
+        except Exception as e:
+            logger.debug(f"[correspondent.summarize_articles] article_ingested emit failed (non-fatal): {e}")
+
+        # P14.E (2026-06-10) — full pipeline done for this content article;
+        # flip the idempotency flag so subsequent reprocess runs skip it.
+        try:
+            await article_store.mark_intelligence_processed(a["id"])
+        except Exception as e:
+            logger.debug(f"[correspondent.summarize_articles] processed-flag set failed: {e}")
 
     # P1C.3 (2026-06-10) — index articles into LanceDB as their own
     # retrievable entries. Runs after summaries + embeddings so the RAG
@@ -837,18 +959,46 @@ async def ingest_newsletter(
     # Phase 1 Tier 2 (2026-06-09) — entity tagging at ingest (Phase D).
     # Fire-and-forget; never blocks ingest. Filters generic entities via
     # the global denylist baked into entity_extractor.
+    #
+    # P14.B (2026-06-10) — when articles were extracted (≥2), the
+    # per-article entity extraction in _summarize_articles_background
+    # owns this work. Skip the full-newsletter pass to avoid
+    # double-counting (every article entity would also appear here).
+    # When articles == 1 (treated as a single source) OR extraction
+    # failed, fall through to the legacy newsletter-level pass.
+    article_count = 0
     try:
-        from services.entity_extractor import entity_extractor
-        asyncio.create_task(entity_extractor.extract_from_text(
-            text=text,
-            notebook_id=notebook_id,
-            source_id=source_id,
-            use_llm=True,
-        ))
-    except Exception as _e:
-        logger.debug(f"[correspondent.ingest_newsletter] entity extraction kickoff skipped: {_e}")
+        from storage.article_store import article_store as _astore
+        article_count = await _astore.count_by_source(source_id)
+    except Exception:
+        pass
+    if article_count <= 1:
+        try:
+            from services.entity_extractor import entity_extractor
+            asyncio.create_task(entity_extractor.extract_from_text(
+                text=text,
+                notebook_id=notebook_id,
+                source_id=source_id,
+                use_llm=True,
+            ))
+        except Exception as _e:
+            logger.debug(f"[correspondent.ingest_newsletter] entity extraction kickoff skipped: {_e}")
+    else:
+        logger.debug(
+            f"[correspondent.ingest_newsletter] newsletter-level entity extraction "
+            f"skipped — {article_count} articles will each run their own pass"
+        )
 
-    # Emit so the curator brain picks it up.
+    # Emit so the curator brain picks it up. P14.C (2026-06-10) — when
+    # ≥2 articles were extracted, omit the summary so consensus_detector
+    # / weekly_journal skip this parent event (each article emits its own
+    # `article_ingested` with its summary). The brain's dispatch handlers
+    # (mark_notebook_dirty / source-reputation / mental-model trigger /
+    # stance scoring / anticipatory drafts) still fire ONCE per newsletter
+    # because they react to `action` + `notebook_id`, not summary.
+    summary_for_event = (
+        "" if article_count >= 2 else classification.summary
+    )
     try:
         event_bus.emit_now(
             actor="@correspondent",
@@ -859,7 +1009,7 @@ async def ingest_newsletter(
                 "filename": filename,
                 "format": "email",
                 "sender": parsed.sender,
-                "summary": classification.summary,
+                "summary": summary_for_event,
                 "topic_tags": classification.topic_tags,
             },
             outcome="success",
@@ -1204,16 +1354,26 @@ async def ingest_forward(
     except Exception as _e:
         logger.debug(f"[correspondent.ingest_forward] article extraction skipped: {_e}")
 
+    # P14.B (2026-06-10) — same skip rule as ingest_newsletter: when
+    # articles were extracted from the forward, let the per-article
+    # background pass own entity extraction.
+    forward_article_count = 0
     try:
-        from services.entity_extractor import entity_extractor
-        asyncio.create_task(entity_extractor.extract_from_text(
-            text=body,
-            notebook_id=notebook_id,
-            source_id=source_id,
-            use_llm=True,
-        ))
-    except Exception as _e:
-        logger.debug(f"[correspondent.ingest_forward] entity extraction kickoff skipped: {_e}")
+        from storage.article_store import article_store as _astore_fwd
+        forward_article_count = await _astore_fwd.count_by_source(source_id)
+    except Exception:
+        pass
+    if forward_article_count <= 1:
+        try:
+            from services.entity_extractor import entity_extractor
+            asyncio.create_task(entity_extractor.extract_from_text(
+                text=body,
+                notebook_id=notebook_id,
+                source_id=source_id,
+                use_llm=True,
+            ))
+        except Exception as _e:
+            logger.debug(f"[correspondent.ingest_forward] entity extraction kickoff skipped: {_e}")
 
     try:
         event_bus.emit_now(

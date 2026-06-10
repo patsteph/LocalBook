@@ -82,6 +82,10 @@ async def index_pending_for_source(source_id: str) -> int:
     indexed = 0
     conn = get_db().get_connection()
     for a in articles:
+        # P14.A (2026-06-10) — skip non-content articles. Sponsors / ads
+        # / jobs / navigation chrome should never reach RAG.
+        if (a.get("kind") or "content").strip().lower() != "content":
+            continue
         # Skip if already indexed
         try:
             row = conn.execute(

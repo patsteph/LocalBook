@@ -437,6 +437,72 @@ class Database:
         except sqlite3.OperationalError as _e:
             if "duplicate column" not in str(_e).lower():
                 raise
+        # P14.A (2026-06-10) — article skip classifier. `kind` gates every
+        # downstream pass (summary, embed, RAG, entity, sections, brain
+        # events). Default 'content' so pre-Phase-14 rows behave as before;
+        # next refresh / re-classification can override.
+        try:
+            cursor.execute("ALTER TABLE articles ADD COLUMN kind TEXT DEFAULT 'content'")
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
+        try:
+            cursor.execute("ALTER TABLE articles ADD COLUMN kind_reason TEXT")
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
+        try:
+            cursor.execute("ALTER TABLE articles ADD COLUMN kind_confidence REAL DEFAULT 0.0")
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
+        # P14.D (2026-06-10) — article section assignment. Each notebook has
+        # its own set of subject sections ("AI accounting", "Payments", etc.).
+        # NOT the same as the GLOBAL `notebook_sections` table which groups
+        # notebooks themselves in the left nav. Articles get classified into
+        # the best-fit existing section, or a new one is proposed when
+        # confidence ≥ 0.85 (auto-create) or queued otherwise (NULL section_id
+        # + section_proposal text holds the unconfirmed suggestion).
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS article_sections (
+                id              TEXT PRIMARY KEY,
+                notebook_id     TEXT NOT NULL,
+                name            TEXT NOT NULL,
+                description     TEXT,
+                created_at      TEXT NOT NULL,
+                article_count   INTEGER DEFAULT 0
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_article_sections_notebook
+            ON article_sections(notebook_id)
+        """)
+        try:
+            cursor.execute("ALTER TABLE articles ADD COLUMN section_id TEXT")
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
+        try:
+            cursor.execute("ALTER TABLE articles ADD COLUMN section_proposal TEXT")
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
+        try:
+            cursor.execute("ALTER TABLE articles ADD COLUMN section_confidence REAL DEFAULT 0.0")
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
+        # P14.E (2026-06-10) — idempotency flag for the full Phase 14
+        # pipeline. Set to 1 after a content article has been classified,
+        # entity-extracted, section-assigned, and emitted its
+        # `article_ingested` event. Lets `@correspondent reprocess articles`
+        # safely retry over the user's existing DB without duplicating
+        # brain events or thrashing section assignments.
+        try:
+            cursor.execute("ALTER TABLE articles ADD COLUMN intelligence_processed INTEGER DEFAULT 0")
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
 
         # -- topic_clusters (Phase 2.2 Tier 2, 2026-06-09) --
         # Output of the article-level hot/cold clustering pass.

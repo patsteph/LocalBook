@@ -395,18 +395,26 @@ class SourceStore:
         # P1C.3 (2026-06-10) — cascade delete articles + their RAG chunks
         # when their parent newsletter is removed. Best-effort: failures
         # leave orphaned rows but don't block the parent deletion.
+        # P14.B (2026-06-10) — also cascade per-article entities so the
+        # notebook KG doesn't accumulate orphaned synthetic source_ids.
         if deleted:
             try:
                 from storage.article_store import article_store
                 from services.article_rag import synthetic_id_for_article
                 from services.rag_engine import rag_engine
+                from services.entity_extractor import entity_extractor
                 article_rows = await article_store.list_by_source(source_id)
                 for ar in article_rows:
                     ar_id = ar.get("id")
                     if not ar_id:
                         continue
+                    synth_id = synthetic_id_for_article(ar_id)
                     try:
-                        await rag_engine.delete_source(notebook_id, synthetic_id_for_article(ar_id))
+                        await rag_engine.delete_source(notebook_id, synth_id)
+                    except Exception:
+                        pass
+                    try:
+                        entity_extractor.delete_source_entities(notebook_id, synth_id)
                     except Exception:
                         pass
                 await article_store.delete_by_source(source_id)

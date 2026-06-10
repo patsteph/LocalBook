@@ -128,19 +128,27 @@ class ArticleStore:
         *,
         notebook_id: Optional[str] = None,
         limit: int = 20,
+        include_non_content: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Most recent articles, newest first. Optionally scoped to one notebook."""
+        """Most recent articles, newest first. Optionally scoped to one notebook.
+
+        P14.A (2026-06-10) — defaults to content-only. Pass
+        `include_non_content=True` to see sponsors / ads / jobs / navigation
+        rows too (audit / debug view)."""
+        clauses: List[str] = []
+        args: List[Any] = []
+        if notebook_id:
+            clauses.append("notebook_id = ?")
+            args.append(notebook_id)
+        if not include_non_content:
+            clauses.append("(kind IS NULL OR kind = 'content')")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        args.append(int(limit))
         try:
-            if notebook_id:
-                rows = self._get_db().execute(
-                    "SELECT * FROM articles WHERE notebook_id = ? ORDER BY created_at DESC LIMIT ?",
-                    (notebook_id, int(limit)),
-                ).fetchall()
-            else:
-                rows = self._get_db().execute(
-                    "SELECT * FROM articles ORDER BY created_at DESC LIMIT ?",
-                    (int(limit),),
-                ).fetchall()
+            rows = self._get_db().execute(
+                f"SELECT * FROM articles {where} ORDER BY created_at DESC LIMIT ?",
+                args,
+            ).fetchall()
             return [self._row_to_dict(r) for r in rows]
         except Exception as e:
             logger.debug(f"[article_store.list_recent] {e}")
@@ -151,13 +159,16 @@ class ArticleStore:
         sender_query: str,
         *,
         limit: int = 30,
+        include_non_content: bool = False,
     ) -> List[Dict[str, Any]]:
         """List articles where the sender matches (case-insensitive LIKE).
-        Used by `@correspondent show articles from <sender>`."""
+        Used by `@correspondent show articles from <sender>`. P14.A:
+        content-only by default."""
+        kind_clause = "" if include_non_content else " AND (kind IS NULL OR kind = 'content')"
         try:
             pattern = f"%{sender_query.strip().lower()}%"
             rows = self._get_db().execute(
-                "SELECT * FROM articles WHERE LOWER(sender) LIKE ? "
+                f"SELECT * FROM articles WHERE LOWER(sender) LIKE ?{kind_clause} "
                 "ORDER BY created_at DESC LIMIT ?",
                 (pattern, int(limit)),
             ).fetchall()
@@ -186,6 +197,73 @@ class ArticleStore:
         except Exception as e:
             logger.debug(f"[article_store.count_by_source] {e}")
             return 0
+
+    async def mark_intelligence_processed(self, article_id: str) -> bool:
+        """P14.E (2026-06-10) — set the idempotency flag after the full
+        Phase 14 pipeline (classifier + summary + entity + section + event)
+        has run on a content article. Re-runs of
+        `_summarize_articles_background` skip flagged articles to avoid
+        duplicate brain events and section thrashing."""
+        try:
+            conn = self._get_db()
+            cur = conn.execute(
+                "UPDATE articles SET intelligence_processed = 1 WHERE id = ?",
+                (article_id,),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            logger.debug(f"[article_store.mark_intelligence_processed] {e}")
+            return False
+
+    async def update_section(
+        self,
+        article_id: str,
+        *,
+        section_id: Optional[str] = None,
+        proposal: Optional[str] = None,
+        confidence: float = 0.0,
+    ) -> bool:
+        """P14.D (2026-06-10) — persist section assignment OR proposal.
+        section_id non-None → article confidently assigned. proposal
+        non-None with section_id None → low-confidence proposal sits for
+        user review."""
+        try:
+            conn = self._get_db()
+            cur = conn.execute(
+                """UPDATE articles
+                   SET section_id = ?, section_proposal = ?, section_confidence = ?
+                   WHERE id = ?""",
+                (section_id, (proposal or None), float(confidence), article_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            logger.debug(f"[article_store.update_section] {e}")
+            return False
+
+    async def update_kind(
+        self,
+        article_id: str,
+        *,
+        kind: str,
+        reason: str = "",
+        confidence: float = 0.0,
+    ) -> bool:
+        """P14.A (2026-06-10) — persist article-skip classifier result.
+        `kind` is one of content / sponsor / ad / jobs / navigation.
+        Downstream passes branch on `kind == 'content'`."""
+        try:
+            conn = self._get_db()
+            cur = conn.execute(
+                "UPDATE articles SET kind = ?, kind_reason = ?, kind_confidence = ? WHERE id = ?",
+                ((kind or "content")[:32], (reason or "")[:300], float(confidence), article_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            logger.debug(f"[article_store.update_kind] {e}")
+            return False
 
     async def update_title(self, article_id: str, title: str) -> bool:
         """Q2 (2026-06-10) — used by the refresh-titles batch to fix
@@ -253,13 +331,19 @@ class ArticleStore:
 
         Returns a slim row dict including the raw embedding bytes; caller
         unpacks via numpy.frombuffer(blob, dtype=float32).
+
+        P14.A (2026-06-10) — content-only filter. Sponsors / ads / jobs /
+        navigation chrome have embeddings (legacy data) but must not
+        influence clustering. Default kind is 'content' for legacy rows.
         """
         try:
             rows = self._get_db().execute(
                 """SELECT id, source_id, notebook_id, position, title, summary,
                           sender, topic_tags, created_at, embedding
                    FROM articles
-                   WHERE embedding IS NOT NULL AND created_at >= ?
+                   WHERE embedding IS NOT NULL
+                     AND created_at >= ?
+                     AND (kind IS NULL OR kind = 'content')
                    ORDER BY created_at DESC LIMIT ?""",
                 (since_iso, int(limit)),
             ).fetchall()
