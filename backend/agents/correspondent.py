@@ -759,6 +759,27 @@ class CorrespondentAgent:
         items = [i for i in items if i["item_id"] != item_id]
         _save_queue(items)
 
+        # Q6 (2026-06-10) — log manual approvals as routing decisions so
+        # the histogram reflects the user's actual choices. Original
+        # decision verb is preserved as 'manual_route' with the cosine
+        # score from the queued candidate (which was the auto-route
+        # attempt that fell below threshold). Lets the histogram show
+        # not just where auto-route succeeded but where the user picked
+        # up the slack.
+        try:
+            from services.routing_telemetry import log_decision
+            top = item.get("top_candidate") or {}
+            log_decision(
+                sender=item.get("sender") or "",
+                top_cosine=float(top.get("confidence") or 0.0),
+                threshold=0.75,
+                decision_verb="manual_route",
+                top_notebook_id=target_nb,
+                bias_applied=("user-override" if (top.get("notebook_id") or "") != target_nb else None),
+            )
+        except Exception as _t_e:
+            logger.debug(f"[correspondent.approve_queued] routing telemetry skipped: {_t_e}")
+
         # F5b (2026-06-08) — record this routing as a learning signal.
         # The notebook the user picked at approval time wins future
         # routing for this sender. _record_sender_routing is a no-op

@@ -117,7 +117,7 @@ async def _auto_route_rate() -> Dict[str, Any]:
         return out
     except Exception as e:
         logger.debug(f"[dashboard.auto_route_rate] {e}")
-        return {"d3": None, "d7": None, "d30": None, "label": "—"}
+        return {"d3": None, "d7": None, "d30": None, "label": "populates after next poll"}
 
 
 async def _approval_throughput() -> Dict[str, Any]:
@@ -183,14 +183,14 @@ async def _sender_learning_impact() -> Dict[str, Any]:
             (since,),
         ).fetchone()
         if not row or not row["total"]:
-            return {"value": None, "label": "—"}
+            return {"value": None, "label": "learns from your manual approves"}
         return {
             "value": row["biased"] / row["total"],
             "label": f"{row['biased']} of {row['total']} routes (30d) used learned bias",
         }
     except Exception as e:
         logger.debug(f"[dashboard.sender_learning] {e}")
-        return {"value": None, "label": "—"}
+        return {"value": None, "label": "learns from your manual approves"}
 
 
 async def _imap_delete_rate() -> Dict[str, Any]:
@@ -224,7 +224,7 @@ async def _subscription_conversion() -> Dict[str, Any]:
             "label": f"{len(subs)} pending proposal(s) right now",
         }
     except Exception:
-        return {"value": None, "label": "—"}
+        return {"value": None, "label": "queue empty"}
 
 
 async def _avg_grade() -> Dict[str, Any]:
@@ -353,10 +353,20 @@ def compose_dashboard_html(metrics: Dict[str, Any]) -> str:
 
     parts.append('</div>')
 
+    # Q7 (2026-06-10) — more actionable than the old "populate as activity
+    # happens." Tells the user the specific lever for each blank tile.
     parts.append(
-        '<p class="text-xs text-gray-500 italic">'
-        'Metrics that show "—" haven\'t had data logged yet — populate as activity happens.'
-        '</p>'
+        '<div class="text-xs text-gray-500 mt-2 leading-relaxed">'
+        '<p class="font-semibold mb-1">Why some tiles show "—"?</p>'
+        '<ul class="list-disc pl-5 space-y-0.5">'
+        '<li><b>Auto-route / Sender learning</b> — populates after the next IMAP poll routes mail.</li>'
+        '<li><b>Approval throughput</b> — populates the first time you approve a queued item.</li>'
+        '<li><b>Dedup catch rate</b> — populates after inflows start hitting (each newsletter ingest).</li>'
+        '<li><b>IMAP delete success</b> — populates only if "delete on ingest" is enabled per-account.</li>'
+        '<li><b>Avg quality grade</b> — needs at least 5 emails from a sender before grading.</li>'
+        '</ul>'
+        '<p class="mt-2 italic">Trigger a sync now with <code>@correspondent sync now</code> to seed these faster.</p>'
+        '</div>'
     )
     parts.append('</div>')
     return "".join(parts)

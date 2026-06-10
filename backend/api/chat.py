@@ -3002,6 +3002,7 @@ def _quick_intent_for_correspondent(query: str) -> tuple:
         (r"^(show|list)\s+articles?$|show me articles", "show_articles"),
         (r"^backfill\s+status$|^backfill\s+progress$|how.?s?\s+(?:the\s+)?backfill", "backfill_status"),
         (r"^backfill(\s+articles?)?$|^extract\s+articles?\s+for\s+old\b|rebuild\s+article\s+index", "backfill_articles"),
+        (r"^refresh\s+titles?$|^fix\s+(article\s+)?titles?$|^rebuild\s+titles?$", "refresh_titles"),
         (r"^(show|list)\s+subscriptions?$|show.*proposals?$", "show_subscriptions"),
         (r"^(show|list)\s+(approval\s+)?queue$|^(show\s+)?pending$|^show\s+approvals?$", "show_queue"),
         (r"^(show|list)\s+accounts?$|^(show|list)\s+inboxes?$", "show_accounts"),
@@ -3595,6 +3596,32 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
             except Exception as _bf_e:
                 yield _reply(f"⚠ Backfill kickoff failed: {_bf_e}")
 
+        elif intent == "refresh_titles":
+            from storage.article_store import article_store
+            from services.article_extractor import _extract_title_from_segment
+            yield _reply("🔄 Re-extracting titles for existing articles…")
+            try:
+                articles = await article_store.list_all_with_text(limit=5000)
+                fixed = 0
+                skipped = 0
+                for a in articles:
+                    new_title = _extract_title_from_segment(
+                        text=a.get("body_text") or "",
+                        html=a.get("body_html") or "",
+                    )
+                    old = (a.get("title") or "").strip()
+                    if new_title and new_title != "(untitled)" and new_title != old:
+                        await article_store.update_title(a["id"], new_title)
+                        fixed += 1
+                    else:
+                        skipped += 1
+                yield _reply(
+                    f"\n\n✓ Refreshed **{fixed}** title(s); skipped **{skipped}** that were already clean. "
+                    f"Try `show articles` to confirm."
+                )
+            except Exception as _rt_e:
+                yield _reply(f"\n\n⚠ Refresh failed: {_rt_e}")
+
         elif intent == "backfill_status":
             try:
                 from api.articles import _BACKFILL_STATUS
@@ -3626,7 +3653,9 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
             if not label:
                 yield _reply("Tell me which topic — e.g. `deep read AI agents`.")
             else:
-                yield _reply(f"🔭 Combining your newsletter coverage of **{label}** with a fresh web sweep…")
+                # Q4 (2026-06-10) — trailing \n\n so the next reply with
+                # a code fence is treated as a separate block.
+                yield _reply(f"🔭 Combining your newsletter coverage of **{label}** with a fresh web sweep…\n\n")
                 try:
                     result = await run_deep_read(label=label, notebook_id=chat_query.notebook_id)
                 except Exception as _de:
@@ -4008,31 +4037,36 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
             from services.routing_telemetry import get_distribution
             dist = get_distribution(days=14)
             if dist["total"] == 0:
+                # Q7 (2026-06-10) — more useful empty state: tell the
+                # user exactly what would populate this.
                 yield _reply(
-                    "📊 No routing decisions logged yet over the last 14 days. "
-                    "Once newsletters start arriving, this command shows the cosine-score "
-                    "distribution so you can decide if the 0.75 auto-route threshold is right."
+                    "📊 **No routing decisions logged yet over the last 14 days.**\n\n"
+                    "This populates when:\n"
+                    "- The IMAP poller routes a new newsletter (auto or queue)\n"
+                    "- You manually approve a queued item from chat or Settings\n\n"
+                    "Trigger a manual sync with `@correspondent sync now`, or wait for the next 8-hour poll cycle."
                 )
             else:
                 threshold = dist["threshold"]
                 auto_rate = dist["auto_rate"]
                 buckets = dist["buckets"]
-                # Build bar chart: 2 series (auto vs queued) per cosine bucket.
-                # Only render non-empty buckets to keep the chart legible.
-                non_empty = [b for b in buckets if (b["auto"] + b["queued"]) > 0]
+                # Q6 (2026-06-10) — three series now: auto, manual, queued.
+                non_empty = [b for b in buckets if (b["auto"] + b.get("manual", 0) + b["queued"]) > 0]
                 labels = [f"{b['lo']:.2f}" for b in non_empty]
+                series = [
+                    {"label": "auto-routed", "data": [b["auto"] for b in non_empty]},
+                ]
+                if dist.get("manual", 0) > 0:
+                    series.append({"label": "manual approve", "data": [b.get("manual", 0) for b in non_empty]})
+                series.append({"label": "queued", "data": [b["queued"] for b in non_empty]})
                 chart = {
                     "kind": "bar",
                     "title": f"Routing decisions — last {dist['window_days']}d",
                     "labels": labels,
-                    "series": [
-                        {"label": "auto-routed", "data": [b["auto"] for b in non_empty]},
-                        {"label": "queued", "data": [b["queued"] for b in non_empty]},
-                    ],
+                    "series": series,
                 }
                 # Threshold-tuning advice
-                above_thr = sum(b["auto"] + b["queued"] for b in non_empty if b["lo"] >= threshold)
-                below_thr = sum(b["auto"] + b["queued"] for b in non_empty if b["lo"] < threshold)
+                above_thr = sum(b["auto"] + b.get("manual", 0) + b["queued"] for b in non_empty if b["lo"] >= threshold)
                 advice = ""
                 if dist["total"] >= 20:
                     pct_at_thr = above_thr / dist["total"]
@@ -4049,14 +4083,17 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                 lines = [
                     f"**📊 Routing confidence — last {dist['window_days']} days**\n",
                     f"- **Total decisions:** {dist['total']}",
-                    f"- **Auto-routed:** {dist['auto_rate']:.0%} ({sum(b['auto'] for b in non_empty)} of {dist['total']})",
-                    f"- **Threshold:** {threshold:.2f}",
-                    advice,
-                    "",
-                    "```json-chart",
-                    json.dumps(chart),
-                    "```",
+                    f"- **Auto-routed:** {dist['auto']} ({dist['auto_rate']:.0%})",
                 ]
+                if dist.get("manual", 0) > 0:
+                    lines.append(f"- **Manual approves:** {dist['manual']} ({dist['manual'] / dist['total']:.0%})")
+                lines.append(f"- **Queued (no approval yet):** {dist['queued']}")
+                lines.append(f"- **Threshold:** {threshold:.2f}")
+                lines.append(advice)
+                lines.append("")
+                lines.append("```json-chart")
+                lines.append(json.dumps(chart))
+                lines.append("```")
                 yield _reply("\n".join(lines))
 
         # ─────────────────────────────────────────────────────────────
@@ -4285,8 +4322,9 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                 from services.article_clusterer import get_recent_clusters, recluster_all
                 clusters = await get_recent_clusters(limit=8)
                 # If no clusters exist yet (or are stale), kick off a recluster
+                clustering_msg = ""
                 if not clusters:
-                    yield _reply("🔄 Clustering articles… this is the first time so it may take ~30 seconds.")
+                    yield _reply("🔄 Clustering articles… this is the first time so it may take ~30 seconds.\n\n")
                     await recluster_all()
                     clusters = await get_recent_clusters(limit=8)
                 if not clusters:
@@ -4319,7 +4357,10 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                                 for c in items
                             ],
                         }
-                        yield _reply("```json-correspondent-hot-clusters\n" + json.dumps(payload_obj) + "\n```")
+                        # Q4 (2026-06-10) — leading \n\n so the fence is
+                        # always on its own line even when concatenated
+                        # after a prior status message.
+                        yield _reply("\n\n```json-correspondent-hot-clusters\n" + json.dumps(payload_obj) + "\n```")
             else:
                 trends = await compute_topic_trends(days=days)
                 if not trends:

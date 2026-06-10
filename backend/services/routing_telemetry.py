@@ -88,6 +88,11 @@ def get_distribution(*, days: int = 14, bucket_size: float = 0.05) -> Dict[str, 
 
     total = 0
     auto = 0
+    manual = 0
+    # Q6 (2026-06-10) — bucket adds a 'manual' column so the user can
+    # see where their approvals are landing vs the auto-route line.
+    for b in buckets:
+        b["manual"] = 0
     for r in rows:
         cos = float(r.get("top_cosine") or 0.0)
         cos = max(0.0, min(0.999, cos))
@@ -98,6 +103,9 @@ def get_distribution(*, days: int = 14, bucket_size: float = 0.05) -> Dict[str, 
         if verb == "route":
             buckets[idx]["auto"] += 1
             auto += 1
+        elif verb == "manual_route":
+            buckets[idx]["manual"] += 1
+            manual += 1
         else:
             buckets[idx]["queued"] += 1
         total += 1
@@ -107,6 +115,9 @@ def get_distribution(*, days: int = 14, bucket_size: float = 0.05) -> Dict[str, 
     return {
         "buckets": buckets,
         "total": total,
+        "auto": auto,
+        "manual": manual,
+        "queued": total - auto - manual,
         "auto_rate": auto_rate,
         "threshold": threshold,
         "window_days": days,

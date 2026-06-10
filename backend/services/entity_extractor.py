@@ -17,6 +17,8 @@ from config import settings
 # Phase 1 Tier 2 (2026-06-09) — applied at extraction time so over-generic
 # entities don't flood routing decisions. Lowercase for case-insensitive
 # membership check. Per-notebook custom denylists deferred to Phase 4+.
+# Q3 (2026-06-10) expanded to cover newsletter template noise + locations
+# that the LLM extractor kept misclassifying as people.
 _GENERIC_ENTITY_DENYLIST = frozenset(s.lower() for s in [
     # Tech generic
     "ai", "artificial intelligence", "machine learning", "ml",
@@ -26,13 +28,35 @@ _GENERIC_ENTITY_DENYLIST = frozenset(s.lower() for s in [
     "linkedin", "instagram", "reddit", "github", "discord",
     "internet", "web", "cloud", "data", "software", "hardware",
     "ios", "android", "macos", "windows", "linux",
-    # Newsletter generic
+    # Newsletter template strings (Q3) — these were being extracted as
+    # entities because they appear in capitalized form at the top of
+    # almost every newsletter
     "newsletter", "subscriber", "subscribe", "unsubscribe", "click here",
-    "read more", "continue reading", "view in browser", "this week",
-    "this month", "today", "yesterday", "tomorrow",
-    # Vacuous
-    "ceo", "cto", "vp", "founder", "team", "company", "organization",
-    "industry", "sector", "market", "world", "global", "us", "usa",
+    "read more", "continue reading", "view in browser", "view online",
+    "view email", "open in browser", "sign up", "sign in", "log in",
+    "manage subscription", "manage preferences", "preferences",
+    "share this", "follow us", "follow on", "forward to a friend",
+    "this week", "this month", "today", "yesterday", "tomorrow",
+    "advertisement", "sponsored", "promoted",
+    "competitive landscape", "market size", "key takeaways", "executive summary",
+    # Locations (Q3) — the LLM extractor was misclassifying these as
+    # persons. They're real entities but useless for newsletter routing
+    # because every notebook with any geo content matches.
+    "north america", "south america", "central america", "latin america",
+    "middle east", "asia pacific", "asia-pacific", "apac",
+    "europe", "africa", "asia", "oceania",
+    "united states", "us", "usa", "u.s.", "u.s.a.", "america",
+    "uk", "u.k.", "united kingdom", "great britain", "britain", "england",
+    "canada", "mexico", "brazil", "argentina", "japan", "south korea",
+    "north korea", "china", "india", "russia", "germany", "france",
+    "italy", "spain", "australia", "new zealand", "ireland",
+    "european union", "eu",
+    # Vacuous role titles
+    "ceo", "cto", "cfo", "coo", "vp", "evp", "svp", "founder", "co-founder",
+    "team", "company", "organization", "industry", "sector", "market",
+    "world", "global",
+    # Generic editorial framing
+    "introduction", "conclusion", "summary", "overview", "background",
 ])
 
 # Per D.1 spec decision — highest-signal entity types only. Skip
@@ -296,18 +320,27 @@ JSON:"""
         notebook_id: str,
         entity_type: Optional[str] = None
     ) -> List[Entity]:
-        """Get all entities for a notebook."""
+        """Get all entities for a notebook.
+
+        Q3 (2026-06-10) — applies the live denylist + type filter at
+        read time too. Without this, entities written before the
+        denylist was expanded would still show up in chat outputs.
+        """
         if notebook_id not in self._entities:
             return []
-        
-        entities = list(self._entities[notebook_id].values())
-        
+
+        entities = [
+            e for e in self._entities[notebook_id].values()
+            if e.type in _RETAINED_ENTITY_TYPES
+            and (e.name or "").strip().lower() not in _GENERIC_ENTITY_DENYLIST
+        ]
+
         if entity_type:
             entities = [e for e in entities if e.type == entity_type]
-        
+
         # Sort by mentions (most mentioned first)
         entities.sort(key=lambda e: -e.mentions)
-        
+
         return entities
     
     def search_entities(

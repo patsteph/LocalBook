@@ -59,7 +59,11 @@ export const CorrespondentHotClustersRenderer: React.FC<RendererProps<HotCluster
         {headerLabel} · {items.length}
       </div>
       {items.map((c, idx) => {
-        const senderDiversityOK = c.sender_count >= 3;
+        // Q5 (2026-06-10) — was ≥3, too strict for small inbox histories.
+        // ≥2 still requires real cross-sender signal (excludes single-
+        // sender amplification) while letting two-source clusters
+        // through, which is the common case.
+        const senderDiversityOK = c.sender_count >= 2;
         return (
           <div
             key={`${idx}-${c.label}`}

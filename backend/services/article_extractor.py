@@ -77,25 +77,103 @@ def _strip_html_tags(html: str) -> str:
         return text.strip()
 
 
+# Q1 (2026-06-10) — common newsletter template strings that often
+# appear at the top of an article segment and were getting picked as
+# titles. Lowercase for case-insensitive membership check.
+_TITLE_BLACKLIST = frozenset(s.lower() for s in [
+    "view in browser", "view online", "view in your browser",
+    "open in browser", "read in browser", "view email",
+    "view this email in your browser", "having trouble viewing",
+    "click here", "click to view", "click here to read",
+    "tap here", "tap to view",
+    "sign up", "sign in", "log in", "subscribe", "unsubscribe",
+    "manage subscription", "manage preferences", "preferences",
+    "share this", "share with friends", "forward to a friend",
+    "follow us", "follow us on", "follow on",
+    "settings", "options",
+    "email us", "contact us", "reply",
+    "advertisement", "sponsored", "promoted",
+    "read more", "continue reading", "learn more",
+    "this email was sent to", "you received this email",
+    "go to website", "visit website", "website",
+])
+
+_URL_PATTERN = re.compile(
+    r"""^\s*(?:
+        https?://\S+
+        | www\.\S+
+        | mailto:\S+
+        | [a-z0-9][-a-z0-9.]*\.[a-z]{2,}(?:/\S*)?
+    )\s*$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _looks_like_title(text: str) -> bool:
+    """Q1 (2026-06-10) — gate for substantive title candidates.
+
+    Rejects:
+      - URLs / domain-only strings ('example.com', 'https://...')
+      - Common newsletter template strings ('View Online', 'Sign Up')
+      - Strings under 4 chars or under 40% alpha (mostly emoji/punctuation)
+    """
+    s = (text or "").strip()
+    if not s or len(s) < 4 or len(s) > 300:
+        return False
+    if _URL_PATTERN.match(s):
+        return False
+    if s.lower() in _TITLE_BLACKLIST:
+        return False
+    # Reject single-word UI fragments like "Subscribe" even when not
+    # exact match (e.g. "Subscribe now" → false)
+    low = s.lower()
+    for needle in ("view online", "view in browser", "click here",
+                   "sign up", "subscribe", "unsubscribe",
+                   "share this", "follow us", "manage preferences"):
+        if low.startswith(needle):
+            return False
+    alpha = sum(1 for c in s if c.isalpha())
+    if alpha / len(s) < 0.4:
+        return False
+    return True
+
+
 def _extract_title_from_segment(text: str, html: Optional[str] = None) -> str:
     """Pull a best-effort title from the start of an article segment.
-    First non-empty line, truncated to 200 chars."""
+
+    Q1 (2026-06-10) — was returning URLs and template noise ('View
+    Online', 'Sign Up') as titles for ~90% of articles. Now walks the
+    first few candidates and picks the first that passes
+    `_looks_like_title`. Falls back to first non-empty line only if
+    everything fails.
+    """
     if html:
-        # Look for the first H1/H2/H3 in the HTML
         try:
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, "html.parser")
-            heading = soup.find(["h1", "h2", "h3"])
-            if heading:
+            # Walk every H1/H2/H3 — the first substantive one wins
+            for heading in soup.find_all(["h1", "h2", "h3"]):
                 t = heading.get_text(strip=True)
-                if t:
+                if t and _looks_like_title(t):
+                    return t[:200]
+            # Also try title-ish elements with weight (a.title-link etc)
+            for a in soup.find_all("a", limit=8):
+                t = a.get_text(strip=True)
+                if t and len(t) >= 8 and _looks_like_title(t):
                     return t[:200]
         except Exception:
             pass
-    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-    if not lines:
-        return "(untitled)"
-    return lines[0][:200]
+    lines = [ln.strip() for ln in (text or "").split("\n") if ln.strip()]
+    # Walk first ~15 lines looking for a substantive one
+    for line in lines[:15]:
+        if _looks_like_title(line):
+            return line[:200]
+    # Last resort: first non-empty line, even if poor quality. Better
+    # to have SOMETHING than blank, and the calling code prefers the
+    # newsletter subject when this returns "(untitled)".
+    if lines:
+        return lines[0][:200]
+    return "(untitled)"
 
 
 def _split_by_hr(html: str) -> List[str]:

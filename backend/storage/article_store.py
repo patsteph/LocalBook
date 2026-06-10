@@ -187,6 +187,21 @@ class ArticleStore:
             logger.debug(f"[article_store.count_by_source] {e}")
             return 0
 
+    async def update_title(self, article_id: str, title: str) -> bool:
+        """Q2 (2026-06-10) — used by the refresh-titles batch to fix
+        articles that were saved with URL / template-string titles."""
+        try:
+            conn = self._get_db()
+            cur = conn.execute(
+                "UPDATE articles SET title = ? WHERE id = ?",
+                ((title or "")[:500], article_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            logger.debug(f"[article_store.update_title] {e}")
+            return False
+
     async def update_summary(
         self,
         article_id: str,
@@ -259,6 +274,21 @@ class ArticleStore:
             return out
         except Exception as e:
             logger.debug(f"[article_store.list_with_embeddings] {e}")
+            return []
+
+    async def list_all_with_text(self, *, limit: int = 5000) -> List[Dict[str, Any]]:
+        """Return article rows with body_text + body_html (needed for
+        the title-refresh batch). Strips embedding blob for size."""
+        try:
+            rows = self._get_db().execute(
+                """SELECT id, source_id, notebook_id, position, title,
+                          body_text, body_html, summary, sender, created_at
+                   FROM articles ORDER BY created_at DESC LIMIT ?""",
+                (int(limit),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.debug(f"[article_store.list_all_with_text] {e}")
             return []
 
     async def delete_by_source(self, source_id: str) -> int:
