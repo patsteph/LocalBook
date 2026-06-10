@@ -2960,6 +2960,82 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
         yield f"data: {json.dumps({'error': f'Collector error: {e}'})}\n\n"
 
 
+def _quick_intent_for_correspondent(query: str) -> tuple:
+    """2026-06-10 — fast-path keyword override before LLM classification.
+
+    With 27+ Correspondent intents, the LLM classifier was collapsing
+    simple queries ("show articles", "whats hot", "show subscriptions")
+    into the default show_status. This regex table catches the obvious
+    verb-noun pairs deterministically. Returns (intent, params) on match
+    or (None, {}) to fall through to the LLM classifier.
+
+    Order matters — most specific patterns first. Each pattern is a
+    (regex, intent, optional_param_extractor) tuple.
+    """
+    import re as _re_q
+    q = (query or "").strip().lower()
+    if not q:
+        return (None, {})
+
+    # Discovery + browse (no params)
+    simple_patterns = [
+        (r"^(show|list)\s+articles?$|show me articles", "show_articles"),
+        (r"^(show|list)\s+subscriptions?$|show.*proposals?$", "show_subscriptions"),
+        (r"^(show|list)\s+(approval\s+)?queue$|^(show\s+)?pending$|^show\s+approvals?$", "show_queue"),
+        (r"^(show|list)\s+accounts?$|^(show|list)\s+inboxes?$", "show_accounts"),
+        (r"^(show|list)\s+senders?$", "show_senders"),
+        (r"^(show|list)\s+entities?$", "show_entities"),
+        (r"^(show|list)\s+scorecards?$|^show\s+grades?$|^rank\s+(my\s+)?newsletters?$", "show_scorecards"),
+        (r"^(show|list)\s+recent$|^what.?s?\s+recent$|^show\s+recent\s+newsletters?$", "show_recent"),
+        (r"^sync(\s+now)?$|^poll(\s+now)?$|^refresh$", "sync_now"),
+        (r"^(show\s+)?status$", "show_status"),
+        (r"^summari[sz]e\s+recent$|^(weekly\s+)?summary$", "summarize_recent"),
+        (r"^quiet\s+senders?$|^silent\s+senders?$|^unsubscribe\s+candidates?$", "quiet_senders"),
+    ]
+    for pat, intent in simple_patterns:
+        if _re_q.search(pat, q):
+            return (intent, {})
+
+    # Hot/cold (may carry deep flag)
+    if _re_q.search(r"what.?s?\s+hot|hot\s+topics?|trending(\s+up)?", q):
+        params = {}
+        if _re_q.search(r"\bdeep\b|\bcluster|\btheme", q):
+            params["deep"] = True
+        return ("whats_hot", params)
+    if _re_q.search(r"what.?s?\s+cold|cooling(\s+off)?|trending\s+down|going\s+quiet", q):
+        params = {}
+        if _re_q.search(r"\bdeep\b|\bcluster|\btheme", q):
+            params["deep"] = True
+        return ("whats_cold", params)
+
+    # Articles-from-sender pattern (preserve sender)
+    m = _re_q.search(r"(?:show|list)\s+articles?\s+from\s+(.+)", q)
+    if m:
+        return ("show_articles_from_sender", {"email_or_name": m.group(1).strip()})
+
+    # Entities-for-sender
+    m = _re_q.search(r"(?:show|list)\s+entit(?:y|ies)\s+(?:for|from)\s+(.+)", q)
+    if m:
+        return ("show_entities_for_sender", {"email_or_name": m.group(1).strip()})
+
+    # Score sender
+    m = _re_q.search(r"^(?:score|grade|rate)\s+(.+)", q)
+    if m:
+        return ("score_sender", {"email_or_name": m.group(1).strip()})
+
+    # Deep dive on one sender
+    m = _re_q.search(r"(?:show|tell)\s+(?:me\s+)?(?:about|sender)\s+(.+)", q)
+    if m:
+        return ("show_sender", {"email_or_name": m.group(1).strip()})
+
+    # Forget sender
+    m = _re_q.search(r"forget\s+(.+)", q)
+    if m:
+        return ("forget_sender", {"email": m.group(1).strip()})
+
+    return (None, {})
+
+
 async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional[Dict[str, Any]] = None):
     """Stream a Correspondent (IMAP) agent response in SSE format.
 
@@ -3011,9 +3087,17 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
             intent = injected_action.get("intent") or "show_status"
             params = injected_action.get("params") or {}
         else:
-            cls = await classify_intent(q, "correspondent", ollama_client=ollama_client)
-            intent = (cls or {}).get("intent") or "show_status"
-            params = (cls or {}).get("params") or {}
+            # 2026-06-10 — fast-path keyword override for unambiguous
+            # phrasings. With 27+ intents the LLM classifier was
+            # collapsing simple queries like "show articles" / "whats
+            # hot" into the default show_status. This pre-LLM regex
+            # match handles the common verb-noun pairs deterministically
+            # and falls through to the classifier for anything else.
+            intent, params = _quick_intent_for_correspondent(q)
+            if not intent:
+                cls = await classify_intent(q, "correspondent", ollama_client=ollama_client)
+                intent = (cls or {}).get("intent") or "show_status"
+                params = (cls or {}).get("params") or {}
 
         # M2 (2026-06-09) — graceful fallback when action intents land
         # without their required parameter. Better to show the queue
