@@ -3606,6 +3606,19 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                 fixed = 0
                 skipped = 0
                 from_summary = 0
+                # Q1.g (2026-06-10) — diagnostic counters. The "0 fixed /
+                # 80 skipped" run gave us no signal on which branch every
+                # article landed in. These tally each decision path so we
+                # can pinpoint the bottleneck in one refresh run.
+                d_old_gate_passes = 0   # old title already passes the gate
+                d_extract_matched_old = 0  # extract returned the same string
+                d_summary_missing = 0
+                d_summary_html = 0
+                d_summary_chrome = 0
+                d_summary_used = 0
+                d_force_cleared = 0
+                d_first_sent_short = 0
+                sample_lines: list[str] = []
                 for a in articles:
                     new_title = _extract_title_from_segment(
                         text=a.get("body_text") or "",
@@ -3617,20 +3630,26 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                     # title AND the saved title is also bad, derive one from
                     # the LLM summary (which is already clean prose). First
                     # sentence, capped at 140 chars, no trailing period.
+                    # Diagnostic: which gate did `old` hit?
+                    old_passes = _looks_like_title(old)
+                    if old_passes:
+                        d_old_gate_passes += 1
                     if (
                         (not new_title or new_title == "(untitled)")
-                        and not _looks_like_title(old)
+                        and not old_passes
                     ):
-                        # Q1.f (2026-06-10) — lighter gate on the summary
-                        # fallback. The summary is already LLM-clean. Only
-                        # bail if it's obvious raw-HTML / chrome echo.
                         summary = (a.get("summary") or "").strip()
-                        summary_bad = (
-                            not summary
-                            or len(summary) < 8
-                            or summary.startswith("<")
-                            or summary.lower().startswith(("view online", "sign up", "subscribe", "unsubscribe"))
-                        )
+                        if not summary or len(summary) < 8:
+                            d_summary_missing += 1
+                            summary_bad = True
+                        elif summary.startswith("<"):
+                            d_summary_html += 1
+                            summary_bad = True
+                        elif summary.lower().startswith(("view online", "sign up", "subscribe", "unsubscribe")):
+                            d_summary_chrome += 1
+                            summary_bad = True
+                        else:
+                            summary_bad = False
                         if not summary_bad:
                             first_sent = _re_rt.split(r"(?<=[.!?])\s+", summary, maxsplit=1)[0].strip()
                             if first_sent and len(first_sent) >= 8:
@@ -3638,28 +3657,48 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                                 new_title = candidate
                                 from_summary += 1
                                 came_from_summary = True
+                                d_summary_used += 1
+                            else:
+                                d_first_sent_short += 1
+                    elif new_title and new_title == old:
+                        d_extract_matched_old += 1
                     # Q1.f — summary-derived titles bypass the strict gate
-                    # (they naturally end in nouns the gate would flag).
                     title_acceptable = bool(new_title) and new_title != "(untitled)" and (
                         came_from_summary or _looks_like_title(new_title)
                     )
                     if title_acceptable and new_title != old:
                         await article_store.update_title(a["id"], new_title)
                         fixed += 1
+                        if len(sample_lines) < 5:
+                            sample_lines.append(f"  ✓ `{(old or '∅')[:50]}` → `{new_title[:60]}`")
                     elif old and not _looks_like_title(old) and old != "(untitled)":
-                        # Q1.e (2026-06-10) — force-clear obviously-bad
-                        # titles even when we don't have a clean replacement.
-                        # Renderer falls back to a sender-based placeholder.
                         await article_store.update_title(a["id"], "(untitled)")
+                        d_force_cleared += 1
                         fixed += 1
+                        if len(sample_lines) < 5:
+                            sample_lines.append(f"  ⚠ `{old[:60]}` → cleared (no good replacement)")
                     else:
                         skipped += 1
                 summary_note = f" ({from_summary} pulled from the article summary)" if from_summary else ""
-                yield _reply(
+                diag_lines = [
                     f"\n\n✓ Refreshed **{fixed}** title(s){summary_note}; "
-                    f"skipped **{skipped}** that were already clean or had no good source text. "
-                    f"Try `show articles` to confirm."
-                )
+                    f"skipped **{skipped}**.",
+                    "",
+                    "**Diagnostic** (Q1.g — tells us where the 80 went):",
+                    f"- Old title already passed gate: **{d_old_gate_passes}**",
+                    f"- Extraction returned same string as saved title: **{d_extract_matched_old}**",
+                    f"- Summary missing or <8 chars: **{d_summary_missing}**",
+                    f"- Summary started with `<` (HTML echo): **{d_summary_html}**",
+                    f"- Summary started with chrome phrase: **{d_summary_chrome}**",
+                    f"- Summary used as title: **{d_summary_used}**",
+                    f"- First sentence too short: **{d_first_sent_short}**",
+                    f"- Force-cleared (no replacement): **{d_force_cleared}**",
+                ]
+                if sample_lines:
+                    diag_lines.append("")
+                    diag_lines.append("**Samples:**")
+                    diag_lines.extend(sample_lines)
+                yield _reply("\n".join(diag_lines))
             except Exception as _rt_e:
                 yield _reply(f"\n\n⚠ Refresh failed: {_rt_e}")
 
