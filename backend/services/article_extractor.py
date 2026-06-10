@@ -125,6 +125,9 @@ _ZERO_WIDTH = "".join(["​", "‌", "‍", "⁠", "﻿", "\xa0"])
 
 # Q1.b — words that, when a long title ends with them, almost always
 # indicate a mid-sentence truncation rather than a real headline.
+# Q1.e (2026-06-10) — expanded with participles/gerunds that nearly
+# never end a real headline ("starting", "designed", "including", …)
+# after seeing rebuilt-app failure cases.
 _MID_SENTENCE_TAIL_WORDS = frozenset([
     "the", "a", "an", "and", "or", "but", "of", "for", "to", "in",
     "on", "at", "by", "with", "from", "as", "is", "was", "are",
@@ -133,6 +136,13 @@ _MID_SENTENCE_TAIL_WORDS = frozenset([
     "may", "might", "designed", "after", "before", "into", "over",
     "under", "about", "than", "that", "this", "these", "those",
     "via", "per", "without", "within", "across",
+    # Q1.e additions
+    "starting", "ending", "beginning", "including", "featuring",
+    "regarding", "concerning", "original", "focused", "based",
+    "called", "named", "mentioned", "ahead", "behind", "around",
+    "between", "beyond", "against", "during", "since", "while",
+    "until", "although", "because", "unless", "where", "when",
+    "cash", "amid", "amongst", "out", "off", "down", "up",
 ])
 
 
@@ -179,6 +189,12 @@ def _looks_like_title(text: str) -> bool:
         return False
     # Need at least 2 words — single-word lines are almost always chrome
     if len(s.split()) < 2:
+        return False
+    # Q1.e (2026-06-10) — a line that starts with a lowercase letter is
+    # almost always a mid-sentence fragment, never a real headline.
+    # Exception: a leading digit or symbol is fine ("3 things…", "$10M…").
+    first_char = s[0]
+    if first_char.isalpha() and first_char.islower():
         return False
     # Titles with no sentence-ending punctuation that END with a
     # tail-word that screams "mid-sentence" are paragraph fragments,

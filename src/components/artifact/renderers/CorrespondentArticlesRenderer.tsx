@@ -40,28 +40,41 @@ const _BAD_TITLE_PATTERNS = [
   /^\s*[-=*_─━—–·•\s]{3,}\s*$/,                  // HR-style
   /^\s*(?:view\s+(?:online|in\s+browser|in\s+your\s+browser)|sign\s+up|subscribe|unsubscribe|click\s+here|share\s+this|follow\s+us|manage\s+preferences)/i,
 ];
-const _MID_TAIL = new Set(['the','a','an','and','or','but','of','for','to','in','on','at','by','with','from','as','is','was','are','were','be','been','being','have','has','had','do','does','did','will','would','can','could','should','may','might','designed','after','before','into','over','under','about','than','that','this','these','those','via','per','without','within','across']);
+const _MID_TAIL = new Set(['the','a','an','and','or','but','of','for','to','in','on','at','by','with','from','as','is','was','are','were','be','been','being','have','has','had','do','does','did','will','would','can','could','should','may','might','designed','after','before','into','over','under','about','than','that','this','these','those','via','per','without','within','across','starting','ending','beginning','including','featuring','regarding','concerning','original','focused','based','called','named','mentioned','ahead','behind','around','between','beyond','against','during','since','while','until','although','because','unless','where','when','cash','amid','amongst','out','off','down','up']);
+
+function _titleLooksBad(raw: string): boolean {
+  if (!raw || raw.length < 4 || raw === '(untitled)') return true;
+  for (const re of _BAD_TITLE_PATTERNS) {
+    if (re.test(raw)) return true;
+  }
+  // Leading-lowercase = mid-sentence fragment.
+  const firstChar = raw[0];
+  if (firstChar && firstChar.toLowerCase() === firstChar && firstChar.toUpperCase() !== firstChar) return true;
+  // Mid-sentence tail when no sentence-ending punctuation.
+  if (!/[.?!:"']$/.test(raw)) {
+    const lastWord = (raw.split(/\s+/).pop() || '').toLowerCase().replace(/[,;:]+$/, '');
+    if (_MID_TAIL.has(lastWord)) return true;
+  }
+  return false;
+}
 
 function pickDisplayTitle(a: ArticleItem): string {
   const raw = (a.title || '').replace(/[\u200B-\u200D\u2060\uFEFF\u00A0]/g, '').trim();
-  let looksBad = !raw || raw.length < 4 || raw === '(untitled)';
-  if (!looksBad) {
-    for (const re of _BAD_TITLE_PATTERNS) {
-      if (re.test(raw)) { looksBad = true; break; }
-    }
-  }
-  if (!looksBad && !/[.?!:"']$/.test(raw)) {
-    const lastWord = (raw.split(/\s+/).pop() || '').toLowerCase().replace(/[,;:]+$/, '');
-    if (_MID_TAIL.has(lastWord)) looksBad = true;
-  }
-  if (!looksBad) return raw;
+  if (!_titleLooksBad(raw)) return raw;
+  // Summary fallback \u2014 but gate the candidate too.
   const summary = (a.summary || '').trim();
   if (summary) {
     const firstSent = summary.split(/(?<=[.!?])\s+/)[0] || '';
     const candidate = firstSent.replace(/[.\s]+$/, '').slice(0, 140);
-    if (candidate.length >= 8) return candidate;
+    if (candidate.length >= 8 && !_titleLooksBad(candidate)) return candidate;
   }
-  return '(untitled)';
+  // Q1.e (2026-06-10) \u2014 sender-anchored placeholder rather than the
+  // generic "(untitled)" so the user can still tell articles apart.
+  if (a.sender) {
+    const senderDisplay = a.sender.includes('@') ? a.sender.split('@')[0] : a.sender;
+    return `Article from ${senderDisplay}`;
+  }
+  return '(untitled article)';
 }
 
 function relativeTime(iso: string | null | undefined): string {

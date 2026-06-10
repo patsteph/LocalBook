@@ -3636,6 +3636,12 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                     ):
                         await article_store.update_title(a["id"], new_title)
                         fixed += 1
+                    elif old and not _looks_like_title(old) and old != "(untitled)":
+                        # Q1.e (2026-06-10) — force-clear obviously-bad
+                        # titles even when we don't have a clean replacement.
+                        # Renderer falls back to a sender-based placeholder.
+                        await article_store.update_title(a["id"], "(untitled)")
+                        fixed += 1
                     else:
                         skipped += 1
                 summary_note = f" ({from_summary} pulled from the article summary)" if from_summary else ""
