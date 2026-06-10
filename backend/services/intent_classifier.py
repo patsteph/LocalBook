@@ -109,6 +109,7 @@ CORRESPONDENT_INTENTS: List[Dict[str, str]] = [
     {"id": "move_source", "desc": "User wants to re-route a source that was already ingested to a different notebook (e.g. 'move that source to AI Research', 'this should be in Cisco notebook')", "params": "source_query: title/subject fragment to find the source; notebook: target notebook name"},
     # Phase 1C Tier 2 (added 2026-06-10) — backfill
     {"id": "backfill_articles", "desc": "User wants to extract articles for existing newsletters that were ingested before per-article extraction was added (e.g. 'backfill articles', 'extract articles for old newsletters', 'rebuild article index')", "params": "none"},
+    {"id": "backfill_status", "desc": "User wants to check progress of a running or recent backfill job (e.g. 'backfill status', 'how is the backfill going', 'backfill progress')", "params": "none"},
     # Phase 2 Tier 2 (added 2026-06-09) — scorecards
     {"id": "score_sender", "desc": "User wants the 'earns its keep' scorecard for ONE specific newsletter sender (e.g. 'score Stratechery', 'what's the grade for alice@news.io', 'is The Diff worth keeping'). REQUIRES a sender name.", "params": "email_or_name: sender email or fragment"},
     {"id": "show_scorecards", "desc": "User wants to see ALL newsletter sender scorecards ranked best to worst (e.g. 'show scorecards', 'show grades', 'rank my newsletters', 'which subscriptions earn their keep')", "params": "none"},

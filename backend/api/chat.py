@@ -3000,6 +3000,7 @@ def _quick_intent_for_correspondent(query: str) -> tuple:
     # Discovery + browse (no params)
     simple_patterns = [
         (r"^(show|list)\s+articles?$|show me articles", "show_articles"),
+        (r"^backfill\s+status$|^backfill\s+progress$|how.?s?\s+(?:the\s+)?backfill", "backfill_status"),
         (r"^backfill(\s+articles?)?$|^extract\s+articles?\s+for\s+old\b|rebuild\s+article\s+index", "backfill_articles"),
         (r"^(show|list)\s+subscriptions?$|show.*proposals?$", "show_subscriptions"),
         (r"^(show|list)\s+(approval\s+)?queue$|^(show\s+)?pending$|^show\s+approvals?$", "show_queue"),
@@ -3524,19 +3525,56 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
         # ARTICLES + ENTITIES (Phase 1 Tier 2 — 2026-06-09)
         # ─────────────────────────────────────────────────────────────
         elif intent == "backfill_articles":
-            yield _reply("🔄 Backfilling articles for older newsletters… this may take a few minutes.")
             try:
-                # Direct call — endpoint logic lives in api/articles.py
-                from api.articles import backfill_all_articles
+                from api.articles import backfill_all_articles, backfill_status
                 result = await backfill_all_articles()
-                yield _reply(
-                    f"✓ Backfill complete. Processed **{result['sources_processed']}** "
-                    f"older newsletter(s); extracted **{result['articles_created']}** article(s). "
-                    f"Per-article LLM summaries + embeddings are running in the background — "
-                    f"give it a couple minutes then try `show articles`."
-                )
+                if result.get("already_running"):
+                    st = result.get("status") or {}
+                    yield _reply(
+                        f"🔄 A backfill is already running. **{st.get('processed', 0)}**/"
+                        f"**{st.get('queued', 0)}** sources processed so far, "
+                        f"**{st.get('articles_created', 0)}** article(s) extracted. "
+                        f"Try `@correspondent backfill status` in a few minutes."
+                    )
+                else:
+                    queued = result.get("queued", 0)
+                    if queued == 0:
+                        yield _reply("✓ Nothing to backfill — every newsletter already has articles.")
+                    else:
+                        yield _reply(
+                            f"🔄 **Started background backfill of {queued} source(s).** "
+                            f"This runs sequentially with summary + embedding + RAG-index per article — "
+                            f"figure ~30–60s per source. The app stays responsive; you can keep using it. "
+                            f"Try `@correspondent show articles` periodically to watch them appear, or "
+                            f"`@correspondent backfill status` to peek at progress."
+                        )
             except Exception as _bf_e:
-                yield _reply(f"⚠ Backfill failed: {_bf_e}")
+                yield _reply(f"⚠ Backfill kickoff failed: {_bf_e}")
+
+        elif intent == "backfill_status":
+            try:
+                from api.articles import _BACKFILL_STATUS
+                st = dict(_BACKFILL_STATUS)
+                if st.get("running"):
+                    yield _reply(
+                        f"🔄 Backfill running: **{st.get('processed', 0)}**/"
+                        f"**{st.get('queued', 0)}** sources, "
+                        f"**{st.get('articles_created', 0)}** article(s) extracted so far."
+                    )
+                elif st.get("started_at"):
+                    err = st.get("last_error")
+                    if err:
+                        yield _reply(f"⚠ Last backfill aborted: {err}")
+                    else:
+                        yield _reply(
+                            f"✓ Last backfill finished. Processed **{st.get('processed', 0)}** "
+                            f"source(s), extracted **{st.get('articles_created', 0)}** article(s). "
+                            f"Try `show articles` to see them."
+                        )
+                else:
+                    yield _reply("No backfill has run yet. Say `backfill articles` to start one.")
+            except Exception as _bs_e:
+                yield _reply(f"⚠ Couldn't read backfill status: {_bs_e}")
 
         elif intent in ("show_articles", "show_articles_from_sender"):
             from storage.article_store import article_store

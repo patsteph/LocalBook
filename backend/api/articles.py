@@ -6,15 +6,40 @@ an article boundary).
 
 POST /articles/backfill/{source_id} — extract articles for a source that
 was ingested before Phase 1 (lazy migration).
+
+POST /articles/backfill-all — queue a background batch backfill.
+GET /articles/backfill/status — peek at the running batch.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import datetime
+from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# Global single-instance backfill state. Prevents two backfills running
+# concurrently (each would queue dozens of summary/embed/RAG tasks and
+# overwhelm Ollama / LanceDB → backend crash).
+_BACKFILL_LOCK = asyncio.Lock()
+_BACKFILL_STATUS: Dict[str, Any] = {
+    "running": False,
+    "queued": 0,
+    "processed": 0,
+    "articles_created": 0,
+    "started_at": None,
+    "finished_at": None,
+    "last_error": None,
+}
+# Tiny sleep between source-level work so the event loop can service the
+# normal IMAP poller, user chats, etc. Keeps the backfill in the background
+# instead of monopolizing Ollama.
+_PER_SOURCE_SLEEP_SECONDS = 1.0
 
 
 @router.get("/by-source/{source_id}")
@@ -103,74 +128,159 @@ async def backfill_articles(source_id: str):
     return {"ok": True, "count": count, "backfilled": True}
 
 
-@router.post("/backfill-all")
-async def backfill_all_articles():
-    """Batch backfill: iterate every source with format='email'/'forward'
-    and no articles yet. Used by the @correspondent backfill articles
-    chat intent.
+async def _backfill_worker():
+    """Single-instance background worker. Iterates every email/forward
+    source missing articles, extracts + persists, and runs the summary +
+    embed + RAG-index work INLINE (sequential). No parallel task fan-out.
 
-    Returns counts of sources processed + articles created. Sources are
-    processed sequentially to keep load light on the embedding model.
-    """
+    Why sequential: the previous parallel implementation kicked off one
+    asyncio.create_task per source × dozens of sources × per-article LLM
+    + embed + RAG-write — Ollama queues collapsed and LanceDB write
+    contention crashed the backend. Sequential keeps the system stable
+    at the cost of total runtime; user can navigate away and check back."""
     from storage.source_store import source_store
     from storage.article_store import article_store
     from services.article_extractor import extract_articles
     from services.correspondent_processor import _summarize_articles_background
-    import asyncio
 
-    all_by_nb = await source_store.list_all() or {}
-    sources_processed = 0
-    articles_created = 0
-    for nb_id, sources in all_by_nb.items():
-        for s in sources or []:
-            fmt = (s.get("format") or "").lower()
-            if fmt not in ("email", "forward"):
-                continue
-            src_id = s.get("id")
-            if not src_id:
-                continue
-            existing = await article_store.count_by_source(src_id)
-            if existing > 0:
-                continue
-            text_body = s.get("content") or ""
-            meta = s.get("metadata") or {}
-            html_body = meta.get("content_html") if isinstance(meta, dict) else s.get("content_html")
-            if not (text_body or html_body):
-                continue
-            try:
-                articles = extract_articles(
-                    html_body=html_body or "",
-                    text_body=text_body,
-                    fallback_title=s.get("filename") or "(untitled)",
-                )
-            except Exception as e:
-                logger.debug(f"[articles.backfill-all] extract failed for {src_id}: {e}")
-                continue
-            if not articles:
-                continue
-            count = await article_store.create_batch(
-                source_id=src_id,
-                notebook_id=nb_id,
-                sender=s.get("sender") or s.get("original_sender"),
-                articles=[
-                    {
-                        "position": a.position,
-                        "title": a.title,
-                        "body_text": a.body_text,
-                        "body_html": a.body_html,
-                        "body_text_offset": a.body_text_offset,
-                    }
-                    for a in articles
-                ],
+    async with _BACKFILL_LOCK:
+        _BACKFILL_STATUS["running"] = True
+        _BACKFILL_STATUS["started_at"] = datetime.utcnow().isoformat()
+        _BACKFILL_STATUS["finished_at"] = None
+        _BACKFILL_STATUS["last_error"] = None
+        _BACKFILL_STATUS["processed"] = 0
+        _BACKFILL_STATUS["articles_created"] = 0
+        try:
+            all_by_nb = await source_store.list_all() or {}
+            for nb_id, sources in all_by_nb.items():
+                for s in sources or []:
+                    fmt = (s.get("format") or "").lower()
+                    if fmt not in ("email", "forward"):
+                        continue
+                    src_id = s.get("id")
+                    if not src_id:
+                        continue
+                    try:
+                        existing = await article_store.count_by_source(src_id)
+                    except Exception:
+                        existing = 0
+                    if existing > 0:
+                        continue
+                    text_body = s.get("content") or ""
+                    meta = s.get("metadata") or {}
+                    html_body = meta.get("content_html") if isinstance(meta, dict) else s.get("content_html")
+                    if not (text_body or html_body):
+                        continue
+                    try:
+                        articles = extract_articles(
+                            html_body=html_body or "",
+                            text_body=text_body,
+                            fallback_title=s.get("filename") or "(untitled)",
+                        )
+                    except Exception as e:
+                        logger.debug(f"[articles.backfill_worker] extract failed for {src_id}: {e}")
+                        continue
+                    if not articles:
+                        continue
+                    try:
+                        count = await article_store.create_batch(
+                            source_id=src_id,
+                            notebook_id=nb_id,
+                            sender=s.get("sender") or s.get("original_sender"),
+                            articles=[
+                                {
+                                    "position": a.position,
+                                    "title": a.title,
+                                    "body_text": a.body_text,
+                                    "body_html": a.body_html,
+                                    "body_text_offset": a.body_text_offset,
+                                }
+                                for a in articles
+                            ],
+                        )
+                    except Exception as e:
+                        logger.warning(f"[articles.backfill_worker] persist failed for {src_id}: {e}")
+                        continue
+
+                    try:
+                        await source_store.update(nb_id, src_id, {"article_count": count})
+                    except Exception:
+                        pass
+
+                    # CRITICAL CHANGE — run summary + embed + RAG INLINE
+                    # (await) instead of asyncio.create_task. This keeps
+                    # Ollama / LanceDB load to one source at a time and
+                    # prevents the cascade that crashed the backend.
+                    if count > 0:
+                        try:
+                            await _summarize_articles_background(src_id)
+                        except Exception as e:
+                            logger.debug(f"[articles.backfill_worker] post-extract pass failed for {src_id}: {e}")
+
+                    _BACKFILL_STATUS["processed"] += 1
+                    _BACKFILL_STATUS["articles_created"] += count
+
+                    # Yield to the event loop so the IMAP poller, user
+                    # chats, etc. can interleave.
+                    await asyncio.sleep(_PER_SOURCE_SLEEP_SECONDS)
+        except Exception as e:
+            _BACKFILL_STATUS["last_error"] = str(e)[:300]
+            logger.error(f"[articles.backfill_worker] aborted: {e}")
+        finally:
+            _BACKFILL_STATUS["running"] = False
+            _BACKFILL_STATUS["finished_at"] = datetime.utcnow().isoformat()
+            logger.info(
+                f"[articles.backfill_worker] done — processed {_BACKFILL_STATUS['processed']} "
+                f"source(s), {_BACKFILL_STATUS['articles_created']} article(s)"
             )
-            await source_store.update(nb_id, src_id, {"article_count": count})
-            if count > 0:
-                asyncio.create_task(_summarize_articles_background(src_id))
-            sources_processed += 1
-            articles_created += count
 
+
+@router.post("/backfill-all")
+async def backfill_all_articles():
+    """Queue a background batch backfill of every email/forward source
+    that doesn't have articles yet. Returns immediately.
+
+    Single-instance: returns `already_running` if a backfill is in flight.
+    Status is queryable via GET /articles/backfill/status.
+    """
+    from storage.source_store import source_store
+    from storage.article_store import article_store
+
+    if _BACKFILL_STATUS["running"]:
+        return {
+            "ok": True,
+            "already_running": True,
+            "status": dict(_BACKFILL_STATUS),
+        }
+
+    # Pre-count how many sources need work so the user sees a real ETA.
+    queued = 0
+    try:
+        all_by_nb = await source_store.list_all() or {}
+        for nb_id, sources in all_by_nb.items():
+            for s in sources or []:
+                fmt = (s.get("format") or "").lower()
+                if fmt not in ("email", "forward"):
+                    continue
+                src_id = s.get("id")
+                if not src_id:
+                    continue
+                if await article_store.count_by_source(src_id) > 0:
+                    continue
+                queued += 1
+    except Exception as e:
+        logger.warning(f"[articles.backfill-all] pre-count failed: {e}")
+
+    _BACKFILL_STATUS["queued"] = queued
+    asyncio.create_task(_backfill_worker())
     return {
         "ok": True,
-        "sources_processed": sources_processed,
-        "articles_created": articles_created,
+        "queued": queued,
+        "message": f"Backfill started in the background for {queued} source(s).",
     }
+
+
+@router.get("/backfill/status")
+async def backfill_status():
+    """Peek at the running backfill, if any."""
+    return dict(_BACKFILL_STATUS)
