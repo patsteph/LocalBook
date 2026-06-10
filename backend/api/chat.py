@@ -442,6 +442,26 @@ async def _dispatch_multi_intent(chat_query: "ChatQuery", agent_type: str, handl
             yield chunk
         return
 
+    # 2026-06-10 — agent-specific keyword shortcuts BEFORE the LLM classifier.
+    # The LLM gets confused at 27+ intents and collapses simple verb-noun
+    # queries ("backfill articles", "whats hot") into the default fallback.
+    # When the shortcut matches, we skip the LLM entirely and inject the
+    # resolved action so the handler treats it like any other classified call.
+    quick_action = None
+    if agent_type == "correspondent":
+        try:
+            qi_intent, qi_params = _quick_intent_for_correspondent(q)
+            if qi_intent:
+                quick_action = {"intent": qi_intent, "params": qi_params or {}, "confidence": 1.0}
+                logger.info(f"[multi-intent] correspondent quick-intent matched: {qi_intent}")
+        except Exception as _qi_e:
+            logger.debug(f"[multi-intent] quick-intent check failed: {_qi_e}")
+
+    if quick_action:
+        async for chunk in handler_fn(chat_query, injected_action=quick_action):
+            yield chunk
+        return
+
     # Try to classify the message into one or more actions.
     try:
         classified = await classify_intent(q, agent_type, ollama_client)
