@@ -28,6 +28,7 @@ import { ComparisonArtifactRenderer } from './renderers/ComparisonArtifactRender
 import { CorrespondentQueueRenderer } from './renderers/CorrespondentQueueRenderer';
 import { CorrespondentSubscriptionsRenderer } from './renderers/CorrespondentSubscriptionsRenderer';
 import { CorrespondentArticlesRenderer } from './renderers/CorrespondentArticlesRenderer';
+import { CorrespondentHotClustersRenderer } from './renderers/CorrespondentHotClustersRenderer';
 
 let registered = false;
 
@@ -58,6 +59,8 @@ export function registerBuiltInRenderers(): void {
   rendererRegistry.register('json:correspondent-subscriptions', CorrespondentSubscriptionsRenderer);
   // Phase 1 Tier 2 (2026-06-09) — per-article list with deep-link to source viewer
   rendererRegistry.register('json:correspondent-articles', CorrespondentArticlesRenderer);
+  // Phase 2 Tier 2 (2026-06-09) — hot/cold article clusters with Deep-read + Articles CTAs
+  rendererRegistry.register('json:correspondent-hot-clusters', CorrespondentHotClustersRenderer);
 }
 
 // Auto-register on import so consumers don't have to remember to call.

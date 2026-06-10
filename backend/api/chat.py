@@ -3529,6 +3529,83 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                 yield _reply(f"⚠ Couldn't load entities: {_ent_e}")
 
         # ─────────────────────────────────────────────────────────────
+        # SCORECARDS (Phase 2.5 Tier 2 — 2026-06-09)
+        # ─────────────────────────────────────────────────────────────
+        elif intent == "score_sender":
+            sender_query = (params.get("email_or_name") or "").strip()
+            if not sender_query:
+                yield _reply("Tell me which sender — e.g. `score Stratechery`.")
+            else:
+                from services.newsletter_scorecard import (
+                    get_scorecard, recompute_all, load_weights, grade_color,
+                )
+                card = await get_scorecard(sender_query)
+                if not card:
+                    # Try one recompute in case data is new
+                    yield _reply("🔄 Computing scorecards for the first time…")
+                    await recompute_all()
+                    card = await get_scorecard(sender_query)
+                if not card:
+                    yield _reply(f"Couldn't find a scorecard for `{sender_query}`. Have they sent any newsletters yet?")
+                else:
+                    raw_weights = load_weights()
+                    color = grade_color(card.get("grade") or "—")
+                    lines = [
+                        f"**{color} `{card['sender_email']}` — Grade: {card.get('grade') or '—'}**\n",
+                        f"- **Composite score:** {card.get('composite_score', 0):.2f}",
+                        f"- **Volume:** {card.get('volume_per_week', 0):.1f} emails/week",
+                        f"- **Highlight rate:** {card.get('highlight_rate', 0):.2f}",
+                        f"- **Read-through:** {card.get('read_through', 0):.2f} _(coming soon)_",
+                        f"- **Citation rate:** {card.get('citation_rate', 0):.2f} _(coming soon)_",
+                        f"- **Action conversion:** {card.get('action_conversion', 0):.2f} _(coming soon)_",
+                        "",
+                        "<details><summary><strong>How this is calculated</strong></summary>",
+                        "",
+                        f"Composite score = "
+                        f"{raw_weights['highlight_rate']:.0%} highlight_rate + "
+                        f"{raw_weights['citation_rate']:.0%} citation_rate + "
+                        f"{raw_weights['read_through']:.0%} read_through + "
+                        f"{raw_weights['action_conversion']:.0%} action_conversion.",
+                        "",
+                        "Until citation_rate, read_through, and action_conversion data pipelines are wired up, ",
+                        "their weights are redistributed to the available metric (highlight_rate). Once they come ",
+                        "online the formula reverts to the designed weights automatically.",
+                        "",
+                        "Grade thresholds: A ≥ 0.80 · B ≥ 0.60 · C ≥ 0.40 · D ≥ 0.20 · F < 0.20. ",
+                        f"Insufficient data when fewer than 5 newsletters in the last 30 days.",
+                        "",
+                        "</details>",
+                    ]
+                    yield _reply("\n".join(lines))
+
+        elif intent == "show_scorecards":
+            from services.newsletter_scorecard import (
+                list_scorecards, recompute_all, grade_color,
+            )
+            scards = await list_scorecards(limit=30)
+            if not scards:
+                yield _reply("🔄 Computing scorecards for the first time…")
+                await recompute_all()
+                scards = await list_scorecards(limit=30)
+            if not scards:
+                yield _reply("No scorecards yet. Add some inboxes and let some newsletters ingest first.")
+            else:
+                lines = [f"**📊 Newsletter scorecards ({len(scards)} sender(s)):**\n"]
+                lines.append("| Grade | Sender | Volume/wk | Highlights | Score |")
+                lines.append("|:--|:--|--:|--:|--:|")
+                for c in scards:
+                    color = grade_color(c.get("grade") or "—")
+                    lines.append(
+                        f"| {color} {c.get('grade') or '—'} "
+                        f"| `{(c.get('sender_email') or '?')[:40]}` "
+                        f"| {c.get('volume_per_week', 0):.1f} "
+                        f"| {c.get('highlight_rate', 0):.2f} "
+                        f"| {c.get('composite_score', 0):.2f} |"
+                    )
+                lines.append("\n_Drop into one with `@correspondent score <sender>` for the full card._")
+                yield _reply("\n".join(lines))
+
+        # ─────────────────────────────────────────────────────────────
         # HOT / COLD + SUMMARIES (I6)
         # ─────────────────────────────────────────────────────────────
         elif intent in ("whats_hot", "whats_cold", "summarize_recent"):
@@ -3537,9 +3614,62 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
             except (TypeError, ValueError):
                 days = 7
             from services.correspondent_trends import compute_topic_trends, summarize_recent_intake
+
+            # P2.3 — when user asks for "deep" / "cluster" mode (or
+            # passes deep=true), serve article-level clusters instead of
+            # the tag-based trend bars.
+            deep_param = params.get("deep")
+            deep_mode = False
+            if isinstance(deep_param, bool):
+                deep_mode = deep_param
+            elif isinstance(deep_param, str):
+                deep_mode = deep_param.lower() in ("true", "1", "yes", "deep", "cluster")
+            else:
+                # fallback heuristic — user query contains the magic word
+                deep_mode = any(w in q.lower() for w in ("deep", "cluster", "theme"))
+
             if intent == "summarize_recent":
                 lines = await summarize_recent_intake(days=days)
                 yield _reply(lines)
+            elif deep_mode:
+                from services.article_clusterer import get_recent_clusters, recluster_all
+                clusters = await get_recent_clusters(limit=8)
+                # If no clusters exist yet (or are stale), kick off a recluster
+                if not clusters:
+                    yield _reply("🔄 Clustering articles… this is the first time so it may take ~30 seconds.")
+                    await recluster_all()
+                    clusters = await get_recent_clusters(limit=8)
+                if not clusters:
+                    yield _reply(
+                        "Not enough embedded articles to cluster yet. "
+                        "New newsletters are being embedded in the background — try again after a few more ingests."
+                    )
+                else:
+                    polarity = "hot" if intent == "whats_hot" else "cold"
+                    items = [c for c in clusters if (c["delta"] > 0 if polarity == "hot" else c["delta"] < 0)]
+                    if not items:
+                        yield _reply(f"No clusters {polarity} right now. Try `@correspondent whats_{polarity}` for the tag-based view instead.")
+                    else:
+                        items.sort(key=lambda c: abs(c["delta"]), reverse=True)
+                        items = items[:6]
+                        # Card payload (per C.1 locked decision)
+                        payload_obj = {
+                            "polarity": polarity,
+                            "items": [
+                                {
+                                    "label": c.get("label") or "(unlabeled)",
+                                    "size": int(c.get("size", 0)),
+                                    "recent_size": int(c.get("recent_size", 0)),
+                                    "baseline_size": int(c.get("baseline_size", 0)),
+                                    "delta": int(c.get("delta", 0)),
+                                    "sender_count": len(c.get("sender_counts") or {}),
+                                    "notebook_count": len(c.get("notebook_counts") or {}),
+                                    "sample_senders": list((c.get("sender_counts") or {}).keys())[:3],
+                                }
+                                for c in items
+                            ],
+                        }
+                        yield _reply("```json-correspondent-hot-clusters\n" + json.dumps(payload_obj) + "\n```")
             else:
                 trends = await compute_topic_trends(days=days)
                 if not trends:
@@ -3550,7 +3680,7 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                     items.sort(key=lambda t: abs(t["delta"]), reverse=True)
                     items = items[:8]
                     if not items:
-                        yield _reply(f"Nothing notably {polarity} right now over the last {days} days.")
+                        yield _reply(f"Nothing notably {polarity} right now over the last {days} days. Try `whats_hot deep=true` for article-cluster view.")
                     else:
                         title = "Topics gaining momentum" if polarity == "hot" else "Topics cooling off"
                         lines = [f"**🌡 {title} (last {days}d vs prior {days}d):**\n"]
@@ -3567,6 +3697,7 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                             ],
                         }
                         lines.append("\n```json-chart\n" + json.dumps(chart) + "\n```")
+                        lines.append("\n_Tip: try `whats_hot deep=true` for article-level clusters (richer signal)._")
                         yield _reply("\n".join(lines))
 
         # ─────────────────────────────────────────────────────────────

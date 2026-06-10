@@ -414,6 +414,49 @@ class Database:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_articles_sender ON articles(sender, created_at DESC)
         """)
+        # Phase 2.1 (2026-06-09) — add embedding column for clustering.
+        # SQLite doesn't support ADD COLUMN IF NOT EXISTS prior to 3.35;
+        # catch the duplicate-column error so the migration is idempotent.
+        try:
+            cursor.execute("ALTER TABLE articles ADD COLUMN embedding BLOB")
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
+
+        # -- topic_clusters (Phase 2.2 Tier 2, 2026-06-09) --
+        # Output of the article-level hot/cold clustering pass.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS topic_clusters (
+                id              TEXT PRIMARY KEY,
+                label           TEXT,
+                article_ids     TEXT NOT NULL DEFAULT '[]',
+                sender_counts   TEXT NOT NULL DEFAULT '{}',
+                notebook_counts TEXT NOT NULL DEFAULT '{}',
+                avg_embedding   BLOB,
+                recent_size     INTEGER DEFAULT 0,
+                baseline_size   INTEGER DEFAULT 0,
+                last_built_at   TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_clusters_built ON topic_clusters(last_built_at DESC)
+        """)
+
+        # -- newsletter_scorecards (Phase 2.4 Tier 2, 2026-06-09) --
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS newsletter_scorecards (
+                sender_email       TEXT PRIMARY KEY,
+                volume_per_week    REAL DEFAULT 0,
+                read_through       REAL DEFAULT 0,
+                highlight_rate     REAL DEFAULT 0,
+                citation_rate      REAL DEFAULT 0,
+                action_conversion  REAL DEFAULT 0,
+                composite_score    REAL DEFAULT 0,
+                grade              TEXT DEFAULT '',
+                last_built_at      TEXT NOT NULL,
+                trend_data         TEXT DEFAULT '{}'
+            )
+        """)
 
         # -- migration tracking --
         cursor.execute("""

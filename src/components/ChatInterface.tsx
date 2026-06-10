@@ -104,6 +104,26 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     return () => window.removeEventListener('lb:openSource', handler);
   }, []);
 
+  // P2.3 (2026-06-09) — listen for lb:chatPrompt events from in-chat
+  // card CTAs. Sets the input + auto-submits so the user gets the
+  // expected one-click "Deep read" / "Show articles" behavior.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {};
+      const text = typeof detail.text === 'string' ? detail.text.trim() : '';
+      if (!text) return;
+      setInput(text);
+      setTimeout(() => {
+        const form = document.querySelector('form');
+        if (form) {
+          form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        }
+      }, 100);
+    };
+    window.addEventListener('lb:chatPrompt', handler);
+    return () => window.removeEventListener('lb:chatPrompt', handler);
+  }, []);
+
 
   useEffect(() => {
     scrollToBottom();

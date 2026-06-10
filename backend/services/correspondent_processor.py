@@ -343,26 +343,47 @@ async def summarize_article(title: str, body_text: str) -> Dict[str, Any]:
 
 
 async def _summarize_articles_background(source_id: str) -> None:
-    """Iterate articles for a source and fill in summary + topic_tags.
-    Fire-and-forget — schedules from ingest_newsletter / ingest_forward."""
+    """Iterate articles for a source and fill in summary + topic_tags +
+    embedding. Fire-and-forget — schedules from ingest_newsletter /
+    ingest_forward. P2.1 adds the embedding step for clustering."""
     from storage.article_store import article_store
+    from services.ollama_service import ollama_service
+    import struct as _struct
+
     try:
         articles = await article_store.list_by_source(source_id)
     except Exception:
         return
     for a in articles:
-        if a.get("summary"):
-            continue  # already done
-        result = await summarize_article(
-            title=a.get("title") or "",
-            body_text=a.get("body_text") or "",
-        )
-        if result:
-            await article_store.update_summary(
-                article_id=a["id"],
-                summary=result.get("summary"),
-                topic_tags=result.get("topic_tags"),
+        # Summary + topic_tags pass
+        if not a.get("summary"):
+            result = await summarize_article(
+                title=a.get("title") or "",
+                body_text=a.get("body_text") or "",
             )
+            if result:
+                await article_store.update_summary(
+                    article_id=a["id"],
+                    summary=result.get("summary"),
+                    topic_tags=result.get("topic_tags"),
+                )
+
+        # P2.1 — embedding pass. Title + summary first, fall back to body
+        # text. Stored as packed float32 bytes for cheap numpy.frombuffer.
+        try:
+            embed_input = (
+                f"{a.get('title') or ''}\n\n{a.get('summary') or ''}\n\n"
+                f"{(a.get('body_text') or '')[:2000]}"
+            ).strip()
+            if embed_input:
+                result = await ollama_service.embed(text=embed_input)
+                vecs = (result or {}).get("embeddings") or []
+                vec = vecs[0] if vecs and isinstance(vecs[0], list) else []
+                if vec:
+                    blob = _struct.pack(f"{len(vec)}f", *vec)
+                    await article_store.update_embedding(a["id"], blob)
+        except Exception as e:
+            logger.debug(f"[correspondent.summarize_articles] embed failed (non-fatal): {e}")
 
 
 async def classify_email(parsed: ParsedEmail) -> Classification:

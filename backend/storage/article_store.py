@@ -217,6 +217,48 @@ class ArticleStore:
             logger.debug(f"[article_store.update_summary] {e}")
             return False
 
+    async def update_embedding(self, article_id: str, embedding: bytes) -> bool:
+        """Persist a packed-float32 embedding blob for clustering use."""
+        try:
+            conn = self._get_db()
+            cur = conn.execute(
+                "UPDATE articles SET embedding = ? WHERE id = ?",
+                (embedding, article_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            logger.debug(f"[article_store.update_embedding] {e}")
+            return False
+
+    async def list_with_embeddings(self, since_iso: str, limit: int = 5000) -> List[Dict[str, Any]]:
+        """Recent articles that have embeddings — used by the clusterer.
+
+        Returns a slim row dict including the raw embedding bytes; caller
+        unpacks via numpy.frombuffer(blob, dtype=float32).
+        """
+        try:
+            rows = self._get_db().execute(
+                """SELECT id, source_id, notebook_id, position, title, summary,
+                          sender, topic_tags, created_at, embedding
+                   FROM articles
+                   WHERE embedding IS NOT NULL AND created_at >= ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (since_iso, int(limit)),
+            ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                try:
+                    d["topic_tags"] = json.loads(d.get("topic_tags") or "[]")
+                except Exception:
+                    d["topic_tags"] = []
+                out.append(d)
+            return out
+        except Exception as e:
+            logger.debug(f"[article_store.list_with_embeddings] {e}")
+            return []
+
     async def delete_by_source(self, source_id: str) -> int:
         """Cascade delete: called when parent source is removed."""
         try:

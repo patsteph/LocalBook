@@ -189,6 +189,20 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
                 return null;
               }
             }
+            // Phase 2 Tier 2 (2026-06-09) — hot/cold cluster cards
+            if (/language-json-correspondent-hot-clusters/.test(codeClass || '')) {
+              try {
+                const payload = JSON.parse(raw);
+                return (
+                  <ArtifactRender
+                    artifact={{ id: `inline-corhc-${raw.length}`, type: 'json:correspondent-hot-clusters', payload }}
+                    context={context}
+                  />
+                );
+              } catch {
+                return null;
+              }
+            }
             // Phase 14 (2026-06-08) — `html` code-fence routes to the
             // HtmlArtifactRenderer (Shadow DOM + DOMPurify strict). Lets
             // Curator asides, anticipatory drafts, and any markdown surface
@@ -222,6 +236,7 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
                 /language-json-correspondent-queue/.test(cls) ||
                 /language-json-correspondent-subscriptions/.test(cls) ||
                 /language-json-correspondent-articles/.test(cls) ||
+                /language-json-correspondent-hot-clusters/.test(cls) ||
                 /language-html\b/.test(cls)
               )
             ) {
