@@ -30,6 +30,40 @@ interface CorrespondentArticlesPayload {
   empty_message?: string;
 }
 
+// Q1.d (2026-06-10) — render-time guard for already-saved bad titles.
+// Mirrors the backend `_looks_like_title` gate, lighter-weight. Returns
+// the cleaned title (may fall back to summary's first sentence) so old
+// articles look OK before the user runs `refresh titles`.
+const _BAD_TITLE_PATTERNS = [
+  /^\s*<[a-z!?/]/i,                              // HTML tag bleed
+  /^\s*\[\d+\]\s*[:.\-)]?\s*(?:https?:|www\.)/i, // [1] https://...
+  /^\s*[-=*_─━—–·•\s]{3,}\s*$/,                  // HR-style
+  /^\s*(?:view\s+(?:online|in\s+browser|in\s+your\s+browser)|sign\s+up|subscribe|unsubscribe|click\s+here|share\s+this|follow\s+us|manage\s+preferences)/i,
+];
+const _MID_TAIL = new Set(['the','a','an','and','or','but','of','for','to','in','on','at','by','with','from','as','is','was','are','were','be','been','being','have','has','had','do','does','did','will','would','can','could','should','may','might','designed','after','before','into','over','under','about','than','that','this','these','those','via','per','without','within','across']);
+
+function pickDisplayTitle(a: ArticleItem): string {
+  const raw = (a.title || '').replace(/[\u200B-\u200D\u2060\uFEFF\u00A0]/g, '').trim();
+  let looksBad = !raw || raw.length < 4 || raw === '(untitled)';
+  if (!looksBad) {
+    for (const re of _BAD_TITLE_PATTERNS) {
+      if (re.test(raw)) { looksBad = true; break; }
+    }
+  }
+  if (!looksBad && !/[.?!:"']$/.test(raw)) {
+    const lastWord = (raw.split(/\s+/).pop() || '').toLowerCase().replace(/[,;:]+$/, '');
+    if (_MID_TAIL.has(lastWord)) looksBad = true;
+  }
+  if (!looksBad) return raw;
+  const summary = (a.summary || '').trim();
+  if (summary) {
+    const firstSent = summary.split(/(?<=[.!?])\s+/)[0] || '';
+    const candidate = firstSent.replace(/[.\s]+$/, '').slice(0, 140);
+    if (candidate.length >= 8) return candidate;
+  }
+  return '(untitled)';
+}
+
 function relativeTime(iso: string | null | undefined): string {
   if (!iso) return '';
   const t = new Date(iso).getTime();
@@ -89,7 +123,7 @@ export const CorrespondentArticlesRenderer: React.FC<RendererProps<Correspondent
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-gray-800 dark:text-gray-100 line-clamp-2">
-                {a.title || '(untitled)'}
+                {pickDisplayTitle(a)}
               </p>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 {a.sender ? <span>from <span className="font-medium">{a.sender}</span></span> : null}

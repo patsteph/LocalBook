@@ -3597,26 +3597,51 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                 yield _reply(f"⚠ Backfill kickoff failed: {_bf_e}")
 
         elif intent == "refresh_titles":
+            import re as _re_rt
             from storage.article_store import article_store
-            from services.article_extractor import _extract_title_from_segment
+            from services.article_extractor import _extract_title_from_segment, _looks_like_title
             yield _reply("🔄 Re-extracting titles for existing articles…")
             try:
                 articles = await article_store.list_all_with_text(limit=5000)
                 fixed = 0
                 skipped = 0
+                from_summary = 0
                 for a in articles:
                     new_title = _extract_title_from_segment(
                         text=a.get("body_text") or "",
                         html=a.get("body_html") or "",
                     )
                     old = (a.get("title") or "").strip()
-                    if new_title and new_title != "(untitled)" and new_title != old:
+                    # Q1.c (2026-06-10) — when extraction can't find a good
+                    # title AND the saved title is also bad, derive one from
+                    # the LLM summary (which is already clean prose). First
+                    # sentence, capped at 140 chars, no trailing period.
+                    if (
+                        (not new_title or new_title == "(untitled)")
+                        and not _looks_like_title(old)
+                    ):
+                        summary = (a.get("summary") or "").strip()
+                        if summary:
+                            first_sent = _re_rt.split(r"(?<=[.!?])\s+", summary, maxsplit=1)[0].strip()
+                            if first_sent and len(first_sent) >= 8:
+                                candidate = first_sent[:140].rstrip(". ")
+                                if _looks_like_title(candidate):
+                                    new_title = candidate
+                                    from_summary += 1
+                    if (
+                        new_title
+                        and new_title != "(untitled)"
+                        and new_title != old
+                        and _looks_like_title(new_title)
+                    ):
                         await article_store.update_title(a["id"], new_title)
                         fixed += 1
                     else:
                         skipped += 1
+                summary_note = f" ({from_summary} pulled from the article summary)" if from_summary else ""
                 yield _reply(
-                    f"\n\n✓ Refreshed **{fixed}** title(s); skipped **{skipped}** that were already clean. "
+                    f"\n\n✓ Refreshed **{fixed}** title(s){summary_note}; "
+                    f"skipped **{skipped}** that were already clean or had no good source text. "
                     f"Try `show articles` to confirm."
                 )
             except Exception as _rt_e:

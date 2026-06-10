@@ -108,44 +108,96 @@ _URL_PATTERN = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Q1.b (2026-06-10) — citation-style URL references: "[1] https://..."
+# or "[1] www.example.com" still made it through the bare-URL filter.
+_CITATION_URL_PATTERN = re.compile(
+    r"""^\s*\[\d+\]\s*[:.\-)]?\s*(?:https?://|www\.|mailto:|[a-z0-9][-a-z0-9.]*\.[a-z]{2,})""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Q1.b — characters that, alone or in any combo, indicate a markdown
+# horizontal-rule line (was getting picked as title).
+_HR_CHAR_SET = set("-=*_─━—–·•")
+
+# Q1.b — zero-width / invisible unicode that often pads "blank" lines in
+# HTML emails. Stripped before length / content checks.
+_ZERO_WIDTH = "".join(["​", "‌", "‍", "⁠", "﻿", "\xa0"])
+
+# Q1.b — words that, when a long title ends with them, almost always
+# indicate a mid-sentence truncation rather than a real headline.
+_MID_SENTENCE_TAIL_WORDS = frozenset([
+    "the", "a", "an", "and", "or", "but", "of", "for", "to", "in",
+    "on", "at", "by", "with", "from", "as", "is", "was", "are",
+    "were", "be", "been", "being", "have", "has", "had", "do",
+    "does", "did", "will", "would", "can", "could", "should",
+    "may", "might", "designed", "after", "before", "into", "over",
+    "under", "about", "than", "that", "this", "these", "those",
+    "via", "per", "without", "within", "across",
+])
+
+
+def _strip_invisible(s: str) -> str:
+    """Strip zero-width unicode + NBSP, then collapse runs of whitespace."""
+    if not s:
+        return ""
+    for ch in _ZERO_WIDTH:
+        s = s.replace(ch, "")
+    return re.sub(r"\s+", " ", s).strip()
+
 
 def _looks_like_title(text: str) -> bool:
     """Q1 (2026-06-10) — gate for substantive title candidates.
-
-    Rejects:
-      - URLs / domain-only strings ('example.com', 'https://...')
-      - Common newsletter template strings ('View Online', 'Sign Up')
-      - Strings under 4 chars or under 40% alpha (mostly emoji/punctuation)
+    Q1.b (2026-06-10, post-rebuild) — tightened: also rejects HTML
+    tags, citation-style URL refs, HR lines, zero-width-only "blanks",
+    single-word fragments, and long titles ending mid-sentence.
     """
-    s = (text or "").strip()
+    s = _strip_invisible(text)
     if not s or len(s) < 4 or len(s) > 300:
+        return False
+    # HTML bleed-through ('<div class="...', '<p style="...')
+    if s.startswith("<"):
         return False
     if _URL_PATTERN.match(s):
         return False
+    if _CITATION_URL_PATTERN.match(s):
+        return False
+    # HR-style: every char is in the HR set
+    if all((c in _HR_CHAR_SET or c.isspace()) for c in s):
+        return False
     if s.lower() in _TITLE_BLACKLIST:
         return False
-    # Reject single-word UI fragments like "Subscribe" even when not
-    # exact match (e.g. "Subscribe now" → false)
     low = s.lower()
     for needle in ("view online", "view in browser", "click here",
                    "sign up", "subscribe", "unsubscribe",
-                   "share this", "follow us", "manage preferences"):
+                   "share this", "follow us", "manage preferences",
+                   "having trouble viewing", "this email was sent",
+                   "you received this email"):
         if low.startswith(needle):
             return False
     alpha = sum(1 for c in s if c.isalpha())
     if alpha / len(s) < 0.4:
         return False
+    # Need at least 2 words — single-word lines are almost always chrome
+    if len(s.split()) < 2:
+        return False
+    # Titles with no sentence-ending punctuation that END with a
+    # tail-word that screams "mid-sentence" are paragraph fragments,
+    # not headlines. Words in the set (the/of/for/designed/after/…)
+    # almost never end a real headline.
+    if s[-1] not in ".?!:\"'":
+        last_word = (s.rsplit(maxsplit=1) or [""])[-1].lower().rstrip(",;:")
+        if last_word in _MID_SENTENCE_TAIL_WORDS:
+            return False
     return True
 
 
 def _extract_title_from_segment(text: str, html: Optional[str] = None) -> str:
     """Pull a best-effort title from the start of an article segment.
 
-    Q1 (2026-06-10) — was returning URLs and template noise ('View
-    Online', 'Sign Up') as titles for ~90% of articles. Now walks the
-    first few candidates and picks the first that passes
-    `_looks_like_title`. Falls back to first non-empty line only if
-    everything fails.
+    Q1.b (2026-06-10) — returns the literal string '(untitled)' when no
+    candidate passes the gate. Callers (`article_store.update_title` +
+    the chat refresh handler) interpret '(untitled)' as a signal to
+    fall back to the article summary instead of saving noise.
     """
     if html:
         try:
@@ -153,26 +205,23 @@ def _extract_title_from_segment(text: str, html: Optional[str] = None) -> str:
             soup = BeautifulSoup(html, "html.parser")
             # Walk every H1/H2/H3 — the first substantive one wins
             for heading in soup.find_all(["h1", "h2", "h3"]):
-                t = heading.get_text(strip=True)
+                t = _strip_invisible(heading.get_text(strip=True))
                 if t and _looks_like_title(t):
                     return t[:200]
             # Also try title-ish elements with weight (a.title-link etc)
             for a in soup.find_all("a", limit=8):
-                t = a.get_text(strip=True)
+                t = _strip_invisible(a.get_text(strip=True))
                 if t and len(t) >= 8 and _looks_like_title(t):
                     return t[:200]
         except Exception:
             pass
-    lines = [ln.strip() for ln in (text or "").split("\n") if ln.strip()]
-    # Walk first ~15 lines looking for a substantive one
-    for line in lines[:15]:
+    # Walk text lines — first 25 (was 15) for templates that pad with
+    # invisible whitespace and chrome
+    raw_lines = [_strip_invisible(ln) for ln in (text or "").split("\n")]
+    lines = [ln for ln in raw_lines if ln]
+    for line in lines[:25]:
         if _looks_like_title(line):
             return line[:200]
-    # Last resort: first non-empty line, even if poor quality. Better
-    # to have SOMETHING than blank, and the calling code prefers the
-    # newsletter subject when this returns "(untitled)".
-    if lines:
-        return lines[0][:200]
     return "(untitled)"
 
 

@@ -377,19 +377,40 @@ async def _summarize_articles_background(source_id: str) -> None:
         articles = await article_store.list_by_source(source_id)
     except Exception:
         return
+    # Q1.c (2026-06-10) — fallback path: when extracted title was
+    # rejected ('(untitled)') or looks bad post-rebuild, rewrite from
+    # the summary's first sentence after the summary pass lands.
+    from services.article_extractor import _looks_like_title
+    import re as _re_ts
+
     for a in articles:
         # Summary + topic_tags pass
+        new_summary: Optional[str] = None
+        new_tags: Optional[List[str]] = None
         if not a.get("summary"):
             result = await summarize_article(
                 title=a.get("title") or "",
                 body_text=a.get("body_text") or "",
             )
             if result:
+                new_summary = result.get("summary")
+                new_tags = result.get("topic_tags")
                 await article_store.update_summary(
                     article_id=a["id"],
-                    summary=result.get("summary"),
-                    topic_tags=result.get("topic_tags"),
+                    summary=new_summary,
+                    topic_tags=new_tags,
                 )
+        effective_summary = (new_summary or a.get("summary") or "").strip()
+        current_title = (a.get("title") or "").strip()
+        if effective_summary and (
+            current_title == "(untitled)" or not _looks_like_title(current_title)
+        ):
+            first_sent = _re_ts.split(r"(?<=[.!?])\s+", effective_summary, maxsplit=1)[0].strip()
+            if first_sent and len(first_sent) >= 8:
+                candidate = first_sent[:140].rstrip(". ")
+                if _looks_like_title(candidate):
+                    await article_store.update_title(a["id"], candidate)
+                    a["title"] = candidate  # so the embed pass below uses the clean title
 
         # P2.1 — embedding pass. Title + summary first, fall back to body
         # text. Stored as packed float32 bytes for cheap numpy.frombuffer.
