@@ -374,7 +374,32 @@ async def _summarize_articles_background(source_id: str) -> None:
     persisted then SKIPPED for everything downstream. They still live
     in article_store for the audit trail and the "Show sponsors" filter
     in the renderer; they just don't poison the intelligence layer.
+
+    P14.H.2 (2026-06-11) — process-wide single-instance lock. Every
+    caller (chat reprocess/reextract, IMAP ingest fanning out one task
+    per incoming newsletter, batch backfill worker, single-source
+    backfill endpoint) is serialized here. Per-article cost grew with
+    Phase 14 (4 LLM calls/article: classifier + summary + sectioner +
+    entity) so concurrent sources collapse Ollama. Function-level lock
+    fixes ALL entry points at once.
     """
+    async with _PROCESSOR_LOCK:
+        await _summarize_articles_background_unlocked(source_id)
+
+
+# Process-wide lock. asyncio.Lock is FIFO — pending callers queue in
+# arrival order. Memory cost per queued task is small (a coroutine
+# frame + the source_id string) so high IMAP burst load is safe; it
+# just takes longer to drain.
+_PROCESSOR_LOCK = asyncio.Lock()
+
+
+async def _summarize_articles_background_unlocked(source_id: str) -> None:
+    """Lock-free body. Do NOT call directly — go through
+    `_summarize_articles_background`. Kept as a separate function so
+    nested calls (which would deadlock if both reacquired the lock)
+    can use it explicitly when they've already acquired the lock at a
+    higher level."""
     from storage.article_store import article_store
     from services.ollama_service import ollama_service
     from services.article_rag import index_pending_for_source

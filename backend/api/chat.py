@@ -3781,20 +3781,42 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                     })
                     try:
                         all_by_nb = await source_store.list_all() or {}
+                        # P14.G.2 (2026-06-11) — bucket all email/forward
+                        # sources by article count so the user sees the
+                        # full picture, not just the 1-article subset
+                        # this command actually touches.
                         targets = []
+                        bucket_zero = []
+                        bucket_two_plus = 0
+                        non_correspondent_skipped = 0
                         for nb_id, sources in all_by_nb.items():
                             for s in (sources or []):
                                 fmt = (s.get("format") or "").lower()
                                 if fmt not in ("email", "forward"):
+                                    non_correspondent_skipped += 1
                                     continue
                                 src_id = s.get("id")
                                 if not src_id:
                                     continue
                                 cnt = await article_store.count_by_source(src_id)
-                                if cnt == 1:
+                                if cnt == 0:
+                                    bucket_zero.append((nb_id, src_id, s.get("filename", "")[:40]))
+                                elif cnt == 1:
                                     targets.append((nb_id, src_id, s))
+                                else:
+                                    bucket_two_plus += 1
                         _ARTICLE_PIPELINE_STATUS["sources_total"] = len(targets)
-                        yield _reply(f"\n\n📊 Found **{len(targets)}** single-article source(s) to re-attempt.")
+                        breakdown_lines = [
+                            f"\n\n📊 **Correspondent source distribution** (email + forward):",
+                            f"- **{len(bucket_zero)}** source(s) with **0 articles** — run `@correspondent backfill articles` to extract them.",
+                            f"- **{len(targets)}** source(s) with **1 article** — will re-attempt now (multi-section newsletters will split).",
+                            f"- **{bucket_two_plus}** source(s) with **≥2 articles** — already split correctly, left alone.",
+                        ]
+                        if non_correspondent_skipped:
+                            breakdown_lines.append(
+                                f"- _{non_correspondent_skipped} non-email/forward source(s) ignored (PDFs, web captures, etc.)._"
+                            )
+                        yield _reply("\n".join(breakdown_lines))
                         split_count = 0
                         left_alone = 0
                         new_total = 0
