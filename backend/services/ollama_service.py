@@ -9,6 +9,15 @@ httpx.AsyncClient for Ollama API calls. Provides:
 4. Model warmup tracking (mark_*_model_used)
 5. keep_alive policy (main=30m, fast=10m)
 6. Consistent error handling and logging
+7. Per-model concurrency caps (P14.H.3, 2026-06-11) — prevents Ollama
+   queue collapse when many background paths fan out concurrent calls
+   (per-article entity extraction, curator brain inference, memory
+   consolidation, IMAP-driven classification, etc.). gemma4 can only
+   serve ~1 request at a time on Apple Silicon before tail latency
+   explodes; embeddings parallelize better. The semaphores act as a
+   process-wide rate limiter that protects ALL callers, including the
+   ones we can't easily refactor (curator brain handlers fire as
+   asyncio.create_task and bypass any application-level lock).
 
 Migration guide:
   OLD:  async with httpx.AsyncClient(timeout=30.0) as client:
@@ -16,6 +25,7 @@ Migration guide:
   NEW:  from services.ollama_service import ollama_service
         result = await ollama_service.generate(prompt=..., model=..., temperature=...)
 """
+import asyncio
 import json
 import logging
 import time
@@ -27,6 +37,45 @@ import httpx
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ── P14.H.3 — Per-model concurrency semaphores ──────────────────────────
+# These cap how many concurrent in-flight calls to each model are allowed.
+# Calls beyond the cap queue (asyncio.Semaphore is FIFO).
+#
+# Tuning rationale (Apple Silicon, gemma4:e4b 9.6 GB + phi4-mini 3 GB +
+# embed 1 GB on a 16 GB Mac):
+#   - Main model (gemma4): 1. Multi-call concurrency causes tail-latency
+#     explosion (we observed 603s gemma4 generate when 5+ tasks queued).
+#   - Fast model (phi4-mini): 2. Smaller working set, handles 2 concurrent
+#     reasonably; protects against the article pipeline + curator stance
+#     scoring colliding.
+#   - Embedding model: 4. Snowflake-arctic-embed2 is small and fast; the
+#     bottleneck is mostly HTTP/IPC. Cap mostly exists to prevent total
+#     Ollama queue overflow.
+#
+# Semaphores are lazy-initialized so they bind to the running event loop.
+_MODEL_SEMAPHORES: Dict[str, asyncio.Semaphore] = {}
+_SEMAPHORE_CAPS = {
+    "main": 1,    # gemma4 / olmo / similar large models
+    "fast": 2,    # phi4-mini
+    "embed": 4,   # embedding models
+}
+
+
+def _semaphore_for_model(model: str) -> asyncio.Semaphore:
+    """Return the semaphore for a model name, picking the right bucket
+    by matching against settings. Initialized lazily."""
+    if model == settings.embedding_model:
+        bucket = "embed"
+    elif model == settings.ollama_fast_model:
+        bucket = "fast"
+    else:
+        # Default: treat unknown / main model as the heavy bucket.
+        bucket = "main"
+    if bucket not in _MODEL_SEMAPHORES:
+        _MODEL_SEMAPHORES[bucket] = asyncio.Semaphore(_SEMAPHORE_CAPS[bucket])
+    return _MODEL_SEMAPHORES[bucket]
 
 
 def _get_caller() -> str:
@@ -197,7 +246,14 @@ class OllamaService:
             openai_non_stream_to_ollama_response,
         )
         route = _resolve_provider(use_model)
+        # P14.H.3 — acquire per-model semaphore before the network call.
+        # Caps concurrent in-flight calls so background fan-out (curator
+        # brain, per-article entity extraction, memory consolidation)
+        # can't collapse Ollama's queue.
+        sem = _semaphore_for_model(use_model) if route.api_style == "ollama" else None
         try:
+            if sem is not None:
+                await sem.acquire()
             if route.api_style == "ollama":
                 response = await client.post(
                     f"{route.base_url}/api/generate",
@@ -232,6 +288,9 @@ class OllamaService:
             _elapsed = time.time() - _t0
             logger.error(f"[OllamaService] generate FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
             return {"response": ""}
+        finally:
+            if sem is not None:
+                sem.release()
 
     # ── Non-streaming chat (/api/chat) ────────────────────────────────
 
@@ -308,7 +367,11 @@ class OllamaService:
             openai_non_stream_to_ollama_response,
         )
         route = _resolve_provider(use_model)
+        # P14.H.3 — per-model semaphore (see generate())
+        sem = _semaphore_for_model(use_model) if route.api_style == "ollama" else None
         try:
+            if sem is not None:
+                await sem.acquire()
             if route.api_style == "ollama":
                 response = await client.post(
                     f"{route.base_url}/api/chat",
@@ -339,6 +402,9 @@ class OllamaService:
             _elapsed = time.time() - _t0
             logger.error(f"[OllamaService] chat FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
             return {"message": {"content": ""}}
+        finally:
+            if sem is not None:
+                sem.release()
 
     # ── Embeddings (/api/embed) ───────────────────────────────────────
 
@@ -372,7 +438,10 @@ class OllamaService:
         read_timeout = timeout or 120.0
         _caller = _get_caller()
         _t0 = time.time()
+        # P14.H.3 — per-model semaphore (see generate())
+        sem = _semaphore_for_model(use_model)
         try:
+            await sem.acquire()
             response = await client.post(
                 f"{settings.ollama_base_url}/api/embed",
                 json=payload,
@@ -386,6 +455,8 @@ class OllamaService:
             _elapsed = time.time() - _t0
             logger.error(f"[OllamaService] embed FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
             return {}
+        finally:
+            sem.release()
 
     # ── Streaming generate (/api/generate, stream=True) ───────────────
 
@@ -454,6 +525,14 @@ class OllamaService:
             openai_stream_chunk_to_ollama,
         )
         route = _resolve_provider(use_model)
+        # P14.H.3 — semaphore for streaming generate too. Held for the
+        # full duration of the stream (which is short for interactive
+        # chat). Without this, a streaming chat could start while a
+        # bg gemma4 call holds the non-streaming semaphore → still 2
+        # concurrent calls hitting Ollama.
+        sem = _semaphore_for_model(use_model) if route.api_style == "ollama" else None
+        if sem is not None:
+            await sem.acquire()
         try:
             if route.api_style == "ollama":
                 async with client.stream(
@@ -504,6 +583,9 @@ class OllamaService:
             _elapsed = time.time() - _t0
             logger.error(f"[OllamaService] stream FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
             raise
+        finally:
+            if sem is not None:
+                sem.release()
 
     # ── Utility: model info / availability ────────────────────────────
 

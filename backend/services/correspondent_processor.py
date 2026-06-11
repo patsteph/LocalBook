@@ -510,7 +510,12 @@ async def _summarize_articles_background_unlocked(source_id: str) -> None:
         # article's synthetic `art-{uuid}` source_id so entities trace
         # back to the article (not the wrapping newsletter). Runs AFTER
         # the summary pass so we can feed the LLM clean title+summary+body
-        # rather than just noisy body. Fire-and-forget; never blocks.
+        # rather than just noisy body.
+        # P14.H.3 (2026-06-11) — was asyncio.create_task fire-and-forget.
+        # That spawned a gemma4 call OUTSIDE the lock for every article;
+        # 12-article newsletter → 12 concurrent gemma4 calls. Now awaited
+        # so it stays inside the lock window. Adds ~3s per article to the
+        # serial path but keeps Ollama queue depth at 1.
         try:
             from services.entity_extractor import entity_extractor
             from services.article_rag import synthetic_id_for_article
@@ -519,14 +524,14 @@ async def _summarize_articles_background_unlocked(source_id: str) -> None:
                 f"{(a.get('body_text') or '')[:2500]}"
             ).strip()
             if entity_input:
-                asyncio.create_task(entity_extractor.extract_from_text(
+                await entity_extractor.extract_from_text(
                     text=entity_input,
                     notebook_id=a["notebook_id"],
                     source_id=synthetic_id_for_article(a["id"]),
                     use_llm=True,
-                ))
+                )
         except Exception as e:
-            logger.debug(f"[correspondent.summarize_articles] entity kickoff failed (non-fatal): {e}")
+            logger.debug(f"[correspondent.summarize_articles] entity extraction failed (non-fatal): {e}")
 
         # P14.D (2026-06-10) — per-article notebook section assignment.
         # phi4-mini picks an existing section OR proposes a new one;
