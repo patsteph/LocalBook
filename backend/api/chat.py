@@ -3680,230 +3680,189 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
         elif intent == "reprocess_articles":
             # P14.F (2026-06-10) — push pre-Phase-14 articles through the
             # new pipeline. P14.H (2026-06-11) — gated by single-instance
-            # lock; second invocations get progress instead of stacking
-            # concurrent Ollama load.
+            # lock. P14.RES (2026-06-11) — runs as a true background task
+            # now; chat returns immediately instead of holding the HTTP
+            # connection for 5+ minutes. User polls via `pipeline status`.
             if _ARTICLE_PIPELINE_LOCK.locked():
                 st = _ARTICLE_PIPELINE_STATUS
                 yield _reply(
                     f"⏳ A {st.get('operation','article')} batch is already running — "
                     f"**{st.get('sources_processed',0)}/{st.get('sources_total',0)}** sources, "
                     f"**{st.get('articles_touched',0)}** article(s) touched so far. "
-                    f"Wait for it to finish; running two at once would overload Ollama."
+                    f"Check progress with `pipeline status` any time."
                 )
             else:
-                from storage.source_store import source_store
-                from storage.article_store import article_store
                 from services.correspondent_processor import _summarize_articles_background
-                yield _reply("🔁 Reprocessing existing articles through the Phase 14 pipeline. This walks every newsletter source sequentially (one at a time) so Ollama stays stable — expect ~3-5s per article.")
-                async with _ARTICLE_PIPELINE_LOCK:
+
+                async def _run_reprocess_bg():
+                    from storage.source_store import source_store
+                    from storage.article_store import article_store
                     from datetime import datetime as _dt
-                    _ARTICLE_PIPELINE_STATUS.update({
-                        "running": True, "operation": "reprocess",
-                        "sources_total": 0, "sources_processed": 0,
-                        "articles_touched": 0,
-                        "started_at": _dt.utcnow().isoformat(),
-                        "finished_at": None, "last_error": None,
-                    })
-                    try:
-                        all_by_nb = await source_store.list_all() or {}
-                        source_targets = []
-                        for nb_id, sources in all_by_nb.items():
-                            for s in (sources or []):
-                                fmt = (s.get("format") or "").lower()
-                                if fmt not in ("email", "forward"):
-                                    continue
-                                src_id = s.get("id")
-                                if not src_id:
-                                    continue
-                                cnt = await article_store.count_by_source(src_id)
-                                if cnt > 0:
-                                    source_targets.append((src_id, cnt))
-                        total_articles = sum(c for _, c in source_targets)
-                        _ARTICLE_PIPELINE_STATUS["sources_total"] = len(source_targets)
-                        yield _reply(f"\n\n📊 Found **{len(source_targets)} sources** with **{total_articles} articles** to walk.")
-                        processed_sources = 0
-                        for src_id, _cnt in source_targets:
-                            try:
-                                await _summarize_articles_background(src_id)
-                                processed_sources += 1
-                                _ARTICLE_PIPELINE_STATUS["sources_processed"] = processed_sources
-                                _ARTICLE_PIPELINE_STATUS["articles_touched"] += _cnt
-                            except Exception as _e:
-                                logger.debug(f"[reprocess_articles] source {src_id[:8]} failed: {_e}")
-                            await asyncio.sleep(0.5)  # yield to other tasks
-                        conn = article_store._get_db()
-                        row = conn.execute(
-                            "SELECT COUNT(*) AS c FROM articles WHERE intelligence_processed = 1"
-                        ).fetchone()
-                        processed_articles = int(row["c"]) if row else 0
-                        _ARTICLE_PIPELINE_STATUS["finished_at"] = _dt.utcnow().isoformat()
-                        yield _reply(
-                            f"\n\n✓ Reprocess complete. Walked **{processed_sources}/{len(source_targets)}** sources; "
-                            f"**{processed_articles}** article(s) flagged as Phase-14-processed in total. "
-                            f"Run `show articles` to see the new sections + categorization."
-                        )
-                    except Exception as _rp_e:
-                        _ARTICLE_PIPELINE_STATUS["last_error"] = str(_rp_e)[:300]
-                        yield _reply(f"\n\n⚠ Reprocess failed: {_rp_e}")
-                    finally:
-                        _ARTICLE_PIPELINE_STATUS["running"] = False
+                    async with _ARTICLE_PIPELINE_LOCK:
+                        _ARTICLE_PIPELINE_STATUS.update({
+                            "running": True, "operation": "reprocess",
+                            "sources_total": 0, "sources_processed": 0,
+                            "articles_touched": 0,
+                            "started_at": _dt.utcnow().isoformat(),
+                            "finished_at": None, "last_error": None,
+                        })
+                        try:
+                            all_by_nb = await source_store.list_all() or {}
+                            source_targets = []
+                            for nb_id, sources in all_by_nb.items():
+                                for s in (sources or []):
+                                    fmt = (s.get("format") or "").lower()
+                                    if fmt not in ("email", "forward"):
+                                        continue
+                                    src_id = s.get("id")
+                                    if not src_id:
+                                        continue
+                                    cnt = await article_store.count_by_source(src_id)
+                                    if cnt > 0:
+                                        source_targets.append((src_id, cnt))
+                            _ARTICLE_PIPELINE_STATUS["sources_total"] = len(source_targets)
+                            for src_id, _cnt in source_targets:
+                                try:
+                                    await _summarize_articles_background(src_id)
+                                    _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
+                                    _ARTICLE_PIPELINE_STATUS["articles_touched"] += _cnt
+                                except Exception as _e:
+                                    logger.debug(f"[reprocess_articles bg] source {src_id[:8]} failed: {_e}")
+                                await asyncio.sleep(0.5)
+                            _ARTICLE_PIPELINE_STATUS["finished_at"] = _dt.utcnow().isoformat()
+                        except Exception as _e:
+                            _ARTICLE_PIPELINE_STATUS["last_error"] = str(_e)[:300]
+                        finally:
+                            _ARTICLE_PIPELINE_STATUS["running"] = False
+
+                asyncio.create_task(_run_reprocess_bg())
+                yield _reply(
+                    "🔁 **Reprocess started in the background.** Walking every newsletter source through "
+                    "the Phase 14 pipeline (classifier + summary + entity + section + brain event). "
+                    "Expect ~3-5s per article; with the Ollama concurrency caps in place, this stays "
+                    "stable even if IMAP pulls new mail simultaneously.\n\n"
+                    "Check progress at any time with `pipeline status`."
+                )
 
         elif intent == "reextract_articles":
             # P14.G (2026-06-11) — one-time backfill: re-run extraction
-            # on sources currently at 1 article. P14.H — gated by the
-            # shared single-instance lock so it can't collide with
-            # reprocess_articles (the crash root cause).
+            # on sources currently at 1 article. P14.RES (2026-06-11) —
+            # runs as a true background task. Chat returns immediately.
             if _ARTICLE_PIPELINE_LOCK.locked():
                 st = _ARTICLE_PIPELINE_STATUS
                 yield _reply(
                     f"⏳ A {st.get('operation','article')} batch is already running — "
                     f"**{st.get('sources_processed',0)}/{st.get('sources_total',0)}** sources, "
                     f"**{st.get('articles_touched',0)}** article(s) touched so far. "
-                    f"Wait for it to finish; running two at once would overload Ollama."
+                    f"Check progress with `pipeline status` any time."
                 )
             else:
-                from storage.source_store import source_store
-                from storage.article_store import article_store
-                from services.article_extractor import extract_articles
-                from services.correspondent_processor import _summarize_articles_background
-                from services.article_rag import synthetic_id_for_article
-                from services.entity_extractor import entity_extractor
-                from services.rag_engine import rag_engine
-                yield _reply("🔪 Re-extracting articles on sources currently stuck at 1 article. Single-article-by-structure newsletters (The Hustle, personal blogs) will stay at 1; multi-section newsletters will split.")
-                async with _ARTICLE_PIPELINE_LOCK:
+                async def _run_reextract_bg():
+                    from storage.source_store import source_store
+                    from storage.article_store import article_store
+                    from services.article_extractor import extract_articles
+                    from services.correspondent_processor import _summarize_articles_background
+                    from services.article_rag import synthetic_id_for_article
+                    from services.entity_extractor import entity_extractor
+                    from services.rag_engine import rag_engine
                     from datetime import datetime as _dt
-                    _ARTICLE_PIPELINE_STATUS.update({
-                        "running": True, "operation": "reextract",
-                        "sources_total": 0, "sources_processed": 0,
-                        "articles_touched": 0,
-                        "started_at": _dt.utcnow().isoformat(),
-                        "finished_at": None, "last_error": None,
-                    })
-                    try:
-                        all_by_nb = await source_store.list_all() or {}
-                        # P14.G.2 (2026-06-11) — bucket all email/forward
-                        # sources by article count so the user sees the
-                        # full picture, not just the 1-article subset
-                        # this command actually touches.
-                        targets = []
-                        bucket_zero = []
-                        bucket_two_plus = 0
-                        non_correspondent_skipped = 0
-                        for nb_id, sources in all_by_nb.items():
-                            for s in (sources or []):
-                                fmt = (s.get("format") or "").lower()
-                                if fmt not in ("email", "forward"):
-                                    non_correspondent_skipped += 1
-                                    continue
-                                src_id = s.get("id")
-                                if not src_id:
-                                    continue
-                                cnt = await article_store.count_by_source(src_id)
-                                if cnt == 0:
-                                    bucket_zero.append((nb_id, src_id, s.get("filename", "")[:40]))
-                                elif cnt == 1:
-                                    targets.append((nb_id, src_id, s))
-                                else:
-                                    bucket_two_plus += 1
-                        _ARTICLE_PIPELINE_STATUS["sources_total"] = len(targets)
-                        breakdown_lines = [
-                            f"\n\n📊 **Correspondent source distribution** (email + forward):",
-                            f"- **{len(bucket_zero)}** source(s) with **0 articles** — run `@correspondent backfill articles` to extract them.",
-                            f"- **{len(targets)}** source(s) with **1 article** — will re-attempt now (multi-section newsletters will split).",
-                            f"- **{bucket_two_plus}** source(s) with **≥2 articles** — already split correctly, left alone.",
-                        ]
-                        if non_correspondent_skipped:
-                            breakdown_lines.append(
-                                f"- _{non_correspondent_skipped} non-email/forward source(s) ignored (PDFs, web captures, etc.)._"
-                            )
-                        yield _reply("\n".join(breakdown_lines))
-                        split_count = 0
-                        left_alone = 0
-                        new_total = 0
-                        for nb_id, src_id, source in targets:
-                            text_body = source.get("content") or ""
-                            meta = source.get("metadata") or {}
-                            html_body = meta.get("content_html") if isinstance(meta, dict) else source.get("content_html")
-                            if not (text_body or html_body):
-                                left_alone += 1
-                                _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
-                                continue
-                            try:
-                                new_articles = extract_articles(
-                                    html_body=html_body or "",
-                                    text_body=text_body,
-                                    fallback_title=source.get("filename") or "(untitled)",
-                                )
-                            except Exception as _ex:
-                                logger.debug(f"[reextract] extract failed on {src_id[:8]}: {_ex}")
-                                left_alone += 1
-                                _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
-                                continue
-                            if len(new_articles) < 2:
-                                left_alone += 1
-                                _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
-                                continue
-                            # Cascade: clean up old article art-IDs
-                            try:
-                                old_rows = await article_store.list_by_source(src_id)
-                                for old in old_rows:
-                                    ar_id = old.get("id")
-                                    if not ar_id:
+                    async with _ARTICLE_PIPELINE_LOCK:
+                        _ARTICLE_PIPELINE_STATUS.update({
+                            "running": True, "operation": "reextract",
+                            "sources_total": 0, "sources_processed": 0,
+                            "articles_touched": 0,
+                            "started_at": _dt.utcnow().isoformat(),
+                            "finished_at": None, "last_error": None,
+                        })
+                        try:
+                            all_by_nb = await source_store.list_all() or {}
+                            targets = []
+                            for nb_id, sources in all_by_nb.items():
+                                for s in (sources or []):
+                                    fmt = (s.get("format") or "").lower()
+                                    if fmt not in ("email", "forward"):
                                         continue
-                                    synth = synthetic_id_for_article(ar_id)
-                                    try:
-                                        await rag_engine.delete_source(nb_id, synth)
-                                    except Exception:
-                                        pass
-                                    try:
-                                        entity_extractor.delete_source_entities(nb_id, synth)
-                                    except Exception:
-                                        pass
-                                await article_store.delete_by_source(src_id)
-                            except Exception as _cl:
-                                logger.debug(f"[reextract] cleanup failed on {src_id[:8]}: {_cl}")
-                            try:
-                                count = await article_store.create_batch(
-                                    source_id=src_id,
-                                    notebook_id=nb_id,
-                                    sender=source.get("sender") or source.get("original_sender"),
-                                    articles=[
-                                        {
-                                            "position": a.position,
-                                            "title": a.title,
-                                            "body_text": a.body_text,
-                                            "body_html": a.body_html,
-                                            "body_text_offset": a.body_text_offset,
-                                        }
-                                        for a in new_articles
-                                    ],
-                                )
-                                await source_store.update(nb_id, src_id, {"article_count": count})
-                                new_total += count
-                                split_count += 1
-                                _ARTICLE_PIPELINE_STATUS["articles_touched"] += count
-                            except Exception as _ce:
-                                logger.warning(f"[reextract] persist failed on {src_id[:8]}: {_ce}")
+                                    src_id = s.get("id")
+                                    if not src_id:
+                                        continue
+                                    cnt = await article_store.count_by_source(src_id)
+                                    if cnt == 1:
+                                        targets.append((nb_id, src_id, s))
+                            _ARTICLE_PIPELINE_STATUS["sources_total"] = len(targets)
+                            for nb_id, src_id, source in targets:
+                                text_body = source.get("content") or ""
+                                meta = source.get("metadata") or {}
+                                html_body = meta.get("content_html") if isinstance(meta, dict) else source.get("content_html")
+                                if not (text_body or html_body):
+                                    _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
+                                    continue
+                                try:
+                                    new_articles = extract_articles(
+                                        html_body=html_body or "",
+                                        text_body=text_body,
+                                        fallback_title=source.get("filename") or "(untitled)",
+                                    )
+                                except Exception:
+                                    _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
+                                    continue
+                                if len(new_articles) < 2:
+                                    _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
+                                    continue
+                                try:
+                                    old_rows = await article_store.list_by_source(src_id)
+                                    for old in old_rows:
+                                        ar_id = old.get("id")
+                                        if not ar_id:
+                                            continue
+                                        synth = synthetic_id_for_article(ar_id)
+                                        try:
+                                            await rag_engine.delete_source(nb_id, synth)
+                                        except Exception:
+                                            pass
+                                        try:
+                                            entity_extractor.delete_source_entities(nb_id, synth)
+                                        except Exception:
+                                            pass
+                                    await article_store.delete_by_source(src_id)
+                                except Exception as _cl:
+                                    logger.debug(f"[reextract bg] cleanup failed on {src_id[:8]}: {_cl}")
+                                try:
+                                    count = await article_store.create_batch(
+                                        source_id=src_id,
+                                        notebook_id=nb_id,
+                                        sender=source.get("sender") or source.get("original_sender"),
+                                        articles=[
+                                            {"position": a.position, "title": a.title,
+                                             "body_text": a.body_text, "body_html": a.body_html,
+                                             "body_text_offset": a.body_text_offset}
+                                            for a in new_articles
+                                        ],
+                                    )
+                                    await source_store.update(nb_id, src_id, {"article_count": count})
+                                    _ARTICLE_PIPELINE_STATUS["articles_touched"] += count
+                                except Exception as _ce:
+                                    logger.warning(f"[reextract bg] persist failed on {src_id[:8]}: {_ce}")
+                                    _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
+                                    continue
+                                try:
+                                    await _summarize_articles_background(src_id)
+                                except Exception as _bge:
+                                    logger.debug(f"[reextract bg] post-extract failed on {src_id[:8]}: {_bge}")
                                 _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
-                                continue
-                            try:
-                                await _summarize_articles_background(src_id)
-                            except Exception as _bge:
-                                logger.debug(f"[reextract] post-extract pass failed on {src_id[:8]}: {_bge}")
-                            _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
-                            await asyncio.sleep(0.5)
-                        _ARTICLE_PIPELINE_STATUS["finished_at"] = _dt.utcnow().isoformat()
-                        yield _reply(
-                            f"\n\n✓ Re-extract complete.\n"
-                            f"- **{split_count}** source(s) split into multiple articles (total **{new_total}** new article rows).\n"
-                            f"- **{left_alone}** source(s) left as-is (structurally single-article or no extractable body).\n"
-                            f"Run `show articles` to confirm."
-                        )
-                    except Exception as _re_e:
-                        _ARTICLE_PIPELINE_STATUS["last_error"] = str(_re_e)[:300]
-                        yield _reply(f"\n\n⚠ Re-extract failed: {_re_e}")
-                    finally:
-                        _ARTICLE_PIPELINE_STATUS["running"] = False
+                                await asyncio.sleep(0.5)
+                            _ARTICLE_PIPELINE_STATUS["finished_at"] = _dt.utcnow().isoformat()
+                        except Exception as _e:
+                            _ARTICLE_PIPELINE_STATUS["last_error"] = str(_e)[:300]
+                        finally:
+                            _ARTICLE_PIPELINE_STATUS["running"] = False
+
+                asyncio.create_task(_run_reextract_bg())
+                yield _reply(
+                    "🔪 **Re-extract started in the background.** Walking single-article sources and "
+                    "re-attempting the split. Multi-section newsletters will split into sub-articles; "
+                    "single-article-by-structure ones (personal blogs, hustle) stay as one.\n\n"
+                    "Check progress at any time with `pipeline status`."
+                )
 
         elif intent == "article_pipeline_status":
             st = _ARTICLE_PIPELINE_STATUS

@@ -62,10 +62,21 @@ class MemoryManager:
         """Start the background consolidation scheduler"""
         if self._running:
             return
-        
+
         self._running = True
         logger.info("Memory consolidation scheduler started (multi-tier)")
-        
+
+        # P14.RES (2026-06-11) — defer first iteration by 5 min after
+        # startup. Otherwise every backend restart immediately fires
+        # gemma4-heavy Tier 3 consolidation while IMAP catch-up + warmup
+        # + curator brain wake-up are all competing for the same model.
+        # The 5-min delay lets the system stabilize before consolidation
+        # work begins.
+        try:
+            await asyncio.sleep(300)
+        except asyncio.CancelledError:
+            return
+
         while self._running:
             try:
                 now = datetime.utcnow()

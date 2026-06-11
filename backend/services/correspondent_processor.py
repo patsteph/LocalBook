@@ -1019,33 +1019,14 @@ async def ingest_newsletter(
             f"skipped — {article_count} articles will each run their own pass"
         )
 
-    # Emit so the curator brain picks it up. P14.C (2026-06-10) — when
-    # ≥2 articles were extracted, omit the summary so consensus_detector
-    # / weekly_journal skip this parent event (each article emits its own
-    # `article_ingested` with its summary). The brain's dispatch handlers
-    # (mark_notebook_dirty / source-reputation / mental-model trigger /
-    # stance scoring / anticipatory drafts) still fire ONCE per newsletter
-    # because they react to `action` + `notebook_id`, not summary.
-    summary_for_event = (
-        "" if article_count >= 2 else classification.summary
-    )
-    try:
-        event_bus.emit_now(
-            actor="@correspondent",
-            action="source_ingested",
-            notebook_id=notebook_id,
-            payload={
-                "source_id": source_id,
-                "filename": filename,
-                "format": "email",
-                "sender": parsed.sender,
-                "summary": summary_for_event,
-                "topic_tags": classification.topic_tags,
-            },
-            outcome="success",
-        )
-    except Exception as _e:
-        logger.debug(f"[correspondent.ingest_newsletter] event emit skipped: {_e}")
+    # P14.RES (2026-06-11) — REMOVED duplicate source_ingested emit.
+    # `source_store.create()` already emits one with actor='system' which
+    # the curator brain dispatch handler (mark_notebook_dirty,
+    # mental_model_inference, stance_scoring, anticipatory_draft) reacts
+    # to. Emitting again here with actor='@correspondent' doubled all
+    # brain work per newsletter (incl. gemma4 inference). consensus_detector
+    # gets its signal from the per-article `article_ingested` events, not
+    # from this parent emit.
 
     # Phase 7 — fire-and-forget subscription proposal extraction. Never
     # blocks the ingest path; failures are swallowed at debug.
@@ -1405,22 +1386,8 @@ async def ingest_forward(
         except Exception as _e:
             logger.debug(f"[correspondent.ingest_forward] entity extraction kickoff skipped: {_e}")
 
-    try:
-        event_bus.emit_now(
-            actor="@correspondent",
-            action="source_ingested",
-            notebook_id=notebook_id,
-            payload={
-                "source_id": source_id,
-                "filename": filename,
-                "format": "forward",
-                "sender": payload.original_sender,
-                "forwarded_by": payload.forwarded_by,
-            },
-            outcome="success",
-        )
-    except Exception as _e:
-        logger.debug(f"[correspondent.ingest_forward] event emit skipped: {_e}")
+    # P14.RES (2026-06-11) — REMOVED duplicate source_ingested emit.
+    # See same removal in ingest_newsletter above.
 
     return source_id
 

@@ -477,7 +477,24 @@ class CorrespondentAgent:
         messages = fetch.get("messages") or []
         new_max_uid = int(fetch.get("max_uid") or account.get("last_uid", 0))
 
-        for msg in messages:
+        # P14.RES (2026-06-11) — per-cycle backpressure. Each ingested
+        # newsletter spawns a background article-processing task that
+        # queues at `_PROCESSOR_LOCK`. If IMAP returns a burst of 50
+        # messages we DON'T want all 50 tasks queued at once (memory
+        # pressure + every restart re-fans them out). Cap per-cycle and
+        # advance last_uid only to the cap; remaining messages will be
+        # picked up next poll cycle. Process oldest first so user sees
+        # chronological progress.
+        MAX_MESSAGES_PER_POLL = 5
+        process_messages = sorted(messages, key=lambda m: int(m.get("uid", 0) or 0))[:MAX_MESSAGES_PER_POLL]
+        if len(messages) > MAX_MESSAGES_PER_POLL:
+            logger.info(
+                f"[correspondent.poll_account] {email}: capped {len(messages)} → {MAX_MESSAGES_PER_POLL} per cycle; "
+                f"remaining {len(messages) - MAX_MESSAGES_PER_POLL} will arrive next poll"
+            )
+            new_max_uid = int(process_messages[-1].get("uid", new_max_uid) or new_max_uid)
+
+        for msg in process_messages:
             try:
                 await self._handle_message(email=email, account=account, msg=msg, counts=result)
             except Exception as e:
