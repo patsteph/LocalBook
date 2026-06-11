@@ -3003,7 +3003,8 @@ def _quick_intent_for_correspondent(query: str) -> tuple:
         (r"^backfill\s+status$|^backfill\s+progress$|how.?s?\s+(?:the\s+)?backfill", "backfill_status"),
         (r"^backfill(\s+articles?)?$|^extract\s+articles?\s+for\s+old\b|rebuild\s+article\s+index", "backfill_articles"),
         (r"^refresh\s+titles?$|^fix\s+(article\s+)?titles?$|^rebuild\s+titles?$", "refresh_titles"),
-        (r"^reprocess\s+articles?$|^reclassify\s+articles?$|^re-?run\s+phase\s*14$", "reprocess_articles"),
+        (r"^reprocess\s+articles?$|^reclassify\s+articles?$|^re-?run\s+phase\s*14$|^refresh\s+articles?$|^refresh\s+article\s+data$", "reprocess_articles"),
+        (r"^re-?extract(\s+all)?(\s+articles?)?$|^re-?split(\s+all)?(\s+newsletters?)?$", "reextract_articles"),
         (r"^(show|list)\s+subscriptions?$|show.*proposals?$", "show_subscriptions"),
         (r"^(show|list)\s+(approval\s+)?queue$|^(show\s+)?pending$|^show\s+approvals?$", "show_queue"),
         (r"^(show|list)\s+accounts?$|^(show|list)\s+inboxes?$", "show_accounts"),
@@ -3699,6 +3700,121 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                 )
             except Exception as _rp_e:
                 yield _reply(f"\n\n⚠ Reprocess failed: {_rp_e}")
+
+        elif intent == "reextract_articles":
+            # P14.G (2026-06-11) — one-time backfill: re-run article
+            # extraction on every email/forward source that currently has
+            # exactly 1 article (the single-article-fallback case). When
+            # new extraction yields ≥2 sub-articles, replace the old
+            # article rows + clean up their RAG chunks + entity
+            # associations, then run Phase 14 on the new rows.
+            #
+            # Sources that already split correctly (article_count >= 2)
+            # are LEFT ALONE — re-extraction could change article IDs and
+            # invalidate references for no benefit.
+            from storage.source_store import source_store
+            from storage.article_store import article_store
+            from services.article_extractor import extract_articles
+            from services.correspondent_processor import _summarize_articles_background
+            from services.article_rag import synthetic_id_for_article
+            from services.entity_extractor import entity_extractor
+            from services.rag_engine import rag_engine
+            yield _reply("🔪 Re-extracting articles on sources currently stuck at 1 article. Single-article-by-structure newsletters (The Hustle, personal blogs) will stay at 1; multi-section newsletters will split.")
+            try:
+                all_by_nb = await source_store.list_all() or {}
+                targets = []
+                for nb_id, sources in all_by_nb.items():
+                    for s in (sources or []):
+                        fmt = (s.get("format") or "").lower()
+                        if fmt not in ("email", "forward"):
+                            continue
+                        src_id = s.get("id")
+                        if not src_id:
+                            continue
+                        cnt = await article_store.count_by_source(src_id)
+                        if cnt == 1:  # only single-article sources are candidates
+                            targets.append((nb_id, src_id, s))
+                yield _reply(f"\n\n📊 Found **{len(targets)}** single-article source(s) to re-attempt.")
+                split_count = 0
+                left_alone = 0
+                new_total = 0
+                for nb_id, src_id, source in targets:
+                    text_body = source.get("content") or ""
+                    meta = source.get("metadata") or {}
+                    html_body = meta.get("content_html") if isinstance(meta, dict) else source.get("content_html")
+                    if not (text_body or html_body):
+                        left_alone += 1
+                        continue
+                    try:
+                        new_articles = extract_articles(
+                            html_body=html_body or "",
+                            text_body=text_body,
+                            fallback_title=source.get("filename") or "(untitled)",
+                        )
+                    except Exception as _ex:
+                        logger.debug(f"[reextract] extract failed on {src_id[:8]}: {_ex}")
+                        left_alone += 1
+                        continue
+                    if len(new_articles) < 2:
+                        # No split possible; preserve existing row.
+                        left_alone += 1
+                        continue
+                    # Cascade: clean up old article art-IDs from RAG + entity store
+                    try:
+                        old_rows = await article_store.list_by_source(src_id)
+                        for old in old_rows:
+                            ar_id = old.get("id")
+                            if not ar_id:
+                                continue
+                            synth = synthetic_id_for_article(ar_id)
+                            try:
+                                await rag_engine.delete_source(nb_id, synth)
+                            except Exception:
+                                pass
+                            try:
+                                entity_extractor.delete_source_entities(nb_id, synth)
+                            except Exception:
+                                pass
+                        await article_store.delete_by_source(src_id)
+                    except Exception as _cl:
+                        logger.debug(f"[reextract] cleanup failed on {src_id[:8]}: {_cl}")
+                    # Persist new article rows
+                    try:
+                        count = await article_store.create_batch(
+                            source_id=src_id,
+                            notebook_id=nb_id,
+                            sender=source.get("sender") or source.get("original_sender"),
+                            articles=[
+                                {
+                                    "position": a.position,
+                                    "title": a.title,
+                                    "body_text": a.body_text,
+                                    "body_html": a.body_html,
+                                    "body_text_offset": a.body_text_offset,
+                                }
+                                for a in new_articles
+                            ],
+                        )
+                        await source_store.update(nb_id, src_id, {"article_count": count})
+                        new_total += count
+                        split_count += 1
+                    except Exception as _ce:
+                        logger.warning(f"[reextract] persist failed on {src_id[:8]}: {_ce}")
+                        continue
+                    # Run Phase 14 on the new article rows
+                    try:
+                        await _summarize_articles_background(src_id)
+                    except Exception as _bge:
+                        logger.debug(f"[reextract] post-extract pass failed on {src_id[:8]}: {_bge}")
+                    await asyncio.sleep(0.5)  # yield to other tasks
+                yield _reply(
+                    f"\n\n✓ Re-extract complete.\n"
+                    f"- **{split_count}** source(s) split into multiple articles (total **{new_total}** new article rows).\n"
+                    f"- **{left_alone}** source(s) left as-is (structurally single-article or no extractable body).\n"
+                    f"Run `show articles` to confirm."
+                )
+            except Exception as _re_e:
+                yield _reply(f"\n\n⚠ Re-extract failed: {_re_e}")
 
         elif intent == "backfill_status":
             try:
