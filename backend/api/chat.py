@@ -3029,6 +3029,7 @@ def _quick_intent_for_correspondent(query: str) -> tuple:
         (r"^reprocess\s+articles?$|^reclassify\s+articles?$|^re-?run\s+phase\s*14$|^refresh\s+articles?$|^refresh\s+article\s+data$", "reprocess_articles"),
         (r"^re-?extract(\s+all)?(\s+articles?)?$|^re-?split(\s+all)?(\s+newsletters?)?$", "reextract_articles"),
         (r"^(article\s+)?pipeline\s+status$|^reprocess\s+status$|^re-?extract\s+status$", "article_pipeline_status"),
+        (r"^diagnose\s+extraction$|^extraction\s+diagnostic$|^article\s+extraction\s+diagnostic$", "diagnose_extraction"),
         (r"^(show|list)\s+subscriptions?$|show.*proposals?$", "show_subscriptions"),
         (r"^(show|list)\s+(approval\s+)?queue$|^(show\s+)?pending$|^show\s+approvals?$", "show_queue"),
         (r"^(show|list)\s+accounts?$|^(show|list)\s+inboxes?$", "show_accounts"),
@@ -3892,6 +3893,54 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                     "No article-pipeline batch has run yet. "
                     "Try `@correspondent re-extract all` then `@correspondent reprocess articles`."
                 )
+
+        elif intent == "diagnose_extraction":
+            # P14.DX (2026-06-11) — read-only diagnostic. Walks every
+            # email/forward source, runs each heuristic independently,
+            # writes a JSON report. Chat reply summarizes.
+            yield _reply(
+                "🔬 Running article-extraction diagnostic across all email/forward sources. "
+                "Read-only — no articles will be re-extracted or changed. Building report…"
+            )
+            try:
+                from services.article_extraction_diagnostic import run_diagnostic
+                report = await run_diagnostic()
+                summary = report.get("summary") or {}
+                lines = [
+                    "\n\n📊 **Article extraction diagnostic complete**\n",
+                    f"- **Total sources analyzed:** {summary.get('total_sources', 0)}",
+                    f"- **Split correctly (≥2 articles):** {summary.get('split_correctly_ge2', 0)}",
+                    f"- **Resolved to 1 article:** {summary.get('single_article_total', 0)}",
+                    f"  - **Probable misfires** (structural markers suggest more articles): **{summary.get('single_article_probable_misfire', 0)}**",
+                    f"  - **Probable genuine single-article** (no structural signals): **{summary.get('single_article_probable_genuine', 0)}**",
+                ]
+                if summary.get("extraction_failed"):
+                    lines.append(f"- **Extraction raised an exception:** {summary['extraction_failed']}")
+                hbu = summary.get("heuristics_used_for_correct_splits") or {}
+                if hbu:
+                    lines.append("")
+                    lines.append("**Heuristics that split correctly:**")
+                    for h, n in sorted(hbu.items(), key=lambda x: x[1], reverse=True):
+                        lines.append(f"- `{h}`: {n} source(s)")
+                top = summary.get("top_misfire_senders") or []
+                if top:
+                    lines.append("")
+                    lines.append("**Top senders with probable misfires:**")
+                    for s in top[:10]:
+                        lines.append(
+                            f"- **{s['source_count']}** source(s) from `{s['sender']}` — "
+                            f"avg body {s['avg_body_size']:,} chars · {s['sample_diagnosis']}"
+                        )
+                written_to = report.get("_written_to")
+                if written_to:
+                    lines.append("")
+                    lines.append(f"**Full per-source detail written to:**")
+                    lines.append(f"`{written_to}`")
+                    lines.append("")
+                    lines.append("Paste the contents of that file (or share it) so we can build targeted heuristics for the top misfire senders.")
+                yield _reply("\n".join(lines))
+            except Exception as _dx_e:
+                yield _reply(f"\n\n⚠ Diagnostic failed: {_dx_e}")
 
         elif intent == "backfill_status":
             try:

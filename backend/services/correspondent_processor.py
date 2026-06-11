@@ -615,10 +615,16 @@ async def classify_email(parsed: ParsedEmail) -> Classification:
     )
 
     try:
+        # P14.MEM (2026-06-11) — was settings.ollama_model (gemma4 9.6 GB).
+        # IMAP fires this on every incoming email so it kept gemma4 pinned
+        # in memory permanently via model_warmup. Newsletter/personal/
+        # transactional/forward classification is a structured 4-way pick
+        # that phi4-mini handles well. Frees ~9 GB of working set when no
+        # active chat is happening.
         result = await ollama_service.generate(
             prompt=user_prompt,
             system=_CLASSIFY_SYSTEM,
-            model=settings.ollama_model,
+            model=settings.ollama_fast_model,
             temperature=0.2,
             num_predict=400,
             format="json",
@@ -1138,10 +1144,14 @@ async def classify_link_candidates(
     user_prompt = f"LINKS:\n{listing}"
 
     try:
+        # P14.MEM (2026-06-11) — was settings.ollama_model. Link
+        # classification (sister-newsletter detection) is a low-stakes
+        # category pick that phi4-mini handles fine. Removes another
+        # gemma4 toucher from the IMAP path.
         result = await ollama_service.generate(
             prompt=user_prompt,
             system=system_prompt,
-            model=settings.ollama_model,
+            model=settings.ollama_fast_model,
             temperature=0.1,
             num_predict=600,
             format="json",
