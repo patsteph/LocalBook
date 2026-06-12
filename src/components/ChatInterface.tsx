@@ -137,21 +137,76 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
 
   // Note: We intentionally do NOT load suggested questions before the user starts chatting.
   // Follow-up questions come with each response after the user asks their first question.
-  // Per-notebook message cache — preserves chat history when switching between notebooks
-  const messageCacheRef = useRef<Map<string, ChatMessage[]>>(new Map());
+  // Per-notebook message cache.
+  //
+  // P14.CHATCACHE (2026-06-12) — moved from useRef to sessionStorage.
+  // useRef dies when ChatInterface unmounts, which happens when the
+  // canvas layout structure differs between notebooks (saved layouts
+  // in localStorage can be split vs leaf, or different leaf IDs →
+  // React swaps in a fresh CanvasPanel → fresh ChatInterface → empty
+  // ref). sessionStorage survives any remount but clears on app close,
+  // which is exactly the lifetime the user expects: "until I quit
+  // LocalBook."
+  const CHAT_CACHE_KEY = "lb_chat_cache_v1";
+  const loadChatCache = (): Map<string, ChatMessage[]> => {
+    try {
+      const raw = sessionStorage.getItem(CHAT_CACHE_KEY);
+      if (!raw) return new Map();
+      const obj = JSON.parse(raw) as Record<string, ChatMessage[]>;
+      return new Map(Object.entries(obj));
+    } catch {
+      return new Map();
+    }
+  };
+  const saveChatCache = (cache: Map<string, ChatMessage[]>) => {
+    try {
+      const obj: Record<string, ChatMessage[]> = {};
+      cache.forEach((v, k) => { obj[k] = v; });
+      sessionStorage.setItem(CHAT_CACHE_KEY, JSON.stringify(obj));
+    } catch {
+      // sessionStorage full or unavailable — silently drop
+    }
+  };
   const prevNotebookId = React.useRef(notebookId);
   useEffect(() => {
     if (notebookId && notebookId !== prevNotebookId.current) {
+      const cache = loadChatCache();
       // Save current notebook's messages before switching
       if (prevNotebookId.current && messages.length > 0) {
-        messageCacheRef.current.set(prevNotebookId.current, messages);
+        cache.set(prevNotebookId.current, messages);
       }
       // Restore target notebook's cached messages (or start fresh)
-      const cached = messageCacheRef.current.get(notebookId);
+      const cached = cache.get(notebookId);
       setMessages(cached || []);
+      saveChatCache(cache);
       prevNotebookId.current = notebookId;
     }
   }, [notebookId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // P14.CHATCACHE — on first mount, restore from cache for the current
+  // notebook. Handles the case where ChatInterface was unmounted then
+  // remounted for the SAME notebook (e.g. canvas layout change in
+  // current notebook). Without this, the first remount would show an
+  // empty chat even though the cache has the messages.
+  useEffect(() => {
+    if (notebookId && messages.length === 0) {
+      const cache = loadChatCache();
+      const cached = cache.get(notebookId);
+      if (cached && cached.length > 0) {
+        setMessages(cached);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // only on mount
+
+  // P14.CHATCACHE — continuously persist the current notebook's
+  // messages so a sudden unmount doesn't lose the in-flight chat.
+  useEffect(() => {
+    if (!notebookId || messages.length === 0) return;
+    const cache = loadChatCache();
+    cache.set(notebookId, messages);
+    saveChatCache(cache);
+  }, [messages, notebookId]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

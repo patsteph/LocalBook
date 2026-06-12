@@ -413,60 +413,85 @@ async def _summarize_articles_background_unlocked(source_id: str) -> None:
     from services.article_extractor import _looks_like_title
     import re as _re_ts
 
+    # P14.BATCH (2026-06-12) — replace three separate phi4-mini calls
+    # (classify + summarize + section) with one batch call. Same model,
+    # same context, one model load instead of three. ~30s per article
+    # instead of ~90s under Apple Silicon load.
+    from services.article_batch_processor import batch_analyze_article
+    from services.article_sectioner import apply_section_verdict
+    from storage.article_section_store import article_section_store
+
     skip_counts = {"sponsor": 0, "ad": 0, "jobs": 0, "navigation": 0}
     for a in articles:
-        # P14.A — classify first. Persist kind so downstream / future runs
-        # don't re-classify. Articles already classified (kind != default
-        # OR confidence > 0) are skipped to keep the loop idempotent.
-        existing_kind = (a.get("kind") or "content").strip().lower()
-        existing_confidence = float(a.get("kind_confidence") or 0.0)
-        if existing_confidence == 0.0:  # never classified — run it now
-            verdict = await classify_article(
-                title=a.get("title") or "",
-                body_text=a.get("body_text") or "",
-            )
-            existing_kind = verdict.get("kind", "content")
-            await article_store.update_kind(
-                a["id"],
-                kind=existing_kind,
-                reason=verdict.get("reason", ""),
-                confidence=float(verdict.get("confidence", 0.0)),
-            )
-            a["kind"] = existing_kind
-        if not is_content(existing_kind):
-            skip_counts[existing_kind] = skip_counts.get(existing_kind, 0) + 1
-            continue  # non-content articles bypass everything below
-
-        # P14.E (2026-06-10) — idempotency gate. If we've already run the
-        # full Phase 14 pipeline (classifier + summary + entity + section
-        # + event) on this article, skip the heavy work. Lets the
-        # `@correspondent reprocess articles` backfill be safely re-run
-        # without duplicating brain events or thrashing sections.
+        # P14.E (2026-06-10) — idempotency gate. Already-processed content
+        # articles skip the heavy work entirely.
         if int(a.get("intelligence_processed") or 0) == 1:
             continue
 
-        # Summary + topic_tags pass
-        new_summary: Optional[str] = None
-        new_tags: Optional[List[str]] = None
-        if not a.get("summary"):
-            result = await summarize_article(
+        # Fast-path skip for already-classified non-content articles
+        # (no point even running the batch — we already know to skip).
+        existing_kind = (a.get("kind") or "content").strip().lower()
+        existing_confidence = float(a.get("kind_confidence") or 0.0)
+        if existing_confidence > 0.0 and not is_content(existing_kind):
+            skip_counts[existing_kind] = skip_counts.get(existing_kind, 0) + 1
+            continue
+
+        # P14.BATCH — single LLM call covers classifier + summary +
+        # topic_tags + section assignment. Needed when:
+        #   - kind hasn't been classified yet (existing_confidence == 0)
+        #   - OR summary hasn't been generated yet (legacy data path)
+        # When both are already populated, skip the batch call entirely
+        # and just run the downstream work (embed, entity, event).
+        needs_batch = existing_confidence == 0.0 or not a.get("summary")
+        section_result: Optional[Dict[str, Any]] = None
+
+        if needs_batch:
+            try:
+                existing_sections = await article_section_store.list_for_notebook(a["notebook_id"])
+            except Exception:
+                existing_sections = []
+            batch = await batch_analyze_article(
                 title=a.get("title") or "",
                 body_text=a.get("body_text") or "",
+                existing_sections=existing_sections,
             )
-            if result:
-                new_summary = result.get("summary")
-                new_tags = result.get("topic_tags")
+            # Persist kind
+            await article_store.update_kind(
+                a["id"],
+                kind=batch["kind"],
+                reason="batch",
+                confidence=float(batch.get("kind_confidence") or 0.0),
+            )
+            a["kind"] = batch["kind"]
+            existing_kind = batch["kind"]
+
+            if not is_content(existing_kind):
+                skip_counts[existing_kind] = skip_counts.get(existing_kind, 0) + 1
+                continue
+
+            # Persist summary + tags
+            new_summary = batch.get("summary")
+            new_tags = batch.get("topic_tags") or []
+            if new_summary:
                 await article_store.update_summary(
                     article_id=a["id"],
                     summary=new_summary,
                     topic_tags=new_tags,
                 )
-                # Mirror to the in-memory dict so downstream passes
-                # (entity extraction, event emission) see the new values.
-                if new_summary:
-                    a["summary"] = new_summary
-                if new_tags is not None:
-                    a["topic_tags"] = new_tags
+                a["summary"] = new_summary
+                a["topic_tags"] = new_tags
+
+            # Persist section verdict
+            try:
+                section_result = await apply_section_verdict(
+                    article_id=a["id"],
+                    notebook_id=a["notebook_id"],
+                    match_id=batch.get("match_existing_id"),
+                    proposal=batch.get("proposed_new_section"),
+                    confidence=float(batch.get("section_confidence") or 0.0),
+                )
+            except Exception as e:
+                logger.debug(f"[correspondent.summarize_articles] batch section apply failed: {e}")
         effective_summary = (new_summary or a.get("summary") or "").strip()
         current_title = (a.get("title") or "").strip()
         # Q1.h (2026-06-10) — always prefer the LLM summary as the title
@@ -533,23 +558,23 @@ async def _summarize_articles_background_unlocked(source_id: str) -> None:
         except Exception as e:
             logger.debug(f"[correspondent.summarize_articles] entity extraction failed (non-fatal): {e}")
 
-        # P14.D (2026-06-10) — per-article notebook section assignment.
-        # phi4-mini picks an existing section OR proposes a new one;
-        # auto-creates when confidence ≥ 0.85, else stores proposal text
-        # for later review. Runs synchronously (not fire-and-forget) so
-        # the article_ingested event below can carry the section_id.
-        section_result: Optional[Dict[str, Any]] = None
-        try:
-            from services.article_sectioner import assign_section
-            if (a.get("summary") or "").strip():
+        # P14.D section assignment is now handled inside the batch
+        # call at the top of this loop body (P14.BATCH, 2026-06-12) —
+        # `section_result` was already populated there. For the rare
+        # legacy path where the batch was skipped (summary + kind already
+        # present, but no section yet), fall back to the standalone
+        # sectioner call.
+        if section_result is None and (a.get("summary") or "").strip() and not a.get("section_id"):
+            try:
+                from services.article_sectioner import assign_section
                 section_result = await assign_section(
                     article_id=a["id"],
                     notebook_id=a["notebook_id"],
                     title=a.get("title") or "",
                     summary=a.get("summary") or "",
                 )
-        except Exception as e:
-            logger.debug(f"[correspondent.summarize_articles] section assign failed (non-fatal): {e}")
+            except Exception as e:
+                logger.debug(f"[correspondent.summarize_articles] fallback section assign failed: {e}")
 
         # P14.C (2026-06-10) — emit a per-article ingest event so the
         # curator brain / consensus detector / weekly journal see each

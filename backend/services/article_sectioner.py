@@ -122,29 +122,24 @@ async def classify_section(
                 "confidence": 0.0, "reason": "sectioner failed"}
 
 
-async def assign_section(
+async def apply_section_verdict(
     *,
     article_id: str,
     notebook_id: str,
-    title: str,
-    summary: str,
+    match_id: Optional[str],
+    proposal: Optional[str],
+    confidence: float,
 ) -> Optional[Dict[str, Any]]:
-    """End-to-end: classify, then either assign to existing section or
-    auto-create new section (≥ AUTO_CREATE_THRESHOLD confidence) or store
-    the proposal text for later review.
+    """P14.BATCH (2026-06-12) — extracted from `assign_section` so the
+    batch processor can apply a verdict without making its own LLM call.
 
-    Returns the section dict when assigned, or None when only proposal
-    was stored.
+    Three paths:
+      - existing match + confidence ≥ MIN_REASONABLE → assign + increment
+      - new proposal + confidence ≥ AUTO_CREATE_THRESHOLD → create + assign
+      - otherwise → store proposal text only, leave section_id NULL
     """
     from storage.article_section_store import article_section_store
     from storage.article_store import article_store
-
-    verdict = await classify_section(
-        notebook_id=notebook_id, title=title, summary=summary,
-    )
-    confidence = float(verdict.get("confidence") or 0.0)
-    match_id = verdict.get("match_existing_id")
-    proposal = verdict.get("proposed_new_section")
 
     # Path 1: existing-section match
     if match_id and confidence >= MIN_REASONABLE_CONFIDENCE:
@@ -172,3 +167,29 @@ async def assign_section(
             article_id, section_id=None, proposal=proposal, confidence=confidence,
         )
     return None
+
+
+async def assign_section(
+    *,
+    article_id: str,
+    notebook_id: str,
+    title: str,
+    summary: str,
+) -> Optional[Dict[str, Any]]:
+    """End-to-end: classify, then apply the verdict (assign / auto-create
+    / store proposal). Returns the section dict when assigned, or None
+    when only proposal was stored.
+
+    Kept for non-batch callers. The batch processor calls
+    `apply_section_verdict` directly with verdict from
+    `batch_analyze_article`."""
+    verdict = await classify_section(
+        notebook_id=notebook_id, title=title, summary=summary,
+    )
+    return await apply_section_verdict(
+        article_id=article_id,
+        notebook_id=notebook_id,
+        match_id=verdict.get("match_existing_id"),
+        proposal=verdict.get("proposed_new_section"),
+        confidence=float(verdict.get("confidence") or 0.0),
+    )
