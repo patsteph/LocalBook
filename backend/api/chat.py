@@ -3787,10 +3787,16 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                                     if not src_id:
                                         continue
                                     cnt = await article_store.count_by_source(src_id)
-                                    if cnt == 1:
-                                        targets.append((nb_id, src_id, s))
+                                    # P14.EXT (2026-06-11) — include sources
+                                    # with any current count. We still only
+                                    # replace when new extraction yields MORE
+                                    # articles (handled below per-source), so
+                                    # already-correctly-split sources stay put.
+                                    # cnt=0 sources also picked up (matches
+                                    # backfill behavior).
+                                    targets.append((nb_id, src_id, s, cnt))
                             _ARTICLE_PIPELINE_STATUS["sources_total"] = len(targets)
-                            for nb_id, src_id, source in targets:
+                            for nb_id, src_id, source, current_cnt in targets:
                                 text_body = source.get("content") or ""
                                 meta = source.get("metadata") or {}
                                 html_body = meta.get("content_html") if isinstance(meta, dict) else source.get("content_html")
@@ -3806,7 +3812,12 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                                 except Exception:
                                     _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
                                     continue
-                                if len(new_articles) < 2:
+                                # P14.EXT (2026-06-11) — replace when new
+                                # extraction yields MORE articles than the
+                                # existing count, OR when current count is 0
+                                # (backfill case). Leave alone if extraction
+                                # found ≤ current — no improvement.
+                                if len(new_articles) <= max(1, current_cnt):
                                     _ARTICLE_PIPELINE_STATUS["sources_processed"] += 1
                                     continue
                                 try:

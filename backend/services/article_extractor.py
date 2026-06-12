@@ -250,27 +250,55 @@ def _split_by_hr(html: str) -> List[str]:
 
 
 def _split_by_headers(html: str) -> List[str]:
-    """Heuristic 2 — split on H1/H2/H3 boundaries. Each header marks the
-    start of an article."""
+    """Heuristic 2 — split on H1/H2/H3 boundaries.
+
+    P14.EXT (2026-06-11) — rewritten to use marker-based splitting.
+    The previous sibling-walk approach failed for newsletters where
+    headers are nested inside per-article wrapper divs (TLDR-style:
+    `<div class="container"><div class="text-block"><h1>...`) because
+    H1s had no substantive siblings to collect.
+
+    The marker approach: insert a unique boundary string before each
+    target header, serialize the soup, split on the marker. Works for
+    both flat layouts (H1 as direct sibling of content) and nested
+    layouts (H1 wrapped inside per-article divs).
+
+    Priority: prefer H1 (most structural) when ≥2 exist; else H2; else
+    H3. Mixing levels (H1+H2+H3) tends to fragment articles by their
+    sub-sections instead of splitting at actual article boundaries.
+    """
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
-        headers = soup.find_all(["h1", "h2", "h3"])
-        if len(headers) < 2:
+
+        # Pick the most structural header level that has 2+ occurrences
+        for tag_name in ("h1", "h2", "h3"):
+            headers = soup.find_all(tag_name)
+            if len(headers) >= 2:
+                target_headers = headers
+                break
+        else:
             return []
 
-        segments: List[str] = []
-        for i, header in enumerate(headers):
-            # Collect the header + everything until the next header (or end).
-            collected: List[str] = [str(header)]
-            for sibling in header.find_next_siblings():
-                if sibling.name in ("h1", "h2", "h3"):
-                    break
-                collected.append(str(sibling))
-            segments.append("".join(collected))
+        # Insert a unique marker before each target header. We use a
+        # very long random-looking sentinel so it can never appear in
+        # newsletter content. Serialize the modified soup, then split.
+        MARKER = "LB_ARTICLE_BOUNDARY_8e3f2a9c"
+        for h in target_headers:
+            h.insert_before(soup.new_string(MARKER))
 
-        segments = [s for s in segments if len(_strip_html_tags(s)) >= _MIN_ARTICLE_CHARS]
-        return segments
+        full_str = str(soup)
+        parts = full_str.split(MARKER)
+        # First part is the preamble BEFORE the first header — usually
+        # newsletter chrome / banner / intro. Drop it. Articles start
+        # at the second part onward.
+        if len(parts) < 2:
+            return []
+        articles = parts[1:]
+
+        # Filter by min char length (after HTML tag strip)
+        articles = [a for a in articles if len(_strip_html_tags(a)) >= _MIN_ARTICLE_CHARS]
+        return articles
     except Exception as e:
         logger.debug(f"[article_extractor] header-split failed: {e}")
         return []
@@ -362,6 +390,16 @@ def extract_articles(
 
     if not html and not text:
         return []
+
+    # P14.EXT (2026-06-11) — when text body is empty but HTML is intact
+    # (common with Beehiiv + some other senders where mail-parser didn't
+    # decode plain text), derive text from HTML so text-based heuristics
+    # have something to work with.
+    if not text and html:
+        try:
+            text = _strip_html_tags(html)
+        except Exception:
+            pass
 
     # Try HTML heuristics in order
     segments: List[str] = []
