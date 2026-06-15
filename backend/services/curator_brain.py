@@ -684,7 +684,10 @@ class CuratorBrain:
         These are highest-confidence since the user explicitly linked them.
         """
         try:
-            from database import get_db
+            # 2026-06-15: was `from database import get_db` — wrong path,
+            # threw `No module named 'database'` every consolidation cycle
+            # and silently skipped wikilink detection.
+            from storage.database import get_db
             db = get_db()
             conn = db.get_connection()
             

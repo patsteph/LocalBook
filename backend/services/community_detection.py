@@ -12,12 +12,14 @@ The RAG engine does not yet route holistic queries through community summaries.
 """
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set
-import httpx
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -296,48 +298,40 @@ Format:
 NAME: [group name]
 SUMMARY: [2-3 sentence summary]"""
 
+        # Route through ollama_service so we get the shared client, model
+        # registry defaults, token tracking, and warmup mark — instead of
+        # an ephemeral httpx client per call (violated the centralization
+        # rule and contributed to the 2026-06-15 background-task overload).
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": settings.ollama_fast_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"num_predict": 150, "temperature": 0.3}
-                    }
-                )
-                
-                if response.status_code != 200:
-                    return ""
-                
-                result = response.json().get("response", "")
-                
-                # Parse name and summary
-                lines = result.strip().split('\n')
-                name = ""
-                summary = ""
-                
-                for line in lines:
-                    if line.startswith("NAME:"):
-                        name = line.replace("NAME:", "").strip()
-                    elif line.startswith("SUMMARY:"):
-                        summary = line.replace("SUMMARY:", "").strip()
-                
-                if name:
-                    community.name = name
-                if summary:
-                    community.summary = summary
-                
-                # Extract keywords
-                community.keywords = [e for e in community.entities[:5]]
-                
-                self._save_communities()
-                
-                return summary
-                
+            from services.ollama_service import ollama_service
+            result = await ollama_service.generate(
+                prompt=prompt,
+                model=settings.ollama_fast_model,
+                temperature=0.3,
+                num_predict=150,
+                timeout=60.0,
+            )
+            raw = (result or {}).get("response", "") or ""
+
+            # Parse name and summary
+            name = ""
+            summary = ""
+            for line in raw.strip().split('\n'):
+                if line.startswith("NAME:"):
+                    name = line.replace("NAME:", "").strip()
+                elif line.startswith("SUMMARY:"):
+                    summary = line.replace("SUMMARY:", "").strip()
+
+            if name:
+                community.name = name
+            if summary:
+                community.summary = summary
+
+            community.keywords = [e for e in community.entities[:5]]
+            self._save_communities()
+            return summary
         except Exception as e:
-            print(f"[CommunityDetector] Summary generation failed: {e}")
+            logger.warning(f"[CommunityDetector] Summary generation failed: {e}")
             return ""
     
     async def build_missing_summaries(
@@ -461,3 +455,46 @@ SUMMARY: [2-3 sentence summary]"""
 
 # Singleton instance
 community_detector = CommunityDetector()
+
+
+# ── Background scheduler with per-notebook dedup ──────────────────────────────
+# 2026-06-15: `build_missing_summaries` used to be spawned fire-and-forget
+# from rag_storage on every entity extraction. Each newsletter ingests 3–6
+# articles → 3–6 builders launched concurrently for the same notebook, no
+# dedup. Combined with phi4-mini taking 20–35s per call, this saturated the
+# Ollama queue and bogged down the event loop enough that /health stopped
+# responding, prompting the Tauri sidecar to SIGTERM the backend repeatedly.
+#
+# Now: if a builder is already in flight for a notebook, skip the spawn.
+# The currently-running builder will pick up any new missing summaries on
+# its next iteration when called again after it finishes.
+_inflight_builders: Dict[str, asyncio.Task] = {}
+
+
+def schedule_build_missing_summaries(notebook_id: str, entity_graph) -> Optional[asyncio.Task]:
+    """Spawn community-summary-builder for a notebook, deduping per-notebook.
+
+    Returns the existing in-flight task if one is already running for this
+    notebook (no new task created), or the newly-created task otherwise.
+    """
+    from utils.tasks import safe_create_task
+
+    existing = _inflight_builders.get(notebook_id)
+    if existing and not existing.done():
+        return existing
+
+    task = safe_create_task(
+        community_detector.build_missing_summaries(notebook_id, entity_graph),
+        name="community-summary-builder",
+    )
+    _inflight_builders[notebook_id] = task
+
+    def _cleanup(_t: asyncio.Task, nb_id: str = notebook_id):
+        # Only clear if the slot still points at the task that finished;
+        # a faster-finishing duplicate spawn (shouldn't happen, but cheap
+        # to guard) wouldn't be cleared inappropriately.
+        if _inflight_builders.get(nb_id) is _t:
+            _inflight_builders.pop(nb_id, None)
+
+    task.add_done_callback(_cleanup)
+    return task

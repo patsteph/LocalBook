@@ -266,14 +266,17 @@ async def ingest_document(
                         print(f"[RAG] Extracted {len(relationships)} relationships from {filename}")
                         
                         # GraphRAG Phase 2: Detect communities and build missing summaries
+                        # 2026-06-15: dedup-aware scheduler — one builder per
+                        # notebook at a time. Prior fire-and-forget pattern
+                        # caused N concurrent builders per newsletter batch
+                        # and saturated the Ollama queue.
                         try:
-                            from services.community_detection import community_detector
-                            await community_detector.detect_communities(notebook_id, entity_graph)
-                            # Run summary building as a separate nested task to not block
-                            safe_create_task(
-                                community_detector.build_missing_summaries(notebook_id, entity_graph),
-                                name="community-summary-builder"
+                            from services.community_detection import (
+                                community_detector,
+                                schedule_build_missing_summaries,
                             )
+                            await community_detector.detect_communities(notebook_id, entity_graph)
+                            schedule_build_missing_summaries(notebook_id, entity_graph)
                         except Exception as comm_err:
                             print(f"[RAG] Community detection failed: {comm_err}")
         except Exception as e:

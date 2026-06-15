@@ -206,11 +206,14 @@ class MemoryManager:
                     f"Is there a new, non-obvious connection worth noting? "
                     f"If YES, describe in one sentence. If NO, say NONE."
                 )
+                # 2026-06-15: was timeout=15.0 — phi4-mini consistently
+                # takes 20–35s when warm, so the call was being cancelled
+                # before producing any reflection every consolidation cycle.
                 response = await ollama_client.generate(
                     prompt=prompt,
                     model=settings.ollama_fast_model,
                     temperature=0.3,
-                    timeout=15.0,
+                    timeout=60.0,
                     num_predict=80,
                 )
                 text = response.get("response", "").strip()
