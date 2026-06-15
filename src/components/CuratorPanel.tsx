@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Lightbulb } from 'lucide-react';
 import { MarkdownArtifactRenderer } from './artifact/renderers/MarkdownArtifactRenderer';
 import { curatorService, type BrainStatus, type AnticipatoryDraftStatus, type VoiceScoreboard, type StudioScoreboard, type SourceReputationRow } from '../services/curatorApi';
 import { useEngagement } from '../hooks/useEngagement';
@@ -6,6 +7,27 @@ import { MentalModelPanel } from './curator/MentalModelPanel';
 import { FeedbackThumbs } from './shared/FeedbackThumbs';
 import { useReadTime } from '../hooks/useReadTime';
 import { ArtifactRender } from './artifact/RendererRegistry';
+
+// Per-notebook open/closed state for the mental-model panel, persisted to
+// sessionStorage so navigating between notebooks doesn't snap it shut.
+// 2026-06-15: panel toggle moved from inside the panel into the banner
+// lightbulb so the panel is hidden by default until the user asks for it.
+const MM_OPEN_KEY = 'lb_curator_mm_open_v1';
+const loadMMOpen = (): Record<string, boolean> => {
+  try {
+    const raw = sessionStorage.getItem(MM_OPEN_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+};
+const saveMMOpen = (state: Record<string, boolean>) => {
+  try {
+    sessionStorage.setItem(MM_OPEN_KEY, JSON.stringify(state));
+  } catch {
+    // sessionStorage full or unavailable — silently drop
+  }
+};
 
 interface CuratorConfig {
   name: string;
@@ -121,6 +143,35 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
   const [voiceScoreboard, setVoiceScoreboard] = useState<VoiceScoreboard | null>(null);
   const [studioScoreboard, setStudioScoreboard] = useState<StudioScoreboard | null>(null);
   const [sourceReputation, setSourceReputation] = useState<SourceReputationRow[]>([]);
+
+  // 2026-06-15: mental-model panel is hidden by default. Banner lightbulb
+  // controls open/close per-notebook; confidence feeds back from the panel
+  // to drive the lightbulb tint (emerald=strong, amber=weak, gray=neutral).
+  const [mmOpenMap, setMmOpenMap] = useState<Record<string, boolean>>(() => loadMMOpen());
+  const mentalModelOpen = notebookId ? !!mmOpenMap[notebookId] : false;
+  const [mmConfidence, setMmConfidence] = useState<number | null>(null);
+  const [mmHasModel, setMmHasModel] = useState(false);
+  // Reset the lightbulb tint when the notebook changes; the panel will
+  // refetch and report back.
+  useEffect(() => {
+    setMmConfidence(null);
+    setMmHasModel(false);
+  }, [notebookId]);
+  const handleMmConfidenceChange = useCallback(
+    (confidence: number | null, hasModel: boolean) => {
+      setMmConfidence(confidence);
+      setMmHasModel(hasModel);
+    },
+    []
+  );
+  const toggleMentalModel = useCallback(() => {
+    if (!notebookId) return;
+    setMmOpenMap((prev) => {
+      const next = { ...prev, [notebookId]: !prev[notebookId] };
+      saveMMOpen(next);
+      return next;
+    });
+  }, [notebookId]);
 
   // Fix #4 (2026-05-23): brief read-time tracker. Attaches to the first
   // brief message in the rendered list; fires `brief / read_time` with
@@ -513,9 +564,52 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
             </button>
           </div>
         </div>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-10">
-          {config?.personality || 'Your research advisor with cross-notebook awareness'}
-        </p>
+        <div className="flex items-end justify-between gap-2 mt-1">
+          <p className="text-xs text-gray-500 dark:text-gray-400 ml-10 min-w-0 flex-1">
+            {config?.personality || 'Your research advisor with cross-notebook awareness'}
+          </p>
+          {/* 2026-06-15: lightbulb opens the "what I think you're doing"
+              panel. Tint reflects curator confidence so users get an
+              ambient cue without having to unfurl. */}
+          {notebookId && (() => {
+            const tier: 'strong' | 'medium' | 'weak' | 'none' = !mmHasModel || mmConfidence === null
+              ? 'none'
+              : mmConfidence >= 0.85
+                ? 'strong'
+                : mmConfidence >= 0.5
+                  ? 'medium'
+                  : 'weak';
+            const tint =
+              tier === 'strong'
+                ? 'text-emerald-500 dark:text-emerald-400'
+                : tier === 'weak'
+                  ? 'text-amber-500 dark:text-amber-400'
+                  : 'text-gray-400 dark:text-gray-500';
+            const title = !mmHasModel
+              ? "What I think you're doing — no read yet"
+              : tier === 'strong'
+                ? `What I think you're doing — high confidence (${Math.round((mmConfidence ?? 0) * 100)}%)`
+                : tier === 'weak'
+                  ? `What I think you're doing — tentative, correct me (${Math.round((mmConfidence ?? 0) * 100)}%)`
+                  : `What I think you're doing — medium confidence (${Math.round((mmConfidence ?? 0) * 100)}%)`;
+            return (
+              <button
+                type="button"
+                onClick={toggleMentalModel}
+                aria-expanded={mentalModelOpen}
+                aria-label={title}
+                title={title}
+                className={`flex-shrink-0 p-1 rounded transition-colors cursor-pointer ${
+                  mentalModelOpen
+                    ? 'bg-indigo-200/70 dark:bg-indigo-800/60 ring-1 ring-indigo-300 dark:ring-indigo-600'
+                    : 'hover:bg-indigo-100 dark:hover:bg-indigo-900/40'
+                }`}
+              >
+                <Lightbulb className={`w-4 h-4 ${tint}`} />
+              </button>
+            );
+          })()}
+        </div>
       </div>
 
       {/* Fix #2/#4 (2026-05-23): collapsible curator settings + brain status. */}
@@ -684,10 +778,16 @@ export const CuratorPanel: React.FC<CuratorPanelProps> = ({ notebookId, morningB
         </div>
       )}
 
-      {/* Mental model — Curator Phase 3a (only shown when a notebook is selected) */}
+      {/* Mental model — Curator Phase 3a. 2026-06-15: panel always mounts
+          when a notebook is selected so it can fetch the current confidence
+          for the banner lightbulb tint. Body only renders when isOpen. */}
       {notebookId && (
         <div className="flex-shrink-0 px-4">
-          <MentalModelPanel notebookId={notebookId} />
+          <MentalModelPanel
+            notebookId={notebookId}
+            isOpen={mentalModelOpen}
+            onConfidenceChange={handleMmConfidenceChange}
+          />
         </div>
       )}
 

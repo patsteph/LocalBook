@@ -6,14 +6,13 @@
  * User can edit individual values + pin fields to lock them against
  * future auto-inference.
  *
- * Empty state (no model yet) explains the curator will form one after
- * a few sources. Refresh button forces re-inference (bypasses 30s
- * debounce). Save-on-blur for inline edits.
+ * 2026-06-15: open/close is now controlled by the parent (lightbulb in
+ * CuratorPanel banner). Panel still mounts when closed so it can fetch
+ * once and report confidence back via onConfidenceChange (drives the
+ * lightbulb tint). Polling only runs while open.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ChevronDown,
-  ChevronRight,
   Pin,
   PinOff,
   RefreshCw,
@@ -40,6 +39,8 @@ interface MentalModel {
 
 interface MentalModelPanelProps {
   notebookId: string | null;
+  isOpen: boolean;
+  onConfidenceChange?: (confidence: number | null, hasModel: boolean) => void;
 }
 
 interface StanceCounts {
@@ -230,13 +231,12 @@ const FIELD_PLACEHOLDER: Record<EditableField, string> = {
   recent_focus: 'What you\'ve been zooming in on',
 };
 
-export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
+export function MentalModelPanel({ notebookId, isOpen, onConfidenceChange }: MentalModelPanelProps) {
   const [model, setModel] = useState<MentalModel | null>(null);
   const [stances, setStances] = useState<StancePayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [rescoring, setRescoring] = useState(false);
-  const [expanded, setExpanded] = useState(true);
   const [editingField, setEditingField] = useState<EditableField | null>(null);
   const [draftValue, setDraftValue] = useState('');
 
@@ -284,17 +284,24 @@ export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
     void fetchModel();
   }, [fetchModel]);
 
-  // Poll while visible so that inference fired in the background
+  // Poll while open so that inference fired in the background
   // (event-bus triggered after a source-add) gets reflected without a
   // manual reload. 10s interval is cheap (~one GET) and matches the
   // ~5-15s typical inference latency with phi4-mini.
   useEffect(() => {
-    if (!notebookId || !expanded) return;
+    if (!notebookId || !isOpen) return;
     const id = window.setInterval(() => {
       void fetchModel();
     }, 10000);
     return () => window.clearInterval(id);
-  }, [notebookId, expanded, fetchModel]);
+  }, [notebookId, isOpen, fetchModel]);
+
+  // Bubble confidence + has-model up to the banner lightbulb so it can tint.
+  useEffect(() => {
+    if (!onConfidenceChange) return;
+    const hasModelLocal = !!model && (model.exists !== false || !!model.last_inferred_at);
+    onConfidenceChange(hasModelLocal ? (model?.confidence ?? null) : null, hasModelLocal);
+  }, [model, onConfidenceChange]);
 
   const handleRefresh = async () => {
     if (!notebookId || refreshing) return;
@@ -368,7 +375,7 @@ export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
     }
   };
 
-  if (!notebookId) return null;
+  if (!notebookId || !isOpen) return null;
 
   const hasModel = !!model && (model.exists !== false || !!model.last_inferred_at);
   const fieldOrder: EditableField[] = ['thesis', 'stage', 'goals', 'audience', 'recent_focus', 'blocked_on'];
@@ -407,26 +414,9 @@ export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
 
   return (
     <div className={`my-3 rounded-md border ${tierBorderClass} ${tierBgClass} overflow-hidden`}>
-      {/* Header */}
-      <div
-        role="button"
-        tabIndex={0}
-        aria-expanded={expanded}
-        onClick={() => setExpanded((v) => !v)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            setExpanded((v) => !v);
-          }
-        }}
-        className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700/40 transition-colors cursor-pointer select-none"
-      >
+      {/* Static header (no chevron — open/close is owned by the banner lightbulb) */}
+      <div className="w-full flex items-center justify-between px-3 py-2 select-none">
         <div className="flex items-center gap-2 min-w-0">
-          {expanded ? (
-            <ChevronDown className="h-3.5 w-3.5 text-gray-500 dark:text-gray-400" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 text-gray-500 dark:text-gray-400" />
-          )}
           <Lightbulb className="h-3.5 w-3.5 text-amber-500 dark:text-amber-400" />
           <span className="text-xs font-medium text-gray-800 dark:text-gray-200">
             What I think you're doing
@@ -449,10 +439,7 @@ export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
         {hasModel && (
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              void handleRefresh();
-            }}
+            onClick={() => void handleRefresh()}
             disabled={refreshing}
             className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             aria-label="Refresh inference"
@@ -468,8 +455,7 @@ export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
       </div>
 
       {/* Body */}
-      {expanded && (
-        <div className="px-3 pb-3 pt-1 border-t border-gray-200 dark:border-gray-700/50">
+      <div className="px-3 pb-3 pt-1 border-t border-gray-200 dark:border-gray-700/50">
           {loading && !model ? (
             <div className="py-3 text-[11px] text-gray-500 dark:text-gray-400 italic">
               <Loader2 className="inline h-3 w-3 mr-1.5 animate-spin" />
@@ -594,7 +580,6 @@ export function MentalModelPanel({ notebookId }: MentalModelPanelProps) {
             </div>
           )}
         </div>
-      )}
     </div>
   );
 }
