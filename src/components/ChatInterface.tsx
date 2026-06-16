@@ -148,12 +148,25 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   // which is exactly the lifetime the user expects: "until I quit
   // LocalBook."
   const CHAT_CACHE_KEY = "lb_chat_cache_v1";
+  // 2026-06-16: revive Date on load. JSON.stringify writes Date as ISO
+  // string; JSON.parse leaves it as string, so msg.timestamp.getTime()
+  // at the timeline call site below crashed "Workspace" via the error
+  // boundary on notebook switch.
+  const reviveMessage = (m: any): ChatMessage => ({
+    ...m,
+    timestamp: m?.timestamp instanceof Date
+      ? m.timestamp
+      : (m?.timestamp ? new Date(m.timestamp) : new Date()),
+  });
   const loadChatCache = (): Map<string, ChatMessage[]> => {
     try {
       const raw = sessionStorage.getItem(CHAT_CACHE_KEY);
       if (!raw) return new Map();
-      const obj = JSON.parse(raw) as Record<string, ChatMessage[]>;
-      return new Map(Object.entries(obj));
+      const obj = JSON.parse(raw) as Record<string, any[]>;
+      const revived: [string, ChatMessage[]][] = Object.entries(obj).map(
+        ([nbId, msgs]) => [nbId, (msgs || []).map(reviveMessage)],
+      );
+      return new Map(revived);
     } catch {
       return new Map();
     }
