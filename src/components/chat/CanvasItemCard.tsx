@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import DOMPurify from 'dompurify';
 import {
   FileText, Palette, Target, Layers, Mic, MessageSquare, PenLine,
@@ -298,6 +299,65 @@ const ExportMenu: React.FC<{ item: CanvasItem }> = ({ item }) => {
   );
 };
 
+// ─── InteractiveQuizModal ─────────────────────────────────────────────────────
+// 2026-06-16: interactive HTML quizzes need real width to be usable. The
+// chat column is too narrow — questions wrap heavily, options scroll,
+// the Check button + feedback land off-screen. Quiz items now render as
+// a compact tile in chat and open a centered modal portal when expanded.
+const InteractiveQuizModal: React.FC<{
+  title: string;
+  html: string;
+  onClose: () => void;
+}> = ({ title, html, onClose }) => {
+  // Esc-to-close. Backdrop click also closes via the outer div onClick.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return createPortal(
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden"
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <Target className="w-4 h-4 text-amber-500 flex-shrink-0" />
+            <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{title}</h2>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors flex-shrink-0"
+            title="Close (Esc)"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto bg-white dark:bg-gray-900">
+          <ArtifactRender
+            artifact={{
+              id: 'quiz-modal',
+              type: 'interactive-html',
+              payload: html,
+              title,
+            }}
+            context="canvas-full"
+          />
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+};
+
 export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
   const ctx = useCanvas();
   const [visualThumbsDown, setVisualThumbsDown] = useState(false);
@@ -321,6 +381,11 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
     ctx.toggleCanvasItemCollapse(item.id);
   };
 
+  // 2026-06-16: interactive HTML quizzes render in a portal modal instead
+  // of inline. Chat-column width was too narrow for the quiz UI to function.
+  const isInteractiveQuiz =
+    item.type === 'quiz' && !!item.metadata?.interactive_html;
+
   // Compute word count for tombstone subtitle
   const wordCount = item.content ? item.content.trim().split(/\s+/).filter(Boolean).length : 0;
   const isGenerating = item.status === 'generating';
@@ -341,8 +406,11 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
     : '';
 
   // ─── COLLAPSED: Tombstone mode ────────────────────────────────────────
-  if (item.collapsed && item.type !== 'note') {
+  // 2026-06-16: interactive quizzes ALWAYS render as a tombstone in chat
+  // and overlay a modal when "expanded" — so the quiz UI gets real width.
+  if ((item.collapsed || isInteractiveQuiz) && item.type !== 'note') {
     return (
+      <>
       <div
         onClick={handleToggle}
         className={`mx-1 my-2 rounded-xl border border-l-[3px] ${TYPE_ACCENTS[item.type]} border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm cursor-pointer hover:shadow-md hover:bg-gray-50 dark:hover:bg-gray-750 transition-all group`}
@@ -391,6 +459,14 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
           </div>
         </div>
       </div>
+      {isInteractiveQuiz && !item.collapsed && (
+        <InteractiveQuizModal
+          title={item.title || 'Quiz'}
+          html={item.metadata!.interactive_html as string}
+          onClose={handleToggle}
+        />
+      )}
+      </>
     );
   }
 

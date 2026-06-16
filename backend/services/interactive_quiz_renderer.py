@@ -133,20 +133,31 @@ _BRIDGE_JS = r"""
       postResult({score: correct, total: total, answers: answers});
     }
   }
+  function revealFeedback(card) {
+    var feedback = card.querySelector('.lb-feedback');
+    if (!feedback) return;
+    feedback.hidden = false;
+    // 2026-06-16: scroll the feedback into view so the user sees the
+    // result immediately even when the surrounding tile is short.
+    // Without this, the feedback expands below the visible area and
+    // looks like the Check button did nothing.
+    try {
+      feedback.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+    } catch (_) {}
+  }
   function handleCheck(card) {
     var picked = card.querySelector('input[type="radio"]:checked');
-    var feedback = card.querySelector('.lb-feedback');
     var line = card.querySelector('.lb-result-line');
     if (!picked) {
       if (line) line.textContent = 'Pick one first.';
-      if (feedback) feedback.hidden = false;
+      revealFeedback(card);
       postResize();
       return;
     }
     var correct = picked.getAttribute('data-correct') === 'true';
     card.setAttribute('data-state', correct ? 'correct' : 'wrong');
     if (line) line.textContent = correct ? 'Correct.' : 'Not quite.';
-    if (feedback) feedback.hidden = false;
+    revealFeedback(card);
     // Highlight options.
     Array.prototype.forEach.call(card.querySelectorAll('label.lb-opt'), function(lab) {
       var input = lab.querySelector('input');
@@ -157,9 +168,8 @@ _BRIDGE_JS = r"""
     postResize();
   }
   function handleReveal(card) {
-    var feedback = card.querySelector('.lb-feedback');
-    if (feedback) feedback.hidden = false;
     card.setAttribute('data-state', 'revealed');
+    revealFeedback(card);
     updateProgress();
     postResize();
   }
@@ -228,9 +238,21 @@ def _styles() -> str:
       border-radius: 6px; cursor: pointer;
     }
     .lb-btn:hover { background: #1d4ed8; }
-    .lb-feedback { margin: 10px 0 0 32px; font-size: 13px; }
-    .lb-result-line { margin: 0; font-weight: 500; }
+    .lb-feedback {
+      margin: 12px 0 0 0; padding: 10px 12px; font-size: 13px;
+      border-radius: 6px; background: rgba(0,0,0,0.03);
+      border-left: 3px solid #9ca3af;
+    }
+    .lb-q[data-state="correct"] .lb-feedback { border-left-color: #16a34a; background: #ecfdf5; }
+    .lb-q[data-state="wrong"]   .lb-feedback { border-left-color: #dc2626; background: #fef2f2; }
+    .lb-q[data-state="revealed"].lb-feedback,
+    .lb-q[data-state="revealed"] .lb-feedback { border-left-color: #2563eb; background: #eff6ff; }
+    .lb-result-line { margin: 0; font-weight: 600; font-size: 14px; }
     .lb-explanation { margin: 6px 0 0 0; color: #4b5563; }
+    @media (max-width: 480px) {
+      .lb-opts, .lb-applied { margin-left: 0; }
+      .lb-q { padding: 12px; }
+    }
     """
 
 
