@@ -2,10 +2,12 @@
 
 All notable changes to LocalBook will be documented in this file.
 
-## Unreleased — v2.0.0 work-in-progress (Information Cortex)
+## v2.0.0 — Information Cortex: Universal Canvas, Correspondent, Synthesis Layer
 
-Tag gated on Phase 14 (article depth) per 2026-06-10 plan. Everything below
-is code-complete and user-verified unless explicitly noted as "awaiting test".
+LocalBook's largest release: an Information Cortex that turns documents and
+forwarded email into a synthesizing knowledge system — one artifact/renderer
+spec (Universal Canvas), an email cortex (Correspondent), and a cross-source
+synthesis layer. Highlights below.
 
 ### Highlights
 - **Universal Canvas** — single artifact spec + renderer registry routes markdown / strict HTML / interactive HTML (iframe sandbox) / SVG / Mermaid / Klein / `json:<kind>` through one dispatch. Mixed-medium documents interleave prose + Recharts + SVG via gemma4 `VISUAL_INTERLEAVE` injection + post-processor.
@@ -13,6 +15,11 @@ is code-complete and user-verified unless explicitly noted as "awaiting test".
 - **Synthesis layer** — Curator HTML morning brief with consensus detection + deep-read auto-trigger, interactive HTML artifacts (iframe `sandbox="allow-scripts"` + postMessage), cross-source perspectives view (consensus vs contested), per-notebook dashboards, entity-anchored topic deep-dives, source-graph entity proposals, weekly auto-journal via SMTP.
 - **Correspondent Tier 2 (all 10 capabilities)** — per-article extraction + summary + RAG indexing, hot/cold clusters via embedding agglomeration, deep-read with newsletter context, cross-notebook entity tagging at ingest, per-newsletter scorecard, RFC 2369 List-Unsubscribe one-click POST with two-step confirmation, frequency tuner, smart digest grouping, effectiveness dashboard, routing histogram with auto/manual/queued series.
 - **Gemma4 flip** — `ollama_model` default switched from `olmo-3:7b-instruct` to `gemma4:e4b`. Native vision absorbs the vision slot on 16 GB Macs.
+
+---
+
+<!-- Everything above this rule feeds the README "What's New" (synced by
+     release.sh). The detailed per-phase breakdown below is CHANGELOG-only. -->
 
 ### Phase 14 — Article Depth (2026-06-10)
 
