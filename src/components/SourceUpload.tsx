@@ -51,7 +51,7 @@ const STAGE_COPY: Record<string, { label: string; blurb: string }> = {
   analyzing:        { label: 'Analyzing',        blurb: 'Finding the content date and other metadata.' },
   creating_record:  { label: 'Creating record',  blurb: 'Writing the source row into SQLite so it appears in the sidebar.' },
   chunking:         { label: 'Chunking',         blurb: 'Splitting text into semantic chunks sized for retrieval (source-type aware).' },
-  summarizing:      { label: 'Summarizing',      blurb: 'Local LLM (olmo-3) generates a compact summary used as a quick-retrieval chunk.' },
+  summarizing:      { label: 'Summarizing',      blurb: 'The local LLM generates a compact summary used as a quick-retrieval chunk.' },
   hyde_questions:   { label: 'HyDE questions',   blurb: 'Generating synthetic questions each chunk answers — boosts recall at query time.' },
   embedding:        { label: 'Embedding',        blurb: 'Computing 1024-dim vectors (snowflake-arctic-embed2 via Ollama) for every chunk + summary.' },
   indexing:         { label: 'Indexing',         blurb: 'Writing vectors and metadata into the notebook\'s LanceDB table.' },

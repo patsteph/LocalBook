@@ -175,3 +175,6 @@ graphify-out/
 # at build time. P0.1d (2026-05-15).
 extension/.key.pem
 
+# Build/coverage profiling artifacts (regenerable; never commit)
+*.profraw
+
