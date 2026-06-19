@@ -210,7 +210,7 @@ async def _warm_vision_model(model_name: str) -> PreflightCheck:
         return PreflightCheck(name=check_name, status="warn", message="No vision model configured")
     try:
         import asyncio as _asyncio
-        from services.ollama_client import ollama_client
+        from services.ollama_service import ollama_service
         from evaluator.model_registry import model_registry as _registry
         # 1×1 white PNG via PIL — already a project dep.
         try:
@@ -229,7 +229,7 @@ async def _warm_vision_model(model_name: str) -> PreflightCheck:
         api_style = info.vision_api_style if info else "generate"
         t0 = _time.time()
         resp = await _asyncio.wait_for(
-            ollama_client.vision_describe(
+            ollama_service.vision_describe(
                 image_b64=tiny_png,
                 prompt="ok",
                 model=model_name,

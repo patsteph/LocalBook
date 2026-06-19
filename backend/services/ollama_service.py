@@ -28,6 +28,7 @@ Migration guide:
 import asyncio
 import json
 import logging
+import os
 import time
 import traceback
 from typing import Any, AsyncGenerator, Dict, List, Optional
@@ -108,6 +109,44 @@ def _get_model_options(model_name: str) -> dict:
     return {}
 
 
+# ── PB-2a: rag_profile overlay (ported from ollama_client) ───────────────────
+# Applies the active model's rag_profile (num_ctx_cap + stop_sequences into the
+# options dict; `think` returned for the payload) so Gemma-family callers get
+# their tuned context cap / thinking suppression / stop sequences without each
+# call site managing it. No-op for models without a profile (olmo/phi/llama),
+# for vision calls (images), and when the caller opts out (respect=False).
+#
+# FEATURE FLAG (A/B during PB-2a, droppable after PB-2c): default OFF so this is
+# a pure no-op port — existing ollama_service callers stay byte-identical to
+# before. Set LOCALBOOK_OLLAMA_RAG_PROFILE=1 to enable and A/B against the old
+# path. Once the enabled path is validated, flip the default to ON, migrate the
+# ollama_client callers (PB-2c), then drop the flag. Audit ref: 10_plan PB-2a.
+_RAG_PROFILE_ENABLED = os.getenv("LOCALBOOK_OLLAMA_RAG_PROFILE", "0") == "1"
+
+
+def _apply_rag_profile(
+    model: str, options: dict, respect: bool, images: Optional[list]
+) -> Optional[bool]:
+    """Apply the model's rag_profile to `options` in place; return the `think`
+    override (or None). See the block comment above for semantics + the flag."""
+    if images or not (respect and _RAG_PROFILE_ENABLED):
+        return None
+    try:
+        from evaluator.model_registry import model_registry
+        info = model_registry.get_model(model)
+        rp = dict(getattr(info, "rag_profile", None) or {}) if info else {}
+    except Exception as _e:
+        logger.debug(f"[ollama-service] rag_profile lookup failed: {_e}")
+        return None
+    cap = rp.get("num_ctx_cap")
+    if cap and "num_ctx" in options:
+        options["num_ctx"] = min(options["num_ctx"], cap)
+    stops = rp.get("stop_sequences")
+    if stops and "stop" not in options:
+        options["stop"] = list(stops)
+    return rp.get("think")
+
+
 def _record_tokens(data: dict):
     """Extract and record token usage from an Ollama response/final chunk."""
     try:
@@ -181,6 +220,7 @@ class OllamaService:
         images: Optional[List[str]] = None,
         keep_alive: Optional[Any] = None,
         voice_modifier: bool = True,
+        respect_rag_profile: bool = True,
     ) -> Dict[str, Any]:
         """Non-streaming generate call to Ollama /api/generate.
 
@@ -215,6 +255,9 @@ class OllamaService:
         if extra_options:
             options.update(extra_options)
 
+        # PB-2a: rag_profile overlay (num_ctx cap / stop sequences / think).
+        _profile_think = _apply_rag_profile(use_model, options, respect_rag_profile, images)
+
         # Voice modifier: inject family-specific tone instruction unless
         # the caller is producing structured output (JSON, vision OCR).
         if voice_modifier and not format and not images and system:
@@ -234,6 +277,8 @@ class OllamaService:
             payload["format"] = format
         if images:
             payload["images"] = images
+        if _profile_think is not None:
+            payload["think"] = _profile_think
 
         client = self._get_client()
         read_timeout = timeout or 600.0
@@ -304,6 +349,7 @@ class OllamaService:
         images: Optional[List[str]] = None,
         keep_alive: Optional[Any] = None,
         voice_modifier: bool = True,
+        respect_rag_profile: bool = True,
     ) -> Dict[str, Any]:
         """Non-streaming chat call to Ollama /api/chat.
 
@@ -330,6 +376,9 @@ class OllamaService:
         if extra_options:
             options.update(extra_options)
 
+        # PB-2a: rag_profile overlay (num_ctx cap / stop sequences / think).
+        _profile_think = _apply_rag_profile(use_model, options, respect_rag_profile, images)
+
         # Voice modifier: prepend tone instruction to the FIRST system
         # message. Skips for vision calls (images present) where the model
         # is doing OCR / scene description, not prose generation.
@@ -355,6 +404,8 @@ class OllamaService:
             "keep_alive": keep_alive if keep_alive is not None else _keep_alive_for(use_model),
             "options": options,
         }
+        if _profile_think is not None:
+            payload["think"] = _profile_think
 
         client = self._get_client()
         read_timeout = timeout or 600.0
@@ -405,6 +456,74 @@ class OllamaService:
         finally:
             if sem is not None:
                 sem.release()
+
+    # ── Vision (dispatches to generate/chat) ──────────────────────────
+
+    async def vision_describe(
+        self,
+        image_b64: str,
+        prompt: str,
+        model: Optional[str] = None,
+        api_style: str = "generate",
+        timeout: float = 90.0,
+        num_predict: Optional[int] = None,
+        num_ctx: Optional[int] = None,
+        temperature: Optional[float] = None,
+    ) -> str:
+        """Universal vision dispatcher — routes to /api/generate or /api/chat
+        per the model's required api_style. Ported from ollama_client (PB-2b);
+        signature mirrored exactly so PB-2c migration is a pure rename.
+
+        Param resolution per arg: explicit > vision_profile > global default
+        (num_predict=1500, num_ctx=8192, temperature=0.3). num_ctx is passed
+        through extra_options since generate/chat don't take it directly. Vision
+        calls skip the rag_profile overlay (images present) and the voice
+        modifier automatically. Audit ref: 10_plan_of_attack PB-2b.
+        """
+        model = model or settings.vision_model
+
+        profile: Dict[str, Any] = {}
+        try:
+            from evaluator.model_registry import model_registry
+            info = model_registry.get_model(model)
+            if info and getattr(info, "vision_profile", None):
+                profile = dict(info.vision_profile)
+        except Exception as _e:
+            logger.debug(f"[vision] profile lookup failed: {_e}")
+
+        final_num_predict = num_predict if num_predict is not None else profile.get("num_predict", 1500)
+        final_num_ctx = num_ctx if num_ctx is not None else profile.get("num_ctx", 8192)
+        final_temp = temperature if temperature is not None else profile.get("temperature", 0.3)
+
+        try:
+            if api_style == "chat":
+                # Gemma 4 / Llama 3.2 — images go inside chat messages.
+                result = await self.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=model,
+                    temperature=final_temp,
+                    timeout=timeout,
+                    extra_options={"num_predict": final_num_predict, "num_ctx": final_num_ctx},
+                    images=[image_b64],
+                    voice_modifier=False,
+                )
+                return (result.get("message") or {}).get("content", "")
+            else:
+                # Granite / LLaVA — images are top-level in /api/generate.
+                result = await self.generate(
+                    prompt=prompt,
+                    model=model,
+                    temperature=final_temp,
+                    timeout=timeout,
+                    num_predict=final_num_predict,
+                    extra_options={"num_ctx": final_num_ctx},
+                    images=[image_b64],
+                    voice_modifier=False,
+                )
+                return result.get("response", "")
+        except Exception as e:
+            logger.error(f"[OllamaService] vision_describe FAILED model={model}: {e}")
+            return f"Error: {str(e)}"
 
     # ── Embeddings (/api/embed) ───────────────────────────────────────
 

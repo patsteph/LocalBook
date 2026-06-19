@@ -235,9 +235,9 @@ Focus on information that would be useful for answering questions about this doc
         try:
             # Use the universal vision dispatcher — handles both /api/generate
             # (Granite/LLaVA) and /api/chat (Gemma4/Llama3.2) automatically
-            from services.ollama_client import ollama_client
+            from services.ollama_service import ollama_service
             api_style = self._get_vision_api_style()
-            description = await ollama_client.vision_describe(
+            description = await ollama_service.vision_describe(
                 image_b64=image_b64,
                 prompt=prompt,
                 model=self.vision_model,
@@ -332,7 +332,7 @@ Focus on information that would be useful for answering questions about this doc
                 f"{int(dpi_scale * 72)} DPI for vision extraction"
             )
 
-            from services.ollama_client import ollama_client
+            from services.ollama_service import ollama_service
             api_style = self._get_vision_api_style()
 
             for page_idx in range(total_pages):
@@ -347,7 +347,7 @@ Focus on information that would be useful for answering questions about this doc
                     del pixmap
 
                     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-                    description = await ollama_client.vision_describe(
+                    description = await ollama_service.vision_describe(
                         image_b64=image_b64,
                         prompt=PAGE_TEXT_EXTRACT_PROMPT,
                         model=self.vision_model,
