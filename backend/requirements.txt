@@ -824,6 +824,7 @@ simplejson==3.19.3
 six==1.17.0
     # via
     #   ebooklib
+    #   mail-parser
     #   python-dateutil
 smart-open==7.5.1
     # via weasel

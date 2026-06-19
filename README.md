@@ -2,7 +2,7 @@
 
 **Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
-[![Version](https://img.shields.io/badge/version-1.8.0-blue.svg)](https://github.com/patsteph/LocalBook/releases)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
 [![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -25,18 +25,40 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v1.6.1
-### Chat Agents
-- **Multi-Intent Messages** — `@collector`, `@curator`, `@research`, and `@studio` can now handle compound requests in a single message (e.g. "add this URL and set my focus to X"); the classifier decomposes the message and each action runs in sequence
-- **Smarter Compound Routing** — Messages like "scrape this video, add the channel, collect daily" now correctly subscribe to the channel, schedule daily collection, and ingest the video in one turn
-- **Schedule Keyword Fallback** — "daily", "hourly", and "weekly" in a message are honored even when the LLM classifier doesn't extract them into params
-### Sources
-- **Consistent YouTube / arXiv Labels** — YouTube videos and arXiv papers now display as `▶️ YOUTUBE` / `ARXIV` regardless of how they were added (chat, browser extension capture, feed-page article, or agent tool); previously some paths mislabeled them as generic `WEB`
-- **Full Ingest Pipeline for Chat Adds** — Sources added via `@collector` now run the same pipeline as direct captures, including auto-tagging, content-date extraction, and `document_captured` event logging
+## 🎉 What's New in v2.0.0
+LocalBook's largest release: an Information Cortex that turns documents and
+forwarded email into a synthesizing knowledge system — one artifact/renderer
+spec (Universal Canvas), an email cortex (Correspondent), and a cross-source
+synthesis layer. Highlights below.
+### Highlights
+- **Universal Canvas** — single artifact spec + renderer registry routes markdown / strict HTML / interactive HTML (iframe sandbox) / SVG / Mermaid / Klein / `json:<kind>` through one dispatch. Mixed-medium documents interleave prose + Recharts + SVG via gemma4 `VISUAL_INTERLEAVE` injection + post-processor.
+- **Correspondent (email cortex)** — IMAP poller (Gmail / Fastmail / iCloud+ / Outlook via app password), tool-less LLM classification, cross-notebook auto-routing via embedding similarity, sister-newsletter auto-subscribe through Collector queue, reply-to-ingest, outbound SMTP via `aiosmtplib`, newsletter HTML rendered in source viewer.
+- **Synthesis layer** — Curator HTML morning brief with consensus detection + deep-read auto-trigger, interactive HTML artifacts (iframe `sandbox="allow-scripts"` + postMessage), cross-source perspectives view (consensus vs contested), per-notebook dashboards, entity-anchored topic deep-dives, source-graph entity proposals, weekly auto-journal via SMTP.
+- **Correspondent Tier 2 (all 10 capabilities)** — per-article extraction + summary + RAG indexing, hot/cold clusters via embedding agglomeration, deep-read with newsletter context, cross-notebook entity tagging at ingest, per-newsletter scorecard, RFC 2369 List-Unsubscribe one-click POST with two-step confirmation, frequency tuner, smart digest grouping, effectiveness dashboard, routing histogram with auto/manual/queued series.
+- **Gemma4 flip** — `ollama_model` default switched from `olmo-3:7b-instruct` to `gemma4:e4b`. Native vision absorbs the vision slot on 16 GB Macs.
 
 ---
+
+## v1.8.0 — Studio Redesign, iPhone Scan Capture, Sidecar Lifecycle, Multi-Provider LLM
+
+- **Studio redesigned** — one unified drawer + two slim entry bars replace the old 9-pill action bar; 6 generation types including Flash Cards. Studio documents now read like the chat (explicit markdown presentation brief).
+- **iPhone Scan Capture** — Continuity Camera integrated in-process via `AVCaptureDevice` with multi-page Scan Documents sessions, portrait preview, and rotate.
+- **Memory steward** — owns Ollama RAM hygiene, evicting non-essential models before each scan so the vision working set fits a 16 GB Mac.
+- **Signed + notarized releases** — `release.sh` now does codesign + `notarytool` + stapler + Gatekeeper verify end-to-end (identity injected, never committed).
+- **Multi-provider LLM foundation** — `llm_provider.py` routes models to Ollama or a `llama-server` sidecar (one-click Bonsai-8B swap from the Health Portal).
+- **Library main view + main nav redesign** — type-grouped accordion with universal Download/export; word-button nav (Chat / Library / Constellation / Timeline / Curator) + ⌘1-⌘5 / ⌘K command palette.
+
 ---
----
+
+<details>
+<summary><strong>v1.6.0 – v1.6.2</strong> — Granular ingestion progress, multi-intent chat, YouTube sources</summary>
+
+- **Granular ingestion progress** — the upload bar streams stage-by-stage (receive → detect → extract → analyze → chunk → summarize → HyDE → embed → index → tag) with an optional "Show journey" expander; per-file progress in multi-file uploads
+- **Multi-intent chat** — `@collector` / `@curator` / `@research` / `@studio` handle compound requests in one message ("add this URL and set my focus to X")
+- **YouTube sources** — ingest with a full-transcript summary; consistent `▶️ YOUTUBE` / `ARXIV` labels across every add path (chat, extension, feed, agent)
+- **LLM Locker improvements** — smarter RAM estimation eliminates false memory rejections; per-model tuning profiles in the registry
+- **Quiz enhancements** — RAG-retrieval-backed questions, five question types, instant click-to-reveal, LLM-graded open answers with partial credit
+</details>
 
 ## v1.5
 
@@ -137,7 +159,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full release history.
 | **macOS** | 12.0+ (Apple Silicon required — M1/M2/M3/M4) |
 | **Python** | 3.12+ required |
 | **RAM** | 16GB+ recommended (8GB minimum) |
-| **Storage** | ~15GB for models and app |
+| **Storage** | ~20GB for models and app |
 | **Ollama** | Local LLM runtime ([ollama.ai](https://ollama.ai)) |
 
 ### System Dependencies
@@ -152,13 +174,23 @@ brew install ollama ffmpeg tesseract espeak-ng python@3.12 node
 
 ## Quick Start
 
-### Option 1: Download Release (Recommended)
+### Option 1: One-Line Install (Recommended)
 
-1. Download `LocalBook-v1.5.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+Clones the repo, builds the app, pulls the AI models, and installs to `/Applications` — one command:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/patsteph/LocalBook/master/install.sh)"
+```
+
+To upgrade an existing install, append `-- --upgrade`.
+
+### Option 2: Download Release
+
+1. Download `LocalBook-v2.0.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip and drag `LocalBook.app` to `/Applications`
 3. Launch LocalBook — it will download required AI models on first run
 
-### Option 2: Build from Source
+### Option 3: Build from Source
 
 **⚠️ Requires Python 3.12+**
 
@@ -180,10 +212,11 @@ Build takes ~15-20 minutes on first run (downloads models, installs dependencies
 Pre-download AI models before launching:
 
 ```bash
-# Required models (~6GB total)
-ollama pull olmo-3:7b-instruct      # Main reasoning model (64K context)
+# The one-line installer pulls these for you; to pre-pull manually:
+ollama pull gemma4:e4b              # Main model — chat + native vision (~9.6GB)
 ollama pull phi4-mini               # Fast model for quick responses
 ollama pull snowflake-arctic-embed2 # Embeddings (1024 dims)
+ollama pull granite3.2-vision:2b    # Vision fallback
 ```
 
 The Kokoro-82M TTS model (~348MB) downloads automatically on first use. If the automatic download fails (e.g. SSL certificate issues on macOS), you can download it manually:
@@ -200,7 +233,7 @@ The **LocalBook Companion** extension lets you use LocalBook while browsing the 
 
 ### Installation
 
-1. Download `LocalBook-Extension-v1.0.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-Extension-v2.0.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip to a folder (e.g., `~/LocalBook-Extension`)
 3. Open Chrome/Edge and go to `chrome://extensions`
 4. Enable **Developer mode** (toggle in top right)
@@ -272,7 +305,7 @@ Automatically extract dates and events from documents, visualized on an interact
 ### Environment Variables (`backend/.env`)
 ```bash
 # LLM Configuration
-OLLAMA_MODEL=olmo-3:7b-instruct       # Main reasoning model
+OLLAMA_MODEL=gemma4:e4b               # Main model (chat + native vision)
 OLLAMA_FAST_MODEL=phi4-mini           # Fast responses
 EMBEDDING_MODEL=snowflake-arctic-embed2  # 1024-dim embeddings
 
