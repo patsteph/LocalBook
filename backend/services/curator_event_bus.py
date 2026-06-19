@@ -29,7 +29,18 @@ from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from utils.singleflight import KeyedSingleflight
+
 logger = logging.getLogger(__name__)
+
+# PB-1b: spawn-level dedup so a burst of source-adds doesn't launch N concurrent
+# copies of the same per-notebook background job. Each job is already internally
+# gated/debounced, so skipping a duplicate spawn is safe and saves Ollama queue
+# churn. Audit ref: 10_plan_of_attack PB-1b.
+_mental_model_sf = KeyedSingleflight("mental-model-infer")
+_stance_score_sf = KeyedSingleflight("stance-score")
+_anticipatory_draft_sf = KeyedSingleflight("anticipatory-draft")
+_dissent_overwatch_sf = KeyedSingleflight("dissent-overwatch")
 
 
 Actor = Literal["@collector", "@research", "@curator", "@correspondent", "@mcp", "user", "system"]
@@ -215,9 +226,9 @@ class CuratorEventBus:
                                 f"[event_bus] notebook {nb[:8]} source_count={count} "
                                 f"crossed mental-model threshold; triggering inference"
                             )
-                            asyncio.create_task(
-                                curator_brain.infer_mental_model(nb),
-                                name=f"mental-model-infer-{nb[:8]}",
+                            _mental_model_sf.spawn(
+                                nb,
+                                lambda: curator_brain.infer_mental_model(nb),
                             )
                     except Exception as e:
                         logger.debug(f"[event_bus] mental-model trigger check: {e}")
@@ -230,9 +241,10 @@ class CuratorEventBus:
                     try:
                         source_id = (event.payload or {}).get("source_id")
                         if source_id:
-                            asyncio.create_task(
-                                curator_brain.score_source_stance(nb, source_id),
-                                name=f"stance-score-{nb[:8]}-{str(source_id)[:8]}",
+                            _stance_score_sf.spawn(
+                                f"{nb}:{source_id}",
+                                lambda: curator_brain.score_source_stance(nb, source_id),
+                                suffix=str(source_id),
                             )
                     except Exception as e:
                         logger.debug(f"[event_bus] stance scoring trigger: {e}")
@@ -244,9 +256,9 @@ class CuratorEventBus:
                     # itself does all the checks; we just kick it off.
                     try:
                         from agents.curator import curator
-                        asyncio.create_task(
-                            curator.maybe_fire_anticipatory_draft(nb),
-                            name=f"anticipatory-draft-{nb[:8]}",
+                        _anticipatory_draft_sf.spawn(
+                            nb,
+                            lambda: curator.maybe_fire_anticipatory_draft(nb),
                         )
                     except Exception as e:
                         logger.debug(f"[event_bus] anticipatory_draft trigger: {e}")
@@ -265,11 +277,11 @@ class CuratorEventBus:
                     ):
                         try:
                             from agents.curator import curator
-                            asyncio.create_task(
-                                curator.maybe_fire_dissent_overwatch(
+                            _dissent_overwatch_sf.spawn(
+                                nb,
+                                lambda: curator.maybe_fire_dissent_overwatch(
                                     nb, payload.get("source_id"),
                                 ),
-                                name=f"dissent-overwatch-{nb[:8]}",
                             )
                             self._dispatch_counts[action] = self._dispatch_counts.get(action, 0) + 1
                         except Exception as e:

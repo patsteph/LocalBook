@@ -23,8 +23,13 @@ import lancedb
 
 from config import settings
 from services.ollama_client import ollama_client
+from utils.singleflight import KeyedSingleflight
 
 logger = logging.getLogger(__name__)
+
+# PB-1b: dedup per-notebook background re-score so rapid thesis edits don't launch
+# concurrent rescores for the same notebook. Audit ref: 10_plan_of_attack PB-1b.
+_stance_rescore_sf = KeyedSingleflight("stance-rescore")
 
 
 class CuratorBrain:
@@ -2276,9 +2281,9 @@ class CuratorBrain:
                     and self._thesis_hash(new_thesis) != self._thesis_hash(prior_thesis or "")
                 ):
                     try:
-                        asyncio.create_task(
-                            self.rescore_notebook_stances(notebook_id),
-                            name=f"stance-rescore-{notebook_id[:8]}",
+                        _stance_rescore_sf.spawn(
+                            notebook_id,
+                            lambda: self.rescore_notebook_stances(notebook_id),
                         )
                         logger.info(
                             f"[CuratorBrain] thesis changed for notebook {notebook_id[:8]}; "

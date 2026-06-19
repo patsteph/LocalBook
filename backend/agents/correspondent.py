@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from utils.tasks import safe_create_task
+
 logger = logging.getLogger(__name__)
 
 # Poll interval: 8 hours (2026-06-08). Newsletters arrive irregularly; the
@@ -379,7 +381,7 @@ class CorrespondentAgent:
         if self._running:
             return
         self._running = True
-        self._task = asyncio.create_task(self._loop(), name="correspondent-poller")
+        self._task = safe_create_task(self._loop(), name="correspondent-poller")
         logger.info("[correspondent] poller started")
 
     async def stop(self) -> None:
@@ -588,14 +590,14 @@ class CorrespondentAgent:
                 source_id = await ingest_forward(target_nb, parsed, payload)
                 if source_id:
                     counts["forwards"] += 1
-                    asyncio.create_task(self._send_forward_confirmation(
+                    safe_create_task(self._send_forward_confirmation(
                         account=account, parsed=parsed, payload=payload,
                         notebook_id=target_nb, source_filename=payload.original_subject or "forwarded email",
                     ))
                     # F3 (2026-06-08) — delete from IMAP after successful
                     # ingest so the next sync doesn't re-process. Fire-and-
                     # forget on a worker thread; never blocks the loop.
-                    asyncio.create_task(asyncio.to_thread(
+                    safe_create_task(asyncio.to_thread(
                         _imap_delete,
                         host=account["imap_host"], port=account["imap_port"],
                         user=account["imap_user"], password=account["imap_password"],
@@ -710,7 +712,7 @@ class CorrespondentAgent:
                 counts["ingested"] += 1
                 # F3 (2026-06-08) — delete from IMAP after successful
                 # ingest. Same fire-and-forget pattern as the forward path.
-                asyncio.create_task(asyncio.to_thread(
+                safe_create_task(asyncio.to_thread(
                     _imap_delete,
                     host=account["imap_host"], port=account["imap_port"],
                     user=account["imap_user"], password=account["imap_password"],

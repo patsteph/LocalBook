@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from config import settings
+from utils.singleflight import KeyedSingleflight
 
 logger = logging.getLogger(__name__)
 
@@ -468,33 +469,18 @@ community_detector = CommunityDetector()
 # Now: if a builder is already in flight for a notebook, skip the spawn.
 # The currently-running builder will pick up any new missing summaries on
 # its next iteration when called again after it finishes.
-_inflight_builders: Dict[str, asyncio.Task] = {}
+_community_builder_sf = KeyedSingleflight("community-summary-builder")
 
 
-def schedule_build_missing_summaries(notebook_id: str, entity_graph) -> Optional[asyncio.Task]:
+def schedule_build_missing_summaries(notebook_id: str, entity_graph) -> asyncio.Task:
     """Spawn community-summary-builder for a notebook, deduping per-notebook.
 
     Returns the existing in-flight task if one is already running for this
     notebook (no new task created), or the newly-created task otherwise.
+
+    Audit ref: 10_plan_of_attack PB-1 — first KeyedSingleflight migration.
     """
-    from utils.tasks import safe_create_task
-
-    existing = _inflight_builders.get(notebook_id)
-    if existing and not existing.done():
-        return existing
-
-    task = safe_create_task(
-        community_detector.build_missing_summaries(notebook_id, entity_graph),
-        name="community-summary-builder",
+    return _community_builder_sf.spawn(
+        notebook_id,
+        lambda: community_detector.build_missing_summaries(notebook_id, entity_graph),
     )
-    _inflight_builders[notebook_id] = task
-
-    def _cleanup(_t: asyncio.Task, nb_id: str = notebook_id):
-        # Only clear if the slot still points at the task that finished;
-        # a faster-finishing duplicate spawn (shouldn't happen, but cheap
-        # to guard) wouldn't be cleared inappropriately.
-        if _inflight_builders.get(nb_id) is _t:
-            _inflight_builders.pop(nb_id, None)
-
-    task.add_done_callback(_cleanup)
-    return task

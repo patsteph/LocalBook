@@ -24,6 +24,7 @@ from storage.notebook_store import notebook_store
 from models.memory import ArchivalMemoryEntry, MemorySourceType, MemoryImportance
 from services.ollama_client import ollama_client
 from config import settings
+from utils.tasks import safe_create_task
 
 logger = logging.getLogger(__name__)
 
@@ -5254,7 +5255,7 @@ Respond with JSON only:
                 if not cl.primary_notebook_id or not cl.topic_label:
                     continue
                 query = cl.topic_label
-                asyncio.create_task(
+                safe_create_task(
                     research_engine.deep_dive(
                         query=query,
                         notebook_id=cl.primary_notebook_id,

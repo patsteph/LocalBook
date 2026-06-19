@@ -26,6 +26,8 @@ from uuid import uuid4
 
 from bs4 import BeautifulSoup
 
+from utils.tasks import safe_create_task
+
 logger = logging.getLogger(__name__)
 
 
@@ -1013,7 +1015,7 @@ async def ingest_newsletter(
             # immediately (without summary); summaries trickle in over
             # the next 30-60s via the fast model.
             if count > 0:
-                asyncio.create_task(_summarize_articles_background(source_id))
+                safe_create_task(_summarize_articles_background(source_id))
     except Exception as _e:
         logger.debug(f"[correspondent.ingest_newsletter] article extraction skipped: {_e}")
 
@@ -1036,7 +1038,7 @@ async def ingest_newsletter(
     if article_count <= 1:
         try:
             from services.entity_extractor import entity_extractor
-            asyncio.create_task(entity_extractor.extract_from_text(
+            safe_create_task(entity_extractor.extract_from_text(
                 text=text,
                 notebook_id=notebook_id,
                 source_id=source_id,
@@ -1062,7 +1064,7 @@ async def ingest_newsletter(
     # Phase 7 — fire-and-forget subscription proposal extraction. Never
     # blocks the ingest path; failures are swallowed at debug.
     try:
-        asyncio.create_task(_kickoff_subscription_extraction(notebook_id, parsed, text))
+        safe_create_task(_kickoff_subscription_extraction(notebook_id, parsed, text))
     except Exception as _e:
         logger.debug(f"[correspondent.ingest_newsletter] subscription kickoff skipped: {_e}")
 
@@ -1070,7 +1072,7 @@ async def ingest_newsletter(
     # expansion proposals. Same swallow-at-debug pattern.
     try:
         from services.entity_subscription_proposer import propose_entities_from_summary
-        asyncio.create_task(propose_entities_from_summary(
+        safe_create_task(propose_entities_from_summary(
             notebook_id=notebook_id, source_id=source_id,
             summary=classification.summary or text[:600],
             sender=parsed.sender or "",
@@ -1396,7 +1398,7 @@ async def ingest_forward(
             )
             await source_store.update(notebook_id, source_id, {"article_count": count})
             if count > 0:
-                asyncio.create_task(_summarize_articles_background(source_id))
+                safe_create_task(_summarize_articles_background(source_id))
     except Exception as _e:
         logger.debug(f"[correspondent.ingest_forward] article extraction skipped: {_e}")
 
@@ -1412,7 +1414,7 @@ async def ingest_forward(
     if forward_article_count <= 1:
         try:
             from services.entity_extractor import entity_extractor
-            asyncio.create_task(entity_extractor.extract_from_text(
+            safe_create_task(entity_extractor.extract_from_text(
                 text=body,
                 notebook_id=notebook_id,
                 source_id=source_id,
