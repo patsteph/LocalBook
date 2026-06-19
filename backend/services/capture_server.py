@@ -18,6 +18,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from utils.tasks import safe_create_task
+
 logger = logging.getLogger(__name__)
 
 _capture_app: Optional[FastAPI] = None
@@ -101,7 +103,7 @@ async def start_capture_server():
         # No TLS — using <input capture> instead of getUserMedia
     )
     _server = uvicorn.Server(config)
-    _server_task = asyncio.create_task(_server.serve())
+    _server_task = safe_create_task(_server.serve())
 
     local_ip = get_local_ip()
     logger.info(

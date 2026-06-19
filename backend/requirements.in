@@ -12,8 +12,6 @@ sentence-transformers>=3.3.0  # Fallback embeddings (only used if Ollama unavail
 # LLM integrations
 anthropic>=0.40.0
 openai>=1.56.0
-mistralai>=1.10.0  # Mistral API client
-pydantic-ai>=0.0.30  # Structured LLM outputs with validation and retry
 
 # LangChain/LangGraph for agent workflows
 langchain-core>=0.3.0  # Allow 0.x or 1.x - we only use basic message/tool imports

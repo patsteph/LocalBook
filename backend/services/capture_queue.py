@@ -11,6 +11,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
+from utils.tasks import safe_create_task
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,7 +86,7 @@ class CaptureQueue:
                 f"already running (task={self._task!r})"
             )
             return
-        self._task = asyncio.create_task(self._process_loop(process_fn))
+        self._task = safe_create_task(self._process_loop(process_fn))
         # Add a done-callback so we can see if the worker dies silently
         # for any reason — without this, a crashed worker leaves no trace
         # and the queue silently swallows every uploaded page forever.

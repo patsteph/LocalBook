@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, lazy, Suspense } from 'react';
 import { PanelView } from './types';
 import { useAppShell } from './CanvasContext';
 import { ChatInterface } from '../ChatInterface';
 import { Timeline } from '../Timeline';
-import { Constellation3D } from '../Constellation3D';
+// Lazy-loaded so the heavy three.js bundle only downloads when the Constellation tab opens (PB-5a).
+const Constellation3D = lazy(() => import('../Constellation3D').then(m => ({ default: m.Constellation3D })));
 import { ThemesPanel } from '../ThemesPanel';
 import { ExplorationPanel } from '../ExplorationPanel';
 import { CuratorPanel } from '../CuratorPanel';
@@ -100,15 +101,17 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
               </div>
             </div>
             <div className="flex-1 relative">
-              <Constellation3D
-                notebookId={ctx.selectedNotebookId}
-                selectedSourceId={ctx.selectedSourceId}
-                rightSidebarCollapsed={true}
-                onNodeClick={(topicId) => {
-                  setHighlightedTopicId(topicId);
-                  setInsightTab('themes');  // Auto-switch to themes tab
-                }}
-              />
+              <Suspense fallback={<div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Loading constellation…</div>}>
+                <Constellation3D
+                  notebookId={ctx.selectedNotebookId}
+                  selectedSourceId={ctx.selectedSourceId}
+                  rightSidebarCollapsed={true}
+                  onNodeClick={(topicId) => {
+                    setHighlightedTopicId(topicId);
+                    setInsightTab('themes');  // Auto-switch to themes tab
+                  }}
+                />
+              </Suspense>
             </div>
           </div>
         );

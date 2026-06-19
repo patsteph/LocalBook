@@ -22,6 +22,8 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from utils.tasks import safe_create_task
+
 logger = logging.getLogger(__name__)
 
 # Worker cadence: wake every 6h. Senders ship their digest on the matching
@@ -232,7 +234,7 @@ class DigestSchedulerAgent:
         if self._running:
             return
         self._running = True
-        self._task = asyncio.create_task(self._loop(), name="digest-scheduler")
+        self._task = safe_create_task(self._loop(), name="digest-scheduler")
         logger.info("[digest_composer] scheduler started")
 
     async def stop(self) -> None:

@@ -307,7 +307,7 @@ def extract_themes_regex(text: str) -> List[str]:
 
 
 async def extract_themes_llm(text: str) -> VisualContent:
-    """LLM extraction fallback using pydantic-ai for guaranteed structured output."""
+    """LLM extraction fallback — httpx call to Ollama with JSON-mode prompting."""
     import httpx
     from config import settings
     import json

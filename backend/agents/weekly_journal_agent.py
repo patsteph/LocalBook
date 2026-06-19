@@ -14,6 +14,8 @@ import asyncio
 import logging
 from typing import Optional
 
+from utils.tasks import safe_create_task
+
 logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
@@ -28,7 +30,7 @@ class WeeklyJournalAgent:
         if self._running:
             return
         self._running = True
-        self._task = asyncio.create_task(self._loop(), name="weekly-journal-scheduler")
+        self._task = safe_create_task(self._loop(), name="weekly-journal-scheduler")
         logger.info("[weekly_journal] scheduler started")
 
     async def stop(self) -> None:

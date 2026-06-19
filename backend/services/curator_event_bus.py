@@ -30,6 +30,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from utils.singleflight import KeyedSingleflight
+from utils.tasks import safe_create_task
 
 logger = logging.getLogger(__name__)
 
@@ -563,7 +564,7 @@ class CuratorEventBus:
             self._handlers.append(_default_persist_and_log)
 
         self._running = True
-        self._consumer_task = asyncio.create_task(self._consumer_loop(), name="curator-event-bus")
+        self._consumer_task = safe_create_task(self._consumer_loop(), name="curator-event-bus")
         logger.info("[event_bus] consumer started with %d handler(s)", len(self._handlers))
 
     async def stop(self) -> None:

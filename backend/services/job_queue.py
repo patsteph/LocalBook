@@ -25,6 +25,9 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Awaitable
 from collections import OrderedDict
 import logging
+
+from utils.tasks import safe_create_task
+
 logger = logging.getLogger(__name__)
 
 
@@ -180,7 +183,7 @@ class JobQueue:
             return job_id
         
         # Start job execution
-        job._task = asyncio.create_task(
+        job._task = safe_create_task(
             self._execute_job(job, actual_handler)
         )
         
