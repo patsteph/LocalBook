@@ -564,21 +564,27 @@ class VisualComposer:
             f"no written language"
         )
 
-        # Step 3: pre-unload Gemma on swap-mode machines so Klein has room
+        # Step 3+4: pre-unload Gemma on swap-mode machines so Klein has room,
+        # then generate. Both happen inside pause_background_gemma so the
+        # background PDF-vision flood can't reload Gemma after we evict it and
+        # thrash 16 GB against the Klein image model (was ballooning image gen
+        # from ~90 s to ~360 s when a PDF had just been ingested).
+        from services.memory_steward import pause_background_gemma
         swap_mode = capability.concurrency_mode.value in ("swap", "swap_strict")
-        if swap_mode and capability.gemma_model:
-            logger.info("[visual_composer] full-bleed: pre-Klein Gemma unload (swap mode)")
-            await force_unload(capability.gemma_model)
+        async with pause_background_gemma(reason="klein_image"):
+            if swap_mode and capability.gemma_model:
+                logger.info("[visual_composer] full-bleed: pre-Klein Gemma unload (swap mode)")
+                await force_unload(capability.gemma_model)
 
-        # Step 4: Klein generation
-        diffusion = await klein_diffusion.generate(
-            prompt=klein_prompt,
-            capability=capability,
-            aspect_ratio=intent.aspect_ratio,
-            quality_tier=intent.quality_tier,
-            negative_prompt=negative_prompt,
-            unload_after=swap_mode,
-        )
+            # Step 4: Klein generation
+            diffusion = await klein_diffusion.generate(
+                prompt=klein_prompt,
+                capability=capability,
+                aspect_ratio=intent.aspect_ratio,
+                quality_tier=intent.quality_tier,
+                negative_prompt=negative_prompt,
+                unload_after=swap_mode,
+            )
         if not diffusion.success or not diffusion.png_bytes:
             logger.warning(
                 f"[visual_composer] full-bleed: Klein generation failed: {diffusion.error}"

@@ -33,7 +33,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Iterable, List, Optional, Set
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Iterable, List, Optional, Set
 
 import httpx
 
@@ -45,6 +46,58 @@ logger = logging.getLogger(__name__)
 # computing the eviction set. Lock contention is irrelevant in practice
 # (capture queues are serial per session and global concurrency is low).
 _lock = asyncio.Lock()
+
+# ── Background-gemma pause gate ─────────────────────────────────────────
+# A foreground RAM-heavy pipeline (Klein image generation) evicts the 9.6 GB
+# main model so the image model has room on a 16 GB swap-mode box. But that
+# eviction is futile if background gemma work (the PDF-vision `describe_image`
+# flood) immediately reloads the model — gemma + Klein then thrash 16 GB and
+# image gen balloons from ~90 s to ~360 s. This gate lets the foreground
+# pipeline *pause* background gemma work for its duration: background callers
+# await `await_background_clearance()` before their gemma call, and the
+# foreground pipeline holds `pause_background_gemma()` across evict + generate.
+# Event semantics: SET = background allowed (normal), CLEAR = paused.
+_bg_gemma_allowed = asyncio.Event()
+_bg_gemma_allowed.set()
+
+
+@asynccontextmanager
+async def pause_background_gemma(reason: str = "foreground") -> AsyncIterator[None]:
+    """Pause background gemma work for the duration of a foreground RAM-heavy
+    pipeline. New background gemma calls block at `await_background_clearance`
+    until the context exits. Re-entrant-safe via a depth counter so nested or
+    concurrent foreground pipelines don't resume early."""
+    global _bg_pause_depth
+    _bg_pause_depth += 1
+    _bg_gemma_allowed.clear()
+    logger.info(f"[memory-steward] background gemma paused ({reason}, depth={_bg_pause_depth})")
+    try:
+        yield
+    finally:
+        _bg_pause_depth -= 1
+        if _bg_pause_depth <= 0:
+            _bg_pause_depth = 0
+            _bg_gemma_allowed.set()
+            logger.info(f"[memory-steward] background gemma resumed ({reason})")
+
+
+_bg_pause_depth = 0
+
+
+async def await_background_clearance(timeout: float = 300.0) -> None:
+    """Background gemma callers await this before their LLM call. Returns
+    immediately when not paused; otherwise waits (bounded) until a foreground
+    pipeline resumes background work. The timeout is a safety valve so a
+    crashed foreground pipeline can never deadlock background ingest."""
+    if _bg_gemma_allowed.is_set():
+        return
+    try:
+        await asyncio.wait_for(_bg_gemma_allowed.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[memory-steward] background clearance wait timed out "
+            f"({timeout}s); proceeding anyway"
+        )
 
 
 def _ollama_base() -> str:

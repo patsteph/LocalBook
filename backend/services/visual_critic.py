@@ -209,6 +209,7 @@ class VisualCritic:
         )
 
         logger.info(f"[visual_critic] critic_model={critic_model}")
+        from services.ollama_service import PRIORITY_FOREGROUND
         result = await ollama_service.generate(
             prompt=prompt,
             system=CRITIC_SYSTEM,
@@ -219,6 +220,7 @@ class VisualCritic:
             images=[b64],
             format="json",
             voice_modifier=False,
+            priority=PRIORITY_FOREGROUND,  # final step of user-initiated image gen
         )
         raw = result.get("response", "")
         parsed = _repair_json(raw)

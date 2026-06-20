@@ -65,7 +65,12 @@ class MultimodalExtractor:
     
     def __init__(self):
         self.min_image_size = 100  # Minimum dimension to extract
-        self.max_images_per_doc = 100  # Increased for large PDFs
+        # Cap the per-doc vision batch. Each describe_image call monopolizes
+        # the single-wide gemma vision lane for ~90 s, so 100 images = a 2.5 h
+        # background gemma monopoly that starves foreground work on swap-mode
+        # Macs. 24 covers chart-heavy PDFs (charts are prioritized first) while
+        # bounding the batch to a sane window.
+        self.max_images_per_doc = 24
         self.max_parallel_workers = 4  # Concurrent vision model calls
         self.vision_model = settings.vision_model
         self.image_cache_dir = Path(settings.db_path).parent / "images"
@@ -236,6 +241,10 @@ Focus on information that would be useful for answering questions about this doc
             # Use the universal vision dispatcher — handles both /api/generate
             # (Granite/LLaVA) and /api/chat (Gemma4/Llama3.2) automatically
             from services.ollama_service import ollama_service, PRIORITY_BACKGROUND
+            # If a foreground RAM-heavy pipeline (Klein image gen) is running,
+            # wait so we don't reload gemma and thrash its 16 GB working set.
+            from services.memory_steward import await_background_clearance
+            await await_background_clearance()
             api_style = self._get_vision_api_style()
             # PDF image-description is bulk background ingest — yield the
             # (single-wide) gemma4 lane to any user-initiated foreground call.
@@ -245,6 +254,11 @@ Focus on information that would be useful for answering questions about this doc
                 model=self.vision_model,
                 api_style=api_style,
                 priority=PRIORITY_BACKGROUND,
+                # An image/chart description bound for RAG chunks needs ~300
+                # words, not 1100. The default 1500 was producing 800-1500
+                # token descriptions that held the gemma lane for 90 s+ each;
+                # 400 keeps the key data points while cutting per-call time ~3x.
+                num_predict=400,
             )
             
             if description and not description.startswith("Error:"):

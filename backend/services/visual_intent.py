@@ -246,6 +246,7 @@ async def classify_intent(content: str, model: Optional[str]) -> IllustrationInt
         return DEFAULT_INTENT
 
     try:
+        from services.ollama_service import PRIORITY_FOREGROUND
         result = await ollama_service.generate(
             prompt=f"REQUEST:\n{content}\n\nClassify and return JSON only.",
             system=_INTENT_SYSTEM,
@@ -255,6 +256,7 @@ async def classify_intent(content: str, model: Optional[str]) -> IllustrationInt
             timeout=60.0,
             format="json",
             voice_modifier=False,
+            priority=PRIORITY_FOREGROUND,  # first step of user-initiated image gen
         )
     except Exception as e:
         logger.warning(f"[visual_intent] classifier call failed: {e}")
