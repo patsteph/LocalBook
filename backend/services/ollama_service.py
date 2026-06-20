@@ -26,6 +26,8 @@ Migration guide:
         result = await ollama_service.generate(prompt=..., model=..., temperature=...)
 """
 import asyncio
+import heapq
+import itertools
 import json
 import logging
 import os
@@ -55,8 +57,69 @@ logger = logging.getLogger(__name__)
 #     bottleneck is mostly HTTP/IPC. Cap mostly exists to prevent total
 #     Ollama queue overflow.
 #
-# Semaphores are lazy-initialized so they bind to the running event loop.
-_MODEL_SEMAPHORES: Dict[str, asyncio.Semaphore] = {}
+# ── Priority lanes (replaces plain FIFO Semaphore) ──────────────────────
+# A plain asyncio.Semaphore is strictly FIFO, so a flood of *background*
+# work (PDF image-description, community-summary rebuilds, per-article
+# analysis) can fully starve a user-initiated *foreground* request: the
+# foreground call simply queues behind every background call already in
+# line. PriorityLane keeps the same concurrency cap but serves waiters by
+# priority — lower number first, FIFO within a priority. Foreground chat /
+# visual / doc-gen (NORMAL or FOREGROUND) thus jumps ahead of the
+# BACKGROUND ingest flood the moment a slot frees.
+PRIORITY_FOREGROUND = 0   # user is actively waiting (chat, visual, doc-gen)
+PRIORITY_NORMAL = 1       # default — most callers
+PRIORITY_BACKGROUND = 2   # bulk ingest fan-out; yields to everyone else
+
+
+class PriorityLane:
+    """Concurrency limiter like asyncio.Semaphore, but waiters are served
+    by priority instead of FIFO. Lower priority value is served first;
+    ties break FIFO via a monotonic counter. Drop-in for the acquire/
+    release pattern used by the model semaphores."""
+
+    def __init__(self, value: int):
+        self._value = value
+        self._waiters: list = []  # heap of (priority, seq, future)
+        self._counter = itertools.count()
+
+    def locked(self) -> bool:
+        return self._value == 0
+
+    async def acquire(self, priority: int = PRIORITY_NORMAL) -> bool:
+        # Fast path: a slot is free and nobody is already queued.
+        if self._value > 0 and not self._waiters:
+            self._value -= 1
+            return True
+        loop = asyncio.get_event_loop()
+        fut = loop.create_future()
+        heapq.heappush(self._waiters, (priority, next(self._counter), fut))
+        try:
+            await fut
+        except asyncio.CancelledError:
+            # If we were granted the slot just as we got cancelled, hand it
+            # on to the next waiter rather than leaking it.
+            if fut.done() and not fut.cancelled():
+                self._value += 1
+                self._wake_next()
+            raise
+        return True
+
+    def release(self) -> None:
+        self._value += 1
+        self._wake_next()
+
+    def _wake_next(self) -> None:
+        while self._waiters and self._value > 0:
+            _priority, _seq, fut = heapq.heappop(self._waiters)
+            if fut.cancelled():
+                continue  # waiter gave up; skip it
+            self._value -= 1
+            fut.set_result(True)
+            return
+
+
+# Lanes are lazy-initialized so they bind to the running event loop.
+_MODEL_SEMAPHORES: Dict[str, PriorityLane] = {}
 _SEMAPHORE_CAPS = {
     "main": 1,    # gemma4 / olmo / similar large models
     "fast": 2,    # phi4-mini
@@ -64,8 +127,8 @@ _SEMAPHORE_CAPS = {
 }
 
 
-def _semaphore_for_model(model: str) -> asyncio.Semaphore:
-    """Return the semaphore for a model name, picking the right bucket
+def _semaphore_for_model(model: str) -> PriorityLane:
+    """Return the priority lane for a model name, picking the right bucket
     by matching against settings. Initialized lazily."""
     if model == settings.embedding_model:
         bucket = "embed"
@@ -75,7 +138,7 @@ def _semaphore_for_model(model: str) -> asyncio.Semaphore:
         # Default: treat unknown / main model as the heavy bucket.
         bucket = "main"
     if bucket not in _MODEL_SEMAPHORES:
-        _MODEL_SEMAPHORES[bucket] = asyncio.Semaphore(_SEMAPHORE_CAPS[bucket])
+        _MODEL_SEMAPHORES[bucket] = PriorityLane(_SEMAPHORE_CAPS[bucket])
     return _MODEL_SEMAPHORES[bucket]
 
 
@@ -220,6 +283,7 @@ class OllamaService:
         keep_alive: Optional[Any] = None,
         voice_modifier: bool = True,
         respect_rag_profile: bool = True,
+        priority: int = PRIORITY_NORMAL,
     ) -> Dict[str, Any]:
         """Non-streaming generate call to Ollama /api/generate.
 
@@ -297,7 +361,7 @@ class OllamaService:
         sem = _semaphore_for_model(use_model) if route.api_style == "ollama" else None
         try:
             if sem is not None:
-                await sem.acquire()
+                await sem.acquire(priority)
             if route.api_style == "ollama":
                 response = await client.post(
                     f"{route.base_url}/api/generate",
@@ -349,6 +413,7 @@ class OllamaService:
         keep_alive: Optional[Any] = None,
         voice_modifier: bool = True,
         respect_rag_profile: bool = True,
+        priority: int = PRIORITY_NORMAL,
     ) -> Dict[str, Any]:
         """Non-streaming chat call to Ollama /api/chat.
 
@@ -421,7 +486,7 @@ class OllamaService:
         sem = _semaphore_for_model(use_model) if route.api_style == "ollama" else None
         try:
             if sem is not None:
-                await sem.acquire()
+                await sem.acquire(priority)
             if route.api_style == "ollama":
                 response = await client.post(
                     f"{route.base_url}/api/chat",
@@ -468,6 +533,7 @@ class OllamaService:
         num_predict: Optional[int] = None,
         num_ctx: Optional[int] = None,
         temperature: Optional[float] = None,
+        priority: int = PRIORITY_NORMAL,
     ) -> str:
         """Universal vision dispatcher — routes to /api/generate or /api/chat
         per the model's required api_style. Ported from ollama_client (PB-2b);
@@ -505,6 +571,7 @@ class OllamaService:
                     extra_options={"num_predict": final_num_predict, "num_ctx": final_num_ctx},
                     images=[image_b64],
                     voice_modifier=False,
+                    priority=priority,
                 )
                 return (result.get("message") or {}).get("content", "")
             else:
@@ -518,6 +585,7 @@ class OllamaService:
                     extra_options={"num_ctx": final_num_ctx},
                     images=[image_b64],
                     voice_modifier=False,
+                    priority=priority,
                 )
                 return result.get("response", "")
         except Exception as e:
@@ -589,6 +657,7 @@ class OllamaService:
         extra_options: Optional[Dict[str, Any]] = None,
         stop: Optional[List[str]] = None,
         keep_alive: Optional[Any] = None,
+        priority: int = PRIORITY_NORMAL,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Streaming generate — yields parsed JSON chunks from Ollama.
 
@@ -650,7 +719,7 @@ class OllamaService:
         # concurrent calls hitting Ollama.
         sem = _semaphore_for_model(use_model) if route.api_style == "ollama" else None
         if sem is not None:
-            await sem.acquire()
+            await sem.acquire(priority)
         try:
             if route.api_style == "ollama":
                 async with client.stream(

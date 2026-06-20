@@ -105,7 +105,7 @@ async def batch_analyze_article(
     null section/summary — so downstream gracefully treats failures as
     "include but don't auto-act."
     """
-    from services.ollama_service import ollama_service
+    from services.ollama_service import ollama_service, PRIORITY_BACKGROUND
     from config import settings
 
     body = (body_text or "")[:2500]
@@ -133,6 +133,7 @@ async def batch_analyze_article(
             temperature=0.1,
             num_predict=400,
             format="json",
+            priority=PRIORITY_BACKGROUND,
         )
         raw = (result or {}).get("response", "").strip()
         data = json.loads(raw)

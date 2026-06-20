@@ -133,17 +133,11 @@ class StructuredLLMService:
             JSON output is unreliable.
           - prefer_json_mode=True (Gemma, Phi, Llama) uses native JSON mode.
         """
-        from services.llm_provider import (
-            resolve as _resolve_provider,
-            Provider as _Provider,
-            ollama_to_openai_payload,
-            openai_non_stream_to_ollama_response,
-        )
+        from services.llm_provider import resolve as _resolve_provider
 
         # Re-read settings per call so Locker swaps are respected
         active_model = settings.ollama_model
-        route = _resolve_provider(active_model)
-        timeout = httpx.Timeout(timeout_seconds)
+        route = _resolve_provider(active_model)  # retained for provider-aware logging
 
         # Look up the active model's structured profile
         prefer_json_mode = True  # Default: use JSON mode if model supports it
@@ -160,71 +154,49 @@ class StructuredLLMService:
         except Exception as _e:
             logger.debug(f"[StructuredLLM] structured_profile lookup failed: {_e}")
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            if route.provider is _Provider.OLLAMA:
-                payload = {
-                    "model": active_model,
-                    "prompt": f"{system_prompt}\n\nUser request:\n{user_prompt}",
-                    "stream": False,
-                    "keep_alive": "5m",
-                    "options": {
-                        "temperature": temperature,
-                        "num_predict": num_predict,
-                        "repeat_penalty": 1.2,
-                        "repeat_last_n": 128,
-                    },
-                }
-                if prefer_json_mode:
-                    payload["format"] = "json"
-                response = await client.post(
-                    f"{route.base_url}/api/generate",
-                    json=payload,
-                )
-                if response.status_code != 200:
-                    logger.error(f"[StructuredLLM] Ollama HTTP {response.status_code}: {response.text[:200]}")
-                    return {}
-                raw_response = response.json().get("response", "")
-            else:
-                # Sidecar path — translate to OpenAI chat-completions with json_object response
-                ollama_shape = {
-                    "model": active_model,
-                    "prompt": f"{system_prompt}\n\nUser request:\n{user_prompt}",
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature,
-                        "num_predict": num_predict,
-                    },
-                }
-                openai_payload = ollama_to_openai_payload(ollama_shape, is_chat=False)
-                openai_payload["response_format"] = {"type": "json_object"}
-                response = await client.post(
-                    f"{route.base_url}/v1/chat/completions",
-                    json=openai_payload,
-                )
-                if response.status_code != 200:
-                    logger.error(f"[StructuredLLM] Sidecar HTTP {response.status_code}: {response.text[:200]}")
-                    return {}
-                normalized = openai_non_stream_to_ollama_response(response.json(), is_chat=False)
-                raw_response = normalized.get("response", "")
+        # Route through ollama_service so structured generation rides the
+        # per-model priority lane. Studio output (quiz / visual / doc /
+        # comparison) is user-initiated foreground work, so it runs at
+        # FOREGROUND priority and jumps ahead of background ingest fan-out
+        # (PDF vision, community summaries) on the single-wide gemma4 lane.
+        # ollama_service handles provider routing (Ollama vs sidecar) and
+        # JSON mode internally. respect_rag_profile=False keeps structured
+        # JSON free of chat stop-sequences (mirrors the old raw path).
+        from services.ollama_service import ollama_service, PRIORITY_FOREGROUND
+        result = await ollama_service.generate(
+            prompt=f"User request:\n{user_prompt}",
+            system=system_prompt,
+            model=active_model,
+            temperature=temperature,
+            num_predict=num_predict,
+            timeout=timeout_seconds,
+            format="json" if prefer_json_mode else None,
+            extra_options={"repeat_penalty": 1.2, "repeat_last_n": 128},
+            keep_alive="5m",
+            voice_modifier=False,
+            respect_rag_profile=False,
+            priority=PRIORITY_FOREGROUND,
+        )
+        raw_response = result.get("response", "")
 
-            if not raw_response.strip():
-                logger.warning(f"[StructuredLLM] Empty response (model={active_model}, provider={route.provider.value})")
-                return {}
+        if not raw_response.strip():
+            logger.warning(f"[StructuredLLM] Empty response (model={active_model}, provider={route.provider.value})")
+            return {}
+        try:
+            parsed = json.loads(raw_response)
+            return parsed
+        except json.JSONDecodeError as e:
+            # Sidecar may still wrap JSON in prose even with response_format.
+            # Try to recover with a permissive repair.
             try:
-                parsed = json.loads(raw_response)
-                return parsed
-            except json.JSONDecodeError as e:
-                # Sidecar may still wrap JSON in prose even with response_format.
-                # Try to recover with a permissive repair.
-                try:
-                    from utils.json_repair import robust_json_parse
-                    parsed = robust_json_parse(raw_response, label="StructuredLLM", fallback=None)
-                    if parsed and isinstance(parsed, (dict, list)):
-                        return parsed
-                except Exception:
-                    pass
-                logger.warning(f"[StructuredLLM] JSON parse failed (model={active_model}): {e}. Raw: {raw_response[:200]}")
-                return {}
+                from utils.json_repair import robust_json_parse
+                parsed = robust_json_parse(raw_response, label="StructuredLLM", fallback=None)
+                if parsed and isinstance(parsed, (dict, list)):
+                    return parsed
+            except Exception:
+                pass
+            logger.warning(f"[StructuredLLM] JSON parse failed (model={active_model}): {e}. Raw: {raw_response[:200]}")
+            return {}
     
     async def generate_quiz(
         self, 

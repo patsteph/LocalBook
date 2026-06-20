@@ -235,13 +235,16 @@ Focus on information that would be useful for answering questions about this doc
         try:
             # Use the universal vision dispatcher — handles both /api/generate
             # (Granite/LLaVA) and /api/chat (Gemma4/Llama3.2) automatically
-            from services.ollama_service import ollama_service
+            from services.ollama_service import ollama_service, PRIORITY_BACKGROUND
             api_style = self._get_vision_api_style()
+            # PDF image-description is bulk background ingest — yield the
+            # (single-wide) gemma4 lane to any user-initiated foreground call.
             description = await ollama_service.vision_describe(
                 image_b64=image_b64,
                 prompt=prompt,
                 model=self.vision_model,
                 api_style=api_style,
+                priority=PRIORITY_BACKGROUND,
             )
             
             if description and not description.startswith("Error:"):
@@ -332,6 +335,19 @@ Focus on information that would be useful for answering questions about this doc
                 f"{int(dpi_scale * 72)} DPI for vision extraction"
             )
 
+            # Evict the 9.6 GB main model before vision inference so the
+            # vision model + page renders fit in RAM (mirrors scan_pipeline).
+            try:
+                from services.memory_steward import free_for_pipeline
+                evicted = await free_for_pipeline(
+                    {self.vision_model, settings.ollama_fast_model, settings.embedding_model},
+                    reason="pdf_page_render",
+                )
+                if evicted:
+                    logger.info(f"[multimodal] freed RAM before page-render vision: unloaded {evicted}")
+            except Exception as _e:
+                logger.warning(f"[multimodal] free_for_pipeline skipped: {_e}")
+
             from services.ollama_service import ollama_service
             api_style = self._get_vision_api_style()
 
@@ -417,7 +433,20 @@ Focus on information that would be useful for answering questions about this doc
         to_process = prioritized[:self.max_images_per_doc]
         
         print(f"[MultimodalExtractor] Processing {len(to_process)} images ({len(charts)} charts) with {self.max_parallel_workers} workers")
-        
+
+        # Evict the 9.6 GB main model before the parallel vision batch so the
+        # vision model + concurrent renders fit in RAM (mirrors scan_pipeline).
+        try:
+            from services.memory_steward import free_for_pipeline
+            evicted = await free_for_pipeline(
+                {self.vision_model, settings.ollama_fast_model, settings.embedding_model},
+                reason="pdf_vision_batch",
+            )
+            if evicted:
+                logger.info(f"[multimodal] freed RAM before vision batch: unloaded {evicted}")
+        except Exception as _e:
+            logger.warning(f"[multimodal] free_for_pipeline skipped: {_e}")
+
         # Create semaphore for parallel processing
         semaphore = asyncio.Semaphore(self.max_parallel_workers)
         

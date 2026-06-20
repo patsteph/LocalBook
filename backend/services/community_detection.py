@@ -304,13 +304,14 @@ SUMMARY: [2-3 sentence summary]"""
         # an ephemeral httpx client per call (violated the centralization
         # rule and contributed to the 2026-06-15 background-task overload).
         try:
-            from services.ollama_service import ollama_service
+            from services.ollama_service import ollama_service, PRIORITY_BACKGROUND
             result = await ollama_service.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.3,
                 num_predict=150,
                 timeout=60.0,
+                priority=PRIORITY_BACKGROUND,
             )
             raw = (result or {}).get("response", "") or ""
 
