@@ -19,7 +19,7 @@ from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime
 
-from services.ollama_client import ollama_client
+from services.ollama_service import ollama_service
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -198,7 +198,7 @@ If it's not public or you're not sure, respond with: PRIVATE
 Respond with just the ticker or PRIVATE, nothing else."""
 
         try:
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.1
@@ -267,7 +267,7 @@ If competitors are private companies, use their names instead.
 Only include direct competitors in the same industry."""
 
         try:
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.3
@@ -370,7 +370,7 @@ Be accurate - only include URLs you're confident about."""
 
         enrichment = {}
         try:
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.3
@@ -428,7 +428,7 @@ Examples:
 Respond with just the company name or NONE, nothing else."""
 
         try:
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.1

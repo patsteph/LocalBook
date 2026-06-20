@@ -24,7 +24,7 @@ from enum import Enum
 from pydantic import BaseModel, Field
 import aiohttp
 
-from services.ollama_client import ollama_client
+from services.ollama_service import ollama_service
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -401,7 +401,7 @@ Respond with JSON only:
     "is_real_company": true/false (false if search results don't match a real company)
 }}"""
             
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=extract_prompt,
                 system="Extract company information from search results. Respond only with JSON.",
                 model=settings.ollama_fast_model,
@@ -523,7 +523,7 @@ Prioritize:
 
 Respond ONLY with the JSON array."""
 
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=categorize_prompt,
                 system="You are a research source curator. Respond only with a JSON array.",
                 model=settings.ollama_fast_model,
@@ -699,7 +699,7 @@ Examples:
 
         try:
             print("[SOURCE_DISCOVERY] Calling LLM for intent analysis...")
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 system="You are an intent analysis system. Respond only with valid JSON.",
                 model=settings.ollama_fast_model,
@@ -1095,7 +1095,7 @@ Respond with JSON array only (max 3 podcasts):
     {{"podcast_name": "Podcast Name", "episode_url": "URL if found", "description": "what was discussed"}}
 ]"""
                 
-                response = await ollama_client.generate(
+                response = await ollama_service.generate(
                     prompt=extract_prompt,
                     system="Extract podcast appearances. Respond only with JSON array.",
                     model=settings.ollama_fast_model,
@@ -1145,7 +1145,7 @@ Respond with JSON array only:
 Only include feeds you're confident exist. Better to suggest fewer high-quality feeds."""
 
         try:
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 system="You are a research assistant. Respond only with valid JSON array.",
                 model=settings.ollama_fast_model,
@@ -1304,7 +1304,7 @@ Respond with JSON array only (max 3 channels):
     {{"name": "Channel Name", "url": "youtube channel URL if found", "description": "what they cover"}}
 ]"""
                     
-                    response = await ollama_client.generate(
+                    response = await ollama_service.generate(
                         prompt=extract_prompt,
                         system="Extract YouTube channel information. Respond only with JSON array.",
                         model=settings.ollama_fast_model,
@@ -1555,7 +1555,7 @@ Respond with JSON array only (max 3 podcasts):
     {{"name": "Podcast Name", "url": "podcast website or RSS feed URL", "description": "brief description"}}
 ]"""
                 
-                response = await ollama_client.generate(
+                response = await ollama_service.generate(
                     prompt=extract_prompt,
                     system="Extract podcast information from search results. Respond only with JSON array.",
                     model=settings.ollama_fast_model,
@@ -1631,7 +1631,7 @@ Respond with JSON array only (max 2 newsletters):
     {{"name": "Newsletter Name", "url": "newsletter website", "description": "brief description"}}
 ]"""
                     
-                    response = await ollama_client.generate(
+                    response = await ollama_service.generate(
                         prompt=extract_prompt,
                         system="Extract newsletter information. Respond only with JSON array.",
                         model=settings.ollama_fast_model,
@@ -1728,7 +1728,7 @@ If it's a public company, respond with just the ticker (e.g., AAPL).
 If not public or unknown, respond with NULL."""
 
         try:
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.1

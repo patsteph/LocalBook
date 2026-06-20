@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Any
 import lancedb
 
 from config import settings
-from services.ollama_client import ollama_client
+from services.ollama_service import ollama_service
 from utils.singleflight import KeyedSingleflight
 
 logger = logging.getLogger(__name__)
@@ -506,7 +506,7 @@ class CuratorBrain:
                     f"and concept names."
                 )
                 try:
-                    response = await ollama_client.generate(
+                    response = await ollama_service.generate(
                         prompt=prompt,
                         model=settings.ollama_fast_model,
                         temperature=0.3,
@@ -2492,7 +2492,7 @@ class CuratorBrain:
         from config import settings as _settings
         try:
             from utils.json_repair import robust_json_parse
-            result = await ollama_client.generate(
+            result = await ollama_service.generate(
                 prompt=prompt,
                 system="You output only valid JSON for mental model inference.",
                 model=_settings.ollama_fast_model,
@@ -3372,7 +3372,7 @@ class CuratorBrain:
         from config import settings as _settings
         try:
             from utils.json_repair import robust_json_parse
-            result = await ollama_client.generate(
+            result = await ollama_service.generate(
                 prompt=prompt,
                 system="You output only valid JSON for stance classification.",
                 model=_settings.ollama_fast_model,
@@ -3568,7 +3568,7 @@ class CuratorBrain:
                 f"Write 1-2 sentences only."
             )
 
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.5,

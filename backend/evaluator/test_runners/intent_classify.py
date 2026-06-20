@@ -8,7 +8,7 @@ from evaluator.models import EvalResult
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
     """Run intent classification tests against known expected intents."""
     from services.intent_classifier import classify_intent
-    from services.ollama_client import ollama_client
+    from services.ollama_service import ollama_service
     from config import settings
 
     tests = config.get("intent_classification_tests", [])
@@ -38,7 +38,6 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             classified = await classify_intent(
                 message=test["message"],
                 agent_type=test.get("agent", "studio"),
-                ollama_client=ollama_client,
             )
             elapsed = (time.time() - start) * 1000
             result.total_time_ms = elapsed

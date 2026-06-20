@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from storage.memory_store import memory_store, AgentNamespace
 from models.memory import ArchivalMemoryEntry, MemorySourceType, MemoryImportance
-from services.ollama_client import ollama_client
+from services.ollama_service import ollama_service
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -1050,7 +1050,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
         try:
             import asyncio as _asyncio
             response = await _asyncio.wait_for(
-                ollama_client.generate(
+                ollama_service.generate(
                     prompt=prompt,
                     system="You are a research assistant. Respond only with a JSON array.",
                     model=settings.ollama_fast_model,
@@ -2639,7 +2639,7 @@ Respond with JSON only:
     "knowledge_overlap": {knowledge_overlap}
 }}"""
 
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 system="You are a research analyst identifying what's new. Respond only with valid JSON.",
                 model=settings.ollama_fast_model,

@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from storage.memory_store import memory_store, AgentNamespace
 from storage.notebook_store import notebook_store
 from models.memory import ArchivalMemoryEntry, MemorySourceType, MemoryImportance
-from services.ollama_client import ollama_client
+from services.ollama_service import ollama_service
 from config import settings
 from utils.tasks import safe_create_task
 
@@ -506,7 +506,7 @@ Respond with JSON only:
     "modifications": null or ["suggestion1", "suggestion2"]
 }}"""
 
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 system="You are an editorial judgment system. Respond only with valid JSON.",
                 model=settings.ollama_fast_model,  # Fast model — sufficient for approve/reject JSON
@@ -608,7 +608,7 @@ Respond with JSON only:
     "reasoning": "brief explanation"
 }}"""
 
-                response = await ollama_client.generate(
+                response = await ollama_service.generate(
                     prompt=prompt,
                     model=settings.ollama_fast_model,
                     temperature=0.2
@@ -908,7 +908,7 @@ Provide a synthesis that:
 
 Be concise and cite which notebook each insight comes from."""
 
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 system=f"You are {self.name}, a research curator. Personality: {self.personality}",
                 model=settings.ollama_model,
@@ -2677,11 +2677,11 @@ Return a JSON object with:
 Return ONLY valid JSON, no explanation."""
 
         try:
-            from services.ollama_client import ollama_client
+            from services.ollama_service import ollama_service
             from config import settings
             import json
 
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 system="You extract research themes from notes and suggest collector search keywords. Return only valid JSON.",
                 model=settings.ollama_fast_model,
@@ -3163,7 +3163,7 @@ Content:
 
 State the thesis in one clear sentence."""
 
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.3
@@ -3181,7 +3181,7 @@ State the thesis in one clear sentence."""
 Generate 3 search queries that would find contradicting evidence or alternative perspectives.
 Return only the queries, one per line."""
 
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.5
@@ -3224,7 +3224,7 @@ Generate ONE helpful follow-up question or suggestion. Examples:
 
 Keep it conversational and short (1-2 sentences). Return just the message, no JSON."""
 
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 system=f"You are {self.name}. Personality: {self.personality}",
                 model=settings.ollama_fast_model,
@@ -3269,7 +3269,7 @@ Respond with JSON only:
 }}"""
 
         try:
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 system=f"You are {self.name}. Analyze research content and suggest configuration. Respond with valid JSON only.",
                 model=settings.ollama_fast_model,
@@ -3443,7 +3443,7 @@ Respond with JSON only:
         Returns:
             List of 3-5 adjacent/tangential search queries
         """
-        from services.ollama_client import ollama_client
+        from services.ollama_service import ollama_service
         from config import settings
         
         subject = config.subject.strip() if hasattr(config, 'subject') else ""
@@ -3513,7 +3513,7 @@ Respond with ONLY a JSON array of strings, no other text:
         try:
             import asyncio as _asyncio
             response = await _asyncio.wait_for(
-                ollama_client.generate(
+                ollama_service.generate(
                     prompt=prompt,
                     system="You are a creative research librarian specializing in cross-disciplinary discovery. Respond only with a valid JSON array of search query strings.",
                     model=settings.ollama_model,
@@ -3696,7 +3696,7 @@ Respond with ONLY a JSON array of strings, no other text:
 
             import asyncio as _asyncio
             response = await _asyncio.wait_for(
-                ollama_client.generate(
+                ollama_service.generate(
                     prompt=prompt,
                     system="You are a research librarian. Respond only with a valid JSON array of search query strings.",
                     model=settings.ollama_model,  # Main model — this is the strategic brain
@@ -4605,7 +4605,7 @@ Rules:
             prompt = f"Conversation so far:{history_text}\n\nUSER: {message}"
         
         try:
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 system=system_prompt,
                 model=settings.ollama_model,
@@ -4768,7 +4768,7 @@ Rules:
             )
 
             try:
-                result = await ollama_client.generate(
+                result = await ollama_service.generate(
                     prompt=prompt,
                     system=f"You are {self.name}, drafting pre-emptive Studio content.",
                     model=settings.ollama_model,  # main model — quality matters here
@@ -5167,7 +5167,7 @@ Respond with JSON only:
     "reason": "one sentence explanation"
 }}"""
 
-                response = await ollama_client.generate(
+                response = await ollama_service.generate(
                     prompt=prompt,
                     model=settings.ollama_fast_model,
                     temperature=0.3

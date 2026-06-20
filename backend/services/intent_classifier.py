@@ -170,7 +170,7 @@ Rules:
 async def classify_intent(
     message: str,
     agent_type: str,
-    ollama_client=None,
+    ollama_service=None,
 ) -> Dict[str, Any]:
     """
     Classify user intent using the local LLM.
@@ -178,14 +178,14 @@ async def classify_intent(
     Args:
         message: The user's message
         agent_type: 'curator' or 'collector'
-        ollama_client: OllamaClient instance
+        ollama_service: LLM service instance (defaults to the canonical ollama_service)
 
     Returns:
         Dict with 'intent', 'params', and 'confidence' keys
     """
-    if ollama_client is None:
-        from services.ollama_client import ollama_client as _client
-        ollama_client = _client
+    if ollama_service is None:
+        from services.ollama_service import ollama_service as _default
+        ollama_service = _default
 
     if agent_type == "curator":
         intents = CURATOR_INTENTS
@@ -213,7 +213,7 @@ async def classify_intent(
     prompt = f'User message: "{message}"'
 
     try:
-        result = await ollama_client.generate(
+        result = await ollama_service.generate(
             prompt=prompt,
             system=system,
             temperature=0.0,

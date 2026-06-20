@@ -21,7 +21,6 @@ from typing import Any, Dict, List, Optional
 from config import settings
 from services.image_preprocessor import check_blur, enhance_for_ocr
 from services.memory_steward import free_for_pipeline
-from services.ollama_client import ollama_client
 from services.ollama_service import ollama_service
 from services.page_classifier import classify_page
 from services.progress_reporter import ProgressReporter, get_noop_reporter
@@ -181,7 +180,7 @@ async def _refine_visual(raw: str, mode: str) -> str:
     if mode not in _REFINE_SYSTEMS:
         return raw
     try:
-        result = await ollama_client.generate(
+        result = await ollama_service.generate(
             prompt=_REFINE_PROMPTS[mode].format(raw=raw),
             model=settings.ollama_model,
             system=_REFINE_SYSTEMS[mode],
@@ -224,7 +223,7 @@ async def _translate_to(text: str, target_language: Optional[str]) -> str:
         f"no commentary or wrapper:\n\n{text}"
     )
     try:
-        result = await ollama_client.generate(
+        result = await ollama_service.generate(
             prompt=user_prompt,
             model=settings.ollama_model,
             system=system_prompt,
@@ -1003,7 +1002,7 @@ class ScanPipeline:
         cleanup_model = _cleanup_model()
         logger.info(f"[scan] Cleanup pass with model={cleanup_model}")
         try:
-            result = await ollama_client.generate(
+            result = await ollama_service.generate(
                 prompt=CLEANUP_PROMPT_TMPL.format(raw=raw),
                 model=cleanup_model,
                 system=CLEANUP_SYSTEM,
@@ -1054,7 +1053,7 @@ class ScanPipeline:
 
         # Call 1: structured markdown summary + reconstruction prompt
         try:
-            result = await ollama_client.generate(
+            result = await ollama_service.generate(
                 prompt=PHOTO_ENRICH_PROMPT_TMPL.format(raw=raw),
                 model=enrich_model,
                 system=PHOTO_ENRICH_SYSTEM,
@@ -1071,7 +1070,7 @@ class ScanPipeline:
 
         # Call 2: keywords (separate call so the format is enforceable)
         try:
-            kw_result = await ollama_client.generate(
+            kw_result = await ollama_service.generate(
                 prompt=PHOTO_KEYWORDS_PROMPT_TMPL.format(raw=raw),
                 model=enrich_model,
                 system=PHOTO_ENRICH_SYSTEM,

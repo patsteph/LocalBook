@@ -8,7 +8,7 @@ from evaluator.models import EvalResult
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
     """Run fast follow-up tests: fast model (direct generate) + main model (RAG query)."""
     from services.rag_engine import rag_engine
-    from services.ollama_client import ollama_client
+    from services.ollama_service import ollama_service
     from config import settings
 
     results = []
@@ -28,7 +28,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
 
     try:
         start = time.time()
-        response = await ollama_client.generate(
+        response = await ollama_service.generate(
             prompt=f"Summarize the following in 3 bullet points:\n\n{q['question']}",
             model=fast_model,
             num_predict=150,

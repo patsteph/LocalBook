@@ -180,7 +180,7 @@ class MemoryManager:
         # findings as brain reflections so the next morning brief picks them up.
         try:
             from services.curator_brain import curator_brain
-            from services.ollama_client import ollama_client
+            from services.ollama_service import ollama_service
             from config import settings
 
             dirty = curator_brain.get_dirty_notebooks()
@@ -209,7 +209,7 @@ class MemoryManager:
                 # 2026-06-15: was timeout=15.0 — phi4-mini consistently
                 # takes 20–35s when warm, so the call was being cancelled
                 # before producing any reflection every consolidation cycle.
-                response = await ollama_client.generate(
+                response = await ollama_service.generate(
                     prompt=prompt,
                     model=settings.ollama_fast_model,
                     temperature=0.3,

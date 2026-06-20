@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field, asdict
 
-from services.ollama_client import ollama_client
+from services.ollama_service import ollama_service
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -173,7 +173,7 @@ Respond with JSON array only:
 Respond with the JSON array only, no other text."""
 
     try:
-        response = await ollama_client.generate(
+        response = await ollama_service.generate(
             prompt=prompt,
             model=settings.ollama_fast_model,
             temperature=0.2,

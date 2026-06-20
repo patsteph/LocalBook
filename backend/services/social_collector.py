@@ -444,7 +444,7 @@ class SocialCollectorService:
     ) -> Optional[Dict[str, Any]]:
         """Use LLM to extract structured data from raw page text."""
         try:
-            from services.ollama_client import ollama_client
+            from services.ollama_service import ollama_service
 
             prompt = f"""Extract structured profile information from this {platform} profile page text.
 Return JSON only with these fields (use null for missing):
@@ -462,7 +462,7 @@ Return JSON only with these fields (use null for missing):
 Profile text:
 {raw_text[:3000]}"""
 
-            response = await ollama_client.generate(
+            response = await ollama_service.generate(
                 prompt=prompt,
                 system="You extract structured profile data. Respond with JSON only.",
                 model=settings.ollama_fast_model,

@@ -116,12 +116,11 @@ def _get_model_options(model_name: str) -> dict:
 # call site managing it. No-op for models without a profile (olmo/phi/llama),
 # for vision calls (images), and when the caller opts out (respect=False).
 #
-# FEATURE FLAG (A/B during PB-2a, droppable after PB-2c): default OFF so this is
-# a pure no-op port — existing ollama_service callers stay byte-identical to
-# before. Set LOCALBOOK_OLLAMA_RAG_PROFILE=1 to enable and A/B against the old
-# path. Once the enabled path is validated, flip the default to ON, migrate the
-# ollama_client callers (PB-2c), then drop the flag. Audit ref: 10_plan PB-2a.
-_RAG_PROFILE_ENABLED = os.getenv("LOCALBOOK_OLLAMA_RAG_PROFILE", "0") == "1"
+# FEATURE FLAG (A/B for PB-2a/2c, droppable once 2c settles): default ON
+# (flipped 2026-06-19, after the no-op path validated + the 2c-generate callers
+# migrated onto ollama_service). KILL-SWITCH: LOCALBOOK_OLLAMA_RAG_PROFILE=0
+# reverts to the old no-overlay behavior for instant rollback. Audit: 10_plan PB-2a.
+_RAG_PROFILE_ENABLED = os.getenv("LOCALBOOK_OLLAMA_RAG_PROFILE", "1") != "0"
 
 
 def _apply_rag_profile(

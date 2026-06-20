@@ -455,7 +455,7 @@ async def _dispatch_multi_intent(chat_query: "ChatQuery", agent_type: str, handl
     pre-multi-intent error recovery path.
     """
     from services.intent_classifier import classify_intent
-    from services.ollama_client import ollama_client
+    from services.ollama_service import ollama_service
 
     q = chat_query.question
 
@@ -487,7 +487,7 @@ async def _dispatch_multi_intent(chat_query: "ChatQuery", agent_type: str, handl
 
     # Try to classify the message into one or more actions.
     try:
-        classified = await classify_intent(q, agent_type, ollama_client)
+        classified = await classify_intent(q, agent_type)
     except Exception as e:
         logger.warning(f"[multi-intent] Classification failed for {agent_type}: {e}; delegating to handler")
         async for chunk in handler_fn(chat_query):
@@ -556,7 +556,7 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
     """
     from agents.curator import curator
     from services.cross_notebook_search import cross_notebook_search
-    from services.ollama_client import ollama_client
+    from services.ollama_service import ollama_service
     from services.intent_classifier import classify_intent
 
     curator_name = curator.name or "Curator"
@@ -586,7 +586,7 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
         if injected_action:
             classified = injected_action
         else:
-            classified = await classify_intent(q, "curator", ollama_client)
+            classified = await classify_intent(q, "curator")
         intent = classified["intent"]
         params = classified.get("params", {})
         handled = False
@@ -1503,7 +1503,7 @@ Synthesize a comprehensive answer that:
 Answer:"""
 
                 try:
-                    response = await ollama_client.generate(
+                    response = await ollama_service.generate(
                         prompt=prompt,
                         system=f"You are {curator_name}, a research curator who synthesizes knowledge across multiple research notebooks. Personality: {curator.personality}",
                         model=settings.ollama_model,
@@ -1805,7 +1805,7 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
     import re as _re
     from storage.source_store import source_store
     from agents.collector import get_collector, CollectionMode, ApprovalMode
-    from services.ollama_client import ollama_client
+    from services.ollama_service import ollama_service
     from services.intent_classifier import classify_intent
 
     collector_agent = get_collector(chat_query.notebook_id)
@@ -1872,7 +1872,7 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
         if injected_action:
             classified = injected_action
         else:
-            classified = await classify_intent(q, "collector", ollama_client)
+            classified = await classify_intent(q, "collector")
         intent = classified["intent"]
         params = classified.get("params", {})
 
@@ -2551,7 +2551,7 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
                 )
                 synthesized = ""
                 try:
-                    resp = await ollama_client.generate(
+                    resp = await ollama_service.generate(
                         prompt=synth_prompt,
                         model=getattr(settings, "ollama_fast_model", None) or settings.ollama_model,
                         temperature=0.3,
@@ -3139,7 +3139,7 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
     the canonical function matrix.
     """
     from services.intent_classifier import classify_intent
-    from services.ollama_client import ollama_client
+    from services.ollama_service import ollama_service
     from services.credential_locker import list_imap_accounts, update_imap_state
     from agents.correspondent import (
         correspondent_agent, _load_sender_routing, _save_sender_routing,
@@ -3189,7 +3189,7 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
             # and falls through to the classifier for anything else.
             intent, params = _quick_intent_for_correspondent(q)
             if not intent:
-                cls = await classify_intent(q, "correspondent", ollama_client=ollama_client)
+                cls = await classify_intent(q, "correspondent")
                 intent = (cls or {}).get("intent") or "show_status"
                 params = (cls or {}).get("params") or {}
 
@@ -4768,7 +4768,7 @@ async def _stream_research(chat_query: ChatQuery, injected_action: Optional[Dict
     Results are streamed as a narrative summary followed by a structured
     'research_results' event so the frontend can render approval cards.
     """
-    from services.ollama_client import ollama_client
+    from services.ollama_service import ollama_service
     from services.intent_classifier import classify_intent
     from services.research_engine import research_engine, DeepDiveFilters
 
@@ -4788,7 +4788,7 @@ async def _stream_research(chat_query: ChatQuery, injected_action: Optional[Dict
         if injected_action:
             classified = injected_action
         else:
-            classified = await classify_intent(q, "research", ollama_client)
+            classified = await classify_intent(q, "research")
         intent = classified["intent"]
         params = classified.get("params", {})
 
@@ -4929,7 +4929,7 @@ async def _stream_studio(chat_query: ChatQuery, injected_action: Optional[Dict[s
     documents, quizzes, visuals, videos) directly from the chat, using the
     current conversation as context.
     """
-    from services.ollama_client import ollama_client
+    from services.ollama_service import ollama_service
     from services.intent_classifier import classify_intent
     from services.event_logger import log_content_generated
 
@@ -4950,7 +4950,7 @@ async def _stream_studio(chat_query: ChatQuery, injected_action: Optional[Dict[s
         if injected_action:
             classified = injected_action
         else:
-            classified = await classify_intent(q, "studio", ollama_client)
+            classified = await classify_intent(q, "studio")
         intent = classified["intent"]
         params = classified.get("params", {})
         topic = (params.get("topic") or "").strip() or None

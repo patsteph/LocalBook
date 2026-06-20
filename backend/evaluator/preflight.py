@@ -160,10 +160,10 @@ async def _warm_text_model(model_name: str, role: str = "main") -> PreflightChec
         return PreflightCheck(name=check_name, status="warn", message=f"No {role} model configured")
     try:
         import asyncio as _asyncio
-        from services.ollama_client import ollama_client
+        from services.ollama_service import ollama_service
         t0 = _time.time()
         resp = await _asyncio.wait_for(
-            ollama_client.generate(
+            ollama_service.generate(
                 prompt="ping",
                 model=model_name,
                 temperature=0.0,
