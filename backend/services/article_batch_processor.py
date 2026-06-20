@@ -126,6 +126,9 @@ async def batch_analyze_article(
     )
 
     try:
+        # Yield to any in-progress foreground generation (see foreground_guard).
+        from services.memory_steward import await_background_clearance
+        await await_background_clearance()
         result = await ollama_service.generate(
             prompt=user_prompt,
             system=_BATCH_SYSTEM,

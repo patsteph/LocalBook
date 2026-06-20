@@ -1084,9 +1084,21 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
                 break
         
         yield f"event: done\ndata: {json_module.dumps({'total': len(seen_templates)})}\n\n"
-    
+
+    async def _guarded_stream():
+        # Hold the foreground guard for the entire stream — including the
+        # context-build + reranker phase up front, which is where the 18 GB
+        # box was tipping into swap under a concurrent background flood. The
+        # async-with releases on normal completion AND on client disconnect
+        # (GeneratorExit), so background work always resumes. The 300 s
+        # clearance timeout is a further safety net.
+        from services.memory_steward import foreground_guard
+        async with foreground_guard("visual"):
+            async for chunk in generate_stream():
+                yield chunk
+
     return StreamingResponse(
-        generate_stream(),
+        _guarded_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     )
@@ -1255,25 +1267,29 @@ async def v2_compose(request: V2ComposeRequest):
     if not request.topic or not request.topic.strip():
         raise HTTPException(status_code=400, detail="topic is required")
 
-    content = request.topic
-    if request.include_sources:
-        try:
-            built = await context_builder.build_context(
-                notebook_id=request.notebook_id,
-                skill_id="visual",
-                topic=request.topic,
-            )
-            if built.sources_used > 0:
-                content = f"{request.topic}\n\nSource content:\n{built.context}"
-        except Exception as e:
-            logger.warning(f"[v2_compose] context_builder failed: {e}")
+    # Pause background AI floods across context-build + compose (see
+    # foreground_guard rationale in memory_steward).
+    from services.memory_steward import foreground_guard
+    async with foreground_guard("visual"):
+        content = request.topic
+        if request.include_sources:
+            try:
+                built = await context_builder.build_context(
+                    notebook_id=request.notebook_id,
+                    skill_id="visual",
+                    topic=request.topic,
+                )
+                if built.sources_used > 0:
+                    content = f"{request.topic}\n\nSource content:\n{built.context}"
+            except Exception as e:
+                logger.warning(f"[v2_compose] context_builder failed: {e}")
 
-    visual = await visual_composer.compose(
-        content=content,
-        template_id=request.template_id,
-        force_idiom=request.force_idiom,
-        topic=request.topic,
-    )
+        visual = await visual_composer.compose(
+            content=content,
+            template_id=request.template_id,
+            force_idiom=request.force_idiom,
+            topic=request.topic,
+        )
     payload = _visual_to_dict(visual)
 
     # Telemetry hook (same surface as existing endpoints)
@@ -1368,7 +1384,16 @@ async def v2_compose_stream(request: V2ComposeRequest):
         finally:
             yield "event: done\ndata: {}\n\n"
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    async def _guarded_stream():
+        # Pause background AI floods across the whole compose (context-build
+        # included) so foreground gen runs against a calm machine. See the
+        # foreground_guard rationale in memory_steward.
+        from services.memory_steward import foreground_guard
+        async with foreground_guard("visual"):
+            async for chunk in stream():
+                yield chunk
+
+    return StreamingResponse(_guarded_stream(), media_type="text/event-stream")
 
 
 @router.post("/v2/render/png")

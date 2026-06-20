@@ -47,52 +47,61 @@ logger = logging.getLogger(__name__)
 # (capture queues are serial per session and global concurrency is low).
 _lock = asyncio.Lock()
 
-# ── Background-gemma pause gate ─────────────────────────────────────────
-# A foreground RAM-heavy pipeline (Klein image generation) evicts the 9.6 GB
-# main model so the image model has room on a 16 GB swap-mode box. But that
-# eviction is futile if background gemma work (the PDF-vision `describe_image`
-# flood) immediately reloads the model — gemma + Klein then thrash 16 GB and
-# image gen balloons from ~90 s to ~360 s. This gate lets the foreground
-# pipeline *pause* background gemma work for its duration: background callers
-# await `await_background_clearance()` before their gemma call, and the
-# foreground pipeline holds `pause_background_gemma()` across evict + generate.
+# ── Foreground guard: quiesce background AI work during foreground gen ──
+# On an 18 GB swap-mode box the resident working set (gemma4 9.6 GB + phi4
+# 3 GB + embed 1 GB) leaves only ~4 GB of headroom. When the user kicks off a
+# foreground generation (visual / doc / quiz) the pipeline loads a reranker +
+# builds a large context — and if the background AI floods (community-summary
+# storm, per-article analysis, PDF-vision batch) are running concurrently, the
+# combined footprint tips into swap. The machine then thrashes so hard the
+# whole event loop stalls, /health stops responding, and Tauri SIGTERM-restarts
+# the backend (observed 2026-06-20: 2m48s of total silence mid context-build).
+#
+# The fix the user approved: pause background AI work for the *whole* duration
+# of a foreground generation, not just the final image phase. Foreground
+# generators hold `foreground_guard(reason)` from the very start (before
+# context-build); background flood callers `await_background_clearance()`
+# before their LLM work and yield until the guard releases.
 # Event semantics: SET = background allowed (normal), CLEAR = paused.
-_bg_gemma_allowed = asyncio.Event()
-_bg_gemma_allowed.set()
+_bg_allowed = asyncio.Event()
+_bg_allowed.set()
+_bg_pause_depth = 0
 
 
 @asynccontextmanager
-async def pause_background_gemma(reason: str = "foreground") -> AsyncIterator[None]:
-    """Pause background gemma work for the duration of a foreground RAM-heavy
-    pipeline. New background gemma calls block at `await_background_clearance`
-    until the context exits. Re-entrant-safe via a depth counter so nested or
-    concurrent foreground pipelines don't resume early."""
+async def foreground_guard(reason: str = "foreground") -> AsyncIterator[None]:
+    """Pause background AI floods for the duration of a foreground generation.
+    Calls made to `await_background_clearance` while held block until the guard
+    exits. Re-entrant-safe via a depth counter so nested or concurrent
+    foreground pipelines don't resume background work early."""
     global _bg_pause_depth
     _bg_pause_depth += 1
-    _bg_gemma_allowed.clear()
-    logger.info(f"[memory-steward] background gemma paused ({reason}, depth={_bg_pause_depth})")
+    _bg_allowed.clear()
+    logger.info(f"[memory-steward] background paused for foreground ({reason}, depth={_bg_pause_depth})")
     try:
         yield
     finally:
         _bg_pause_depth -= 1
         if _bg_pause_depth <= 0:
             _bg_pause_depth = 0
-            _bg_gemma_allowed.set()
-            logger.info(f"[memory-steward] background gemma resumed ({reason})")
+            _bg_allowed.set()
+            logger.info(f"[memory-steward] background resumed ({reason})")
 
 
-_bg_pause_depth = 0
+# Back-compat alias — visual_composer's Klein-phase pause still calls this.
+# Nesting under the endpoint-level guard is harmless (depth-counted).
+pause_background_gemma = foreground_guard
 
 
 async def await_background_clearance(timeout: float = 300.0) -> None:
-    """Background gemma callers await this before their LLM call. Returns
-    immediately when not paused; otherwise waits (bounded) until a foreground
-    pipeline resumes background work. The timeout is a safety valve so a
-    crashed foreground pipeline can never deadlock background ingest."""
-    if _bg_gemma_allowed.is_set():
+    """Background flood callers await this before their LLM work. Returns
+    immediately when not paused; otherwise waits (bounded) until the foreground
+    guard releases. The timeout is a safety valve so a crashed/disconnected
+    foreground pipeline can never permanently deadlock background ingest."""
+    if _bg_allowed.is_set():
         return
     try:
-        await asyncio.wait_for(_bg_gemma_allowed.wait(), timeout=timeout)
+        await asyncio.wait_for(_bg_allowed.wait(), timeout=timeout)
     except asyncio.TimeoutError:
         logger.warning(
             "[memory-steward] background clearance wait timed out "

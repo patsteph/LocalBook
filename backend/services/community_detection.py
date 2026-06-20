@@ -305,6 +305,11 @@ SUMMARY: [2-3 sentence summary]"""
         # rule and contributed to the 2026-06-15 background-task overload).
         try:
             from services.ollama_service import ollama_service, PRIORITY_BACKGROUND
+            # Yield to any in-progress foreground generation — this summary
+            # storm is the heaviest background flood and must not thrash the
+            # machine while the user is waiting on a visual/doc.
+            from services.memory_steward import await_background_clearance
+            await await_background_clearance()
             result = await ollama_service.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
