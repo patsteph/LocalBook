@@ -372,86 +372,95 @@ async def stream_ollama(
         _route = _resolve_provider(model)
         _use_chat = rag_profile.get("use_chat_endpoint", False) and _route.api_style == "ollama"
 
-        if _use_chat:
-            chat_payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": True,
-                "keep_alive": _keep_alive,
-                "options": stream_options,
-            }
-            if stop_sequences:
-                chat_payload["stop"] = stop_sequences
-            if "think" in rag_profile:
-                chat_payload["think"] = rag_profile["think"]
-            async with client.stream("POST", f"{_route.base_url}/api/chat", json=chat_payload) as response:
-                async for line in response.aiter_lines():
-                    if line:
-                        data = json.loads(line)
-                        token = data.get("message", {}).get("content", "")
-                        if token:
-                            yield token
-                        if data.get("done"):
-                            _record_ollama_tokens(data)
-        elif _route.api_style == "ollama":
-            request_json = {
-                "model": model,
-                "prompt": f"{system_prompt}\n\n{prompt}",
-                "stream": True,
-                "keep_alive": _keep_alive,
-                "options": stream_options,
-            }
-            if stop_sequences:
-                request_json["stop"] = stop_sequences
-            async with client.stream(
-                "POST",
-                f"{_route.base_url}/api/generate",
-                json=request_json,
-            ) as response:
-                async for line in response.aiter_lines():
-                    if line:
-                        data = json.loads(line)
-                        if data.get("response"):
-                            yield data["response"]
-                        if data.get("done"):
-                            _record_ollama_tokens(data)
-        else:
-            # OpenAI-compatible streaming (llama-server sidecar).
-            request_json = {
-                "model": model,
-                "prompt": f"{system_prompt}\n\n{prompt}",
-                "stream": True,
-                "keep_alive": _keep_alive,
-                "options": stream_options,
-            }
-            if stop_sequences:
-                request_json["stop"] = stop_sequences
-            openai_payload = ollama_to_openai_payload(request_json, is_chat=False)
-            async with client.stream(
-                "POST",
-                f"{_route.base_url}/v1/chat/completions",
-                json=openai_payload,
-            ) as response:
-                async for line in response.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-                    payload_text = line[5:].strip()
-                    if not payload_text or payload_text == "[DONE]":
-                        continue
-                    try:
-                        chunk = json.loads(payload_text)
-                    except Exception:
-                        continue
-                    translated = openai_stream_chunk_to_ollama(chunk, is_chat=False)
-                    if not translated:
-                        continue
-                    if translated.get("response"):
-                        yield translated["response"]
-                    if translated.get("done"):
-                        _record_ollama_tokens(translated)
+        # Hold the per-model priority lane for the whole stream at FOREGROUND
+        # priority. stream_ollama is always user-initiated (chat answer or doc
+        # generation), so it must (a) not run as a 2nd concurrent gemma call
+        # against background work — the thrash the lane prevents — and (b) jump
+        # ahead of background ingest. This is the rag_llm half of PB-2d: it owns
+        # its own httpx streaming + stop-sequence logic, so it joins the lane
+        # via model_lane() rather than migrating to ollama_service.stream_generate.
+        from services.ollama_service import model_lane, PRIORITY_FOREGROUND
+        async with model_lane(model, PRIORITY_FOREGROUND):
+            if _use_chat:
+                chat_payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": True,
+                    "keep_alive": _keep_alive,
+                    "options": stream_options,
+                }
+                if stop_sequences:
+                    chat_payload["stop"] = stop_sequences
+                if "think" in rag_profile:
+                    chat_payload["think"] = rag_profile["think"]
+                async with client.stream("POST", f"{_route.base_url}/api/chat", json=chat_payload) as response:
+                    async for line in response.aiter_lines():
+                        if line:
+                            data = json.loads(line)
+                            token = data.get("message", {}).get("content", "")
+                            if token:
+                                yield token
+                            if data.get("done"):
+                                _record_ollama_tokens(data)
+            elif _route.api_style == "ollama":
+                request_json = {
+                    "model": model,
+                    "prompt": f"{system_prompt}\n\n{prompt}",
+                    "stream": True,
+                    "keep_alive": _keep_alive,
+                    "options": stream_options,
+                }
+                if stop_sequences:
+                    request_json["stop"] = stop_sequences
+                async with client.stream(
+                    "POST",
+                    f"{_route.base_url}/api/generate",
+                    json=request_json,
+                ) as response:
+                    async for line in response.aiter_lines():
+                        if line:
+                            data = json.loads(line)
+                            if data.get("response"):
+                                yield data["response"]
+                            if data.get("done"):
+                                _record_ollama_tokens(data)
+            else:
+                # OpenAI-compatible streaming (llama-server sidecar).
+                request_json = {
+                    "model": model,
+                    "prompt": f"{system_prompt}\n\n{prompt}",
+                    "stream": True,
+                    "keep_alive": _keep_alive,
+                    "options": stream_options,
+                }
+                if stop_sequences:
+                    request_json["stop"] = stop_sequences
+                openai_payload = ollama_to_openai_payload(request_json, is_chat=False)
+                async with client.stream(
+                    "POST",
+                    f"{_route.base_url}/v1/chat/completions",
+                    json=openai_payload,
+                ) as response:
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        payload_text = line[5:].strip()
+                        if not payload_text or payload_text == "[DONE]":
+                            continue
+                        try:
+                            chunk = json.loads(payload_text)
+                        except Exception:
+                            continue
+                        translated = openai_stream_chunk_to_ollama(chunk, is_chat=False)
+                        if not translated:
+                            continue
+                        if translated.get("response"):
+                            yield translated["response"]
+                        if translated.get("done"):
+                            _record_ollama_tokens(translated)
 
 
 # ─── OpenAI ──────────────────────────────────────────────────────────────────────

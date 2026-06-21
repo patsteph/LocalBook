@@ -32,6 +32,7 @@ scan pipeline must continue even if memory mgmt fails.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Iterable, List, Optional, Set
@@ -67,20 +68,33 @@ _bg_allowed = asyncio.Event()
 _bg_allowed.set()
 _bg_pause_depth = 0
 
+# Per-task marker: True inside a foreground_guard (and any task spawned within
+# it — contextvars propagate to child tasks). Makes await_background_clearance
+# deadlock-proof: an LLM call that is *part of* a foreground op (e.g. the query
+# path's entity extraction, called transitively from a guarded visual gen)
+# must NOT wait for the guard it is itself inside. Only genuinely independent
+# background work (spawned outside any guard) actually waits.
+_in_foreground: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "lb_in_foreground", default=False
+)
+
 
 @asynccontextmanager
 async def foreground_guard(reason: str = "foreground") -> AsyncIterator[None]:
     """Pause background AI floods for the duration of a foreground generation.
-    Calls made to `await_background_clearance` while held block until the guard
-    exits. Re-entrant-safe via a depth counter so nested or concurrent
-    foreground pipelines don't resume background work early."""
+    Calls made to `await_background_clearance` from *independent* background
+    tasks block until the guard exits; calls from within this op's own task
+    tree pass straight through (see `_in_foreground`). Re-entrant-safe via a
+    depth counter so nested/concurrent foreground pipelines don't resume early."""
     global _bg_pause_depth
     _bg_pause_depth += 1
     _bg_allowed.clear()
+    _tok = _in_foreground.set(True)
     logger.info(f"[memory-steward] background paused for foreground ({reason}, depth={_bg_pause_depth})")
     try:
         yield
     finally:
+        _in_foreground.reset(_tok)
         _bg_pause_depth -= 1
         if _bg_pause_depth <= 0:
             _bg_pause_depth = 0
@@ -97,8 +111,13 @@ async def await_background_clearance(timeout: float = 300.0) -> None:
     """Background flood callers await this before their LLM work. Returns
     immediately when not paused; otherwise waits (bounded) until the foreground
     guard releases. The timeout is a safety valve so a crashed/disconnected
-    foreground pipeline can never permanently deadlock background ingest."""
-    if _bg_allowed.is_set():
+    foreground pipeline can never permanently deadlock background ingest.
+
+    Deadlock-proof: if the caller is *inside* a foreground op (its task tree is
+    marked via `_in_foreground`), this returns immediately — a foreground op
+    must never block on its own guard. So this is safe to call from dual-use
+    code (e.g. entity extraction that runs at ingest AND in the query path)."""
+    if _bg_allowed.is_set() or _in_foreground.get():
         return
     try:
         await asyncio.wait_for(_bg_allowed.wait(), timeout=timeout)

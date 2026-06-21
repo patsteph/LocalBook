@@ -118,6 +118,9 @@ Example: ["financials", "competitor", "quarterly-results"]
 Tags:"""
 
         timeout = httpx.Timeout(15.0, read=20.0)
+        # PB-2d: ingest-time auto-tagging is background — yield to foreground gen.
+        from services.memory_steward import await_background_clearance
+        await await_background_clearance()
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{settings.ollama_base_url}/api/generate",

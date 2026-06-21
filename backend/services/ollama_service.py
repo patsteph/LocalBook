@@ -33,6 +33,7 @@ import logging
 import os
 import time
 import traceback
+from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
@@ -140,6 +141,28 @@ def _semaphore_for_model(model: str) -> PriorityLane:
     if bucket not in _MODEL_SEMAPHORES:
         _MODEL_SEMAPHORES[bucket] = PriorityLane(_SEMAPHORE_CAPS[bucket])
     return _MODEL_SEMAPHORES[bucket]
+
+
+@asynccontextmanager
+async def model_lane(model: str, priority: int = PRIORITY_NORMAL):
+    """Public accessor to a model's priority lane, for inference callers that
+    own their own httpx streaming (e.g. rag_llm's chat stream) or haven't been
+    fully migrated to generate()/chat() yet. Acquiring this makes a raw-httpx
+    call serialize on the SAME lane as generate/chat/embed, so it can't run as
+    a 2nd concurrent call to the heavy model (the thrash the lane prevents) and
+    it honors foreground/background priority. Hold the block only around the
+    network call — the lane is held for the whole `async with` body.
+
+    Usage:
+        async with model_lane(model, PRIORITY_FOREGROUND):
+            async with client.stream(...) as r: ...
+    """
+    sem = _semaphore_for_model(model)
+    await sem.acquire(priority)
+    try:
+        yield
+    finally:
+        sem.release()
 
 
 def _get_caller() -> str:

@@ -440,6 +440,8 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
         )
         async with semaphore:
             try:
+                from services.memory_steward import await_background_clearance
+                await await_background_clearance()  # PB-2d: chunk-question gen is ingest/background
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     response = await client.post(
                         f"{settings.ollama_base_url}/api/generate",
@@ -546,6 +548,8 @@ Summary:"""
 
     try:
         timeout = httpx.Timeout(30.0, read=60.0)
+        from services.memory_steward import await_background_clearance
+        await await_background_clearance()  # PB-2d: doc-summary gen is ingest/background
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{settings.ollama_base_url}/api/generate",
