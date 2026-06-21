@@ -195,8 +195,6 @@ Output as JSON array. Example:
 JSON (only output relationships you find, empty array if none):"""
 
         try:
-            from services.memory_steward import await_background_clearance
-            await await_background_clearance()  # PB-2d: relationship extraction is ingest/background
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{settings.ollama_base_url}/api/generate",

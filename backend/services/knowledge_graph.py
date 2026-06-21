@@ -749,8 +749,6 @@ Respond ONLY with JSON:"""
 
 What theme or topic connects them? Respond with just a 2-4 word name (no punctuation):"""
             
-            from services.memory_steward import await_background_clearance
-            await await_background_clearance()  # PB-2d: graph-build is background
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{self.ollama_url}/api/generate",
@@ -1099,8 +1097,6 @@ What theme or topic connects them? Respond with just a 2-4 word name (no punctua
             timeout = 15.0 if attempt == 0 else 30.0
             
             try:
-                from services.memory_steward import await_background_clearance
-                await await_background_clearance()  # PB-2d: concept extraction is ingest/background
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     print(f"[KG-LLM] Calling {self.extraction_model} (attempt {attempt + 1}, timeout={timeout}s)")
                     response = await client.post(

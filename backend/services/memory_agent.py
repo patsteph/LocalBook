@@ -144,8 +144,6 @@ Respond ONLY with the JSON, no other text."""
     
     async def _call_llm_for_extraction(self, prompt: str) -> Optional[Dict]:
         """Call LLM to extract memories"""
-        from services.memory_steward import await_background_clearance
-        await await_background_clearance()  # PB-2d: memory extraction is post-chat background
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{self.ollama_url}/api/generate",
@@ -546,8 +544,6 @@ Rules:
 - critical_context should capture details that would be hard to re-derive"""
 
         try:
-            from services.memory_steward import await_background_clearance
-            await await_background_clearance()  # PB-2d: checkpoint summary is background
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{self.ollama_url}/api/generate",

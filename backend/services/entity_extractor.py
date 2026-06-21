@@ -220,11 +220,6 @@ Output as JSON array:
 JSON:"""
 
         try:
-            # PB-2d: ingest-time entity extraction is background work — yield to
-            # any in-progress foreground generation (visual/doc/chat) so it
-            # doesn't add GPU/RAM contention while the user is waiting.
-            from services.memory_steward import await_background_clearance
-            await await_background_clearance()
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{settings.ollama_base_url}/api/generate",

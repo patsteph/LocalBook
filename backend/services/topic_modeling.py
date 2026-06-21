@@ -557,8 +557,6 @@ Theme name:"""
 
         try:
             timeout = httpx.Timeout(15.0, read=30.0)
-            from services.memory_steward import await_background_clearance
-            await await_background_clearance()  # PB-2d: topic labeling is background
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     f"{settings.ollama_base_url}/api/generate",

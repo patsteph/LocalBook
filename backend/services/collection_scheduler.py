@@ -222,6 +222,16 @@ class CollectionScheduler:
             logger.info(f"Scheduled collection due for '{nb_name}' ({notebook_id[:8]}) — frequency: {freq}")
             print(f"[SCHEDULER] Running scheduled collection for '{nb_name}' (freq={freq})")
 
+            # Re-scope (2026-06-20): a scheduled collection is autonomous,
+            # deferrable work — gemma query-gen + web research + scraping. Pause
+            # it while the user has a foreground generation running (visual/chat/
+            # doc) so it can't pile load onto an 18 GB box and tip it into swap
+            # (observed crash: Costco sync fired mid-visual → SIGTERM restart).
+            # run_immediate() (user clicked "collect now") is NOT gated. Bounded
+            # by the 300 s safety valve inside await_background_clearance.
+            from services.memory_steward import await_background_clearance
+            await await_background_clearance()
+
             try:
                 result = await self._run_collection(notebook_id)
                 self._last_runs[notebook_id] = datetime.utcnow()

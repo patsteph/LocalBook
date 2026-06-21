@@ -80,7 +80,14 @@ class MemoryManager:
         while self._running:
             try:
                 now = datetime.utcnow()
-                
+
+                # Re-scope (2026-06-20): consolidation tiers are autonomous,
+                # deferrable background work — pause them while the user has a
+                # foreground generation running so they don't add load. One gate
+                # covers all four tiers. Bounded by the 300 s clearance valve.
+                from services.memory_steward import await_background_clearance
+                await await_background_clearance()
+
                 # Check each tier independently
                 # Tier 1: Hourly compact (dedupe events)
                 if self._should_run(self._last_compact, self.COMPACT_INTERVAL_HOURS):
