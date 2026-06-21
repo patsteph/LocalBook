@@ -424,36 +424,77 @@ def search_chunks(notebook_id: str, query_text: str, top_k: int = 5) -> List[Dic
 
 # ─── LLM Question & Summary Generation ──────────────────────────────────────────
 
+# HyDE batching: one phi4 call PER CHUNK used to flood Ollama on large PDFs
+# (50-chunk doc = 50 back-to-back fast-model calls, observed starving the core
+# embeddings + a concurrent visual into timeouts). Batch several chunks per call
+# (like the article BATCH win) to cut the call count ~CHUNKS_PER_BATCH×.
+_HYDE_CHUNKS_PER_BATCH = 5
+_HYDE_MAX_CONCURRENT_BATCHES = 3
+# Guard: never fan HyDE out unboundedly. Beyond this many chunks, the overflow
+# chunks embed WITHOUT synthetic questions (still searchable, slightly weaker
+# HyDE) rather than melting Ollama on a giant document.
+_HYDE_MAX_CHUNKS = 200
+
+
 async def generate_chunk_questions(chunks: List[str]) -> List[str]:
-    """Generate synthetic questions for each chunk using phi4-mini (HyDE)."""
+    """Generate synthetic HyDE questions for each chunk via phi4-mini, batched
+    to keep the call count (and Ollama load) bounded. Returns one questions
+    string per chunk, parallel to `chunks` (empty string where generation was
+    skipped or failed)."""
     if not chunks:
         return []
-    
-    semaphore = asyncio.Semaphore(5)  # Limit concurrency
 
-    async def get_questions(chunk: str) -> str:
+    from services.ollama_service import ollama_service
+    from utils.json_repair import robust_json_parse
+
+    results: List[str] = [""] * len(chunks)
+    eligible = min(len(chunks), _HYDE_MAX_CHUNKS)
+    semaphore = asyncio.Semaphore(_HYDE_MAX_CONCURRENT_BATCHES)
+
+    async def _run_batch(start: int) -> None:
+        batch = chunks[start:start + _HYDE_CHUNKS_PER_BATCH]
+        # Build a numbered prompt; ask for a JSON object keyed by passage number.
+        # JSON mode is safe here (object output, not a bare array).
+        parts = [
+            f"Passage {i + 1}:\n{c[:1500]}"
+            for i, c in enumerate(batch)
+        ]
         prompt = (
-            "Read the following text and write exactly 3 short, specific questions "
-            "that this text directly answers. Do not include any intro/outro.\n\n"
-            f"Text:\n{chunk[:2000]}\n\nQuestions:"
+            f"You are given {len(batch)} text passages, numbered. For EACH passage, "
+            "write exactly 3 short, specific questions that the passage directly answers.\n\n"
+            "Return ONLY a JSON object mapping each passage number (as a string) to its "
+            'three questions joined by a space. Example: {"1": "What is X? How does Y work? '
+            'When did Z happen?", "2": "..."}\n\n'
+            + "\n\n".join(parts)
         )
         async with semaphore:
             try:
-                from services.ollama_service import ollama_service
                 _resp = await ollama_service.generate(
                     prompt=prompt,
                     model=settings.ollama_fast_model,
                     temperature=0.3,
-                    num_predict=100,
-                    timeout=45.0,
+                    num_predict=110 * len(batch),  # ~3 short Qs/passage
+                    format="json",
+                    timeout=60.0,
                 )
-                return (_resp.get("response", "") or "").strip()
+                raw = _resp.get("response", "") or ""
+                data = robust_json_parse(raw, expect="object", fallback={}, label="HyDE")
+                if isinstance(data, dict):
+                    for i in range(len(batch)):
+                        val = data.get(str(i + 1)) or data.get(i + 1) or ""
+                        if isinstance(val, list):
+                            val = " ".join(str(x) for x in val)
+                        results[start + i] = str(val).strip()
             except Exception as e:
-                print(f"[RAG] Question generation failed: {e}")
-        return ""
+                print(f"[RAG] HyDE batch at {start} failed: {e}")  # leave "" for this batch
 
-    tasks = [get_questions(c) for c in chunks]
-    return await asyncio.gather(*tasks)
+    await asyncio.gather(*[
+        _run_batch(s) for s in range(0, eligible, _HYDE_CHUNKS_PER_BATCH)
+    ])
+    if len(chunks) > _HYDE_MAX_CHUNKS:
+        print(f"[RAG] HyDE capped at {_HYDE_MAX_CHUNKS}/{len(chunks)} chunks "
+              f"({len(chunks) - _HYDE_MAX_CHUNKS} embedded without synthetic questions)")
+    return results
 
 
 # ─── Document Summary ────────────────────────────────────────────────────────────

@@ -77,6 +77,18 @@ async def _run():
                 QueryDecomposer().decompose("Compare the safety and cost of nuclear versus solar power and explain the tradeoffs."),
                 lambda v: isinstance(v, list))
 
+    # ── batched HyDE (per-chunk mapping must survive batching) ──
+    from services.rag_storage import generate_chunk_questions
+    _hyde_chunks = ["The Eiffel Tower is 330m tall, finished 1889.",
+                    "Mitochondria produce ATP in cells.",
+                    "HTTP 404 means resource not found.",
+                    "Python uses indentation for blocks.",
+                    "Everest is 8849m tall.",
+                    "Photosynthesis makes glucose from sunlight."]
+    await check("rag_storage.generate_chunk_questions (batched, per-chunk)",
+                generate_chunk_questions(_hyde_chunks),
+                lambda v: len(v) == len(_hyde_chunks) and sum(1 for q in v if q.strip()) >= 4)
+
     # ── Apple Vision OCR seam (engine strategy) ──
     try:
         import base64 as _b64, io as _io
