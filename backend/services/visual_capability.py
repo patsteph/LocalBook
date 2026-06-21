@@ -118,6 +118,19 @@ async def get_capability(force_refresh: bool = False) -> VisualCapability:
         if not force_refresh and _cached and (time.time() - _cached_at) < CACHE_TTL_SEC:
             return _cached
         cap = await _detect()
+        # Robustness: a degraded 'unknown' detection means the Ollama /api/tags
+        # probe failed (typically a timeout while Ollama is saturated under
+        # concurrent load) — NOT that Klein/Gemma vanished. Never let that
+        # overwrite a known-good snapshot, or the visual silently drops to the
+        # non-Klein legacy path and produces an unusable result. Keep last-good
+        # and refresh the TTL so we re-probe on the next call.
+        if cap.setup == Setup.UNKNOWN and _cached is not None and _cached.setup != Setup.UNKNOWN:
+            logger.warning(
+                "[visual_capability] probe degraded (Ollama busy/unreachable); "
+                f"keeping last-good capability: {_cached.summary()}"
+            )
+            _cached_at = time.time()
+            return _cached
         _cached = cap
         _cached_at = time.time()
         logger.info(f"[visual_capability] detected: {cap.summary()}")
@@ -195,16 +208,24 @@ async def _detect() -> VisualCapability:
 async def _list_ollama_models() -> List[str]:
     """Query Ollama /api/tags. Returns lowercased model names."""
     url = f"{settings.ollama_base_url}/api/tags"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(url)
-            r.raise_for_status()
-            data = r.json()
-            models = data.get("models", [])
-            return [m.get("name", "").lower() for m in models if m.get("name")]
-    except Exception as e:
-        logger.warning(f"[visual_capability] ollama tags fetch failed: {e}")
-        return []
+    # /api/tags is cheap but can be slow to RESPOND when Ollama is mid-inference
+    # under load. 5 s was too tight (timed out → empty list → degraded visual).
+    # Use a tolerant timeout + one retry before giving up.
+    last_err: Optional[Exception] = None
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.get(url)
+                r.raise_for_status()
+                data = r.json()
+                models = data.get("models", [])
+                return [m.get("name", "").lower() for m in models if m.get("name")]
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                await asyncio.sleep(1.0)
+    logger.warning(f"[visual_capability] ollama tags fetch failed after retry: {last_err}")
+    return []
 
 
 def _find_first(installed: List[str], prefixes: tuple[str, ...]) -> Optional[str]:

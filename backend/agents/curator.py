@@ -388,6 +388,10 @@ class CuratorAgent:
         sem = asyncio.Semaphore(4)
         
         async def _judge_bounded(item):
+            # Mid-flight yield: pause scheduled-collection judging if a
+            # foreground op is active (no-op for "Collect Now").
+            from services.memory_steward import yield_if_background
+            await yield_if_background()
             # If less than 10s left, skip LLM and auto-defer
             if deadline and _time.time() > deadline - 10:
                 return JudgmentResult(
@@ -397,7 +401,7 @@ class CuratorAgent:
                 )
             async with sem:
                 return await self._judge_single_item(item, notebook_intent, collector_id)
-        
+
         results = await asyncio.gather(*[_judge_bounded(item) for item in proposed_items])
         return list(results)
     

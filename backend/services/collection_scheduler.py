@@ -20,11 +20,19 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 # How long to wait after app launch before the first check (seconds).
-# Gives models time to warm up and avoids contention on startup.
-STARTUP_DELAY_SECONDS = 120  # 2 minutes
+# The first ~20 min after launch is when the user is most likely actively
+# working (warmup, IMAP catch-up, and the user poking around). Settle well
+# clear of that before any autonomous collection fires.
+STARTUP_DELAY_SECONDS = 1200  # 20 minutes
 
 # How often the scheduler wakes up to check for due collections (seconds).
 CHECK_INTERVAL_SECONDS = 600  # 10 minutes
+
+# Idle gate: a scheduled collection only fires when the user has been idle
+# (no resource-meaningful activity — see memory_steward.mark_user_activity)
+# for at least this long. Keeps autonomous web-research/scraping out of the
+# way of active use entirely. If the user is active, the whole cycle defers.
+IDLE_THRESHOLD_SECONDS = 300  # 5 minutes of no user activity
 
 # Cooldown between consecutive collection runs in the same cycle (seconds).
 # Prevents Ollama from being hammered by back-to-back LLM-heavy pipelines.
@@ -194,6 +202,23 @@ class CollectionScheduler:
         if not due_list:
             return
 
+        # ── Idle gate: never fire while the user is actively working ──
+        # Scheduled collection is autonomous + heavy (gemma + web research +
+        # scraping). If the user has done anything resource-meaningful recently,
+        # defer the ENTIRE cycle to the next wake-up rather than colliding. The
+        # due notebooks stay due, so they run the moment the app goes idle.
+        try:
+            from services.memory_steward import seconds_since_activity
+            idle = seconds_since_activity()
+            if idle < IDLE_THRESHOLD_SECONDS:
+                logger.info(
+                    f"Scheduler: {len(due_list)} due but user active "
+                    f"({idle:.0f}s idle < {IDLE_THRESHOLD_SECONDS}s) — deferring cycle"
+                )
+                return
+        except Exception as e:
+            logger.debug(f"[scheduler] idle check skipped: {e}")
+
         # ── Phase 2: sort by staleness (most overdue first), cap per cycle ──
         due_list.sort(key=lambda x: x["staleness"], reverse=True)
         to_run = due_list[:MAX_COLLECTIONS_PER_CYCLE]
@@ -227,15 +252,34 @@ class CollectionScheduler:
             # it while the user has a foreground generation running (visual/chat/
             # doc) so it can't pile load onto an 18 GB box and tip it into swap
             # (observed crash: Costco sync fired mid-visual → SIGTERM restart).
-            # run_immediate() (user clicked "collect now") is NOT gated. Bounded
-            # by the 300 s safety valve inside await_background_clearance.
-            from services.memory_steward import await_background_clearance
+            # run_immediate() (user clicked "collect now") is NOT gated.
+            #   - The upfront clearance defers STARTING a collection while a
+            #     foreground op is already active.
+            #   - yieldable_background marks the whole run so its internal
+            #     deep-dive checkpoints can pause it MID-FLIGHT if a foreground op
+            #     starts after the collection began (the real-world collision).
+            # Both bounded by the 300 s safety valve inside await_background_clearance.
+            from services.memory_steward import (
+                await_background_clearance,
+                yieldable_background,
+            )
             await await_background_clearance()
 
+            # No-re-fire claim: record the run timestamp BEFORE the collection,
+            # not after. Previously it was saved only on success, so a collection
+            # that was killed mid-run (app crash/SIGTERM under contention) never
+            # recorded → it re-qualified as "due" on the next launch and fired
+            # again → contention → crash → repeat. Claiming up-front means an
+            # interrupted daily run simply waits until tomorrow instead of
+            # hammering on every restart. (A genuine in-process failure is caught
+            # below and also stays claimed — daily collection isn't worth a
+            # retry storm.)
+            self._last_runs[notebook_id] = datetime.utcnow()
+            self._save_state()
+
             try:
-                result = await self._run_collection(notebook_id)
-                self._last_runs[notebook_id] = datetime.utcnow()
-                self._save_state()
+                async with yieldable_background("scheduled-collection"):
+                    result = await self._run_collection(notebook_id)
 
                 approved = result.get("items_approved", 0)
                 pending = result.get("items_pending", 0)

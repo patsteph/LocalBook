@@ -900,6 +900,13 @@ class CollectorAgent:
         )
         
         for query in queries[:4]:  # Cap to limit API + LLM cost
+            # Mid-flight yield point: a scheduled collection's deep-dive is the
+            # longest, heaviest phase (~80 s of web research + scraping). If the
+            # user starts a foreground op (visual/chat) after this collection
+            # began, pause between queries so we don't saturate Ollama/RAM. No-op
+            # for user-triggered "Collect Now" (not a yieldable_background ctx).
+            from services.memory_steward import yield_if_background
+            await yield_if_background()
             try:
                 results = await research_engine.deep_dive(
                     query=query,
@@ -958,6 +965,11 @@ class CollectorAgent:
         current_queries = list(initial_queries)
         
         for iteration in range(max_iterations):
+            # Mid-flight yield: pause a scheduled collection between search
+            # iterations if a foreground op started (no-op for "Collect Now").
+            from services.memory_steward import yield_if_background
+            await yield_if_background()
+
             # Budget check
             if deadline and _time.time() > deadline - 90:
                 logger.info(f"[IterSearch] Stopping at iteration {iteration} — deadline approaching")

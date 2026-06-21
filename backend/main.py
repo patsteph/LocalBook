@@ -472,6 +472,17 @@ logger = logging.getLogger(__name__)
 class DiagnosticsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         record_endpoint(f"{request.method} {request.url.path}")
+        # User-activity signal for idle-gating autonomous schedulers. Non-GET
+        # requests are user actions that consume resources (chat, upload,
+        # generate, config); GET polls + passive navigation don't count, so the
+        # app can actually reach "idle" while open. Foreground generations also
+        # mark activity directly (some stream via GET) — see foreground_guard.
+        if request.method != "GET":
+            try:
+                from services.memory_steward import mark_user_activity
+                mark_user_activity()
+            except Exception:
+                pass
         return await call_next(request)
 
 # Middleware ordering note (P0.1f, 2026-05-21):

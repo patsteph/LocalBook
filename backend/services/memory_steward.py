@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Iterable, List, Optional, Set
 
@@ -86,9 +87,10 @@ async def foreground_guard(reason: str = "foreground") -> AsyncIterator[None]:
     tasks block until the guard exits; calls from within this op's own task
     tree pass straight through (see `_in_foreground`). Re-entrant-safe via a
     depth counter so nested/concurrent foreground pipelines don't resume early."""
-    global _bg_pause_depth
+    global _bg_pause_depth, _last_activity_ts
     _bg_pause_depth += 1
     _bg_allowed.clear()
+    _last_activity_ts = time.monotonic()  # a foreground op IS user activity
     _tok = _in_foreground.set(True)
     logger.info(f"[memory-steward] background paused for foreground ({reason}, depth={_bg_pause_depth})")
     try:
@@ -126,6 +128,60 @@ async def await_background_clearance(timeout: float = 300.0) -> None:
             "[memory-steward] background clearance wait timed out "
             f"({timeout}s); proceeding anyway"
         )
+
+
+# Per-task marker: True when we're inside a long-running AUTONOMOUS pipeline
+# that is safe to pause MID-FLIGHT at its own checkpoints (the scheduled
+# collection's deep-dive loop). User-initiated "Collect Now" runs the same code
+# but WITHOUT this marker, so it never yields. Set by the scheduler; propagates
+# to the awaited pipeline via contextvars.
+_yieldable_bg: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "lb_yieldable_bg", default=False
+)
+
+
+@asynccontextmanager
+async def yieldable_background(reason: str = "scheduled") -> AsyncIterator[None]:
+    """Mark the enclosed autonomous pipeline as yieldable so its internal
+    `yield_if_background()` checkpoints will defer to foreground work. Only the
+    scheduler wraps calls in this — user-triggered runs of the same code stay
+    unmarked and run straight through."""
+    tok = _yieldable_bg.set(True)
+    try:
+        yield
+    finally:
+        _yieldable_bg.reset(tok)
+
+
+async def yield_if_background(timeout: float = 300.0) -> None:
+    """Mid-flight pause point for long autonomous pipelines (scheduled-collection
+    deep-dive loop). No-op unless we're in a `yieldable_background` context. When
+    we are, it defers to any active foreground op exactly like
+    `await_background_clearance` (and is likewise deadlock-proof)."""
+    if _yieldable_bg.get():
+        await await_background_clearance(timeout)
+
+
+# ── User-activity tracker (for idle-gating autonomous schedulers) ───────
+# Tracks when the user last did something resource-meaningful, so autonomous
+# work (scheduled collection) can wait for the app to be IDLE before running —
+# never colliding with active use. Bumped on (a) any non-GET HTTP request
+# (chat / upload / generate / config = real work; GET polls & passive reading
+# don't count) and (b) every foreground_guard enter. Monotonic clock so it's
+# immune to wall-clock changes. Initialized to "now" so launch counts as
+# activity (combines with the scheduler's startup settle delay).
+_last_activity_ts: float = time.monotonic()
+
+
+def mark_user_activity() -> None:
+    """Record that the user just did something resource-meaningful."""
+    global _last_activity_ts
+    _last_activity_ts = time.monotonic()
+
+
+def seconds_since_activity() -> float:
+    """Seconds since the last user activity (large == idle)."""
+    return time.monotonic() - _last_activity_ts
 
 
 def _ollama_base() -> str:
