@@ -195,22 +195,16 @@ Output as JSON array. Example:
 JSON (only output relationships you find, empty array if none):"""
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": settings.ollama_fast_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"num_predict": 300, "temperature": 0.2}
-                    }
-                )
-                
-                if response.status_code != 200:
-                    return []
-                
-                result = response.json().get("response", "")
-                
+            from services.ollama_service import ollama_service
+            _resp = await ollama_service.generate(
+                prompt=prompt,
+                model=settings.ollama_fast_model,
+                num_predict=300,
+                temperature=0.2,
+                timeout=60.0,
+            )
+            result = _resp.get("response", "")
+            if result:
                 # Extract JSON array
                 match = re.search(r'\[.*?\]', result, re.DOTALL)
                 if match:
@@ -240,9 +234,10 @@ JSON (only output relationships you find, empty array if none):"""
                             relationships.append(rel)
                     
                     return relationships
-                
+
                 return []
-                
+
+            return []
         except Exception as e:
             print(f"[EntityGraph] LLM extraction failed: {e}")
             return []

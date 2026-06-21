@@ -78,24 +78,16 @@ class KnowledgeGraphService:
         self._initialized = True
     
     async def get_embedding(self, text: str) -> List[float]:
-        """Generate embedding for text using Ollama (same model as RAG engine)"""
+        """Generate embedding for text via the canonical Ollama service."""
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{self.ollama_url}/api/embeddings",
-                    json={
-                        "model": self.embedding_model_name,
-                        "prompt": text
-                    }
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    embedding = result.get("embedding", [])
-                    if not embedding:
-                        print(f"[KG-Embed] Empty embedding returned for: {text[:50]}...")
-                    return embedding
-                else:
-                    print(f"[KG-Embed] Non-200 status: {response.status_code} for: {text[:50]}...")
+            from services.ollama_service import ollama_service
+            data = await ollama_service.embed(text, model=self.embedding_model_name)
+            embs = data.get("embeddings") or []
+            if embs:
+                return embs[0]
+            if data.get("embedding"):  # legacy single-vector shape
+                return data["embedding"]
+            print(f"[KG-Embed] Empty embedding returned for: {text[:50]}...")
         except Exception as e:
             print(f"[KG-Embed] Error: {e} for: {text[:50]}...")
         return []
@@ -749,25 +741,21 @@ Respond ONLY with JSON:"""
 
 What theme or topic connects them? Respond with just a 2-4 word name (no punctuation):"""
             
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.ollama_url}/api/generate",
-                    json={
-                        "model": self.extraction_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.3, "num_predict": 20}
-                    }
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    name = result.get("response", "").strip()[:50]
-                    # Remove trailing punctuation
-                    name = name.rstrip('.,;:!?')
-                    # Remove quotes if wrapped
-                    name = name.strip('"\'')
-                    return name
+            from services.ollama_service import ollama_service
+            _resp = await ollama_service.generate(
+                prompt=prompt,
+                model=self.extraction_model,
+                temperature=0.3,
+                num_predict=20,
+                timeout=30.0,
+            )
+            name = (_resp.get("response", "") or "").strip()[:50]
+            if name:
+                # Remove trailing punctuation
+                name = name.rstrip('.,;:!?')
+                # Remove quotes if wrapped
+                name = name.strip('"\'')
+                return name
         except Exception as e:
             print(f"Cluster naming error: {e}")
         
@@ -1092,55 +1080,43 @@ What theme or topic connects them? Respond with just a 2-4 word name (no punctua
     
     async def _call_llm(self, prompt: str, max_retries: int = 2) -> Optional[Dict]:
         """Call LLM and parse JSON response with adaptive timeout and retry"""
+        from services.ollama_service import ollama_service
         for attempt in range(max_retries):
-            # Adaptive timeout: shorter first attempt, longer on retry
+            # Adaptive timeout: shorter first attempt, longer on retry.
             timeout = 15.0 if attempt == 0 else 30.0
-            
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    print(f"[KG-LLM] Calling {self.extraction_model} (attempt {attempt + 1}, timeout={timeout}s)")
-                    response = await client.post(
-                        f"{self.ollama_url}/api/generate",
-                        json={
-                            "model": self.extraction_model,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {"temperature": 0.1, "num_predict": 500}
-                        }
-                    )
-                    
-                    print(f"[KG-LLM] Response status: {response.status_code}")
-                    
-                    if response.status_code == 200:
-                        result = response.json()
-                        text = result.get("response", "")
-                        print(f"[KG-LLM] Response length: {len(text)} chars")
-                        
-                        # Parse JSON from response
-                        from utils.json_repair import robust_json_parse
-                        parsed = robust_json_parse(text, label="KG-LLM", fallback=None)
-                        if parsed is not None:
-                            print(f"[KG-LLM] Parsed JSON: {len(parsed.get('concepts', []))} concepts")
-                            return parsed
-                        else:
-                            print(f"[KG-LLM] No JSON found in response: {text[:200]}...")
-                        # Got response but couldn't parse - don't retry
-                        return None
-                    else:
-                        print(f"[KG-LLM] Non-200 response: {response.status_code} - {response.text[:200]}")
-                        
-            except httpx.TimeoutException:
-                if attempt < max_retries - 1:
-                    print(f"[KG-LLM] Timeout (attempt {attempt + 1}), retrying with longer timeout...")
-                    continue
-                else:
-                    print(f"[KG-LLM] Timeout after {max_retries} attempts")
+                print(f"[KG-LLM] Calling {self.extraction_model} (attempt {attempt + 1}, timeout={timeout}s)")
+                _resp = await ollama_service.generate(
+                    prompt=prompt,
+                    model=self.extraction_model,
+                    temperature=0.1,
+                    num_predict=500,
+                    timeout=timeout,
+                )
+                text = _resp.get("response", "")
+                # ollama_service returns an empty response on timeout/failure
+                # (rather than raising) — treat that as the retry trigger.
+                if not text:
+                    if attempt < max_retries - 1:
+                        print(f"[KG-LLM] Empty response (attempt {attempt + 1}), retrying with longer timeout...")
+                        continue
+                    print(f"[KG-LLM] Empty response after {max_retries} attempts")
                     return None
+                print(f"[KG-LLM] Response length: {len(text)} chars")
+                from utils.json_repair import robust_json_parse
+                parsed = robust_json_parse(text, label="KG-LLM", fallback=None)
+                if parsed is not None:
+                    print(f"[KG-LLM] Parsed JSON: {len(parsed.get('concepts', []))} concepts")
+                    return parsed
+                print(f"[KG-LLM] No JSON found in response: {text[:200]}...")
+                # Got a response but couldn't parse — don't retry.
+                return None
             except Exception as e:
                 import traceback
                 print(f"[KG-LLM] Error: {e}")
                 traceback.print_exc()
                 return None
+        return None
         
         return None
 

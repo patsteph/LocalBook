@@ -557,17 +557,32 @@ class OllamaService:
         num_ctx: Optional[int] = None,
         temperature: Optional[float] = None,
         priority: int = PRIORITY_NORMAL,
+        ocr_mode: bool = False,
     ) -> str:
         """Universal vision dispatcher — routes to /api/generate or /api/chat
-        per the model's required api_style. Ported from ollama_client (PB-2b);
-        signature mirrored exactly so PB-2c migration is a pure rename.
+        per the model's required api_style. Ported from ollama_client (PB-2b).
+
+        ocr_mode: when True the call is pure document/page TEXT EXTRACTION, so
+        we try free on-device Apple Vision OCR first (no model load, no lane,
+        no RAM) and only fall back to the LLM vision path if Vision is
+        unavailable or errors. Leave False for scene/chart DESCRIPTION, which
+        needs the model's understanding, not raw OCR.
 
         Param resolution per arg: explicit > vision_profile > global default
-        (num_predict=1500, num_ctx=8192, temperature=0.3). num_ctx is passed
-        through extra_options since generate/chat don't take it directly. Vision
-        calls skip the rag_profile overlay (images present) and the voice
-        modifier automatically. Audit ref: 10_plan_of_attack PB-2b.
+        (num_predict=1500, num_ctx=8192, temperature=0.3). Vision calls skip
+        the rag_profile overlay (images present) and the voice modifier.
         """
+        # Apple Vision OCR fast-path for text-extraction calls.
+        if ocr_mode:
+            try:
+                from services.apple_vision_ocr import recognize_text as _av_ocr
+                _txt = await _av_ocr(image_b64)
+                if _txt is not None:  # "" (no text found) still counts as success
+                    logger.info(f"[OllamaService] vision OCR via Apple Vision ({len(_txt)} chars, no model load)")
+                    return _txt
+            except Exception as _e:
+                logger.debug(f"[apple-vision] fast-path skipped: {_e}")
+
         model = model or settings.vision_model
 
         profile: Dict[str, Any] = {}

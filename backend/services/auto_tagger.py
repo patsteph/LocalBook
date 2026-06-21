@@ -117,29 +117,19 @@ Example: ["financials", "competitor", "quarterly-results"]
 
 Tags:"""
 
-        timeout = httpx.Timeout(15.0, read=20.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={
-                    "model": settings.ollama_fast_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.2,
-                        "num_predict": 100,
-                    }
-                }
-            )
-            
-            if response.status_code != 200:
-                print(f"[AutoTagger] Ollama returned {response.status_code}")
-                return self._fallback_tags(title, content)
-            
-            result = response.json()
-            raw = result.get("response", "").strip()
-            
-            return self._parse_tags(raw)
+        from services.ollama_service import ollama_service
+        _resp = await ollama_service.generate(
+            prompt=prompt,
+            model=settings.ollama_fast_model,
+            temperature=0.2,
+            num_predict=100,
+            timeout=20.0,
+        )
+        raw = (_resp.get("response", "") or "").strip()
+        if not raw:
+            print("[AutoTagger] empty LLM response")
+            return self._fallback_tags(title, content)
+        return self._parse_tags(raw)
     
     def _parse_tags(self, raw: str) -> List[str]:
         """Parse LLM output into a clean tag list."""

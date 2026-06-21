@@ -110,43 +110,39 @@ Output as a JSON array of strings. Example:
 JSON array:"""
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": settings.ollama_fast_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"num_predict": 200, "temperature": 0.3}
-                    }
-                )
-                
-                if response.status_code != 200:
-                    return []
-
-                result = response.json().get("response", "")
-
-                # Strategy 1: robust JSON-array parse (handles markdown fences,
-                # trailing commas, preamble text). Works for any model that
-                # produces something close to valid JSON.
-                from utils.json_repair import robust_json_parse
-                parsed = robust_json_parse(result, expect="array", fallback=None, label="QueryDecomposer")
-                if isinstance(parsed, list) and all(isinstance(q, str) for q in parsed):
-                    return [q.strip() for q in parsed if q.strip()]
-
-                # Strategy 2: numbered-list fallback. Some models (notably
-                # Gemma when JSON mode is off) prefer a "1. ...\n2. ..." list.
-                # Extract any line starting with N. or N) and treat as a sub-question.
-                numbered = re.findall(
-                    r'^\s*\d+[\.\)]\s+(.+?)\s*$',
-                    result,
-                    flags=re.MULTILINE,
-                )
-                if len(numbered) >= self.complexity_threshold:
-                    return [q.strip().rstrip('?') + '?' if not q.strip().endswith('?') else q.strip()
-                            for q in numbered if q.strip()]
-
+            from services.ollama_service import ollama_service
+            _resp = await ollama_service.generate(
+                prompt=prompt,
+                model=settings.ollama_fast_model,
+                num_predict=200,
+                temperature=0.3,
+                timeout=30.0,
+            )
+            result = _resp.get("response", "")
+            if not result:
                 return []
+
+            # Strategy 1: robust JSON-array parse (handles markdown fences,
+            # trailing commas, preamble text). Works for any model that
+            # produces something close to valid JSON.
+            from utils.json_repair import robust_json_parse
+            parsed = robust_json_parse(result, expect="array", fallback=None, label="QueryDecomposer")
+            if isinstance(parsed, list) and all(isinstance(q, str) for q in parsed):
+                return [q.strip() for q in parsed if q.strip()]
+
+            # Strategy 2: numbered-list fallback. Some models (notably
+            # Gemma when JSON mode is off) prefer a "1. ...\n2. ..." list.
+            # Extract any line starting with N. or N) and treat as a sub-question.
+            numbered = re.findall(
+                r'^\s*\d+[\.\)]\s+(.+?)\s*$',
+                result,
+                flags=re.MULTILINE,
+            )
+            if len(numbered) >= self.complexity_threshold:
+                return [q.strip().rstrip('?') + '?' if not q.strip().endswith('?') else q.strip()
+                        for q in numbered if q.strip()]
+
+            return []
 
         except Exception as e:
             print(f"[QueryDecomposer] LLM error: {e}")

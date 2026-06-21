@@ -556,30 +556,22 @@ Rules:
 Theme name:"""
 
         try:
-            timeout = httpx.Timeout(15.0, read=30.0)
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": settings.ollama_fast_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {
-                            "temperature": 0.3,
-                            "num_predict": 20,
-                        }
-                    }
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    name = result.get("response", "").strip()
-                    # Clean up
-                    name = name.strip('"\'').strip()
-                    name = re.sub(r'^(topic|theme|subject):\s*', '', name, flags=re.IGNORECASE)
-                    if name and len(name) > 3 and len(name) < 50:
-                        return name
-                        
+            from services.ollama_service import ollama_service
+            _resp = await ollama_service.generate(
+                prompt=prompt,
+                model=settings.ollama_fast_model,
+                temperature=0.3,
+                num_predict=20,
+                timeout=30.0,
+            )
+            name = (_resp.get("response", "") or "").strip()
+            if name:
+                # Clean up
+                name = name.strip('"\'').strip()
+                name = re.sub(r'^(topic|theme|subject):\s*', '', name, flags=re.IGNORECASE)
+                if name and len(name) > 3 and len(name) < 50:
+                    return name
+
         except Exception as e:
             print(f"[TopicModel] LLM enhancement failed: {e}")
         

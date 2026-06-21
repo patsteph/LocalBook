@@ -52,6 +52,7 @@ from services.visual_intent import (
     IllustrationIntent,
     USER_DIRECTED_SVG_SYSTEM,
     classify_intent,
+    obvious_illustration_intent,
     is_user_directed_svg,
 )
 from services.ollama_service import ollama_service
@@ -358,7 +359,18 @@ class VisualComposer:
             # as illustration because the source blob mentions palettes
             # and aesthetic words from RAG articles).
             topic_for_classifier = getattr(self, "_topic", None) or content
-            intent = await classify_intent(topic_for_classifier, capability.gemma_model)
+            # Deterministic fast-path first: an obvious image ask ("a cinematic
+            # image of…") routes to Klein with NO Gemma call, so routing no
+            # longer depends on a slow/busy main model and the model can evict
+            # immediately. Only ambiguous prompts pay for the LLM classifier.
+            intent = obvious_illustration_intent(topic_for_classifier)
+            if intent is not None:
+                logger.info(
+                    f"[visual_composer] obvious image ask → Klein fast-path "
+                    f"(no classifier call): {intent.reason}"
+                )
+            else:
+                intent = await classify_intent(topic_for_classifier, capability.gemma_model)
             if intent.routes_to_klein():
                 logger.info(
                     f"[visual_composer] intent routes to Klein full-bleed "

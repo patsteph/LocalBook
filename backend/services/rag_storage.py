@@ -430,8 +430,7 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
         return []
     
     semaphore = asyncio.Semaphore(5)  # Limit concurrency
-    timeout = httpx.Timeout(45.0)
-    
+
     async def get_questions(chunk: str) -> str:
         prompt = (
             "Read the following text and write exactly 3 short, specific questions "
@@ -440,21 +439,15 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
         )
         async with semaphore:
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(
-                        f"{settings.ollama_base_url}/api/generate",
-                        json={
-                            "model": settings.ollama_fast_model,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {
-                                "temperature": 0.3,
-                                "num_predict": 100,
-                            }
-                        }
-                    )
-                    if response.status_code == 200:
-                        return response.json().get("response", "").strip()
+                from services.ollama_service import ollama_service
+                _resp = await ollama_service.generate(
+                    prompt=prompt,
+                    model=settings.ollama_fast_model,
+                    temperature=0.3,
+                    num_predict=100,
+                    timeout=45.0,
+                )
+                return (_resp.get("response", "") or "").strip()
             except Exception as e:
                 print(f"[RAG] Question generation failed: {e}")
         return ""
@@ -545,26 +538,17 @@ Content:
 Summary:"""
 
     try:
-        timeout = httpx.Timeout(30.0, read=60.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={
-                    "model": settings.ollama_fast_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.3,
-                        "num_predict": 200,
-                    }
-                }
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                summary = result.get("response", "").strip()
-                if summary and len(summary) > 20:
-                    return summary
+        from services.ollama_service import ollama_service
+        _resp = await ollama_service.generate(
+            prompt=prompt,
+            model=settings.ollama_fast_model,
+            temperature=0.3,
+            num_predict=200,
+            timeout=60.0,
+        )
+        summary = (_resp.get("response", "") or "").strip()
+        if summary and len(summary) > 20:
+            return summary
     except Exception as e:
         print(f"[RAG] Summary generation failed for {filename}: {e}")
 

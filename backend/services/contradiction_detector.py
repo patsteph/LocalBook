@@ -51,15 +51,15 @@ _contradiction_cache: Dict[str, ContradictionReport] = {}
 
 
 class ContradictionDetector:
-    """Service for detecting contradictions in notebook sources."""
-    
-    def __init__(self):
-        self._ollama_url = "http://localhost:11434"
-    
+    """Service for detecting contradictions in notebook sources.
+
+    All LLM/embedding calls route through the canonical `ollama_service`
+    (priority lane + token tracking + configured models) — no hardcoded URL
+    or model. Claim extraction + contradiction checks use the fast model.
+    """
+
     async def _extract_claims_from_chunk(self, chunk: str, source_id: str, source_name: str) -> List[Claim]:
         """Extract factual claims from a text chunk using LLM."""
-        import httpx
-        
         prompt = f"""Extract factual claims from this text. Each claim should be:
 - A single, atomic statement that can be verified
 - Focus on: facts, statistics, dates, conclusions, recommendations
@@ -77,25 +77,31 @@ Example output:
 If no clear claims, return: []"""
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self._ollama_url}/api/generate",
-                    json={
-                        "model": "llama3.2",
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.1}
-                    },
-                    timeout=30.0
-                )
-                
-                if response.status_code != 200:
-                    return []
-                
-                result = response.json().get("response", "")
-                
+            from services.ollama_service import ollama_service
+            from config import settings
+            # NB: no format="json" here — this prompt asks for a bare JSON
+            # ARRAY, but Ollama's JSON mode forces an OBJECT, which makes phi4
+            # jam the array into a key ({"[{...}]": false}). robust_json_parse
+            # extracts the [...] from plain output reliably.
+            _resp = await ollama_service.generate(
+                prompt=prompt,
+                model=settings.ollama_fast_model,
+                temperature=0.1,
+                num_predict=600,
+                timeout=60.0,
+            )
+            result = _resp.get("response", "")
+            if result:
                 from utils.json_repair import robust_json_parse
                 claims_data = robust_json_parse(result, expect="array", fallback=[], label="ContradictionDetector")
+                # JSON-mode small models often wrap the array in an object
+                # ({"claims": [...]}) — unwrap to the first list value. Guards
+                # the [:10] slice against a dict/non-list (the original code
+                # assumed a bare array and crashed once the model actually ran).
+                if isinstance(claims_data, dict):
+                    claims_data = next((v for v in claims_data.values() if isinstance(v, list)), [])
+                if not isinstance(claims_data, list):
+                    claims_data = []
                 claims = []
                 for i, c in enumerate(claims_data[:10]):  # Limit to 10 claims per chunk
                     if not isinstance(c, dict):
@@ -110,14 +116,13 @@ If no clear claims, return: []"""
                         claim_type=c.get("type", "factual")
                     ))
                 return claims
+            return []
         except Exception as e:
             print(f"[CONTRADICTION] Claim extraction error: {e}")
             return []
     
     async def _check_contradiction(self, claim_a: Claim, claim_b: Claim) -> Optional[Contradiction]:
         """Check if two claims contradict each other."""
-        import httpx
-        
         prompt = f"""Analyze if these two claims contradict each other.
 
 Claim 1 (from "{claim_a.source_name}"):
@@ -139,69 +144,58 @@ If they do NOT contradict (they agree, are unrelated, or compatible), respond:
 {{"contradicts": false}}"""
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self._ollama_url}/api/generate",
-                    json={
-                        "model": "llama3.2",
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.1}
-                    },
-                    timeout=30.0
-                )
-                
-                if response.status_code != 200:
-                    return None
-                
-                result = response.json().get("response", "")
-                
-                from utils.json_repair import robust_json_parse
-                data = robust_json_parse(result, label="ContradictionCheck", fallback={})
-                
-                if data.get("contradicts"):
-                    contra_id = hashlib.md5(f"{claim_a.id}:{claim_b.id}".encode()).hexdigest()[:12]
-                    return Contradiction(
-                        id=contra_id,
-                        claim_a=claim_a,
-                        claim_b=claim_b,
-                        contradiction_type=data.get("type", "factual"),
-                        severity=data.get("severity", "medium"),
-                        explanation=data.get("explanation", ""),
-                        resolution_hint=data.get("resolution_hint"),
-                        detected_at=datetime.utcnow().isoformat()
-                    )
-                
+            from services.ollama_service import ollama_service
+            from config import settings
+            _resp = await ollama_service.generate(
+                prompt=prompt,
+                model=settings.ollama_fast_model,
+                temperature=0.1,
+                num_predict=400,
+                format="json",
+                timeout=60.0,
+            )
+            result = _resp.get("response", "")
+            if not result:
                 return None
+
+            from utils.json_repair import robust_json_parse
+            data = robust_json_parse(result, label="ContradictionCheck", fallback={})
+
+            if data.get("contradicts"):
+                contra_id = hashlib.md5(f"{claim_a.id}:{claim_b.id}".encode()).hexdigest()[:12]
+                return Contradiction(
+                    id=contra_id,
+                    claim_a=claim_a,
+                    claim_b=claim_b,
+                    contradiction_type=data.get("type", "factual"),
+                    severity=data.get("severity", "medium"),
+                    explanation=data.get("explanation", ""),
+                    resolution_hint=data.get("resolution_hint"),
+                    detected_at=datetime.utcnow().isoformat()
+                )
+
+            return None
         except Exception as e:
             print(f"[CONTRADICTION] Check error: {e}")
             return None
     
     async def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Get embeddings for texts using Ollama."""
-        import httpx
-        
+        """Get embeddings for texts using Ollama (via the canonical service)."""
+        from services.ollama_service import ollama_service
+        from config import settings
+
         embeddings = []
-        async with httpx.AsyncClient() as client:
-            for text in texts:
-                try:
-                    response = await client.post(
-                        f"{self._ollama_url}/api/embed",
-                        json={"model": "snowflake-arctic-embed2", "input": text[:1000]},
-                        timeout=30.0
-                    )
-                    if response.status_code == 200:
-                        data = response.json()
-                        if "embeddings" in data and len(data["embeddings"]) > 0:
-                            embeddings.append(data["embeddings"][0])
-                        elif "embedding" in data:
-                            embeddings.append(data["embedding"])
-                        else:
-                            embeddings.append([0] * 1024)
-                    else:
-                        embeddings.append([0] * 1024)
-                except:
-                    embeddings.append([0] * 1024)
+        for text in texts:
+            try:
+                data = await ollama_service.embed(text[:1000])
+                if data.get("embeddings"):
+                    embeddings.append(data["embeddings"][0])
+                elif data.get("embedding"):
+                    embeddings.append(data["embedding"])
+                else:
+                    embeddings.append([0] * settings.embedding_dim)
+            except Exception:
+                embeddings.append([0] * settings.embedding_dim)
         return embeddings
     
     def _cosine_similarity(self, a: List[float], b: List[float]) -> float:

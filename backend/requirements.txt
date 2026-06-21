@@ -669,16 +669,30 @@ pynndescent==0.6.0
 pyobjc-core==12.1
     # via
     #   pyobjc-framework-cocoa
+    #   pyobjc-framework-coreml
     #   pyobjc-framework-localauthentication
+    #   pyobjc-framework-quartz
     #   pyobjc-framework-security
+    #   pyobjc-framework-vision
 pyobjc-framework-cocoa==12.1
     # via
+    #   pyobjc-framework-coreml
     #   pyobjc-framework-localauthentication
+    #   pyobjc-framework-quartz
     #   pyobjc-framework-security
+    #   pyobjc-framework-vision
+pyobjc-framework-coreml==12.1 ; sys_platform == "darwin"
+    # via pyobjc-framework-vision
 pyobjc-framework-localauthentication==12.1 ; sys_platform == "darwin"
     # via -r requirements.in
+pyobjc-framework-quartz==12.1 ; sys_platform == "darwin"
+    # via
+    #   pyobjc-framework-vision
+    #   -r requirements.in
 pyobjc-framework-security==12.1
     # via pyobjc-framework-localauthentication
+pyobjc-framework-vision==12.1 ; sys_platform == "darwin"
+    # via -r requirements.in
 pyparsing==3.3.2
     # via rdflib
 pyperclip==1.11.0

@@ -144,29 +144,20 @@ Respond ONLY with the JSON, no other text."""
     
     async def _call_llm_for_extraction(self, prompt: str) -> Optional[Dict]:
         """Call LLM to extract memories"""
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{self.ollama_url}/api/generate",
-                json={
-                    "model": self.extraction_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1,  # Low temperature for consistent extraction
-                        "num_predict": 500,
-                    }
-                }
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                text = result.get("response", "")
-                
-                from utils.json_repair import robust_json_parse
-                parsed = robust_json_parse(text, label="MemoryAgent", fallback=None)
-                if parsed is not None:
-                    return parsed
-        
+        from services.ollama_service import ollama_service
+        _resp = await ollama_service.generate(
+            prompt=prompt,
+            model=self.extraction_model,
+            temperature=0.1,  # Low temperature for consistent extraction
+            num_predict=500,
+            timeout=60.0,
+        )
+        text = _resp.get("response", "")
+        if text:
+            from utils.json_repair import robust_json_parse
+            parsed = robust_json_parse(text, label="MemoryAgent", fallback=None)
+            if parsed is not None:
+                return parsed
         return None
     
     async def _process_extracted_memories(
@@ -544,39 +535,34 @@ Rules:
 - critical_context should capture details that would be hard to re-derive"""
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.ollama_url}/api/generate",
-                    json={
-                        "model": self.extraction_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.1}
-                    }
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    text = result.get("response", "")
-                    
-                    from utils.json_repair import robust_json_parse
-                    data = robust_json_parse(text, label="MemoryAgent-Summary", fallback=None)
-                    if data is not None:
-                        
-                        summary_obj = ConversationSummary(
-                            conversation_id=entries[0].conversation_id,
-                            notebook_id=entries[0].notebook_id,
-                            summary=data.get("summary", ""),
-                            key_points=data.get("key_points", []),
-                            decisions_made=data.get("decisions_made", []),
-                            action_items=data.get("action_items", []),
-                            start_time=min(e.timestamp for e in entries),
-                            end_time=max(e.timestamp for e in entries),
-                            message_count=len(entries),
-                        )
-                        # Return tuple: (summary, critical_context) — avoids Pydantic v2 attribute issues
-                        critical_context = data.get("critical_context", [])
-                        return (summary_obj, critical_context)
+            from services.ollama_service import ollama_service
+            _resp = await ollama_service.generate(
+                prompt=prompt,
+                model=self.extraction_model,
+                temperature=0.1,
+                num_predict=600,
+                format="json",
+                timeout=60.0,
+            )
+            text = _resp.get("response", "")
+            if text:
+                from utils.json_repair import robust_json_parse
+                data = robust_json_parse(text, label="MemoryAgent-Summary", fallback=None)
+                if data is not None:
+                    summary_obj = ConversationSummary(
+                        conversation_id=entries[0].conversation_id,
+                        notebook_id=entries[0].notebook_id,
+                        summary=data.get("summary", ""),
+                        key_points=data.get("key_points", []),
+                        decisions_made=data.get("decisions_made", []),
+                        action_items=data.get("action_items", []),
+                        start_time=min(e.timestamp for e in entries),
+                        end_time=max(e.timestamp for e in entries),
+                        message_count=len(entries),
+                    )
+                    # Return tuple: (summary, critical_context) — avoids Pydantic v2 attribute issues
+                    critical_context = data.get("critical_context", [])
+                    return (summary_obj, critical_context)
         except Exception as e:
             print(f"Conversation summarization error: {e}")
         

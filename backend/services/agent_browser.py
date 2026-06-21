@@ -375,21 +375,15 @@ Only return the JSON array, no other text."""
         return ElementType.UNKNOWN
     
     async def _call_llm(self, prompt: str) -> str:
-        """Call Ollama LLM."""
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{self._ollama_url}/api/generate",
-                json={
-                    "model": self._model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.1}
-                }
-            )
-            
-            if response.status_code == 200:
-                return response.json().get("response", "")
-            return ""
+        """Call the LLM via the canonical Ollama service."""
+        from services.ollama_service import ollama_service
+        _resp = await ollama_service.generate(
+            prompt=prompt,
+            model=self._model,
+            temperature=0.1,
+            timeout=60.0,
+        )
+        return _resp.get("response", "")
     
     def _parse_json_response(self, response: str) -> Optional[Any]:
         """Parse JSON from LLM response."""

@@ -377,11 +377,15 @@ Focus on information that would be useful for answering questions about this doc
                     del pixmap
 
                     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                    # ocr_mode: pure page transcription → free on-device Apple
+                    # Vision OCR (no gemma load), falling back to the LLM vision
+                    # model when Vision is unavailable.
                     description = await ollama_service.vision_describe(
                         image_b64=image_b64,
                         prompt=PAGE_TEXT_EXTRACT_PROMPT,
                         model=self.vision_model,
                         api_style=api_style,
+                        ocr_mode=True,
                     )
 
                     if (

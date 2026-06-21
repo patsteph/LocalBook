@@ -570,39 +570,32 @@ Rules:
 - Output ONLY the questions, one per line, no numbering"""
 
     try:
-        timeout = httpx.Timeout(15.0, read=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={
-                    "model": settings.ollama_fast_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.5,
-                        "num_predict": 200,
-                    }
-                }
-            )
-            
-            if response.status_code == 200:
-                result = response.json().get("response", "").strip()
-                questions = []
-                for line in result.split('\n'):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    # Strip numbering/bullets
-                    line = line.lstrip('0123456789.-) •')
-                    line = line.strip()
-                    if line.endswith('?') and len(line) > 15:
-                        questions.append(line)
-                
-                return {
-                    "topic_id": topic_id,
-                    "topic_name": topic.display_name,
-                    "questions": questions[:4]
-                }
+        from services.ollama_service import ollama_service
+        _resp = await ollama_service.generate(
+            prompt=prompt,
+            model=settings.ollama_fast_model,
+            temperature=0.5,
+            num_predict=200,
+            timeout=30.0,
+        )
+        result = (_resp.get("response", "") or "").strip()
+        if result:
+            questions = []
+            for line in result.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                # Strip numbering/bullets
+                line = line.lstrip('0123456789.-) •')
+                line = line.strip()
+                if line.endswith('?') and len(line) > 15:
+                    questions.append(line)
+
+            return {
+                "topic_id": topic_id,
+                "topic_name": topic.display_name,
+                "questions": questions[:4]
+            }
     except Exception as e:
         print(f"[Graph] Exploration question generation failed: {e}")
     

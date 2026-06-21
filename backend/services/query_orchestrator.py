@@ -119,20 +119,17 @@ RULES:
 SUB-QUESTIONS:"""
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.ollama_base_url}/api/generate",
-                    json={
-                        "model": self.fast_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.3, "num_predict": 500}
-                    }
-                )
-                
-                if response.status_code == 200:
-                    result = response.json().get("response", "")
-                    return self._parse_sub_queries(result)
+            from services.ollama_service import ollama_service
+            _resp = await ollama_service.generate(
+                prompt=prompt,
+                model=self.fast_model,
+                temperature=0.3,
+                num_predict=500,
+                timeout=30.0,
+            )
+            result = _resp.get("response", "")
+            if result:
+                return self._parse_sub_queries(result)
         except Exception as e:
             print(f"[Orchestrator] Decomposition failed: {e}")
         

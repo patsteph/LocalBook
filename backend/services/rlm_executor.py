@@ -300,49 +300,32 @@ answer_ready = True
     
     async def _call_root_llm(self, messages: List[Dict]) -> str:
         """Call root LLM for orchestration."""
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            # Convert to Ollama format
-            prompt = "\n\n".join([
-                f"{m['role'].upper()}: {m['content']}"
-                for m in messages
-            ])
-            
-            response = await client.post(
-                f"{self.ollama_url}/api/generate",
-                json={
-                    "model": self.root_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.3,
-                        "num_predict": 2000,
-                    }
-                }
-            )
-            
-            if response.status_code == 200:
-                return response.json().get("response", "")
-            return f"Error: {response.status_code}"
-    
+        from services.ollama_service import ollama_service
+        # Convert to Ollama format
+        prompt = "\n\n".join([
+            f"{m['role'].upper()}: {m['content']}"
+            for m in messages
+        ])
+        _resp = await ollama_service.generate(
+            prompt=prompt,
+            model=self.root_model,
+            temperature=0.3,
+            num_predict=2000,
+            timeout=120.0,
+        )
+        return _resp.get("response", "")
+
     async def _sub_llm_call(self, chunk: str, question: str) -> str:
         """Call sub-LLM for chunk analysis."""
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{self.ollama_url}/api/generate",
-                json={
-                    "model": self.sub_model,
-                    "prompt": f"Context:\n{chunk[:3000]}\n\nQuestion: {question}\n\nAnswer concisely:",
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1,
-                        "num_predict": 500,
-                    }
-                }
-            )
-            
-            if response.status_code == 200:
-                return response.json().get("response", "")
-            return f"Error: {response.status_code}"
+        from services.ollama_service import ollama_service
+        _resp = await ollama_service.generate(
+            prompt=f"Context:\n{chunk[:3000]}\n\nQuestion: {question}\n\nAnswer concisely:",
+            model=self.sub_model,
+            temperature=0.1,
+            num_predict=500,
+            timeout=60.0,
+        )
+        return _resp.get("response", "")
 
 
 # Integration with Job Queue

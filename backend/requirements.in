@@ -102,3 +102,5 @@ pyarrow>=14.0.0
 
 # Build tools (for creating distributable binary)
 pyinstaller>=6.0.0
+pyobjc-framework-Vision>=10.0; sys_platform == "darwin"  # Apple Vision on-device OCR (engine strategy)
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"  # CGImage for Apple Vision OCR

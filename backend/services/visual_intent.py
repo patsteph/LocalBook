@@ -152,6 +152,79 @@ DEFAULT_INTENT = IllustrationIntent(
 )
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Deterministic Klein fast-path — obvious image asks skip the Gemma call
+#
+# The classifier's own DISPOSITIVE RULE (see _INTENT_SYSTEM below) says a
+# prompt whose FIRST clause names a pictorial medium ("a cinematic image
+# of…", "a render of…", "an illustration of…") is ILLUSTRATION ≥0.85. That
+# rule is deterministic — yet the pipeline was spending a ~60 s Gemma call
+# to apply it, and DROPPING TO THE SKELETON PATH if that call timed out.
+# That was the regression: the Klein routing became hostage to a slow/busy
+# main model, and the main model was held through the classify call (and the
+# art-director call) before it could be evicted for Klein. Applying the rule
+# with a regex means an obvious image ask routes to Klein with NO Gemma call,
+# so the main model evicts immediately — the original "kick to Klein, evict,
+# let it do its thing" flow.
+# ──────────────────────────────────────────────────────────────────────
+_PICTORIAL_MEDIUM = (
+    r"cinematic\s+(?:image|photo(?:graph)?|render|illustration|scene|painting)|"
+    r"photorealistic|photo(?:graph)?|render(?:ing)?|illustration|painting|"
+    r"watercolou?r|drawing|sketch|poster|portrait|hero\s+image|"
+    r"3d\s+render|digital\s+(?:art|painting)|concept\s+art|oil\s+painting"
+)
+_OBVIOUS_ILLUSTRATION_RE = re.compile(
+    rf"^\s*(?:a|an|the)\s+(?:\w+\s+){{0,2}}?(?:{_PICTORIAL_MEDIUM})\b",
+    re.IGNORECASE,
+)
+_STRUCTURAL_OPENER_RE = re.compile(
+    r"^\s*(?:a|an|the)?\s*(?:\w+\s+){0,2}?"
+    r"(?:diagram|flow\s?chart|chart|graph|swim\s?lane|matrix|timeline|"
+    r"org\s?chart|mind\s?map|architecture\s+diagram)\b",
+    re.IGNORECASE,
+)
+
+
+def obvious_illustration_intent(prompt: str) -> Optional[IllustrationIntent]:
+    """Deterministic Klein routing for prompts that unambiguously name a
+    pictorial medium up front (the classifier's DISPOSITIVE RULE, applied with
+    no LLM call). Returns a high-confidence illustration intent, or None when
+    the prompt isn't an obvious image ask — in which case the caller runs the
+    Gemma classifier as before."""
+    if not prompt:
+        return None
+    head = prompt.strip()[:200]
+    if _STRUCTURAL_OPENER_RE.match(head):
+        return None  # opener names a diagram type — let the classifier judge
+    if not _OBVIOUS_ILLUSTRATION_RE.match(head):
+        return None
+    low = prompt.lower()
+    if any(w in low for w in ("portrait", "poster", "vertical", "9:16")):
+        aspect = "9:16"
+    elif any(w in low for w in ("square", "1:1", " icon")):
+        aspect = "1:1"
+    else:
+        aspect = "16:9"
+    tier = "hero" if any(
+        w in low for w in ("cinematic", "photorealistic", "hyper", "4k",
+                           "ultra", "detailed", "editorial", "magazine")
+    ) else "draft"
+    # Rich/long prompts already carry their own art direction → passthrough
+    # (use verbatim, skip the Gemma art-director brief → evict immediately).
+    passthrough = len(prompt.strip()) >= 80
+    return IllustrationIntent(
+        is_illustration=True,
+        confidence=0.9,
+        aspect_ratio=aspect,
+        quality_tier=tier,
+        passthrough_recommended=passthrough,
+        style_hint=None,
+        title="",
+        subtitle="",
+        reason="deterministic medium-opener fast-path (no LLM)",
+    )
+
+
 _INTENT_SYSTEM = """You are classifying a visual generation request. Decide whether the user is asking for:
 
 A) An ILLUSTRATED IMAGE — a creative picture, hero image, cinematic render, scene, poster, photograph, painting, or illustrated graphic. The user uses art-direction vocabulary (cinematic, isometric, palette, lighting, mood, render, photo, scene, hero, illustration, photograph, painting, watercolor, low-poly, Studio Ghibli, golden hour, depth of field, etc.) or describes a visual SUBJECT to depict (a Mac Mini on a walnut desk, a rocket launching, a mountain landscape).
@@ -253,7 +326,14 @@ async def classify_intent(content: str, model: Optional[str]) -> IllustrationInt
             model=model,
             temperature=0.1,
             num_predict=800,
-            timeout=60.0,
+            # 60 s was too tight: on an 18 GB swap-mode box gemma4 calls run
+            # ~60 s, so the classifier timed out → empty → DEFAULT_INTENT →
+            # composer fell back to the non-Klein skeleton picker (5-box linear
+            # layout) for a prompt that explicitly asked for a cinematic image.
+            # This is the FIRST step and decides Klein-vs-skeleton routing, so a
+            # spurious timeout here ruins the whole result. Match the other
+            # foreground visual gemma calls (write_klein_brief uses 180 s).
+            timeout=180.0,
             format="json",
             voice_modifier=False,
             priority=PRIORITY_FOREGROUND,  # first step of user-initiated image gen

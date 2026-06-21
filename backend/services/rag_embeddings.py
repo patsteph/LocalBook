@@ -126,18 +126,13 @@ def encode(texts: Union[str, List[str]]) -> np.ndarray:
 # ─── Async Embedding ────────────────────────────────────────────────────────────
 
 async def _get_ollama_embedding(text: str) -> List[float]:
-    """Get embedding from Ollama asynchronously."""
-    timeout = httpx.Timeout(60.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            f"{settings.ollama_base_url}/api/embeddings",
-            json={
-                "model": settings.embedding_model,
-                "prompt": text
-            }
-        )
-        result = response.json()
-        return result.get("embedding", [])
+    """Get embedding from Ollama asynchronously (via the canonical service)."""
+    from services.ollama_service import ollama_service
+    data = await ollama_service.embed(text, timeout=60.0)
+    embs = data.get("embeddings") or []
+    if embs:
+        return embs[0]
+    return data.get("embedding", [])  # legacy single-vector shape
 
 
 async def _get_ollama_embeddings_batch_async(texts: List[str], max_concurrent: int = 10) -> List[List[float]]:
@@ -146,23 +141,22 @@ async def _get_ollama_embeddings_batch_async(texts: List[str], max_concurrent: i
     This is 10-20x faster than sequential processing for large batches.
     Uses semaphore to limit concurrent requests and avoid overwhelming Ollama.
     """
+    # Concurrency is now bounded by ollama_service's embed lane (cap 4); the
+    # local semaphore stays as an outer guard so very large batches don't
+    # create thousands of pending coroutines at once.
     semaphore = asyncio.Semaphore(max_concurrent)
-    timeout = httpx.Timeout(60.0)
-    
+
     async def get_single_embedding(text: str, index: int) -> Tuple[int, List[float]]:
         async with semaphore:
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(
-                        f"{settings.ollama_base_url}/api/embeddings",
-                        json={"model": settings.embedding_model, "prompt": text}
-                    )
-                    result = response.json()
-                    embedding = result.get("embedding", [])
-                    if not embedding:
-                        print(f"[RAG] Empty embedding for chunk {index}, using zero vector")
-                        return (index, [0.0] * settings.embedding_dim)
-                    return (index, embedding)
+                from services.ollama_service import ollama_service
+                data = await ollama_service.embed(text, timeout=60.0)
+                embs = data.get("embeddings") or []
+                embedding = embs[0] if embs else data.get("embedding", [])
+                if not embedding:
+                    print(f"[RAG] Empty embedding for chunk {index}, using zero vector")
+                    return (index, [0.0] * settings.embedding_dim)
+                return (index, embedding)
             except Exception as e:
                 print(f"[RAG] Embedding failed for chunk {index}: {e}")
                 return (index, [0.0] * settings.embedding_dim)

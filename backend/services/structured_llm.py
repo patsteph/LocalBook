@@ -1979,9 +1979,8 @@ QUESTIONS TO VERIFY:
             return self.build_from_structure(pre_classified_structure, diagram_type, colors, title)
         
         # FALLBACK: Extract structure via LLM (only if no pre-classification)
-        import httpx
         from config import settings
-        
+
         prompt = f"""Topic: {content[:300]}
 
 Return JSON with themes, sequence, and dates:
@@ -1990,31 +1989,24 @@ Return JSON with themes, sequence, and dates:
 Extract the main themes/concepts from the topic."""
 
         try:
-            timeout = httpx.Timeout(90.0)  # 90 second timeout for LLM generation
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": settings.ollama_fast_model,  # phi4-mini - FAST
-                        "prompt": prompt,
-                        "stream": False,
-                        "format": "json",
-                        "options": {
-                            "temperature": 0.3,
-                            "num_predict": 500,  # Small output
-                        }
-                    }
-                )
-                result = response.json()
-                raw_response = result.get("response", "{}")
-                print(f"[StructuredLLM] LLM fallback response: {raw_response[:200]}...")
-                
-                import json
-                parsed = json.loads(raw_response)
-                
-                # Use diagram builders with LLM-extracted structure
-                title = parsed.get("title", parsed.get("themes", ["Overview"])[0] if parsed.get("themes") else "Overview")
-                return self.build_from_structure(parsed, diagram_type, colors, title)
+            from services.ollama_service import ollama_service
+            _resp = await ollama_service.generate(
+                prompt=prompt,
+                model=settings.ollama_fast_model,  # phi4-mini - FAST
+                temperature=0.3,
+                num_predict=500,  # Small output
+                format="json",
+                timeout=90.0,
+            )
+            raw_response = _resp.get("response", "") or "{}"
+            print(f"[StructuredLLM] LLM fallback response: {raw_response[:200]}...")
+
+            import json
+            parsed = json.loads(raw_response)
+
+            # Use diagram builders with LLM-extracted structure
+            title = parsed.get("title", parsed.get("themes", ["Overview"])[0] if parsed.get("themes") else "Overview")
+            return self.build_from_structure(parsed, diagram_type, colors, title)
         except Exception as e:
             import traceback
             print(f"[StructuredLLM] Fast visual failed: {e}")
