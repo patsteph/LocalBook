@@ -65,12 +65,13 @@ class MultimodalExtractor:
     
     def __init__(self):
         self.min_image_size = 100  # Minimum dimension to extract
-        # Cap the per-doc vision batch. Each describe_image call monopolizes
-        # the single-wide gemma vision lane for ~90 s, so 100 images = a 2.5 h
-        # background gemma monopoly that starves foreground work on swap-mode
-        # Macs. 24 covers chart-heavy PDFs (charts are prioritized first) while
-        # bounding the batch to a sane window.
-        self.max_images_per_doc = 24
+        # Per-doc vision batch cap. Restored 24→60 (2026-06-22): image
+        # processing is now backgrounded + the foreground guard stops it from
+        # starving user work, so the aggressive 24 cap (a flood mitigation) was
+        # dropping real content from image-heavy PDFs. document_processor still
+        # lowers this further for very large PDFs (10/25 by size). Charts are
+        # prioritized first so the most useful images are always covered.
+        self.max_images_per_doc = 60
         self.max_parallel_workers = 4  # Concurrent vision model calls
         self.vision_model = settings.vision_model
         self.image_cache_dir = Path(settings.db_path).parent / "images"
@@ -254,11 +255,12 @@ Focus on information that would be useful for answering questions about this doc
                 model=self.vision_model,
                 api_style=api_style,
                 priority=PRIORITY_BACKGROUND,
-                # An image/chart description bound for RAG chunks needs ~300
-                # words, not 1100. The default 1500 was producing 800-1500
-                # token descriptions that held the gemma lane for 90 s+ each;
-                # 400 keeps the key data points while cutting per-call time ~3x.
-                num_predict=400,
+                # Quality restored (2026-06-22): the 400-token cut was a flood
+                # mitigation, but image processing is now BACKGROUNDED (it no
+                # longer blocks the upload), so we can afford full chart/figure
+                # descriptions again. 1024 ≈ 750 words — detailed data points
+                # without the runaway tail the old default 1500 sometimes had.
+                num_predict=1024,
             )
             
             if description and not description.startswith("Error:"):

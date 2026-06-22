@@ -128,6 +128,13 @@ async def await_background_clearance(timeout: float = 300.0) -> None:
             "[memory-steward] background clearance wait timed out "
             f"({timeout}s); proceeding anyway"
         )
+    except RuntimeError:
+        # The module-level Event binds to the loop that first awaited it. A
+        # caller running in a DIFFERENT event loop (e.g. a background job runner
+        # that spins its own loop) would otherwise crash with "bound to a
+        # different event loop". The guard is a best-effort throttle, not a
+        # correctness primitive — just proceed rather than fail the LLM call.
+        return
 
 
 # Per-task marker: True when we're inside a long-running AUTONOMOUS pipeline

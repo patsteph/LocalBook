@@ -556,15 +556,23 @@ Rules:
 Theme name:"""
 
         try:
-            from services.ollama_service import ollama_service
-            _resp = await ollama_service.generate(
-                prompt=prompt,
-                model=settings.ollama_fast_model,
-                temperature=0.3,
-                num_predict=20,
-                timeout=30.0,
-            )
-            name = (_resp.get("response", "") or "").strip()
+            # NOTE: this runs inside `_enhance_names_background`, which spins its
+            # OWN event loop (`asyncio.new_event_loop()` above). ollama_service's
+            # priority lane / clearance Event bind to the main loop and crash
+            # cross-loop ("bound to a different event loop"), so this one caller
+            # stays on loop-agnostic raw httpx. (D4 exception, documented.)
+            import httpx
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, read=30.0)) as client:
+                response = await client.post(
+                    f"{settings.ollama_base_url}/api/generate",
+                    json={
+                        "model": settings.ollama_fast_model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"temperature": 0.3, "num_predict": 20},
+                    },
+                )
+            name = (response.json().get("response", "") if response.status_code == 200 else "").strip()
             if name:
                 # Clean up
                 name = name.strip('"\'').strip()

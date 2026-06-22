@@ -200,15 +200,20 @@ async def _process_upload_background(
         except Exception as _e:
             logger.debug(f"[sources] {type(_e).__name__}: {_e}")
 
-        # Image processing for PDFs/PPTs
+        # Image processing for PDFs/PPTs — SPAWN, don't await. The gemma4 vision
+        # descriptions can take many minutes on a large/image-heavy PDF; awaiting
+        # here blocked the upload for the whole flood ("PDF stuck in processing").
+        # The other 3 upload paths already background this; match them so text is
+        # usable immediately and image descriptions append in the background.
         file_ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
         if file_ext in ['pdf', 'pptx']:
-            try:
-                await document_processor.process_images_background(
+            from utils.tasks import safe_create_task
+            safe_create_task(
+                document_processor.process_images_background(
                     content, notebook_id, source_id, filename
-                )
-            except Exception as _e:
-                logger.debug(f"[sources] {type(_e).__name__}: {_e}")
+                ),
+                name=f"image-ocr-{source_id}",
+            )
 
         # Auto-tag
         try:

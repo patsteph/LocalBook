@@ -87,11 +87,16 @@ class PriorityLane:
         return self._value == 0
 
     async def acquire(self, priority: int = PRIORITY_NORMAL) -> bool:
-        # Fast path: a slot is free and nobody is already queued.
+        # Fast path: a slot is free and nobody is already queued. (Also the
+        # cross-loop-safe path — a caller in a separate event loop hits this
+        # without touching loop-bound futures, since the lane is uncontended
+        # there.)
         if self._value > 0 and not self._waiters:
             self._value -= 1
             return True
-        loop = asyncio.get_event_loop()
+        # get_running_loop() (not the deprecated get_event_loop) so the future
+        # binds to the loop actually awaiting it.
+        loop = asyncio.get_running_loop()
         fut = loop.create_future()
         heapq.heappush(self._waiters, (priority, next(self._counter), fut))
         try:
@@ -122,10 +127,34 @@ class PriorityLane:
 # Lanes are lazy-initialized so they bind to the running event loop.
 _MODEL_SEMAPHORES: Dict[str, PriorityLane] = {}
 _SEMAPHORE_CAPS = {
-    "main": 1,    # gemma4 / olmo / similar large models
+    "main": 1,    # gemma4 / olmo — see _main_lane_cap() (memory-aware)
     "fast": 2,    # phi4-mini
     "embed": 4,   # embedding models
 }
+
+
+def _main_lane_cap() -> int:
+    """Concurrency cap for the heavy (gemma/main) model — MEMORY-AWARE.
+
+    cap=1 is the safe floor: on ≤18 GB boxes 2 concurrent gemma calls cause the
+    Ollama tail-latency/thrash that crashed the 18 GB Mac (P14.H.3). On roomy
+    machines (≥24 GB) there's headroom for 2 concurrent gemma contexts, which
+    un-serializes the big throughput sinks (vision-describe + chat + doc-gen)
+    that otherwise queue one-at-a-time. Env override: LOCALBOOK_GEMMA_LANE_CAP.
+
+    (When the MLX text engine lands it replaces this with its own memory-guarded
+    thread-per-model scheduler — the RAM *awareness* carries over; only the value
+    changes. See READFIRST/in-progress/local-ai-engine-strategy.md.)
+    """
+    override = os.getenv("LOCALBOOK_GEMMA_LANE_CAP")
+    if override and override.strip().isdigit():
+        return max(1, int(override))
+    try:
+        import psutil
+        total_gb = psutil.virtual_memory().total / (1024 ** 3)
+        return 2 if total_gb >= 24 else 1
+    except Exception:
+        return 1  # psutil missing → assume constrained, stay safe
 
 
 def _semaphore_for_model(model: str) -> PriorityLane:
@@ -139,7 +168,10 @@ def _semaphore_for_model(model: str) -> PriorityLane:
         # Default: treat unknown / main model as the heavy bucket.
         bucket = "main"
     if bucket not in _MODEL_SEMAPHORES:
-        _MODEL_SEMAPHORES[bucket] = PriorityLane(_SEMAPHORE_CAPS[bucket])
+        cap = _main_lane_cap() if bucket == "main" else _SEMAPHORE_CAPS[bucket]
+        if bucket == "main":
+            logger.info(f"[OllamaService] gemma lane cap={cap} (memory-aware)")
+        _MODEL_SEMAPHORES[bucket] = PriorityLane(cap)
     return _MODEL_SEMAPHORES[bucket]
 
 
