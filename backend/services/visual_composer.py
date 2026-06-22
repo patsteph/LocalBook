@@ -620,14 +620,29 @@ class VisualComposer:
         suggested_overlay = suggest_overlay_position(diffusion.png_bytes)
 
         # Step 6: critic (best-effort — None on failure is fine).
-        # Pass the user's ACTUAL prompt (not the enriched content blob, not
-        # truncated to 300 chars) so the critic can apply the prompt-fidelity
-        # hard-penalty check from CRITIC_SYSTEM. Cap at 1500 chars to keep
-        # the critic's context bounded.
-        critic_intent = prompt_source[:1500] if prompt_source else content[:300]
-        critic_result = await self._run_critic(
-            svg, title=title, intent=critic_intent, capability=capability,
-        )
+        # SWAP-MODE SKIP: on ≤18 GB boxes we skip the Gemma critic entirely.
+        # The full-bleed path just force-unloaded gemma4 (9.6 GB) to make room
+        # for Klein; running the critic immediately demands that 9.6 GB back,
+        # and reloading it on a pressured box thrashes RAM, hits the critic's
+        # own 180s timeout, AND starves concurrent work (observed: a PDF's core
+        # embeddings timing out → ingest stuck → crash). The image is already
+        # done; a quality score is not worth a crash on the most constrained
+        # machines. Critic stays ON for concurrent-mode boxes (≥24 GB).
+        swap_mode = capability.concurrency_mode.value in ("swap", "swap_strict")
+        if swap_mode:
+            logger.info(
+                "[visual_composer] full-bleed: skipping Gemma critic (swap mode — "
+                "avoids a post-Klein 9.6 GB gemma reload that thrashes RAM)"
+            )
+            critic_result = None
+        else:
+            # Pass the user's ACTUAL prompt so the critic can apply the
+            # prompt-fidelity hard-penalty check from CRITIC_SYSTEM. Cap at
+            # 1500 chars to keep the critic's context bounded.
+            critic_intent = prompt_source[:1500] if prompt_source else content[:300]
+            critic_result = await self._run_critic(
+                svg, title=title, intent=critic_intent, capability=capability,
+            )
 
         return ComposedVisual(
             success=True,

@@ -179,6 +179,10 @@ async def ingest_document(
         f"Computing {len(texts_to_embed)} embeddings (1024-dim snowflake-arctic)...",
         details={"vector_count": len(texts_to_embed)},
     )
+    # Serialize the (core) embedding step behind any active foreground
+    # generation too — ingest-only, deadlock-proof, no-op when idle.
+    from services.memory_steward import await_background_clearance
+    await await_background_clearance()
     embeddings = await rag_embeddings.encode_async(texts_to_embed)
     await reporter.emit("embedding", 85, "Embeddings ready")
 
@@ -331,6 +335,10 @@ async def append_to_document(
     texts_to_embed = [f"{c}\n\nQuestions this answers:\n{q}" if q else c for c, q in zip(chunks, questions)]
 
     # Generate embeddings
+    # Serialize the (core) embedding step behind any active foreground
+    # generation too — ingest-only, deadlock-proof, no-op when idle.
+    from services.memory_steward import await_background_clearance
+    await await_background_clearance()
     embeddings = await rag_embeddings.encode_async(texts_to_embed)
 
     # Get existing table
@@ -426,14 +434,17 @@ def search_chunks(notebook_id: str, query_text: str, top_k: int = 5) -> List[Dic
 
 # HyDE batching: one phi4 call PER CHUNK used to flood Ollama on large PDFs
 # (50-chunk doc = 50 back-to-back fast-model calls, observed starving the core
-# embeddings + a concurrent visual into timeouts). Batch several chunks per call
-# (like the article BATCH win) to cut the call count ~CHUNKS_PER_BATCH×.
-_HYDE_CHUNKS_PER_BATCH = 5
+# embeddings + a concurrent visual into timeouts). Batch a few chunks per call
+# to cut the call count. Uses a phi4-friendly DELIMITED format ("P1: ...") —
+# nested JSON for 5 passages proved unreliable on the small model (it dropped
+# whole passages); line-per-passage + regex parse is robust + small batches.
+_HYDE_CHUNKS_PER_BATCH = 3
 _HYDE_MAX_CONCURRENT_BATCHES = 3
 # Guard: never fan HyDE out unboundedly. Beyond this many chunks, the overflow
 # chunks embed WITHOUT synthetic questions (still searchable, slightly weaker
 # HyDE) rather than melting Ollama on a giant document.
 _HYDE_MAX_CHUNKS = 200
+_HYDE_LINE_RE = re.compile(r'(?im)^\s*P\s*(\d+)\s*[:\-.]\s*(.+?)\s*$')
 
 
 async def generate_chunk_questions(chunks: List[str]) -> List[str]:
@@ -445,7 +456,6 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
         return []
 
     from services.ollama_service import ollama_service
-    from utils.json_repair import robust_json_parse
 
     results: List[str] = [""] * len(chunks)
     eligible = min(len(chunks), _HYDE_MAX_CHUNKS)
@@ -453,38 +463,36 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
 
     async def _run_batch(start: int) -> None:
         batch = chunks[start:start + _HYDE_CHUNKS_PER_BATCH]
-        # Build a numbered prompt; ask for a JSON object keyed by passage number.
-        # JSON mode is safe here (object output, not a bare array).
-        parts = [
-            f"Passage {i + 1}:\n{c[:1500]}"
-            for i, c in enumerate(batch)
-        ]
+        parts = [f"P{i + 1}: {c[:1500]}" for i, c in enumerate(batch)]
         prompt = (
-            f"You are given {len(batch)} text passages, numbered. For EACH passage, "
-            "write exactly 3 short, specific questions that the passage directly answers.\n\n"
-            "Return ONLY a JSON object mapping each passage number (as a string) to its "
-            'three questions joined by a space. Example: {"1": "What is X? How does Y work? '
-            'When did Z happen?", "2": "..."}\n\n'
+            f"Below are {len(batch)} passages labeled P1..P{len(batch)}. For EACH "
+            "passage, write exactly 3 short, specific questions it directly answers.\n"
+            "Output ONE line per passage, in this EXACT format and nothing else:\n"
+            "P1: <question1> <question2> <question3>\n"
+            "P2: <question1> <question2> <question3>\n\n"
             + "\n\n".join(parts)
         )
         async with semaphore:
+            # Serialize behind any active foreground generation (visual/chat):
+            # on an 18 GB box the HyDE phi4 flood + a visual's models can't
+            # coexist. Yield per-batch so an upload pauses HyDE *during* a
+            # visual, then resumes cleanly. No-op when nothing foreground is
+            # active (deadlock-proof via the contextvar); ingest-only path.
+            from services.memory_steward import await_background_clearance
+            await await_background_clearance()
             try:
                 _resp = await ollama_service.generate(
                     prompt=prompt,
                     model=settings.ollama_fast_model,
                     temperature=0.3,
-                    num_predict=110 * len(batch),  # ~3 short Qs/passage
-                    format="json",
+                    num_predict=90 * len(batch),  # ~3 short Qs/passage
                     timeout=60.0,
                 )
                 raw = _resp.get("response", "") or ""
-                data = robust_json_parse(raw, expect="object", fallback={}, label="HyDE")
-                if isinstance(data, dict):
-                    for i in range(len(batch)):
-                        val = data.get(str(i + 1)) or data.get(i + 1) or ""
-                        if isinstance(val, list):
-                            val = " ".join(str(x) for x in val)
-                        results[start + i] = str(val).strip()
+                for m in _HYDE_LINE_RE.finditer(raw):
+                    idx = int(m.group(1)) - 1
+                    if 0 <= idx < len(batch):
+                        results[start + idx] = m.group(2).strip()
             except Exception as e:
                 print(f"[RAG] HyDE batch at {start} failed: {e}")  # leave "" for this batch
 
