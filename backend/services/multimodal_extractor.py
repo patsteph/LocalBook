@@ -73,6 +73,15 @@ class MultimodalExtractor:
         # prioritized first so the most useful images are always covered.
         self.max_images_per_doc = 60
         self.max_parallel_workers = 4  # Concurrent vision model calls
+        # OCR-first triage floor (2026-06-23): a non-chart embedded image whose
+        # Apple-Vision OCR yields ≥ this many chars is treated as a text-block /
+        # table screenshot — the OCR transcript becomes its description and it
+        # NEVER touches the gemma vision lane. This "clears the GPU highway" so
+        # only genuine figures/photos/diagrams (and all charts) reach gemma,
+        # which in turn lets the figure path afford a high-side token budget.
+        # 240 ≈ a few sentences: real text blocks clear it easily, while short
+        # figure captions don't (so captioned figures still go to gemma).
+        self._OCR_TEXT_FLOOR = 240
         self.vision_model = settings.vision_model
         self.image_cache_dir = Path(settings.db_path).parent / "images"
         self.image_cache_dir.mkdir(exist_ok=True)
@@ -217,7 +226,30 @@ class MultimodalExtractor:
         """
         # Convert to base64
         image_b64 = base64.b64encode(image.image_bytes).decode('utf-8')
-        
+
+        # ── OCR-first triage: clear the GPU "highway" ───────────────────
+        # Non-chart embedded images are often text blocks / table screenshots
+        # whose value IS the text. Apple Vision OCR (CPU, no GPU, no model load)
+        # transcribes those for free, so only genuine figures/photos/diagrams
+        # reach the gemma vision lane. Charts always go to gemma — their value
+        # is the visual trend, not the handful of axis labels OCR can see.
+        if not image.is_chart:
+            try:
+                from services.apple_vision_ocr import recognize_text
+                ocr_text = await recognize_text(image_b64)
+            except Exception as _e:
+                logger.debug(f"[multimodal] OCR triage skipped: {_e}")
+                ocr_text = None
+            if ocr_text and len(ocr_text.strip()) >= self._OCR_TEXT_FLOOR:
+                logger.info(
+                    f"[multimodal] OCR-triage p{image.page_number}: "
+                    f"{len(ocr_text.strip())} chars text-image → skipped gemma vision"
+                )
+                return (
+                    f"[Text extracted from image on page {image.page_number}]\n"
+                    f"{ocr_text.strip()}"
+                )
+
         # Determine prompt based on image type
         if image.is_chart:
             prompt = """Describe this chart or graph in detail:
@@ -255,12 +287,13 @@ Focus on information that would be useful for answering questions about this doc
                 model=self.vision_model,
                 api_style=api_style,
                 priority=PRIORITY_BACKGROUND,
-                # Quality restored (2026-06-22): the 400-token cut was a flood
-                # mitigation, but image processing is now BACKGROUNDED (it no
-                # longer blocks the upload), so we can afford full chart/figure
-                # descriptions again. 1024 ≈ 750 words — detailed data points
-                # without the runaway tail the old default 1500 sometimes had.
-                num_predict=1024,
+                # High-side quality on the figure path (2026-06-23): OCR-first
+                # triage now diverts text-images to CPU OCR, so only genuine
+                # figures/charts reach gemma — far fewer calls — which makes a
+                # rich budget affordable without the per-doc runaway that 1024×
+                # all-images caused. 840 ≈ 620 words: detailed chart data points
+                # and figure descriptions, short of the runaway tail.
+                num_predict=840,
             )
             
             if description and not description.startswith("Error:"):

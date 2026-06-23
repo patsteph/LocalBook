@@ -1148,31 +1148,31 @@ Return ONLY a JSON object:
 CRITICAL: Preserve the diagram type (flowchart, mindmap, etc). Only modify structure/content."""
 
     try:
-        import httpx
+        # D4 (2026-06-23): routed through ollama_service for token metrics +
+        # model options + lane scheduling. Behavior preserved (main model,
+        # num_predict 1000, temp 0.3, regex JSON extraction — no native JSON
+        # mode, matching the original prose+JSON response handling).
+        from services.ollama_service import ollama_service
         from config import settings
-        
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={
-                    "model": settings.ollama_model,
-                    "prompt": refinement_prompt,
-                    "stream": False,
-                    "options": {"num_predict": 1000, "temperature": 0.3}
-                }
-            )
-            result = response.json().get("response", "{}")
-            
-            import json
-            import re
-            json_match = re.search(r'\{[\s\S]*\}', result)
-            if json_match:
-                parsed = json.loads(json_match.group())
-                return {
-                    "success": True,
-                    "code": parsed.get("code", request.current_code),
-                    "changes_made": parsed.get("changes_made", "Diagram refined"),
-                }
+        _resp = await ollama_service.generate(
+            prompt=refinement_prompt,
+            model=settings.ollama_model,
+            temperature=0.3,
+            num_predict=1000,
+            timeout=15.0,
+        )
+        result = _resp.get("response", "{}")
+
+        import json
+        import re
+        json_match = re.search(r'\{[\s\S]*\}', result)
+        if json_match:
+            parsed = json.loads(json_match.group())
+            return {
+                "success": True,
+                "code": parsed.get("code", request.current_code),
+                "changes_made": parsed.get("changes_made", "Diagram refined"),
+            }
     except Exception as e:
         print(f"[Visual] Refinement failed: {e}")
     

@@ -648,28 +648,22 @@ class VisualGenerator:
     
     async def _call_llm(self, system_prompt: str, content: str) -> Dict[str, Any]:
         """Call LLM with JSON output."""
-        timeout = httpx.Timeout(120.0)
-        
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": f"{system_prompt}\n\nCONTENT TO VISUALIZE:\n{content[:6000]}",
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0.7,
-                        "num_predict": 2000,
-                    }
-                }
-            )
-            result = response.json()
-            
-            try:
-                return json.loads(result.get("response", "{}"))
-            except json.JSONDecodeError:
-                return {}
+        # D4 (2026-06-23): routed through ollama_service for token metrics +
+        # model options + lane scheduling. Behavior preserved (main model, JSON
+        # mode, temp 0.7, num_predict 2000, same 6000-char content budget).
+        from services.ollama_service import ollama_service
+        result = await ollama_service.generate(
+            prompt=f"{system_prompt}\n\nCONTENT TO VISUALIZE:\n{content[:6000]}",
+            model=self.model,
+            temperature=0.7,
+            num_predict=2000,
+            format="json",
+            timeout=120.0,
+        )
+        try:
+            return json.loads(result.get("response", "{}"))
+        except json.JSONDecodeError:
+            return {}
     
     def _fix_mermaid_syntax(self, code: str, mermaid_type: str) -> str:
         """Fix common Mermaid syntax issues."""

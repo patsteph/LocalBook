@@ -360,187 +360,191 @@ RULES:
 - Return ONLY the JSON, nothing else"""
 
         try:
-            import json
-            import re
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                # Stage 1: Extract content structure using FAST model for speed
-                # This runs in background after query - speed is critical
-                response = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": settings.ollama_fast_model,  # Use fast model (phi4-mini)
-                        "prompt": extraction_prompt,
-                        "stream": False,
-                        "options": {"num_predict": 1200, "temperature": 0}  # More tokens for deeper extraction
-                    }
-                )
-                result = response.json().get("response", "{}")
-                print(f"[Visual Extraction] Raw LLM response ({len(result)} chars): {result[:500]}...")
-                
-                # Parse the structure extraction with robust JSON handling
-                from utils.json_repair import robust_json_parse
-                structure = robust_json_parse(result, label="VisualAnalyzer", fallback=None)
-                if structure is None:
-                    # Last-resort: regex extract themes from malformed JSON
-                    themes_match = re.findall(r'"themes"\s*:\s*\[(.*?)\]', result, re.DOTALL)
-                    if themes_match:
-                        theme_items = re.findall(r'"([^"]+)"', themes_match[0])
-                        structure = {"themes": theme_items}
+            # NOTE: `re` is used at module scope (line 8) — do NOT re-import it
+            # locally here. A function-local `import re` makes `re` a local for
+            # the WHOLE method, so the earlier `re.findall` (section detection)
+            # would hit UnboundLocalError before the import line runs. (`json`
+            # is no longer used here — robust_json_parse handles parsing.)
+            # Stage 1: Extract content structure using FAST model for speed.
+            # This runs in background after query - speed is critical.
+            # D4 (2026-06-23): routed through ollama_service (token metrics +
+            # model options + lane scheduling). Behavior preserved - fast model,
+            # num_predict 1200, temp 0, prompt-driven JSON + robust parse below.
+            from services.ollama_service import ollama_service
+            _resp = await ollama_service.generate(
+                prompt=extraction_prompt,
+                model=settings.ollama_fast_model,
+                temperature=0,
+                num_predict=1200,
+                timeout=30.0,
+            )
+            result = _resp.get("response", "{}")
+            print(f"[Visual Extraction] Raw LLM response ({len(result)} chars): {result[:500]}...")
+
+            # Parse the structure extraction with robust JSON handling
+            from utils.json_repair import robust_json_parse
+            structure = robust_json_parse(result, label="VisualAnalyzer", fallback=None)
+            if structure is None:
+                # Last-resort: regex extract themes from malformed JSON
+                themes_match = re.findall(r'"themes"\s*:\s*\[(.*?)\]', result, re.DOTALL)
+                if themes_match:
+                    theme_items = re.findall(r'"([^"]+)"', themes_match[0])
+                    structure = {"themes": theme_items}
+                else:
+                    structure = {}
+
+            # CRITICAL: If we detected numbered sections in the content, ALWAYS use them
+            # They are more reliable than LLM extraction
+            if numbered_sections and len(numbered_sections) >= 2:
+                print("[Visual Extraction] ✅ USING DETECTED SECTIONS (more reliable than LLM)")
+                structure["themes"] = numbered_sections[:8]
+                print(f"[Visual Extraction] Themes from sections: {structure['themes']}")
+                # Generate a better title from the content if LLM didn't provide one
+                if not structure.get("title") or len(structure.get("title", "")) < 5:
+                    # Try to extract title from first line or use generic
+                    first_line = text.split('\n')[0][:50].strip()
+                    if first_line and not first_line.startswith('*'):
+                        structure["title"] = first_line
                     else:
-                        structure = {}
-                
-                # CRITICAL: If we detected numbered sections in the content, ALWAYS use them
-                # They are more reliable than LLM extraction
-                if numbered_sections and len(numbered_sections) >= 2:
-                    print("[Visual Extraction] ✅ USING DETECTED SECTIONS (more reliable than LLM)")
-                    structure["themes"] = numbered_sections[:8]
-                    print(f"[Visual Extraction] Themes from sections: {structure['themes']}")
-                    # Generate a better title from the content if LLM didn't provide one
-                    if not structure.get("title") or len(structure.get("title", "")) < 5:
-                        # Try to extract title from first line or use generic
-                        first_line = text.split('\n')[0][:50].strip()
-                        if first_line and not first_line.startswith('*'):
-                            structure["title"] = first_line
-                        else:
-                            structure["title"] = "Key Themes"
-                elif len(structure.get("themes", [])) < 3:
-                    # LLM also failed - log this
-                    print(f"[Visual Extraction] ⚠️ NO numbered sections AND LLM returned only {len(structure.get('themes', []))} themes")
-                    # Last resort: extract first few sentences as themes
-                    sentences = re.split(r'[.!?]\s+', text[:1000])
-                    fallback_themes = [s.strip()[:60] for s in sentences[:4] if len(s.strip()) > 20]
-                    if fallback_themes:
-                        structure["themes"] = fallback_themes
-                        print(f"[Visual Extraction] 🔄 Using sentence fallback: {fallback_themes}")
-                
-                # DEBUG: Show full extracted structure
-                print("[Visual Extraction] PARSED STRUCTURE:")
-                print(f"  themes ({len(structure.get('themes', []))}): {structure.get('themes', [])}")
-                print(f"  tensions ({len(structure.get('tensions', []))}): {structure.get('tensions', [])}")
-                print(f"  gaps ({len(structure.get('gaps', []))}): {structure.get('gaps', [])}")
-                print(f"  relationships ({len(structure.get('relationships', []))}): {structure.get('relationships', [])}")
-                print(f"  pros ({len(structure.get('pros', []))}): {structure.get('pros', [])}")
-                print(f"  cons ({len(structure.get('cons', []))}): {structure.get('cons', [])}")
-                print(f"  recommendations ({len(structure.get('recommendations', []))}): {structure.get('recommendations', [])}")
-                
-                # Stage 2: Pick visual type based on what we found
-                themes = structure.get("themes", [])
-                entities = structure.get("entities", [])
-                relationships = structure.get("relationships", [])
-                tensions = structure.get("tensions", [])
-                gaps = structure.get("gaps", [])
-                sequence = structure.get("sequence", [])
-                dates_events = structure.get("dates_events", [])
-                comparisons = structure.get("comparisons", [])
-                numbers = structure.get("numbers", [])
-                pros = structure.get("pros", [])
-                cons = structure.get("cons", [])
-                recommendations = structure.get("recommendations", [])
-                components = structure.get("components", [])
-                rankings = structure.get("rankings", [])
-                
-                # Decision logic based on extracted structure
-                # Priority order matches template specificity (most specific first)
-                visual_type = "THEMES"  # Default
-                suggested_template = "key_takeaways"
-                
-                # === HIGH SPECIFICITY MATCHES ===
-                # NEW: Tensions/gaps indicate narrative arc - use force field or gap analysis
-                if len(tensions) >= 2 or (len(gaps) >= 2 and len(themes) >= 3):
-                    visual_type = "TENSION_GAP"
-                    suggested_template = "force_field"  # Shows opposing forces
-                elif len(pros) >= 2 and len(cons) >= 2:
-                    # Explicit pros/cons found
-                    visual_type = "PROS_CONS"
-                    suggested_template = "pros_cons"
-                elif len(rankings) >= 3:
-                    # Ranked/ordered items
-                    visual_type = "RANKING"
-                    suggested_template = "ranking"
-                elif len(recommendations) >= 2:
-                    # Action items / recommendations
-                    visual_type = "RECOMMENDATIONS"
-                    suggested_template = "recommendation_stack"
-                elif len(dates_events) >= 3:
-                    # Timeline with actual dated events
-                    visual_type = "TIMELINE"
-                    suggested_template = "timeline"
-                elif len(comparisons) >= 1:
-                    # Explicit A vs B comparisons
-                    visual_type = "COMPARISON"
-                    suggested_template = "side_by_side"
-                elif len(sequence) >= 3:
-                    # Process/progression with steps
-                    visual_type = "PROGRESSION"
-                    suggested_template = "horizontal_steps"
-                elif len(components) >= 3:
-                    # System/concept breakdown
-                    visual_type = "ANATOMY"
-                    suggested_template = "anatomy"
-                elif len(relationships) >= 3:
-                    # Multiple relationships - concept map
-                    visual_type = "RELATIONSHIPS"
-                    suggested_template = "concept_map"
-                elif len(numbers) >= 3:
-                    # Stats/metrics - key stats or distribution
-                    visual_type = "STATS"
-                    suggested_template = "key_stats"
-                elif len(themes) >= 2:
-                    # Themes found - choose template based on COUNT for visual quality
-                    visual_type = "THEMES"
-                    if len(themes) >= 7:
-                        # 7+ themes: exec_summary (two-column) shows all, hub-spoke truncates
-                        suggested_template = "exec_summary"
-                    elif len(themes) >= 5:
-                        # 5-6 themes: hub-spoke works well
-                        suggested_template = "key_takeaways"
-                    else:
-                        # 2-4 themes: hub-spoke or MECE both work
-                        suggested_template = "key_takeaways"
-                elif len(entities) >= 3:
-                    # Entities found - overview map
-                    visual_type = "OVERVIEW"
-                    suggested_template = "overview_map"
-                
-                # Phase 4: Detect multiple visual types for multi-visual generation
-                secondary_types = []
-                has_multiple = False
-                
-                # Check for secondary structures
-                if visual_type != "THEMES" and len(themes) >= 2:
-                    secondary_types.append("THEMES")
-                if visual_type != "TIMELINE" and len(dates_events) >= 3:
-                    secondary_types.append("TIMELINE")
-                if visual_type != "RELATIONSHIPS" and len(relationships) >= 2:
-                    secondary_types.append("RELATIONSHIPS")
-                if visual_type != "PROGRESSION" and len(sequence) >= 3:
-                    secondary_types.append("PROGRESSION")
-                
-                has_multiple = len(secondary_types) > 0
-                
-                print(f"[VisualAnalyzer] Napkin-style analysis: themes={len(themes)}, entities={len(entities)}, "
-                      f"relationships={len(relationships)}, sequence={len(sequence)}, dates={len(dates_events)} "
-                      f"-> {visual_type} ({suggested_template})" + 
-                      (f" + {secondary_types}" if secondary_types else ""))
-                
-                # Use extracted title from LLM, fallback to generic
-                extracted_title = structure.get("title", "")
-                if not extracted_title or len(extracted_title) > 40:
-                    # Fallback: create short title from first theme
-                    extracted_title = themes[0][:30] if themes else "Key Insights"
-                
-                print(f"[VisualAnalyzer] Using title: {extracted_title}")
-                
-                return {
-                    "visual_type": visual_type,
-                    "suggested_template": suggested_template,
-                    "key_items": themes[:5] or entities[:5] or sequence[:5],
-                    "title": extracted_title,
-                    "structure": structure,  # Include raw structure for debugging
-                    "secondary_types": secondary_types,
-                    "has_multiple_structures": has_multiple,
-                }
-                
+                        structure["title"] = "Key Themes"
+            elif len(structure.get("themes", [])) < 3:
+                # LLM also failed - log this
+                print(f"[Visual Extraction] ⚠️ NO numbered sections AND LLM returned only {len(structure.get('themes', []))} themes")
+                # Last resort: extract first few sentences as themes
+                sentences = re.split(r'[.!?]\s+', text[:1000])
+                fallback_themes = [s.strip()[:60] for s in sentences[:4] if len(s.strip()) > 20]
+                if fallback_themes:
+                    structure["themes"] = fallback_themes
+                    print(f"[Visual Extraction] 🔄 Using sentence fallback: {fallback_themes}")
+
+            # DEBUG: Show full extracted structure
+            print("[Visual Extraction] PARSED STRUCTURE:")
+            print(f"  themes ({len(structure.get('themes', []))}): {structure.get('themes', [])}")
+            print(f"  tensions ({len(structure.get('tensions', []))}): {structure.get('tensions', [])}")
+            print(f"  gaps ({len(structure.get('gaps', []))}): {structure.get('gaps', [])}")
+            print(f"  relationships ({len(structure.get('relationships', []))}): {structure.get('relationships', [])}")
+            print(f"  pros ({len(structure.get('pros', []))}): {structure.get('pros', [])}")
+            print(f"  cons ({len(structure.get('cons', []))}): {structure.get('cons', [])}")
+            print(f"  recommendations ({len(structure.get('recommendations', []))}): {structure.get('recommendations', [])}")
+
+            # Stage 2: Pick visual type based on what we found
+            themes = structure.get("themes", [])
+            entities = structure.get("entities", [])
+            relationships = structure.get("relationships", [])
+            tensions = structure.get("tensions", [])
+            gaps = structure.get("gaps", [])
+            sequence = structure.get("sequence", [])
+            dates_events = structure.get("dates_events", [])
+            comparisons = structure.get("comparisons", [])
+            numbers = structure.get("numbers", [])
+            pros = structure.get("pros", [])
+            cons = structure.get("cons", [])
+            recommendations = structure.get("recommendations", [])
+            components = structure.get("components", [])
+            rankings = structure.get("rankings", [])
+
+            # Decision logic based on extracted structure
+            # Priority order matches template specificity (most specific first)
+            visual_type = "THEMES"  # Default
+            suggested_template = "key_takeaways"
+
+            # === HIGH SPECIFICITY MATCHES ===
+            # NEW: Tensions/gaps indicate narrative arc - use force field or gap analysis
+            if len(tensions) >= 2 or (len(gaps) >= 2 and len(themes) >= 3):
+                visual_type = "TENSION_GAP"
+                suggested_template = "force_field"  # Shows opposing forces
+            elif len(pros) >= 2 and len(cons) >= 2:
+                # Explicit pros/cons found
+                visual_type = "PROS_CONS"
+                suggested_template = "pros_cons"
+            elif len(rankings) >= 3:
+                # Ranked/ordered items
+                visual_type = "RANKING"
+                suggested_template = "ranking"
+            elif len(recommendations) >= 2:
+                # Action items / recommendations
+                visual_type = "RECOMMENDATIONS"
+                suggested_template = "recommendation_stack"
+            elif len(dates_events) >= 3:
+                # Timeline with actual dated events
+                visual_type = "TIMELINE"
+                suggested_template = "timeline"
+            elif len(comparisons) >= 1:
+                # Explicit A vs B comparisons
+                visual_type = "COMPARISON"
+                suggested_template = "side_by_side"
+            elif len(sequence) >= 3:
+                # Process/progression with steps
+                visual_type = "PROGRESSION"
+                suggested_template = "horizontal_steps"
+            elif len(components) >= 3:
+                # System/concept breakdown
+                visual_type = "ANATOMY"
+                suggested_template = "anatomy"
+            elif len(relationships) >= 3:
+                # Multiple relationships - concept map
+                visual_type = "RELATIONSHIPS"
+                suggested_template = "concept_map"
+            elif len(numbers) >= 3:
+                # Stats/metrics - key stats or distribution
+                visual_type = "STATS"
+                suggested_template = "key_stats"
+            elif len(themes) >= 2:
+                # Themes found - choose template based on COUNT for visual quality
+                visual_type = "THEMES"
+                if len(themes) >= 7:
+                    # 7+ themes: exec_summary (two-column) shows all, hub-spoke truncates
+                    suggested_template = "exec_summary"
+                elif len(themes) >= 5:
+                    # 5-6 themes: hub-spoke works well
+                    suggested_template = "key_takeaways"
+                else:
+                    # 2-4 themes: hub-spoke or MECE both work
+                    suggested_template = "key_takeaways"
+            elif len(entities) >= 3:
+                # Entities found - overview map
+                visual_type = "OVERVIEW"
+                suggested_template = "overview_map"
+
+            # Phase 4: Detect multiple visual types for multi-visual generation
+            secondary_types = []
+            has_multiple = False
+
+            # Check for secondary structures
+            if visual_type != "THEMES" and len(themes) >= 2:
+                secondary_types.append("THEMES")
+            if visual_type != "TIMELINE" and len(dates_events) >= 3:
+                secondary_types.append("TIMELINE")
+            if visual_type != "RELATIONSHIPS" and len(relationships) >= 2:
+                secondary_types.append("RELATIONSHIPS")
+            if visual_type != "PROGRESSION" and len(sequence) >= 3:
+                secondary_types.append("PROGRESSION")
+
+            has_multiple = len(secondary_types) > 0
+
+            print(f"[VisualAnalyzer] Napkin-style analysis: themes={len(themes)}, entities={len(entities)}, "
+                  f"relationships={len(relationships)}, sequence={len(sequence)}, dates={len(dates_events)} "
+                  f"-> {visual_type} ({suggested_template})" + 
+                  (f" + {secondary_types}" if secondary_types else ""))
+
+            # Use extracted title from LLM, fallback to generic
+            extracted_title = structure.get("title", "")
+            if not extracted_title or len(extracted_title) > 40:
+                # Fallback: create short title from first theme
+                extracted_title = themes[0][:30] if themes else "Key Insights"
+
+            print(f"[VisualAnalyzer] Using title: {extracted_title}")
+
+            return {
+                "visual_type": visual_type,
+                "suggested_template": suggested_template,
+                "key_items": themes[:5] or entities[:5] or sequence[:5],
+                "title": extracted_title,
+                "structure": structure,  # Include raw structure for debugging
+                "secondary_types": secondary_types,
+                "has_multiple_structures": has_multiple,
+            }
+
         except Exception as e:
             print(f"[VisualAnalyzer] LLM analysis failed: {e}")
             import traceback

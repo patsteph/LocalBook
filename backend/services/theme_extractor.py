@@ -348,54 +348,56 @@ RULES:
 - Return ONLY the JSON, no other text"""
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={
-                    "model": settings.ollama_fast_model,
-                    "prompt": extraction_prompt,
-                    "stream": False,
-                    "options": {"num_predict": 800, "temperature": 0}
-                }
-            )
-            result = response.json().get("response", "{}")
-            logger.info(f"[Theme Extractor] LLM response: {result[:300]}...")
-            
-            # Parse JSON (robust handling of trailing commas, markdown fences, etc.)
-            from utils.json_repair import robust_json_parse
-            data = robust_json_parse(result, label="ThemeExtractor", fallback=None)
-            if data is None:
-                raise ValueError("No JSON found in LLM response")
-            
-            # Clean and validate themes
-            themes = [clean_theme_name(t) for t in data.get("themes", [])]
-            themes = [t for t in themes if len(t) > 5 and not is_garbage_theme(t)]
-            
-            if len(themes) < 3:
-                # Even LLM failed - use generic fallback
-                themes = ["Key Finding 1", "Key Finding 2", "Key Finding 3"]
-            
-            # Clean insight - strip trailing "..." that LLM sometimes adds
-            raw_insight = data.get("insight", "")
-            if raw_insight:
-                insight = raw_insight.strip()
-                # Remove trailing ellipsis
-                while insight.endswith('...'):
-                    insight = insight[:-3].strip()
-                while insight.endswith('..'):
-                    insight = insight[:-2].strip()
-                # Ensure it ends with proper punctuation if not empty
-                if insight and not insight[-1] in '.!?':
-                    insight += '.'
-            else:
-                insight = None
-            
-            return VisualContent(
-                title=data.get("title", "Key Themes")[:60],
-                themes=themes[:15],  # Allow up to 15 themes
-                insight=insight
-            )
-            
+        from services.ollama_service import ollama_service
+        # D4 (2026-06-23): routed through ollama_service for token metrics +
+        # model options + lane scheduling. Native JSON mode (format="json") since
+        # the prompt demands a JSON object.
+        _resp = await ollama_service.generate(
+            prompt=extraction_prompt,
+            model=settings.ollama_fast_model,
+            temperature=0,
+            num_predict=800,
+            format="json",
+            timeout=30.0,
+        )
+        result = _resp.get("response", "{}")
+        logger.info(f"[Theme Extractor] LLM response: {result[:300]}...")
+
+        # Parse JSON (robust handling of trailing commas, markdown fences, etc.)
+        from utils.json_repair import robust_json_parse
+        data = robust_json_parse(result, label="ThemeExtractor", fallback=None)
+        if data is None:
+            raise ValueError("No JSON found in LLM response")
+
+        # Clean and validate themes
+        themes = [clean_theme_name(t) for t in data.get("themes", [])]
+        themes = [t for t in themes if len(t) > 5 and not is_garbage_theme(t)]
+
+        if len(themes) < 3:
+            # Even LLM failed - use generic fallback
+            themes = ["Key Finding 1", "Key Finding 2", "Key Finding 3"]
+
+        # Clean insight - strip trailing "..." that LLM sometimes adds
+        raw_insight = data.get("insight", "")
+        if raw_insight:
+            insight = raw_insight.strip()
+            # Remove trailing ellipsis
+            while insight.endswith('...'):
+                insight = insight[:-3].strip()
+            while insight.endswith('..'):
+                insight = insight[:-2].strip()
+            # Ensure it ends with proper punctuation if not empty
+            if insight and not insight[-1] in '.!?':
+                insight += '.'
+        else:
+            insight = None
+
+        return VisualContent(
+            title=data.get("title", "Key Themes")[:60],
+            themes=themes[:15],  # Allow up to 15 themes
+            insight=insight
+        )
+
     except Exception as e:
         logger.error(f"[Theme Extractor] LLM extraction failed: {e}")
         return VisualContent(

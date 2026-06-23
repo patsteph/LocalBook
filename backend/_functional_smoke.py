@@ -89,6 +89,27 @@ async def _run():
                 generate_chunk_questions(_hyde_chunks),
                 lambda v: len(v) == len(_hyde_chunks) and sum(1 for q in v if q.strip()) >= 4)
 
+    # ── D4 tail (2026-06-23): visual + theme generation paths ──
+    _viz_sample = ("First, AI safety and alignment research is accelerating. "
+                   "Second, enterprise adoption of autonomous agents grew 40% year over year. "
+                   "Third, regulatory frameworks for healthcare AI remain fragmented. "
+                   "Recommendation: adopt staged rollout with human oversight.")
+    from services.theme_extractor import extract_themes_llm
+    await check("theme_extractor.extract_themes_llm",
+                extract_themes_llm(_viz_sample),
+                lambda vc: bool(vc.title) and len(vc.themes) >= 3)
+
+    from services.visual_generator import VisualGenerator
+    await check("visual_generator._call_llm",
+                VisualGenerator()._call_llm(
+                    "Extract the key themes as JSON with a \"themes\" array.", _viz_sample),
+                lambda r: isinstance(r, dict) and len(r) > 0)
+
+    from services.visual_analyzer import visual_analyzer
+    await check("visual_analyzer.analyze_with_llm",
+                visual_analyzer.analyze_with_llm(_viz_sample),
+                lambda r: bool(r.get("visual_type")) and isinstance(r.get("key_items"), list))
+
     # ── Apple Vision OCR seam (engine strategy) ──
     try:
         import base64 as _b64, io as _io
