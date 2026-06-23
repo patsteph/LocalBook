@@ -191,6 +191,52 @@ def seconds_since_activity() -> float:
     return time.monotonic() - _last_activity_ts
 
 
+# ── Idle-gate for deferred ENRICHMENT (image description, HyDE) ─────────
+# Some background work is pure *enrichment*: the document is already searchable
+# on its text embeddings the moment ingest finishes, and image descriptions /
+# HyDE questions only sharpen retrieval at the margins. That work is also the
+# most expensive (multi-minute gemma vision calls; hundreds of phi4 question
+# batches) and — critically — gemma image description shares the SINGLE gemma
+# lane with the user's chat query, which cannot preempt a call already in
+# flight (observed 2026-06-23: a 283 s describe_image blocked the chat query
+# until it timed out). So we gate enrichment behind app-idleness: it runs ONLY
+# after the user has been quiet for `min_idle` seconds. Combined with the
+# foreground guard this means enrichment never *starts* while the user is
+# active, so it can't get in front of — or hold the lane against — a chat query.
+# Embeddings (core searchability) are NOT idle-gated; only enrichment is.
+IDLE_GATE_DEFAULT = 20.0  # seconds of quiet before deferred enrichment may run
+
+
+async def await_idle(
+    min_idle: float = IDLE_GATE_DEFAULT,
+    timeout: float = 1800.0,
+    poll: float = 5.0,
+) -> None:
+    """Block until the app has been idle for `min_idle` seconds (no non-GET user
+    activity and no active foreground guard), so deferred enrichment backfills
+    only when the user isn't waiting on anything. Bounded by `timeout` so
+    enrichment still eventually completes even on a perpetually-busy app.
+    Deadlock-proof: returns immediately when called from within a foreground
+    op's own task tree (same contextvar guard as await_background_clearance);
+    loop-agnostic and never raises."""
+    if _in_foreground.get():
+        return
+    deadline = time.monotonic() + timeout
+    while True:
+        # Never run while a foreground generation holds the guard.
+        await await_background_clearance(timeout=timeout)
+        idle = seconds_since_activity()
+        if idle >= min_idle:
+            return
+        if time.monotonic() >= deadline:
+            logger.info(
+                f"[memory-steward] await_idle timeout {timeout:.0f}s reached "
+                f"(idle={idle:.0f}s); proceeding to avoid stranding enrichment"
+            )
+            return
+        await asyncio.sleep(min(poll, max(0.5, min_idle - idle)))
+
+
 def _ollama_base() -> str:
     return settings.ollama_base_url.rstrip("/")
 

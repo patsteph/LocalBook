@@ -473,13 +473,15 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
             + "\n\n".join(parts)
         )
         async with semaphore:
-            # Serialize behind any active foreground generation (visual/chat):
-            # on an 18 GB box the HyDE phi4 flood + a visual's models can't
-            # coexist. Yield per-batch so an upload pauses HyDE *during* a
-            # visual, then resumes cleanly. No-op when nothing foreground is
-            # active (deadlock-proof via the contextvar); ingest-only path.
-            from services.memory_steward import await_background_clearance
-            await await_background_clearance()
+            # HyDE is pure ENRICHMENT — the doc is already searchable on its
+            # embeddings — so defer it to app-idle (2026-06-23). This stops the
+            # 10-min question-generation flood from saturating Ollama while the
+            # user is uploading / chatting / generating. await_idle yields to any
+            # foreground op AND waits for a quiet window before each batch, then
+            # backfills questions when the user isn't waiting on anything.
+            # No-op (returns immediately) inside a foreground task tree.
+            from services.memory_steward import await_idle
+            await await_idle()
             try:
                 _resp = await ollama_service.generate(
                     prompt=prompt,

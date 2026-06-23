@@ -339,6 +339,11 @@ python -W ignore -m PyInstaller \
     --hidden-import=yaml \
     --hidden-import=cryptography \
     --hidden-import=zoneinfo \
+    --collect-all=objc \
+    --collect-all=Quartz \
+    --collect-all=Vision \
+    --hidden-import=Foundation \
+    --hidden-import=CoreFoundation \
     --exclude-module=boto3 \
     --exclude-module=botocore \
     --exclude-module=s3transfer \

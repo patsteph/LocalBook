@@ -274,10 +274,15 @@ Focus on information that would be useful for answering questions about this doc
             # Use the universal vision dispatcher — handles both /api/generate
             # (Granite/LLaVA) and /api/chat (Gemma4/Llama3.2) automatically
             from services.ollama_service import ollama_service, PRIORITY_BACKGROUND
-            # If a foreground RAM-heavy pipeline (Klein image gen) is running,
-            # wait so we don't reload gemma and thrash its 16 GB working set.
-            from services.memory_steward import await_background_clearance
-            await await_background_clearance()
+            # Image description is ENRICHMENT (the doc is already searchable on
+            # its text) and the gemma vision call shares the single gemma lane
+            # with the user's chat query, which can't preempt an in-flight call
+            # (observed 2026-06-23: a 283 s describe_image timed out a chat
+            # query). So defer to app-idle: this gemma call only fires after a
+            # quiet window, so it can't get in front of — or block — a chat
+            # query. await_idle also yields to any active foreground op.
+            from services.memory_steward import await_idle
+            await await_idle()
             api_style = self._get_vision_api_style()
             # PDF image-description is bulk background ingest — yield the
             # (single-wide) gemma4 lane to any user-initiated foreground call.
