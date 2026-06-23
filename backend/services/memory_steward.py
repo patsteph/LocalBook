@@ -204,37 +204,56 @@ def seconds_since_activity() -> float:
 # foreground guard this means enrichment never *starts* while the user is
 # active, so it can't get in front of — or hold the lane against — a chat query.
 # Embeddings (core searchability) are NOT idle-gated; only enrichment is.
-IDLE_GATE_DEFAULT = 20.0  # seconds of quiet before deferred enrichment may run
+IDLE_GATE_DEFAULT = 20.0   # seconds of USER quiet before enrichment may run
+OLLAMA_QUIET_DEFAULT = 12.0  # seconds of OLLAMA quiet (ingest flood drained)
 
 
 async def await_idle(
     min_idle: float = IDLE_GATE_DEFAULT,
+    ollama_quiet: float = OLLAMA_QUIET_DEFAULT,
     timeout: float = 1800.0,
     poll: float = 5.0,
 ) -> None:
-    """Block until the app has been idle for `min_idle` seconds (no non-GET user
-    activity and no active foreground guard), so deferred enrichment backfills
-    only when the user isn't waiting on anything. Bounded by `timeout` so
-    enrichment still eventually completes even on a perpetually-busy app.
-    Deadlock-proof: returns immediately when called from within a foreground
-    op's own task tree (same contextvar guard as await_background_clearance);
-    loop-agnostic and never raises."""
+    """Block until the app is idle on BOTH axes, so deferred enrichment (image
+    description, HyDE) backfills only when nothing is waiting on it AND the
+    system can actually do the work fast:
+
+      • USER-idle: no non-GET user activity for `min_idle`s (and no foreground
+        guard held) — the user isn't actively waiting on anything.
+      • SYSTEM-idle: Ollama has done no work for `ollama_quiet`s — the upload's
+        background ingest flood (embeds + community-detection + entity
+        extraction) has DRAINED. This is the fix for 2026-06-23: user-idle
+        alone let enrichment fire into the still-running flood, where gemma
+        vision stacked 90s timeouts on the cap-1 lane and blocked the chat
+        query. Gating on Ollama-quiet makes enrichment wait for the flood to
+        finish, then run on a free system (fast, no stacking, chat unblocked).
+
+    Bounded by `timeout` so enrichment still eventually completes on a
+    perpetually-busy app. Deadlock-proof: returns immediately when called from
+    within a foreground op's own task tree (same contextvar guard as
+    await_background_clearance); loop-agnostic and never raises."""
     if _in_foreground.get():
         return
+    from services.ollama_service import seconds_since_ollama_activity
     deadline = time.monotonic() + timeout
     while True:
         # Never run while a foreground generation holds the guard.
         await await_background_clearance(timeout=timeout)
-        idle = seconds_since_activity()
-        if idle >= min_idle:
+        user_idle = seconds_since_activity()
+        sys_idle = seconds_since_ollama_activity()
+        if user_idle >= min_idle and sys_idle >= ollama_quiet:
             return
         if time.monotonic() >= deadline:
             logger.info(
                 f"[memory-steward] await_idle timeout {timeout:.0f}s reached "
-                f"(idle={idle:.0f}s); proceeding to avoid stranding enrichment"
+                f"(user_idle={user_idle:.0f}s sys_idle={sys_idle:.0f}s); "
+                "proceeding to avoid stranding enrichment"
             )
             return
-        await asyncio.sleep(min(poll, max(0.5, min_idle - idle)))
+        # Sleep no longer than the nearest unmet threshold (so we wake promptly
+        # once both clear), but at least 0.5s and at most `poll`.
+        wait = max(0.5, min(poll, min_idle - user_idle, ollama_quiet - sys_idle))
+        await asyncio.sleep(wait)
 
 
 def _ollama_base() -> str:

@@ -72,7 +72,14 @@ class MultimodalExtractor:
         # lowers this further for very large PDFs (10/25 by size). Charts are
         # prioritized first so the most useful images are always covered.
         self.max_images_per_doc = 60
-        self.max_parallel_workers = 4  # Concurrent vision model calls
+        # Serial vision describe (2026-06-23): gemma vision is cap-1 on its lane,
+        # so "parallel" workers don't speed it up — they just QUEUE 4 calls on
+        # the lane, each timing out after 90s and STACKING (90→180→283s of gemma
+        # occupancy, observed blocking the chat query). Serial = at most ONE
+        # in-flight gemma call, and each image re-checks await_idle first, so a
+        # chat arriving mid-batch defers the remaining images. OCR-triaged
+        # text-images (the common case) are cheap CPU and unaffected.
+        self.max_parallel_workers = 1  # Concurrent vision model calls
         # OCR-first triage floor (2026-06-23): a non-chart embedded image whose
         # Apple-Vision OCR yields ≥ this many chars is treated as a text-block /
         # table screenshot — the OCR transcript becomes its description and it

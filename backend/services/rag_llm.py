@@ -76,6 +76,7 @@ async def call_ollama(
     repeat_penalty: float = None,
     extra_options: dict = None,
     voice_modifier: bool = True,
+    priority: int = None,
 ) -> str:
     """Call Ollama API (non-streaming).
 
@@ -89,6 +90,10 @@ async def call_ollama(
                        Used by outline-first pipeline to inject Mirostat on sub-3000-token sections.
         voice_modifier: Prepend the active model's voice instruction to the system prompt.
                         Defaults True. Set False for structured/format-sensitive outputs.
+        priority: Lane priority for the per-model concurrency limiter (FOREGROUND/
+                  NORMAL/BACKGROUND). None → NORMAL. User-facing callers (chat
+                  fallbacks, quick actions) should pass FOREGROUND so they jump
+                  ahead of background ingest on the shared model lane.
     """
     # Use very long timeout - LLM generation can take minutes for complex queries
     timeout = httpx.Timeout(10.0, read=600.0)  # 10s connect, 10 min read
@@ -169,47 +174,58 @@ async def call_ollama(
         # All other Ollama models keep the /api/generate path unchanged.
         _use_chat = rag_profile.get("use_chat_endpoint", False) and _route.api_style == "ollama"
 
-        if _use_chat:
-            payload = {
-                "model": use_model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": False,
-                "keep_alive": _keep_alive,
-                "options": options,
-            }
-            if "think" in rag_profile:
-                payload["think"] = rag_profile["think"]
-            response = await client.post(f"{_route.base_url}/api/chat", json=payload)
-            raw = response.json()
-            # Normalize to the same shape as /api/generate so token tracking works
-            result = {"response": raw.get("message", {}).get("content", ""), **raw}
-        elif _route.api_style == "ollama":
-            payload = {
-                "model": use_model,
-                "prompt": f"{system_prompt}\n\n{prompt}",
-                "stream": False,
-                "keep_alive": _keep_alive,
-                "options": options,
-            }
-            response = await client.post(f"{_route.base_url}/api/generate", json=payload)
-            result = response.json()
-        else:
-            payload = {
-                "model": use_model,
-                "prompt": f"{system_prompt}\n\n{prompt}",
-                "stream": False,
-                "keep_alive": _keep_alive,
-                "options": options,
-            }
-            openai_payload = ollama_to_openai_payload(payload, is_chat=False)
-            response = await client.post(
-                f"{_route.base_url}/v1/chat/completions",
-                json=openai_payload,
-            )
-            result = openai_non_stream_to_ollama_response(response.json(), is_chat=False)
+        # PB-2d / D4 (2026-06-23): join the shared per-model lane so this raw-httpx
+        # call serializes on the SAME limiter as ollama_service.generate/chat/embed
+        # and stream_ollama — it can't run as a 2nd concurrent call to the heavy
+        # model, and user-facing callers (priority=FOREGROUND) preempt background
+        # ingest. Mirrors stream_ollama, which already joins the lane. call_ollama
+        # keeps its own bespoke coherence tuning (num_ctx auto-size / repeat_penalty
+        # / Mirostat) that generate()/chat() don't replicate, so it lane-joins
+        # rather than migrating. Lane held only around the network dispatch.
+        from services.ollama_service import model_lane, PRIORITY_NORMAL
+        _priority = priority if priority is not None else PRIORITY_NORMAL
+        async with model_lane(use_model, _priority):
+            if _use_chat:
+                payload = {
+                    "model": use_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                    "keep_alive": _keep_alive,
+                    "options": options,
+                }
+                if "think" in rag_profile:
+                    payload["think"] = rag_profile["think"]
+                response = await client.post(f"{_route.base_url}/api/chat", json=payload)
+                raw = response.json()
+                # Normalize to the same shape as /api/generate so token tracking works
+                result = {"response": raw.get("message", {}).get("content", ""), **raw}
+            elif _route.api_style == "ollama":
+                payload = {
+                    "model": use_model,
+                    "prompt": f"{system_prompt}\n\n{prompt}",
+                    "stream": False,
+                    "keep_alive": _keep_alive,
+                    "options": options,
+                }
+                response = await client.post(f"{_route.base_url}/api/generate", json=payload)
+                result = response.json()
+            else:
+                payload = {
+                    "model": use_model,
+                    "prompt": f"{system_prompt}\n\n{prompt}",
+                    "stream": False,
+                    "keep_alive": _keep_alive,
+                    "options": options,
+                }
+                openai_payload = ollama_to_openai_payload(payload, is_chat=False)
+                response = await client.post(
+                    f"{_route.base_url}/v1/chat/completions",
+                    json=openai_payload,
+                )
+                result = openai_non_stream_to_ollama_response(response.json(), is_chat=False)
 
         # Track model usage for warmup service
         from services.model_warmup import mark_fast_model_used, mark_main_model_used

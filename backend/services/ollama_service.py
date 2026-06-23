@@ -157,9 +157,37 @@ def _main_lane_cap() -> int:
         return 1  # psutil missing → assume constrained, stay safe
 
 
+# ── Ollama-activity tracker (for SYSTEM-idle gating of enrichment) ──────
+# `memory_steward.await_idle` originally gated deferred enrichment (image
+# description, HyDE) on USER-idleness only. But a PDF upload kicks off a
+# multi-minute BACKGROUND flood — embeddings + community-detection + entity
+# extraction — that is NOT user activity, so the user-idle clock ticks past
+# its threshold while Ollama is still saturated. Enrichment then fired into
+# that flood and stacked 90 s gemma-vision timeouts on the cap-1 lane,
+# blocking the chat query (observed 2026-06-23: chat answered only after the
+# flood drained). So we also expose "seconds since Ollama last did ANY work":
+# every routed call bumps this via `_semaphore_for_model` (the single
+# chokepoint for generate/chat/embed/stream). During the dense ingest flood
+# it stays fresh; when the flood drains it goes stale → enrichment proceeds on
+# a quiet system (fast, no stacking). Warmup pings use raw httpx (not this
+# path) so they don't keep the system falsely "busy".
+_last_ollama_activity_ts: float = 0.0
+
+
+def _note_ollama_activity() -> None:
+    global _last_ollama_activity_ts
+    _last_ollama_activity_ts = time.monotonic()
+
+
+def seconds_since_ollama_activity() -> float:
+    """Seconds since the last Ollama call started (large == Ollama idle)."""
+    return time.monotonic() - _last_ollama_activity_ts
+
+
 def _semaphore_for_model(model: str) -> PriorityLane:
     """Return the priority lane for a model name, picking the right bucket
     by matching against settings. Initialized lazily."""
+    _note_ollama_activity()  # every routed call funnels here → system-busy signal
     if model == settings.embedding_model:
         bucket = "embed"
     elif model == settings.ollama_fast_model:
