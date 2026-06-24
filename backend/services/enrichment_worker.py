@@ -33,12 +33,25 @@ from services.enrichment_jobs import EnrichmentJob, min_presence_for
 logger = logging.getLogger(__name__)
 
 _POLL = 0.5            # cancellation-watch granularity (s) — sub-perceptual
-_INTER_JOB_GAP = 2.0   # dose: trickle between jobs, don't burst
 _MAX_ATTEMPTS = 5      # drop a job after this many foreground cancellations
 _OLLAMA_QUIET = 8.0    # require Ollama quiet this long before starting a job
 _IDLE_RECHECK = 5.0    # re-evaluate presence at least this often when parked
                        # (bounds how long after the user goes idle before
                        # enrichment resumes — new enqueues wake it immediately)
+
+# Phase 2 — adaptive dose budget. The worker drains at a pace SCALED TO HOW AWAY
+# the user is (autovacuum-style cost budget). Each entry is (burst, cooldown_s):
+# run up to `burst` jobs back-to-back, then rest `cooldown` (re-evaluating
+# presence) before the next burst. This is what makes "daydream" (gentle trickle
+# while the user might return any second) genuinely different from "deep sleep"
+# (drain the backlog overnight). ACTIVE never runs jobs (gated upstream).
+from services.presence import Tier as _Tier  # noqa: E402
+
+_DOSE = {
+    _Tier.SHORT_IDLE: (1, 15.0),     # might return any second → one then rest
+    _Tier.LONG_IDLE:  (3, 8.0),      # sustained idle → moderate
+    _Tier.AWAY:       (10_000, 1.5), # away / overnight → drain hard
+}
 
 
 class EnrichmentWorker:
@@ -86,9 +99,8 @@ class EnrichmentWorker:
                 pass
 
     # ── internals ───────────────────────────────────────────────────────
-    def _peek_runnable_key(self) -> Optional[str]:
-        """First queued job whose tier is permitted by the current presence."""
-        tier_now = presence.current_tier()
+    def _peek_runnable_key(self, tier_now) -> Optional[str]:
+        """First queued job whose tier is permitted by `tier_now`."""
         for key in self._order:
             job = self._jobs.get(key)
             if job is not None and tier_now >= min_presence_for(job.tier):
@@ -96,8 +108,17 @@ class EnrichmentWorker:
         return None
 
     async def _loop(self) -> None:
+        burst_done = 0
+        burst_tier = None
         while self._running:
-            key = self._peek_runnable_key()
+            tier_now = presence.current_tier()
+            # A change in presence (e.g. user went from LONG_IDLE → AWAY, or
+            # returned) resets the dose so the new tier's pace applies at once.
+            if burst_tier != tier_now:
+                burst_tier = tier_now
+                burst_done = 0
+
+            key = self._peek_runnable_key(tier_now)
             if key is None:
                 # Nothing runnable now (queue empty, or presence too "active").
                 # Wait for new work or re-evaluate presence on a timer.
@@ -111,6 +132,7 @@ class EnrichmentWorker:
             if presence.system_busy(_OLLAMA_QUIET):
                 await asyncio.sleep(_POLL)
                 continue
+
             job = self._jobs.pop(key, None)
             try:
                 self._order.remove(key)
@@ -119,7 +141,17 @@ class EnrichmentWorker:
             if job is None:
                 continue
             await self._run_one(job)
-            await asyncio.sleep(_INTER_JOB_GAP)  # dose
+
+            # Adaptive dose: run a burst of jobs, then rest. The pace scales with
+            # how "away" the user is (gentle trickle when they might return, hard
+            # drain overnight).
+            burst, cooldown = _DOSE.get(tier_now, (1, _IDLE_RECHECK))
+            burst_done += 1
+            if burst_done >= burst:
+                burst_done = 0
+                await asyncio.sleep(cooldown)
+            else:
+                await asyncio.sleep(_POLL)  # brief yield, keep draining the burst
 
     async def _run_one(self, job: EnrichmentJob) -> None:
         self._current_key = job.key
