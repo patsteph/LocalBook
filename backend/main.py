@@ -265,6 +265,12 @@ async def _run_startup_tasks():
     async def _start_services():
         from services.stuck_source_recovery import stuck_source_recovery
         stuck_source_recovery.start_background_task()
+        # Background Enrichment Worker — the single presence-aware, cancellable
+        # queue that all deferred second-brain work runs through. Must start
+        # before the schedulers/poller that enqueue onto it.
+        from services.enrichment_worker import enrichment_worker
+        await enrichment_worker.start()
+        print("🌙 Enrichment worker started (presence-aware night shift)")
         from services.memory_manager import memory_manager
         safe_create_task(memory_manager.start_scheduler(), name="memory-scheduler")
         print("📝 Memory consolidation manager started")
@@ -428,7 +434,11 @@ async def lifespan(app: FastAPI):
 
     # Stop warmup task on shutdown
     await stop_warmup_task()
-    
+
+    # Stop the enrichment worker on shutdown
+    from services.enrichment_worker import enrichment_worker
+    await enrichment_worker.stop()
+
     # Stop memory manager on shutdown
     from services.memory_manager import memory_manager
     memory_manager.stop_scheduler()

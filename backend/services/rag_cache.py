@@ -403,6 +403,24 @@ class AnswerCache:
         if self.persist and self._cache_file.exists():
             self._cache_file.unlink()
 
+    async def invalidate_notebook(self, notebook_id: str) -> int:
+        """Drop all cached answers for one notebook. Called when its corpus
+        changes (a source is ingested) so a repeat question never serves an
+        answer computed before the new content existed. Returns count dropped.
+        This is the correctness gate that makes caching the streaming chat path
+        safe — answers are instant on repeats, but only until the notebook
+        changes, after which the next ask recomputes (and re-caches)."""
+        async with self._lock:
+            keys = [k for k, e in self._cache.items()
+                    if e.get("notebook_id") == notebook_id]
+            for k in keys:
+                self._cache.pop(k, None)
+                self._embeddings.pop(k, None)
+        if keys:
+            print(f"[AnswerCache] Invalidated {len(keys)} cached answer(s) for "
+                  f"notebook {notebook_id[:8]} (corpus changed)")
+        return len(keys)
+
 
 class ContextCompressor:
     """Compresses context to reduce LLM token count while preserving key information."""

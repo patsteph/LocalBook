@@ -804,7 +804,31 @@ JSON:"""
         # Generate embedding with basic expansion (runs in parallel with LLM analysis)
         basic_expanded = self._expand_query(question)
         query_embedding = self.encode(basic_expanded)[0].tolist()
-        
+
+        # Phase 1b (2026-06-24): answer cache on the STREAMING path. The WS2 audit
+        # found answer_cache was wired ONLY into the non-streaming query() — so
+        # chat re-ran the full gemma generation on every repeat/near-duplicate
+        # question. Check the moment the embedding is ready (exact + semantic
+        # 0.92): on a hit, replay the cached answer + citations instantly with NO
+        # retrieval and NO generation. Per-notebook invalidation on ingest keeps
+        # it from ever serving a stale answer.
+        _cached = await answer_cache.get(question, notebook_id, query_embedding)
+        if _cached:
+            if not cached_analysis:
+                analysis_task.cancel()  # short-circuiting before analysis is used
+            _cc = _cached.get("citations", []) or []
+            _cs = list({c.get("source_id") for c in _cc if c.get("source_id")})
+            yield {"type": "status", "message": "⚡ Instant answer (from cache)"}
+            yield {"type": "citations", "citations": _cc, "sources": _cs, "low_confidence": False}
+            yield {"type": "token", "content": _cached.get("answer", "")}
+            try:
+                rag_metrics.record_cache_hit("answer", True)
+                await rag_metrics.end_query((time.time() - total_start) * 1000)
+            except Exception:
+                pass
+            yield {"type": "done", "follow_up_questions": [], "cache": _cached.get("cache_type", "exact")}
+            return
+
         # Wait for LLM analysis if not cached
         if not cached_analysis:
             query_analysis = await analysis_task
@@ -1165,6 +1189,16 @@ Answer the question, citing sources inline as [N]. Do not list references at the
             "follow_up_questions": follow_up_questions,
             "verification": verification_payload
         }
+
+        # Phase 1b: cache the finalized answer (post-CaRR) for instant repeat /
+        # near-duplicate asks. The low-confidence refusal returns earlier, so
+        # only genuine answers with citations are cached. query_embedding was
+        # computed at Step 1; reuse it (no extra embed).
+        try:
+            if full_answer and full_answer.strip() and citations:
+                await answer_cache.put(question, notebook_id, query_embedding, full_answer, citations)
+        except Exception as _e:
+            logger.debug(f"[rag-engine] answer_cache.put failed (non-fatal): {_e}")
 
         # Late follow-ups (if not ready at done time)
         if not follow_up_questions and not followup_task.cancelled():

@@ -313,15 +313,24 @@ class Database:
             )
         """)
         
-        # Add section_id and sort_order to notebooks if missing (safe migration)
+        # Add section_id and sort_order to notebooks if missing (safe migration).
+        # Idempotent: ALTER TABLE ADD COLUMN runs every launch, and after the
+        # first success the column exists → SQLite raises "duplicate column
+        # name". That benign case is the expected steady state, so swallow it
+        # silently (matching the `articles` migrations below). Only a *genuine*
+        # migration failure should warn — otherwise these two lines log on every
+        # startup and look like a recurring bug (they are not; they're just the
+        # first log lines of each fresh process, i.e. a restart marker).
         try:
             cursor.execute("ALTER TABLE notebooks ADD COLUMN section_id TEXT REFERENCES notebook_sections(id) ON DELETE SET NULL")
         except Exception as _e:
-            logger.warning(f"[database] {type(_e).__name__}: {_e}")
+            if "duplicate column" not in str(_e).lower():
+                logger.warning(f"[database] {type(_e).__name__}: {_e}")
         try:
             cursor.execute("ALTER TABLE notebooks ADD COLUMN sort_order INTEGER DEFAULT 0")
         except Exception as _e:
-            logger.warning(f"[database] {type(_e).__name__}: {_e}")
+            if "duplicate column" not in str(_e).lower():
+                logger.warning(f"[database] {type(_e).__name__}: {_e}")
         
         # -- canvas_notes --
         cursor.execute("""

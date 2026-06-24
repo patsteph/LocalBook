@@ -227,10 +227,18 @@ class CuratorEventBus:
                                 f"[event_bus] notebook {nb[:8]} source_count={count} "
                                 f"crossed mental-model threshold; triggering inference"
                             )
-                            _mental_model_sf.spawn(
-                                nb,
-                                lambda: curator_brain.infer_mental_model(nb),
-                            )
+                            # 2026-06-24: route through the Background Enrichment
+                            # Worker (presence-gated, cancellable) instead of a
+                            # bare singleflight spawn. Coalesced per-notebook by key.
+                            from services.enrichment_worker import enrichment_worker
+                            from services.enrichment_jobs import EnrichmentJob, JobTier
+                            enrichment_worker.enqueue(EnrichmentJob(
+                                key=f"mental-model:{nb}",
+                                tier=JobTier.DEEP,
+                                factory=lambda nb=nb: curator_brain.infer_mental_model(nb),
+                                label="mental-model",
+                                notebook_id=nb,
+                            ))
                     except Exception as e:
                         logger.debug(f"[event_bus] mental-model trigger check: {e}")
 
@@ -242,11 +250,15 @@ class CuratorEventBus:
                     try:
                         source_id = (event.payload or {}).get("source_id")
                         if source_id:
-                            _stance_score_sf.spawn(
-                                f"{nb}:{source_id}",
-                                lambda: curator_brain.score_source_stance(nb, source_id),
-                                suffix=str(source_id),
-                            )
+                            from services.enrichment_worker import enrichment_worker
+                            from services.enrichment_jobs import EnrichmentJob, JobTier
+                            enrichment_worker.enqueue(EnrichmentJob(
+                                key=f"stance:{nb}:{source_id}",
+                                tier=JobTier.DEEP,
+                                factory=lambda nb=nb, sid=source_id: curator_brain.score_source_stance(nb, sid),
+                                label="stance",
+                                notebook_id=nb,
+                            ))
                     except Exception as e:
                         logger.debug(f"[event_bus] stance scoring trigger: {e}")
 

@@ -269,24 +269,43 @@ async def ingest_document(
                     if relationships:
                         print(f"[RAG] Extracted {len(relationships)} relationships from {filename}")
                         
-                        # GraphRAG Phase 2: Detect communities and build missing summaries
-                        # 2026-06-15: dedup-aware scheduler — one builder per
-                        # notebook at a time. Prior fire-and-forget pattern
-                        # caused N concurrent builders per newsletter batch
-                        # and saturated the Ollama queue.
+                        # GraphRAG Phase 2: detect communities + build summaries.
+                        # 2026-06-24: run INLINE inside the enrichment job (below)
+                        # rather than spawning a separate task, so the worker can
+                        # cancel the whole chain — including in-flight community
+                        # summary generation — the instant a foreground op starts.
                         try:
-                            from services.community_detection import (
-                                community_detector,
-                                schedule_build_missing_summaries,
-                            )
+                            from services.community_detection import community_detector
                             await community_detector.detect_communities(notebook_id, entity_graph)
-                            schedule_build_missing_summaries(notebook_id, entity_graph)
+                            await community_detector.build_missing_summaries(notebook_id, entity_graph)
                         except Exception as comm_err:
                             print(f"[RAG] Community detection failed: {comm_err}")
         except Exception as e:
             print(f"[RAG] Entity/relationship extraction failed (non-fatal): {e}")
 
-    safe_create_task(_extract_entities_and_relationships_background(), name="entity-extraction")
+    # 2026-06-24: route the whole post-ingest enrichment chain (entities →
+    # relationships → communities) through the Background Enrichment Worker —
+    # one presence-aware, cancellable, dosed queue — instead of fire-and-forget.
+    # Ingest's promise ends at "chunk + embed = searchable"; this is deferred
+    # second-brain work that yields to the user and backfills in idle gaps.
+    from services.enrichment_worker import enrichment_worker
+    from services.enrichment_jobs import EnrichmentJob, JobTier
+    enrichment_worker.enqueue(EnrichmentJob(
+        key=f"ingest-enrich:{notebook_id}:{source_id}",
+        tier=JobTier.DEEP,
+        factory=_extract_entities_and_relationships_background,
+        label="ingest-enrich",
+        notebook_id=notebook_id,
+    ))
+
+    # Phase 1b (2026-06-24): the notebook's corpus just changed — drop any
+    # cached chat answers for it so the streaming path never serves a reply
+    # computed before this source existed. Cheap; only touches this notebook.
+    try:
+        from services.rag_cache import answer_cache
+        await answer_cache.invalidate_notebook(notebook_id)
+    except Exception as _e:
+        print(f"[RAG] answer-cache invalidate failed (non-fatal): {_e}")
 
     # Auto-refresh people coaching insights when new sources are added
     if source_type not in ("people_profile", "coaching_notes", "summary"):

@@ -191,6 +191,15 @@ def seconds_since_activity() -> float:
     return time.monotonic() - _last_activity_ts
 
 
+def foreground_active() -> bool:
+    """True while a foreground generation holds the guard (an explicit user op —
+    chat / visual / doc / quiz — is running). The Background Enrichment Worker
+    treats this as the ACTIVE presence tier and cancels in-flight background work
+    the instant it becomes true. Depth-counted, so nested/concurrent foreground
+    pipelines all count."""
+    return _bg_pause_depth > 0
+
+
 # ── Idle-gate for deferred ENRICHMENT (image description, HyDE) ─────────
 # Some background work is pure *enrichment*: the document is already searchable
 # on its text embeddings the moment ingest finishes, and image descriptions /
