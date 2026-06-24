@@ -506,6 +506,11 @@ class CuratorBrain:
                     f"and concept names."
                 )
                 try:
+                    # WS1 (2026-06-23): yield to an active foreground op (chat/
+                    # visual) — curator digest rebuilds run post-upload and must
+                    # not compete with the user's gemma query. Deadlock-proof.
+                    from services.memory_steward import await_background_clearance
+                    await await_background_clearance()
                     response = await ollama_service.generate(
                         prompt=prompt,
                         model=settings.ollama_fast_model,
@@ -2492,6 +2497,11 @@ class CuratorBrain:
         from config import settings as _settings
         try:
             from utils.json_repair import robust_json_parse
+            # WS1 (2026-06-23): yield to an active foreground op (chat/visual) —
+            # mental-model inference fires on source-count thresholds right after
+            # an upload, exactly when the user is likely to chat. Deadlock-proof.
+            from services.memory_steward import await_background_clearance
+            await await_background_clearance()
             result = await ollama_service.generate(
                 prompt=prompt,
                 system="You output only valid JSON for mental model inference.",

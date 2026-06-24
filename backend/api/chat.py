@@ -378,20 +378,33 @@ async def query_stream(chat_query: ChatQuery):
         answer_parts = []
         sources_used = []
         try:
-            async for chunk in rag_engine.query_stream(
-                notebook_id=chat_query.notebook_id,
-                question=chat_query.question,
-                source_ids=chat_query.source_ids,
-                top_k=chat_query.top_k or 4,
-                llm_provider=chat_query.llm_provider,
-                deep_think=chat_query.deep_think or False,
-                extra_system_context=extra_ctx,
-            ):
-                if chunk.get("type") == "answer_chunk":
-                    answer_parts.append(chunk.get("content", ""))
-                elif chunk.get("type") == "citations":
-                    sources_used = [c.get("source_id", "") for c in chunk.get("citations", [])]
-                yield f"data: {json.dumps(chunk)}\n\n"
+            # Hold the foreground guard for the WHOLE RAG answer so every
+            # background AI flood — community detection, curator digest
+            # rebuilds, memory consolidation, HyDE, image description — PAUSES
+            # while the user's chat runs, giving gemma the RAM + GPU to answer
+            # fast on an 18 GB box. This is the symmetry the chat path was
+            # missing: visual generation already holds the guard (and works),
+            # but chat never did, so a post-upload background storm starved the
+            # gemma query analysis into a timeout and thrashed the box into
+            # swap → SIGTERM (observed 2026-06-23). Deadlock-proof: the query
+            # path's OWN Ollama calls run inside this task tree, so their
+            # await_background_clearance passes straight through (contextvar).
+            from services.memory_steward import foreground_guard
+            async with foreground_guard("chat"):
+                async for chunk in rag_engine.query_stream(
+                    notebook_id=chat_query.notebook_id,
+                    question=chat_query.question,
+                    source_ids=chat_query.source_ids,
+                    top_k=chat_query.top_k or 4,
+                    llm_provider=chat_query.llm_provider,
+                    deep_think=chat_query.deep_think or False,
+                    extra_system_context=extra_ctx,
+                ):
+                    if chunk.get("type") == "answer_chunk":
+                        answer_parts.append(chunk.get("content", ""))
+                    elif chunk.get("type") == "citations":
+                        sources_used = [c.get("source_id", "") for c in chunk.get("citations", [])]
+                    yield f"data: {json.dumps(chunk)}\n\n"
             # Log the completed Q&A interaction for memory consolidation
             try:
                 log_chat_qa(chat_query.notebook_id, chat_query.question, "".join(answer_parts), sources_used)
