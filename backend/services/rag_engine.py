@@ -613,13 +613,22 @@ Extract:
 JSON:"""
             
             # v1.8.0: route via ollama_service so sidecar-backed models work
-            from services.ollama_service import ollama_service as _os
+            # WS2 (2026-06-23): query analysis BLOCKS the answer (rag_engine awaits
+            # this task before retrieval). It was on gemma — the same cap-1 lane the
+            # streamed answer needs — so it serialized 10s of analysis AHEAD of the
+            # answer and timed out whenever gemma was busy (the crash log). Move it
+            # to phi4 (separate fast lane, smaller/quicker, keeps the gemma slot warm
+            # for the answer) at FOREGROUND priority so it jumps any queued background
+            # phi4 work. Structured entity/intent extraction is well within phi4's
+            # range; the except-path _fallback_query_analysis covers any miss.
+            from services.ollama_service import ollama_service as _os, PRIORITY_FOREGROUND
             _resp = await _os.generate(
                 prompt=prompt,
-                model=settings.ollama_model,
+                model=settings.ollama_fast_model,
                 temperature=0,
                 num_predict=200,
                 timeout=10.0,
+                priority=PRIORITY_FOREGROUND,
             )
             result = _resp.get("response", "{}")
             if True:  # keep original indentation scope

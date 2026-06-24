@@ -361,6 +361,15 @@ SUMMARY: [2-3 sentence summary]"""
                 communities_to_build.append(comm_id)
                 
         for comm_id in communities_to_build:
+            # WS4 (2026-06-23): community summaries are the dominant post-upload
+            # flood — one phi4 call PER community, dozens for a big notebook, fired
+            # on every source ingest. They're pure ENRICHMENT (graph search works
+            # without them), so defer EACH to app-idle: they backfill when nothing
+            # is waiting instead of saturating Ollama during/after the upload. The
+            # loop re-checks idle per summary, so a chat/upload mid-build defers the
+            # rest. Bounded by await_idle's 1800s safety so they still complete.
+            from services.memory_steward import await_idle
+            await await_idle()
             summary = await self.generate_community_summary(notebook_id, comm_id, entity_graph)
             if summary:
                 generated_count += 1
