@@ -245,56 +245,67 @@ async def ingest_document(
     ))
     print(f"[RAG] Queued topic modeling for {filename} (background)")
 
-    # v1.0.3: Entity extraction + relationship mapping in background
-    async def _extract_entities_and_relationships_background():
+    # Phase 3 (2026-06-24) — instant/daydream/deep reclassification.
+    # The post-ingest enrichment splits along the design's "skeleton fast,
+    # connective tissue deep" line:
+    #   • DAYDREAM (source-local): entity extraction — depends only on THIS
+    #     source's text, one cheap phi4 call. Fills the graph skeleton during
+    #     short idle. On success it enqueues the DEEP job below.
+    #   • DEEP (corpus-global): relationships + community detection/summaries —
+    #     a function of the WHOLE (growing) notebook; runs during sustained idle.
+    from services.enrichment_worker import enrichment_worker
+    from services.enrichment_jobs import EnrichmentJob, JobTier
+
+    async def _graph_deep(entity_dicts):
+        """DEEP: corpus-global relationships + community detection/summaries.
+        Runs INLINE inside one worker job so cancellation reaches the in-flight
+        community-summary generation the instant a foreground op starts."""
+        try:
+            relationships = await entity_graph.extract_relationships(
+                text=text[:4000],
+                notebook_id=notebook_id,
+                source_id=source_id,
+                entities=entity_dicts,
+            )
+            if relationships:
+                print(f"[RAG] Extracted {len(relationships)} relationships from {filename}")
+                from services.community_detection import community_detector
+                await community_detector.detect_communities(notebook_id, entity_graph)
+                await community_detector.build_missing_summaries(notebook_id, entity_graph)
+        except Exception as comm_err:
+            print(f"[RAG] Graph/community (deep) failed (non-fatal): {comm_err}")
+
+    async def _entities_daydream():
+        """DAYDREAM: source-local entity extraction; on success, enqueue the
+        corpus-global graph synthesis as a separate DEEP job."""
         try:
             entities = await entity_extractor.extract_from_text(
                 text=text[:8000],  # Limit for speed
                 notebook_id=notebook_id,
                 source_id=source_id,
-                use_llm=len(text) > 500  # Only use LLM for substantial docs
+                use_llm=len(text) > 500,  # Only use LLM for substantial docs
             )
             if entities:
                 print(f"[RAG] Extracted {len(entities)} entities from {filename}")
-
-                # v1.0.4: Extract relationships between entities (Phase 2 Graph RAG)
                 if len(entities) >= 2:
                     entity_dicts = [{"name": e.name, "type": e.type} for e in entities]
-                    relationships = await entity_graph.extract_relationships(
-                        text=text[:4000],
+                    enrichment_worker.enqueue(EnrichmentJob(
+                        key=f"graph-deep:{notebook_id}:{source_id}",
+                        tier=JobTier.DEEP,
+                        factory=lambda eds=entity_dicts: _graph_deep(eds),
+                        label="graph-deep",
                         notebook_id=notebook_id,
-                        source_id=source_id,
-                        entities=entity_dicts
-                    )
-                    if relationships:
-                        print(f"[RAG] Extracted {len(relationships)} relationships from {filename}")
-                        
-                        # GraphRAG Phase 2: detect communities + build summaries.
-                        # 2026-06-24: run INLINE inside the enrichment job (below)
-                        # rather than spawning a separate task, so the worker can
-                        # cancel the whole chain — including in-flight community
-                        # summary generation — the instant a foreground op starts.
-                        try:
-                            from services.community_detection import community_detector
-                            await community_detector.detect_communities(notebook_id, entity_graph)
-                            await community_detector.build_missing_summaries(notebook_id, entity_graph)
-                        except Exception as comm_err:
-                            print(f"[RAG] Community detection failed: {comm_err}")
+                    ))
         except Exception as e:
-            print(f"[RAG] Entity/relationship extraction failed (non-fatal): {e}")
+            print(f"[RAG] Entity extraction (daydream) failed (non-fatal): {e}")
 
-    # 2026-06-24: route the whole post-ingest enrichment chain (entities →
-    # relationships → communities) through the Background Enrichment Worker —
-    # one presence-aware, cancellable, dosed queue — instead of fire-and-forget.
-    # Ingest's promise ends at "chunk + embed = searchable"; this is deferred
-    # second-brain work that yields to the user and backfills in idle gaps.
-    from services.enrichment_worker import enrichment_worker
-    from services.enrichment_jobs import EnrichmentJob, JobTier
+    # Ingest's promise ends at "chunk + embed = searchable"; everything below is
+    # deferred second-brain work routed through the presence-aware worker.
     enrichment_worker.enqueue(EnrichmentJob(
-        key=f"ingest-enrich:{notebook_id}:{source_id}",
-        tier=JobTier.DEEP,
-        factory=_extract_entities_and_relationships_background,
-        label="ingest-enrich",
+        key=f"entities-daydream:{notebook_id}:{source_id}",
+        tier=JobTier.DAYDREAM,
+        factory=_entities_daydream,
+        label="entities-daydream",
         notebook_id=notebook_id,
     ))
 

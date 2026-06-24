@@ -160,11 +160,26 @@ async def _get_ollama_embeddings_batch_async(texts: List[str], max_concurrent: i
             except Exception as e:
                 print(f"[RAG] Embedding failed for chunk {index}: {e}")
                 return (index, [0.0] * settings.embedding_dim)
-    
-    # Run all embedding requests in parallel
-    tasks = [get_single_embedding(text, i) for i, text in enumerate(texts)]
-    results = await asyncio.gather(*tasks)
-    
+
+    # 2026-06-24: bulk ingest embedding is "core searchability" but a big PDF
+    # produces THOUSANDS of chunks → firing them all at once monopolized Ollama
+    # for minutes and starved a concurrent chat's phi4 query analysis (observed:
+    # 12-min embed flood → chat _analyze_query_with_llm TIMEOUT). So process in
+    # batches and yield to any active FOREGROUND op between batches. The doc just
+    # finishes embedding a few seconds later; the user's chat gets the box at
+    # once. await_background_clearance is deadlock-proof — when this runs INSIDE a
+    # foreground task tree (e.g. a chat's own embed) it returns immediately, so
+    # only genuine bulk/background embedding actually pauses.
+    from services.memory_steward import await_background_clearance
+
+    results: List[Tuple[int, List[float]]] = []
+    batch = max(max_concurrent, 1)  # yield ~every `max_concurrent` embeds
+    for start in range(0, len(texts), batch):
+        await await_background_clearance()
+        chunk = texts[start:start + batch]
+        tasks = [get_single_embedding(t, start + i) for i, t in enumerate(chunk)]
+        results.extend(await asyncio.gather(*tasks))
+
     # Sort by index to preserve order
     results.sort(key=lambda x: x[0])
     return [emb for _, emb in results]
