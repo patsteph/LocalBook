@@ -342,9 +342,15 @@ class ContextBuilder:
         
         try:
             from services.rag_engine import rag_engine
-            
-            # Encode the topic
-            topic_embedding = rag_engine.encode([topic])[0]
+
+            # Encode the topic.
+            # MUST be encode_async (not the sync encode): _rank_sources runs on
+            # the event loop, and the sync path makes a BLOCKING embed call.
+            # When Ollama is saturated (e.g. a graph-deep community-summary
+            # flood), that blocking call froze the loop for 113s — a near-fatal
+            # stall caught by loop-monitor during a foreground visual on the
+            # 2026-06-25 soak. encode_async yields the loop while embeds run.
+            topic_embedding = (await rag_engine.encode_async([topic]))[0]
             
             # Build texts to embed — use summary if available, else filename + first 200 chars
             source_texts = []
@@ -360,8 +366,8 @@ class ContextBuilder:
                         text += " " + " ".join(tags)
                     source_texts.append(text or "untitled")
             
-            # Encode all source texts in one batch (fast)
-            source_embeddings = rag_engine.encode(source_texts)
+            # Encode all source texts in one batch (async — see note above)
+            source_embeddings = await rag_engine.encode_async(source_texts)
             
             # Compute cosine similarity
             for i, s in enumerate(sources):
@@ -457,8 +463,8 @@ class ContextBuilder:
             # Get the LanceDB table for this notebook
             table = rag_engine._get_table(notebook_id)
             
-            # Encode the topic for vector search
-            topic_embedding = rag_engine.encode([topic])[0].tolist()
+            # Encode the topic for vector search (async — sync encode blocks the loop)
+            topic_embedding = (await rag_engine.encode_async([topic]))[0].tolist()
             
             # Build source ID filter
             source_id_set = {s["id"] for s in sources}
@@ -636,8 +642,8 @@ class ContextBuilder:
             # Create a broader query by removing specific constraints
             expanded_topic = f"{topic} concepts principles applications examples"
             
-            # Get embeddings for the expanded topic
-            topic_embedding = rag_engine.encode([expanded_topic])[0]
+            # Get embeddings for the expanded topic (async — sync encode blocks the loop)
+            topic_embedding = (await rag_engine.encode_async([expanded_topic]))[0]
             
             # Get embeddings for available sources (use summaries if available)
             source_texts = []
@@ -647,8 +653,8 @@ class ContextBuilder:
                 text = summary if summary else content_preview
                 source_texts.append(text[:500] if text else s.get("filename", ""))
             
-            source_embeddings = rag_engine.encode(source_texts)
-            
+            source_embeddings = await rag_engine.encode_async(source_texts)
+
             # Calculate similarity scores
             scored_sources = []
             for i, source in enumerate(available):
