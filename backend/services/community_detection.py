@@ -369,6 +369,16 @@ SUMMARY: [2-3 sentence summary]"""
             summary = await self.generate_community_summary(notebook_id, comm_id, entity_graph)
             if summary:
                 generated_count += 1
+            # 2026-06-24: trickle, don't burst. generate_community_summary yields
+            # to FOREGROUND, but draining this whole loop back-to-back monopolized
+            # the cap-2 phi4 lane against OTHER background work (stance scoring,
+            # entity graph) and timed two of them out. Rest between units, scaled
+            # to presence, so concurrent background work can interleave. AWAY → 0
+            # (drain hard). The worker still cancels the whole job on foreground.
+            from services import presence
+            pace = presence.background_pace_seconds()
+            if pace > 0:
+                await asyncio.sleep(pace)
                 
         if generated_count > 0:
             print(f"[CommunityDetector] Built {generated_count} missing community summaries for {notebook_id}")

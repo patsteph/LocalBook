@@ -95,3 +95,26 @@ def system_busy(quiet_s: float = 8.0) -> bool:
     from services.ollama_service import seconds_since_ollama_activity
 
     return seconds_since_ollama_activity() < quiet_s
+
+
+# Inter-unit trickle (seconds to rest between consecutive BACKGROUND work units)
+# keyed to tier — the within-loop analogue of the worker's between-jobs dose. A
+# long inline background loop (e.g. building dozens of community summaries inside
+# one worker job) should leave room between units so OTHER background work on the
+# same Ollama lane can interleave, instead of draining as a tight burst that
+# starves it (observed 2026-06-24: a community-summary burst monopolized the
+# cap-2 phi4 lane and timed out concurrent background stance/graph tasks). AWAY =
+# drain hard (matches the worker's AWAY dose intent).
+_BACKGROUND_PACE = {
+    Tier.ACTIVE: 5.0,
+    Tier.SHORT_IDLE: 5.0,
+    Tier.LONG_IDLE: 2.0,
+    Tier.AWAY: 0.0,
+}
+
+
+def background_pace_seconds() -> float:
+    """Seconds an inline background loop should rest between consecutive units,
+    scaled to how 'away' the user is. Single authority for 'how gently should
+    background trickle' — set to 0.0 everywhere to revert to burst behavior."""
+    return _BACKGROUND_PACE.get(current_tier(), 2.0)
