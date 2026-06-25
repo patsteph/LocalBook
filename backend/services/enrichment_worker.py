@@ -28,7 +28,7 @@ import time
 from typing import Dict, List, Optional
 
 from services import presence
-from services.enrichment_jobs import EnrichmentJob, min_presence_for
+from services.enrichment_jobs import EnrichmentJob, JobTier, min_presence_for
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,15 @@ class EnrichmentWorker:
             # A change in presence (e.g. user went from LONG_IDLE → AWAY, or
             # returned) resets the dose so the new tier's pace applies at once.
             if burst_tier != tier_now:
+                # Visibility for the overnight soak: log transitions into the
+                # idle tiers that unlock background work (esp. AWAY, which gates
+                # the NIGHT-tier consolidation/journal jobs). Kept low-noise —
+                # ACTIVE↔SHORT flapping during use isn't logged.
+                if tier_now >= _Tier.LONG_IDLE:
+                    logger.info(
+                        f"[enrichment-worker] presence → {tier_now.name} "
+                        f"(queue depth={len(self._jobs)})"
+                    )
                 burst_tier = tier_now
                 burst_done = 0
 
@@ -156,6 +165,13 @@ class EnrichmentWorker:
     async def _run_one(self, job: EnrichmentJob) -> None:
         self._current_key = job.key
         t0 = time.time()
+        # Surface the heavier tiers (DEEP / NIGHT) when they actually start —
+        # this is how the overnight soak confirms the night-pass jobs fired.
+        if job.tier >= JobTier.DEEP:
+            logger.info(
+                f"[enrichment-worker] running {job.label} "
+                f"(tier={job.tier.name}, attempt={job.attempts})"
+            )
         task = asyncio.create_task(job.factory(), name=f"enrich:{job.label}")
         cancelled = False
         try:

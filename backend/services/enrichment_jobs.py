@@ -5,10 +5,14 @@ graph relationships, community summaries, curator inference, stance scoring. It
 is ENQUEUED on the worker (never spawned fire-and-forget), coalesced by `key`,
 and runnable only when presence allows.
 
-Two tiers, mapped to the presence tier at which they may run:
+Three tiers, mapped to the presence tier at which they may run:
 
   DAYDREAM  source-local, one cheap LLM call → runs at SHORT_IDLE or better
   DEEP      corpus-global synthesis → runs at LONG_IDLE or better (and AWAY/night)
+  NIGHT     heavy whole-corpus maintenance (memory consolidation, journals,
+            digests) → runs ONLY at AWAY (long idle or the night window). The
+            "night pass" — work too expensive to risk during any plausibly-active
+            window, gated to when the host is genuinely unattended.
 
 `factory` MUST return a FRESH coroutine each call: the worker cancels a job the
 instant a foreground op starts and re-runs it later, and a coroutine can only be
@@ -29,12 +33,14 @@ from services.presence import Tier
 class JobTier(IntEnum):
     DAYDREAM = 1   # source-local, light; OK during brief idle
     DEEP = 2       # corpus-global; sustained idle / overnight
+    NIGHT = 3      # heavy whole-corpus maintenance; AWAY / night window only
 
 
 # Minimum presence tier required to run a job of each tier.
 _MIN_PRESENCE = {
     JobTier.DAYDREAM: Tier.SHORT_IDLE,
     JobTier.DEEP: Tier.LONG_IDLE,
+    JobTier.NIGHT: Tier.AWAY,
 }
 
 

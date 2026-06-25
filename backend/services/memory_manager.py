@@ -81,34 +81,47 @@ class MemoryManager:
             try:
                 now = datetime.utcnow()
 
-                # Re-scope (2026-06-20): consolidation tiers are autonomous,
-                # deferrable background work — pause them while the user has a
-                # foreground generation running so they don't add load. One gate
-                # covers all four tiers. Bounded by the 300 s clearance valve.
-                from services.memory_steward import await_background_clearance
-                await await_background_clearance()
+                # Night-pass fold (2026-06-25): this loop no longer RUNS the
+                # tiers inline — it only tracks intervals and ENQUEUES the work
+                # onto the Background Enrichment Worker, the single traffic cop
+                # for all background work. The worker presence-gates, doses, and
+                # cancels it. This stops these heavy cycles from firing on their
+                # own timer concurrently with the user / ingest floods (the
+                # 2026-06-25 consolidation freeze). Execution scheduling now lives
+                # in exactly one place. _should_run still owns the cadence; we set
+                # _last_* at ENQUEUE so the 15-min poll doesn't re-enqueue while a
+                # job waits for its tier (the worker also coalesces by key).
+                from services.enrichment_worker import enrichment_worker
+                from services.enrichment_jobs import EnrichmentJob, JobTier
 
-                # Check each tier independently
-                # Tier 1: Hourly compact (dedupe events)
+                # Tier 1: Hourly compact (dedupe events) — light, non-LLM.
                 if self._should_run(self._last_compact, self.COMPACT_INTERVAL_HOURS):
-                    await self.run_compact()
+                    enrichment_worker.enqueue(EnrichmentJob(
+                        key="mem-compact", tier=JobTier.DEEP,
+                        factory=lambda: self.run_compact(), label="mem-compact"))
                     self._last_compact = now
-                
-                # Tier 2: 3-hour pattern analysis
+
+                # Tier 2: 3-hour pattern analysis.
                 if self._should_run(self._last_pattern, self.PATTERN_INTERVAL_HOURS):
-                    await self.run_pattern_analysis()
+                    enrichment_worker.enqueue(EnrichmentJob(
+                        key="mem-pattern", tier=JobTier.DEEP,
+                        factory=lambda: self.run_pattern_analysis(), label="mem-pattern"))
                     self._last_pattern = now
-                
-                # Tier 3: 6-hour deep consolidation
+
+                # Tier 3: 6-hour deep consolidation — heaviest; AWAY/night only.
                 if self._should_run(self._last_consolidation, self.DEEP_CONSOLIDATION_HOURS):
-                    await self.run_consolidation()
+                    enrichment_worker.enqueue(EnrichmentJob(
+                        key="mem-consolidation", tier=JobTier.NIGHT,
+                        factory=lambda: self.run_consolidation(), label="mem-consolidation"))
                     self._last_consolidation = now
-                
-                # Tier 4: Daily summary
+
+                # Tier 4: Daily summary — AWAY/night only.
                 if self._should_run(self._last_daily, self.DAILY_SUMMARY_HOURS):
-                    await self.run_daily_summary()
+                    enrichment_worker.enqueue(EnrichmentJob(
+                        key="mem-daily-summary", tier=JobTier.NIGHT,
+                        factory=lambda: self.run_daily_summary(), label="mem-daily-summary"))
                     self._last_daily = now
-                
+
                 # Sleep for 15 minutes between checks
                 await asyncio.sleep(900)
             except asyncio.CancelledError:

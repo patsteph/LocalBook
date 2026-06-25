@@ -263,6 +263,11 @@ async def _run_startup_tasks():
 
     # ── Step 6: Starting background services ──────────────────────────────
     async def _start_services():
+        # Event-loop lag monitor — names the culprit when a sync call blocks the
+        # loop, before a fatal stall silently trips the Tauri watchdog. Start it
+        # first so it covers the rest of service startup too.
+        from services.loop_monitor import loop_monitor
+        await loop_monitor.start()
         from services.stuck_source_recovery import stuck_source_recovery
         stuck_source_recovery.start_background_task()
         # Background Enrichment Worker — the single presence-aware, cancellable
@@ -438,6 +443,10 @@ async def lifespan(app: FastAPI):
     # Stop the enrichment worker on shutdown
     from services.enrichment_worker import enrichment_worker
     await enrichment_worker.stop()
+
+    # Stop the event-loop lag monitor
+    from services.loop_monitor import loop_monitor
+    await loop_monitor.stop()
 
     # Stop memory manager on shutdown
     from services.memory_manager import memory_manager

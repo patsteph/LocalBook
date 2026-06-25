@@ -2782,28 +2782,43 @@ Return ONLY valid JSON, no explanation."""
             since_recent = (now - _td(days=7)).isoformat()
             since_baseline = (now - _td(days=21)).isoformat()
 
-            recent_ev = _cb.recent_events(limit=2000, since_iso=since_recent)
-            baseline_ev = _cb.recent_events(limit=4000, since_iso=since_baseline)
+            # 2026-06-25: recent_events is a SYNC SQLite read and the
+            # mention-scan below is a pure-CPU double loop (up to 6000 events ×
+            # all shared entities of json.dumps + substring). Run inline with no
+            # await, on a mature corpus this blocked the event loop for >2 min →
+            # watchdog kill. Bound the entity set, then offload both the reads
+            # and the scan to a thread so the loop never stalls.
+            recent_ev = await asyncio.to_thread(_cb.recent_events, limit=2000, since_iso=since_recent)
+            baseline_ev = await asyncio.to_thread(_cb.recent_events, limit=4000, since_iso=since_baseline)
 
-            # Mention count = case-insensitive substring hit in payload JSON
-            # of an entity-string. We use the candidate-entity set we
-            # already extracted above so we don't pay for a second pass.
-            candidate_entities = [e for e in shared_entities.keys() if e and len(e) >= 3]
-            if candidate_entities:
+            # Mention count = case-insensitive substring hit in payload JSON of
+            # an entity-string. Bound to the most-shared entities so the scan
+            # cost stays O(events × CAP) regardless of corpus growth.
+            _ENTITY_CAP = 200
+            candidate_entities = sorted(
+                (e for e in shared_entities.keys() if e and len(e) >= 3),
+                key=lambda e: len(shared_entities.get(e, [])),
+                reverse=True,
+            )[:_ENTITY_CAP]
+
+            def _scan_mention_spikes(recent_events, baseline_events, entities):
+                """Pure-CPU mention-spike scan — runs in a worker thread so it
+                cannot block the event loop. Returns a list of (ent, recent_n,
+                prior_per_week) spikes."""
+                lowered = [(e, e.lower()) for e in entities]
                 recent_counts: Dict[str, int] = {}
                 baseline_counts: Dict[str, int] = {}
-                for ev in recent_ev:
+                for ev in recent_events:
                     blob = json.dumps(ev.get("payload") or {}).lower()
-                    for ent in candidate_entities:
-                        if ent.lower() in blob:
+                    for ent, ent_l in lowered:
+                        if ent_l in blob:
                             recent_counts[ent] = recent_counts.get(ent, 0) + 1
-                for ev in baseline_ev:
+                for ev in baseline_events:
                     blob = json.dumps(ev.get("payload") or {}).lower()
-                    for ent in candidate_entities:
-                        if ent.lower() in blob:
+                    for ent, ent_l in lowered:
+                        if ent_l in blob:
                             baseline_counts[ent] = baseline_counts.get(ent, 0) + 1
-
-                spikes: List[tuple] = []
+                out: List[tuple] = []
                 for ent, recent_n in recent_counts.items():
                     if recent_n < 3:
                         continue
@@ -2813,7 +2828,13 @@ Return ONLY valid JSON, no explanation."""
                     # prior is 14 days, recent is 7 days; multiply prior by 0.5.
                     prior_per_week = prior_n * 0.5
                     if recent_n >= 2 * max(1.0, prior_per_week):
-                        spikes.append((ent, recent_n, prior_per_week))
+                        out.append((ent, recent_n, prior_per_week))
+                return out
+
+            if candidate_entities:
+                spikes: List[tuple] = await asyncio.to_thread(
+                    _scan_mention_spikes, recent_ev, baseline_ev, candidate_entities
+                )
 
                 spikes.sort(key=lambda x: x[1], reverse=True)
                 for ent, recent_n, prior_per_week in spikes[:3]:
@@ -2872,14 +2893,22 @@ Return ONLY valid JSON, no explanation."""
     async def _find_shared_entities(self, notebooks: List[Dict]) -> Dict[str, List[Dict]]:
         """Find entities that appear in multiple notebooks"""
         entity_map = {}
-        
+
         for notebook in notebooks:
-            # Search for entities in this notebook's memories
-            results = memory_store.search_archival_memory(
+            # Search for entities in this notebook's memories.
+            # 2026-06-25: search_archival_memory is SYNCHRONOUS (it embeds the
+            # query via the blocking `requests` path + does a LanceDB search).
+            # Called inline once per notebook with no await between, it froze the
+            # event loop across the whole corpus → /health stalled → the Tauri
+            # watchdog killed the backend. Offload each blocking search to a
+            # thread so the loop stays responsive (and the cycle stays
+            # cancellable — there's now an await per notebook).
+            results = await asyncio.to_thread(
+                memory_store.search_archival_memory,
                 query="key entities people companies topics",
                 namespace=AgentNamespace.COLLECTOR,
                 notebook_id=notebook["id"],
-                limit=20
+                limit=20,
             )
             
             for r in results:
