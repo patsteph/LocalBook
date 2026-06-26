@@ -45,13 +45,19 @@ class WeeklyJournalAgent:
         logger.info("[weekly_journal] scheduler stopped")
 
     async def _loop(self) -> None:
+        # Folded onto the Enrichment Worker (Phase 5a) at NIGHT — weekly journal
+        # compose + SMTP is heavy and time-insensitive; runs when AWAY. Cadence
+        # stays here; the cheap "is it due" check + the work both run via the
+        # worker. Coalesced by key.
+        from services.enrichment_worker import enrichment_worker
+        from services.enrichment_jobs import EnrichmentJob, JobTier
         while self._running:
             try:
-                await self._tick()
-            except asyncio.CancelledError:
-                break
+                enrichment_worker.enqueue(EnrichmentJob(
+                    key="weekly-journal", tier=JobTier.NIGHT,
+                    factory=lambda: self._tick(), label="weekly-journal"))
             except Exception as e:
-                logger.warning(f"[weekly_journal] tick failed: {e}")
+                logger.warning(f"[weekly_journal] enqueue failed: {e}")
             try:
                 await asyncio.sleep(CHECK_INTERVAL_SECONDS)
             except asyncio.CancelledError:

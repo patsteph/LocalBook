@@ -2,6 +2,25 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## Unreleased — post-v2.0: Background Enrichment Worker ("Night Shift") + RAG/stability overhaul
+
+A presence-aware, cancellable, dose-budgeted background worker that replaces fire-and-forget
+sprawl, so the CORE loop (upload→ingest→ask→answer→output) always preempts ENRICHMENT
+(synthesis runs in idle gaps, like sleep consolidation). Overnight soak validated (2026-06-25→26,
+14 h, zero stalls / zero restarts / NIGHT consolidation completed cleanly).
+
+- **One worker, not fire-and-forget** (`services/enrichment_worker.py` + `enrichment_jobs.py` + `presence.py`) — every enrichment is an enqueued, coalesced job through a single presence-gated chokepoint. Tiers: DAYDREAM (short-idle, source-local) / DEEP (long-idle, corpus-global) / NIGHT (away/overnight, heavy maintenance). Cancels the in-flight job the instant a foreground op starts and re-queues it; adaptive dose budget drains backlogs across idle windows.
+- **Answer cache in the streaming chat path** — repeat/near-dup questions replay instantly (`⚡ Instant answer`), notebook-scoped invalidation on ingest so a stale answer is never served.
+- **Instant/daydream/deep reclassification** — ingest shrinks to chunk+embed (searchable in seconds); entities run at short-idle, corpus-global relationships + communities at long-idle/overnight.
+- **Bulk-embedding flood fix** — chunk embedding batches and yields to foreground (no more 12-min embed floods starving chat).
+- **Night-pass fold + consolidation-freeze crash fix** — the memory-manager tiers enqueue onto the worker (NIGHT) instead of firing on their own timer; the 6-hour consolidation's blocking cross-notebook scan offloaded to `asyncio.to_thread` (the freeze that watchdog-killed the backend 2026-06-25).
+- **"Aware" layer** — `loop_monitor` logs `[loop-monitor] event loop stalled Ns` + alive tasks (sub-fatal early warning); `ArchitectureDocs/BACKGROUND_SCHEDULE.md` is the schedule of record.
+- **context_builder sync-embed fix** — `_rank_sources` / `_build_chunk_context` / `expand_sources_for_flashcards` now use `encode_async` instead of the blocking `encode()` (removed a 113 s event-loop stall under Ollama saturation).
+- **Phase 5b — memory-pressure gate** — `presence.memory_pressure()` (RAM-% ceiling + swap-growth delta) parks ALL background work (incl. NIGHT) while the box swaps; the fix for the per-model-cap-but-total-residency gap that thrashed the ≤18 GB box.
+- **Phase 5c — community-summary per-cycle cap** (`LOCALBOOK_COMMUNITY_SUMMARY_CAP`=40) — a big notebook can no longer monopolize the phi4 lane for ~15 min; a self-re-enqueueing job finishes the remainder across later idle windows.
+- **Phase 5d — fatal-freeze watchdog** (`services/loop_watchdog.py`) — `faulthandler.dump_traceback_later` re-armed by an asyncio heartbeat dumps the exact blocking stack on a freeze the loop-monitor can't log live. Diagnostics only (does not prevent).
+- **Phase 5a — all background timers folded** — correspondent poller (DEEP), digest-composer (NIGHT), weekly-journal (NIGHT), and collection-scheduler (DEEP, per-notebook) keep their cadence locally but route execution through the worker. Every LLM-bearing background actor now flows through the one traffic cop.
+
 ## v2.0.0 — Information Cortex: Universal Canvas, Correspondent, Synthesis Layer
 
 LocalBook's largest release: an Information Cortex that turns documents and

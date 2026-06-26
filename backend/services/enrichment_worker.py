@@ -64,6 +64,7 @@ class EnrichmentWorker:
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._current_key: Optional[str] = None
+        self._in_pressure = False  # low-noise edge-logging for the memory gate
 
     # ── public API ──────────────────────────────────────────────────────
     def enqueue(self, job: EnrichmentJob) -> None:
@@ -137,8 +138,19 @@ class EnrichmentWorker:
                 except asyncio.TimeoutError:
                     pass
                 continue
-            # Don't pile onto a still-draining ingest flood.
-            if presence.system_busy(_OLLAMA_QUIET):
+            # Don't pile onto a still-draining ingest flood, and NEVER start a
+            # job while the box is swap-thrashing — the aggregate memory gate
+            # (Phase 5b) parks ALL background work (incl. NIGHT) until RAM/swap
+            # pressure clears, since that thrash is what starves the event loop.
+            pressure = presence.memory_pressure()
+            if pressure != self._in_pressure:
+                self._in_pressure = pressure
+                logger.info(
+                    "[enrichment-worker] memory pressure — parking background work"
+                    if pressure else
+                    "[enrichment-worker] memory pressure cleared — resuming"
+                )
+            if presence.system_busy(_OLLAMA_QUIET) or pressure:
                 await asyncio.sleep(_POLL)
                 continue
 

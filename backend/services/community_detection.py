@@ -13,6 +13,7 @@ The RAG engine does not yet route holistic queries through community summaries.
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -21,6 +22,15 @@ from config import settings
 from utils.singleflight import KeyedSingleflight
 
 logger = logging.getLogger(__name__)
+
+# Phase 5c (2026-06-26) — cap community summaries built per cycle. A large
+# notebook crossing the graph threshold once produced HUNDREDS of summaries
+# back-to-back (~15 min monopolizing the phi4 lane; 2026-06-25 soak). Phase 3.1
+# paces SPACING between summaries but not total COUNT. This bounds each cycle to
+# a digestible batch; build_missing_summaries is idempotent (builds only MISSING
+# ones), so the caller (_graph_deep) re-enqueues a coalesced DEEP job to finish
+# the remainder across later idle windows under the worker's dose budget.
+_SUMMARY_CAP_PER_CYCLE = int(os.getenv("LOCALBOOK_COMMUNITY_SUMMARY_CAP", "40"))
 
 
 @dataclass
@@ -355,11 +365,20 @@ SUMMARY: [2-3 sentence summary]"""
         
         generated_count = 0
         communities_to_build = []
-        
+
         for comm_id, comm in self._communities[notebook_id].items():
             if not comm.summary:
                 communities_to_build.append(comm_id)
-                
+
+        # Phase 5c: cap this cycle's batch. The remainder is left MISSING and
+        # finished by a re-enqueued worker job (see rag_storage._graph_deep), so
+        # one big notebook can't monopolize the phi4 lane for 15 minutes.
+        total_missing = len(communities_to_build)
+        deferred = 0
+        if total_missing > _SUMMARY_CAP_PER_CYCLE:
+            deferred = total_missing - _SUMMARY_CAP_PER_CYCLE
+            communities_to_build = communities_to_build[:_SUMMARY_CAP_PER_CYCLE]
+
         for comm_id in communities_to_build:
             # 2026-06-24: scheduling is now owned by the Background Enrichment
             # Worker — this whole routine runs inside one presence-gated,
@@ -382,9 +401,21 @@ SUMMARY: [2-3 sentence summary]"""
                 
         if generated_count > 0:
             print(f"[CommunityDetector] Built {generated_count} missing community summaries for {notebook_id}")
-            
+        if deferred > 0:
+            # No silent caps — say what was deferred and that it'll resume.
+            logger.info(
+                f"[CommunityDetector] built {generated_count}, "
+                f"{deferred} summaries deferred to next cycle for {notebook_id}"
+            )
+
         return generated_count
-    
+
+    def count_missing_summaries(self, notebook_id: str) -> int:
+        """How many communities still lack a summary — the caller uses this to
+        decide whether to re-enqueue a finish-the-remainder job (Phase 5c)."""
+        comms = self._communities.get(notebook_id, {})
+        return sum(1 for c in comms.values() if not c.summary)
+
     def get_community_for_entity(
         self,
         notebook_id: str,

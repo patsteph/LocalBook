@@ -229,64 +229,46 @@ class CollectionScheduler:
         else:
             logger.info(f"Scheduler: {len(to_run)} collection(s) due this cycle")
 
-        # ── Phase 3: run with stagger delay ──
-        for idx, entry in enumerate(to_run):
+        # ── Phase 3: ENQUEUE each due collection onto the Enrichment Worker ──
+        # Folded 2026-06-26 (Phase 5a). This loop keeps ALL the cadence/eligibility
+        # logic above (due-check, fresh-notebook stagger, the idle gate, staleness
+        # sort + per-cycle cap) — but EXECUTION now routes through the one
+        # presence-gated, cancellable, memory-aware queue as one DEEP job per
+        # notebook (key=collection:{id}). The worker supersedes what we used to do
+        # inline here: its presence gate replaces await_background_clearance, its
+        # cancel-on-foreground replaces yieldable_background, and its dose budget
+        # replaces the manual STAGGER_DELAY pause (jobs drain one-at-a-time with
+        # cooldowns). The memory-pressure gate (5b) additionally parks them while
+        # the box is swapping — the actual fix for the Costco-mid-visual crash.
+        from services.enrichment_worker import enrichment_worker
+        from services.enrichment_jobs import EnrichmentJob, JobTier
+        for entry in to_run:
             if not self._running:
                 break
-
             notebook_id = entry["notebook_id"]
             nb_name = entry["nb_name"]
             freq = entry["freq"]
 
-            # Stagger: pause before 2nd, 3rd, etc. runs
-            if idx > 0:
-                logger.info(f"Stagger pause: waiting {STAGGER_DELAY_SECONDS}s before next collection...")
-                print(f"[SCHEDULER] Cooling down {STAGGER_DELAY_SECONDS}s before next run...")
-                await asyncio.sleep(STAGGER_DELAY_SECONDS)
-
-            logger.info(f"Scheduled collection due for '{nb_name}' ({notebook_id[:8]}) — frequency: {freq}")
-            print(f"[SCHEDULER] Running scheduled collection for '{nb_name}' (freq={freq})")
-
-            # Re-scope (2026-06-20): a scheduled collection is autonomous,
-            # deferrable work — gemma query-gen + web research + scraping. Pause
-            # it while the user has a foreground generation running (visual/chat/
-            # doc) so it can't pile load onto an 18 GB box and tip it into swap
-            # (observed crash: Costco sync fired mid-visual → SIGTERM restart).
-            # run_immediate() (user clicked "collect now") is NOT gated.
-            #   - The upfront clearance defers STARTING a collection while a
-            #     foreground op is already active.
-            #   - yieldable_background marks the whole run so its internal
-            #     deep-dive checkpoints can pause it MID-FLIGHT if a foreground op
-            #     starts after the collection began (the real-world collision).
-            # Both bounded by the 300 s safety valve inside await_background_clearance.
-            from services.memory_steward import (
-                await_background_clearance,
-                yieldable_background,
-            )
-            await await_background_clearance()
-
-            # No-re-fire claim: record the run timestamp BEFORE the collection,
-            # not after. Previously it was saved only on success, so a collection
-            # that was killed mid-run (app crash/SIGTERM under contention) never
-            # recorded → it re-qualified as "due" on the next launch and fired
-            # again → contention → crash → repeat. Claiming up-front means an
-            # interrupted daily run simply waits until tomorrow instead of
-            # hammering on every restart. (A genuine in-process failure is caught
-            # below and also stays claimed — daily collection isn't worth a
-            # retry storm.)
+            # No-re-fire claim: record the run timestamp at ENQUEUE (the worker
+            # may run it much later, or cancel+drop it). An interrupted/cancelled
+            # collection then waits for the next interval instead of re-qualifying
+            # as "due" every cycle and hammering on contention. (Matches the prior
+            # claim-before-run rationale; now aligned with the worker-fold "set
+            # _last_* at enqueue" rule.)
             self._last_runs[notebook_id] = datetime.utcnow()
             self._save_state()
 
-            try:
-                async with yieldable_background("scheduled-collection"):
-                    result = await self._run_collection(notebook_id)
-
-                approved = result.get("items_approved", 0)
-                pending = result.get("items_pending", 0)
-                collected = result.get("items_collected", 0)
-                print(f"[SCHEDULER] '{nb_name}' done: {collected} found, {approved} approved, {pending} pending")
-            except Exception as e:
-                logger.error(f"Collection failed for '{nb_name}': {e}")
+            logger.info(
+                f"Scheduled collection due for '{nb_name}' ({notebook_id[:8]}) "
+                f"— enqueued on worker (freq={freq})"
+            )
+            enrichment_worker.enqueue(EnrichmentJob(
+                key=f"collection:{notebook_id}",
+                tier=JobTier.DEEP,
+                factory=lambda nb=notebook_id: self._run_collection(nb),
+                label=f"collection:{nb_name[:24]}",
+                notebook_id=notebook_id,
+            ))
 
     # ------------------------------------------------------------------
     # Frequency logic

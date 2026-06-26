@@ -271,9 +271,27 @@ async def ingest_document(
                 print(f"[RAG] Extracted {len(relationships)} relationships from {filename}")
                 from services.community_detection import community_detector
                 await community_detector.detect_communities(notebook_id, entity_graph)
-                await community_detector.build_missing_summaries(notebook_id, entity_graph)
+                await _finish_community_summaries()
         except Exception as comm_err:
             print(f"[RAG] Graph/community (deep) failed (non-fatal): {comm_err}")
+
+    async def _finish_community_summaries():
+        """Build ONE capped batch of community summaries (Phase 5c), then if any
+        remain, re-enqueue a coalesced DEEP job to finish them in a later idle
+        window. Keeps a big notebook from monopolizing the phi4 lane in one burst
+        while still draining to completion. Re-enqueueing the dedicated
+        summaries-only job (not the whole _graph_deep) avoids re-extracting
+        relationships each pass."""
+        from services.community_detection import community_detector
+        await community_detector.build_missing_summaries(notebook_id, entity_graph)
+        if community_detector.count_missing_summaries(notebook_id) > 0:
+            enrichment_worker.enqueue(EnrichmentJob(
+                key=f"community-summaries:{notebook_id}",
+                tier=JobTier.DEEP,
+                factory=_finish_community_summaries,
+                label="community-summaries",
+                notebook_id=notebook_id,
+            ))
 
     async def _entities_daydream():
         """DAYDREAM: source-local entity extraction; on success, enqueue the

@@ -249,13 +249,19 @@ class DigestSchedulerAgent:
         logger.info("[digest_composer] scheduler stopped")
 
     async def _loop(self) -> None:
+        # Folded onto the Enrichment Worker (Phase 5a) at NIGHT — per-sender
+        # digest compose is heavy LLM synthesis and time-insensitive, so it runs
+        # only when the host is AWAY/overnight. Cadence stays here; execution
+        # routes through the worker. Coalesced by key.
+        from services.enrichment_worker import enrichment_worker
+        from services.enrichment_jobs import EnrichmentJob, JobTier
         while self._running:
             try:
-                await self._tick()
-            except asyncio.CancelledError:
-                break
+                enrichment_worker.enqueue(EnrichmentJob(
+                    key="digest-compose", tier=JobTier.NIGHT,
+                    factory=lambda: self._tick(), label="digest-compose"))
             except Exception as e:
-                logger.warning(f"[digest_composer] tick failed: {e}")
+                logger.warning(f"[digest_composer] enqueue failed: {e}")
             try:
                 await asyncio.sleep(WORKER_INTERVAL_SECONDS)
             except asyncio.CancelledError:

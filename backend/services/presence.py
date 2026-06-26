@@ -118,3 +118,53 @@ def background_pace_seconds() -> float:
     scaled to how 'away' the user is. Single authority for 'how gently should
     background trickle' — set to 0.0 everywhere to revert to burst behavior."""
     return _BACKGROUND_PACE.get(current_tier(), 2.0)
+
+
+# ── Memory-pressure gate (Phase 5b, 2026-06-26) ────────────────────────
+# Per-model Ollama lane caps (gemma 1 / phi4 2 / embed 4) bound concurrency
+# PER MODEL but not total model RESIDENCY. On an ≤18 GB box, gemma (9.6 GB) +
+# phi4 + embed + a foreground Klein image all wanting RAM at once tips the box
+# into swap (`mode=swap`); the event-loop thread is then CPU/paging-starved and
+# can stall past the Tauri watchdog → silent kill (the 2026-06-25 daytime soak).
+# No queue or per-model cap prevents this — we need a gate on AGGREGATE memory
+# state that parks ALL background work (incl. NIGHT) while the box is thrashing.
+_MEM_PRESSURE_PCT = _envf("LOCALBOOK_MEM_PRESSURE_PCT", 92.0)    # hard RAM ceiling (%)
+_MEM_SWAP_DELTA_MB = _envf("LOCALBOOK_MEM_SWAP_DELTA_MB", 50.0)  # active-paging signal
+_MEM_SWAP_WINDOW_S = 15.0                                        # delta only valid within this gap
+_last_swap_used = {"bytes": 0, "ts": 0.0}
+
+
+def memory_pressure() -> bool:
+    """True when the box is RAM-constrained or ACTIVELY SWAPPING — the worker
+    parks ALL background work (even NIGHT) until this clears. Prevents the
+    gemma+image+embed co-residency swap-thrash that froze the loop 2026-06-25.
+
+    Two signals, OR'd:
+      1. virtual_memory().percent ≥ ceiling — a hard "no headroom" stop.
+      2. swap USED growing ≥ delta within the window — the LIVE "thrashing right
+         now" signal. A steady high-but-stable swap from a resident model is NOT
+         pressure (it's normal on a constrained box); only the GROWTH is. This is
+         why the delta — not raw swap size — is the primary live signal.
+
+    Set LOCALBOOK_MEM_PRESSURE_PCT / _MEM_SWAP_DELTA_MB absurdly high to disable.
+    """
+    try:
+        import psutil
+    except Exception:
+        return False  # can't measure → don't over-gate (fail open)
+
+    try:
+        if psutil.virtual_memory().percent >= _MEM_PRESSURE_PCT:
+            return True
+
+        sw = psutil.swap_memory()
+        now = time.monotonic()
+        prev_b, prev_t = _last_swap_used["bytes"], _last_swap_used["ts"]
+        _last_swap_used["bytes"], _last_swap_used["ts"] = sw.used, now
+        if prev_t and (now - prev_t) <= _MEM_SWAP_WINDOW_S:
+            grew_mb = (sw.used - prev_b) / (1024 * 1024)
+            if grew_mb >= _MEM_SWAP_DELTA_MB:
+                return True
+    except Exception:
+        return False  # any psutil hiccup → fail open, never block on a metrics error
+    return False

@@ -396,13 +396,23 @@ class CorrespondentAgent:
         logger.info("[correspondent] poller stopped")
 
     async def _loop(self) -> None:
+        # Folded onto the Enrichment Worker (Phase 5a, 2026-06-26): the poll
+        # CADENCE stays here, but EXECUTION routes through the one presence-gated,
+        # cancellable, memory-aware queue at DEEP. classify=phi4 + route=embeds
+        # are the real Ollama contention (IMAP fetch riding under the worker is
+        # light); gating them stops a newsletter backlog from colliding with the
+        # user / an enrichment burst. Coalesced by key so a slow poll can't stack.
+        # Trade-off: email ingestion is enrichment (not core), so it now waits for
+        # an idle gap instead of polling during active use — by design.
+        from services.enrichment_worker import enrichment_worker
+        from services.enrichment_jobs import EnrichmentJob, JobTier
         while self._running:
             try:
-                await self.poll_all()
-            except asyncio.CancelledError:
-                break
+                enrichment_worker.enqueue(EnrichmentJob(
+                    key="correspondent-poll", tier=JobTier.DEEP,
+                    factory=lambda: self.poll_all(), label="correspondent-poll"))
             except Exception as e:
-                logger.warning(f"[correspondent] poll cycle failed: {e}")
+                logger.warning(f"[correspondent] enqueue failed: {e}")
             try:
                 await asyncio.sleep(self.poll_interval_seconds)
             except asyncio.CancelledError:

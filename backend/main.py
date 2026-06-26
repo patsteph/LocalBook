@@ -268,6 +268,11 @@ async def _run_startup_tasks():
         # first so it covers the rest of service startup too.
         from services.loop_monitor import loop_monitor
         await loop_monitor.start()
+        # Fatal-freeze watchdog — faulthandler-based; dumps the blocking stack if
+        # the loop freezes past the threshold (the silent-kill case loop_monitor
+        # can't log live). Diagnostics only; does not prevent the freeze.
+        from services.loop_watchdog import loop_watchdog
+        await loop_watchdog.start()
         from services.stuck_source_recovery import stuck_source_recovery
         stuck_source_recovery.start_background_task()
         # Background Enrichment Worker — the single presence-aware, cancellable
@@ -444,9 +449,11 @@ async def lifespan(app: FastAPI):
     from services.enrichment_worker import enrichment_worker
     await enrichment_worker.stop()
 
-    # Stop the event-loop lag monitor
+    # Stop the event-loop lag monitor + fatal-freeze watchdog
     from services.loop_monitor import loop_monitor
     await loop_monitor.stop()
+    from services.loop_watchdog import loop_watchdog
+    await loop_watchdog.stop()
 
     # Stop memory manager on shutdown
     from services.memory_manager import memory_manager
