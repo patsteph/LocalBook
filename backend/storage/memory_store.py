@@ -93,22 +93,24 @@ class MemoryStore:
     # =========================================================================
     
     def get_embedding(self, text: str) -> List[float]:
-        """Generate embedding using Ollama API (matches RAG engine)"""
+        """Generate embedding via the shared RAG embedding path (batched /api/embed).
+
+        Routes through rag_embeddings.encode so memory uses the same model AND the
+        batched endpoint as the RAG engine — replaces the raw per-text
+        /api/embeddings call (the last deprecated singular-embed site). Returns a
+        zero vector on failure so callers degrade gracefully.
+
+        NOTE (PB-3, deferred): still synchronous. The wider PB-3 conversion — making
+        the read/write methods async + offloading the LanceDB search, plus caching
+        the recall connection — is its own isolated build: it cascades through ~11
+        curator/collector call sites + ~24 `conn.close()` sites, and memory_store was
+        not a freeze source in the 2026-06-26 logs.
+        """
         try:
-            response = requests.post(
-                f"{settings.ollama_base_url}/api/embeddings",
-                json={
-                    "model": settings.embedding_model,  # snowflake-arctic-embed2
-                    "prompt": text
-                },
-                timeout=60
-            )
-            result = response.json()
-            embedding = result.get("embedding", [])
-            if embedding:
-                return embedding
-            # Fallback to zero vector if empty
-            return [0.0] * settings.embedding_dim
+            from services import rag_embeddings
+            arr = rag_embeddings.encode(text)
+            emb = arr[0].tolist() if len(arr) else []
+            return emb if emb else [0.0] * settings.embedding_dim
         except Exception as e:
             print(f"[MemoryStore] Embedding error: {e}")
             return [0.0] * settings.embedding_dim

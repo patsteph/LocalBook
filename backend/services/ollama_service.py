@@ -742,6 +742,71 @@ class OllamaService:
         finally:
             sem.release()
 
+    async def embed_batch(
+        self,
+        texts: List[str],
+        model: Optional[str] = None,
+        timeout: Optional[float] = None,
+        keep_alive: Optional[Any] = None,
+        max_batch: int = 64,
+    ) -> List[List[float]]:
+        """Embed many texts in the FEWEST round-trips.
+
+        Ollama's /api/embed accepts ``input`` as a list and returns one vector per
+        item in a single response. Callers used to fire one HTTP request per chunk
+        (thousands per big ingest → the 2026-06-26 loop-freeze); this issues one
+        request per ``max_batch`` slice instead. Order preserved; a failed or
+        shape-mismatched sub-batch falls back to zero vectors (logged) so retrieval
+        gaps stay visible rather than silently corrupting the index.
+        """
+        if not texts:
+            return []
+        use_model = model or settings.embedding_model
+        read_timeout = timeout or 120.0
+        client = self._get_client()
+        sem = _semaphore_for_model(use_model)
+        zero = [0.0] * settings.embedding_dim
+        out: List[List[float]] = []
+        for start in range(0, len(texts), max_batch):
+            sub = texts[start:start + max_batch]
+            _caller = _get_caller()
+            _t0 = time.time()
+            try:
+                await sem.acquire()
+                response = await client.post(
+                    f"{settings.ollama_base_url}/api/embed",
+                    json={
+                        "model": use_model,
+                        "input": sub,
+                        "keep_alive": keep_alive if keep_alive is not None else "5m",
+                    },
+                    timeout=httpx.Timeout(10.0, read=read_timeout),
+                )
+                response.raise_for_status()
+                embs = response.json().get("embeddings") or []
+                _elapsed = time.time() - _t0
+                logger.info(
+                    f"[OllamaService] embed_batch OK model={use_model} n={len(sub)} "
+                    f"caller={_caller} {_elapsed:.1f}s"
+                )
+                if len(embs) == len(sub):
+                    out.extend(e if (e and len(e) == settings.embedding_dim) else zero for e in embs)
+                else:
+                    logger.error(
+                        f"[OllamaService] embed_batch shape mismatch {len(embs)}≠{len(sub)} — zero-filling"
+                    )
+                    out.extend(zero for _ in sub)
+            except Exception as e:
+                _elapsed = time.time() - _t0
+                logger.error(
+                    f"[OllamaService] embed_batch FAILED model={use_model} n={len(sub)} "
+                    f"caller={_caller} {_elapsed:.1f}s: {e}"
+                )
+                out.extend(zero for _ in sub)
+            finally:
+                sem.release()
+        return out
+
     # ── Streaming generate (/api/generate, stream=True) ───────────────
 
     async def stream_generate(

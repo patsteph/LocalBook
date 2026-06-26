@@ -159,14 +159,18 @@ class RAGEngine:
         filename: str = "Unknown",
         source_type: str = "document",
         reporter=None,
+        enable_hyde: bool = True,
+        precomputed_summary=None,
     ) -> Dict:
         """Ingest a document into the RAG system.
 
         reporter (optional): ProgressReporter for stage-by-stage progress events.
         When None, ingestion runs silently (existing behaviour).
+        enable_hyde / precomputed_summary: see rag_storage.ingest_document.
         """
         return await rag_storage.ingest_document(
             notebook_id, source_id, text, filename, source_type, reporter=reporter,
+            enable_hyde=enable_hyde, precomputed_summary=precomputed_summary,
         )
 
     async def append_to_document(

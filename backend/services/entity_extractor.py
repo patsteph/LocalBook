@@ -233,6 +233,7 @@ JSON:"""
                 num_predict=500,
                 temperature=0.2,
                 timeout=60.0,
+                format="json",  # 2026-06-26: was free-form → No-valid-JSON failures + 60s timeouts
             )
             result = _resp.get("response", "")
             if result:

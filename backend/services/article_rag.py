@@ -45,12 +45,17 @@ async def index_article(
     article_id: str,
     title: str,
     body_text: str,
+    summary=None,
 ) -> bool:
     """Ingest one article into the notebook's LanceDB index under a
     synthetic source_id. Returns True on success.
 
     Fire-and-forget — caller (background summary task) doesn't await on
     failure; we log at debug since RAG-indexing failures are recoverable.
+
+    Background ingest: HyDE is skipped (enable_hyde=False) and the article's
+    already-generated batch summary is reused (precomputed_summary) so we don't
+    fire a per-chunk question flood + a redundant summary call per article.
     """
     if not body_text.strip():
         return False
@@ -63,6 +68,8 @@ async def index_article(
             text=body_text,
             filename=title or "Article",
             source_type="article",
+            enable_hyde=False,
+            precomputed_summary=summary,
         )
         return True
     except Exception as e:
@@ -101,6 +108,7 @@ async def index_pending_for_source(source_id: str) -> int:
             article_id=a["id"],
             title=a.get("title") or "",
             body_text=a.get("body_text") or "",
+            summary=a.get("summary") or "",
         )
         if ok:
             try:

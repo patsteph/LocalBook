@@ -46,75 +46,71 @@ def load_embedding_model():
 # ─── Sync Embedding ─────────────────────────────────────────────────────────────
 
 def _get_ollama_embedding_sync(text: str) -> List[float]:
-    """Get embedding from Ollama synchronously."""
+    """Get a single embedding from Ollama synchronously (legacy / rarely used).
+
+    Kept for non-async callers that embed one string; bulk paths use the batched
+    helpers below. Uses /api/embed (input list of one) for consistency.
+    """
     import requests
     response = requests.post(
-        f"{settings.ollama_base_url}/api/embeddings",
-        json={
-            "model": settings.embedding_model,
-            "prompt": text
-        },
-        timeout=60
+        f"{settings.ollama_base_url}/api/embed",
+        json={"model": settings.embedding_model, "input": text},
+        timeout=60,
     )
-    result = response.json()
-    return result.get("embedding", [])
+    response.raise_for_status()
+    embs = response.json().get("embeddings") or []
+    return embs[0] if embs else []
 
 
 def _get_ollama_embeddings_batch_sync(texts: List[str]) -> List[List[float]]:
-    """Get embeddings for multiple texts from Ollama.
-    
-    Uses sequential processing with exponential backoff retry.
-    Logs failures for monitoring - zero vectors indicate retrieval gaps.
+    """Get embeddings for many texts in ONE /api/embed call per sub-batch.
+
+    P0a (2026-06-26): Ollama's /api/embed accepts a list ``input`` and returns all
+    vectors in a single response, so we no longer loop one HTTP request per text
+    (the old behaviour produced the thousands-of-calls flood). Sync path retained
+    only for non-async callers; async contexts must use ``encode_async``. A failed
+    or shape-mismatched sub-batch falls back to zero vectors (logged) so retrieval
+    gaps stay visible rather than silently corrupting the index.
     """
-    embeddings = []
-    failed_chunks = []
-    
-    for i, text in enumerate(texts):
-        embedding = None
-        max_retries = 3
-        
-        for attempt in range(max_retries):
-            try:
-                embedding = _get_ollama_embedding_sync(text)
-                if embedding and len(embedding) == settings.embedding_dim:
-                    break  # Success
-                
-                # Empty or wrong dimension - retry
-                if attempt < max_retries - 1:
-                    wait_time = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
-                    print(f"[RAG] Empty embedding for chunk {i}, retry {attempt + 1}/{max_retries} in {wait_time}s...")
-                    time.sleep(wait_time)
-                    
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    wait_time = 0.5 * (2 ** attempt)
-                    print(f"[RAG] Embedding failed for chunk {i} (attempt {attempt + 1}): {e}")
-                    time.sleep(wait_time)
-                else:
-                    print(f"[RAG] ⚠️ EMBEDDING FAILED after {max_retries} attempts for chunk {i}: {e}")
-        
-        if embedding and len(embedding) == settings.embedding_dim:
-            embeddings.append(embedding)
-        else:
-            # Last resort: zero vector (will be logged for later repair)
-            embeddings.append([0.0] * settings.embedding_dim)
-            failed_chunks.append(i)
-    
-    if failed_chunks:
-        print(f"[RAG] ⚠️ {len(failed_chunks)} chunks got zero vectors (indices: {failed_chunks[:5]}{'...' if len(failed_chunks) > 5 else ''})")
-    
-    return embeddings
+    import requests
+    if not texts:
+        return []
+    zero = [0.0] * settings.embedding_dim
+    batch = 64
+    out: List[List[float]] = []
+    for start in range(0, len(texts), batch):
+        sub = texts[start:start + batch]
+        try:
+            response = requests.post(
+                f"{settings.ollama_base_url}/api/embed",
+                json={"model": settings.embedding_model, "input": sub},
+                timeout=120,
+            )
+            response.raise_for_status()
+            embs = response.json().get("embeddings") or []
+            if len(embs) == len(sub):
+                out.extend(e if (e and len(e) == settings.embedding_dim) else zero for e in embs)
+            else:
+                print(f"[RAG] ⚠️ sync embed shape mismatch {len(embs)}≠{len(sub)} — zero-filling")
+                out.extend(zero for _ in sub)
+        except Exception as e:
+            print(f"[RAG] ⚠️ sync batch embed failed for slice @{start}: {e}")
+            out.extend(zero for _ in sub)
+    return out
 
 
 def encode(texts: Union[str, List[str]]) -> np.ndarray:
     """Encode texts to embeddings (compatible with SentenceTransformer interface).
-    
+
     This is the primary sync encoding entry point. All callers
     (rag_engine.encode, external services) route through here.
+
+    WARNING: this blocks. In an async context use ``encode_async`` instead — a
+    sync embed on the event loop is what froze the loop on 2026-06-26.
     """
     if isinstance(texts, str):
         texts = [texts]
-    
+
     if _use_ollama:
         embeddings = _get_ollama_embeddings_batch_sync(texts)
         return np.array(embeddings)
@@ -136,63 +132,44 @@ async def _get_ollama_embedding(text: str) -> List[float]:
 
 
 async def _get_ollama_embeddings_batch_async(texts: List[str], max_concurrent: int = 10) -> List[List[float]]:
-    """Get embeddings for multiple texts in parallel using asyncio.gather.
-    
-    This is 10-20x faster than sequential processing for large batches.
-    Uses semaphore to limit concurrent requests and avoid overwhelming Ollama.
+    """Embed many texts with the fewest round-trips, yielding to foreground work.
+
+    P0a (2026-06-26): replaced the per-chunk fan-out (one HTTP call per chunk →
+    thousands per big ingest, which monopolised Ollama and froze the loop) with one
+    batched ``/api/embed`` call per sub-batch via ``ollama_service.embed_batch``. We
+    still ``await_background_clearance()`` between sub-batches so a bulk/background
+    ingest yields to any active FOREGROUND op (deadlock-proof: a no-op when this runs
+    inside a foreground task tree, e.g. a chat's own embed). ``max_concurrent`` is
+    retained for signature compatibility; batching now bounds the request count.
     """
-    # Concurrency is now bounded by ollama_service's embed lane (cap 4); the
-    # local semaphore stays as an outer guard so very large batches don't
-    # create thousands of pending coroutines at once.
-    semaphore = asyncio.Semaphore(max_concurrent)
-
-    async def get_single_embedding(text: str, index: int) -> Tuple[int, List[float]]:
-        async with semaphore:
-            try:
-                from services.ollama_service import ollama_service
-                data = await ollama_service.embed(text, timeout=60.0)
-                embs = data.get("embeddings") or []
-                embedding = embs[0] if embs else data.get("embedding", [])
-                if not embedding:
-                    print(f"[RAG] Empty embedding for chunk {index}, using zero vector")
-                    return (index, [0.0] * settings.embedding_dim)
-                return (index, embedding)
-            except Exception as e:
-                print(f"[RAG] Embedding failed for chunk {index}: {e}")
-                return (index, [0.0] * settings.embedding_dim)
-
-    # 2026-06-24: bulk ingest embedding is "core searchability" but a big PDF
-    # produces THOUSANDS of chunks → firing them all at once monopolized Ollama
-    # for minutes and starved a concurrent chat's phi4 query analysis (observed:
-    # 12-min embed flood → chat _analyze_query_with_llm TIMEOUT). So process in
-    # batches and yield to any active FOREGROUND op between batches. The doc just
-    # finishes embedding a few seconds later; the user's chat gets the box at
-    # once. await_background_clearance is deadlock-proof — when this runs INSIDE a
-    # foreground task tree (e.g. a chat's own embed) it returns immediately, so
-    # only genuine bulk/background embedding actually pauses.
+    if not texts:
+        return []
+    from services.ollama_service import ollama_service
     from services.memory_steward import await_background_clearance
 
-    results: List[Tuple[int, List[float]]] = []
-    batch = max(max_concurrent, 1)  # yield ~every `max_concurrent` embeds
+    zero = [0.0] * settings.embedding_dim
+    batch = 64
+    results: List[List[float]] = []
     for start in range(0, len(texts), batch):
         await await_background_clearance()
-        chunk = texts[start:start + batch]
-        tasks = [get_single_embedding(t, start + i) for i, t in enumerate(chunk)]
-        results.extend(await asyncio.gather(*tasks))
-
-    # Sort by index to preserve order
-    results.sort(key=lambda x: x[0])
-    return [emb for _, emb in results]
+        sub = texts[start:start + batch]
+        embs = await ollama_service.embed_batch(sub, timeout=60.0, max_batch=batch)
+        if len(embs) == len(sub):
+            results.extend(e if (e and len(e) == settings.embedding_dim) else zero for e in embs)
+        else:
+            results.extend(zero for _ in sub)
+    return results
 
 
 async def encode_async(texts: Union[str, List[str]]) -> np.ndarray:
-    """Async encode texts to embeddings using parallel processing.
-    
-    Use this instead of encode() in async contexts for 10-20x speedup.
+    """Async encode texts to embeddings using batched processing.
+
+    Use this instead of encode() in async contexts — one batched call per 64 texts
+    instead of one blocking call per text.
     """
     if isinstance(texts, str):
         texts = [texts]
-    
+
     if _use_ollama:
         embeddings = await _get_ollama_embeddings_batch_async(texts)
         return np.array(embeddings)

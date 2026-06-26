@@ -372,7 +372,7 @@ async def corrective_retrieval(
 
     for variant in variants[1:]:  # Skip original (index 0)
         # Generate embedding for variant
-        embedding = rag_embeddings.encode(variant)[0].tolist()
+        embedding = (await rag_embeddings.encode_async(variant))[0].tolist()
 
         # Search with variant
         if HAS_BM25:

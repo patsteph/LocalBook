@@ -133,12 +133,19 @@ async def ingest_document(
     filename: str = "Unknown",
     source_type: str = "document",
     reporter: Optional[ProgressReporter] = None,
+    enable_hyde: bool = True,
+    precomputed_summary: Optional[str] = None,
 ) -> Dict:
     """Ingest a document into the RAG system.
 
     reporter (optional): emits progress events during chunking, summarization,
     HyDE question generation, embedding, and indexing. When omitted, a no-op
     reporter is used so existing callers are unaffected.
+    enable_hyde: when False, skip per-chunk synthetic-question generation (pure
+    retrieval enrichment). Background/auto-collected ingest (articles) passes
+    False — HyDE was the biggest fast-model multiplier with marginal ROI there.
+    precomputed_summary: when provided, reuse it instead of making a second LLM
+    summary call (e.g. the article batch pass already produced one).
     """
     reporter = reporter or get_noop_reporter()
 
@@ -154,7 +161,11 @@ async def ingest_document(
     # Skip summary for web sources (they have search snippets already)
     # YouTube gets its own proportional sampling summary
     summary = None
-    if source_type not in ['web']:
+    if precomputed_summary is not None:
+        # Reuse an already-generated summary (e.g. the article batch pass) — avoids
+        # a second LLM summary call for the same content (2026-06-26).
+        summary = precomputed_summary or None
+    elif source_type not in ['web']:
         await reporter.emit("summarizing", 60, "Generating document summary with local LLM...")
         summary = await generate_document_summary(text, filename, source_type)
         if summary:
@@ -165,12 +176,17 @@ async def ingest_document(
                 details={"summary_chars": len(summary)},
             )
 
-    # Generate synthetic questions for HyDE
-    await reporter.emit(
-        "hyde_questions", 68,
-        "Generating synthetic questions to improve retrieval (HyDE)...",
-    )
-    questions = await generate_chunk_questions(chunks)
+    # Generate synthetic questions for HyDE — pure retrieval enrichment, so skip
+    # it entirely for background/auto-collected ingest (enable_hyde=False) where it
+    # was the biggest fast-model multiplier with marginal ROI (2026-06-26).
+    if enable_hyde:
+        await reporter.emit(
+            "hyde_questions", 68,
+            "Generating synthetic questions to improve retrieval (HyDE)...",
+        )
+        questions = await generate_chunk_questions(chunks)
+    else:
+        questions = [""] * len(chunks)
     texts_to_embed = [f"{c}\n\nQuestions this answers:\n{q}" if q else c for c, q in zip(chunks, questions)]
 
     # Generate embeddings
@@ -213,7 +229,9 @@ async def ingest_document(
 
     # Add summary as a special chunk (chunk_index = -1) for quick retrieval
     if summary:
-        summary_embedding = rag_embeddings.encode(summary)[0].tolist()
+        # de-sync (2026-06-26): a sync encode() here blocked the event loop during
+        # ingest — the faulthandler's smoking gun. Use the async batched path.
+        summary_embedding = (await rag_embeddings.encode_async(summary))[0].tolist()
         summary_row = {
             "vector": summary_embedding,
             "text": f"[SUMMARY] {summary}",

@@ -210,8 +210,8 @@ class StuckSourceRecovery:
             if not chunks:
                 return 0
             
-            # Generate embeddings
-            embeddings = rag_engine.encode(chunks)
+            # Generate embeddings (async batched — was a sync embed on the loop)
+            embeddings = await rag_engine.encode_async(chunks)
             
             # Prepare rows
             rows = []

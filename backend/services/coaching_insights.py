@@ -159,7 +159,7 @@ class CoachingInsightGenerator:
 
             for q in queries:
                 try:
-                    embedding = rag_engine.encode([q])[0]
+                    embedding = (await rag_engine.encode_async([q]))[0]
                     results = table.search(embedding).limit(3).to_list()
                     for r in results:
                         text = r.get("text", "")[:300]
@@ -545,6 +545,28 @@ async def refresh_notebook_insights(notebook_id: str):
         logger.error(f"[CoachingInsights] Notebook refresh failed: {e}")
 
 
+def _enqueue_night_refresh(notebook_id: str) -> None:
+    """Queue a coaching-insight refresh as a NIGHT-tier enrichment job.
+
+    Coaching insights are a slow-built, person-notebook-only synthesis — they must
+    run in idle / evening windows, never inline on startup or right after an upload
+    (a heavy gemma call on the hot path froze the startup loop, 2026-06-26). The
+    worker coalesces by key and runs it only when the host is AWAY.
+    """
+    try:
+        from services.enrichment_worker import enrichment_worker
+        from services.enrichment_jobs import EnrichmentJob, JobTier
+        enrichment_worker.enqueue(EnrichmentJob(
+            key=f"coaching-refresh:{notebook_id}",
+            tier=JobTier.NIGHT,
+            factory=lambda: refresh_notebook_insights(notebook_id),
+            label="coaching-refresh",
+            notebook_id=notebook_id,
+        ))
+    except Exception as e:
+        logger.warning(f"[CoachingInsights] could not enqueue night refresh: {e}")
+
+
 # =============================================================================
 # Debounced trigger — prevents redundant refreshes when multiple sources
 # are uploaded in rapid succession
@@ -621,7 +643,7 @@ async def check_stale_insights_on_startup():
                     f"[CoachingInsights] Stale insights detected in notebook "
                     f"{notebook_id} — scheduling refresh"
                 )
-                await refresh_notebook_insights(notebook_id)
+                _enqueue_night_refresh(notebook_id)
                 refreshed += 1
 
         if refreshed:
@@ -644,27 +666,11 @@ _DEBOUNCE_SECONDS = 30  # Wait 30s after last ingestion before refreshing
 
 
 def schedule_insight_refresh(notebook_id: str):
-    """Schedule a debounced insight refresh for a people notebook.
+    """Queue a coaching-insight refresh for a people notebook.
 
-    If called multiple times for the same notebook within DEBOUNCE_SECONDS,
-    only the last call triggers the actual refresh. This prevents redundant
-    LLM calls when uploading multiple documents in sequence.
+    2026-06-26: was a 30s-debounced inline gemma refresh fired right after upload;
+    now enqueued as a NIGHT-tier enrichment job so it runs in idle/evening windows.
+    The worker key-coalesces, so rapid repeated uploads collapse to one overnight
+    run — the debounce window is no longer needed.
     """
-    # Cancel any pending refresh for this notebook
-    existing = _pending_refreshes.get(notebook_id)
-    if existing and not existing.done():
-        existing.cancel()
-
-    async def _delayed_refresh():
-        try:
-            await asyncio.sleep(_DEBOUNCE_SECONDS)
-            await refresh_notebook_insights(notebook_id)
-        except asyncio.CancelledError:
-            pass  # Debounced — a newer trigger replaced us
-        except Exception as e:
-            logger.error(f"[CoachingInsights] Scheduled refresh failed: {e}")
-        finally:
-            _pending_refreshes.pop(notebook_id, None)
-
-    from utils.tasks import safe_create_task
-    _pending_refreshes[notebook_id] = safe_create_task(_delayed_refresh(), name=f"coaching-refresh-{notebook_id}")
+    _enqueue_night_refresh(notebook_id)
