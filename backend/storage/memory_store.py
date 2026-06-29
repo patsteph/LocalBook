@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 import threading
 import lancedb
-import requests
 
 
 class AgentNamespace(str, Enum):

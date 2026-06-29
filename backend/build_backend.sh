@@ -343,6 +343,10 @@ python -W ignore -m PyInstaller \
     --collect-all=objc \
     --collect-all=Quartz \
     --collect-all=Vision \
+    --collect-all=CoreML \
+    --collect-all=Cocoa \
+    --collect-all=LocalAuthentication \
+    --collect-all=Security \
     --hidden-import=Foundation \
     --hidden-import=CoreFoundation \
     --exclude-module=boto3 \
@@ -405,6 +409,35 @@ if [ $TTS_EXIT -eq 0 ]; then
 else
     echo -e "${RED}✗ kokoro-mlx TTS bundle verification FAILED — check missing deps above${NC}"
     echo -e "${YELLOW}  The build will continue but TTS may not work at runtime${NC}"
+fi
+
+# Verify PyObjC frameworks (Apple Vision OCR + Touch ID keychain). These fall
+# back silently if Vision/CoreML/LocalAuthentication aren't collected, so assert
+# them at build time rather than discover the loss at runtime in the .app.
+echo -e "${YELLOW}Verifying PyObjC (Vision OCR + Touch ID) bundle integrity...${NC}"
+PYOBJC_EXIT=0
+PYTHONPATH="$OUTPUT_DIR/localbook-backend/_internal" python -c "
+import sys, importlib
+mods = ['objc','Foundation','Quartz','Vision','CoreML','LocalAuthentication','Security']
+failed = []
+for m in mods:
+    try:
+        importlib.import_module(m)
+    except Exception as e:
+        failed.append(f'{m}: {e}')
+if failed:
+    print('PYOBJC BUNDLE VERIFICATION FAILED:')
+    for f in failed:
+        print(f'  ✗ {f}')
+    sys.exit(1)
+else:
+    print('All PyObjC framework imports verified OK')
+" 2>/dev/null || PYOBJC_EXIT=$?
+if [ $PYOBJC_EXIT -eq 0 ]; then
+    echo -e "${GREEN}✓ PyObjC frameworks bundled (Apple Vision OCR + Touch ID active)${NC}"
+else
+    echo -e "${RED}✗ PyObjC bundle verification FAILED — Apple Vision OCR / Touch ID would fall back${NC}"
+    echo -e "${YELLOW}  Check --collect-all for objc/Vision/CoreML/Cocoa/LocalAuthentication/Security${NC}"
 fi
 
 # Trim unnecessary bulk from bundle

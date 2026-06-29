@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     embedding_model: str = "snowflake-arctic-embed2"  # Via Ollama - best balance of speed/quality
     embedding_dim: int = 1024  # snowflake-arctic-embed2 uses 1024 dimensions
     use_ollama_embeddings: bool = True  # Use Ollama for embeddings instead of sentence-transformers
+    use_spacy_extractor: bool = True  # NER via spaCy (en_core_web_sm) instead of phi4 LLM — faster, deterministic, frees the fast lane
     chunk_size: int = 1000
     chunk_overlap: int = 200
     

@@ -230,8 +230,11 @@ class MigrationManager:
         yield {"status": "🔄 Enhancing your documents with v0.60 features...", "progress": 10}
         
         try:
-            pass
-            
+            # No imperative step needed here: schema evolution is handled
+            # idempotently in storage/database.py (CREATE TABLE IF NOT EXISTS +
+            # ALTER TABLE ADD COLUMN every launch) and LanceDB tables self-create
+            # on first use. This path reports progress + bumps the stored version.
+
             # Step 1: Ensure knowledge graph has new tables
             yield {"status": "📊 Updating schema...", "progress": 20}
             # The __init__ will create new tables if they don't exist

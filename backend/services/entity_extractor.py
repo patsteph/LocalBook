@@ -64,6 +64,30 @@ _GENERIC_ENTITY_DENYLIST = frozenset(s.lower() for s in [
 # (still useful elsewhere, but not what we want biasing notebook routing).
 _RETAINED_ENTITY_TYPES = frozenset(["person", "company", "product"])
 
+# spaCy NER (en_core_web_sm) — deterministic local replacement for the phi4
+# entity LLM. Only PERSON/ORG/PRODUCT map to our retained types; anything else
+# spaCy emits is dropped by the retained-type filter anyway.
+_SPACY_LABEL_MAP = {"PERSON": "person", "ORG": "company", "PRODUCT": "product"}
+_spacy_nlp = None  # lazy-loaded + cached pipeline; False once = tried-and-failed
+
+
+def _get_spacy_nlp():
+    """Lazy-load the bundled en_core_web_sm NER pipeline (NER components only).
+    Returns the pipeline, or None if spaCy/model unavailable (caller falls back)."""
+    global _spacy_nlp
+    if _spacy_nlp is not None:
+        return _spacy_nlp or None
+    try:
+        import spacy
+        _spacy_nlp = spacy.load(
+            "en_core_web_sm",
+            disable=["tagger", "parser", "attribute_ruler", "lemmatizer"],
+        )
+    except Exception as e:
+        print(f"[EntityExtractor] spaCy unavailable ({e}); falling back to LLM/regex")
+        _spacy_nlp = False
+    return _spacy_nlp or None
+
 
 @dataclass
 class Entity:
@@ -138,7 +162,10 @@ class EntityExtractor:
         Returns: List of extracted entities
         """
         if use_llm:
-            entities = await self._extract_with_llm(text)
+            if settings.use_spacy_extractor:
+                entities = await asyncio.to_thread(self._extract_with_spacy, text)
+            else:
+                entities = await self._extract_with_llm(text)
         else:
             entities = self._extract_with_regex(text)
 
@@ -262,6 +289,44 @@ JSON:"""
             print(f"[EntityExtractor] LLM extraction failed: {e}")
             return self._extract_with_regex(text)
     
+    def _extract_with_spacy(self, text: str) -> List[Entity]:
+        """NER via spaCy — deterministic, fast, no LLM call. Maps spaCy
+        PERSON/ORG/PRODUCT → our person/company/product. Falls back to regex if
+        spaCy is unavailable. Sync; callers offload via asyncio.to_thread."""
+        nlp = _get_spacy_nlp()
+        if nlp is None:
+            return self._extract_with_regex(text)
+        body = text[:20000]  # cap for speed; entities cluster early in a doc
+        try:
+            doc = nlp(body)
+        except Exception as e:
+            print(f"[EntityExtractor] spaCy parse failed ({e}); regex fallback")
+            return self._extract_with_regex(text)
+        seen: Dict[tuple, Entity] = {}
+        for ent in doc.ents:
+            etype = _SPACY_LABEL_MAP.get(ent.label_)
+            if not etype:
+                continue
+            name = ent.text.strip()
+            if not name:
+                continue
+            s = max(0, ent.start_char - 100)
+            snippet = body[s:ent.end_char + 100].strip()[:300]
+            key = (name.lower(), etype)
+            existing = seen.get(key)
+            if existing:
+                existing.mentions += 1
+                if snippet and snippet not in existing.context_snippets and len(existing.context_snippets) < 5:
+                    existing.context_snippets.append(snippet)
+            else:
+                seen[key] = Entity(
+                    name=name,
+                    type=etype,
+                    mentions=1,
+                    context_snippets=[snippet] if snippet else [],
+                )
+        return list(seen.values())
+
     def _extract_with_regex(self, text: str) -> List[Entity]:
         """Fast regex-based entity extraction (fallback)."""
         entities = []
