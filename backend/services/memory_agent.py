@@ -180,7 +180,7 @@ Respond ONLY with the JSON, no other text."""
             )
             
             # Check for conflicts
-            existing = memory_store.find_similar_core_memory(f"{entry.key}: {entry.value}")
+            existing = await memory_store.find_similar_core_memory_async(f"{entry.key}: {entry.value}")
             if existing:
                 conflict = MemoryConflict(
                     existing_memory_id=existing.id,
@@ -214,7 +214,7 @@ Respond ONLY with the JSON, no other text."""
                 topics=extracted.get("topics_mentioned", []),
                 entities=extracted.get("entities_mentioned", []),
             )
-            memory_store.add_archival_memory(archival_entry)
+            await memory_store.add_archival_memory_async(archival_entry)
             result.archival_memories.append(archival_entry)
     
     async def _store_in_recall(self, request: MemoryExtractionRequest) -> None:
@@ -310,7 +310,7 @@ Respond ONLY with the JSON, no other text."""
         # 2. Search archival memory for relevant context (now hybrid vector+BM25)
         retrieved_memories = []
         if remaining_tokens > 200:
-            archival_results = memory_store.search_archival_memory(
+            archival_results = await memory_store.search_archival_memory_async(
                 query=query,
                 limit=self.archival_retrieval_count,
                 notebook_id=notebook_id
@@ -429,7 +429,7 @@ Respond ONLY with the JSON, no other text."""
                 source_type=entry_to_archive.source_type,
                 importance=entry_to_archive.importance,
             )
-            memory_store.add_archival_memory(archival_entry)
+            await memory_store.add_archival_memory_async(archival_entry)
             
             # Remove from core
             memory.entries = [e for e in memory.entries if e.id != entry_to_archive.id]
@@ -493,7 +493,7 @@ Respond ONLY with the JSON, no other text."""
                     source_notebook_id=entries[0].notebook_id,
                     topics=entries[0].topics,
                 )
-                memory_store.add_archival_memory(archival_entry)
+                await memory_store.add_archival_memory_async(archival_entry)
                 
                 # Mark as summarized
                 memory_store.mark_entries_summarized(conv_id)
@@ -661,7 +661,7 @@ Rules:
             return {"success": success}
         
         elif tool_name == "archival_memory_search":
-            results = memory_store.search_archival_memory(
+            results = await memory_store.search_archival_memory_async(
                 query=params["query"],
                 limit=params.get("max_results", 5)
             )

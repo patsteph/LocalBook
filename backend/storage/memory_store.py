@@ -114,6 +114,20 @@ class MemoryStore:
         except Exception as e:
             print(f"[MemoryStore] Embedding error: {e}")
             return [0.0] * settings.embedding_dim
+
+    # ── Async off-loop wrappers (PB-3, 2026-06-29) ───────────────────────────
+    # Run the existing SYNC methods (sync embed + LanceDB/JSON I/O) in a worker
+    # thread so they don't block the asyncio event loop. Sync bodies unchanged;
+    # async callers should prefer these. (A post-chat memory lookup stalled the
+    # loop ~10s — loop-monitor 2026-06-26.)
+    async def search_archival_memory_async(self, *args, **kwargs):
+        return await asyncio.to_thread(self.search_archival_memory, *args, **kwargs)
+
+    async def find_similar_core_memory_async(self, *args, **kwargs):
+        return await asyncio.to_thread(self.find_similar_core_memory, *args, **kwargs)
+
+    async def add_archival_memory_async(self, *args, **kwargs):
+        return await asyncio.to_thread(self.add_archival_memory, *args, **kwargs)
     
     # =========================================================================
     # Core Memory (JSON file)

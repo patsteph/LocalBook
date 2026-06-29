@@ -947,7 +947,7 @@ EXAMPLE: [concrete example]
             search_query = f"{topic} {' '.join(c['name'] for c in lvl_concepts)}"
             try:
                 # Over-fetch so we have room after quality filtering
-                chunks = rag_engine.search_chunks(notebook_id, search_query, top_k=8)
+                chunks = await rag_engine.search_chunks_async(notebook_id, search_query, top_k=8)
                 raw = [
                     {
                         'text': chunk.get('text', ''),

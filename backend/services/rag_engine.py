@@ -205,6 +205,13 @@ class RAGEngine:
         """Search for relevant chunks in a notebook's vector store."""
         return rag_storage.search_chunks(notebook_id, query_text, top_k)
 
+    async def search_chunks_async(self, notebook_id: str, query_text: str, top_k: int = 5) -> List[Dict]:
+        """Async off-loop wrapper for search_chunks (PB-3, 2026-06-29) — runs the
+        sync query embed + LanceDB search in a worker thread so an async caller
+        (content/visual generation) doesn't block the event loop."""
+        import asyncio
+        return await asyncio.to_thread(rag_storage.search_chunks, notebook_id, query_text, top_k)
+
     async def query(
         self,
         notebook_id: str,

@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 # the remainder across later idle windows under the worker's dose budget.
 _SUMMARY_CAP_PER_CYCLE = int(os.getenv("LOCALBOOK_COMMUNITY_SUMMARY_CAP", "40"))
 
+# Minimum entities for a community to be worth summarizing. Was an implicit 2,
+# which made ~50-70% of communities trivial size-2 pairs ("X mentioned-with Y")
+# the worker ground on. Raising to 4 collapses a fragmented ~235-community
+# notebook toward ~80-100 dense, summary-worthy ones (2026-06-29).
+_MIN_COMMUNITY_SIZE = int(os.getenv("LOCALBOOK_MIN_COMMUNITY_SIZE", "4"))
+
 
 @dataclass
 class Community:
@@ -135,7 +141,7 @@ class CommunityDetector:
         self,
         component: Set[str],
         nodes: Dict[str, Set[str]],
-        min_size: int = 3
+        min_size: int = 4
     ) -> List[Set[str]]:
         """Split a large component into denser sub-communities."""
         # Find nodes with highest connectivity (hubs)
@@ -219,17 +225,28 @@ class CommunityDetector:
         # Convert to Community objects
         communities = []
         async with self._lock:
-            if notebook_id not in self._communities:
-                self._communities[notebook_id] = {}
-            if notebook_id not in self._entity_to_community:
-                self._entity_to_community[notebook_id] = {}
-            
+            # Preserve summaries across rebuilds: a rebuild used to overwrite every
+            # community with a fresh, summary-less object, so count_missing jumped
+            # back to the full set and the worker re-summarized EVERYTHING on every
+            # ingest (the 2026-06-29 treadmill). Carry the summary forward when a
+            # community's member set is unchanged, and rebuild the maps fresh so
+            # orphaned communities from prior builds don't accumulate.
+            prior_by_members = {
+                frozenset(c.entities): c
+                for c in self._communities.get(notebook_id, {}).values()
+                if c.summary
+            }
+            self._communities[notebook_id] = {}
+            self._entity_to_community[notebook_id] = {}
+
             for i, members in enumerate(raw_communities):
-                if len(members) < 2:
+                # 2026-06-29: was `< 2`. Size-2 pairs dominated the count and
+                # produced throwaway summaries — require a denser group.
+                if len(members) < _MIN_COMMUNITY_SIZE:
                     continue
-                
+
                 comm_id = f"comm_{notebook_id[:8]}_{i}"
-                
+
                 # Calculate density
                 total_edges = sum(
                     len(adjacency.get(m, set()) & members)
@@ -237,7 +254,7 @@ class CommunityDetector:
                 ) // 2
                 max_edges = len(members) * (len(members) - 1) // 2
                 density = total_edges / max_edges if max_edges > 0 else 0
-                
+
                 # Get source IDs from entity graph
                 source_ids = set()
                 for entity_name in members:
@@ -247,7 +264,7 @@ class CommunityDetector:
                             for rel in entity_graph._relationships.get(notebook_id, {}).values():
                                 if rel.source_entity == entity_name or rel.target_entity == entity_name:
                                     source_ids.update(rel.source_ids)
-                
+
                 community = Community(
                     id=comm_id,
                     name=f"Community {i+1}",  # Will be updated by summary
@@ -256,14 +273,21 @@ class CommunityDetector:
                     density=density,
                     source_ids=list(source_ids)[:20]
                 )
-                
+
+                # Carry forward an existing summary for the same membership so the
+                # rebuild doesn't wipe work the worker already did.
+                prior = prior_by_members.get(frozenset(members))
+                if prior and prior.summary:
+                    community.summary = prior.summary
+                    community.name = prior.name
+
                 communities.append(community)
                 self._communities[notebook_id][comm_id] = community
-                
+
                 # Update entity -> community mapping
                 for entity in members:
                     self._entity_to_community[notebook_id][entity.lower()] = comm_id
-            
+
             self._save_communities()
         
         print(f"[CommunityDetector] Detected {len(communities)} communities in notebook {notebook_id[:8]}")

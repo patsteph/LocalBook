@@ -337,7 +337,7 @@ async def smart_visual(request: SmartVisualRequest):
     # RAG-direct extraction: pull top chunks from LanceDB for richer visual content
     try:
         from services.rag_engine import rag_engine
-        rag_chunks = rag_engine.search_chunks(request.notebook_id, request.topic, top_k=3)
+        rag_chunks = await rag_engine.search_chunks_async(request.notebook_id, request.topic, top_k=3)
         if rag_chunks:
             chunk_texts = [c.get("text", "")[:800] for c in rag_chunks]
             rag_context = "\n\n".join(chunk_texts)

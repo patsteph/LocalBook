@@ -815,7 +815,7 @@ Respond with JSON only:
         best_by_notebook: Dict[str, Dict[str, Any]] = {}
         for nb_id in notebook_ids:
             try:
-                results = memory_store.search_archival_memory(
+                results = await memory_store.search_archival_memory_async(
                     query=query,
                     namespace=AgentNamespace.CURATOR,
                     notebook_id=nb_id,
@@ -866,7 +866,7 @@ Respond with JSON only:
         # Search across all specified notebooks using Curator's cross-notebook access
         all_results = []
         for nb_id in notebook_ids:
-            results = memory_store.search_archival_memory(
+            results = await memory_store.search_archival_memory_async(
                 query=query,
                 namespace=AgentNamespace.CURATOR,
                 notebook_id=nb_id,
@@ -929,7 +929,7 @@ Be concise and cite which notebook each insight comes from."""
                 topics=["synthesis", "cross_notebook"],
                 importance=MemoryImportance.MEDIUM,
             )
-            memory_store.add_archival_memory(entry, namespace=AgentNamespace.CURATOR)
+            await memory_store.add_archival_memory_async(entry, namespace=AgentNamespace.CURATOR)
             
             return {
                 "synthesis": synthesis,
@@ -3151,7 +3151,7 @@ Return ONLY valid JSON, no explanation."""
 
         for query in counter_queries:
             # Search notebook for contradicting evidence
-            results = memory_store.search_archival_memory(
+            results = await memory_store.search_archival_memory_async(
                 query=query,
                 namespace=AgentNamespace.COLLECTOR,
                 notebook_id=notebook_id,
@@ -3176,7 +3176,7 @@ Return ONLY valid JSON, no explanation."""
     
     async def _infer_thesis(self, notebook_id: str) -> str:
         """Infer the main thesis/hypothesis from notebook content"""
-        results = memory_store.search_archival_memory(
+        results = await memory_store.search_archival_memory_async(
             query="main thesis hypothesis conclusion argument",
             namespace=AgentNamespace.COLLECTOR,
             notebook_id=notebook_id,
@@ -3426,7 +3426,7 @@ Respond with JSON only:
         try:
             from storage.memory_store import memory_store
             from models.memory import AgentNamespace
-            results = memory_store.search_archival_memory(
+            results = await memory_store.search_archival_memory_async(
                 query="recent research interests topics discussions",
                 namespace=AgentNamespace.CURATOR,
                 notebook_id=notebook_id,
@@ -3637,7 +3637,7 @@ Respond with ONLY a JSON array of strings, no other text:
         # ── Check archival memory for recent coverage ──
         recent_topics_text = ""
         try:
-            existing_memories = memory_store.search_archival_memory(
+            existing_memories = await memory_store.search_archival_memory_async(
                 query=config.intent,
                 limit=10,
                 namespace=AgentNamespace.COLLECTOR,
@@ -4454,7 +4454,7 @@ Respond with ONLY a JSON array of strings, no other text:
         search_context = ""
         if notebook_id:
             try:
-                results = memory_store.search_archival_memory(
+                results = await memory_store.search_archival_memory_async(
                     query=message,
                     namespace=AgentNamespace.COLLECTOR,
                     notebook_id=notebook_id,
@@ -5155,7 +5155,7 @@ Rules:
                 topics=["source_discovery", "validation"],
                 importance=MemoryImportance.LOW,
             )
-            memory_store.add_archival_memory(entry, namespace=AgentNamespace.CURATOR)
+            await memory_store.add_archival_memory_async(entry, namespace=AgentNamespace.CURATOR)
         except Exception as mem_err:
             logger.warning(f"Failed to store discovery validation in memory (non-fatal): {mem_err}")
         

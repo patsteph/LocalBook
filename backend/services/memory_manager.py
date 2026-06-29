@@ -550,8 +550,8 @@ class MemoryManager:
                     entities=[],
                     importance=entry.importance,
                 )
-                self.memory_store.add_archival_memory(
-                    archival_entry, 
+                await self.memory_store.add_archival_memory_async(
+                    archival_entry,
                     namespace=AgentNamespace.SYSTEM
                 )
                 demoted_count += 1

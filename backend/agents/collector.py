@@ -1711,7 +1711,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
         """Find near-duplicate via embedding similarity"""
         try:
             # Search existing Collector memories for this notebook
-            results = memory_store.search_archival_memory(
+            results = await memory_store.search_archival_memory_async(
                 query=item.title + " " + item.content[:500],
                 namespace=AgentNamespace.COLLECTOR,
                 notebook_id=self.notebook_id,
@@ -2292,7 +2292,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 importance=MemoryImportance.MEDIUM if item.overall_confidence >= 0.7 else MemoryImportance.LOW,
             )
             
-            memory_store.add_archival_memory(
+            await memory_store.add_archival_memory_async(
                 entry,
                 namespace=AgentNamespace.COLLECTOR,
                 notebook_id=self.notebook_id
@@ -2588,7 +2588,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
         """
         # Find related existing content in this notebook's memory
         try:
-            related = memory_store.search_archival_memory(
+            related = await memory_store.search_archival_memory_async(
                 query=item.title + " " + item.content[:500],
                 namespace=AgentNamespace.COLLECTOR,
                 notebook_id=self.notebook_id,
