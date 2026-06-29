@@ -247,6 +247,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=agents \
     --hidden-import=agents.collector \
     --hidden-import=agents.curator \
+    --collect-submodules=agents.curator \
     --hidden-import=agents.tools \
     --hidden-import=agents.state \
     --hidden-import=agents.supervisor \
