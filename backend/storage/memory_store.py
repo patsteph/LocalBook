@@ -11,6 +11,7 @@ Namespace Isolation:
 - CURATOR: Cross-notebook synthesis, global insights
 - COLLECTOR: Per-notebook isolated memories
 """
+import asyncio
 import json
 import sqlite3
 from datetime import datetime, timedelta

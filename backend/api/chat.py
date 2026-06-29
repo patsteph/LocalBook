@@ -391,6 +391,21 @@ async def query_stream(chat_query: ChatQuery):
             # await_background_clearance passes straight through (contextvar).
             from services.memory_steward import foreground_guard
             async with foreground_guard("chat"):
+                # Free RAM for the answer model before it loads: evict anything not
+                # in the chat working set (main + fast + embed) so gemma stays
+                # resident without swap-thrash on the 18 GB box. No-op when nothing
+                # extra is loaded; reclaims RAM after a visual/ingest left heavy
+                # models hot (2026-06-29: chat hung for minutes waiting on gemma
+                # under memory pressure during a newsletter ingest).
+                try:
+                    from services.memory_steward import free_for_pipeline
+                    from config import settings as _settings
+                    await free_for_pipeline(
+                        keep=[_settings.ollama_model, _settings.ollama_fast_model, _settings.embedding_model],
+                        reason="chat",
+                    )
+                except Exception as _ev_err:
+                    logger.debug(f"[chat] pre-answer eviction skipped: {_ev_err}")
                 async for chunk in rag_engine.query_stream(
                     notebook_id=chat_query.notebook_id,
                     question=chat_query.question,

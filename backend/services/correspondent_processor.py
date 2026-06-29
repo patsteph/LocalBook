@@ -1015,7 +1015,20 @@ async def ingest_newsletter(
             # immediately (without summary); summaries trickle in over
             # the next 30-60s via the fast model.
             if count > 0:
-                safe_create_task(_summarize_articles_background(source_id))
+                # 2026-06-29: route the heavy per-article work through the
+                # enrichment worker (DEEP) instead of a detached task, so it is
+                # presence-gated AND cancellable — foreground (chat/visual) can now
+                # reclaim Ollama/RAM by cancelling it, instead of waiting out a 300s
+                # clearance while it floods the box.
+                from services.enrichment_worker import enrichment_worker
+                from services.enrichment_jobs import EnrichmentJob, JobTier
+                enrichment_worker.enqueue(EnrichmentJob(
+                    key=f"article-summarize:{source_id}",
+                    tier=JobTier.DEEP,
+                    factory=lambda sid=source_id: _summarize_articles_background(sid),
+                    label="article-summarize",
+                    notebook_id=notebook_id,
+                ))
     except Exception as _e:
         logger.debug(f"[correspondent.ingest_newsletter] article extraction skipped: {_e}")
 
@@ -1398,7 +1411,16 @@ async def ingest_forward(
             )
             await source_store.update(notebook_id, source_id, {"article_count": count})
             if count > 0:
-                safe_create_task(_summarize_articles_background(source_id))
+                # 2026-06-29: cancellable, presence-gated worker job (see ingest_newsletter).
+                from services.enrichment_worker import enrichment_worker
+                from services.enrichment_jobs import EnrichmentJob, JobTier
+                enrichment_worker.enqueue(EnrichmentJob(
+                    key=f"article-summarize:{source_id}",
+                    tier=JobTier.DEEP,
+                    factory=lambda sid=source_id: _summarize_articles_background(sid),
+                    label="article-summarize",
+                    notebook_id=notebook_id,
+                ))
     except Exception as _e:
         logger.debug(f"[correspondent.ingest_forward] article extraction skipped: {_e}")
 

@@ -262,6 +262,7 @@ python -W ignore -m PyInstaller \
     --collect-all=en_core_web_sm \
     --collect-all=phonemizer \
     --collect-all=num2words \
+    --collect-data=tld \
     --hidden-import=soundfile \
     --collect-all=loguru \
     --collect-all=dlinfo \
