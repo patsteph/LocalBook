@@ -8,6 +8,8 @@ import json
 import logging
 from typing import Dict, Any, Optional, List
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -213,10 +215,17 @@ async def classify_intent(
     prompt = f'User message: "{message}"'
 
     try:
+        # 2026-06-29: classify on the FAST model + JSON mode. It was defaulting to
+        # the heavy main model (gemma4), which timed out at 15s under memory pressure
+        # → empty response → fallback intent → misrouted @curator/@collector commands
+        # (e.g. "Morning brief" → cross_notebook_search). phi4-mini is fast, always
+        # warm, and is the model prescribed for intent classification.
         result = await ollama_service.generate(
             prompt=prompt,
             system=system,
+            model=settings.ollama_fast_model,
             temperature=0.0,
+            format="json",
             timeout=15.0,
         )
         raw = result.get("response", "").strip()

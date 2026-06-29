@@ -165,7 +165,6 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.migration_manager \
     --hidden-import=services.model_warmup \
     --hidden-import=services.multimodal_extractor \
-    --hidden-import=services.ollama_client \
     --hidden-import=services.output_templates \
     --hidden-import=services.query_decomposer \
     --hidden-import=services.query_orchestrator \
@@ -250,7 +249,6 @@ python -W ignore -m PyInstaller \
     --collect-submodules=agents.curator \
     --hidden-import=agents.tools \
     --hidden-import=agents.state \
-    --hidden-import=agents.supervisor \
     --collect-all=sentence_transformers \
     --collect-all=evaluator \
     --collect-all=kokoro_mlx \

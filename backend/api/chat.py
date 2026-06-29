@@ -507,6 +507,18 @@ async def _dispatch_multi_intent(chat_query: "ChatQuery", agent_type: str, handl
                 logger.info(f"[multi-intent] correspondent quick-intent matched: {qi_intent}")
         except Exception as _qi_e:
             logger.debug(f"[multi-intent] quick-intent check failed: {_qi_e}")
+    elif agent_type == "curator":
+        # Deterministic routing for the canonical report commands so they can never
+        # fall to the LLM's default-intent fallback (2026-06-29: classifier timeouts
+        # were misrouting "Morning brief" → cross_notebook_search). Tight exact-phrase
+        # match — broad questions still go to the classifier.
+        _qc = q.strip().lower().rstrip("!.?")
+        if _qc in ("morning brief", "morning briefing", "brief me", "catch me up", "what did i miss"):
+            quick_action = {"intent": "morning_brief", "params": {}, "confidence": 1.0}
+        elif _qc in ("weekly wrap", "weekly wrap up", "weekly wrap-up", "weekly wrapup", "week in review", "weekly recap"):
+            quick_action = {"intent": "weekly_wrap_up", "params": {}, "confidence": 1.0}
+        if quick_action:
+            logger.info(f"[multi-intent] curator quick-intent matched: {quick_action['intent']}")
 
     if quick_action:
         async for chunk in handler_fn(chat_query, injected_action=quick_action):
