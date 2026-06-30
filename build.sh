@@ -408,10 +408,11 @@ fi
 
 MODELS=$(ollama list 2>/dev/null || echo "")
 
-# System 2: Main model for conversation and reasoning (64K context)
-if ! echo "$MODELS" | grep -q "olmo-3:7b-instruct"; then
-    echo -e "${YELLOW}Downloading olmo-3:7b-instruct model (~4GB)...${NC}"
-    ollama pull olmo-3:7b-instruct
+# Main model — chat/synthesis + native vision. gemma4 absorbs the vision slot
+# (Option A), so no separate olmo or granite download is needed.
+if ! echo "$MODELS" | grep -q "gemma4:e4b"; then
+    echo -e "${YELLOW}Downloading gemma4:e4b model (~9.6GB, main + native vision)...${NC}"
+    ollama pull gemma4:e4b
 fi
 
 # System 1: Fast model for quick responses (Microsoft Phi-4 mini)

@@ -15,13 +15,27 @@ from config import settings
 import logging
 logger = logging.getLogger(__name__)
 
-# Required Ollama models for v0.6.0
-# Vision model is dynamically read from settings so the Locker can swap it
-REQUIRED_MODELS = [
+# Required Ollama models — derived ENTIRELY from the configured models, never a
+# hardcoded olmo/granite set. The vision slot is RESOLVED: when the main model
+# (gemma4) is vision-capable it absorbs the slot, so granite is neither required
+# nor auto-downloaded. Falls back to the configured vision model otherwise.
+# Deduped so a vision model that equals the main model isn't listed twice.
+def _resolved_vision_model() -> str:
+    try:
+        from evaluator.model_registry import model_registry
+        return model_registry.resolve_vision_model(settings.ollama_model, settings.vision_model)
+    except Exception:
+        return settings.vision_model
+
+_RAW_REQUIRED_MODELS = [
     (settings.ollama_model, "Main model (chat/synthesis)"),
     (settings.ollama_fast_model, "Fast response model for follow-ups"),
-    ("snowflake-arctic-embed2", "Embedding model (1024 dimensions)"),
-    (settings.vision_model, "Vision model for PDF image/chart extraction"),
+    (settings.embedding_model, "Embedding model (1024 dimensions)"),
+    (_resolved_vision_model(), "Vision model for PDF image/chart extraction"),
+]
+_seen_models: set = set()
+REQUIRED_MODELS = [
+    (m, d) for m, d in _RAW_REQUIRED_MODELS if not (m in _seen_models or _seen_models.add(m))
 ]
 
 # Minimum Ollama version required for OLMO model support

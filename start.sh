@@ -91,9 +91,9 @@ if ! echo "$MODELS" | grep -q "phi4-mini"; then
     ollama pull phi4-mini
 fi
 
-if ! echo "$MODELS" | grep -q "olmo-3:7b-instruct"; then
-    echo -e "${YELLOW}Downloading olmo-3:7b-instruct model (this may take a few minutes)...${NC}"
-    ollama pull olmo-3:7b-instruct
+if ! echo "$MODELS" | grep -q "gemma4:e4b"; then
+    echo -e "${YELLOW}Downloading gemma4:e4b model (main + native vision; a few minutes)...${NC}"
+    ollama pull gemma4:e4b
 fi
 
 if ! echo "$MODELS" | grep -q "snowflake-arctic-embed2"; then

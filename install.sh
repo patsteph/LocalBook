@@ -550,14 +550,10 @@ main() {
             success "gemma4:e4b downloaded"
         fi
 
-        # Legacy fallback model (swap target via the LLM Locker; optional)
-        if echo "$models" | grep -q "olmo-3:7b-instruct"; then
-            success "olmo-3:7b-instruct (already downloaded)"
-        else
-            info "Downloading olmo-3:7b-instruct (~4GB) — legacy fallback model..."
-            ollama pull olmo-3:7b-instruct
-            success "olmo-3:7b-instruct downloaded"
-        fi
+        # NOTE: olmo-3 (legacy main) and granite3.2-vision (vision fallback) are
+        # NOT downloaded by default — gemma4 is the main model and absorbs the
+        # vision slot (Option A). Pull them manually only to swap/test via the
+        # LLM Locker: `ollama pull olmo-3:7b-instruct` / `ollama pull granite3.2-vision:2b`.
 
         # Fast model (System 1: quick extraction, classification)
         if echo "$models" | grep -q "phi4-mini"; then
@@ -577,14 +573,7 @@ main() {
             success "snowflake-arctic-embed2 downloaded"
         fi
 
-        # Vision model (PDF image/chart extraction)
-        if echo "$models" | grep -q "granite3.2-vision"; then
-            success "granite3.2-vision:2b (already downloaded)"
-        else
-            info "Downloading granite3.2-vision:2b (~1.5GB) — PDF image extraction..."
-            ollama pull granite3.2-vision:2b
-            success "granite3.2-vision:2b downloaded"
-        fi
+        # (Vision is handled by gemma4's native vision — no separate granite pull.)
 
         echo ""
 
@@ -1075,11 +1064,10 @@ print(f'Whisper model cached at: {local_dir}')
         fi
         local models
         models=$(ollama list 2>/dev/null || echo "")
-        echo "$models" | grep -q "gemma4:e4b" && success "gemma4:e4b" || { info "Pulling gemma4:e4b (main model)..."; ollama pull gemma4:e4b; }
-        echo "$models" | grep -q "olmo-3:7b-instruct" && success "olmo-3:7b-instruct" || { info "Pulling olmo-3:7b-instruct (legacy fallback)..."; ollama pull olmo-3:7b-instruct; }
+        echo "$models" | grep -q "gemma4:e4b" && success "gemma4:e4b" || { info "Pulling gemma4:e4b (main + native vision)..."; ollama pull gemma4:e4b; }
         echo "$models" | grep -q "phi4-mini" && success "phi4-mini" || { info "Pulling phi4-mini..."; ollama pull phi4-mini; }
         echo "$models" | grep -q "snowflake-arctic-embed2" && success "snowflake-arctic-embed2" || { info "Pulling snowflake-arctic-embed2..."; ollama pull snowflake-arctic-embed2; }
-        echo "$models" | grep -q "granite3.2-vision" && success "granite3.2-vision:2b" || { info "Pulling granite3.2-vision:2b..."; ollama pull granite3.2-vision:2b; }
+        # olmo-3 (legacy) + granite3.2-vision (vision fallback) intentionally NOT pulled — gemma4 covers main + vision.
 
         # Check Python-based models (reranker + TTS)
         # shellcheck disable=SC1091

@@ -535,7 +535,14 @@ async def full_health_check():
             results["overall"] = "degraded"
     
     # NEW: Vision Model Check (for PDF image/chart extraction)
-    vision_model = settings.vision_model
+    # Use the RESOLVED vision model — when the main model (gemma4) is vision-capable
+    # it absorbs the slot, so we check/suggest gemma4, not granite (which isn't
+    # needed and shouldn't be flagged "missing" under the gemma defaults).
+    try:
+        from evaluator.model_registry import model_registry
+        vision_model = model_registry.resolve_vision_model(settings.ollama_model, settings.vision_model)
+    except Exception:
+        vision_model = settings.vision_model
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{settings.ollama_base_url}/api/tags")

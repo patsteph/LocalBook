@@ -65,15 +65,22 @@ class ModelRegistry:
             self._loaded = True
 
     def get_model(self, ollama_name: str) -> Optional[ModelInfo]:
-        """Get info for a specific model. Returns None if unknown."""
+        """Get info for a specific model. Returns None if unknown.
+
+        A TAGGED query with no exact match is a DISTINCT model — e.g.
+        ``gemma4:12b`` must NOT fall back to the registered ``gemma4:e4b``
+        entry (different size/params). Only a TAG-LESS query (e.g. ``olmo-3``)
+        loose-matches a registered tag of that exact base family.
+        """
         self.load()
-        # Try exact match first
+        # Exact match first
         if ollama_name in self._models:
             return self._models[ollama_name]
-        # Try without tag (e.g., "olmo-3" matches "olmo-3:7b-instruct")
-        for key, info in self._models.items():
-            if key.startswith(ollama_name.split(":")[0]):
-                return info
+        # Tag-less query → match a registered tag of that exact base family.
+        if ":" not in ollama_name:
+            for key, info in self._models.items():
+                if key.split(":")[0] == ollama_name:
+                    return info
         return None
 
     def resolve_vision_model(self, main_model: str, configured: str) -> str:
@@ -146,6 +153,7 @@ class ModelRegistry:
         """
         # ── 1. Ollama models ──
         installed_ollama: set[str] = set()
+        self._installed_tags = []  # full /api/tags entries (name, size, details) for live cards
         try:
             import urllib.request
             import json
@@ -161,7 +169,8 @@ class ModelRegistry:
             with urllib.request.urlopen(req, timeout=5.0) as response:
                 if response.getcode() == 200:
                     data = json.loads(response.read().decode())
-                    installed_ollama = {m.get("name") for m in data.get("models", []) if "name" in m}
+                    self._installed_tags = data.get("models", []) or []
+                    installed_ollama = {m.get("name") for m in self._installed_tags if m.get("name")}
                 else:
                     print(f"[MODEL-REGISTRY] Ollama /api/tags returned {response.getcode()}")
         except Exception as e:
@@ -180,20 +189,68 @@ class ModelRegistry:
             if getattr(model, "provider", "ollama") == "llama_server":
                 model.is_installed = sidecar_healthy
                 continue
-            # Exact match or tag-less match (e.g. "llama3" matches "llama3:latest")
-            model.is_installed = (name in installed_ollama)
-            if not model.is_installed:
-                base_name = name.split(":")[0]
-                model.is_installed = any(n.startswith(base_name) for n in installed_ollama)
+            # Exact tag match, or ":latest" equivalence for a tag-less registry
+            # name. A DIFFERENT explicit tag is a different model — gemma4:12b
+            # must NOT mark gemma4:e4b installed.
+            model.is_installed = (
+                name in installed_ollama
+                or (":" not in name and f"{name}:latest" in installed_ollama)
+                or (name.endswith(":latest") and name[: -len(":latest")] in installed_ollama)
+            )
 
     def get_installed_models(self) -> list[dict]:
-        """Query Ollama for currently installed models (Legacy/Direct)."""
+        """Live installed models for the evaluator cards.
+
+        Enumerates the actual Ollama tags. A tag with an EXACT registry entry
+        uses that curated card; a tag with no registry entry (e.g. a freshly
+        pulled gemma4:12b) gets a card built from its OWN live Ollama metadata
+        — never a sibling registry entry's name/params. llama-server sidecar
+        models (no Ollama tag) are appended from the registry.
+        """
         self.refresh_installed_status()
-        models = []
+        out: list[dict] = []
+        seen: set[str] = set()
+        for tag in (self._installed_tags or []):
+            name = tag.get("name")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            entry = self._models.get(name)  # EXACT match only
+            out.append(entry.to_dict() if entry else self._live_card(tag))
+        # Sidecar (llama_server) entries have no Ollama tag — include if installed.
         for name, model in self._models.items():
-            if model.is_installed:
-                models.append(model.to_dict())
-        return models
+            if name in seen:
+                continue
+            if getattr(model, "provider", "ollama") == "llama_server" and model.is_installed:
+                out.append(model.to_dict())
+        return out
+
+    def _live_card(self, tag: dict) -> dict:
+        """Build a card from live Ollama /api/tags metadata for a model that
+        isn't in the curated registry — uses the model's REAL name, family,
+        parameter size and disk size instead of borrowing a sibling's entry."""
+        name = tag.get("name", "")
+        details = tag.get("details") or {}
+        size_bytes = tag.get("size") or 0
+        return {
+            "ollama_name": name,
+            "display_name": name,
+            "family": details.get("family", "") or "",
+            "parameter_count": details.get("parameter_size", "") or "",
+            "vendor": "",
+            "origin_country": "",
+            "license": "",
+            "supported_roles": [],
+            "context_window": 0,
+            "supports_vision": False,
+            "embedding_dim": 0,
+            "disk_size_gb": round(size_bytes / 1e9, 1) if size_bytes else 0.0,
+            "min_ram_gb": 0,
+            "policy_tags": ["uncurated"],
+            "is_installed": True,
+            "ollama_options": {},
+            "provider": "ollama",
+        }
 
 
 # Singleton
