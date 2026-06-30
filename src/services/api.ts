@@ -1,5 +1,4 @@
 // API service for backend communication
-import axios from 'axios';
 import { invoke } from '@tauri-apps/api/core';
 
 // If VITE_API_URL is not set, dynamically determine the backend IP
@@ -86,49 +85,62 @@ export async function localFetch(
   return resp;
 }
 
-export const api = axios.create({
-  baseURL: API_BASE_URL,
-  timeout: 300000, // 5 minute timeout for long operations (uploads, concept extraction)
-});
+// Q2 (2026-06-30): localFetch-backed `api` shim — drops axios while preserving
+// the axios-style interface the services already use (api.get/post/put/patch/
+// delete returning `{ data }`, throwing on non-2xx). Token attach + 401-retry
+// come from localFetch; JSON Content-Type is set here but NOT for FormData (the
+// browser adds the multipart boundary); a `params` config serializes to a query
+// string. Error shape mirrors axios's `err.response.{status,data}`.
+interface ApiConfig {
+  params?: Record<string, any>;
+  headers?: Record<string, string>;
+}
 
-// Request interceptor: set Content-Type + attach app token.
-api.interceptors.request.use(async (config) => {
-  // Let axios set the Content-Type automatically for FormData (includes boundary)
-  // Only set application/json for non-FormData requests
-  if (!(config.data instanceof FormData)) {
-    config.headers['Content-Type'] = 'application/json';
-  }
-  const token = await getAppToken();
-  if (token) {
-    config.headers['X-LocalBook-Token'] = token;
-  }
-  return config;
-});
-
-// Response interceptor: error logging + P0.1f 401 retry with refreshed token.
-api.interceptors.response.use(
-  (response) => response,
-  async (error) => {
-    const cfg = error.config;
-    // 401 with no prior retry: token may be stale (backend restart). Refresh
-    // and retry once. The _retried flag prevents an infinite loop if the
-    // refresh itself returns 401 (e.g. backend genuinely down).
-    if (error.response?.status === 401 && cfg && !cfg._retried) {
-      cfg._retried = true;
-      try {
-        const fresh = await refreshAppToken();
-        if (fresh) {
-          cfg.headers = cfg.headers || {};
-          cfg.headers['X-LocalBook-Token'] = fresh;
-          return api.request(cfg);
-        }
-      } catch (refreshErr) {
-        console.warn('API: token refresh failed during 401 retry:', refreshErr);
-      }
+async function apiRequest<T = any>(
+  method: string,
+  path: string,
+  body?: any,
+  config?: ApiConfig,
+): Promise<{ data: T; status: number }> {
+  let url = path.startsWith('http') ? path : `${API_BASE_URL}${path}`;
+  if (config?.params) {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(config.params)) {
+      if (v !== undefined && v !== null) qs.append(k, String(v));
     }
-    console.error('API Error:', error);
-    return Promise.reject(error);
+    const s = qs.toString();
+    if (s) url += (url.includes('?') ? '&' : '?') + s;
   }
-);
+  const headers: Record<string, string> = { ...(config?.headers || {}) };
+  const init: RequestInit = { method };
+  if (body !== undefined && body !== null) {
+    if (body instanceof FormData) {
+      init.body = body; // do NOT set Content-Type — the browser adds the boundary
+    } else {
+      headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body);
+    }
+  }
+  if (Object.keys(headers).length) init.headers = headers;
+
+  const response = await localFetch(url, init);
+  if (!response.ok) {
+    const err: any = new Error(`API ${method} ${path} failed: HTTP ${response.status}`);
+    err.response = { status: response.status };
+    try { err.response.data = await response.json(); } catch { /* non-JSON error body */ }
+    console.error('API Error:', err);
+    throw err;
+  }
+  const text = await response.text();
+  return { data: (text ? JSON.parse(text) : null) as T, status: response.status };
+}
+
+export const api = {
+  get: <T = any>(path: string, config?: ApiConfig) => apiRequest<T>('GET', path, undefined, config),
+  post: <T = any>(path: string, body?: any, config?: ApiConfig) => apiRequest<T>('POST', path, body, config),
+  put: <T = any>(path: string, body?: any, config?: ApiConfig) => apiRequest<T>('PUT', path, body, config),
+  patch: <T = any>(path: string, body?: any, config?: ApiConfig) => apiRequest<T>('PATCH', path, body, config),
+  delete: <T = any>(path: string, config?: ApiConfig) => apiRequest<T>('DELETE', path, undefined, config),
+};
 
 export default api;

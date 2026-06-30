@@ -1,5 +1,5 @@
 // Audio Studio API service
-import api from './api';
+import api, { API_BASE_URL } from './api';
 import { AudioGeneration, AudioGenerateRequest } from '../types';
 
 export const audioService = {
@@ -19,7 +19,7 @@ export const audioService = {
   },
 
   getDownloadUrl(audioId: string): string {
-    return `${api.defaults.baseURL}/audio/download/${audioId}`;
+    return `${API_BASE_URL}/audio/download/${audioId}`;
   },
 
   async delete(audioId: string): Promise<void> {
