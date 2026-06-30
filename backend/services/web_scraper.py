@@ -425,11 +425,16 @@ class WebScraper:
                 }
 
             # ── Phase 2: EXTRACT content ─────────────────────────────────
-            # Extract image references from HTML before trafilatura strips them
-            image_refs = self._extract_image_references(downloaded, base_url=url)
+            loop = asyncio.get_event_loop()
+            # Extract image references from HTML before trafilatura strips them.
+            # Offloaded to a thread (2026-06-30 perf fix): this BeautifulSoup parse
+            # of the full HTML ran ON the event loop and caused multi-second loop
+            # stalls while a collection scraped 10-15 pages back-to-back.
+            image_refs = await loop.run_in_executor(
+                None, self._extract_image_references, downloaded, url
+            )
 
             # Run blocking trafilatura.extract in thread pool
-            loop = asyncio.get_event_loop()
             def extract_content(html):
                 return trafilatura.extract(
                     html,

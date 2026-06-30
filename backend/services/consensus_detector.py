@@ -79,6 +79,26 @@ async def _embed(text: str) -> List[float]:
     return list(vecs[0]) if vecs and isinstance(vecs[0], list) else []
 
 
+async def _embed_many(texts: List[str]) -> List[List[float]]:
+    """Embed many summaries in ONE batched /api/embed round-trip — replaces the N
+    concurrent single embeds that serialized on the embed lane (2026-06-30 perf
+    fix). Blank inputs and failures map to [] so the clustering's empty-vector skip
+    still holds (a zero-fill would divide-by-zero in _cosine)."""
+    from services.ollama_service import ollama_service
+    idx = [(i, t[:2000]) for i, t in enumerate(texts) if t and t.strip()]
+    out: List[List[float]] = [[] for _ in texts]
+    if not idx:
+        return out
+    try:
+        vecs = await ollama_service.embed_batch([t for _, t in idx])
+    except Exception as e:
+        logger.debug(f"[consensus_detector] batch embed failed: {e}")
+        return out
+    for (orig_i, _), v in zip(idx, vecs):
+        out[orig_i] = list(v) if (v and any(v)) else []  # embed_batch zero-fills failures
+    return out
+
+
 def _centroid(vectors: List[List[float]]) -> List[float]:
     """Mean of a list of vectors. Assumes all have the same length."""
     if not vectors:
@@ -152,9 +172,9 @@ async def detect_consensus(
     if len(events) < min_cluster_size:
         return []
 
-    # Embed every event summary in parallel (cheap with the in-process
-    # ollama_service client; we still cap total events).
-    vectors = await asyncio.gather(*[_embed(m.summary) for m in events])
+    # Embed every event summary in ONE batched round-trip (was N concurrent
+    # single embeds that queued on the embed lane — 2026-06-30 perf fix).
+    vectors = await _embed_many([m.summary for m in events])
 
     # Agglomerative: walk events in original time order, assign each to
     # the nearest centroid above the threshold; else seed a new cluster.

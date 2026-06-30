@@ -65,6 +65,8 @@ class EnrichmentWorker:
         self._running = False
         self._current_key: Optional[str] = None
         self._in_pressure = False  # low-noise edge-logging for the memory gate
+        self._last_run: Optional[float] = None       # epoch secs of last completed job (NS-B1 observability)
+        self._last_run_label: Optional[str] = None
 
     # ── public API ──────────────────────────────────────────────────────
     def enqueue(self, job: EnrichmentJob) -> None:
@@ -225,6 +227,8 @@ class EnrichmentWorker:
                     f"done in {time.time() - t0:.1f}s"
                 )
         finally:
+            self._last_run = time.time()
+            self._last_run_label = job.label
             self._current_key = None
 
 

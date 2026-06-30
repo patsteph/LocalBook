@@ -271,13 +271,23 @@ class MultimodalExtractor:
 
         # Determine prompt based on image type
         if image.is_chart:
+            # NS-B4 (2026-06-30): also ask for a markdown DATA TABLE so RAG can
+            # answer numeric questions about the chart ("what was the 2021 value?").
+            # The table is appended to the prose and ingested as searchable text —
+            # no separate parser. The anti-hallucination guard ("only values you can
+            # actually read; otherwise omit") is the fallback to prose-only.
             prompt = """Describe this chart or graph in detail:
 1. What type of chart is it (bar, line, pie, etc.)?
 2. What data is being shown?
 3. What are the key values or trends?
 4. What conclusions can be drawn?
 
-Be specific about numbers and labels visible in the chart."""
+Be specific about numbers and labels visible in the chart.
+
+Then, ONLY IF you can read discrete data points off the chart, add a section titled
+"Chart data:" with a markdown table of the series and values you can actually read
+(e.g. | Label | Value |). Do NOT invent, estimate, or interpolate numbers — if exact
+values are not legible, omit the table and write "Exact values not legible." instead."""
         else:
             prompt = """Describe this image in detail:
 1. What is shown in the image?

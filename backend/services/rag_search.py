@@ -76,6 +76,52 @@ def load_reranker():
 
 # ─── Hybrid Search ───────────────────────────────────────────────────────────────
 
+from collections import OrderedDict as _OrderedDict
+
+# BM25 index cache — built once per table, reused across queries, rebuilt only
+# when the table's row count changes (2026-06-30 perf fix: hybrid_search was
+# re-tokenizing up to 10k docs and rebuilding BM25Okapi on EVERY query). Same
+# rank_bm25 tokenization → identical ranking, zero recall change. Never worse
+# than the old per-query rebuild; faster whenever queries cluster between writes.
+# LRU-bounded (holds the corpus + index) to cap memory.
+_BM25_CACHE: "_OrderedDict" = _OrderedDict()
+_BM25_CACHE_MAX = 3
+
+
+def _get_bm25_index(table):
+    """Return (bm25, all_docs) for a table, cached until its row count changes.
+    Returns (None, None) if the corpus is empty or a fetch fails. Only called when
+    HAS_BM25 is True."""
+    name = None
+    n = -1
+    try:
+        name = getattr(table, "name", None)
+        n = table.count_rows()
+    except Exception as e:
+        print(f"[RAG] BM25 cache: row-count check failed ({e}); rebuilding uncached")
+        name = None
+    if name is not None:
+        cached = _BM25_CACHE.get(name)
+        if cached and cached[0] == n:
+            _BM25_CACHE.move_to_end(name)
+            return cached[1], cached[2]
+    try:
+        all_docs = table.search().limit(10000).to_list()
+    except Exception as e:
+        print(f"[RAG] BM25 cache: corpus fetch failed: {e}")
+        return None, None
+    if not all_docs:
+        return None, None
+    corpus = [doc.get("text", "").lower().split() for doc in all_docs]
+    bm25 = BM25Okapi(corpus)
+    if name is not None:
+        _BM25_CACHE[name] = (n, bm25, all_docs)
+        _BM25_CACHE.move_to_end(name)
+        while len(_BM25_CACHE) > _BM25_CACHE_MAX:
+            _BM25_CACHE.popitem(last=False)
+    return bm25, all_docs
+
+
 def hybrid_search(
     query: str,
     table,
@@ -90,28 +136,23 @@ def hybrid_search(
     
     Uses Reciprocal Rank Fusion (RRF) to combine rankings.
     """
-    # Get ALL documents for BM25 (not just vector-similar ones)
-    try:
-        all_docs = table.search().limit(10000).to_list()
-    except Exception as e:
-        print(f"[RAG] Hybrid search fallback to vector-only: {e}")
+    if not HAS_BM25:
         return table.search(query_embedding).limit(k).to_list()
 
-    if not all_docs or not HAS_BM25:
+    # Cached BM25 index + corpus — rebuilt only when the table's row count changes
+    # (2026-06-30 perf fix; was a full 10k re-tokenize on every query). Same ranking.
+    bm25, all_docs = _get_bm25_index(table)
+    if not bm25 or not all_docs:
         return table.search(query_embedding).limit(k).to_list()
 
-    # Vector search results (separate query for proper ranking)
+    # Vector search results (separate query for proper ranking — fresh per query)
     try:
         vector_results = table.search(query_embedding).limit(k * 2).to_list()
     except:
         vector_results = all_docs[:k * 2]
 
-    # BM25 keyword search
+    # BM25 keyword search (index is cached; only the query is tokenized per call)
     try:
-        # Tokenize documents
-        corpus = [doc.get("text", "").lower().split() for doc in all_docs]
-        bm25 = BM25Okapi(corpus)
-
         # Tokenize query
         query_tokens = query.lower().split()
 

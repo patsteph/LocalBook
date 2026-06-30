@@ -1153,11 +1153,40 @@ Answer the question, citing sources inline as [N]. Do not list references at the
         if verification_result and verification_result.hallucination_risk == "high":
             print(f"[RAG STREAM] CaRR: high hallucination risk detected, running retry...")
             yield {"type": "status", "message": "🔄 Improving answer accuracy..."}
+
+            # NS-B2 (2026-06-30) — corrective-CaRR. The grounding-only retry re-prompts the
+            # SAME evidence, which can't fix an answer that's ungrounded because the evidence
+            # is thin (observed 0.31→0.26 on a real query). Fetch NEW evidence via corrective
+            # retrieval (query variants → re-search; returns original+new deduped), rebuild the
+            # citations/context/prompt with the augmented chunks, and retry against THAT. Falls
+            # back to the original prompt/citations if corrective finds nothing new or errors.
+            retry_system_prompt, retry_user_prompt, retry_citations = system_prompt, prompt, citations
+            try:
+                corrected_results = await self._corrective_retrieval(
+                    table, question, query_analysis, top_k, results
+                )
+                if corrected_results and len(corrected_results) > len(results):
+                    c_citations, _c_sources, c_context, _c_low = await self._build_citations_and_context(
+                        corrected_results, "[RAG STREAM CaRR]"
+                    )
+                    if c_context and c_context.strip() and c_citations:
+                        retry_user_prompt = f"""{community_context}Sources:
+{c_context}
+
+Question: {question}{temporal_note}
+
+Answer the question, citing sources inline as [N]. Do not list references at the end."""
+                        retry_citations = c_citations
+                        print(f"[RAG STREAM] CaRR: corrective retrieval added "
+                              f"{len(corrected_results) - len(results)} new chunk(s) → retrying on fresh evidence")
+            except Exception as _ce:
+                print(f"[RAG STREAM] CaRR: corrective retrieval failed (non-fatal, using original evidence): {_ce}")
+
             should_replace, new_answer, updated_verif = await rag_verification.attempt_carr_retry(
                 verification_result=verification_result,
-                system_prompt=system_prompt,
-                user_prompt=prompt,
-                citations=citations,
+                system_prompt=retry_system_prompt,
+                user_prompt=retry_user_prompt,
+                citations=retry_citations,
                 deep_think=deep_think,
                 use_fast_model=use_fast_model,
                 original_answer=full_answer,
