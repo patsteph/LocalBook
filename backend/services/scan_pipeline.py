@@ -102,12 +102,18 @@ class BlurryImageError(RuntimeError):
 # ── Model resolution (dynamic — follows LLM Locker selections) ──────────
 
 def _vision_model() -> str:
-    """Vision model — env override > settings.vision_model.
+    """Vision model — env override > vision-capable main model (Option A) > settings.vision_model.
 
     Read on every call so a runtime Locker swap takes effect without
-    a backend restart.
+    a backend restart. The Option-A step routes vision to the already-resident
+    main model (gemma4) when it's vision-capable, so scan doesn't depend on a
+    separately-installed granite that would HTTP-404 when absent.
     """
-    return os.getenv("LOCALBOOK_VISION_MODEL") or settings.vision_model
+    try:
+        from evaluator.model_registry import model_registry
+        return model_registry.resolve_vision_model(settings.ollama_model, settings.vision_model)
+    except Exception:
+        return os.getenv("LOCALBOOK_VISION_MODEL") or settings.vision_model
 
 
 def _cleanup_model() -> str:

@@ -76,6 +76,24 @@ class ModelRegistry:
                 return info
         return None
 
+    def resolve_vision_model(self, main_model: str, configured: str) -> str:
+        """Pick the vision model — gemma4 migration "Option A".
+
+        Precedence: an explicit ``LOCALBOOK_VISION_MODEL`` env override wins;
+        else a vision-capable MAIN model absorbs the vision slot (it's already
+        resident — no extra load, and no dependency on a separately-installed
+        model like granite, which HTTP-404s on machines that don't have it);
+        else fall back to the ``configured`` vision model (Option B).
+        """
+        import os
+        env = os.getenv("LOCALBOOK_VISION_MODEL")
+        if env:
+            return env
+        info = self.get_model(main_model)
+        if info and info.supports_vision:
+            return main_model
+        return configured
+
     def list_all(self) -> list[ModelInfo]:
         """List all known models, refreshed with local install status."""
         self.load()

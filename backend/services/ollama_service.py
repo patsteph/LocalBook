@@ -643,7 +643,16 @@ class OllamaService:
             except Exception as _e:
                 logger.debug(f"[apple-vision] fast-path skipped: {_e}")
 
-        model = model or settings.vision_model
+        # No explicit model → Option A vision routing (a vision-capable main
+        # model absorbs the slot; granite fallback only when it can't), so a
+        # model-less caller doesn't 404 on a machine without granite. Mirrors
+        # multimodal_extractor / scan_pipeline.
+        if not model:
+            try:
+                from evaluator.model_registry import model_registry
+                model = model_registry.resolve_vision_model(settings.ollama_model, settings.vision_model)
+            except Exception:
+                model = settings.vision_model
 
         profile: Dict[str, Any] = {}
         try:

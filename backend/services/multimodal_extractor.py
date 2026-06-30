@@ -89,7 +89,19 @@ class MultimodalExtractor:
         # 240 ≈ a few sentences: real text blocks clear it easily, while short
         # figure captions don't (so captioned figures still go to gemma).
         self._OCR_TEXT_FLOOR = 240
-        self.vision_model = settings.vision_model
+        # Option A (gemma4 migration): a vision-capable MAIN model absorbs the
+        # vision slot, so vision tasks reuse the already-resident main model
+        # (gemma4) instead of requiring a separately-installed granite — which
+        # 404s on machines that don't have it. Falls back to settings.vision_model
+        # (Option B) when the main model can't do vision.
+        try:
+            from evaluator.model_registry import model_registry
+            self.vision_model = model_registry.resolve_vision_model(
+                settings.ollama_model, settings.vision_model
+            )
+        except Exception as _e:
+            logger.debug(f"[multimodal] vision-model resolve fell back to config: {_e}")
+            self.vision_model = settings.vision_model
         self.image_cache_dir = Path(settings.db_path).parent / "images"
         self.image_cache_dir.mkdir(exist_ok=True)
         self._semaphore = None  # Initialized lazily for parallel processing
