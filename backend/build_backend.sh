@@ -247,6 +247,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=agents.collector \
     --hidden-import=agents.curator \
     --collect-submodules=agents.curator \
+    --collect-submodules=agents.collector \
     --collect-submodules=services.curator_brain \
     --collect-submodules=api.chat \
     --hidden-import=agents.tools \
