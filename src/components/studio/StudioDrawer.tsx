@@ -17,6 +17,7 @@
  * Talks directly to existing APIs — no behind-the-scenes refactor needed.
  */
 import React, { useState, useEffect, useCallback } from 'react';
+import { emitEvent } from '../../lib/events';
 import {
   FileText, Mic, Video, Palette, Target, Layers, X, Sparkles, GitCompare, Telescope,
 } from 'lucide-react';
@@ -267,7 +268,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
               status: 'complete',
               metadata: { notebookId, contentId: (result as any).content_id, source: 'studio_drawer' } as any,
             });
-            window.dispatchEvent(new CustomEvent('contentUpdated'));
+            emitEvent('contentUpdated');
             onToast?.('success', 'Document ready');
           } catch (err) {
             updateCanvasItem(itemId, {
@@ -308,7 +309,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
               status: 'processing',
               metadata: { audioId: result.audio_id, notebookId, source: 'studio_drawer' } as any,
             });
-            window.dispatchEvent(new CustomEvent('audioUpdated'));
+            emitEvent('audioUpdated');
             onToast?.('success', 'Podcast generating');
           } catch (err) {
             updateCanvasItem(itemId, {
@@ -358,7 +359,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
                     status: 'complete',
                     metadata: { videoId: result.video_id, notebookId, source: 'studio_drawer', errorMessage: null } as any,
                   });
-                  window.dispatchEvent(new CustomEvent('videoUpdated'));
+                  emitEvent('videoUpdated');
                 } else if (status.status === 'failed') {
                   clearInterval(pollInterval);
                   updateCanvasItem(itemId, {
@@ -608,7 +609,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
               } as any,
             });
             // Library auto-refresh hook (Tier 5).
-            window.dispatchEvent(new CustomEvent('quizzesUpdated'));
+            emitEvent('quizzesUpdated');
             onToast?.('success', 'Quiz ready');
           } catch (err) {
             updateCanvasItem(itemId, {

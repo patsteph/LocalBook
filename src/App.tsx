@@ -22,6 +22,8 @@ import { LLMSelector } from './components/LLMSelector';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
 import { API_BASE_URL, localFetch } from './services/api';
 import { useReconnectingWebSocket } from './hooks/useReconnectingWebSocket';
+import { useMorningBriefFetcher } from './hooks/useMorningBriefFetcher';
+import { emitEvent, onEvent } from './lib/events';
 import { prewarmMermaid } from './components/shared/MermaidRenderer';
 import { useSystemHealth, STATUS_COLORS } from './hooks/useSystemHealth';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -53,6 +55,9 @@ function App() {
   // selector so users in chat/constellation/etc. notice a draft was prepared.
   const [hasPendingDraft, setHasPendingDraft] = useState(false);
   const [weeklyWrap, setWeeklyWrap] = useState<any>(null);
+
+  // V6: morning-brief / weekly-wrap fetching (boot-once + visibility triggers).
+  useMorningBriefFetcher({ backendReady, morningBrief, weeklyWrap, setMorningBrief, setWeeklyWrap });
   const [curatorBriefData, setCuratorBriefData] = useState<any>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showLLMModal, setShowLLMModal] = useState(false);
@@ -262,9 +267,7 @@ function App() {
     // the web-research view. The LeftNav drawer opens a Modal instead — those
     // two paths should behave the same. Dispatch a global event that the
     // LeftNav modal listens for so both surfaces converge on the same UX.
-    window.dispatchEvent(new CustomEvent('lb:openWebResearch', {
-      detail: { tab: 'web', query: query || '' },
-    }));
+    emitEvent('lb:openWebResearch', { tab: 'web', query: query || '' });
   }, []);
 
   const openSettings = useCallback(() => setShowSettingsModal(true), []);
@@ -421,54 +424,8 @@ function App() {
     localStorage.setItem('llmProvider', selectedLLMProvider);
   }, [selectedLLMProvider]);
 
-  // Secondary morning brief / weekly wrap trigger — fires when app regains focus
-  // Backend handles time-of-day gating (morning window OR 8+ hour absence)
-  useEffect(() => {
-    if (!backendReady) return;
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState !== 'visible') return;
-      if (morningBrief || weeklyWrap) return;
-
-      const localHour = new Date().getHours();
-      localFetch(`${API_BASE_URL}/curator/morning-brief/should-show?local_hour=${localHour}`)
-        .then(r => r.ok ? r.json() : null)
-        .then(check => {
-          if (check?.should_show_weekly) {
-            return localFetch(`${API_BASE_URL}/curator/weekly-wrap`)
-              .then(r => r.ok ? r.json() : null)
-              .then(wrap => {
-                if (wrap?.narrative) {
-                  setWeeklyWrap(wrap);
-                  localFetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
-                  localFetch(`${API_BASE_URL}/curator/weekly-wrap/save`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(wrap)
-                  }).catch(() => {});
-                }
-              });
-          } else if (check?.should_show) {
-            const hoursAway = check.hours_away || 12;
-            return localFetch(`${API_BASE_URL}/curator/morning-brief?hours_away=${hoursAway}`)
-              .then(r => r.ok ? r.json() : null)
-              .then(brief => {
-                if (brief && (brief.notebooks?.length > 0 || brief.cross_notebook_insight || brief.narrative)) {
-                  setMorningBrief(brief);
-                  localFetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
-                  localFetch(`${API_BASE_URL}/curator/morning-brief/save`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(brief)
-                  }).catch(() => {});
-                }
-              });
-          }
-        })
-        .catch(() => {});
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [backendReady, morningBrief, weeklyWrap]);
+  // V6 (2026-06-30): the visibility + boot morning-brief/weekly-wrap triggers
+  // moved into useMorningBriefFetcher (called above) — this duplicated block removed.
 
   // Outside-click handler for the utility menu (the view menu was removed
   // 2026-06-02 — main nav is a persistent word-button strip with no popover).
@@ -509,9 +466,9 @@ function App() {
   // user even if multiple sources fire in quick succession.
   useEffect(() => {
     const onChange = () => pulseView('library');
-    const events = ['sourcesUpdated', 'notesUpdated', 'contentUpdated', 'audioUpdated', 'videoUpdated'];
-    events.forEach(e => window.addEventListener(e, onChange));
-    return () => events.forEach(e => window.removeEventListener(e, onChange));
+    const events = ['sourcesUpdated', 'notesUpdated', 'contentUpdated', 'audioUpdated', 'videoUpdated'] as const;
+    const offs = events.map(e => onEvent(e, onChange));
+    return () => offs.forEach(off => off());
   }, []);
 
   // Library → Canvas: when the user clicks an item in Library, drop a
@@ -519,8 +476,7 @@ function App() {
   // so the canvas comes back into focus. Library's "browse" is always a
   // detour from the canvas; this listener completes the round-trip.
   useEffect(() => {
-    const handler = (e: Event) => {
-      const item = (e as CustomEvent).detail || {};
+    return onEvent('lb:openLibraryItem', (item) => {
       const raw = item.raw || {};
       // Map LibraryItemKind → CanvasItem type. These mostly mirror.
       const kindToType: Record<string, string> = {
@@ -589,9 +545,7 @@ function App() {
       });
       // Return to chat so the user sees the canvas with their new item.
       changePanelView(primaryPanelId, 'chat');
-    };
-    window.addEventListener('lb:openLibraryItem', handler as EventListener);
-    return () => window.removeEventListener('lb:openLibraryItem', handler as EventListener);
+    });
   }, [addCanvasItem, changePanelView, primaryPanelId, selectedNotebookId]);
 
   // createFlashcardsDeck — dispatched from FlashcardsCanvasTile's gap-analysis
@@ -599,8 +553,7 @@ function App() {
   // Lives at App level since the old ChatActionBar listener was deleted in
   // the Studio-bars rewrite; without this, the gap-analysis button is a no-op.
   useEffect(() => {
-    const handler = (event: Event) => {
-      const detail = (event as CustomEvent).detail || {};
+    return onEvent('createFlashcardsDeck', (detail) => {
       const targetNotebook = detail.notebookId;
       if (!targetNotebook || targetNotebook !== selectedNotebookId) return;
       const topic = (detail.topic as string) || '';
@@ -631,30 +584,23 @@ function App() {
         title: 'New focused deck',
         message: `${count} ${difficulty} cards on: ${topic}`,
       });
-    };
-    window.addEventListener('createFlashcardsDeck', handler);
-    return () => window.removeEventListener('createFlashcardsDeck', handler);
+    });
   }, [addCanvasItem, addToast, selectedNotebookId]);
 
   // Listen for "Open in Canvas" events from chat visual actions
   useEffect(() => {
-    const handleOpenCanvasVisual = (event: CustomEvent<{ content: string }>) => {
+    return onEvent('openCanvasVisual', (detail) => {
       // Open the content in canvas as a document item for visual generation
       setCanvasItems([{
         id: `canvas-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
         type: 'document',
         title: 'Visual Content',
-        content: event.detail.content,
+        content: detail.content,
         collapsed: true,
         timestamp: Date.now(),
         metadata: { notebookId: selectedNotebookId },
       }]);
-    };
-
-    window.addEventListener('openCanvasVisual', handleOpenCanvasVisual as EventListener);
-    return () => {
-      window.removeEventListener('openCanvasVisual', handleOpenCanvasVisual as EventListener);
-    };
+    });
   }, [selectedNotebookId]);
 
   // 2026-05-26: regenerate-with-feedback closes the loop on thumbs-down.
@@ -662,14 +608,8 @@ function App() {
   // user's reason text; we run a fresh generation with the reason appended
   // as a refinement directive and add a new canvas item with the result.
   useEffect(() => {
-    const handler = async (event: CustomEvent<{
-      notebookId: string;
-      originalPrompt: string;
-      reason: string;
-      previousSubjectId: string;
-      previousTemplateId?: string;
-    }>) => {
-      const { notebookId, originalPrompt, reason, previousTemplateId } = event.detail;
+    return onEvent('visualRegenerateWithFeedback', async (detail) => {
+      const { notebookId, originalPrompt, reason, previousTemplateId } = detail;
       if (!notebookId || !originalPrompt) return;
       const { visualService } = await import('./services/visual');
       const subjId = `studio_visual_${Date.now()}_regen`;
@@ -734,23 +674,14 @@ function App() {
       } catch (err) {
         console.error('Regenerate-with-feedback exception:', err);
       }
-    };
-    window.addEventListener('visualRegenerateWithFeedback', handler as unknown as EventListener);
-    return () => {
-      window.removeEventListener('visualRegenerateWithFeedback', handler as unknown as EventListener);
-    };
+    });
   }, []);
 
   // 2026-05-26: manual idiom swap — bypasses the v2 picker and forces a
   // specific skeleton when the user knows the picker chose wrong.
   useEffect(() => {
-    const handler = async (event: CustomEvent<{
-      notebookId: string;
-      originalPrompt: string;
-      newIdiom: string;
-      previousIdiom?: string;
-    }>) => {
-      const { notebookId, originalPrompt, newIdiom } = event.detail;
+    return onEvent('visualSwapIdiom', async (detail) => {
+      const { notebookId, originalPrompt, newIdiom } = detail;
       if (!notebookId || !originalPrompt || !newIdiom) return;
       const { visualService } = await import('./services/visual');
       const subjId = `studio_visual_${Date.now()}_swap`;
@@ -796,7 +727,7 @@ function App() {
                   v2Setup: visual.setup,
                   v2GenerationMs: visual.generation_ms,
                   templateId: visual.template_id,
-                  swappedFromIdiom: event.detail.previousIdiom,
+                  swappedFromIdiom: detail.previousIdiom,
                 },
               }
             : it
@@ -810,11 +741,7 @@ function App() {
             : it
         ));
       }
-    };
-    window.addEventListener('visualSwapIdiom', handler as unknown as EventListener);
-    return () => {
-      window.removeEventListener('visualSwapIdiom', handler as unknown as EventListener);
-    };
+    });
   }, []);
 
   // Restore persisted canvas notes when backend is ready and a notebook is selected
@@ -916,51 +843,9 @@ function App() {
           setBackendReady(true);
           // Prewarm mermaid renderer in background
           prewarmMermaid();
-          // Fetch morning brief or weekly wrap — check should-show first
-          // Retries if models are still loading (backend returns reason: "models_loading")
-          const fetchBriefWhenReady = (retries = 0) => {
-            const localHour = new Date().getHours();
-            localFetch(`${API_BASE_URL}/curator/morning-brief/should-show?local_hour=${localHour}`)
-              .then(r => r.ok ? r.json() : null)
-              .then(check => {
-                if (check?.reason === 'models_loading' && retries < 6) {
-                  // Models still warming up — retry in 10s (up to ~60s total)
-                  setTimeout(() => fetchBriefWhenReady(retries + 1), 10000);
-                  return;
-                }
-                if (check?.should_show_weekly) {
-                  // Monday — fetch weekly wrap up
-                  localFetch(`${API_BASE_URL}/curator/weekly-wrap`)
-                    .then(r => r.ok ? r.json() : null)
-                    .then(wrap => {
-                      if (wrap?.narrative) {
-                        setWeeklyWrap(wrap);
-                        localFetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
-                        localFetch(`${API_BASE_URL}/curator/weekly-wrap/save`, {
-                          method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify(wrap)
-                        }).catch(() => {});
-                      }
-                    }).catch(() => {});
-                } else if (check?.should_show) {
-                  const hoursAway = check.hours_away || 12;
-                  localFetch(`${API_BASE_URL}/curator/morning-brief?hours_away=${hoursAway}`)
-                    .then(r => r.ok ? r.json() : null)
-                    .then(brief => {
-                      if (brief && (brief.notebooks?.length > 0 || brief.cross_notebook_insight || brief.narrative)) {
-                        setMorningBrief(brief);
-                        localFetch(`${API_BASE_URL}/curator/morning-brief/mark-shown`, { method: 'POST' }).catch(() => {});
-                        localFetch(`${API_BASE_URL}/curator/morning-brief/save`, {
-                          method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify(brief)
-                        }).catch(() => {});
-                      }
-                    }).catch(() => {});
-                }
-              })
-              .catch(() => {});
-          };
-          fetchBriefWhenReady();
+          // V6 (2026-06-30): the morning-brief fetch (with models-loading retry)
+          // moved into useMorningBriefFetcher, which fires on the backendReady
+          // transition this setBackendReady(true) triggers.
         } else {
           // Keep checking every second
           setTimeout(checkBackend, 1000);

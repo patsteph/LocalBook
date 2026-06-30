@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { emitEvent } from '../lib/events';
 import DOMPurify from 'dompurify';
 import { sourceViewerService, SourceContent } from '../services/sourceViewer';
 import { sourceService } from '../services/sources';
@@ -288,8 +289,8 @@ export const SourceNotesViewer: React.FC<SourceNotesViewerProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title, content: body }),
         });
-        window.dispatchEvent(new CustomEvent('sourcesUpdated'));
-        window.dispatchEvent(new CustomEvent('notesUpdated'));
+        emitEvent('sourcesUpdated');
+        emitEvent('notesUpdated');
       } catch (highlightErr) {
         console.error('Failed to save highlight as Note:', highlightErr);
       }

@@ -12,6 +12,7 @@
  */
 import React from 'react';
 import { TrendingUp, TrendingDown, FileText, Telescope } from 'lucide-react';
+import { emitEvent } from '../../../lib/events';
 import type { RendererProps } from '../../../types/artifact';
 
 interface HotClusterItem {
@@ -36,7 +37,7 @@ export const CorrespondentHotClustersRenderer: React.FC<RendererProps<HotCluster
   const items = payload.items || [];
 
   const fireChat = (text: string) => {
-    window.dispatchEvent(new CustomEvent('lb:chatPrompt', { detail: { text } }));
+    emitEvent('lb:chatPrompt', { text });
   };
 
   if (items.length === 0) {

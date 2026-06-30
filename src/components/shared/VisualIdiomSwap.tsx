@@ -10,6 +10,7 @@
  * kept in sync manually since the catalog is small and changes rarely.
  */
 import React, { useLayoutEffect, useRef, useState } from 'react';
+import { emitEvent } from '../../lib/events';
 import { createPortal } from 'react-dom';
 
 const CATEGORIES: Record<string, { label: string; idioms: { id: string; label: string }[] }> = {
@@ -167,9 +168,7 @@ export const VisualIdiomSwap: React.FC<VisualIdiomSwapProps> = ({
     if (swapping) return;
     setSwapping(true);
     setOpen(false);
-    window.dispatchEvent(new CustomEvent('visualSwapIdiom', {
-      detail: { notebookId, originalPrompt, newIdiom, previousIdiom: currentIdiom },
-    }));
+    emitEvent('visualSwapIdiom', { notebookId, originalPrompt, newIdiom, previousIdiom: currentIdiom });
   };
 
   // Portal the menu into document.body so parent overflow can't clip it.

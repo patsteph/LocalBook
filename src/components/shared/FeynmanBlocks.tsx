@@ -11,6 +11,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { emitEvent } from '../../lib/events';
 import { Target, Headphones, ChevronRight, ChevronDown, Check, X, Loader2 } from 'lucide-react';
 import { API_BASE_URL, localFetch } from '../../services/api';
 
@@ -107,9 +108,7 @@ export const FeynmanQuizBlock: React.FC<{ json: string; docTitle?: string }> = (
     if (!data.notebook_id || !data.level) {
       const topicPrefix = docTitle?.replace(/^Document:\s*/i, '').replace(/^Feynman.*?:\s*/i, '') || '';
       const fullTopic = topicPrefix ? `${data.topic || ''}: ${topicPrefix}`.trim() : (data.topic || '');
-      window.dispatchEvent(new CustomEvent('feynmanQuizNav', {
-        detail: { topic: fullTopic, difficulty: data.difficulty }
-      }));
+      emitEvent('feynmanQuizNav', { topic: fullTopic, difficulty: data.difficulty });
       return;
     }
 
@@ -385,9 +384,7 @@ export const FeynmanAudioBlock: React.FC<{ json: string }> = ({ json }) => {
 
   const handleClick = () => {
     setClicked(true);
-    window.dispatchEvent(new CustomEvent('feynmanAudioNav', {
-      detail: { section: data.section || 'full' }
-    }));
+    emitEvent('feynmanAudioNav', { section: data.section || 'full' });
     setTimeout(() => setClicked(false), 2000);
   };
 

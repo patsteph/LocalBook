@@ -12,6 +12,7 @@
  * Created 2026-06-02.
  */
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { onEvent } from '../../lib/events';
 import {
   FileText, Mic, Video, Palette, Target, StickyNote, Search,
   ChevronDown, ChevronRight, Trash2, Download,
@@ -301,17 +302,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
 
   // Listen for completion events from other surfaces so Library auto-refreshes.
   useEffect(() => {
-    const handlers: Array<[string, EventListener]> = [
-      ['sourcesUpdated', () => loadLibrary()],
-      ['notesUpdated', () => loadLibrary()],
-      ['contentUpdated', () => loadLibrary()],
-      ['audioUpdated', () => loadLibrary()],
-      ['videoUpdated', () => loadLibrary()],
-      ['visualsUpdated', () => loadLibrary()],
-      ['quizzesUpdated', () => loadLibrary()],
-    ];
-    handlers.forEach(([k, h]) => window.addEventListener(k, h));
-    return () => { handlers.forEach(([k, h]) => window.removeEventListener(k, h)); };
+    const names = ['sourcesUpdated', 'notesUpdated', 'contentUpdated', 'audioUpdated', 'videoUpdated', 'visualsUpdated', 'quizzesUpdated'] as const;
+    const offs = names.map(n => onEvent(n, () => loadLibrary()));
+    return () => offs.forEach(off => off());
   }, [loadLibrary]);
 
   // Filtered + grouped view.

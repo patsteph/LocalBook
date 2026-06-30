@@ -11,6 +11,7 @@
  */
 import React from 'react';
 import { Mail, FileText } from 'lucide-react';
+import { emitEvent } from '../../../lib/events';
 import type { RendererProps } from '../../../types/artifact';
 
 interface ArticleItem {
@@ -118,13 +119,11 @@ export const CorrespondentArticlesRenderer: React.FC<RendererProps<Correspondent
     // Dispatch the same global event the chat citation-click path uses
     // so the source viewer opens for the parent newsletter. The article
     // position rides along in case the viewer wants to scroll-to.
-    window.dispatchEvent(new CustomEvent('lb:openSource', {
-      detail: {
-        sourceId: item.source_id,
-        notebookId: item.notebook_id,
-        articlePosition: item.position,
-      },
-    }));
+    emitEvent('lb:openSource', {
+      sourceId: item.source_id,
+      notebookId: item.notebook_id,
+      articlePosition: item.position,
+    });
   };
 
   if (items.length === 0) {

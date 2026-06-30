@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { onEvent } from '../../lib/events';
 import { Target, Globe, BookOpen, Search, FileBox, Archive, ChevronDown } from 'lucide-react';
 import { DrawerState } from '../../hooks/useLayoutPersistence';
 import { useCanvas } from '../canvas/CanvasContext';
@@ -128,13 +129,10 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
   // LeftNav drawer open the SAME modal via this event listener so behavior is
   // consistent across entry points.
   useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail || {};
+    return onEvent('lb:openWebResearch', (detail) => {
       setWebResearchInitialQuery(detail.query || '');
       setWebResearchModal(detail.tab || 'web');
-    };
-    window.addEventListener('lb:openWebResearch', handler as EventListener);
-    return () => window.removeEventListener('lb:openWebResearch', handler as EventListener);
+    });
   }, []);
 
   return (

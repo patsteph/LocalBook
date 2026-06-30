@@ -10,6 +10,7 @@
  * capture WHAT failed, not just that it did.
  */
 import React, { useCallback, useState } from 'react';
+import { emitEvent } from '../../lib/events';
 import { localFetch, API_BASE_URL } from '../../services/api';
 
 export interface CriticScoreData {
@@ -156,15 +157,13 @@ export const VisualFeedbackBar: React.FC<VisualFeedbackBarProps> = ({
     setRegenerating(true);
     // Dispatch a global event — App.tsx / canvas listens and runs a new
     // generation with the user's reason appended as refinement directive.
-    window.dispatchEvent(new CustomEvent('visualRegenerateWithFeedback', {
-      detail: {
-        notebookId,
-        originalPrompt,
-        reason: text.trim(),
-        previousSubjectId: subjectId,
-        previousTemplateId: templateId,
-      },
-    }));
+    emitEvent('visualRegenerateWithFeedback', {
+      notebookId,
+      originalPrompt,
+      reason: text.trim(),
+      previousSubjectId: subjectId,
+      previousTemplateId: templateId,
+    });
   }, [originalPrompt, notebookId, regenerating, text, subjectId, templateId]);
 
   if (!visible) return null;

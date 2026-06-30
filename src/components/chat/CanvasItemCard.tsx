@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
+import { emitEvent } from '../../lib/events';
 import { createPortal } from 'react-dom';
 import DOMPurify from 'dompurify';
 import {
@@ -16,7 +17,9 @@ import { StudioQuizBlock } from '../shared/FeynmanBlocks';
 import { AudioCanvasPlayer } from './AudioCanvasPlayer';
 import { FlashcardsCanvasTile } from './FlashcardsCanvasTile';
 import { API_BASE_URL } from '../../services/api';
-import { RichNoteEditor } from '../RichNoteEditor';
+// Q10 (2026-06-30): lazy-load the rich note editor (BlockNote + Mantine) — out of
+// the initial bundle, fetched only when a note tile opens.
+const RichNoteEditor = lazy(() => import('../RichNoteEditor').then(m => ({ default: m.RichNoteEditor })));
 import { FeedbackThumbs } from '../shared/FeedbackThumbs';
 import { VisualCriticBadge, VisualFeedbackBar } from '../shared/VisualCriticBadge';
 import { VisualIdiomSwap } from '../shared/VisualIdiomSwap';
@@ -247,9 +250,7 @@ const ExportMenu: React.FC<{ item: CanvasItem }> = ({ item }) => {
 
   const handlePptx = () => {
     if (!item.content) return;
-    window.dispatchEvent(new CustomEvent('openExportModal', {
-      detail: { content: item.content, title, theme: 'light' },
-    }));
+    emitEvent('openExportModal', { content: item.content, title, theme: 'light' });
     setOpen(false);
   };
 
@@ -533,7 +534,9 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
           >
             <X className="w-3.5 h-3.5" />
           </button>
-          <RichNoteEditor item={item} compact />
+          <Suspense fallback={<div className="p-4 text-gray-400 text-sm">Loading editor…</div>}>
+            <RichNoteEditor item={item} compact />
+          </Suspense>
         </div>
       ) : (
         <div className="px-4 py-3">

@@ -11,6 +11,7 @@
  */
 
 import React, { useState } from 'react';
+import { emitEvent } from '../../lib/events';
 import { localFetch, API_BASE_URL } from '../../services/api';
 
 interface BookmarkButtonProps {
@@ -110,8 +111,8 @@ export const BookmarkButton: React.FC<BookmarkButtonProps> = ({
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setSaved(true);
       // Notify Sources panel to refresh — the saved item appears immediately.
-      window.dispatchEvent(new CustomEvent('sourcesUpdated'));
-      window.dispatchEvent(new CustomEvent('notesUpdated'));
+      emitEvent('sourcesUpdated');
+      emitEvent('notesUpdated');
     } catch (err) {
       console.error('Failed to save as Note:', err);
     } finally {

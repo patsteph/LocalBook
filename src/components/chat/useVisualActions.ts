@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { emitEvent } from '../../lib/events';
 import { visualService } from '../../services/visual';
 import { localFetch, API_BASE_URL } from '../../services/api';
 import { ChatMessage, InlineVisualData } from '../../types';
@@ -92,9 +93,7 @@ export function useVisualActions(
 
   // Open visual content in the universal canvas
   const openVisualInStudio = useCallback((content: string) => {
-    window.dispatchEvent(new CustomEvent('openCanvasVisual', { 
-      detail: { content } 
-    }));
+    emitEvent('openCanvasVisual', { content });
   }, []);
 
   // Save visual as Note (was: Save visual to Findings — Tier 5 refactor)
@@ -113,8 +112,8 @@ export function useVisualActions(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, content: body }),
       });
-      window.dispatchEvent(new CustomEvent('sourcesUpdated'));
-      window.dispatchEvent(new CustomEvent('notesUpdated'));
+      emitEvent('sourcesUpdated');
+      emitEvent('notesUpdated');
     } catch (err) {
       console.error('Failed to save visual as Note:', err);
     }

@@ -15,6 +15,7 @@
  * explanation + answer on wrong. At the end shows a summary with "redo misses".
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { emitEvent } from '../../lib/events';
 import {
   Mic, MicOff, Volume2, CheckCircle2, XCircle, RotateCcw,
   ChevronRight, Settings2, Sparkles, Loader2, AlertCircle,
@@ -440,23 +441,19 @@ export const FlashcardsCanvasTile: React.FC<FlashcardsCanvasTileProps> = ({
   /** Dispatch a request to open the Source Notes viewer for a named source.
    *  The app shell (ChatInterface) listens and performs the name→id lookup. */
   const openSource = useCallback((sourceName: string, searchTerm?: string) => {
-    window.dispatchEvent(new CustomEvent('openSourceByName', {
-      detail: { notebookId, sourceName, searchTerm: searchTerm || '' },
-    }));
+    emitEvent('openSourceByName', { notebookId, sourceName, searchTerm: searchTerm || '' });
   }, [notebookId]);
 
   /** Dispatch a request to spin up a new flash-cards canvas tile focused on a
    *  study-gap topic. ChatActionBar listens and calls addCanvasItem. */
   const createGapDeck = useCallback((gap: KnowledgeGap) => {
-    window.dispatchEvent(new CustomEvent('createFlashcardsDeck', {
-      detail: {
-        notebookId,
-        topic: gap.suggested_topic || gap.gap_title,
-        difficulty,
-        count: Math.min(count, 10),
-        reason: `Study gap: ${gap.gap_title}`,
-      },
-    }));
+    emitEvent('createFlashcardsDeck', {
+      notebookId,
+      topic: gap.suggested_topic || gap.gap_title,
+      difficulty,
+      count: Math.min(count, 10),
+      reason: `Study gap: ${gap.gap_title}`,
+    });
   }, [notebookId, difficulty, count]);
 
   // ── Tutor patch ────────────────────────────────────────────────────────

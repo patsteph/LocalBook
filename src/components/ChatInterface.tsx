@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
+import { onEvent } from '../lib/events';
 import { Compass, Radio, Search, BookOpen, Upload, MessageCircle, Sparkles, Wand2, X, Mail } from 'lucide-react';
 import { chatService } from '../services/chat';
 import { explorationService } from '../services/exploration';
@@ -15,7 +16,9 @@ import { useVisualActions } from './chat/useVisualActions';
 import { WritingAssistBar } from './WritingAssistBar';
 import { CanvasItemCard } from './chat/CanvasItemCard';
 import { StudioLauncher } from './studio/StudioLauncher';
-import { RichNoteEditor } from './RichNoteEditor';
+// Q10 (2026-06-30): lazy-load the rich note editor (BlockNote + Mantine) so it's
+// fetched only when a note opens — keeps it out of the initial bundle.
+const RichNoteEditor = lazy(() => import('./RichNoteEditor').then(m => ({ default: m.RichNoteEditor })));
 import { useCanvasItems, useAppShell } from './canvas/CanvasContext';
 import { CanvasItem } from './canvas/types';
 import { useEngagement } from '../hooks/useEngagement';
@@ -94,8 +97,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   // selected one (when a cluster spans multiple notebooks), so the
   // viewer needs the article's own notebook to avoid 404s.
   useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail || {};
+    return onEvent('lb:openSource', (detail) => {
       if (!detail.sourceId) return;
       setSelectedSource({
         sourceId: detail.sourceId,
@@ -105,17 +107,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
         notebookId: detail.notebookId || undefined,
       });
       setSourceViewerOpen(true);
-    };
-    window.addEventListener('lb:openSource', handler);
-    return () => window.removeEventListener('lb:openSource', handler);
+    });
   }, []);
 
   // P2.3 (2026-06-09) — listen for lb:chatPrompt events from in-chat
   // card CTAs. Sets the input + auto-submits so the user gets the
   // expected one-click "Deep read" / "Show articles" behavior.
   useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail || {};
+    return onEvent('lb:chatPrompt', (detail) => {
       const text = typeof detail.text === 'string' ? detail.text.trim() : '';
       if (!text) return;
       setInput(text);
@@ -125,9 +124,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
           form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
         }
       }, 100);
-    };
-    window.addEventListener('lb:chatPrompt', handler);
-    return () => window.removeEventListener('lb:chatPrompt', handler);
+    });
   }, []);
 
 
@@ -773,8 +770,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
   // any other artifact that only knows a source by its display name). We
   // resolve the ID via sourceService.list and open the existing viewer.
   useEffect(() => {
-    const handler = async (e: Event) => {
-      const detail = (e as CustomEvent).detail || {};
+    return onEvent('openSourceByName', async (detail) => {
       const targetNotebook = detail.notebookId || notebookId;
       const sourceName = detail.sourceName as string | undefined;
       const searchTerm = (detail.searchTerm as string | undefined) || '';
@@ -794,9 +790,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       } catch (err) {
         console.warn('[openSourceByName] lookup failed:', err);
       }
-    };
-    window.addEventListener('openSourceByName', handler);
-    return () => window.removeEventListener('openSourceByName', handler);
+    });
   }, [notebookId]);
 
   // Voice recording handlers
@@ -924,7 +918,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
           >
             <X className="w-4 h-4" />
           </button>
-          <RichNoteEditor item={activeNote} />
+          <Suspense fallback={<div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Loading editor…</div>}>
+            <RichNoteEditor item={activeNote} />
+          </Suspense>
         </div>
       )}
 

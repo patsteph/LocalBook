@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { onEvent } from '../lib/events';
 import { notebookService, NOTEBOOK_COLORS } from '../services/notebooks';
 import { exportService } from '../services/export';
 import { sourceService } from '../services/sources';
@@ -73,14 +74,12 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   }, [refreshTrigger]);
 
   useEffect(() => {
-    const handleOpenExport = () => {
+    return onEvent('openExportModal', () => {
       if (selectedNotebookId) {
         setNotebookToExport(selectedNotebookId);
         setShowExportModal(true);
       }
-    };
-    window.addEventListener('openExportModal', handleOpenExport);
-    return () => window.removeEventListener('openExportModal', handleOpenExport);
+    });
   }, [selectedNotebookId]);
 
   useEffect(() => {
@@ -335,12 +334,23 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
     setError(null);
     try {
       if (format === 'pdf') {
+        // Q3 (2026-06-30): render PDF server-side via the Playwright artifact
+        // pipeline instead of client-side jsPDF. Fetch the server-rendered
+        // notebook HTML, wrap it as an html Artifact, and let /export/artifact →
+        // Playwright produce the PDF (matches the chat/canvas PDF export path).
         const notebook = notebooks.find(nb => nb.id === notebookToExport);
         const notebookTitle = notebook?.title || 'Notebook';
-        const sources = await sourceService.list(notebookToExport);
-        const blob = await exportService.generatePDF(notebookTitle, sources);
-        const filename = `${notebookTitle.replace(/\s+/g, '_')}.pdf`;
-        await exportService.downloadBlob(blob, filename);
+        const htmlBlob = await exportService.exportNotebook({
+          notebookId: notebookToExport,
+          format: 'html',
+          includeSourcesContent: false,
+        });
+        const html = await htmlBlob.text();
+        await exportService.downloadArtifact(
+          { id: `notebook-${notebookToExport}`, type: 'html', payload: html, title: notebookTitle },
+          'pdf',
+          `${notebookTitle.replace(/\s+/g, '_')}.pdf`,
+        );
         setShowExportModal(false);
         setNotebookToExport(null);
       } else {

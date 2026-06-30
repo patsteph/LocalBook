@@ -15,6 +15,7 @@
 
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
+import { emitEvent } from '../../../lib/events';
 import { Target } from 'lucide-react';
 import type { RendererProps } from '../../../types/artifact';
 import { MermaidRenderer } from '../../shared/MermaidRenderer';
@@ -69,9 +70,7 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
                   onClick={(e) => {
                     e.preventDefault();
                     const topic = (docTitle || '').replace(/^Document:\s*/i, '').replace(/^Feynman.*?:\s*/i, '');
-                    window.dispatchEvent(new CustomEvent('feynmanQuizNav', {
-                      detail: { topic: `${label}: ${topic}`.trim(), difficulty },
-                    }));
+                    emitEvent('feynmanQuizNav', { topic: `${label}: ${topic}`.trim(), difficulty });
                   }}
                   className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg no-underline cursor-pointer transition-colors bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-800/50 border border-purple-300 dark:border-purple-700"
                 >

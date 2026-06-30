@@ -11,6 +11,7 @@
  * passed in `options`. The hook owns the canvas item lifecycle.
  */
 import { useCallback } from 'react';
+import { emitEvent } from '../lib/events';
 import { visualService } from '../services/visual';
 import { useCanvasItems } from '../components/canvas/CanvasContext';
 import { useEngagement } from './useEngagement';
@@ -114,7 +115,7 @@ export function useGenerateVisualToCanvas() {
             });
             // Library auto-refresh hook (Tier 5) — visual now persisted
             // via visual_store on the backend; ping Library to re-fetch.
-            window.dispatchEvent(new CustomEvent('visualsUpdated'));
+            emitEvent('visualsUpdated');
             options.onComplete?.(canvasItemId);
           },
           // onAlternative — ignored; canvas shows the primary only

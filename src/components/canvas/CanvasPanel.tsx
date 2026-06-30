@@ -1,4 +1,5 @@
 import React, { useState, lazy, Suspense } from 'react';
+import { emitEvent } from '../../lib/events';
 import { PanelView } from './types';
 import { useAppShell } from './CanvasContext';
 import { ChatInterface } from '../ChatInterface';
@@ -40,7 +41,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
           <LibraryView
             notebookId={ctx.selectedNotebookId}
             onOpenItem={(item) => {
-              window.dispatchEvent(new CustomEvent('lb:openLibraryItem', { detail: item }));
+              emitEvent('lb:openLibraryItem', item);
             }}
           />
         );
