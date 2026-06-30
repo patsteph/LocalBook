@@ -93,7 +93,7 @@ class RSSFetcher(BaseFetcher):
         
         try:
             # feedparser can handle URLs directly
-            feed = feedparser.parse(feed_url)
+            feed = await asyncio.to_thread(feedparser.parse, feed_url)  # 2026-06-30: feedparser.parse(url) does a SYNC network fetch — offload off the event loop
             feed_name = source_config.get("name") or feed.feed.get("title", feed_url)
             
             for entry in feed.entries[:20]:  # Limit per feed
@@ -462,7 +462,7 @@ class YouTubeFetcher(BaseFetcher):
         feed_url = f"{self.YOUTUBE_RSS_BASE}?channel_id={channel_id}"
         
         try:
-            feed = feedparser.parse(feed_url)
+            feed = await asyncio.to_thread(feedparser.parse, feed_url)  # 2026-06-30: feedparser.parse(url) does a SYNC network fetch — offload off the event loop
             
             for entry in feed.entries[:10]:
                 title = entry.get("title", "")
@@ -557,7 +557,7 @@ class ArXivFetcher(BaseFetcher):
         feed_url = f"{self.ARXIV_RSS_BASE}/{category}"
         
         try:
-            feed = feedparser.parse(feed_url)
+            feed = await asyncio.to_thread(feedparser.parse, feed_url)  # 2026-06-30: feedparser.parse(url) does a SYNC network fetch — offload off the event loop
             
             for entry in feed.entries[:15]:
                 title = entry.get("title", "").replace("\n", " ")
@@ -689,7 +689,7 @@ class GoogleNewsFetcher(BaseFetcher):
         feed_url = f"{self.GOOGLE_NEWS_RSS}?q={quote_plus(keyword)}&hl=en-US&gl=US&ceid=US:en"
         
         try:
-            feed = feedparser.parse(feed_url)
+            feed = await asyncio.to_thread(feedparser.parse, feed_url)  # 2026-06-30: feedparser.parse(url) does a SYNC network fetch — offload off the event loop
             
             for entry in feed.entries[:15]:
                 title = entry.get("title", "")

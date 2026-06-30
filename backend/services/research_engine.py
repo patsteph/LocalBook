@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -185,11 +186,13 @@ class ResearchEngine:
             freshness = "pm"     # past month
 
         # ── Step 1: Search ───────────────────────────────────────────────
+        _t0 = time.time()  # 2026-06-30: phase timing to pinpoint the deep-dive loop stall
         if on_status:
             await on_status("Deep dive: searching for candidates...")
 
         raw = await web_scraper.search_web(query, max_results=20, freshness=freshness)
         existing_urls = await self._get_existing_urls(notebook_id)
+        _t_search = time.time()
 
         # Pre-filter: skip already-sourced URLs
         candidates = [r for r in raw if not self._is_duplicate(r.get("url", ""), existing_urls)]
@@ -202,6 +205,7 @@ class ResearchEngine:
 
         urls_to_scrape = [c["url"] for c in candidates[:10]]
         scraped = await web_scraper.scrape_urls(urls_to_scrape)
+        _t_scrape = time.time()
 
         # Merge scraped content with search metadata
         scraped_map: Dict[str, Dict] = {}
@@ -305,6 +309,11 @@ class ResearchEngine:
                 "max_results": filters.max_results,
                 "recency_days": filters.recency_days,
             },
+        )
+        logger.info(
+            f"[deep_dive] timing — search+dedup {_t_search - _t0:.1f}s, "
+            f"scrape {_t_scrape - _t_search:.1f}s, score+eval {time.time() - _t_scrape:.1f}s "
+            f"({len(urls_to_scrape)} urls)"
         )
         return results
 

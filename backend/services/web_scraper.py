@@ -12,6 +12,12 @@ from api.settings import get_api_key
 
 logger = logging.getLogger(__name__)
 
+# Quiet trafilatura's per-URL parse-failure noise (it logs ERROR/WARNING like
+# "parsed tree length: 1" / "empty HTML tree" when a scraped URL returns non-HTML
+# — a PDF/redirect/empty page). We handle failed scrapes via our own fallback, so
+# these are benign and just clutter the log during collection. (2026-06-30)
+logging.getLogger("trafilatura").setLevel(logging.CRITICAL)
+
 # Timeouts
 SCRAPE_TIMEOUT = 120.0  # total timeout per URL (documents can be large)
 MAX_CONCURRENT = 5      # max parallel scrapes
