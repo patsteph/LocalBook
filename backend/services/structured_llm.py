@@ -204,7 +204,8 @@ class StructuredLLMService:
         num_questions: int = 5,
         difficulty: str = "medium",
         question_types: Optional[List[str]] = None,
-        source_names: Optional[List[str]] = None
+        source_names: Optional[List[str]] = None,
+        require_visuals: bool = False,
     ) -> QuizOutput:
         """Generate a professional-quality quiz from content with structured output."""
         
@@ -243,10 +244,19 @@ class StructuredLLMService:
             parts = [f"~{share}% {qt}" for qt in primary_types]
             visual_note = ""
             if 'visual_diagram' in question_types:
-                visual_note = (
-                    "- visual_diagram: aim for 1-2 cards TOTAL (not a share of the deck), and ONLY when the "
-                    "content describes a concrete labeled structure (architecture layers, pipeline stages, OSI model, etc.).\n"
-                )
+                if require_visuals:
+                    # Explicit user opt-in — compel at least one diagram.
+                    visual_note = (
+                        "- visual_diagram: You MUST include at least 1 (ideally 2) visual_diagram question — the "
+                        "user explicitly asked for diagrams. Find ANY labeled structure to diagram: process/pipeline "
+                        "steps, system components, a hierarchy, categories, or how parts relate. A simple 3-5 box "
+                        "diagram is fine. Skip ONLY if the content is truly abstract with no nameable parts.\n"
+                    )
+                else:
+                    visual_note = (
+                        "- visual_diagram: aim for 1-2 cards TOTAL (not a share of the deck), and ONLY when the "
+                        "content describes a concrete labeled structure (architecture layers, pipeline stages, OSI model, etc.).\n"
+                    )
             mix_str = (
                 "\n\nQUESTION TYPE MIX (MANDATORY):\n"
                 f"- Generate {generation_target} questions spread roughly evenly across these types: "
@@ -464,6 +474,10 @@ Return ONLY a JSON object like this:
                     if not sanitized and quiz.questions and attempt == self.max_retries - 1:
                         logger.warning(f"[Quiz] Sanitizer dropped all {len(quiz.questions)} questions — returning raw as emergency fallback")
                         sanitized = quiz.questions[:num_questions]
+                    if 'visual_diagram' in (question_types or []):
+                        _rawv = sum(1 for q in quiz.questions if q.question_type == 'visual_diagram')
+                        _sanv = sum(1 for q in (sanitized or []) if q.question_type == 'visual_diagram')
+                        logger.info(f"[Quiz] visual_diagram: LLM produced {_rawv}, {_sanv} survived sanitize (attempt {attempt+1})")
                     if sanitized:
                         # Trim to exact requested count, prioritizing variety of question types
                         if len(sanitized) > num_questions:

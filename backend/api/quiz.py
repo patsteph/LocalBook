@@ -237,6 +237,11 @@ async def generate_quiz(request: GenerateQuizRequest):
 
 {content}"""
         
+        # Explicit opt-in — the Studio "Include diagrams" toggle passes
+        # visual_diagram in question_types — should COMPEL at least one diagram,
+        # unlike the passive keyword auto-detect which leaves it optional.
+        require_visuals = bool(request.question_types and 'visual_diagram' in request.question_types)
+
         # Generate quiz using structured LLM
         quiz_output = await structured_llm.generate_quiz(
             content=content,
@@ -244,7 +249,10 @@ async def generate_quiz(request: GenerateQuizRequest):
             difficulty=request.difficulty,
             question_types=request.question_types,
             source_names=built.source_names,
+            require_visuals=require_visuals,
         )
+        _vis_n = sum(1 for q in quiz_output.questions if q.question_type == 'visual_diagram')
+        logger.info(f"[Quiz] {len(quiz_output.questions)} questions returned, {_vis_n} visual_diagram (require_visuals={require_visuals})")
 
         if not quiz_output.questions:
             raise HTTPException(
