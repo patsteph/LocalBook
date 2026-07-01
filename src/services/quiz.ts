@@ -153,14 +153,10 @@ export const quizService = {
     const response = await localFetch(`${API_BASE}/quiz/${quizId}/download`);
     if (!response.ok) throw new Error('Failed to download quiz');
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `quiz-${quizId}.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // Native save dialog + fs.writeFile — anchor downloads no-op in WKWebView
+    // once the localFetch await breaks the user-gesture context.
+    const { exportService } = await import('./export');
+    await exportService.downloadBlob(blob, `quiz-${quizId}.md`);
   },
 
   async getDueCards(notebookId: string, limit: number = 20): Promise<ReviewCard[]> {

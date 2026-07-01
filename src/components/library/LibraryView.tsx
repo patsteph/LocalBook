@@ -84,41 +84,41 @@ async function deleteByKind(notebookId: string, item: LibraryItem): Promise<bool
 //  - video: mp4 stream
 //  - visual: SVG (Klein/Mermaid fallback handled server-side)
 //  - quiz: markdown
+// 2026-06-30: every kind now routes its Blob through exportService.downloadBlob
+// (native save dialog + fs.writeFile). The previous `<a download>` anchor +
+// `window.open` approaches silently no-op in the Tauri/WKWebView once an `await`
+// breaks the synchronous user-gesture context — which is why only the document
+// case (synchronous, in-memory blob) appeared to "work" while the rest didn't.
 async function downloadByKind(item: LibraryItem): Promise<void> {
+  const { exportService } = await import('../../services/export');
+  const { localFetch } = await import('../../services/api');
+  const safe = (s: string) => (s || 'download').replace(/[^a-z0-9-_ ]/gi, '_');
+
   switch (item.kind) {
     case 'document': {
       const raw = item.raw as ContentGeneration;
-      const content = raw.content || '';
-      const filename = (raw.skill_name || raw.topic || 'document').replace(/[^a-z0-9-_ ]/gi, '_');
-      contentService.downloadAsFile(content, filename, 'md');
+      const blob = new Blob([raw.content || ''], { type: 'text/markdown' });
+      await exportService.downloadBlob(blob, `${safe(raw.skill_name || raw.topic || 'document')}.md`);
       return;
     }
     case 'note': {
       const src = item.raw as any;
-      const notebookId = src.notebook_id;
-      const sourceId = src.id || src.source_id;
-      // Use localFetch (token-auth'd) → blob; window.open() would send a
-      // tokenless GET and hit 401 from the auth middleware.
-      const { localFetch } = await import('../../services/api');
-      const resp = await localFetch(`${API_BASE_URL}/sources/${notebookId}/${sourceId}/download`);
+      // localFetch is token-auth'd; a tokenless GET would 401 at the middleware.
+      const resp = await localFetch(`${API_BASE_URL}/sources/${src.notebook_id}/${src.id || src.source_id}/download`);
       if (!resp.ok) throw new Error('Failed to download note');
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${(item.title || 'note').replace(/[^a-z0-9-_ ]/gi, '_')}.md`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      await exportService.downloadBlob(await resp.blob(), `${safe(item.title || 'note')}.md`);
       return;
     }
     case 'audio': {
-      window.open(audioService.getDownloadUrl(item.id), '_blank');
+      const resp = await localFetch(audioService.getDownloadUrl(item.id));
+      if (!resp.ok) throw new Error('Failed to download audio');
+      await exportService.downloadBlob(await resp.blob(), `${safe(item.title || 'audio')}.mp3`);
       return;
     }
     case 'video': {
-      window.open(videoService.getStreamUrl(item.id), '_blank');
+      const resp = await localFetch(videoService.getStreamUrl(item.id));
+      if (!resp.ok) throw new Error('Failed to download video');
+      await exportService.downloadBlob(await resp.blob(), `${safe(item.title || 'video')}.mp4`);
       return;
     }
     case 'visual':

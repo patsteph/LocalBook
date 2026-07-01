@@ -263,15 +263,11 @@ export const visualService = {
     const response = await localFetch(`${API_BASE}/visual/item/${visualId}/download?format=${format}`);
     if (!response.ok) throw new Error('Failed to download visual');
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
     const ext = format === 'png' ? 'png' : (blob.type.includes('markdown') ? 'md' : 'svg');
-    a.download = `visual-${visualId}.${ext}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // Native save dialog + fs.writeFile — anchor downloads no-op in WKWebView
+    // once the localFetch await breaks the user-gesture context.
+    const { exportService } = await import('./export');
+    await exportService.downloadBlob(blob, `visual-${visualId}.${ext}`);
   },
 
   async checkCacheStatus(notebookId: string): Promise<{ ready: boolean; theme_count?: number; age_seconds?: number; reason?: string }> {
