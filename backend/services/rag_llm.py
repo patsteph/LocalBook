@@ -330,6 +330,9 @@ async def stream_ollama(
         # floor at 8192 for streaming (chat) exactly as before.
         from services.ollama_service import compute_num_ctx
         effective_num_ctx = compute_num_ctx(model, f"{system_prompt}\n\n{prompt}", effective_num_predict) or 8192
+        # doc-gen flag drives the repeat-penalty tier below (restored — it used to be
+        # defined in the inline num_ctx block the shared helper replaced).
+        is_doc_gen = num_predict is not None and num_predict > 500
 
         # Repetition / coherence control — same strategy as non-streaming path
         # Start with model-specific base options, then layer on call-specific params
