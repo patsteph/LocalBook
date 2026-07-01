@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 from config import settings
 from services.structured_llm import structured_llm
+from services.svg_sanitizer import sanitize_svg
 from storage.source_store import source_store
 
 
@@ -59,6 +60,8 @@ class QuizQuestionResponse(BaseModel):
     question_type: str
     options: Optional[List[str]] = None
     source_reference: Optional[str] = None
+    visual_svg: Optional[str] = None  # sanitized inline SVG for visual_diagram questions
+    visual_labels: Optional[Dict[str, Any]] = None
 
 
 class QuizResponse(BaseModel):
@@ -263,7 +266,11 @@ async def generate_quiz(request: GenerateQuizRequest):
                 difficulty=q.difficulty,
                 question_type=q.question_type,
                 options=q.options,
-                source_reference=q.source_reference
+                source_reference=q.source_reference,
+                # Sanitize model-authored inline SVG once, server-side, before it
+                # persists + reaches any renderer (canonical XSS gate).
+                visual_svg=sanitize_svg(q.visual_svg or ""),
+                visual_labels=(q.visual_labels.model_dump() if q.visual_labels else None),
             ))
         
         # Save questions as cards for spaced repetition

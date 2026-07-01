@@ -15,6 +15,9 @@ export interface ContentGenerateRequest {
     // Tier 4 voice register override. Backend picks the per-doc-type default
     // when omitted. Valid: measured / engaged / warm / urgent.
     register?: string;
+    // Cross-medium visuals (2026-07-01) — when false, suppress VISUAL_INTERLEAVE
+    // so the doc is pure prose. Defaults to true server-side (v2.0 behavior).
+    include_visuals?: boolean;
 }
 
 export interface ContentGenerateResponse {

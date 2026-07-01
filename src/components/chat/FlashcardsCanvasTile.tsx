@@ -16,6 +16,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { emitEvent } from '../../lib/events';
+import { sanitizeSvg } from '../../lib/sanitizeSvg';
 import {
   Mic, MicOff, Volume2, CheckCircle2, XCircle, RotateCcw,
   ChevronRight, Settings2, Sparkles, Loader2, AlertCircle,
@@ -770,7 +771,7 @@ export const FlashcardsCanvasTile: React.FC<FlashcardsCanvasTileProps> = ({
               <div className="mt-3 p-3 bg-white/80 dark:bg-gray-900/60 rounded-lg border border-gray-200 dark:border-gray-700">
                 <div
                   className="w-full overflow-hidden"
-                  dangerouslySetInnerHTML={{ __html: currentCard.visual_svg }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeSvg(currentCard.visual_svg) }}
                   style={{ maxHeight: '200px' }}
                 />
               </div>

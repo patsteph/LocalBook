@@ -133,6 +133,10 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
   const [quizDifficulty, setQuizDifficulty] = useState(() => localStorage.getItem('lb-studio-quiz-difficulty') || 'medium');
   // Phase 11 — opt-in interactive HTML quiz (iframe sandbox + postMessage).
   const [quizInteractive, setQuizInteractive] = useState(() => localStorage.getItem('lb-studio-quiz-interactive') === '1');
+  // Cross-medium visuals (2026-07-01) — opt-in per-question diagrams.
+  const [quizIncludeVisuals, setQuizIncludeVisuals] = useState(() => localStorage.getItem('lb-studio-quiz-visuals') === 'true');
+  // Docs interleave visuals by default (v2.0 behavior); this lets the user turn it off.
+  const [docsIncludeVisuals, setDocsIncludeVisuals] = useState(() => localStorage.getItem('lb-studio-docs-visuals') !== 'false');
   // Cards (flash cards). Tutor accent kept as us/uk only — the underlying
   // flashcards TTS pipeline only ships those two voices.
   const [cardsCount, setCardsCount] = useState(() => parseInt(localStorage.getItem('lb-studio-cards-count') || localStorage.getItem('lb-bar-cards-count') || '10'));
@@ -187,6 +191,8 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
   useEffect(() => { localStorage.setItem('lb-studio-quiz-count', String(quizCount)); }, [quizCount]);
   useEffect(() => { localStorage.setItem('lb-studio-quiz-difficulty', quizDifficulty); }, [quizDifficulty]);
   useEffect(() => { localStorage.setItem('lb-studio-quiz-interactive', quizInteractive ? '1' : '0'); }, [quizInteractive]);
+  useEffect(() => { localStorage.setItem('lb-studio-quiz-visuals', String(quizIncludeVisuals)); }, [quizIncludeVisuals]);
+  useEffect(() => { localStorage.setItem('lb-studio-docs-visuals', String(docsIncludeVisuals)); }, [docsIncludeVisuals]);
   useEffect(() => { localStorage.setItem('lb-studio-cards-count', String(cardsCount)); }, [cardsCount]);
   useEffect(() => { localStorage.setItem('lb-studio-cards-diff', cardsDifficulty); }, [cardsDifficulty]);
   useEffect(() => { localStorage.setItem('lb-studio-cards-tutor-gender', cardsTutorGender); }, [cardsTutorGender]);
@@ -259,6 +265,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
               skill_id: docsSkill,
               topic: trimmedTopic,
               style: docsStyle,
+              include_visuals: docsIncludeVisuals,
               ...(chatContext ? { chat_context: chatContext } : {}),
               ...(regOverride ? { register: regOverride } : {}),
             });
@@ -584,7 +591,10 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
             metadata: { notebookId, source: 'studio_drawer' } as any,
           });
           try {
-            const result = await quizService.generate(notebookId, quizCount, quizDifficulty, trimmedTopic, chatContext);
+            const qTypes = quizIncludeVisuals
+              ? ['multiple_choice', 'true_false', 'fill_in_the_blank', 'visual_diagram']
+              : undefined;
+            const result = await quizService.generate(notebookId, quizCount, quizDifficulty, trimmedTopic, chatContext, qTypes);
             // Phase 11 — when the interactive toggle is on, compose the
             // sandbox-iframe HTML page server-side and stash on metadata.
             // CanvasItemCard dispatches via the InteractiveHtml renderer
@@ -600,7 +610,10 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
             }
             updateCanvasItem(itemId, {
               status: 'complete',
-              content: '',
+              // R1: the non-interactive StudioQuizBlock only renders when content
+              // starts with '[' — stash the questions JSON so it shows (and now
+              // carries visual_svg). The interactive_html branch still wins when set.
+              content: JSON.stringify(result.questions),
               metadata: {
                 notebookId,
                 quiz: result,
@@ -628,7 +641,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
     } finally {
       setGenerating(false);
     }
-  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoFormat, videoNarrationStyle, videoNarratorGender, videoAccent, quizCount, quizDifficulty, quizInteractive, cardsCount, cardsDifficulty, cardsTutorGender, cardsTutorAccent, cardsTutorAutoplay, cardsIncludeVisuals, perspectivesQuery, perspectivesCrossNotebook, deepDiveEntity, deepDiveCrossNotebook, compareSourceA, compareSourceB, compareFocus, availableSources, chatContext, onClose, onToast, generateVisualToCanvas, addCanvasItem, updateCanvasItem, textSkills]);
+  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoFormat, videoNarrationStyle, videoNarratorGender, videoAccent, quizCount, quizDifficulty, quizInteractive, quizIncludeVisuals, docsIncludeVisuals, cardsCount, cardsDifficulty, cardsTutorGender, cardsTutorAccent, cardsTutorAutoplay, cardsIncludeVisuals, perspectivesQuery, perspectivesCrossNotebook, deepDiveEntity, deepDiveCrossNotebook, compareSourceA, compareSourceB, compareFocus, availableSources, chatContext, onClose, onToast, generateVisualToCanvas, addCanvasItem, updateCanvasItem, textSkills]);
 
   if (!open) return null;
 
@@ -772,6 +785,15 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
                   ))}
                 </div>
               </div>
+              <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={docsIncludeVisuals}
+                  onChange={(e) => setDocsIncludeVisuals(e.target.checked)}
+                  className="rounded border-gray-300 dark:border-gray-600"
+                />
+                Include visuals (charts &amp; diagrams)
+              </label>
             </div>
           )}
 
@@ -975,6 +997,15 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
                   className="rounded border-gray-300 dark:border-gray-600"
                 />
                 Render as interactive HTML (sandbox iframe)
+              </label>
+              <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={quizIncludeVisuals}
+                  onChange={(e) => setQuizIncludeVisuals(e.target.checked)}
+                  className="rounded border-gray-300 dark:border-gray-600"
+                />
+                Include diagrams (visual questions)
               </label>
             </div>
           )}

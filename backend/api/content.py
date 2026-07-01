@@ -1472,6 +1472,10 @@ class ContentGenerateRequest(BaseModel):
     # build_document_prompt uses the doc type's default_register. Valid:
     # measured / engaged / warm / urgent.
     register: Optional[str] = None
+    # Cross-medium visuals (2026-07-01) — when False, suppress the
+    # VISUAL_INTERLEAVE injection so the doc is pure prose. Default True
+    # preserves the always-on behavior docs have shipped with since v2.0.
+    include_visuals: bool = True
 
 
 class ContentGenerateResponse(BaseModel):
@@ -1543,6 +1547,7 @@ CITATION CONTRACT — required for every factual claim:
                 request.style or "professional",
                 built.sources_used,
                 register=request.register,
+                include_visuals=request.include_visuals,
             )
             system_prompt = f"""{template_system}
 
@@ -1760,6 +1765,7 @@ CITATION CONTRACT — required for every factual claim:
                 request.style or "professional",
                 built.sources_used,
                 register=request.register,
+                include_visuals=request.include_visuals,
             )
             system_prompt = f"""{template_system}
 

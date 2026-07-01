@@ -1059,6 +1059,7 @@ def build_document_prompt(
     style: str,
     source_count: int,
     register: Optional[str] = None,
+    include_visuals: bool = True,
 ) -> tuple[str, str]:
     """Build complete system and user prompts for document generation.
 
@@ -1074,11 +1075,14 @@ def build_document_prompt(
         Tuple of (system_prompt, format_instructions)
     """
     template = DOCUMENT_TEMPLATES.get(template_id)
+    # Docs interleave charts / visual-hints by default; the caller's
+    # include_visuals toggle (Studio) gates the VISUAL_INTERLEAVE injection off.
+    visual_interleave = VISUAL_INTERLEAVE if include_visuals else ""
 
     if not template:
         # Fallback for unknown template
         return (
-            f"Create high-quality, well-structured content based on the provided sources.\n\n{PRESENTATION_QUALITY}\n\n{VISUAL_INTERLEAVE}",
+            f"Create high-quality, well-structured content based on the provided sources.\n\n{PRESENTATION_QUALITY}\n\n{visual_interleave}",
             "Format clearly with appropriate sections using markdown."
         )
 
@@ -1114,7 +1118,7 @@ QUALITY REQUIREMENTS:
 
 {PRESENTATION_QUALITY}
 
-{VISUAL_INTERLEAVE}
+{visual_interleave}
 
 You are working with {source_count} source document(s). Synthesize across ALL sources.
 

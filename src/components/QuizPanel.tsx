@@ -6,6 +6,7 @@ import { BookmarkButton } from './shared/BookmarkButton';
 import { useAppShell } from './canvas/CanvasContext';
 import { useEngagement } from '../hooks/useEngagement';
 import { FeedbackThumbs } from './shared/FeedbackThumbs';
+import { sanitizeSvg } from '../lib/sanitizeSvg';
 
 const ALL_QUESTION_TYPE_OPTIONS = [
   { id: 'multiple_choice', label: 'Multiple Choice' },
@@ -415,6 +416,13 @@ export const QuizPanel: React.FC<QuizPanelProps> = ({ notebookId, initialTopic, 
               <span className="text-purple-500 dark:text-purple-400 mr-1.5">{currentQuestionIndex + 1}.</span>
               {currentQuestion.question}
             </p>
+
+            {currentQuestion.visual_svg && (
+              <div
+                className="mb-4 p-2 bg-gray-50 dark:bg-gray-900/60 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden [&_svg]:max-w-full [&_svg]:h-auto"
+                dangerouslySetInnerHTML={{ __html: sanitizeSvg(currentQuestion.visual_svg) }}
+              />
+            )}
 
             {/* ── Choice-based (MC / T/F) — instant reveal on click ── */}
             {isChoiceType(currentQuestion.question_type) && (

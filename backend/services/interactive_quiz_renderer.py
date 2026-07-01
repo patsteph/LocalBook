@@ -28,10 +28,13 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from services.svg_sanitizer import sanitize_svg
+
 logger = logging.getLogger(__name__)
 
 _CHOICE_KINDS = {"multiple_choice", "true_false"}
 _OPEN_KINDS = {"fill_in_the_blank", "short_answer", "spot_the_error", "justify"}
+_VISUAL_KINDS = {"visual_diagram"}
 
 
 def _safe(s: Any) -> str:
@@ -84,6 +87,31 @@ def _render_open_question(idx: int, q: Dict[str, Any]) -> str:
         <p class="lb-q-text">{_safe(q.get('question'))}</p>
       </div>
       {applied_html}
+      <textarea class="lb-input" rows="3" placeholder="Type your answer…"></textarea>
+      <button type="button" class="lb-btn lb-reveal">Reveal answer</button>
+      <div class="lb-feedback" hidden>
+        <p class="lb-result-line"><strong>Answer:</strong> {answer}</p>
+        <p class="lb-explanation">{explanation}</p>
+      </div>
+    </div>
+    """
+
+
+def _render_visual_question(idx: int, q: Dict[str, Any]) -> str:
+    """A visual_diagram question: an inline diagram (with a blanked label) plus a
+    reveal-answer flow. The SVG is re-sanitized here (defense in depth) and
+    injected as raw markup — which is exactly why it must be sanitized first."""
+    svg = sanitize_svg(str(q.get("visual_svg") or ""))
+    svg_html = f'<div class="lb-visual">{svg}</div>' if svg else ""
+    explanation = _safe(q.get("explanation") or "")
+    answer = _safe(q.get("answer") or "")
+    return f"""
+    <div class="lb-q" data-kind="open" data-idx="{idx}">
+      <div class="lb-q-head">
+        <span class="lb-q-num">{idx + 1}</span>
+        <p class="lb-q-text">{_safe(q.get('question'))}</p>
+      </div>
+      {svg_html}
       <textarea class="lb-input" rows="3" placeholder="Type your answer…"></textarea>
       <button type="button" class="lb-btn lb-reveal">Reveal answer</button>
       <div class="lb-feedback" hidden>
@@ -219,6 +247,8 @@ def _styles() -> str:
     }
     .lb-q-text { margin: 0; font-weight: 500; }
     .lb-applied { margin: 8px 0 0 32px; font-size: 12px; color: #4b5563; font-style: italic; }
+    .lb-visual { margin: 12px 0 0 32px; max-width: 100%; }
+    .lb-visual svg { max-width: 100%; height: auto; display: block; }
     .lb-opts { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 0 32px; }
     .lb-opt {
       display: flex; align-items: center; gap: 8px; padding: 6px 10px;
@@ -271,7 +301,9 @@ def quiz_to_interactive_html(
         if not isinstance(q, dict):
             continue
         kind = str(q.get("question_type") or "short_answer").lower()
-        if kind in _CHOICE_KINDS:
+        if kind in _VISUAL_KINDS:
+            cards.append(_render_visual_question(i, q))
+        elif kind in _CHOICE_KINDS:
             cards.append(_render_choice_question(i, q))
         elif kind in _OPEN_KINDS:
             cards.append(_render_open_question(i, q))
@@ -281,6 +313,13 @@ def quiz_to_interactive_html(
     return (
         "<!DOCTYPE html><html><head>"
         f"<meta charset='utf-8'><title>{title_safe}</title>"
+        # CSP: block ALL network (default-src 'none') so even a payload that
+        # slips the SVG sanitizer cannot phone home; inline style+script are the
+        # renderer's own CSS + bridge; img-src data: is belt-and-braces (we strip
+        # <image> anyway). Keeps the documented "no external resources" contract.
+        "<meta http-equiv=\"Content-Security-Policy\" "
+        "content=\"default-src 'none'; style-src 'unsafe-inline'; "
+        "script-src 'unsafe-inline'; img-src data:\">"
         f"<style>{_styles()}</style>"
         "</head><body>"
         '<div class="lb-progress" id="lb-progress">0 of 0 answered correctly · '

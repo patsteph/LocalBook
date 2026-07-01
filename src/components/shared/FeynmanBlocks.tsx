@@ -12,6 +12,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { emitEvent } from '../../lib/events';
+import { sanitizeSvg } from '../../lib/sanitizeSvg';
 import { Target, Headphones, ChevronRight, ChevronDown, Check, X, Loader2 } from 'lucide-react';
 import { API_BASE_URL, localFetch } from '../../services/api';
 
@@ -22,6 +23,7 @@ interface CachedQuestion {
   a: string;
   options: string[];
   explanation: string;
+  visual_svg?: string;
 }
 
 // Module-level cache: survives React remounts caused by parent re-renders.
@@ -186,6 +188,17 @@ export const FeynmanQuizBlock: React.FC<{ json: string; docTitle?: string }> = (
 // Module-level answer cache: preserves user's quiz progress across remounts
 const _answerCache: Record<string, { selected: string | null; revealed: boolean }> = {};
 
+// Shared inline-SVG diagram block for visual_diagram questions. The SVG is
+// model-authored — the backend sanitizes it before persistence; this re-sanitizes
+// as defense in depth (and cleans any pre-sanitizer legacy quiz).
+const VisualDiagram: React.FC<{ svg?: string }> = ({ svg }) =>
+  svg ? (
+    <div
+      className="mb-3 p-2 bg-white/80 dark:bg-gray-900/60 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden [&_svg]:max-w-full [&_svg]:h-auto"
+      dangerouslySetInnerHTML={{ __html: sanitizeSvg(svg) }}
+    />
+  ) : null;
+
 const InlineQuestion: React.FC<{ index: number; question: CachedQuestion }> = ({ index, question }) => {
   const qKey = (question.q || '').slice(0, 80);
   const prevAnswer = _answerCache[qKey];
@@ -206,6 +219,7 @@ const InlineQuestion: React.FC<{ index: number; question: CachedQuestion }> = ({
         <span className="text-purple-600 dark:text-purple-400 mr-1.5">{index + 1}.</span>
         {question.q}
       </p>
+      <VisualDiagram svg={question.visual_svg} />
       <div className="space-y-1.5">
         {(question.options || []).map((opt, oi) => {
           const isThis = selected === opt;
@@ -252,6 +266,7 @@ interface StudioQuestion {
   options?: string[] | null;
   difficulty?: string;
   source_reference?: string;
+  visual_svg?: string;
 }
 
 const OPEN_ENDED_CANVAS = new Set(['fill_in_the_blank', 'short_answer', 'spot_the_error']);
@@ -295,6 +310,7 @@ const OpenEndedQuestion: React.FC<{ index: number; q: StudioQuestion }> = ({ ind
         <span className="text-purple-600 dark:text-purple-400 mr-1.5">{index + 1}.</span>
         {q.question}
       </p>
+      <VisualDiagram svg={q.visual_svg} />
       {q.question_type === 'short_answer' ? (
         <textarea
           value={value}
@@ -349,7 +365,8 @@ export const StudioQuizBlock: React.FC<{ json: string }> = ({ json }) => {
   return (
     <div className="space-y-3 py-1">
       {questions.map((q, i) => {
-        if (OPEN_ENDED_CANVAS.has(q.question_type)) {
+        if (OPEN_ENDED_CANVAS.has(q.question_type) || q.question_type === 'visual_diagram') {
+          // visual_diagram = a diagram with a blanked label → open-answer flow.
           return <OpenEndedQuestion key={q.id || i} index={i} q={q} />;
         }
         // Choice-based: adapt to CachedQuestion shape for InlineQuestion
@@ -358,6 +375,7 @@ export const StudioQuizBlock: React.FC<{ json: string }> = ({ json }) => {
           a: q.answer,
           options: q.options ?? (q.question_type === 'true_false' ? ['True', 'False'] : []),
           explanation: q.explanation,
+          visual_svg: q.visual_svg,
         };
         return <InlineQuestion key={q.id || i} index={i} question={adapted} />;
       })}
