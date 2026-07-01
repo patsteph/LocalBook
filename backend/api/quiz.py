@@ -268,15 +268,30 @@ async def generate_quiz(request: GenerateQuizRequest):
         if require_visuals:
             try:
                 from services.visual_composer import VisualComposer
-                composed = await VisualComposer().compose(
-                    content=content[:4000],
-                    topic=quiz_output.topic or request.topic or "",
+                # Give the composer a FOCUSED diagram brief — the quiz's subject plus
+                # the concepts it covers — NOT the raw quiz instruction + 4000 chars of
+                # mixed source. The unfocused input made the slot-fill draw empty,
+                # label-less boxes; docs get good visuals precisely because they hand
+                # the composer a focused hint.
+                _subject = quiz_output.topic or request.topic or "this topic"
+                _concepts = "\n".join(f"- {q.question}" for q in quiz_output.questions[:8])
+                diagram_brief = (
+                    f"Diagram the key components or stages of: {_subject}. "
+                    f"Label each part clearly and show how they connect.\n\n"
+                    f"Concepts the quiz covers:\n{_concepts}"
                 )
+                composed = await VisualComposer().compose(content=diagram_brief, topic=_subject)
                 if composed and composed.success and composed.svg_markup:
+                    _svg = composed.svg_markup
+                    # Diagnostic: <text> count distinguishes a content problem (0 labels)
+                    # from a rendering/visibility problem (labels present but not shown).
+                    logger.info(
+                        f"[Quiz] composer SVG: {len(_svg)} chars, {_svg.count('<text')} <text> els, "
+                        f"path={getattr(composed, 'path', '?')}"
+                    )
                     target = next((q for q in quiz_output.questions if not q.visual_svg), None)
                     if target is not None:
-                        target.visual_svg = composed.svg_markup
-                        logger.info(f"[Quiz] attached visual_composer diagram (path={getattr(composed, 'path', '?')})")
+                        target.visual_svg = _svg
                 else:
                     logger.info(
                         f"[Quiz] visual_composer produced no usable SVG "
