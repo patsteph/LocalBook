@@ -210,19 +210,10 @@ class StructuredLLMService:
         
         question_types = question_types or ["multiple_choice", "true_false", "fill_in_the_blank"]
 
-        # Auto-detect topics that benefit from visual diagrams (architecture, process flows, etc.)
-        # We add visual_diagram as an option (not requirement) — LLM can use it when appropriate.
-        visual_keywords = [
-            'architecture', 'pipeline', 'workflow', 'process flow', 'diagram',
-            'layered', 'stack', 'topology', 'framework structure', 'system design',
-            'data flow', 'rag pipeline', 'neural network', 'lifecycle', 'phases',
-        ]
-        content_lower = content.lower()[:2000]  # Check first 2KB only for speed
-        has_visual_content = any(kw in content_lower for kw in visual_keywords)
-        if has_visual_content and 'visual_diagram' not in question_types:
-            # Allow but don't require visual_diagram questions
-            logger.info(f"[Quiz] Detected visual-friendly content, making visual_diagram available")
-            question_types = list(question_types) + ['visual_diagram']
+        # Quiz visuals PULLED (2026-07-01): gemma4 can't reliably author labeled
+        # inline SVG, so we no longer auto-add visual_diagram — it only bloated the
+        # prompt (a ~500-token SVG example) and risked blank-box questions. Revisit
+        # via a labels→template approach if quiz diagrams are wanted later.
 
         types_str = ", ".join(question_types)
 
@@ -869,9 +860,9 @@ Return ONLY a JSON object like this:
             if q.question_type == 'fill_in_the_blank' and answer_word_count > 6:
                 logger.info(f"[Quiz Sanitize] fill_in_the_blank too long ({answer_word_count} words), converting to short_answer: '{q.question[:40]}'")
                 q.question_type = 'short_answer'
-            if q.question_type == 'multiple_choice' and answer_word_count > 10:
-                logger.info(f"[Quiz Sanitize] MC answer too long ({answer_word_count} words), dropping: '{q.question[:40]}'")
-                continue
+            # multiple_choice answers are SELECTED, not typed — a long answer just
+            # means a longer option, which is fine. No length-drop here (repair-not-
+            # drop); only short_answer / fill_in (typed) enforce brevity above.
 
             # Explanation length cap — truncate if the LLM dumped a wall of text
             raw_explanation = str(q.explanation or '').strip()
