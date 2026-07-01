@@ -260,6 +260,32 @@ async def generate_quiz(request: GenerateQuizRequest):
                 detail="Quiz generation produced no valid questions. The source material may be too short or off-topic. Try adding more sources or changing the topic."
             )
 
+        # Explicit visuals opt-in: gemma can't reliably author SVG, so compose ONE
+        # diagram via the proven visual pipeline (Klein / SVG templates + critic)
+        # and attach it to a question that lacks one, as a supporting illustration.
+        # Best-effort + bounded — a failure or a Mermaid-only result never blocks
+        # the quiz. Only runs when the user opted in (adds ~1-3 min).
+        if require_visuals:
+            try:
+                from services.visual_composer import VisualComposer
+                composed = await VisualComposer().compose(
+                    content=content[:4000],
+                    topic=quiz_output.topic or request.topic or "",
+                )
+                if composed and composed.success and composed.svg_markup:
+                    target = next((q for q in quiz_output.questions if not q.visual_svg), None)
+                    if target is not None:
+                        target.visual_svg = composed.svg_markup
+                        logger.info(f"[Quiz] attached visual_composer diagram (path={getattr(composed, 'path', '?')})")
+                else:
+                    logger.info(
+                        f"[Quiz] visual_composer produced no usable SVG "
+                        f"(success={getattr(composed, 'success', None)}, "
+                        f"mermaid_only={bool(getattr(composed, 'mermaid_code', None))})"
+                    )
+            except Exception as e:
+                logger.warning(f"[Quiz] visual_composer diagram failed: {e}")
+
         # Create quiz response
         import uuid
         quiz_id = str(uuid.uuid4())[:8]
