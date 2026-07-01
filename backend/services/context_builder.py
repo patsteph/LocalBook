@@ -138,6 +138,22 @@ CONTEXT_PROFILES: Dict[str, ContextProfile] = {
 }
 
 
+def _window_char_budget(output_reserve_tokens: int = 7000, chars_per_token: int = 3) -> int:
+    """Max context chars that fit the main model's effective num_ctx window while
+    leaving room for the system prompt + generated output. Tier-aware — scales with
+    RAM via ollama_service.effective_num_ctx_cap — so bigger Macs assemble more.
+    Uses the same conservative 3-chars/token ratio as compute_num_ctx so the two
+    reconcile (assembly never over-fills the window the model is given)."""
+    try:
+        from services.ollama_service import effective_num_ctx_cap
+        from config import settings
+        cap_tokens = effective_num_ctx_cap(settings.ollama_model)
+        usable = max(4000, cap_tokens - output_reserve_tokens)
+        return usable * chars_per_token
+    except Exception:
+        return 28000  # safe 16-18GB-gemma default
+
+
 @dataclass
 class BuiltContext:
     """Result of context building — everything needed for content generation."""
@@ -203,10 +219,16 @@ class ContextBuilder:
         
         # Get profile for this output type
         profile = self._get_profile(skill_id, duration_minutes)
-        
+
+        # Reconcile the assembly budget with the model's ACTUAL window (tier-aware):
+        # the char budget must leave room for the system prompt + generated output
+        # inside num_ctx, else the model silently truncates the prompt. Caps ~28K on
+        # 16-18GB gemma; bigger-RAM machines get proportionally more.
+        budget_chars = min(profile.total_context_chars, _window_char_budget())
+
         logger.info(f"[ContextBuilder] Building context for skill={skill_id}, "
                     f"topic={topic or 'none'}, profile={profile.strategy}, "
-                    f"budget={profile.total_context_chars} chars")
+                    f"budget={budget_chars} chars (profile={profile.total_context_chars}, window-capped)")
         
         # Import here to avoid circular imports
         from storage.source_store import source_store
@@ -248,8 +270,8 @@ class ContextBuilder:
         
         # Step 6: Assemble final context within budget
         context = "\n\n---\n\n".join(context_parts)
-        if len(context) > profile.total_context_chars:
-            context = context[:profile.total_context_chars]
+        if len(context) > budget_chars:
+            context = context[:budget_chars]
 
         # Step 6.5 — Tag headers with `[Sn]` for the citation contract.
         # Each `_build_*_context` method emits "## Source: <filename>" headers;
