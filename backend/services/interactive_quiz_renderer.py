@@ -313,13 +313,13 @@ def quiz_to_interactive_html(
     return (
         "<!DOCTYPE html><html><head>"
         f"<meta charset='utf-8'><title>{title_safe}</title>"
-        # CSP: block ALL network (default-src 'none') so even a payload that
-        # slips the SVG sanitizer cannot phone home; inline style+script are the
-        # renderer's own CSS + bridge; img-src data: is belt-and-braces (we strip
-        # <image> anyway). Keeps the documented "no external resources" contract.
-        "<meta http-equiv=\"Content-Security-Policy\" "
-        "content=\"default-src 'none'; style-src 'unsafe-inline'; "
-        "script-src 'unsafe-inline'; img-src data:\">"
+        # NO meta-CSP here: WKWebView (this app's engine) does not reliably honor
+        # `script-src 'unsafe-inline'` for an inline <script> inside a sandboxed
+        # srcdoc iframe, which silently kills the bridge script (no resize, dead
+        # Check button). Isolation is already provided by sandbox="allow-scripts"
+        # (opaque origin — no parent/storage/IPC), the server-side SVG sanitizer
+        # (strips <script>/<image>/external refs), and the parent's strict
+        # postMessage source check. A CSP added no coverage the sanitizer lacks.
         f"<style>{_styles()}</style>"
         "</head><body>"
         '<div class="lb-progress" id="lb-progress">0 of 0 answered correctly · '
