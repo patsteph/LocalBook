@@ -204,8 +204,7 @@ class StructuredLLMService:
         num_questions: int = 5,
         difficulty: str = "medium",
         question_types: Optional[List[str]] = None,
-        source_names: Optional[List[str]] = None,
-        require_visuals: bool = False,
+        source_names: Optional[List[str]] = None
     ) -> QuizOutput:
         """Generate a professional-quality quiz from content with structured output."""
         
@@ -244,19 +243,10 @@ class StructuredLLMService:
             parts = [f"~{share}% {qt}" for qt in primary_types]
             visual_note = ""
             if 'visual_diagram' in question_types:
-                if require_visuals:
-                    # Explicit user opt-in — compel at least one diagram.
-                    visual_note = (
-                        "- visual_diagram: You MUST include at least 1 (ideally 2) visual_diagram question — the "
-                        "user explicitly asked for diagrams. Find ANY labeled structure to diagram: process/pipeline "
-                        "steps, system components, a hierarchy, categories, or how parts relate. A simple 3-5 box "
-                        "diagram is fine. Skip ONLY if the content is truly abstract with no nameable parts.\n"
-                    )
-                else:
-                    visual_note = (
-                        "- visual_diagram: aim for 1-2 cards TOTAL (not a share of the deck), and ONLY when the "
-                        "content describes a concrete labeled structure (architecture layers, pipeline stages, OSI model, etc.).\n"
-                    )
+                visual_note = (
+                    "- visual_diagram: aim for 1-2 cards TOTAL (not a share of the deck), and ONLY when the "
+                    "content describes a concrete labeled structure (architecture layers, pipeline stages, OSI model, etc.).\n"
+                )
             mix_str = (
                 "\n\nQUESTION TYPE MIX (MANDATORY):\n"
                 f"- Generate {generation_target} questions spread roughly evenly across these types: "
@@ -451,7 +441,10 @@ Return ONLY a JSON object like this:
                 predict_tokens = max(4000, generation_target * 350 + 800)
                 result = await self._call_ollama_json(
                     use_prompt,
-                    f"Content:\n{content[:12000]}",
+                    # 24000 chars (~6K tokens) now fits the properly-sized context
+                    # window (the num_ctx fix); the old 12000 slice threw away half
+                    # the context_builder's 28000-char quiz context.
+                    f"Content:\n{content[:24000]}",
                     temperature=0.2 + (attempt * 0.1),
                     timeout_seconds=120.0,
                     num_predict=predict_tokens,
@@ -470,14 +463,13 @@ Return ONLY a JSON object like this:
                         source_content=content,
                         requested_difficulty=difficulty,
                     )
-                    # Emergency fallback: if sanitizer killed everything, keep raw questions
-                    if not sanitized and quiz.questions and attempt == self.max_retries - 1:
-                        logger.warning(f"[Quiz] Sanitizer dropped all {len(quiz.questions)} questions — returning raw as emergency fallback")
-                        sanitized = quiz.questions[:num_questions]
-                    if 'visual_diagram' in (question_types or []):
-                        _rawv = sum(1 for q in quiz.questions if q.question_type == 'visual_diagram')
-                        _sanv = sum(1 for q in (sanitized or []) if q.question_type == 'visual_diagram')
-                        logger.info(f"[Quiz] visual_diagram: LLM produced {_rawv}, {_sanv} survived sanitize (attempt {attempt+1})")
+                    # 2026-07-01: NO raw-shipping fallback. With repair-not-drop the
+                    # sanitizer keeps valid questions; if it still drops everything the
+                    # questions are genuinely malformed — return fewer (or let the
+                    # endpoint 503) rather than ship known-broken questions (the "answers
+                    # not in options" quiz the user hit came from shipping raw rejects).
+                    if not sanitized and quiz.questions:
+                        logger.warning(f"[Quiz] All {len(quiz.questions)} questions failed validation this attempt — not shipping raw")
                     if sanitized:
                         # Trim to exact requested count, prioritizing variety of question types
                         if len(sanitized) > num_questions:
@@ -799,20 +791,17 @@ Return ONLY a JSON object like this:
                 # require it. Model may have labeled some questions easier
                 # than asked; that's an honest downgrade and we let it pass
                 # only when caller asked for "easy" or "any".
-                if requested_difficulty.lower() == "medium" and effective_difficulty == "medium":
-                    if not q.applied_scenario or len(q.applied_scenario.strip()) < 20:
-                        logger.info(
-                            f"[Quiz Sanitize] Dropped medium-difficulty q without applied_scenario: '{q.question[:40]}'"
-                        )
-                        continue
-                if requested_difficulty.lower() == "hard" and effective_difficulty == "hard":
-                    chunks = q.chunks_combined or []
-                    distinct = {str(c).strip().upper() for c in chunks if str(c).strip()}
+                # Repair-not-drop (2026-07-01): a mislabeled difficulty is not a
+                # reason to discard an otherwise-valid question — downgrade it to a
+                # level whose structural requirements it DOES meet, and keep it.
+                # (A small local model can't reliably hit the applied-scenario /
+                # cross-chunk bar, and mass-dropping left users with 1/5 quizzes.)
+                if effective_difficulty == "medium" and (not q.applied_scenario or len(q.applied_scenario.strip()) < 20):
+                    q.difficulty = "easy"
+                elif effective_difficulty == "hard":
+                    distinct = {str(c).strip().upper() for c in (q.chunks_combined or []) if str(c).strip()}
                     if len(distinct) < 2:
-                        logger.info(
-                            f"[Quiz Sanitize] Dropped hard-difficulty q without ≥2 chunks_combined: '{q.question[:40]}'"
-                        )
-                        continue
+                        q.difficulty = "medium" if (q.applied_scenario and len(q.applied_scenario.strip()) >= 20) else "easy"
 
             # multiple_choice: answer must be in options (should already be true
             # from parsing, but re-check as a safety net)
@@ -847,28 +836,23 @@ Return ONLY a JSON object like this:
                                     matched = True
                                     break
                             if not matched:
-                                # Drop rather than convert — preserves type variety.
-                                # If short_answer IS in allowed types, convert to preserve the card.
-                                if can_fallback_short:
-                                    logger.info(f"[Quiz Sanitize] MC answer not in options, converting to short_answer: q='{q.question[:40]}' a='{ans[:30]}'")
-                                    q.question_type = 'short_answer'
-                                    q.options = None
+                                # Repair-not-drop: inject the correct answer as an
+                                # option so the MC is answerable (fixes the "right
+                                # answer isn't among the choices" quiz the user hit).
+                                if len(opts) >= 4:
+                                    opts[-1] = ans  # replace one distractor with the answer
+                                    q.options = opts
                                 else:
-                                    logger.info(f"[Quiz Sanitize] MC answer not in options, dropping (short_answer not allowed): q='{q.question[:40]}' a='{ans[:30]}'")
-                                    continue
-                # MC needs 2+ options; if fewer, drop or convert
+                                    q.options = opts + [ans]
+                                q.answer = ans
+                                logger.info(f"[Quiz Sanitize] MC answer not in options — injected it as a choice: '{ans[:30]}'")
+                # MC needs 2+ options (re-read; may have been repaired above). A 2-3
+                # option MC is a valid, easier question — keep it, don't drop for <4.
                 if q.question_type == 'multiple_choice':
+                    opts = [str(o).strip() for o in (q.options or [])]
                     if len(opts) < 2:
                         logger.info(f"[Quiz Sanitize] MC has < 2 options, dropping")
                         continue
-                    if len(opts) < 4:
-                        if can_fallback_short:
-                            logger.info(f"[Quiz Sanitize] MC has only {len(opts)} options, converting to short_answer")
-                            q.question_type = 'short_answer'
-                            q.options = None
-                        else:
-                            logger.info(f"[Quiz Sanitize] MC has only {len(opts)} options, dropping")
-                            continue
 
             # Answer length enforcement: flashcard answers must be quick to type/read
             # If too long, keep the question but truncate/convert rather than dropping

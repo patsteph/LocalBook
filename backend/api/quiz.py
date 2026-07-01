@@ -237,11 +237,6 @@ async def generate_quiz(request: GenerateQuizRequest):
 
 {content}"""
         
-        # Explicit opt-in — the Studio "Include diagrams" toggle passes
-        # visual_diagram in question_types — should COMPEL at least one diagram,
-        # unlike the passive keyword auto-detect which leaves it optional.
-        require_visuals = bool(request.question_types and 'visual_diagram' in request.question_types)
-
         # Generate quiz using structured LLM
         quiz_output = await structured_llm.generate_quiz(
             content=content,
@@ -249,57 +244,13 @@ async def generate_quiz(request: GenerateQuizRequest):
             difficulty=request.difficulty,
             question_types=request.question_types,
             source_names=built.source_names,
-            require_visuals=require_visuals,
         )
-        _vis_n = sum(1 for q in quiz_output.questions if q.question_type == 'visual_diagram')
-        logger.info(f"[Quiz] {len(quiz_output.questions)} questions returned, {_vis_n} visual_diagram (require_visuals={require_visuals})")
 
         if not quiz_output.questions:
             raise HTTPException(
                 status_code=503,
                 detail="Quiz generation produced no valid questions. The source material may be too short or off-topic. Try adding more sources or changing the topic."
             )
-
-        # Explicit visuals opt-in: gemma can't reliably author SVG, so compose ONE
-        # diagram via the proven visual pipeline (Klein / SVG templates + critic)
-        # and attach it to a question that lacks one, as a supporting illustration.
-        # Best-effort + bounded — a failure or a Mermaid-only result never blocks
-        # the quiz. Only runs when the user opted in (adds ~1-3 min).
-        if require_visuals:
-            try:
-                from services.visual_composer import VisualComposer
-                # Give the composer a FOCUSED diagram brief — the quiz's subject plus
-                # the concepts it covers — NOT the raw quiz instruction + 4000 chars of
-                # mixed source. The unfocused input made the slot-fill draw empty,
-                # label-less boxes; docs get good visuals precisely because they hand
-                # the composer a focused hint.
-                _subject = quiz_output.topic or request.topic or "this topic"
-                _concepts = "\n".join(f"- {q.question}" for q in quiz_output.questions[:8])
-                diagram_brief = (
-                    f"Diagram the key components or stages of: {_subject}. "
-                    f"Label each part clearly and show how they connect.\n\n"
-                    f"Concepts the quiz covers:\n{_concepts}"
-                )
-                composed = await VisualComposer().compose(content=diagram_brief, topic=_subject)
-                if composed and composed.success and composed.svg_markup:
-                    _svg = composed.svg_markup
-                    # Diagnostic: <text> count distinguishes a content problem (0 labels)
-                    # from a rendering/visibility problem (labels present but not shown).
-                    logger.info(
-                        f"[Quiz] composer SVG: {len(_svg)} chars, {_svg.count('<text')} <text> els, "
-                        f"path={getattr(composed, 'path', '?')}"
-                    )
-                    target = next((q for q in quiz_output.questions if not q.visual_svg), None)
-                    if target is not None:
-                        target.visual_svg = _svg
-                else:
-                    logger.info(
-                        f"[Quiz] visual_composer produced no usable SVG "
-                        f"(success={getattr(composed, 'success', None)}, "
-                        f"mermaid_only={bool(getattr(composed, 'mermaid_code', None))})"
-                    )
-            except Exception as e:
-                logger.warning(f"[Quiz] visual_composer diagram failed: {e}")
 
         # Create quiz response
         import uuid

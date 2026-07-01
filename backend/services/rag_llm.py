@@ -109,17 +109,17 @@ async def call_ollama(
         from services.voice_modifier import voiced_system as _voiced
         system_prompt = _voiced(system_prompt, model_name=use_model) or system_prompt
     options = {**model_defaults, "num_predict": num_predict}
+    # num_ctx sizing via the shared helper so chat/RAG and every structured caller
+    # share ONE cap-aware, RAM-tier-aware rule (compute_num_ctx also applies the
+    # per-model cap, so the old rag_profile cap line is folded in). Lazy import
+    # avoids a circular dependency with ollama_service.
     if num_ctx is not None:
         options["num_ctx"] = num_ctx
-    elif num_predict > 500:
-        # Auto-size context window for document generation:
-        # estimate prompt tokens (~1 token per 4 chars) + generation headroom
-        prompt_text = f"{system_prompt}\n\n{prompt}"
-        estimated_prompt_tokens = len(prompt_text) // 3  # conservative estimate
-        options["num_ctx"] = max(8192, estimated_prompt_tokens + num_predict + 512)
-    # Apply num_ctx hard cap from rag_profile (e.g. Gemma4 perf cliff at 16K)
-    if rag_profile.get("num_ctx_cap") and "num_ctx" in options:
-        options["num_ctx"] = min(options["num_ctx"], rag_profile["num_ctx_cap"])
+    else:
+        from services.ollama_service import compute_num_ctx
+        _nc = compute_num_ctx(use_model, f"{system_prompt}\n\n{prompt}", num_predict)
+        if _nc:
+            options["num_ctx"] = _nc
     # Temperature priority: explicit arg > rag_profile > ollama_options
     if temperature is not None:
         options["temperature"] = temperature
@@ -326,17 +326,10 @@ async def stream_ollama(
         mode_str = " [Deep Think]" if deep_think else (" [Fast]" if use_fast_model else "")
         print(f"Streaming from Ollama with model: {model}{mode_str} (temp={temperature}, num_predict={effective_num_predict})")
         
-        # Auto-size context window for document generation
-        is_doc_gen = num_predict is not None and num_predict > 500
-        if is_doc_gen:
-            prompt_text = f"{system_prompt}\n\n{prompt}"
-            estimated_prompt_tokens = len(prompt_text) // 3
-            effective_num_ctx = max(8192, estimated_prompt_tokens + effective_num_predict + 512)
-        else:
-            effective_num_ctx = 8192
-        # Apply num_ctx hard cap from rag_profile (e.g. Gemma4 perf cliff at 16K)
-        if rag_profile.get("num_ctx_cap"):
-            effective_num_ctx = min(effective_num_ctx, rag_profile["num_ctx_cap"])
+        # Auto-size context window via the shared helper (one sizing rule app-wide);
+        # floor at 8192 for streaming (chat) exactly as before.
+        from services.ollama_service import compute_num_ctx
+        effective_num_ctx = compute_num_ctx(model, f"{system_prompt}\n\n{prompt}", effective_num_predict) or 8192
 
         # Repetition / coherence control — same strategy as non-streaming path
         # Start with model-specific base options, then layer on call-specific params

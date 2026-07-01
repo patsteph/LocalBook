@@ -285,11 +285,82 @@ def _apply_rag_profile(
         return None
     cap = rp.get("num_ctx_cap")
     if cap and "num_ctx" in options:
-        options["num_ctx"] = min(options["num_ctx"], cap)
+        # Cap at the RAM-tier-aware effective cap (NOT the raw base cap) so this
+        # overlay doesn't undo num_ctx scaling on bigger-RAM machines.
+        options["num_ctx"] = min(options["num_ctx"], effective_num_ctx_cap(model))
     stops = rp.get("stop_sequences")
     if stops and "stop" not in options:
         options["stop"] = list(stops)
     return rp.get("think")
+
+
+# ── num_ctx sizing (2026-07-01) — ONE source of truth for the context window ──
+# Root fix for the "~2048 default" clog: callers through ollama_service never set
+# num_ctx, so Ollama fell back to its small default and truncated large prompts /
+# long JSON output (the quiz "1090-token" truncation, empty-SVG diagrams, choked
+# ingest). This mirrors rag_llm's auto-size formula and is shared by both wrappers.
+# The cap is RAM-tier-aware: 16-18GB machines keep the safe 16K/8K baseline; bigger
+# Macs step up (2x / 4x), bounded by the model's native context window.
+_TOTAL_RAM_GB: Optional[float] = None
+
+
+def _total_ram_gb() -> float:
+    global _TOTAL_RAM_GB
+    if _TOTAL_RAM_GB is None:
+        try:
+            import psutil
+            _TOTAL_RAM_GB = psutil.virtual_memory().total / (1024 ** 3)
+        except Exception:
+            logger.warning("[ollama-service] psutil unavailable; assuming 16 GB for num_ctx tiering")
+            _TOTAL_RAM_GB = 16.0
+    return _TOTAL_RAM_GB
+
+
+def _ram_ctx_multiplier() -> int:
+    """Scale the num_ctx cap by system RAM — mirrors the 'more concurrent models on
+    more RAM' policy. 16-18GB stays at the baseline; 24-32GB doubles; 48GB+ 4x."""
+    ram = _total_ram_gb()
+    if ram <= 20:
+        return 1
+    if ram <= 36:
+        return 2
+    return 4
+
+
+def _model_ctx_limits(model: str) -> tuple:
+    """(base num_ctx_cap for 16-18GB, native context_window) from the registry."""
+    base_cap, native = 8192, 131072
+    try:
+        from evaluator.model_registry import model_registry
+        info = model_registry.get_model(model)
+        if info:
+            rp = getattr(info, "rag_profile", None) or {}
+            base_cap = rp.get("num_ctx_cap") or base_cap
+            native = getattr(info, "context_window", None) or native
+    except Exception as _e:
+        logger.debug(f"[ollama-service] ctx limits lookup failed: {_e}")
+    return base_cap, native
+
+
+def effective_num_ctx_cap(model: str) -> int:
+    """RAM-tier-aware num_ctx cap: baseline cap × RAM multiplier, bounded by the
+    model's native window. On 16-18GB this equals the known_models.json cap."""
+    base_cap, native = _model_ctx_limits(model)
+    return min(base_cap * _ram_ctx_multiplier(), native)
+
+
+def compute_num_ctx(model: str, prompt_text: str, num_predict: Optional[int]) -> Optional[int]:
+    """Auto-size the Ollama context window so input + output fit, capped at the
+    RAM-tier-aware effective cap. Returns None (leave Ollama's default) only for
+    genuinely tiny calls (short prompt AND small output) to conserve KV-cache
+    memory. Triggers on large INPUT too (not just num_predict>500), so big-input
+    ingest calls aren't silently truncated."""
+    np = num_predict or 0
+    est_prompt_tokens = len(prompt_text or "") // 3  # ~1 token / 3 chars (conservative)
+    needed = est_prompt_tokens + np + 512
+    if needed <= 1536:
+        return None
+    return min(max(8192, needed), effective_num_ctx_cap(model))
 
 
 def _record_tokens(data: dict):
@@ -401,6 +472,14 @@ class OllamaService:
         if extra_options:
             options.update(extra_options)
 
+        # Auto-size the context window (input+output), RAM-tier-capped. Without this
+        # the caller gets Ollama's ~2048 default and truncates large prompts / long
+        # JSON output. Skip if the caller set num_ctx explicitly via extra_options.
+        if "num_ctx" not in options:
+            _nc = compute_num_ctx(use_model, f"{system or ''}\n\n{prompt or ''}", num_predict)
+            if _nc:
+                options["num_ctx"] = _nc
+
         # PB-2a: rag_profile overlay (num_ctx cap / stop sequences / think).
         _profile_think = _apply_rag_profile(use_model, options, respect_rag_profile, images)
 
@@ -465,7 +544,7 @@ class OllamaService:
             _record_tokens(result)
             _mark_model_used(use_model)
             _elapsed = time.time() - _t0
-            logger.info(f"[OllamaService] generate OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')}")
+            logger.info(f"[OllamaService] generate OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')} ctx={options.get('num_ctx', 'def')}")
             return result
         except httpx.TimeoutException:
             _elapsed = time.time() - _t0
@@ -522,6 +601,15 @@ class OllamaService:
             options["temperature"] = temperature
         if extra_options:
             options.update(extra_options)
+
+        # Auto-size the context window. Chat has no num_predict param — read it from
+        # options; estimate input from the concatenated message text. Skip if the
+        # caller set num_ctx explicitly.
+        if "num_ctx" not in options:
+            _msg_text = "\n".join(str(m.get("content") or "") for m in messages)
+            _nc = compute_num_ctx(use_model, _msg_text, options.get("num_predict"))
+            if _nc:
+                options["num_ctx"] = _nc
 
         # PB-2a: rag_profile overlay (num_ctx cap / stop sequences / think).
         _profile_think = _apply_rag_profile(use_model, options, respect_rag_profile, images)
@@ -590,7 +678,7 @@ class OllamaService:
             _record_tokens(result)
             _mark_model_used(use_model)
             _elapsed = time.time() - _t0
-            logger.info(f"[OllamaService] chat OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')}")
+            logger.info(f"[OllamaService] chat OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')} ctx={options.get('num_ctx', 'def')}")
             return result
         except httpx.TimeoutException:
             _elapsed = time.time() - _t0
@@ -859,6 +947,13 @@ class OllamaService:
             options["temperature"] = temperature
         if extra_options:
             options.update(extra_options)
+
+        # Auto-size the context window (input+output), RAM-tier-capped — same as
+        # non-streaming generate. Skip if the caller set num_ctx explicitly.
+        if "num_ctx" not in options:
+            _nc = compute_num_ctx(use_model, f"{system or ''}\n\n{prompt or ''}", num_predict)
+            if _nc:
+                options["num_ctx"] = _nc
 
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
 
