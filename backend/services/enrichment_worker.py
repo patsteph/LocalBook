@@ -53,6 +53,26 @@ _DOSE = {
     _Tier.AWAY:       (10_000, 1.5), # away / overnight → drain hard
 }
 
+# Living-view (NS-B1): the deferred graph-synthesis jobs whose completion should
+# push a per-notebook "synthesizing N/M" snapshot to the Constellation WS. Other
+# jobs (journals, digests, curator inference) drain silently.
+_GRAPH_LABELS = frozenset({"entities-daydream", "graph-deep", "community-summaries"})
+
+
+def _split_key(key: str):
+    """Parse a coalescing key 'label:nb:source' → (label, notebook_id, source_id).
+
+    Tolerates keys with no source segment (e.g. 'community-summaries:<nb>') and
+    malformed keys. Notebook/source ids are UUIDs (no ':'), so a plain split is
+    safe."""
+    if not key:
+        return None, None, None
+    parts = key.split(":")
+    label = parts[0] if parts else None
+    nb = parts[1] if len(parts) > 1 else None
+    src = parts[2] if len(parts) > 2 else None
+    return label, nb, src
+
 
 class EnrichmentWorker:
     def __init__(self) -> None:
@@ -83,6 +103,85 @@ class EnrichmentWorker:
 
     def queue_depth(self) -> int:
         return len(self._jobs)
+
+    # ── living-view: per-notebook progress (read-only over queue state) ──
+    def notebook_progress(self, notebook_id: str) -> dict:
+        """Read-only per-notebook enrichment snapshot derived from the pending
+        queue + the in-flight job. `source_ids_pending` is the set of sources
+        with outstanding entity/graph work — the living-view derives
+        N = M − len(source_ids_pending). Reaches N==M exactly when the queue
+        drains for this notebook. Approximate by design: "sources with no
+        outstanding enrichment job", not a verified per-source artifact."""
+        pending = 0
+        source_ids_pending = set()
+        for job in self._jobs.values():
+            if job.notebook_id != notebook_id:
+                continue
+            pending += 1
+            _, _, src = _split_key(job.key)
+            if src:
+                source_ids_pending.add(src)
+        running = 0
+        # The in-flight job is popped from _jobs before _run_one, so resolve its
+        # notebook/source from _current_key.
+        if self._current_key:
+            _, nb, src = _split_key(self._current_key)
+            if nb == notebook_id:
+                running = 1
+                if src:
+                    source_ids_pending.add(src)
+        return {
+            "pending": pending,
+            "running": running,
+            "last_label": self._last_run_label,
+            "source_ids_pending": sorted(source_ids_pending),
+        }
+
+    def progress_by_notebook(self) -> Dict[str, dict]:
+        """Per-notebook snapshots for every notebook with queued/running work."""
+        notebooks = set()
+        for job in self._jobs.values():
+            if job.notebook_id:
+                notebooks.add(job.notebook_id)
+        if self._current_key:
+            _, nb, _ = _split_key(self._current_key)
+            if nb:
+                notebooks.add(nb)
+        return {nb: self.notebook_progress(nb) for nb in notebooks}
+
+    async def _broadcast_synthesis(self, notebook_id: str) -> None:
+        """Compose + push the per-notebook synthesis snapshot to the Constellation
+        WS. Lazy imports avoid an import cycle; best-effort (caller guards)."""
+        prog = self.notebook_progress(notebook_id)
+        total = 0
+        try:
+            from storage.source_store import source_store
+            sources = await source_store.list(notebook_id)
+            total = sum(1 for s in sources if s.get("status") == "completed")
+        except Exception:
+            pass
+        synthesized = max(0, total - len(prog["source_ids_pending"]))
+        communities_built = 0
+        communities_total = 0
+        try:
+            from services.community_detection import community_detector
+            communities_total = len(community_detector.get_all_communities(notebook_id))
+            communities_built = max(
+                0, communities_total - community_detector.count_missing_summaries(notebook_id)
+            )
+        except Exception:
+            pass
+        from api.constellation_ws import notify_synthesis_progress
+        await notify_synthesis_progress({
+            "notebook_id": notebook_id,
+            "synthesized": synthesized,
+            "total": total,
+            "pending_jobs": prog["pending"],
+            "running_jobs": prog["running"],
+            "last_label": prog["last_label"],
+            "communities_built": communities_built,
+            "communities_total": communities_total,
+        })
 
     async def start(self) -> None:
         if self._running:
@@ -230,6 +329,18 @@ class EnrichmentWorker:
             self._last_run = time.time()
             self._last_run_label = job.label
             self._current_key = None
+            # Living-view (NS-B1): on GENUINE completion of a graph-enrichment job,
+            # push the notebook's fresh "synthesizing N/M" snapshot. Skip the
+            # cancelled/re-queued path (progress hasn't advanced) and never raise —
+            # the worker's finally must not stall the single chokepoint. _current_key
+            # is already cleared above so the finished job isn't counted as running.
+            if not cancelled and job.notebook_id and job.label in _GRAPH_LABELS:
+                try:
+                    await self._broadcast_synthesis(job.notebook_id)
+                except Exception as e:
+                    logger.debug(
+                        f"[enrichment-worker] synthesis broadcast failed: {e}"
+                    )
 
 
 # Module-level singleton — import and `enqueue` from anywhere.

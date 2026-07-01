@@ -263,7 +263,6 @@ Respond with JSON only:
             memory_store.record_user_signal(
                 notebook_id=notebook_id,
                 signal_type="user_capture",
-                signal_value=1.0,  # Strong positive
                 metadata={
                     "title": title[:200],
                     "url": url,
@@ -280,7 +279,6 @@ Respond with JSON only:
                 memory_store.record_user_signal(
                     notebook_id=notebook_id,
                     signal_type="topic_interest",
-                    signal_value=1.0,
                     metadata={"topic": topic, "source": "user_capture"}
                 )
             

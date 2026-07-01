@@ -123,7 +123,6 @@ async def create_highlight(highlight: HighlightCreate):
             memory_store.record_user_signal(
                 notebook_id=highlight.notebook_id,
                 signal_type="content_highlighted",
-                signal_value=1.0,
                 metadata={
                     "source_id": highlight.source_id,
                     "text_preview": highlight.highlighted_text[:200],

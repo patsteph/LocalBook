@@ -89,6 +89,8 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
   const [insightCount, setInsightCount] = useState(0);
   const [scanningInsights, setScanningInsights] = useState(false);
   const [processingSources, setProcessingSources] = useState<Set<string>>(new Set());  // Track sources being processed
+  // Living-view: "synthesizing N/M sources" partial-state indicator (NS-B1).
+  const [synthProgress, setSynthProgress] = useState<{ synthesized: number; total: number; communities_built: number; communities_total: number } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const notebookIdRef = useRef<string | null>(notebookId);
   const autoBuiltNotebooks = useRef<Set<string>>(new Set());  // Track auto-triggered builds to prevent loops
@@ -117,6 +119,13 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
   
   // Store original positions for animation
   const originalPositionsRef = useRef<Map<string, THREE.Vector3>>(new Map());
+  // Living-view: persistent resting positions (stability across incremental
+  // updates) + the last data/layout so the synthesis-progress WS event can
+  // re-emphasize edges without a full reload, + the enrichment emphasis (0..1).
+  const layoutPositionsRef = useRef<Map<string, THREE.Vector3>>(new Map());
+  const lastDataRef = useRef<GraphData | null>(null);
+  const lastLayoutRef = useRef<any>(null);
+  const enrichmentEmphasisRef = useRef<number>(1);
   
   // Animate camera to focus on a node and bring connected nodes closer
   const focusOnNode = useCallback((nodeId: string) => {
@@ -888,6 +897,25 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
                   }
                 }
                 break;
+              case 'synthesis_progress': {
+                // Living-view (NS-B1): per-notebook "synthesizing N/M" from the
+                // enrichment worker. Update the indicator + re-emphasize the
+                // existing edges IN PLACE — no reload, no node churn.
+                const d = message.data;
+                if (d && d.notebook_id === notebookIdRef.current) {
+                  setSynthProgress({
+                    synthesized: d.synthesized ?? 0,
+                    total: d.total ?? 0,
+                    communities_built: d.communities_built ?? 0,
+                    communities_total: d.communities_total ?? 0,
+                  });
+                  enrichmentEmphasisRef.current = d.total > 0 ? (d.synthesized ?? 0) / d.total : 1;
+                  if (lastDataRef.current && lastLayoutRef.current) {
+                    updateEdges(lastDataRef.current, lastLayoutRef.current);
+                  }
+                }
+                break;
+              }
             }
           } catch (err) {
             console.error('WebSocket parse error:', err);
@@ -926,6 +954,31 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
       loadStats();
     }
   }, [notebookId, crossNotebook]);
+
+  // Living-view (NS-B1): seed the "synthesizing N/M" indicator on notebook change
+  // from the per-notebook schedule snapshot, so it shows before the first WS event.
+  useEffect(() => {
+    if (!notebookId) { setSynthProgress(null); enrichmentEmphasisRef.current = 1; return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await localFetch(`${API_BASE}/system/schedule/${notebookId}`);
+        if (!res.ok) return;
+        const d = await res.json();
+        if (cancelled || notebookIdRef.current !== notebookId) return;
+        if (d && typeof d.total === 'number') {
+          setSynthProgress({
+            synthesized: d.synthesized ?? 0,
+            total: d.total ?? 0,
+            communities_built: d.communities_built ?? 0,
+            communities_total: d.communities_total ?? 0,
+          });
+          enrichmentEmphasisRef.current = d.total > 0 ? (d.synthesized ?? 0) / d.total : 1;
+        }
+      } catch { /* observability only — ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [notebookId]);
 
   // Auto-refresh while building (reduced frequency to save resources)
   useEffect(() => {
@@ -1015,289 +1068,268 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
     }
   };
 
-  const updateScene = useCallback((data: GraphData) => {
-    const scene = sceneRef.current;
-    if (!scene) {
-      return;
-    }
-    
-    // Clear existing tracked objects
-    nodesRef.current.forEach(mesh => {
-      scene.remove(mesh);
-      mesh.geometry.dispose();
-      (mesh.material as THREE.Material).dispose();
-    });
-    labelsRef.current.forEach(sprite => {
-      scene.remove(sprite);
-      sprite.material.dispose();
-    });
-    nodesRef.current.clear();
-    labelsRef.current.clear();
-    originalPositionsRef.current.clear();
-    
-    // Remove lines (they aren't tracked in refs)
-    const linesToRemove = scene.children.filter(child => child instanceof THREE.Line);
-    linesToRemove.forEach(line => {
-      scene.remove(line);
-      (line as THREE.Line).geometry.dispose();
-      ((line as THREE.Line).material as THREE.Material).dispose();
-    });
-    
-    if (data.nodes.length === 0) return;
-    
-    // Count connections and rank nodes
+  // ── Living-view: incremental scene updates (skeleton-instant, no teardown flicker) ──
+  // Split the old teardown+rebuild into computeLayout / updateNodes / updateEdges so
+  // graph updates diff against the existing Three.js objects instead of blanking the
+  // scene. Existing nodes keep their position (stored in layoutPositionsRef); only new
+  // ids get a fresh slot; label textures regenerate only when the topic name changes.
+  type Layout = {
+    nodePositions: Record<string, THREE.Vector3>;
+    connectionCounts: Record<string, number>;
+    top25Ids: Set<string>;
+    maxConnections: number;
+    nodeClusterColor: Record<string, number>;
+  };
+
+  const computeLayout = useCallback((data: GraphData): Layout => {
     const connectionCounts: Record<string, number> = {};
     for (const edge of data.edges) {
       connectionCounts[edge.source] = (connectionCounts[edge.source] || 0) + 1;
       connectionCounts[edge.target] = (connectionCounts[edge.target] || 0) + 1;
     }
-    
-    // Sort nodes by connection count to find top 25 "membrane" nodes
-    const sortedByConnections = [...data.nodes].sort((a, b) => 
+    const sortedByConnections = [...data.nodes].sort((a, b) =>
       (connectionCounts[b.id] || 0) - (connectionCounts[a.id] || 0)
     );
     const top25Ids = new Set(sortedByConnections.slice(0, 25).map(n => n.id));
     const maxConnections = Math.max(...Object.values(connectionCounts), 1);
-    
-    // Create cluster color mapping - each cluster gets a distinct color
-    const clusterColors: Record<string, number> = {};
+
     const colorPalette = [
-      0x6366F1,  // Indigo
-      0x8B5CF6,  // Violet
-      0xEC4899,  // Pink
-      0x14B8A6,  // Teal
-      0xF59E0B,  // Amber
-      0x10B981,  // Emerald
-      0x3B82F6,  // Blue
-      0xEF4444,  // Red
-      0x06B6D4,  // Cyan
-      0x84CC16,  // Lime
-      0xA855F7,  // Purple
-      0xF97316,  // Orange
+      0x6366F1, 0x8B5CF6, 0xEC4899, 0x14B8A6, 0xF59E0B, 0x10B981,
+      0x3B82F6, 0xEF4444, 0x06B6D4, 0x84CC16, 0xA855F7, 0xF97316,
     ];
-    
-    // Map each node to its cluster color
     const nodeClusterColor: Record<string, number> = {};
     if (data.clusters && data.clusters.length > 0) {
       data.clusters.forEach((cluster, idx) => {
         const color = colorPalette[idx % colorPalette.length];
-        clusterColors[cluster.id] = color;
-        cluster.concept_ids.forEach(conceptId => {
-          nodeClusterColor[conceptId] = color;
-        });
+        cluster.concept_ids.forEach(conceptId => { nodeClusterColor[conceptId] = color; });
       });
     }
-    
-    // Position nodes - CELL METAPHOR
-    // Top 25 = outer membrane (visible shell)
-    // Minor nodes = inner cytoplasm (hidden until zoom)
+
     const nodePositions: Record<string, THREE.Vector3> = {};
-    
-    // First, position top 25 on outer shell
-    let topIndex = 0;
     const topNodes = data.nodes.filter(n => top25Ids.has(n.id));
     const minorNodes = data.nodes.filter(n => !top25Ids.has(n.id));
-    
+
+    // Top 25 on the outer shell — reuse a stored slot if we've placed this node before.
+    let topIndex = 0;
     topNodes.forEach((node) => {
-      const connections = connectionCounts[node.id] || 0;
-      const importance = connections / maxConnections;
-      
-      // Evenly distribute on outer sphere
+      const stored = layoutPositionsRef.current.get(node.id);
+      if (stored) { nodePositions[node.id] = stored; topIndex++; return; }
       const outerRadius = 90;
       const phi = Math.acos(-1 + (2 * topIndex + 1) / (topNodes.length + 1));
-      const theta = Math.PI * (1 + Math.sqrt(5)) * topIndex; // Golden angle
-      
-      const x = outerRadius * Math.sin(phi) * Math.cos(theta);
-      const y = outerRadius * Math.sin(phi) * Math.sin(theta);
-      const z = outerRadius * Math.cos(phi);
-      
-      nodePositions[node.id] = new THREE.Vector3(x, y, z);
+      const theta = Math.PI * (1 + Math.sqrt(5)) * topIndex;  // golden angle
+      nodePositions[node.id] = new THREE.Vector3(
+        outerRadius * Math.sin(phi) * Math.cos(theta),
+        outerRadius * Math.sin(phi) * Math.sin(theta),
+        outerRadius * Math.cos(phi),
+      );
       topIndex++;
-      
-      // Clean, refined nodes
-      const nodeSize = 3 + (importance * 3);
-      const geometry = new THREE.SphereGeometry(nodeSize, 32, 32);
-      
-      // Use cluster/theme color for constellation visualization (shows theme relationships)
-      const clusterColor = nodeClusterColor[node.id] || 0x6366F1;
-      const baseColor = new THREE.Color(clusterColor);
-      const material = new THREE.MeshStandardMaterial({
-        color: baseColor,
-        emissive: baseColor,
-        emissiveIntensity: 0.25 + importance * 0.2,
-        metalness: 0.3,
-        roughness: 0.5,
-        transparent: true,
-        opacity: 0.75 + importance * 0.15,
-      });
-      
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.copy(nodePositions[node.id]);
-      mesh.userData = { nodeId: node.id, connections, isTopNode: true, clusterColor };
-      scene.add(mesh);
-      nodesRef.current.set(node.id, mesh);
-      
-      // Elegant label - use cluster color, full text with outline
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d')!;
-      canvas.width = 1024;  // Wider for full text
-      canvas.height = 128;
-      
-      const fontSize = 24 + (importance * 6);
-      ctx.font = `600 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      
-      // Draw outline first (contrasting color based on theme)
-      const isDark = document.documentElement.classList.contains('dark');
-      ctx.strokeStyle = isDark ? 'rgba(0, 0, 0, 0.8)' : 'rgba(255, 255, 255, 0.9)';
-      ctx.lineWidth = 4;
-      ctx.lineJoin = 'round';
-      ctx.strokeText(node.label, 512, 64);
-      
-      // Then fill with cluster color
-      const colorHex = '#' + baseColor.getHexString();
-      ctx.fillStyle = colorHex;
-      ctx.fillText(node.label, 512, 64);
-      
-      const texture = new THREE.CanvasTexture(canvas);
-      const spriteMaterial = new THREE.SpriteMaterial({ 
-        map: texture, 
-        transparent: true,
-        depthTest: false,
-      });
-      const sprite = new THREE.Sprite(spriteMaterial);
-      sprite.position.copy(nodePositions[node.id]);
-      sprite.position.y -= nodeSize + 8;
-      sprite.scale.set(60, 8, 1);  // Wider for full text
-      sprite.visible = true;
-      sprite.raycast = () => {};  // Disable raycasting on labels
-      
-      scene.add(sprite);
-      labelsRef.current.set(node.id, sprite);
     });
-    
-    // Position minor nodes inside - subtle interior
+
+    // Minor nodes inside — deterministic index-based jitter (no Math.random → stable
+    // re-layouts), reusing a stored slot when we have one.
     minorNodes.forEach((node, i) => {
-      const connections = connectionCounts[node.id] || 0;
-      const minorImportance = connections / maxConnections;
-      
-      // Distribute inside, with some variation
-      const innerRadius = 25 + Math.random() * 50;
-      const phi = Math.acos(-1 + (2 * i) / minorNodes.length);
-      const theta = Math.sqrt(minorNodes.length * Math.PI) * phi + Math.random() * 0.3;
-      
-      const x = innerRadius * Math.sin(phi) * Math.cos(theta);
-      const y = innerRadius * Math.sin(phi) * Math.sin(theta);
-      const z = innerRadius * Math.cos(phi);
-      
-      nodePositions[node.id] = new THREE.Vector3(x, y, z);
-      
-      // Small subtle dots - use cluster/theme color for visualization
-      const clusterColor = nodeClusterColor[node.id] || 0x6366F1;
-      const nodeSize = 1.5 + minorImportance * 1.5;
-      const geometry = new THREE.SphereGeometry(nodeSize, 12, 12);
-      const color = new THREE.Color(clusterColor);
-      const material = new THREE.MeshStandardMaterial({
-        color: color,
-        emissive: color,
-        emissiveIntensity: 0.15,
-        metalness: 0.5,
-        roughness: 0.4,
-        transparent: true,
-        opacity: 0.2 + minorImportance * 0.15,  // Subtle but visible
-      });
-      
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.copy(nodePositions[node.id]);
-      mesh.userData = { nodeId: node.id, connections, isTopNode: false, clusterColor };
-      scene.add(mesh);
-      nodesRef.current.set(node.id, mesh);
-      
-      // Create hidden label (shown on focus) - use cluster color, full text with outline
+      const stored = layoutPositionsRef.current.get(node.id);
+      if (stored) { nodePositions[node.id] = stored; return; }
+      const n = Math.max(minorNodes.length, 1);
+      const innerRadius = 25 + ((i * 37) % 50);
+      const phi = Math.acos(-1 + (2 * i) / n);
+      const theta = Math.sqrt(n * Math.PI) * phi + ((i % 10) * 0.03);
+      nodePositions[node.id] = new THREE.Vector3(
+        innerRadius * Math.sin(phi) * Math.cos(theta),
+        innerRadius * Math.sin(phi) * Math.sin(theta),
+        innerRadius * Math.cos(phi),
+      );
+    });
+
+    for (const id of Object.keys(nodePositions)) {
+      layoutPositionsRef.current.set(id, nodePositions[id]);
+    }
+    return { nodePositions, connectionCounts, top25Ids, maxConnections, nodeClusterColor };
+  }, []);
+
+  const updateNodes = useCallback((data: GraphData, layout: Layout) => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    const isDark = document.documentElement.classList.contains('dark');
+
+    const paintLabel = (label: string, colorHex: string, fontSize: number, lineWidth: number) => {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d')!;
       canvas.width = 1024;
       canvas.height = 128;
-      ctx.font = '600 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      ctx.font = `600 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      
-      // Draw outline first
-      const isDark = document.documentElement.classList.contains('dark');
       ctx.strokeStyle = isDark ? 'rgba(0, 0, 0, 0.8)' : 'rgba(255, 255, 255, 0.9)';
-      ctx.lineWidth = 3;
+      ctx.lineWidth = lineWidth;
       ctx.lineJoin = 'round';
-      ctx.strokeText(node.label, 512, 64);
-      
-      // Then fill with cluster color
-      const colorHex = '#' + color.getHexString();
+      ctx.strokeText(label, 512, 64);
       ctx.fillStyle = colorHex;
-      ctx.fillText(node.label, 512, 64);
-      
-      const texture = new THREE.CanvasTexture(canvas);
-      const spriteMaterial = new THREE.SpriteMaterial({ 
-        map: texture, 
+      ctx.fillText(label, 512, 64);
+      return new THREE.CanvasTexture(canvas);
+    };
+
+    const disposeNode = (id: string) => {
+      const mesh = nodesRef.current.get(id);
+      if (mesh) {
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+        (mesh.material as THREE.Material).dispose();
+        nodesRef.current.delete(id);
+      }
+      const sprite = labelsRef.current.get(id);
+      if (sprite) {
+        scene.remove(sprite);
+        sprite.material.map?.dispose();
+        sprite.material.dispose();
+        labelsRef.current.delete(id);
+      }
+    };
+
+    const makeNode = (node: GraphNode, pos: THREE.Vector3, isTop: boolean, importance: number, clusterColor: number) => {
+      const baseColor = new THREE.Color(clusterColor);
+      const nodeSize = isTop ? 3 + importance * 3 : 1.5 + importance * 1.5;
+      const geometry = new THREE.SphereGeometry(nodeSize, isTop ? 32 : 12, isTop ? 32 : 12);
+      const material = new THREE.MeshStandardMaterial({
+        color: baseColor,
+        emissive: baseColor,
+        emissiveIntensity: isTop ? 0.25 + importance * 0.2 : 0.15,
+        metalness: isTop ? 0.3 : 0.5,
+        roughness: isTop ? 0.5 : 0.4,
         transparent: true,
-        depthTest: false,
+        opacity: isTop ? 0.75 + importance * 0.15 : 0.2 + importance * 0.15,
       });
-      const sprite = new THREE.Sprite(spriteMaterial);
-      sprite.position.copy(nodePositions[node.id]);
-      sprite.position.y -= nodeSize + 4;
-      sprite.scale.set(50, 6, 1);  // Wider for full text
-      sprite.visible = false;  // Hidden until focused
-      sprite.raycast = () => {};  // Disable raycasting on labels
-      
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.copy(pos);
+      mesh.userData = { nodeId: node.id, connections: layout.connectionCounts[node.id] || 0, isTopNode: isTop, clusterColor, nodeSize, label: node.label };
+      scene.add(mesh);
+      nodesRef.current.set(node.id, mesh);
+
+      const colorHex = '#' + baseColor.getHexString();
+      const texture = paintLabel(node.label, colorHex, isTop ? 24 + importance * 6 : 24, isTop ? 4 : 3);
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }));
+      sprite.position.copy(pos);
+      sprite.position.y -= nodeSize + (isTop ? 8 : 4);
+      sprite.scale.set(isTop ? 60 : 50, isTop ? 8 : 6, 1);
+      sprite.visible = isTop;  // minor labels shown only on focus
+      sprite.raycast = () => {};
       scene.add(sprite);
       labelsRef.current.set(node.id, sprite);
+    };
+
+    const incoming = new Set(data.nodes.map(n => n.id));
+    // Remove nodes no longer present.
+    Array.from(nodesRef.current.keys()).forEach(id => {
+      if (!incoming.has(id)) { disposeNode(id); layoutPositionsRef.current.delete(id); }
     });
-    
-    // Create edges - ALL thin lines, unified color, gradient opacity
-    // Calculate edge importance for gradient
-    const edgeImportance: Map<string, number> = new Map();
-    for (const edge of data.edges) {
-      const sourceConn = connectionCounts[edge.source] || 0;
-      const targetConn = connectionCounts[edge.target] || 0;
-      const avgConn = (sourceConn + targetConn) / 2;
-      edgeImportance.set(`${edge.source}-${edge.target}`, avgConn / maxConnections);
+
+    for (const node of data.nodes) {
+      const pos = layout.nodePositions[node.id];
+      if (!pos) continue;
+      const isTop = layout.top25Ids.has(node.id);
+      const importance = (layout.connectionCounts[node.id] || 0) / layout.maxConnections;
+      const clusterColor = layout.nodeClusterColor[node.id] || 0x6366F1;
+      const existing = nodesRef.current.get(node.id);
+
+      if (existing && existing.userData.isTopNode === isTop) {
+        // Update in place — no geometry churn (this is what kills the flicker).
+        existing.position.copy(pos);
+        const baseColor = new THREE.Color(clusterColor);
+        const mat = existing.material as THREE.MeshStandardMaterial;
+        mat.color.copy(baseColor);
+        mat.emissive.copy(baseColor);
+        existing.userData.clusterColor = clusterColor;
+        const sprite = labelsRef.current.get(node.id);
+        if (sprite) {
+          sprite.position.copy(pos);
+          sprite.position.y -= (existing.userData.nodeSize || 3) + (isTop ? 8 : 4);
+          // Regenerate the label texture only when the topic name changed
+          // (topic-name enhancement) — otherwise reuse the existing texture.
+          if (existing.userData.label !== node.label) {
+            const colorHex = '#' + baseColor.getHexString();
+            sprite.material.map?.dispose();
+            sprite.material.map = paintLabel(node.label, colorHex, isTop ? 24 + importance * 6 : 24, isTop ? 4 : 3);
+            sprite.material.needsUpdate = true;
+            existing.userData.label = node.label;
+          }
+        }
+        continue;
+      }
+      // New node, or top/minor status flipped → (re)create it.
+      if (existing) disposeNode(node.id);
+      makeNode(node, pos, isTop, importance, clusterColor);
     }
-    
-    // Clear old edges
-    edgesRef.current.forEach(line => {
-      scene.remove(line);
-      line.geometry.dispose();
-      (line.material as THREE.Material).dispose();
+  }, []);
+
+  const updateEdges = useCallback((data: GraphData, layout: Layout | null) => {
+    const scene = sceneRef.current;
+    if (!scene || !layout) return;
+    // Living-view: as the enrichment worker synthesizes sources, emphasize the
+    // (real) topic edges. empMul ranges 0.6 (nothing synthesized) → 1.0 (done).
+    const empMul = 0.6 + 0.4 * enrichmentEmphasisRef.current;
+
+    const incoming = new Set(data.edges.map(e => `${e.source}-${e.target}`));
+    Array.from(edgesRef.current.keys()).forEach(key => {
+      if (!incoming.has(key)) {
+        const line = edgesRef.current.get(key)!;
+        scene.remove(line);
+        line.geometry.dispose();
+        (line.material as THREE.Material).dispose();
+        edgesRef.current.delete(key);
+      }
     });
-    edgesRef.current.clear();
-    
+
     for (const edge of data.edges) {
-      const sourcePos = nodePositions[edge.source];
-      const targetPos = nodePositions[edge.target];
-      
-      if (!sourcePos || !targetPos) continue;
-      
-      const points = [sourcePos, targetPos];
-      const geometry = new THREE.BufferGeometry().setFromPoints(points);
-      
-      // Single unified color - soft blue-gray
-      const color = 0x94A3B8;
-      
-      // Smooth gradient opacity based on connection importance
-      const importance = edgeImportance.get(`${edge.source}-${edge.target}`) || 0;
-      const opacity = 0.03 + (importance * 0.2);  // Range: 0.03 to 0.23
-      
-      const material = new THREE.LineBasicMaterial({
-        color: color,
-        transparent: true,
-        opacity: opacity,
-      });
-      
+      const key = `${edge.source}-${edge.target}`;
+      const s = layout.nodePositions[edge.source];
+      const t = layout.nodePositions[edge.target];
+      if (!s || !t) continue;
+      const avgConn = ((layout.connectionCounts[edge.source] || 0) + (layout.connectionCounts[edge.target] || 0)) / 2;
+      const importance = avgConn / layout.maxConnections;
+      const opacity = (0.03 + importance * 0.2) * empMul;
+      const existing = edgesRef.current.get(key);
+      if (existing) {
+        existing.geometry.setFromPoints([s, t]);
+        (existing.material as THREE.LineBasicMaterial).opacity = opacity;
+        continue;
+      }
+      const geometry = new THREE.BufferGeometry().setFromPoints([s, t]);
+      const material = new THREE.LineBasicMaterial({ color: 0x94A3B8, transparent: true, opacity });
       const line = new THREE.Line(geometry, material);
       line.userData = { source: edge.source, target: edge.target };
       scene.add(line);
-      edgesRef.current.set(`${edge.source}-${edge.target}`, line);
+      edgesRef.current.set(key, line);
     }
   }, []);
+
+  const updateScene = useCallback((data: GraphData) => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    lastDataRef.current = data;
+    originalPositionsRef.current.clear();  // focus-restore re-captures fresh next focus
+
+    if (data.nodes.length === 0) {
+      // Empty graph → tear everything down.
+      Array.from(nodesRef.current.keys()).forEach(id => {
+        const mesh = nodesRef.current.get(id)!;
+        scene.remove(mesh); mesh.geometry.dispose(); (mesh.material as THREE.Material).dispose();
+        const sprite = labelsRef.current.get(id);
+        if (sprite) { scene.remove(sprite); sprite.material.map?.dispose(); sprite.material.dispose(); }
+      });
+      nodesRef.current.clear();
+      labelsRef.current.clear();
+      edgesRef.current.forEach(line => { scene.remove(line); line.geometry.dispose(); (line.material as THREE.Material).dispose(); });
+      edgesRef.current.clear();
+      layoutPositionsRef.current.clear();
+      lastLayoutRef.current = null;
+      return;
+    }
+
+    const layout = computeLayout(data);
+    lastLayoutRef.current = layout;
+    updateNodes(data, layout);
+    updateEdges(data, layout);
+  }, [computeLayout, updateNodes, updateEdges]);
 
   const buildConstellation = async () => {
     if (!notebookId) return;
@@ -1366,7 +1398,25 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
             </span>
           </div>
         )}
-        
+
+        {/* Living-view (NS-B1): the second brain is still synthesizing this notebook */}
+        {synthProgress && synthProgress.total > 0 && synthProgress.synthesized < synthProgress.total && (
+          <div className="mb-2 flex items-center gap-2" title="Your second brain is synthesizing connections in the background — this view keeps improving.">
+            <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-emerald-500 transition-all duration-500"
+                style={{ width: `${Math.round((synthProgress.synthesized / synthProgress.total) * 100)}%` }}
+              />
+            </div>
+            <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium whitespace-nowrap">
+              🧠 Synthesizing {synthProgress.synthesized}/{synthProgress.total}
+              {synthProgress.communities_total > 0 && (
+                <span className="text-gray-400 dark:text-gray-500"> · {synthProgress.communities_built}/{synthProgress.communities_total} themes</span>
+              )}
+            </span>
+          </div>
+        )}
+
         <div className={`flex items-center gap-2 ${rightSidebarCollapsed ? 'justify-between' : 'flex-wrap'}`}>
           {/* Left group - Rebuild button and stats */}
           <div className="flex items-center gap-2">

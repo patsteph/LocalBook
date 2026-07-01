@@ -79,6 +79,17 @@ async def notify_topics_updated(data: dict = None):
     await broadcast_update("topics_updated", data or {})
 
 
+async def notify_synthesis_progress(data: dict):
+    """Living-view (NS-B1): push a per-notebook "synthesizing N/M sources"
+    snapshot as the background enrichment worker drains graph jobs.
+
+    NOTE: the event type is `synthesis_progress` — deliberately DISTINCT from the
+    topic-name `enhancement_progress` (one char apart). Do not conflate them.
+    `data` = {notebook_id, synthesized, total, pending_jobs, running_jobs,
+    last_label, communities_built, communities_total}."""
+    await broadcast_update("synthesis_progress", data)
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time constellation updates"""
