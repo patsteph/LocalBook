@@ -119,6 +119,11 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
   const [audioVoices, setAudioVoices] = useState(() => localStorage.getItem('lb-studio-audio-voices') || 'mf');
   const [audioAccent, setAudioAccent] = useState(() => localStorage.getItem('lb-studio-audio-accent') || 'us');
   const [videoDuration, setVideoDuration] = useState(() => parseInt(localStorage.getItem('lb-studio-video-dur') || '5'));
+  // Video visual style (was hardcoded 'classic' — now user-selectable incl. custom
+  // PPTX templates as `tpl:<id>`) + opt-in real diagrams for eligible scenes.
+  const [videoVisualStyle, setVideoVisualStyle] = useState(() => localStorage.getItem('lb-studio-video-style') || 'classic');
+  const [videoIncludeVisuals, setVideoIncludeVisuals] = useState(() => localStorage.getItem('lb-studio-video-visuals') === 'true');
+  const [videoStyles, setVideoStyles] = useState<Array<{ id: string; name: string; is_custom?: boolean }>>([]);
   const [videoFormat, setVideoFormat] = useState<'explainer' | 'brief'>(() => (localStorage.getItem('lb-studio-video-format') as any) || 'explainer');
   const [videoNarrationStyle, setVideoNarrationStyle] = useState<'explainer' | 'narrative' | 'journalistic' | 'study_deep_dive'>(
     () => (localStorage.getItem('lb-studio-video-narration') as any) || 'explainer'
@@ -185,6 +190,9 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
   useEffect(() => { localStorage.setItem('lb-studio-audio-voices', audioVoices); }, [audioVoices]);
   useEffect(() => { localStorage.setItem('lb-studio-audio-accent', audioAccent); }, [audioAccent]);
   useEffect(() => { localStorage.setItem('lb-studio-video-dur', String(videoDuration)); }, [videoDuration]);
+  useEffect(() => { localStorage.setItem('lb-studio-video-style', videoVisualStyle); }, [videoVisualStyle]);
+  useEffect(() => { localStorage.setItem('lb-studio-video-visuals', String(videoIncludeVisuals)); }, [videoIncludeVisuals]);
+  useEffect(() => { videoService.listStyles().then(setVideoStyles).catch(() => {}); }, []);
   useEffect(() => { localStorage.setItem('lb-studio-video-format', videoFormat); }, [videoFormat]);
   useEffect(() => { localStorage.setItem('lb-studio-video-narration', videoNarrationStyle); }, [videoNarrationStyle]);
   useEffect(() => { localStorage.setItem('lb-studio-video-narrator', videoNarratorGender); }, [videoNarratorGender]);
@@ -344,7 +352,8 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
               notebook_id: notebookId,
               topic: trimmedTopic,
               duration_minutes: videoDuration,
-              visual_style: 'classic',
+              visual_style: videoVisualStyle,
+              include_visuals: videoIncludeVisuals,
               narrator_gender: videoNarratorGender,
               accent: videoAccent,
               format_type: videoFormat,
@@ -629,7 +638,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
     } finally {
       setGenerating(false);
     }
-  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoFormat, videoNarrationStyle, videoNarratorGender, videoAccent, quizCount, quizDifficulty, quizIncludeVisuals, docsIncludeVisuals, cardsCount, cardsDifficulty, cardsTutorGender, cardsTutorAccent, cardsTutorAutoplay, cardsIncludeVisuals, perspectivesQuery, perspectivesCrossNotebook, deepDiveEntity, deepDiveCrossNotebook, compareSourceA, compareSourceB, compareFocus, availableSources, chatContext, onClose, onToast, generateVisualToCanvas, addCanvasItem, updateCanvasItem, textSkills]);
+  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoVisualStyle, videoIncludeVisuals, videoFormat, videoNarrationStyle, videoNarratorGender, videoAccent, quizCount, quizDifficulty, quizIncludeVisuals, docsIncludeVisuals, cardsCount, cardsDifficulty, cardsTutorGender, cardsTutorAccent, cardsTutorAutoplay, cardsIncludeVisuals, perspectivesQuery, perspectivesCrossNotebook, deepDiveEntity, deepDiveCrossNotebook, compareSourceA, compareSourceB, compareFocus, availableSources, chatContext, onClose, onToast, generateVisualToCanvas, addCanvasItem, updateCanvasItem, textSkills]);
 
   if (!open) return null;
 
@@ -882,6 +891,28 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
                   />
                 </div>
               </div>
+              <div>
+                <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Visual Style</label>
+                <select
+                  value={videoVisualStyle}
+                  onChange={(e) => setVideoVisualStyle(e.target.value)}
+                  className="w-full px-2 py-1 text-[11px] rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+                >
+                  {videoStyles.length === 0 && <option value="classic">Classic</option>}
+                  {videoStyles.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}{s.is_custom ? ' (template)' : ''}</option>
+                  ))}
+                </select>
+              </div>
+              <label className="inline-flex items-center gap-1.5 text-[11px] text-gray-600 dark:text-gray-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={videoIncludeVisuals}
+                  onChange={(e) => setVideoIncludeVisuals(e.target.checked)}
+                  className="rounded border-gray-300 dark:border-gray-600"
+                />
+                Include diagram visuals (slower)
+              </label>
               <div>
                 <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Narration Style</label>
                 <div className="flex flex-wrap gap-1">

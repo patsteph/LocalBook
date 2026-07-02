@@ -37,6 +37,8 @@ export interface VideoGenerateRequest {
   // Tier 4 voice register override (measured / engaged / warm / urgent).
   // When omitted, video_storyboard picks the per-narration_style default.
   register?: string;
+  // Opt-in: compose real diagrams for eligible scenes instead of text cards.
+  include_visuals?: boolean;
 }
 
 export interface VisualStyle {
