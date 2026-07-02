@@ -20,7 +20,14 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     """
     from config import settings
 
-    vision_model = getattr(settings, 'vision_model', '') or ''
+    # Test the RESOLVED vision model the app actually uses (env > vision-capable main
+    # > configured), not raw settings.vision_model — otherwise we probe a granite that
+    # isn't installed and HTTP-404, when production routes vision to gemma4 (Option A).
+    from evaluator.model_registry import model_registry
+    vision_model = model_registry.resolve_vision_model(
+        getattr(settings, 'ollama_model', '') or '',
+        getattr(settings, 'vision_model', '') or '',
+    )
     vision_config = config.get("vision_test", {})
 
     result = EvalResult(

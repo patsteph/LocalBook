@@ -313,7 +313,14 @@ async def run_preflight(settings_obj) -> PreflightReport:
     main_model = getattr(settings_obj, "ollama_model", "") or ""
     fast_model = getattr(settings_obj, "ollama_fast_model", "") or ""
     embedding_model = getattr(settings_obj, "embedding_model", "") or ""
-    vision_model = getattr(settings_obj, "vision_model", "") or ""
+    # Resolve the vision model the app actually uses (env > vision-capable main >
+    # configured). On a gemma4 box this equals main_model, so the `!= main_model`
+    # guards below skip the vision backend-check + warmup — no probing an uninstalled
+    # granite that HTTP-404s. Only a SEPARATE vision model (or env override) is warmed.
+    from evaluator.model_registry import model_registry
+    vision_model = model_registry.resolve_vision_model(
+        main_model, getattr(settings_obj, "vision_model", "") or ""
+    )
 
     report.checks.append(await _check_model_backend("main", main_model))
     if fast_model and fast_model != main_model:
@@ -360,6 +367,13 @@ def providers_used_summary(settings_obj) -> dict:
         ("vision_model", "vision"),
     ):
         model_name = getattr(settings_obj, role_attr, "") or ""
+        if role_key == "vision" and model_name:
+            # Report the RESOLVED vision model (gemma4 on an Option-A box), not the
+            # raw configured granite the app doesn't actually use.
+            from evaluator.model_registry import model_registry
+            model_name = model_registry.resolve_vision_model(
+                getattr(settings_obj, "ollama_model", "") or "", model_name
+            )
         if not model_name:
             continue
         route = _resolve_provider(model_name)

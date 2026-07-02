@@ -128,7 +128,12 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     from services.vision_prompts import MODE_PROMPTS
     from evaluator.model_registry import model_registry
 
-    vision_model = getattr(settings, "vision_model", "") or ""
+    # Resolved vision model (env > vision-capable main > configured) so we probe the
+    # model production actually uses (gemma4), not an uninstalled granite that 404s.
+    vision_model = model_registry.resolve_vision_model(
+        getattr(settings, "ollama_model", "") or "",
+        getattr(settings, "vision_model", "") or "",
+    )
     results: list[EvalResult] = []
 
     if not vision_model:

@@ -178,6 +178,14 @@ class ModelCombo:
         """Build from current app config.py settings."""
         main = getattr(settings, "ollama_model", "unknown")
         fast = getattr(settings, "ollama_fast_model", main)
+        # Resolve the vision model the app actually uses (env > vision-capable main >
+        # configured) so the combo reflects reality, not an uninstalled granite.
+        # Deferred import avoids a circular dependency (model_registry imports models).
+        try:
+            from evaluator.model_registry import model_registry as _mr
+            vision = _mr.resolve_vision_model(main, getattr(settings, "vision_model", "") or "")
+        except Exception:
+            vision = getattr(settings, "vision_model", "") or ""
         # Build a human-readable combo name from the actual models
         main_short = main.split(":")[0] if ":" in main else main
         fast_short = fast.split(":")[0] if ":" in fast else fast
@@ -188,7 +196,7 @@ class ModelCombo:
             fast_model=fast,
             embedding_model=getattr(settings, "embedding_model", ""),
             embedding_dim=getattr(settings, "embedding_dim", 0),
-            vision_model=getattr(settings, "vision_model", ""),
+            vision_model=vision,
             tts_engine="kokoro-mlx",
         )
 

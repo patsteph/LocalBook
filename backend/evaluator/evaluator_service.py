@@ -142,10 +142,16 @@ async def run_full_evaluation() -> ComboEvalSummary:
     # paths (rag_engine etc. don't take a combo arg) so a mid-run swap
     # WILL affect later phases; the snapshot's job is to make the
     # corruption legible in the report rather than invisible.
+    from evaluator.model_registry import model_registry as _mr
     combo_snapshot = {
         "ollama_model": getattr(settings, "ollama_model", "") or "",
         "ollama_fast_model": getattr(settings, "ollama_fast_model", "") or "",
-        "vision_model": getattr(settings, "vision_model", "") or "",
+        # Record the RESOLVED vision model (what the runners actually test), so the
+        # report matches reality instead of a configured granite that isn't used.
+        "vision_model": _mr.resolve_vision_model(
+            getattr(settings, "ollama_model", "") or "",
+            getattr(settings, "vision_model", "") or "",
+        ),
         "embedding_model": getattr(settings, "embedding_model", "") or "",
     }
 
