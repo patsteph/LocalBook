@@ -316,15 +316,14 @@ def _total_ram_gb() -> float:
     return _TOTAL_RAM_GB
 
 
-def _ram_ctx_multiplier() -> int:
-    """Scale the num_ctx cap by system RAM — mirrors the 'more concurrent models on
-    more RAM' policy. 16-18GB stays at the baseline; 24-32GB doubles; 48GB+ 4x."""
+def _ram_ctx_multiplier() -> float:
+    """Scale the num_ctx cap + context-assembly budget CONTINUOUSLY by system RAM.
+    16GB = 1.0x baseline, linear in RAM, capped at 8.0x (bounded anyway by each
+    model's native window). A smooth ramp — no artificial tier cliffs — so every
+    extra GB of hardware translates to proportionally more capability, and the
+    evaluator's 'soft testing' reflects the SAME window a box actually gets."""
     ram = _total_ram_gb()
-    if ram <= 20:
-        return 1
-    if ram <= 36:
-        return 2
-    return 4
+    return max(1.0, min(8.0, ram / 16.0))
 
 
 def _model_ctx_limits(model: str) -> tuple:
@@ -343,10 +342,11 @@ def _model_ctx_limits(model: str) -> tuple:
 
 
 def effective_num_ctx_cap(model: str) -> int:
-    """RAM-tier-aware num_ctx cap: baseline cap × RAM multiplier, bounded by the
-    model's native window. On 16-18GB this equals the known_models.json cap."""
+    """RAM-aware num_ctx cap: baseline cap × continuous RAM multiplier, bounded by
+    the model's native window. On 16GB this equals the known_models.json cap; it
+    scales smoothly upward with RAM."""
     base_cap, native = _model_ctx_limits(model)
-    return min(base_cap * _ram_ctx_multiplier(), native)
+    return min(int(base_cap * _ram_ctx_multiplier()), native)
 
 
 def compute_num_ctx(model: str, prompt_text: str, num_predict: Optional[int]) -> Optional[int]:
@@ -361,6 +361,24 @@ def compute_num_ctx(model: str, prompt_text: str, num_predict: Optional[int]) ->
     if needed <= 1536:
         return None
     return min(max(8192, needed), effective_num_ctx_cap(model))
+
+
+def clamp_num_predict(prompt_text: str, num_predict: Optional[int], num_ctx: Optional[int]) -> Optional[int]:
+    """P4: when the RAM-tier cap binds num_ctx below prompt+output, cap num_predict to
+    what actually fits the window (leaving room for the prompt). Prevents requesting
+    more output tokens than the context can hold on small-RAM boxes. No-op when num_ctx
+    is unset (Ollama default) or the request already fits — so it never shortens a
+    generation that fits its window (e.g. a large quiz on a 16K-cap box)."""
+    if not num_predict or not num_ctx:
+        return num_predict
+    est_prompt_tokens = len(prompt_text or "") // 3
+    available = max(256, num_ctx - est_prompt_tokens - 128)  # floor + small safety margin
+    if num_predict > available:
+        logger.debug(
+            f"[OllamaService] clamped num_predict {num_predict}→{available} to fit num_ctx={num_ctx}"
+        )
+        return available
+    return num_predict
 
 
 def _record_tokens(data: dict):
@@ -479,6 +497,13 @@ class OllamaService:
             _nc = compute_num_ctx(use_model, f"{system or ''}\n\n{prompt or ''}", num_predict)
             if _nc:
                 options["num_ctx"] = _nc
+
+        # P4: cap num_predict to the resolved window so we never ask for more output
+        # tokens than num_ctx can hold (the RAM-tier cap binds on small-RAM boxes).
+        if options.get("num_predict") and options.get("num_ctx"):
+            options["num_predict"] = clamp_num_predict(
+                f"{system or ''}\n\n{prompt or ''}", options["num_predict"], options["num_ctx"]
+            )
 
         # PB-2a: rag_profile overlay (num_ctx cap / stop sequences / think).
         _profile_think = _apply_rag_profile(use_model, options, respect_rag_profile, images)

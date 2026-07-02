@@ -103,6 +103,7 @@ class VideoGenerator:
         chat_context: Optional[str] = None,
         narration_style: str = "explainer",
         register: Optional[str] = None,
+        include_visuals: bool = False,
     ) -> Dict:
         """Generate a video with narration.
 
@@ -153,6 +154,7 @@ class VideoGenerator:
                 chat_context=chat_context,
                 narration_style=narration_style,
                 register=register,
+                include_visuals=include_visuals,
             ),
             name=f"video-pipeline-{video_id}"
         )
@@ -193,6 +195,7 @@ class VideoGenerator:
         chat_context: Optional[str] = None,
         narration_style: str = "explainer",
         register: Optional[str] = None,
+        include_visuals: bool = False,
     ):
         """Full background pipeline: storyboard → TTS → slides → composite."""
         pipeline_start = time.time()
@@ -287,6 +290,8 @@ class VideoGenerator:
                 scenes=storyboard.scenes,
                 style_name=visual_style,
                 output_dir=slides_dir,
+                include_visuals=include_visuals,
+                topic=topic or "",
             )
             print(f"🖼️  Slides rendered: {len(slide_paths)} PNGs")
 

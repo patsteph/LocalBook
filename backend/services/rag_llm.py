@@ -120,6 +120,12 @@ async def call_ollama(
         _nc = compute_num_ctx(use_model, f"{system_prompt}\n\n{prompt}", num_predict)
         if _nc:
             options["num_ctx"] = _nc
+    # P4: cap output to what the resolved window can hold (small-RAM cap-bound case).
+    if options.get("num_predict") and options.get("num_ctx"):
+        from services.ollama_service import clamp_num_predict
+        options["num_predict"] = clamp_num_predict(
+            f"{system_prompt}\n\n{prompt}", options["num_predict"], options["num_ctx"]
+        )
     # Temperature priority: explicit arg > rag_profile > ollama_options
     if temperature is not None:
         options["temperature"] = temperature
@@ -328,8 +334,12 @@ async def stream_ollama(
         
         # Auto-size context window via the shared helper (one sizing rule app-wide);
         # floor at 8192 for streaming (chat) exactly as before.
-        from services.ollama_service import compute_num_ctx
+        from services.ollama_service import compute_num_ctx, clamp_num_predict
         effective_num_ctx = compute_num_ctx(model, f"{system_prompt}\n\n{prompt}", effective_num_predict) or 8192
+        # P4: cap output to what the resolved window can hold (small-RAM cap-bound case).
+        effective_num_predict = clamp_num_predict(
+            f"{system_prompt}\n\n{prompt}", effective_num_predict, effective_num_ctx
+        ) or effective_num_predict
         # doc-gen flag drives the repeat-penalty tier below (restored — it used to be
         # defined in the inline num_ctx block the shared helper replaced).
         is_doc_gen = num_predict is not None and num_predict > 500

@@ -33,6 +33,9 @@ class VideoGenerateRequest(BaseModel):
     # When None, video_storyboard picks the per-narration_style default.
     register: Optional[str] = None
     chat_context: Optional[str] = None  # Recent chat conversation for "From Chat" mode
+    # Cross-medium visuals (opt-in): compose real diagrams for eligible scenes instead
+    # of text cards. Default OFF; also enabled globally by LOCALBOOK_VIDEO_VISUALS=1.
+    include_visuals: bool = False
 
 
 class VideoGeneration(BaseModel):
@@ -142,6 +145,7 @@ async def generate_video(request: VideoGenerateRequest):
             chat_context=request.chat_context,
             narration_style=request.narration_style,
             register=request.register,
+            include_visuals=request.include_visuals,
         )
         logger.info(f"[STUDIO] Video generation queued: video_id={result.get('video_id', 'unknown')}")
         log_content_generated(request.notebook_id, "video", request.format_type, request.topic or "")

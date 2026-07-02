@@ -7,6 +7,7 @@ in the final video.
 This module is completely independent — it does NOT modify any existing services.
 """
 
+import asyncio
 import html
 import logging
 from pathlib import Path
@@ -130,6 +131,22 @@ def _render_diagram_placeholder(content: Dict) -> str:
     """
 
 
+def _render_composed_svg(content: Dict) -> str:
+    """Cross-medium visuals: inline a (pre-sanitized) composed SVG into the slide,
+    scaled to fit. Falls back to the diagram placeholder if the SVG is missing."""
+    svg = content.get("svg_markup") or ""
+    if not svg.strip():
+        return _render_diagram_placeholder(content)
+    caption = _esc(content.get("caption", "") or content.get("concept", ""))
+    caption_html = f'<div class="caption">{caption}</div>' if caption else ""
+    return f"""
+        <div class="composed-visual" style="width:100%;height:82%;display:flex;align-items:center;justify-content:center;overflow:hidden;">
+            {svg}
+        </div>
+        {caption_html}
+    """
+
+
 def _render_closing(content: Dict) -> str:
     title = _esc(content.get("title", "Key Takeaways"))
     items = content.get("items", [])
@@ -152,8 +169,37 @@ RENDERERS = {
     "comparison": ("comparison", _render_comparison),
     "timeline_point": ("timeline-point", _render_timeline_point),
     "diagram_placeholder": ("diagram-placeholder", _render_diagram_placeholder),
+    "composed_diagram": ("composed-diagram", _render_composed_svg),
     "closing": ("closing", _render_closing),
 }
+
+
+# Cross-medium video visuals (opt-in, default OFF). Only NON-hero idioms are used so
+# visual_composer never routes to Klein diffusion (the ~2 min/scene blow-up); each
+# compose is time-boxed and falls back to the original text card on any failure.
+_VISUAL_ROLE_IDIOMS = {
+    "contrast": "comparison_matrix",
+    "evidence": "concept_map",
+    "turn": "linear_process",
+    "synthesis": "concept_map",
+    # hook / stakes / payoff → keep the text card (openings/closings read better as text)
+}
+
+
+def _video_visual_cap() -> int:
+    import os
+    try:
+        return max(0, int(os.getenv("LOCALBOOK_VIDEO_VISUAL_CAP", "3")))
+    except ValueError:
+        return 3
+
+
+def _video_visual_timeout() -> float:
+    import os
+    try:
+        return max(10.0, float(os.getenv("LOCALBOOK_VIDEO_VISUAL_TIMEOUT", "90")))
+    except ValueError:
+        return 90.0
 
 
 # =============================================================================
@@ -212,11 +258,47 @@ class VideoSlideRenderer:
 
         return result
 
+    async def _maybe_compose_visual(self, scene, topic: str) -> Optional[str]:
+        """Cross-medium visuals: for an eligible scene role, compose ONE real diagram
+        via visual_composer, forcing a non-hero idiom so Klein diffusion is never
+        reached. Time-boxed; returns sanitized SVG markup or None (→ keep text card)."""
+        role = getattr(scene, "role", "") or ""
+        idiom = _VISUAL_ROLE_IDIOMS.get(role)
+        if not idiom:
+            return None
+        narration = getattr(scene, "narration", "") or ""
+        if len(narration.strip()) < 40:
+            return None
+        try:
+            from services.visual_composer import visual_composer
+            # force_idiom=<non-hero> is what guarantees no Klein: it bypasses the
+            # illustration classifier AND avoids the only Klein idiom (hero_with_callouts).
+            # We let the composer pick the best available freeform path (don't force one,
+            # so it stays valid whichever main model is installed).
+            result = await asyncio.wait_for(
+                visual_composer.compose(
+                    content=narration,
+                    topic=topic or None,
+                    force_idiom=idiom,
+                ),
+                timeout=_video_visual_timeout(),
+            )
+            if result and getattr(result, "success", False) and getattr(result, "svg_markup", None):
+                from services.svg_sanitizer import sanitize_svg
+                return sanitize_svg(result.svg_markup)
+        except asyncio.TimeoutError:
+            logger.warning(f"[SlideRenderer] visual compose timed out for role={role}; using text card")
+        except Exception as e:
+            logger.warning(f"[SlideRenderer] visual compose failed (role={role}), using text card: {e}")
+        return None
+
     async def render_slides(
         self,
         scenes: list,
         style_name: str = "classic",
         output_dir: Optional[Path] = None,
+        include_visuals: bool = False,
+        topic: str = "",
     ) -> List[Path]:
         """Render all scenes to PNG files.
 
@@ -224,11 +306,19 @@ class VideoSlideRenderer:
             scenes: List of Scene objects (from Storyboard)
             style_name: Visual style name (classic, dark, whiteboard, etc.)
             output_dir: Directory to save PNGs (created if needed)
+            include_visuals: opt-in — compose real diagrams for eligible scenes
+                (default OFF; also enabled by LOCALBOOK_VIDEO_VISUALS=1)
+            topic: the video topic (passed to visual_composer for context)
 
         Returns:
             List of paths to rendered PNG files, in scene order
         """
+        import os
         from templates.slides.styles import get_style, extract_style_from_pptx
+
+        visuals_on = include_visuals or os.getenv("LOCALBOOK_VIDEO_VISUALS") == "1"
+        visual_cap = _video_visual_cap()
+        composed_count = 0
 
         # Resolve style — built-in or custom PPTX template
         if style_name.startswith("tpl:"):
@@ -266,6 +356,17 @@ class VideoSlideRenderer:
                         v_content = visual.get("content", {})
 
                     scene_id = scene.scene_id if hasattr(scene, 'scene_id') else scene.get("scene_id", 0)
+
+                    # Cross-medium visuals (opt-in): for eligible scene roles, replace the
+                    # text card with a real composed diagram. Capped per video + time-boxed;
+                    # any failure keeps the original text card (fallback-safe).
+                    if visuals_on and composed_count < visual_cap and hasattr(scene, 'visual'):
+                        svg = await self._maybe_compose_visual(scene, topic)
+                        if svg:
+                            composed_count += 1
+                            v_type = "composed_diagram"
+                            v_content = {"svg_markup": svg, "caption": v_content.get("caption", "") if isinstance(v_content, dict) else ""}
+                            logger.info(f"[SlideRenderer] scene {scene_id}: composed diagram ({composed_count}/{visual_cap})")
 
                     # Build HTML for this slide
                     slide_html = self._build_slide_html(v_type, v_content, style)

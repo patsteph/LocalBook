@@ -59,6 +59,65 @@ class QuizOutput(BaseModel):
     source_summary: str = Field(default="", description="Brief summary of source material used")
 
 
+def _render_quiz_diagram(components: List[str], answer: str) -> str:
+    """Labels→template: deterministically render an ordered list of stage labels as a
+    boxes-and-arrows SVG, blanking the component that matches `answer` to "???".
+
+    Server-authored (gemma can't author labeled SVG — proven `0 <text>`), so it always
+    produces a valid, well-laid-out diagram. The result is still run through
+    svg_sanitizer downstream (quiz.py) like any other visual_svg."""
+    comps = [str(c).strip() for c in (components or []) if str(c).strip()][:6]
+    if len(comps) < 2:
+        return ""
+
+    def esc(s: str) -> str:
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def truncate(s: str) -> str:
+        return s if len(s) <= 16 else s[:15] + "…"
+
+    ans = (answer or "").strip().lower()
+    box_w, box_h, gap, pad = 150, 60, 40, 20
+    n = len(comps)
+    width = pad * 2 + n * box_w + (n - 1) * gap
+    height = pad * 2 + box_h
+    fills = ["#dbeafe", "#fef3c7", "#dcfce7", "#fce7f3", "#e0e7ff", "#f1f5f9"]
+    strokes = ["#1e3a8a", "#92400e", "#166534", "#9d174d", "#3730a3", "#334155"]
+
+    out = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+        f'font-family="-apple-system, BlinkMacSystemFont, sans-serif">',
+        '<defs><marker id="qarrow" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">'
+        '<path d="M0,0 L6,3 L0,6 Z" fill="#64748b"/></marker></defs>',
+    ]
+    blanked_once = False
+    for i, label in enumerate(comps):
+        x = pad + i * (box_w + gap)
+        y = pad
+        is_blank = (not blanked_once) and label.strip().lower() == ans
+        if is_blank:
+            blanked_once = True
+        text = "???" if is_blank else truncate(label)
+        fill = "#ffffff" if is_blank else fills[i % len(fills)]
+        stroke = "#dc2626" if is_blank else strokes[i % len(strokes)]
+        out.append(
+            f'<rect x="{x}" y="{y}" width="{box_w}" height="{box_h}" rx="8" '
+            f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>'
+        )
+        out.append(
+            f'<text x="{x + box_w // 2}" y="{y + box_h // 2 + 5}" text-anchor="middle" '
+            f'font-size="15" fill="#0f172a">{esc(text)}</text>'
+        )
+        if i < n - 1:
+            ay = y + box_h // 2
+            out.append(
+                f'<line x1="{x + box_w}" y1="{ay}" x2="{x + box_w + gap - 3}" y2="{ay}" '
+                f'stroke="#64748b" stroke-width="2" marker-end="url(#qarrow)"/>'
+            )
+    out.append("</svg>")
+    return "".join(out)
+
+
 class MermaidDiagram(BaseModel):
     """Mermaid diagram output."""
     diagram_type: str = Field(description="flowchart, mindmap, timeline, sequenceDiagram, etc.")
@@ -265,34 +324,23 @@ class StructuredLLMService:
         visual_diagram_rules = ""
         if 'visual_diagram' in question_types:
             visual_diagram_rules = (
-                "\n- visual_diagram: For architecture, process flows, or systems with labeled components.\n"
-                "  Produce a SIMPLE inline SVG (viewBox 0 0 400 200) with 3-5 labeled rectangles "
-                "connected by arrows. Replace EXACTLY ONE label text with \"???\" — that is the answer the user must identify. "
-                "The 'answer' field is the correct word that belongs in place of \"???\". "
-                "Include 'options' with 4 plausible labels (the correct one plus 3 distractors). "
-                "Include 'visual_labels' with 'shown' (labels the user sees) and 'hidden' (must contain the correct answer).\n"
+                "\n- visual_diagram: For a process / pipeline / architecture that has 3-6 labeled stages.\n"
+                "  DO NOT write any SVG or markup. Provide the diagram as DATA — the server draws it:\n"
+                "  - 'visual_components': an ORDERED list of 3-6 SHORT stage labels (1-2 words each), in sequence.\n"
+                "  - 'answer': EXACTLY ONE of those labels — the stage the user must identify (the server blanks it to ???).\n"
+                "  - 'options': 4 plausible labels (the correct answer + 3 distractors).\n"
+                "  - 'visual_labels': {{'shown': [the other labels], 'hidden': [the answer]}}.\n"
                 "  FULL EXAMPLE (copy this structure exactly, adapting the content):\n"
                 '  {{"question_type": "visual_diagram",\n'
                 '    "question": "What is the missing stage in this RAG pipeline?",\n'
+                '    "visual_components": ["Query", "Retriever", "LLM", "Answer"],\n'
                 '    "answer": "Retriever",\n'
                 '    "options": ["Retriever", "Tokenizer", "Classifier", "Compiler"],\n'
-                '    "visual_svg": "<svg xmlns=\\"http://www.w3.org/2000/svg\\" viewBox=\\"0 0 400 120\\">'
-                '<rect x=\\"10\\" y=\\"40\\" width=\\"80\\" height=\\"40\\" fill=\\"#dbeafe\\" stroke=\\"#1e3a8a\\"/>'
-                '<text x=\\"50\\" y=\\"65\\" text-anchor=\\"middle\\" font-size=\\"12\\">Query</text>'
-                '<rect x=\\"110\\" y=\\"40\\" width=\\"80\\" height=\\"40\\" fill=\\"#fef3c7\\" stroke=\\"#92400e\\"/>'
-                '<text x=\\"150\\" y=\\"65\\" text-anchor=\\"middle\\" font-size=\\"12\\">???</text>'
-                '<rect x=\\"210\\" y=\\"40\\" width=\\"80\\" height=\\"40\\" fill=\\"#dcfce7\\" stroke=\\"#166534\\"/>'
-                '<text x=\\"250\\" y=\\"65\\" text-anchor=\\"middle\\" font-size=\\"12\\">LLM</text>'
-                '<rect x=\\"310\\" y=\\"40\\" width=\\"80\\" height=\\"40\\" fill=\\"#fce7f3\\" stroke=\\"#9d174d\\"/>'
-                '<text x=\\"350\\" y=\\"65\\" text-anchor=\\"middle\\" font-size=\\"12\\">Answer</text>'
-                '<line x1=\\"90\\" y1=\\"60\\" x2=\\"110\\" y2=\\"60\\" stroke=\\"#333\\" marker-end=\\"url(#a)\\"/>'
-                '<line x1=\\"190\\" y1=\\"60\\" x2=\\"210\\" y2=\\"60\\" stroke=\\"#333\\"/>'
-                '<line x1=\\"290\\" y1=\\"60\\" x2=\\"310\\" y2=\\"60\\" stroke=\\"#333\\"/></svg>",\n'
                 '    "visual_labels": {{"shown": ["Query", "LLM", "Answer"], "hidden": ["Retriever"]}},\n'
                 '    "explanation": "The retriever fetches relevant documents from the vector store before the LLM generates the answer.",\n'
                 '    "difficulty": "medium"}}\n'
-                "  RULES: visual_svg MUST start with <svg and end with </svg>. Keep it under 1500 characters. "
-                "Use simple rect/text/line elements only — no CSS, no external references, no scripts."
+                "  RULES: 'answer' MUST be one of 'visual_components'. Labels ≤2 words. NO 'visual_svg' field — "
+                "only structure the data; the server renders the diagram deterministically."
             )
 
         system_prompt = f"""You are an expert instructional designer creating assessment questions for mastery learning.
@@ -682,6 +730,17 @@ Return ONLY a JSON object like this:
 
                 # Parse visual diagram fields if present
                 visual_svg = q.get('visual_svg') or q.get('diagram_svg') or q.get('svg')
+                # Labels→template (B2): for visual_diagram, prefer a deterministic
+                # server-rendered diagram from the LLM's component labels — gemma can't
+                # author labeled SVG. Any LLM-authored visual_svg is ignored in favor of
+                # this. If no usable components, visual_svg stays None and _sanitize_quiz
+                # downgrades the question to multiple_choice (safe fallback).
+                if q_type == 'visual_diagram':
+                    components = q.get('visual_components') or q.get('components') or q.get('stages')
+                    if isinstance(components, list) and len(components) >= 2:
+                        rendered = _render_quiz_diagram(components, answer)
+                        if rendered:
+                            visual_svg = rendered
                 visual_labels_raw = q.get('visual_labels') or q.get('diagram_labels')
                 visual_labels = None
                 if visual_labels_raw and isinstance(visual_labels_raw, dict):

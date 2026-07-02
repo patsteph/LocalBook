@@ -241,10 +241,15 @@ class LLMLocker:
         if model_info and model_info.recommended_ram_gb > sys_ram:
             msg += f" WARNING: This model heavily bottlenecks on {sys_ram}GB and is recommended for {model_info.recommended_ram_gb}GB+ systems."
 
-        # Context extraction
+        # Context extraction (P7: informational only). This is the model's NATIVE
+        # window shown in the swap summary. The window the app actually uses at
+        # runtime is set by ollama_service.effective_num_ctx_cap (RAM-tier-aware) +
+        # compute_num_ctx per call — NOT by this value. No code reads
+        # LOCALBOOK_MAX_RAG_CONTEXT; it's a display/record field, so keep it as the
+        # native ceiling and let the runtime cap govern.
         if model_info and hasattr(model_info, 'context_window'):
             changes["MAX_RAG_CONTEXT"] = min(model_info.context_window, 131072)
-            
+
         return True, msg, changes
 
     @classmethod

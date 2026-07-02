@@ -60,7 +60,8 @@ class ModelCapabilities:
     model: str = ""
     provider: str = "ollama"               # "ollama" | "llama_server"
     backend_url: str = ""
-    context_window: int = 4096
+    context_window: int = 4096             # DEPLOYED window on THIS hardware (RAM-scaled) — the truth for eval
+    native_context_window: int = 4096      # model's native ceiling (may be far larger than deployed)
     supports_vision: bool = False
     supports_embeddings: bool = False
     supports_json_mode: bool = True        # Ollama default; llama-server json_object
@@ -140,8 +141,25 @@ def capabilities_for(model_name: str) -> ModelCapabilities:
     route = _resolve_provider(model_name)
     provider_str = route.provider.value
 
-    # Registry-informed defaults (Ollama path stays fully permissive)
-    ctx = getattr(info, "context_window", 4096) if info else 4096
+    # Registry-informed defaults (Ollama path stays fully permissive).
+    # Report the REAL DEPLOYED window on THIS hardware — the RAM-scaled
+    # effective_num_ctx_cap the app actually gives the model at runtime — NOT the
+    # model's native ceiling. This keeps the evaluator's "soft testing" aligned with
+    # reality (no artificial over-statement of context capability on small boxes, and
+    # bigger Macs correctly show more). Native ceiling is kept separately for context.
+    native_ctx = getattr(info, "context_window", 4096) if info else 4096
+    ctx = native_ctx
+    # Ollama models run through ollama_service, which caps num_ctx at the RAM-scaled
+    # effective_num_ctx_cap — so THAT is the true deployed window. (llama_server sidecar
+    # models set their own window at launch, so keep their native value there.)
+    if provider_str == "ollama":
+        try:
+            from services.ollama_service import effective_num_ctx_cap
+            _eff = effective_num_ctx_cap(model_name)
+            if _eff:
+                ctx = _eff
+        except Exception:
+            pass
     supports_vision = getattr(info, "supports_vision", False) if info else False
     supports_embeddings = bool(getattr(info, "embedding_dim", 0)) if info else False
     supports_json = getattr(info, "supports_json_mode", True) if info else True
@@ -166,6 +184,7 @@ def capabilities_for(model_name: str) -> ModelCapabilities:
         provider=provider_str,
         backend_url=route.base_url,
         context_window=int(ctx),
+        native_context_window=int(native_ctx),
         supports_vision=bool(supports_vision),
         supports_embeddings=bool(supports_embeddings),
         supports_json_mode=bool(supports_json),

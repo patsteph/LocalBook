@@ -220,15 +220,22 @@ class ContextBuilder:
         # Get profile for this output type
         profile = self._get_profile(skill_id, duration_minutes)
 
-        # Reconcile the assembly budget with the model's ACTUAL window (tier-aware):
-        # the char budget must leave room for the system prompt + generated output
-        # inside num_ctx, else the model silently truncates the prompt. Caps ~28K on
-        # 16-18GB gemma; bigger-RAM machines get proportionally more.
-        budget_chars = min(profile.total_context_chars, _window_char_budget())
+        # Reconcile the assembly budget with the model's ACTUAL window (tier-aware).
+        # SCALE the per-skill profile budget by the RAM tier so bigger-RAM machines
+        # genuinely assemble MORE context — not just a higher num_ctx ceiling they
+        # never reach. (Before: min(fixed_profile, window) meant the fixed profile
+        # was always the binding limit, so a 48GB box assembled the same as an 18GB
+        # box.) Still window-capped so we never over-fill num_ctx.
+        try:
+            from services.ollama_service import _ram_ctx_multiplier
+            ram_mult = _ram_ctx_multiplier()
+        except Exception:
+            ram_mult = 1.0
+        budget_chars = min(int(profile.total_context_chars * ram_mult), _window_char_budget())
 
         logger.info(f"[ContextBuilder] Building context for skill={skill_id}, "
                     f"topic={topic or 'none'}, profile={profile.strategy}, "
-                    f"budget={budget_chars} chars (profile={profile.total_context_chars}, window-capped)")
+                    f"budget={budget_chars} chars (profile={profile.total_context_chars}×{ram_mult:.2f}, window-capped)")
         
         # Import here to avoid circular imports
         from storage.source_store import source_store
