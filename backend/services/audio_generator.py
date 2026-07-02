@@ -564,13 +564,17 @@ DO NOT USE THESE PHRASES — they appear in every AI-generated script and signal
                     script = await self._generate_feynman_multipass(
                         system_prompt, context, topic, duration_minutes, host_names=(name_a, name_b)
                     )
-                elif duration_minutes >= 7:
+                elif duration_minutes >= 5:
+                    # 5+ min of ANY style gets the per-style blueprint phase arc
+                    # (A1 parity: was gated at >=7, so 5-6 min debates/interviews
+                    # silently lost their structural arc and fell to a generic
+                    # talking-points single pass).
                     script = await self._generate_script_multipass(
                         system_prompt, context, topic, duration_minutes,
                         host_names=(name_a, name_b), skill_id=skill_id
                     )
                 else:
-                    # Single-pass generation (short scripts < 7 min)
+                    # Single-pass generation (genuinely short scripts < 5 min)
                     talking_points = await self._extract_talking_points(context, topic or '', num_points=10)
                     target_exchanges = max(8, target_words // 30)
                     

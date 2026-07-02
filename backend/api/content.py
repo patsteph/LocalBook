@@ -1237,6 +1237,91 @@ async def _inject_doc_visuals(content: str, topic_focus: str, source_context: st
         return content
 
 
+# Multi-lens debate synthesis tuning.
+_LENS_CTX = 12000       # chars of source context handed to each lens
+_LENS_PREDICT = 900     # output tokens per lens (3-5 tight paragraphs)
+
+
+async def _generate_debate(
+    source_context: str,
+    topic_focus: str,
+    temperature: float,
+    chat_preamble: str = "",
+) -> str:
+    """Multi-lens synthesis: argue a proposition from THREE independent lenses —
+    FOR, AGAINST, then an impartial JUDGE who weighs both and renders a reasoned
+    verdict with its own opinion. Each lens is a separate pass over the same sources
+    (the against-lens sees the for-argument to rebut it; the judge sees both). This
+    produces a genuine two-sided debate with a synthesized conclusion instead of the
+    generic multi-section outline. Charts (if visuals on) are injected downstream."""
+    import time as _t
+    from utils.json_repair import robust_json_parse
+    t0 = _t.time()
+
+    # ── Frame the two opposing sides from the topic (one cheap call) ──
+    frame = {"question": topic_focus[:300], "for_side": "the affirmative case",
+             "against_side": "the opposing case"}
+    try:
+        raw = await rag_engine._call_ollama(
+            "You output ONLY valid JSON — no prose.",
+            f'{chat_preamble}A user asked for a debate on:\n"{topic_focus}"\n\n'
+            "Identify the central question and the TWO opposing positions to argue. Respond as "
+            'JSON: {"question": "<the core question, one sentence>", "for_side": "<stance, <=10 words>", '
+            '"against_side": "<opposing stance, <=10 words>"}.',
+            model=settings.ollama_model, num_predict=200, temperature=0.2,
+        )
+        parsed = robust_json_parse(raw, expect="object", fallback=None, label="DebateFrame")
+        if isinstance(parsed, dict) and parsed.get("for_side") and parsed.get("against_side"):
+            frame.update({k: str(parsed[k]) for k in ("question", "for_side", "against_side") if parsed.get(k)})
+    except Exception as _e:
+        logger.debug(f"[DEBATE] framing fell back to defaults: {_e}")
+
+    question, for_side, against_side = frame["question"], frame["for_side"], frame["against_side"]
+    ctx = source_context[:_LENS_CTX]
+
+    # ── Lens 1: FOR ──
+    for_text = _clean_llm_output(await rag_engine._call_ollama(
+        f"You are a sharp advocate arguing FOR: {for_side}. Build the STRONGEST evidence-based "
+        "case using ONLY the provided sources. Be persuasive, specific, cite concrete points. Do "
+        "NOT present the other side — that is another advocate's job. 3-5 tight paragraphs, no heading.",
+        f"{chat_preamble}CENTRAL QUESTION: {question}\n\nSOURCES:\n{ctx}\n\nMake the case FOR {for_side}:",
+        model=settings.ollama_model, num_predict=_LENS_PREDICT, temperature=min(0.75, temperature + 0.1),
+    ))
+
+    # ── Lens 2: AGAINST (sees the for-argument to rebut it) ──
+    against_text = _clean_llm_output(await rag_engine._call_ollama(
+        f"You are a sharp advocate arguing FOR: {against_side} (i.e. AGAINST {for_side}). Build the "
+        "STRONGEST evidence-based case using ONLY the provided sources, and directly rebut the "
+        "opposing argument's strongest points where the sources allow. 3-5 tight paragraphs, no heading.",
+        f"{chat_preamble}CENTRAL QUESTION: {question}\n\nOPPOSING ARGUMENT TO REBUT:\n{for_text[:3000]}\n\n"
+        f"SOURCES:\n{ctx}\n\nMake the case FOR {against_side}:",
+        model=settings.ollama_model, num_predict=_LENS_PREDICT, temperature=min(0.75, temperature + 0.1),
+    ))
+
+    # ── Lens 3: JUDGE (weighs both + renders own verdict) ──
+    judge_text = _clean_llm_output(await rag_engine._call_ollama(
+        "You are an impartial, incisive judge who has read both advocates' cases. Weigh them against "
+        "the evidence: name the strongest point on each side and where each overreaches, then render "
+        "YOUR OWN reasoned verdict — a clear decision and WHY. Do not merely split the difference; take "
+        "a position and justify it from the evidence. 2-4 paragraphs ending in a crisp verdict, no heading.",
+        f"{chat_preamble}CENTRAL QUESTION: {question}\n\nTHE CASE FOR {for_side}:\n{for_text[:3500]}\n\n"
+        f"THE CASE FOR {against_side}:\n{against_text[:3500]}\n\nSOURCES (ground your verdict):\n{ctx}\n\n"
+        "Deliver your ruling:",
+        model=settings.ollama_model, num_predict=_LENS_PREDICT, temperature=max(0.3, temperature - 0.1),
+    ))
+
+    doc = (
+        f"# {question}\n\n"
+        f"*A structured debate weighing two positions, with a final verdict.*\n\n"
+        f"## The Case For: {for_side}\n\n{for_text}\n\n"
+        f"## The Case Against: {against_side}\n\n{against_text}\n\n"
+        f"## The Verdict\n\n{judge_text}\n"
+    )
+    logger.info(f"[DEBATE] Multi-lens synthesis complete: for={len(for_text)}c against={len(against_text)}c "
+                f"verdict={len(judge_text)}c in {_t.time() - t0:.1f}s")
+    return doc
+
+
 async def _generate_outline_first(
     system_prompt: str,
     source_context: str,
@@ -1710,6 +1795,14 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
                 notebook_id=request.notebook_id,
             )
             # v2 handles everything internally — skip normalization, verification, and embedding
+        elif request.skill_id == 'debate':
+            logger.info("[STUDIO] Using multi-lens debate synthesis (For/Against/Judge)")
+            content = await _generate_debate(
+                source_context=built.context,
+                topic_focus=topic_focus,
+                temperature=skill_temp,
+                chat_preamble=chat_preamble,
+            )
         elif request.skill_id in OUTLINE_FIRST_SKILLS and template and template.structure_requirements:
             logger.info(f"[STUDIO] Using Outline-First pipeline for {request.skill_id} "
                         f"({len(template.structure_requirements)} sections, {doc_num_predict} token budget)")
@@ -1733,8 +1826,9 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
                 logger.warning(f"[STUDIO] Post-processing removed {len(raw_content) - len(content)} chars "
                               f"({len(raw_content)} → {len(content)})")
         
-        # Post-pipeline steps (skipped for feynman_curriculum — v2 handles internally)
-        if request.skill_id != 'feynman_curriculum':
+        # Post-pipeline steps. feynman_v2 handles its own; debate owns its For/Against/
+        # Verdict structure, so the generic template-section verify would fight it.
+        if request.skill_id not in ('feynman_curriculum', 'debate'):
             # Completion verification gate — ensure all required sections present
             if template and template.structure_requirements:
                 content = await _verify_and_fill_sections(
@@ -1809,7 +1903,18 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
 
 @router.post("/generate/stream")
 async def generate_content_stream(request: ContentGenerateRequest):
-    """Stream content generation for real-time display"""
+    """Stream content generation for real-time display.
+
+    ⚠️ D1 GUARD: this path bypasses the shared post-pipeline that `generate_content`
+    (non-streaming) runs — it does NOT apply visual injection/resolution (charts),
+    citation validation, section-completeness backfill, or content_store persistence.
+    Studio uses the non-streaming endpoint; this one has no UI callers today. Do NOT
+    wire it for docs without first routing the finalized content through the same
+    post-pipeline + persistence, or the user silently loses charts, citations, and the
+    saved artifact.
+    """
+    logger.warning("[STUDIO] /content/generate/stream used — bypasses visual/citation/"
+                   "persistence post-pipeline (see D1 guard). Prefer /content/generate.")
     try:
         # Get skill
         skill = await skills_store.get(request.skill_id)

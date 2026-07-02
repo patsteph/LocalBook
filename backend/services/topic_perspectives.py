@@ -363,6 +363,14 @@ async def find_perspectives(
         *[_perspective_for_source(query, s) for s in sources]
     )
     perspectives = [p for p in perspectives if p is not None]
+    # R2: distinguish "sources matched but every perspective pass FAILED" from a
+    # genuine empty result (both otherwise render as "no perspectives found").
+    if sources and not perspectives:
+        logger.warning(
+            f"[perspectives] {len(sources)} source(s) matched but ALL perspective "
+            f"passes failed (LLM/JSON errors) — returning empty (this is a failure, "
+            f"not a genuine 'nothing matched')."
+        )
     clusters = await _cluster_claims(perspectives) if perspectives else []
 
     return TopicPerspectives(

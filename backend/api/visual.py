@@ -28,6 +28,18 @@ from services.context_builder import context_builder
 router = APIRouter(prefix="/visual", tags=["visual"])
 
 
+def _safe_svg(svg: Optional[str]) -> Optional[str]:
+    """Canonical server-side SVG scrub before any markup reaches the client
+    (SVGRenderer deliberately skips DOMPurify). Never raises."""
+    if not svg:
+        return svg
+    try:
+        from services.svg_sanitizer import sanitize_svg
+        return sanitize_svg(svg)
+    except Exception:
+        return svg
+
+
 # =============================================================================
 # Request/Response Models
 # =============================================================================
@@ -652,7 +664,7 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
                 if visual.success and visual.svg_markup:
                     primary = {
                         "render_type": "svg",
-                        "svg": visual.svg_markup,
+                        "svg": _safe_svg(visual.svg_markup),
                         "title": visual.title or "Visual",
                         "subtitle": visual.subtitle or "",
                         "description": visual.description or "",
@@ -1029,7 +1041,7 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
                 
                 return {
                     "render_type": "svg",
-                    "svg": result["svg"],
+                    "svg": _safe_svg(result["svg"]),
                     "title": display_title,
                     "description": result["description"],
                     "template_id": tmpl.id,
@@ -1370,11 +1382,14 @@ async def v2_compose_stream(request: V2ComposeRequest):
             except Exception as e:
                 logger.warning(f"[v2_compose_stream] context_builder: {e}")
 
+        _result_visual = None
         try:
             async for event in visual_composer.compose_stream(
                 content=content,
                 template_id=request.template_id,
             ):
+                if event.get("type") == "result":
+                    _result_visual = event.get("visual")
                 event_name = event.get("type", "message")
                 data = _json.dumps({k: v for k, v in event.items() if k != "type"})
                 yield f"event: {event_name}\ndata: {data}\n\n"
@@ -1382,6 +1397,26 @@ async def v2_compose_stream(request: V2ComposeRequest):
             logger.exception("[v2_compose_stream] failed")
             yield f"event: error\ndata: {_json.dumps({'message': str(e)})}\n\n"
         finally:
+            # R3: persist the streamed visual to the Library (parity with /v2/compose,
+            # which persists; the stream path previously did not, so streamed visuals
+            # were silently absent from the archive). Non-fatal.
+            if _result_visual and _result_visual.get("success") and (
+                _result_visual.get("svg_markup") or _result_visual.get("mermaid_code")
+            ):
+                try:
+                    from storage.visual_store import visual_store
+                    await visual_store.create(
+                        notebook_id=request.notebook_id,
+                        topic=request.topic or "",
+                        title=_result_visual.get("title") or "Visual",
+                        svg_markup=_result_visual.get("svg_markup"),
+                        mermaid_code=_result_visual.get("mermaid_code"),
+                        template_id=_result_visual.get("template_id"),
+                        v2_path=_result_visual.get("path"),
+                        prompt=request.topic,
+                    )
+                except Exception as _vs_err:
+                    logger.debug(f"[v2_compose_stream] persist failed (non-fatal): {_vs_err}")
             yield "event: done\ndata: {}\n\n"
 
     async def _guarded_stream():

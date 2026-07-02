@@ -271,11 +271,24 @@ class VideoGenerator:
                 f"audio={audio_duration:.0f}s, target={target_seconds}s"
             )
             if audio_duration > 0 and audio_duration < target_seconds * 0.40:
+                pct = audio_duration / target_seconds * 100
                 logger.warning(
                     f"[VideoGen] ⚠️ Audio duration ({audio_duration:.0f}s) is only "
-                    f"{audio_duration/target_seconds*100:.0f}% of target ({target_seconds}s). "
+                    f"{pct:.0f}% of target ({target_seconds}s). "
                     f"Narration script may be too short ({word_count} words for {duration_minutes}min)."
                 )
+                # V3: surface the short-narration condition to the user instead of only
+                # logging it (audio retries; video has no narration-retry yet, so at
+                # least make the degraded outcome visible in the record).
+                try:
+                    await video_store.update(video_id, {
+                        "warning": (
+                            f"Narration came out ~{pct:.0f}% of the {duration_minutes}-min target "
+                            f"({word_count} words); the video will be shorter than requested."
+                        )
+                    })
+                except Exception:
+                    pass
 
             print(f"🎤 Narration audio: {audio_path} ({audio_duration:.0f}s)")
 

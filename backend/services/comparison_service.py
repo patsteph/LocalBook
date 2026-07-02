@@ -53,6 +53,18 @@ class ComparisonService:
         text_a = (content_a.get("content") or "").strip()
         text_b = (content_b.get("content") or "").strip()
 
+        # Cap each document so BOTH + the prompt + output fit the model window
+        # (previously the ENTIRE contents were passed → context overflow / silent
+        # truncation on large sources). Window-aware, so bigger Macs compare more.
+        try:
+            from services.ollama_service import effective_num_ctx_cap
+            from config import settings as _s
+            _per_doc = max(4000, int(effective_num_ctx_cap(_s.ollama_model) * 3 * 0.55 / 2))
+        except Exception:
+            _per_doc = 12000
+        text_a = text_a[:_per_doc]
+        text_b = text_b[:_per_doc]
+
         # Optional focus prefix steers the LLM toward a specific axis of
         # comparison (e.g. "focus on the methodological differences").
         if focus:

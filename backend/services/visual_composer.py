@@ -1157,12 +1157,22 @@ def _critic_to_dict(s: CriticScore) -> Dict[str, Any]:
 
 
 def _visual_to_dict(v: ComposedVisual) -> Dict[str, Any]:
+    # Canonical server-side scrub before any SVG reaches the client. SVGRenderer
+    # deliberately skips DOMPurify, so this is the trust boundary (mirrors quiz.py
+    # + video slides). Never raises — sanitize_svg returns "" if nothing is safe.
+    _svg = v.svg_markup
+    if _svg:
+        try:
+            from services.svg_sanitizer import sanitize_svg
+            _svg = sanitize_svg(_svg)
+        except Exception:
+            pass
     return {
         "success": v.success,
         "path": v.path.value,
         "setup": v.setup.value,
         "output_format": v.output_format.value,
-        "svg_markup": v.svg_markup,
+        "svg_markup": _svg,
         "mermaid_code": v.mermaid_code,
         "title": v.title,
         "subtitle": v.subtitle,

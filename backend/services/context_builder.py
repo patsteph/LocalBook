@@ -341,7 +341,7 @@ class ContextBuilder:
         if duration_minutes and skill_id in ("podcast_script", "audio"):
             if duration_minutes <= 5:
                 return ContextProfile(
-                    max_sources=3, chars_per_source=2000, total_context_chars=6000,
+                    max_sources=5, chars_per_source=3000, total_context_chars=10000,
                     strategy="depth", use_chunks=False, chunk_top_k=0, use_map_reduce=False
                 )
             elif duration_minutes <= 15:
