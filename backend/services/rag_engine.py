@@ -1118,7 +1118,11 @@ Answer the question, citing sources inline as [N]. Do not list references at the
                     r'\n\s*(?:\*\*)?(?:supporting\s+)?(?:references|sources|citations?|bibliography|cited\s+sources|key\s+references|footnotes)(?:\*\*)?[\s:]*(?:\n|$)',
                     full_answer, _re_detect.IGNORECASE
                 )
-                if bib_match:
+                # Only truncate when REAL answer content precedes the marker. A model
+                # that LEADS with a "Sources:/References:/Citations:" heading (phi4 on
+                # simple factual queries) would otherwise be truncated to empty — the
+                # blank-answer bug. If nothing meaningful precedes it, keep streaming.
+                if bib_match and full_answer[:bib_match.start()].strip():
                     references_started = True
                     full_answer = full_answer[:bib_match.start()]
                     print(f"[RAG STREAM] Detected bibliography section '{bib_match.group().strip()}', truncating")

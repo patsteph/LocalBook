@@ -109,10 +109,18 @@ def clean_llm_output(text: str) -> str:
     # Single comprehensive regex covers all observed variants:
     # "References:", "Sources:", "Citations:", "Supporting Citations",
     # "Bibliography", "Cited Sources", "Key References", "Footnotes", "*Note"
+    _pre_bib = text
     text = re.sub(
         r'\n\s*(?:\*\*)?(?:supporting\s+)?(?:references|sources?|citations?|bibliography|cited\s+sources|key\s+references|footnotes)(?:\*\*)?[:\s]*(?:\n|$).*',
         '', text, flags=re.DOTALL | re.IGNORECASE
     )
+    # Guard: this DOTALL strip is meant to remove a TRAILING references section, not
+    # the whole answer. Small models (phi4 on simple/factual queries) sometimes LEAD
+    # with a "Sources:/References:/Citations:" heading — which put the marker at the
+    # start and made this wipe the ENTIRE answer to empty (reported blank-answer bug).
+    # If stripping emptied a non-empty answer, keep the original.
+    if not text.strip() and _pre_bib.strip():
+        text = _pre_bib
     text = re.sub(r'\n*User context:.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'\n*Citation.*should not be included.*$', '', text, flags=re.DOTALL | re.IGNORECASE)
     # Strip trailing "*Note" or "*Note:" sections
