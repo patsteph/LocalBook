@@ -1145,12 +1145,46 @@ Answer the question, citing sources inline as [N]. Do not list references at the
         
         print(f"[RAG STREAM] Step 6a - LLM generation (streamed): {gen_time:.2f}s ({len(full_answer)} chars)")
 
+        # ── Empty-answer guard ──────────────────────────────────────────────
+        # Reported bug: the user got citations + follow-up questions but a BLANK
+        # answer. Cause: the stream yielded ZERO usable tokens without raising —
+        # the model produced nothing (evicted / paused under memory pressure, or a
+        # stop sequence fired on the very first token) or post-stream cleanup
+        # stripped everything. There was no guard, so the code sailed on to emit
+        # `done` with no answer. Retry ONCE cleanly (catches a transient pause);
+        # if still empty, surface a clear message so the user is NEVER left with a
+        # silent no-answer.
+        answer_is_fallback = False
+        if not full_answer.strip():
+            print("[RAG STREAM] ⚠️ Empty answer after stream — retrying once")
+            retry_answer = ""
+            try:
+                async for _tok in self._stream_ollama(
+                    system_prompt, prompt, deep_think=deep_think, use_fast_model=use_fast_model
+                ):
+                    retry_answer += _tok
+            except Exception as _empty_e:
+                print(f"[RAG STREAM] Empty-answer retry errored: {_empty_e}")
+            retry_answer = rag_generation.clean_llm_output(retry_answer)
+            if retry_answer.strip():
+                full_answer = retry_answer
+                yield {"type": "token", "content": full_answer}
+                print(f"[RAG STREAM] Empty-answer retry succeeded ({len(full_answer)} chars)")
+            else:
+                answer_is_fallback = True
+                full_answer = (
+                    "I wasn't able to generate an answer just now — the model may have been "
+                    "busy or low on memory. Please ask again."
+                )
+                yield {"type": "token", "content": full_answer}
+                print("[RAG STREAM] Empty-answer retry also empty — sent fallback message")
+
         # Phase 2: VERIFY — silent citation check after streaming completes
         step_start = time.time()
         verification_result = rag_verification.verify_answer(full_answer, citations)
         carr_retried = False
         
-        if verification_result and verification_result.hallucination_risk == "high":
+        if not answer_is_fallback and verification_result and verification_result.hallucination_risk == "high":
             print(f"[RAG STREAM] CaRR: high hallucination risk detected, running retry...")
             yield {"type": "status", "message": "🔄 Improving answer accuracy..."}
 
@@ -1235,7 +1269,7 @@ Answer the question, citing sources inline as [N]. Do not list references at the
         # only genuine answers with citations are cached. query_embedding was
         # computed at Step 1; reuse it (no extra embed).
         try:
-            if full_answer and full_answer.strip() and citations:
+            if full_answer and full_answer.strip() and citations and not answer_is_fallback:
                 await answer_cache.put(question, notebook_id, query_embedding, full_answer, citations)
         except Exception as _e:
             logger.debug(f"[rag-engine] answer_cache.put failed (non-fatal): {_e}")
