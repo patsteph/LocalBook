@@ -26,7 +26,7 @@ import logging
 import time
 import numpy as np
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 logger = logging.getLogger(__name__)
 
@@ -220,22 +220,33 @@ class ContextBuilder:
         # Get profile for this output type
         profile = self._get_profile(skill_id, duration_minutes)
 
-        # Reconcile the assembly budget with the model's ACTUAL window (tier-aware).
-        # SCALE the per-skill profile budget by the RAM tier so bigger-RAM machines
-        # genuinely assemble MORE context — not just a higher num_ctx ceiling they
-        # never reach. (Before: min(fixed_profile, window) meant the fixed profile
-        # was always the binding limit, so a 48GB box assembled the same as an 18GB
-        # box.) Still window-capped so we never over-fill num_ctx.
+        # RAM-scale the ENTIRE retrieval envelope (not just the char budget) so a
+        # bigger-RAM machine genuinely assembles more context: more sources, more
+        # chunks, more per source, bigger total. Scaling only total_context_chars
+        # left max_sources / chunk_top_k / chars_per_source as fixed bottlenecks, so
+        # the bigger budget could never fill on a content-rich notebook. `replace`
+        # makes a scaled COPY (never mutate the shared CONTEXT_PROFILES singleton).
+        # All still bounded by the window budget + actual available content.
         try:
             from services.ollama_service import _ram_ctx_multiplier
             ram_mult = _ram_ctx_multiplier()
         except Exception:
             ram_mult = 1.0
-        budget_chars = min(int(profile.total_context_chars * ram_mult), _window_char_budget())
+        base_total = profile.total_context_chars
+        if ram_mult > 1.0:
+            profile = replace(
+                profile,
+                max_sources=int(profile.max_sources * ram_mult),
+                chars_per_source=int(profile.chars_per_source * ram_mult),
+                chunk_top_k=int(profile.chunk_top_k * ram_mult),
+                total_context_chars=int(profile.total_context_chars * ram_mult),
+            )
+        budget_chars = min(profile.total_context_chars, _window_char_budget())
 
         logger.info(f"[ContextBuilder] Building context for skill={skill_id}, "
                     f"topic={topic or 'none'}, profile={profile.strategy}, "
-                    f"budget={budget_chars} chars (profile={profile.total_context_chars}×{ram_mult:.2f}, window-capped)")
+                    f"budget={budget_chars} chars (base={base_total}×{ram_mult:.2f}, "
+                    f"sources≤{profile.max_sources}, chunks≤{profile.chunk_top_k}, window-capped)")
         
         # Import here to avoid circular imports
         from storage.source_store import source_store
