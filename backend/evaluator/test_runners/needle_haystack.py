@@ -176,5 +176,9 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         result.failure_reason = str(e)[:200]
         result.overall_score = 0
         
-    print(f"[EVAL-NEEDLE] Score={result.overall_score}, context={actual_chars} chars, time={result.total_time_ms/1000:.1f}s")
+    _ss = result.sub_scores or {}
+    _match = 'full' if _ss.get('full_match') else ('partial' if _ss.get('partial_match') else 'MISS')
+    print(f"[EVAL-NEEDLE] RESULT score={result.overall_score} match={_match} "
+          f"stressed≈{target_tokens} tokens (num_ctx≈{target_tokens + 2000}, {actual_chars} chars) "
+          f"of {window}-token deployed window, time={(result.total_time_ms or 0)/1000:.1f}s")
     return [result]

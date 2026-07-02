@@ -291,8 +291,12 @@ async def run_full_evaluation() -> ComboEvalSummary:
 
         # Phase 15: Context Capacity (Needle)
         _update_progress(15, "Context Capacity (Needle)")
+        # Needle now stresses the model's DEPLOYED window (up to ~75% of a large ctx),
+        # so prompt-eval of tens of thousands of tokens can exceed the default 180s.
+        # Give this deliberate stress test a longer ceiling so it completes + scores.
         needle_results = await _run_phase_with_timeout(
-            needle_haystack.run(notebook_id, config, combo.name, hw.fingerprint), "Needle Haystack")
+            needle_haystack.run(notebook_id, config, combo.name, hw.fingerprint),
+            "Needle Haystack", timeout=420)
         cat = _build_category("needle_haystack", "Context Capacity", needle_results)
         category_results["needle_haystack"] = cat
         _progress.results_so_far["needle_haystack"] = {"score": cat.score, "grade": cat.grade}

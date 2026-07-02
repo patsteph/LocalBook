@@ -241,7 +241,14 @@ async def call_ollama(
             mark_main_model_used()
         # Record token usage for Health Portal token economy stats
         _record_ollama_tokens(result)
-        print(f"LLM response received, length: {len(result.get('response', ''))}")
+        # Visibility: this httpx path does NOT go through ollama_service, so log the
+        # ctx here too — otherwise doc/RAG/needle generations are invisible in the
+        # ctx logs (only the small phi4 ollama_service calls show up).
+        logger.info(
+            f"[rag_llm] generate OK model={use_model} caller=call_ollama "
+            f"ctx={options.get('num_ctx', 'def')} num_predict={options.get('num_predict')} "
+            f"resp_chars={len(result.get('response', ''))}"
+        )
         return result.get("response", "No response from LLM")
 
 
@@ -370,6 +377,13 @@ async def stream_ollama(
         # Merge caller-supplied overrides LAST (e.g., Mirostat for outline-first sections)
         if extra_options:
             stream_options.update(extra_options)
+
+        # Visibility: streaming also bypasses ollama_service — log the ctx so the
+        # streamed chat/doc answer shows its window (otherwise it's invisible).
+        logger.info(
+            f"[rag_llm] stream start model={model} "
+            f"ctx={stream_options.get('num_ctx')} num_predict={stream_options.get('num_predict')}"
+        )
 
         # Short keep_alive — warmup loop re-pings active models every 4 min
         _keep_alive = "5m"
