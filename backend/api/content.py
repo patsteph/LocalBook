@@ -1158,6 +1158,85 @@ Write only the table and prompts. Nothing else."""
     return document
 
 
+def _insert_fences_at_anchors(content: str, fences: List[str]) -> str:
+    """Insert visual fences after body-section markdown headings, spread through the
+    doc. Falls back to appending at the end when there are too few headings."""
+    lines = content.split("\n")
+    heading_idxs = [i for i, ln in enumerate(lines) if ln.lstrip().startswith("#")]
+    # Skip the first heading (title/abstract) — charts belong in body sections.
+    body = heading_idxs[1:] if len(heading_idxs) > 1 else heading_idxs
+    if not body:
+        return content + "\n\n" + "\n\n".join(fences)
+    picks = [body[(k * len(body)) // len(fences)] for k in range(len(fences))]
+    # Insert bottom-up so earlier indices stay valid.
+    for idx, fence in sorted(zip(picks, fences), key=lambda t: t[0], reverse=True):
+        lines.insert(idx + 1, "\n" + fence + "\n")
+    return "\n".join(lines)
+
+
+async def _inject_doc_visuals(content: str, topic_focus: str, source_context: str, temperature: float) -> str:
+    """Generate 1-2 data charts for a document and insert them as `lb-chart` fences.
+
+    Runs only when the doc has NO visual yet — notably the outline-first path, whose
+    per-section "prose only" rules + run-on quality gate strip any inline chart before
+    it survives. This DEDICATED pass keeps the chart out of that gate; gemma is reliable
+    at ChartConfig JSON (unlike SVG), and resolve_visuals() renders the fences downstream.
+    Best-effort: any failure returns the content unchanged."""
+    try:
+        from services.chart_spec import ChartConfig
+        from utils.json_repair import robust_json_parse
+        import json as _json
+
+        prompt = (
+            "Design 1-2 DATA VISUALIZATIONS that support the key quantitative comparisons "
+            "or trends in the document below. Return ONLY a JSON array (no prose) of 1-2 "
+            "chart objects, each shaped exactly like:\n"
+            '{"chart_type": "bar", "title": "...", "x_axis": {"key": "label"}, '
+            '"series": [{"key": "value", "label": "..."}], '
+            '"data": [{"label": "A", "value": 3}, {"label": "B", "value": 5}]}\n'
+            "Rules: chart_type is one of bar|line|pie; every data row's keys must match "
+            "x_axis.key and the series keys; 3-6 data points; use only values supported by "
+            "the material; no commentary outside the JSON array.\n\n"
+            f"DOCUMENT TOPIC: {topic_focus[:500]}\n\n"
+            f"DOCUMENT:\n{content[:6000]}\n\n"
+            f"SOURCE MATERIAL:\n{source_context[:4000]}\n\n"
+            "JSON array of 1-2 charts:"
+        )
+        raw = await rag_engine._call_ollama(
+            "You output ONLY valid JSON — no markdown, no prose.",
+            prompt,
+            model=settings.ollama_model,
+            num_predict=800,
+            temperature=max(0.2, temperature - 0.2),
+        )
+        parsed = robust_json_parse(raw, expect="array", fallback=None, label="DocVisuals")
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        if not isinstance(parsed, list):
+            return content
+
+        fences: List[str] = []
+        for obj in parsed[:2]:
+            if not isinstance(obj, dict):
+                continue
+            try:
+                cfg = ChartConfig(**obj)
+            except Exception:
+                continue
+            if not cfg.series or not cfg.data:
+                continue  # empty charts are dropped downstream anyway
+            fences.append("```lb-chart\n" + _json.dumps(obj, ensure_ascii=False) + "\n```")
+
+        if not fences:
+            logger.info("[STUDIO] visual injection: no valid chart produced")
+            return content
+        logger.info(f"[STUDIO] visual injection: inserted {len(fences)} lb-chart fence(s)")
+        return _insert_fences_at_anchors(content, fences)
+    except Exception as _e:
+        logger.debug(f"[STUDIO] visual injection skipped: {_e}")
+        return content
+
+
 async def _generate_outline_first(
     system_prompt: str,
     source_context: str,
@@ -1681,6 +1760,14 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
                     f"[STUDIO] Citation validator stripped {before - len(content)} chars "
                     f"of invalid [Sn] tags from {request.skill_id} output"
                 )
+
+        # Cross-medium: long-form (outline-first) docs almost never emit inline visual
+        # fences — each section is generated in isolation with "prose only" rules and a
+        # run-on quality gate that would strip a chart. So when the user asked for visuals
+        # and the doc has none, run a dedicated pass to add 1-2 real charts before resolve.
+        if (request.include_visuals and request.skill_id != 'feynman_curriculum'
+                and 'lb-chart' not in content and 'lb-visual-hint' not in content):
+            content = await _inject_doc_visuals(content, topic_focus, built.context, skill_temp)
 
         # Phase 4 mixed-medium: resolve inline visualization fences
         # (`lb-chart`, `lb-visual-hint`) before persistence so cached docs
