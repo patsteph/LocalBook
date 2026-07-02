@@ -158,7 +158,7 @@
     "needle": "The secret database override passphrase is 'Tangerine-Sky-44'.",
     "question": "What is the secret database override passphrase?",
     "expected_answer": "Tangerine-Sky-44",
-    "padding_target_tokens": 8000
+    "window_fraction": 0.75
   },
 
   "prompt_safety_test": [

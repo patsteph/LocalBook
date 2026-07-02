@@ -17,27 +17,30 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     needle = test_config.get("needle", "The secret database override passphrase is 'Tangerine-Sky-44'.")
     question = test_config.get("question", "What is the secret database override passphrase?")
     expected_answer = test_config.get("expected_answer", "Tangerine-Sky-44")
-    target_tokens = test_config.get("padding_target_tokens", 8000)
-
-    # v1.8.2: adapt the needle test to the model's actual context window so a
-    # small-ctx model (e.g. Bonsai 4K) isn't scored against an 8K haystack it
-    # physically cannot ingest. We trim target_tokens to ~75% of the window,
-    # leaving headroom for the prompt framing and completion. The test STILL
-    # RUNS and scores honestly — the adaptation is surfaced as a degraded
-    # note so the user sees the true state of affairs.
+    # Stress the DEPLOYED context window on THIS hardware — capabilities_for now
+    # reports the RAM-scaled effective cap the app actually gives the model — so the
+    # test reflects TRUE per-hardware capacity: a 48GB box exercises ~49k tokens, a
+    # 16GB box ~12k, instead of a fixed 8k that under-tests big boxes and misaligns
+    # perception vs reality. An explicit `padding_target_tokens` still works as a
+    # fixed override, but is never allowed to exceed the deployed window.
     caps = capabilities_for(main_model)
-    original_target = target_tokens
+    window = caps.context_window or 8192
     degraded_note = ""
-    if caps.context_window and target_tokens > caps.context_window * 0.75:
-        adjusted = int(caps.context_window * 0.75)
-        degraded_note = (
-            f"Adapted haystack {original_target}→{adjusted} tokens to fit "
-            f"{main_model} context window ({caps.context_window}). "
-            f"Production behavior at {original_target} tokens is UNTESTED — "
-            f"the app would truncate or error if given longer input."
-        )
-        print(f"[EVAL-NEEDLE] {degraded_note}")
-        target_tokens = adjusted
+    explicit = test_config.get("padding_target_tokens")
+    if explicit:
+        target_tokens = min(int(explicit), int(window * 0.9))
+        if int(explicit) > int(window * 0.9):
+            degraded_note = (
+                f"Requested {int(explicit)} tokens exceeds {main_model}'s deployed window "
+                f"({window}); stress-tested at {target_tokens} instead — longer input would truncate."
+            )
+            print(f"[EVAL-NEEDLE] {degraded_note}")
+    else:
+        frac = float(test_config.get("window_fraction", 0.75))
+        target_tokens = int(window * frac)
+    target_tokens = max(2000, target_tokens)
+    print(f"[EVAL-NEEDLE] Stressing {main_model} at {target_tokens} tokens "
+          f"(deployed window {window}, ~{int(100 * target_tokens / max(1, window))}%)")
 
     result = EvalResult(
         test_id="needle_haystack",
@@ -148,6 +151,8 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         # Track sub-scores for dashboard visibility
         result.sub_scores = {
             "context_size": target_tokens,
+            "deployed_window": window,
+            "context_pct_of_window": int(100 * target_tokens / max(1, window)),
             "needle_depth_pct": 65,
             "full_match": is_full_match,
             "partial_match": is_partial,
