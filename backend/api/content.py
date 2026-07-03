@@ -16,7 +16,12 @@ import json
 
 
 def _clean_llm_output(text: str) -> str:
-    """Post-process LLM output: detect repetition loops and ensure clean ending.
+    """Post-process DOC-GEN LLM output: detect repetition loops and ensure clean ending.
+
+    NOT a duplicate of services/rag_generation.clean_llm_output — that one cleans
+    CHAT-ANSWER artifacts (LaTeX, trailing bibliography w/ empty-guard, citation
+    brackets); this one handles long-form doc-gen loop pathology. Evaluated for
+    merge in simplification S1/C2 (2026-07-03): genuinely different jobs, kept apart.
 
     Universal failure modes (run for every model):
       1. Sentence-level loops (same sentence repeats 3+ times)

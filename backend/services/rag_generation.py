@@ -93,7 +93,12 @@ FORMAT REQUIREMENTS (mandatory):
 # ─── Output Cleaning ─────────────────────────────────────────────────────────────
 
 def clean_llm_output(text: str) -> str:
-    """Clean up LLM output artifacts.
+    """Clean up CHAT-ANSWER LLM output artifacts.
+
+    NOT a duplicate of api/content._clean_llm_output (doc-gen loop pathology) —
+    see the S1/C2 note there. This one owns LaTeX artifacts, the trailing-
+    bibliography strip (with the lead-heading empty-answer guard), and citation
+    bracket cleanup.
     
     Minimal post-processing - let the prompt do the heavy lifting.
     Only clean up formatting artifacts that slip through.

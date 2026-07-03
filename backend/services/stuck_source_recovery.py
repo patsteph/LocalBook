@@ -252,17 +252,34 @@ class StuckSourceRecovery:
         print("[StuckRecovery] Stopped background task")
     
     async def _background_loop(self):
-        """Background loop that periodically checks for stuck sources."""
-        # Initial check on startup after short delay
+        """Cadence poll — enqueues the actual check on the enrichment worker.
+
+        S1/C7 (2026-07-03): this was the ONE background timer loop the Night-Shift
+        fold missed (absent from BACKGROUND_SCHEDULE.md). Same fold template as
+        memory_manager: the loop keeps the cheap cadence check but execution routes
+        through the presence-gated worker (tier=DEEP, coalesced by key), so recovery
+        work can never collide with foreground use. Completes the one-traffic-cop goal.
+        """
         await asyncio.sleep(30)  # Wait 30s after startup
-        
-        while self._running:
+
+        from services.enrichment_worker import enrichment_worker
+        from services.enrichment_jobs import EnrichmentJob, JobTier
+
+        async def _run_check():
             try:
                 await self.check_and_recover()
             except Exception as e:
                 print(f"[StuckRecovery] Background check error: {e}")
-            
-            # Wait for next check
+
+        while self._running:
+            enrichment_worker.enqueue(EnrichmentJob(
+                key="stuck-source-recovery",
+                tier=JobTier.DEEP,
+                factory=_run_check,
+                label="stuck-source-recovery",
+            ))
+            # Wait for next check (worker coalesces by key, so a slow drain
+            # can't stack duplicate jobs).
             await asyncio.sleep(CHECK_INTERVAL_MINUTES * 60)
 
 
