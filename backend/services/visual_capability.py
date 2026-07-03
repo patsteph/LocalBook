@@ -6,7 +6,7 @@ Decides which generation path the visual composer should use based on:
   • Currently-configured main/fast/vision model names
 
 Two deployment setups (see READFIRST/VISUAL_V2_PLAN.md):
-  • Setup A — Olmo trio (olmo-3 + phi4-mini + granite vision) → template path
+  • non-Gemma setups → template path (Tier D; Setup-A olmo trio removed S1/B1 2026-07-03)
   • Setup B — Gemma trio (gemma4 + phi4-mini + flux2-klein optional) → freeform path
 
 Cached for 60s — model availability changes rarely; system RAM never.
@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────
 GEMMA_PREFIXES = ("gemma4", "gemma3", "gemma2")  # Gemma family
 KLEIN_PREFIXES = ("flux2-klein", "x/flux2-klein", "flux-klein")
-OLMO_PREFIXES = ("olmo",)
 VISION_PREFIXES = ("granite", "llava", "moondream", "bakllava")
 
 # RAM thresholds (bytes). Total system RAM, not available.
@@ -64,19 +63,16 @@ class VisualCapability:
     # Installed (present in `ollama list`)
     has_gemma: bool = False
     has_klein: bool = False
-    has_olmo: bool = False
     has_vision_model: bool = False
     installed_models: List[str] = field(default_factory=list)
 
     # Resolved canonical names (highest-priority match for each family)
     gemma_model: Optional[str] = None
     klein_model: Optional[str] = None
-    olmo_model: Optional[str] = None
     vision_model: Optional[str] = None
 
     # Derived flags for the composer
     can_freeform_gemma: bool = False     # Setup B primary path
-    can_freeform_olmo: bool = False      # Setup A primary path
     can_critic_gemma_vision: bool = False  # Gemma as vision critic
     can_critic_separate_vision: bool = False  # Granite/etc as critic
     can_diffusion_klein: bool = False    # Hero raster images
@@ -91,8 +87,6 @@ class VisualCapability:
                 f"mode={self.concurrency_mode.value}"]
         if self.can_freeform_gemma:
             bits.append("gemma-freeform")
-        if self.can_freeform_olmo:
-            bits.append("olmo-freeform")
         if self.can_diffusion_klein:
             bits.append("klein")
         crit = "gemma" if self.can_critic_gemma_vision else (
@@ -151,23 +145,15 @@ async def _detect() -> VisualCapability:
     # Find best match per family
     gemma = _find_first(installed, GEMMA_PREFIXES)
     klein = _find_first(installed, KLEIN_PREFIXES)
-    olmo = _find_first(installed, OLMO_PREFIXES)
     vision = _find_first(installed, VISION_PREFIXES)
 
     # Determine setup. Prefer Setup B if Gemma is the configured main model
     # OR if Gemma is installed and configured vision_model also points at Gemma.
-    configured_main = (settings.ollama_model or "").lower()
-    if gemma and any(configured_main.startswith(p) for p in GEMMA_PREFIXES):
-        setup = Setup.SETUP_B
-    elif olmo and any(configured_main.startswith(p) for p in OLMO_PREFIXES):
-        setup = Setup.SETUP_A
-    elif gemma:
-        # Gemma installed but not the configured main — still Setup B available
-        setup = Setup.SETUP_B
-    elif olmo:
-        setup = Setup.SETUP_A
-    else:
-        setup = Setup.UNKNOWN
+    # S1/B1 (2026-07-03): Setup-A (olmo trio) detection removed — non-gemma
+    # setups take the always-available template path (Tier D). SETUP_A stays in
+    # the enum only as a legacy label the frontend types; it is never produced.
+    # UNKNOWN semantics preserved (the degraded-probe last-good guard relies on it).
+    setup = Setup.SETUP_B if gemma else Setup.UNKNOWN
 
     # Concurrency mode based on total RAM
     if total_ram >= RAM_CONCURRENT_THRESHOLD:
@@ -183,18 +169,15 @@ async def _detect() -> VisualCapability:
         total_ram_gb=total_ram / (1024**3),
         has_gemma=gemma is not None,
         has_klein=klein is not None,
-        has_olmo=olmo is not None,
         has_vision_model=vision is not None,
         installed_models=installed,
         gemma_model=gemma,
         klein_model=klein,
-        olmo_model=olmo,
         vision_model=vision,
     )
 
     # Derived capability flags
     cap.can_freeform_gemma = setup == Setup.SETUP_B and gemma is not None
-    cap.can_freeform_olmo = setup == Setup.SETUP_A and olmo is not None
     cap.can_critic_gemma_vision = gemma is not None  # Gemma is multimodal
     cap.can_critic_separate_vision = vision is not None
     # Klein availability is independent of which main model is configured.

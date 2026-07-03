@@ -10,7 +10,6 @@ lancedb>=0.18.0
 sentence-transformers>=3.3.0  # Fallback embeddings (only used if Ollama unavailable)
 
 # LLM integrations
-anthropic>=0.40.0
 openai>=1.56.0
 
 # LangChain/LangGraph for agent workflows

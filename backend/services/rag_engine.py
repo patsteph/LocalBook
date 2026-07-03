@@ -1383,14 +1383,6 @@ Answer the question, citing sources inline as [N]. Do not list references at the
         async for token in rag_llm.stream_ollama(system_prompt, prompt, deep_think=deep_think, use_fast_model=use_fast_model, num_predict=num_predict, temperature_override=temperature_override, extra_options=extra_options):
             yield token
 
-    async def _call_openai(self, system_prompt: str, prompt: str) -> str:
-        """Call OpenAI API"""
-        return await rag_llm.call_openai(system_prompt, prompt)
-
-    async def _call_anthropic(self, system_prompt: str, prompt: str) -> str:
-        """Call Anthropic API"""
-        return await rag_llm.call_anthropic(system_prompt, prompt)
-
     def _chunk_text_smart(self, text: str, source_type: str, filename: str) -> List[str]:
         """Smart chunking that adapts strategy based on source type."""
         return rag_chunking.chunk_text_smart(text, source_type, filename)

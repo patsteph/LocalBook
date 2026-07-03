@@ -238,16 +238,10 @@ Q: {question}
 
 Answer the question, citing sources inline as [N]. Do not list references at the end."""
 
-    # Determine which provider to use
-    provider = llm_provider or settings.llm_provider
-
-    # Call LLM based on provider
-    if provider == "openai":
-        answer = await rag_llm.call_openai(system_prompt, prompt)
-    elif provider == "anthropic":
-        answer = await rag_llm.call_anthropic(system_prompt, prompt)
-    else:
-        answer = await rag_llm.call_ollama(system_prompt, prompt)
+    # Simplification S1/B2 (2026-07-03): cloud providers removed — LocalBook is
+    # 100% local by design; no UI ever surfaced openai/anthropic. llm_provider is
+    # kept in signatures only to avoid a wide call-chain refactor.
+    answer = await rag_llm.call_ollama(system_prompt, prompt)
 
     return {
         "answer": answer,

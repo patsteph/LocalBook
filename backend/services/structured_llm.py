@@ -29,11 +29,6 @@ from services.svg_templates import build_svg_visual, COLOR_THEMES as SVG_COLOR_T
 # Output Models for Structured Generation
 # =============================================================================
 
-class VisualLabels(BaseModel):
-    """Labels shown vs hidden in a visual diagram."""
-    shown: List[str] = Field(default_factory=list, description="Labels that are visible in the diagram")
-    hidden: List[str] = Field(default_factory=list, description="Labels that are hidden (user must identify)")
-
 class QuizQuestion(BaseModel):
     """A single quiz question with answer and explanation."""
     question: str = Field(description="The question text")
@@ -44,7 +39,6 @@ class QuizQuestion(BaseModel):
     options: Optional[List[str]] = Field(default=None, description="Answer options - required for multiple_choice, ['True', 'False'] for true_false")
     source_reference: Optional[str] = Field(default=None, description="Name of the source document this question is from")
     visual_svg: Optional[str] = Field(default=None, description="SVG diagram code for visual_diagram questions (one label replaced with ???)")
-    visual_labels: Optional[VisualLabels] = Field(default=None, description="Labels shown vs hidden for visual_diagram questions")
     # Tier 2.5 (2026-06-01) — citation contract + difficulty schema.
     evidence_quote: Optional[str] = Field(default=None, description="Verbatim source span (≤200 chars) that grounds the answer. Validated against context.")
     citation_tag: Optional[str] = Field(default=None, description="Source tag like [S1] identifying the chunk this question came from.")
@@ -329,14 +323,12 @@ class StructuredLLMService:
                 "  - 'visual_components': an ORDERED list of 3-6 SHORT stage labels (1-2 words each), in sequence.\n"
                 "  - 'answer': EXACTLY ONE of those labels — the stage the user must identify (the server blanks it to ???).\n"
                 "  - 'options': 4 plausible labels (the correct answer + 3 distractors).\n"
-                "  - 'visual_labels': {{'shown': [the other labels], 'hidden': [the answer]}}.\n"
                 "  FULL EXAMPLE (copy this structure exactly, adapting the content):\n"
                 '  {{"question_type": "visual_diagram",\n'
                 '    "question": "What is the missing stage in this RAG pipeline?",\n'
                 '    "visual_components": ["Query", "Retriever", "LLM", "Answer"],\n'
                 '    "answer": "Retriever",\n'
                 '    "options": ["Retriever", "Tokenizer", "Classifier", "Compiler"],\n'
-                '    "visual_labels": {{"shown": ["Query", "LLM", "Answer"], "hidden": ["Retriever"]}},\n'
                 '    "explanation": "The retriever fetches relevant documents from the vector store before the LLM generates the answer.",\n'
                 '    "difficulty": "medium"}}\n'
                 "  RULES: 'answer' MUST be one of 'visual_components'. Labels ≤2 words. NO 'visual_svg' field — "
@@ -741,13 +733,6 @@ Return ONLY a JSON object like this:
                         rendered = _render_quiz_diagram(components, answer)
                         if rendered:
                             visual_svg = rendered
-                visual_labels_raw = q.get('visual_labels') or q.get('diagram_labels')
-                visual_labels = None
-                if visual_labels_raw and isinstance(visual_labels_raw, dict):
-                    visual_labels = VisualLabels(
-                        shown=visual_labels_raw.get('shown', []),
-                        hidden=visual_labels_raw.get('hidden', [])
-                    )
 
                 parsed_questions.append(QuizQuestion(
                     question=scrubbed_question,
@@ -758,7 +743,6 @@ Return ONLY a JSON object like this:
                     options=options,
                     source_reference=validated_ref,
                     visual_svg=visual_svg,
-                    visual_labels=visual_labels,
                 ))
             except Exception as e:
                 logger.debug(f"[Quiz] Skipping malformed question: {e}")

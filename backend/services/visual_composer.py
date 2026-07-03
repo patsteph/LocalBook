@@ -44,8 +44,6 @@ from services.visual_diffusion import (
 from services.visual_freeform import (
     FreeformResult,
     gemma_skeleton,    # Setup B primary path
-    olmo_freeform,     # Backward-compat alias = olmo_skeleton
-    olmo_skeleton,     # Setup A primary path
 )
 from services.visual_generator import GeneratedVisual, VisualGenerator
 from services.visual_intent import (
@@ -79,7 +77,6 @@ class OutputFormat(str, Enum):
 
 class GenerationPath(str, Enum):
     GEMMA_FREEFORM = "gemma_freeform"        # Setup B primary
-    OLMO_FREEFORM = "olmo_freeform"          # Setup A primary
     TEMPLATE = "template"                     # Tier D fallback (today's path)
 
 
@@ -204,8 +201,6 @@ class VisualComposer:
         try:
             if path == GenerationPath.GEMMA_FREEFORM:
                 result = await self._compose_gemma_freeform(content, capability)
-            elif path == GenerationPath.OLMO_FREEFORM:
-                result = await self._compose_olmo_freeform(content, capability)
             else:
                 result = await self._compose_template(content, template_id, capability)
 
@@ -278,8 +273,6 @@ class VisualComposer:
 
         if capability.can_freeform_gemma:
             return GenerationPath.GEMMA_FREEFORM
-        if capability.can_freeform_olmo:
-            return GenerationPath.OLMO_FREEFORM
 
         return GenerationPath.TEMPLATE
 
@@ -700,7 +693,7 @@ class VisualComposer:
           5. Otherwise, return the SVG with its critic score.
         """
         t0 = time.time()
-        model = capability.gemma_model or capability.olmo_model
+        model = capability.gemma_model
         if not model:
             logger.warning(
                 "[visual_composer] user-directed SVG: no LLM model available"
@@ -905,80 +898,6 @@ class VisualComposer:
         except Exception as e:
             logger.exception(f"[visual_composer] critic call raised: {e}")
             return None
-
-    async def _compose_olmo_freeform(
-        self,
-        content: str,
-        capability: VisualCapability,
-    ) -> ComposedVisual:
-        """Setup A primary path: skeleton-based scaffolding via Olmo.
-
-        Strategy:
-          1. Olmo picks the best of 5 skeletons + writes title/subtitle (JSON)
-          2. Olmo fills in slot map (JSON)
-          3. Apply slot map to skeleton SVG
-          4. Validate output (must be parseable, must have <svg>...</svg>)
-          5. If valid, run granite-vision critic with looser threshold (~0.55)
-          6. If invalid OR critic score < 0.40 floor → silent fallback to today's
-             template path (Tier D), never crash, never show broken output
-        """
-        freeform = await olmo_freeform.generate(
-            content, capability, force_idiom=getattr(self, "_forced_idiom", None),
-        )
-
-        if not freeform.success or not freeform.svg_markup or not _is_valid_svg(freeform.svg_markup):
-            logger.info(
-                f"[visual_composer] olmo_freeform invalid output → template fallback "
-                f"(error={freeform.error})"
-            )
-            result = await self._compose_template(content, None, capability)
-            result.error = f"olmo freeform failed: {freeform.error}; used template fallback"
-            return result
-
-        # Critic: granite vision with looser threshold (Olmo path produces
-        # serviceable-not-stunning output; threshold of 0.40 is "is it usable")
-        critic_result = await self._run_critic(
-            freeform.svg_markup,
-            title=freeform.title,
-            intent=freeform.subtitle or freeform.description,
-            capability=capability,
-        )
-
-        # Setup A floor: critic-floor failure also triggers template fallback
-        OLMO_PATH_FLOOR = 0.40
-        if (
-            critic_result
-            and critic_result.success
-            and critic_result.overall < OLMO_PATH_FLOOR
-        ):
-            logger.info(
-                f"[visual_composer] olmo output scored {critic_result.overall:.2f} "
-                f"< floor {OLMO_PATH_FLOOR}; falling back to template path"
-            )
-            result = await self._compose_template(content, None, capability)
-            result.error = (
-                f"olmo output scored {critic_result.overall:.2f} below floor; "
-                f"used template fallback"
-            )
-            return result
-
-        return ComposedVisual(
-            success=True,
-            path=GenerationPath.OLMO_FREEFORM,
-            setup=capability.setup,
-            output_format=OutputFormat.SVG,
-            svg_markup=freeform.svg_markup,
-            title=freeform.title,
-            description=freeform.description,
-            key_points=[],
-            alternatives=[],
-            critic_score=_critic_result_to_score(critic_result) if critic_result else None,
-            retry_count=0,  # Olmo path does not retry — fallback to template instead
-            model_used=freeform.model_used,
-            template_id=freeform.idiom_id,
-            template_name=freeform.idiom_id,
-        )
-
 
 # ──────────────────────────────────────────────────────────────────────
 # Validation + intent detection

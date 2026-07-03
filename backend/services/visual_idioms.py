@@ -18,13 +18,13 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from services.ollama_service import ollama_service
-from services.visual_skeletons import HERO_IDIOMS, OLMO_IDIOMS as _SKELETON_IDIOMS
+from services.visual_skeletons import HERO_IDIOMS, ALL_IDIOMS as _SKELETON_IDIOMS
 
 logger = logging.getLogger(__name__)
 
 # Re-export the skeleton-derived idiom set so callers (and SkeletonGenerator)
 # can validate idiom_ids without importing from visual_skeletons directly.
-OLMO_IDIOMS = _SKELETON_IDIOMS
+ALL_IDIOMS = _SKELETON_IDIOMS
 
 # Warm-call timeout reused across picker calls (matches visual_freeform constants)
 WARM_TIMEOUT = 300.0
@@ -168,75 +168,8 @@ _IDIOM_FITS: dict[str, str] = {
 }
 
 
-def _olmo_pickable_idioms() -> list[str]:
-    """Idioms Olmo (Setup A) is allowed to pick from. Excludes Klein-dependent
-    hero idioms — those only exist in Setup B's hybrid path."""
-    return [i for i in OLMO_IDIOMS if i not in HERO_IDIOMS and i in _IDIOM_FITS]
-
-
-def _build_olmo_pick_system() -> str:
-    options = "\n".join(
-        f"- {idiom_id}: {_IDIOM_FITS[idiom_id]}"
-        for idiom_id in _olmo_pickable_idioms()
-    )
-    return f"""You are choosing the visual idiom that best matches the STRUCTURAL SHAPE of the content. Reject surface-keyword matching — words like "services", "process", "journey", "transformation" appear in many shapes and don't determine the idiom by themselves.
-
-WORKFLOW (follow in order, do not skip):
-1. Identify the CORE STRUCTURAL PATTERN in the content (not the topic, not the keywords).
-2. Match that pattern to an idiom using the IF-THEN rules below.
-3. If multiple match, prefer the one with the MOST SPECIFIC fit to the actual content shape.
-
-IF-THEN RULES (apply BEFORE looking at surface keywords):
-- Content compares a CURRENT/LEGACY state vs a NEW/FUTURE state with concrete metrics on BOTH sides → before_after (NOT request_flow, NOT linear_process, NOT journey_map)
-- Content lists 2-5 OPTIONS compared across 4-6 ATTRIBUTES → comparison_matrix (NOT pros_cons unless explicit pro/con framing)
-- Content plots 4+ ITEMS on TWO ORTHOGONAL AXES (effort/impact, cost/value, etc.) → quadrant_2x2 (NOT comparison_matrix)
-- Content features 4+ PROMINENT METRICS as the dominant message → stat_callouts (NOT timeline unless tied to specific dates)
-- Content lists DATED EVENTS along a time axis → timeline
-- Content describes a process that CROSSES MULTIPLE ACTORS or TEAMS with handoffs → swimlane
-- Content describes CQRS / event sourcing with WRITE PATH and READ PATH through an event store → cqrs_pattern (preferred over swimlane when CQRS is explicit)
-- Content describes a process with multiple actors but NOT CQRS (e.g., write/read paths) → swimlane
-- Content describes a STACK/HIERARCHY of TIERS (UI/API/Service/Data) → layered_architecture
-- Content describes a CENTRAL bus, gateway, or orchestrator with attached services → microservices_mesh
-- Content describes 5 ORDERED STAGES with no actor split → linear_process
-- Content describes STAGES + METRICS per stage + OWNERS per stage → journey_map (the specific shape, not just any process)
-- Content describes YES/NO conditional branching → decision_tree
-- Content explicitly weighs 3-4 PROS vs 3-4 CONS → pros_cons
-- Content describes a PARENT concept with 2-3 CHILDREN and LEAVES per child → tree_hierarchy
-- Content describes a HUB concept with 4-6 RELATED SPOKES → concept_map
-- Content is HERO / VALUE-PROP framing (single value statement + 3 supporting benefits) WITHOUT a request for an image → value_proposition (vector hero — no raster needed)
-- DEFAULT (if uncertain): linear_process
-
-ANTI-PATTERNS — these false signals trick the picker:
-- "Microservices" or "services" in the prompt does NOT automatically mean microservices_mesh. Check the actual structural pattern.
-- "Process" or "flow" does NOT automatically mean process flow. Check whether there are actors, before/after states, or other dominant structural cues.
-- "Journey" as a phrase ("18-month journey to X") does NOT mean journey_map. journey_map requires explicit STAGES + METRICS + OWNERS per stage.
-- "Transformation" does NOT mean linear_process. If both old and new states are described with metrics, that's before_after.
-- "Marketing case study" mentioned once does NOT make this a marketing visual. Look at the content body, not incidental phrases.
-
-OPTIONS (catalog):
-{options}
-
-CONCRETE EXAMPLE PICKS:
-- "Monolith to microservices migration: legacy was X with these metrics, now is Y with these metrics" → before_after (BOTH states are described with metrics)
-- "REST vs GraphQL vs gRPC across transport, schema, caching" → comparison_matrix
-- "Map 8 competitors on complexity-vs-feature-depth axes" → quadrant_2x2
-- "Q3 metrics: ARR, NRR, customer count, gross margin, sales cycle" → stat_callouts
-- "Customer onboarding 6 stages, each with conversion rate and owning team" → journey_map
-- "K8s cluster with namespaces frontend/api/data each holding services" → swimlane (namespaces are lanes)
-- "CQRS write path → store → events; read path → projection → query" → cqrs_pattern (3-lane structure with event store in the middle)
-- "The future of cloud is serverless: ship faster, lower cost, infinite scale" (3 benefits, no image requested) → value_proposition
-- "Multi-region deployment: CDN → ALB → API GW → microservices → DBs (per service)" → microservices_mesh (central GW + radiating services)
-- "Web tier → API tier → service tier → data tier with components in each" → layered_architecture
-
-Return ONLY valid JSON:
-{{
-  "idiom_id": "exact id from the OPTIONS list",
-  "title": "concrete, specific title that names the actual subject (never just 'Process Flow' or 'Architecture')",
-  "subtitle": "single-line audience/context (e.g., 'for enterprise security review')"
-}}"""
-
-
-OLMO_PICK_SYSTEM = _build_olmo_pick_system()
+# S1/B1 (2026-07-03): the dead one-stage OLMO_PICK_SYSTEM picker (zero consumers,
+# superseded by the two-stage pick_category_and_meta/pick_idiom_in_category) was removed.
 
 
 # ──────────────────────────────────────────────────────────────────────

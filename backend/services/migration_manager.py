@@ -184,108 +184,24 @@ class MigrationManager:
         if not backup_path:
             yield {"status": "⚠️ Backup failed - proceeding anyway", "progress": 10, "warning": "Backup failed"}
         
-        if migration_type == "full_reindex":
-            async for update in self._full_reindex_migration(current_version):
-                yield update
-        else:
-            async for update in self._incremental_migration():
-                yield update
-    
-    async def _full_reindex_migration(self, from_version: str) -> AsyncGenerator[Dict, None]:
-        """v0.2/v0.3 → v0.60: Full re-index required due to embedding dimension change."""
-        yield {"status": f"🔄 Major upgrade from v{from_version} detected", "progress": 10}
-        yield {"status": "📦 This will re-index all documents with new embeddings", "progress": 15}
-        
-        # Get list of sources to re-index
-        from storage.source_store import source_store
-        
+        # Simplification S1/A6 (2026-07-03): the old multi-step migration bodies were
+        # progress theater — schema evolution is handled idempotently every launch
+        # (storage/database.py CREATE IF NOT EXISTS + ALTER ADD COLUMN; LanceDB tables
+        # self-create). The only real effects are: warn on embedding-dim changes
+        # (re-upload needed) and bump the stored version. A dead rollback() helper
+        # (zero callers) was removed with the bodies — the backup dir remains for
+        # manual recovery.
         try:
-            sources_data = source_store._load_data()
-            all_sources = sources_data.get("sources", {})
-            source_count = len(all_sources)
-            
-            yield {"status": f"📄 Found {source_count} documents to upgrade", "progress": 20}
-            
-            if source_count == 0:
-                # No documents - just update schema
-                yield {"status": "No documents to migrate", "progress": 90}
-            else:
-                # Note: Actual re-indexing would require re-reading source files
-                # For now, we mark that re-indexing is needed
+            if migration_type == "full_reindex":
                 yield {
-                    "status": "⚠️ Documents need re-indexing. Please re-upload your files.", 
+                    "status": "⚠️ Embedding model changed — documents need re-indexing. Please re-upload your files.",
                     "progress": 80,
-                    "warning": "Re-upload required for full v0.60 features"
+                    "warning": "Re-upload required",
                 }
-            
-            # Update version
             self.set_version(self.CURRENT_VERSION)
-            yield {"status": "✅ Upgrade complete! Re-upload documents for best results.", "progress": 100}
-            
+            yield {"status": "✅ Upgrade complete!", "progress": 100}
         except Exception as e:
             yield {"status": f"❌ Migration error: {e}", "progress": 100, "error": str(e)}
-    
-    async def _incremental_migration(self) -> AsyncGenerator[Dict, None]:
-        """v0.5 → v0.60: Incremental enhancement (same embedding dims)."""
-        yield {"status": "🔄 Enhancing your documents with v0.60 features...", "progress": 10}
-        
-        try:
-            # No imperative step needed here: schema evolution is handled
-            # idempotently in storage/database.py (CREATE TABLE IF NOT EXISTS +
-            # ALTER TABLE ADD COLUMN every launch) and LanceDB tables self-create
-            # on first use. This path reports progress + bumps the stored version.
-
-            # Step 1: Ensure knowledge graph has new tables
-            yield {"status": "📊 Updating schema...", "progress": 20}
-            # The __init__ will create new tables if they don't exist
-            
-            # Step 2: Add parent_text to existing chunks (if not present)
-            yield {"status": "🔗 Adding parent document support...", "progress": 40}
-            # Note: For existing chunks, parent_text will be empty
-            # New documents will have it populated
-            
-            # Step 3: Initialize entity graph tables
-            yield {"status": "🕸️ Initializing entity graph...", "progress": 60}
-            # Tables created by knowledge_graph_service init
-            
-            # Step 4: Mark migration complete
-            yield {"status": "📝 Finalizing...", "progress": 80}
-            self.set_version(self.CURRENT_VERSION)
-            
-            yield {
-                "status": "✅ Upgrade to v0.60 complete!", 
-                "progress": 100,
-                "info": "New documents will have full v0.60 features. Re-upload existing docs for parent context."
-            }
-            
-        except Exception as e:
-            yield {"status": f"❌ Migration error: {e}", "progress": 100, "error": str(e)}
-    
-    async def rollback(self, backup_path: Path) -> bool:
-        """Restore from backup if migration fails."""
-        try:
-            if not backup_path.exists():
-                print(f"[Migration] Backup not found: {backup_path}")
-                return False
-            
-            # Restore LanceDB
-            lancedb_backup = backup_path / "lancedb"
-            if lancedb_backup.exists():
-                if self.db_path.exists():
-                    shutil.rmtree(self.db_path)
-                shutil.copytree(lancedb_backup, self.db_path)
-            
-            # Restore version file
-            version_backup = backup_path / "version.json"
-            if version_backup.exists():
-                shutil.copy2(version_backup, self.version_file)
-            
-            print(f"[Migration] Rollback complete from {backup_path}")
-            return True
-            
-        except Exception as e:
-            print(f"[Migration] Rollback failed: {e}")
-            return False
 
 
 # Singleton instance

@@ -499,34 +499,7 @@ async def stream_ollama(
                             _record_ollama_tokens(translated)
 
 
-# ─── OpenAI ──────────────────────────────────────────────────────────────────────
-
-async def call_openai(system_prompt: str, prompt: str) -> str:
-    """Call OpenAI API."""
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
-
-    response = await client.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ]
-    )
-    return response.choices[0].message.content
-
-
-# ─── Anthropic ───────────────────────────────────────────────────────────────────
-
-async def call_anthropic(system_prompt: str, prompt: str) -> str:
-    """Call Anthropic API."""
-    from anthropic import AsyncAnthropic
-    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-
-    response = await client.messages.create(
-        model="claude-3-5-sonnet-20241022",
-        max_tokens=1024,
-        system=system_prompt,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.content[0].text
+# Simplification S1/B2 (2026-07-03): the call_openai/call_anthropic cloud escape
+# hatches were removed — LocalBook is 100% local; no UI ever surfaced a cloud
+# provider. `anthropic` left requirements.in with them. (`openai` stays: BERTopic's
+# representation model uses its client pointed at LOCAL Ollama.)

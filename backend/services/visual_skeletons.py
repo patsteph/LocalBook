@@ -871,7 +871,9 @@ _SKELETONS: Dict[str, callable] = {
 HERO_IDIOMS = {"hero_with_callouts"}
 
 # Idioms supported by the Olmo (scaffolded) path — must match _SKELETONS keys
-OLMO_IDIOMS = list(_SKELETONS.keys())
+# Renamed from OLMO_IDIOMS (S1/B1 2026-07-03): this is the FULL idiom catalog,
+# used by every skeleton family — the old name was a Setup-A-era artifact.
+ALL_IDIOMS = list(_SKELETONS.keys())
 
 
 def get_skeleton(idiom_id: str) -> Optional[str]:

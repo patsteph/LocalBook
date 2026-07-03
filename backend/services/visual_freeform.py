@@ -10,9 +10,7 @@ consolidation — benchmarks showed skeletons beat freeform on every test
 prompt AND ran 3-5× faster. When skeletons fail, the composer falls
 through directly to the 42-template Mermaid path (Tier D safety net).
 
-Module-level singletons exposed to the composer:
-  olmo_skeleton, gemma_skeleton — SkeletonGenerator instances per family
-  olmo_freeform                  — backward-compat alias for olmo_skeleton
+Module-level singleton exposed to the composer: gemma_skeleton
 
 Idiom catalog, picker prompts, and slot-fill prompts live in companion
 modules (visual_idioms.py, visual_slotfill.py) — file split per the
@@ -31,7 +29,7 @@ from services.ollama_service import ollama_service
 from services.visual_capability import VisualCapability, get_capability
 from services.visual_idioms import (
     CATEGORIES,
-    OLMO_IDIOMS,
+    ALL_IDIOMS,
     pick_category_and_meta,
     pick_idiom_in_category,
 )
@@ -39,7 +37,7 @@ from services.visual_skeletons import get_skeleton
 from services.visual_slotfill import (
     _apply_slot_fill,
     _has_unfilled_slots,
-    _olmo_slotfill_system,
+    _slotfill_system,
     validate_key_slots,
 )
 
@@ -81,13 +79,12 @@ class SkeletonGenerator:
     validated as the best-quality + fastest path for both Olmo (~50s
     avg) and Gemma (~40s avg).
 
-    Two singletons below (olmo_skeleton + gemma_skeleton) wrap this
-    class with different model resolvers so the composer routes per
-    setup.
+    The gemma_skeleton singleton below wraps this class; the family
+    parameter remains so another skeleton-capable family can be added.
     """
 
     def __init__(self, family: str):
-        # family is "olmo" or "gemma"
+        # family: currently only "gemma"
         self._family = family
         # Gemma's channel-token output format eats tokens fast — bumped
         # per family. cqrs_pattern (30+ slots) needs the larger budget.
@@ -97,8 +94,6 @@ class SkeletonGenerator:
     def _model_for(self, cap: VisualCapability) -> Optional[str]:
         if self._family == "gemma":
             return cap.gemma_model
-        if self._family == "olmo":
-            return cap.olmo_model
         return None
 
     async def generate(
@@ -131,17 +126,17 @@ class SkeletonGenerator:
 
         idiom_id = pick.get("idiom_id") or ""
         # Defensively normalize: models sometimes return "idiom_id: description"
-        if idiom_id and idiom_id not in OLMO_IDIOMS:
+        if idiom_id and idiom_id not in ALL_IDIOMS:
             for sep in (":", " ", "(", ","):
                 if sep in idiom_id:
                     candidate = idiom_id.split(sep, 1)[0].strip()
-                    if candidate in OLMO_IDIOMS:
+                    if candidate in ALL_IDIOMS:
                         logger.info(
                             f"[visual_freeform] normalized {idiom_id!r} → {candidate!r}"
                         )
                         idiom_id = candidate
                         break
-        if idiom_id not in OLMO_IDIOMS:
+        if idiom_id not in ALL_IDIOMS:
             logger.warning(
                 f"[visual_freeform] {self._family} picked unknown idiom "
                 f"{idiom_id!r}; defaulting to linear_process"
@@ -291,7 +286,7 @@ class SkeletonGenerator:
 
     async def _run_slotfill(self, content, idiom_id, model, seed) -> Optional[dict]:
         logger.info(f"[visual_freeform] {self._family} pass 2 (slotfill) idiom={idiom_id}")
-        system = _olmo_slotfill_system(idiom_id)
+        system = _slotfill_system(idiom_id)
         result = await ollama_service.generate(
             prompt=(
                 f"SOURCE CONTENT:\n{content}\n\n"
@@ -327,9 +322,7 @@ class SkeletonGenerator:
 # ──────────────────────────────────────────────────────────────────────
 # Module-level singletons + backward-compat aliases
 # ──────────────────────────────────────────────────────────────────────
-olmo_skeleton = SkeletonGenerator(family="olmo")
+# S1/B1 (2026-07-03): the olmo_skeleton singleton + aliases were removed with
+# Setup A. The class stays family-parameterized in case another skeleton-capable
+# family is ever added.
 gemma_skeleton = SkeletonGenerator(family="gemma")
-
-# Backward-compat aliases (composer + tests still use these names)
-OlmoFreeformGenerator = SkeletonGenerator
-olmo_freeform = olmo_skeleton

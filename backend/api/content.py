@@ -15,25 +15,6 @@ from typing import Dict, List, Optional
 import json
 
 
-def _aggressive_cleanup_active() -> bool:
-    """Return True if the active main model wants the aggressive olmo-tuned
-    cleanup pass (filler-word density + buzzword phrase removal).
-
-    Each model in known_models.json declares
-    rag_profile.aggressive_repetition_cleanup. olmo: True. Gemma/Phi/Llama: False.
-    Defaults to True (olmo's historical behavior) when no profile is configured.
-    """
-    try:
-        from config import settings as _s
-        from evaluator.model_registry import model_registry
-        info = model_registry.get_model(_s.ollama_model)
-        if info and info.rag_profile:
-            return bool(info.rag_profile.get("aggressive_repetition_cleanup", True))
-    except Exception:
-        pass
-    return True
-
-
 def _clean_llm_output(text: str) -> str:
     """Post-process LLM output: detect repetition loops and ensure clean ending.
 
@@ -43,16 +24,13 @@ def _clean_llm_output(text: str) -> str:
       3. Mid-sentence cutoff (output ends abruptly)
       4. Trigram-based degenerate paragraphs
 
-    Aggressive olmo-tuned filter (gated by rag_profile.aggressive_repetition_cleanup):
-      5. Filler-word / buzzword density — removes paragraphs where >5% of words
-         are corporate-speak filler. olmo's sampling produced these; Gemma
-         doesn't, so the filter would over-trim its more measured prose.
+    (S1/B1 2026-07-03: the olmo-only aggressive filler-word filter was removed
+    with Setup A — every model now gets the same universal cleanup.)
     """
     if not text or len(text) < 100:
         return text
 
     original_len = len(text)
-    aggressive = _aggressive_cleanup_active()
     
     # --- 0. Strip leaked prompt scaffolding ---
     # The LLM sometimes echoes internal pipeline markers into its output.
@@ -140,26 +118,7 @@ def _clean_llm_output(text: str) -> str:
     # Remove individual paragraphs that are degenerate (low unique trigram ratio
     # OR high filler-word density).
     # This catches phrase-level loops that sentence/paragraph exact-match misses.
-    _FILLER_WORDS = {
-        "thereby", "consequently", "fundamentally", "essentially", "progressively",
-        "significantly", "substantially", "increasingly", "continuously", "ultimately",
-        "revolutionizing", "transforming", "facilitating", "leveraging", "catalyzing",
-        "unprecedented", "indispensable", "comprehensive", "redefining", "reshaping",
-        "propelling", "fostering", "establishing", "navigating", "maximizing",
-        "transcending", "perpetually", "relentlessly", "irrespective", "henceforth",
-        "moreover", "furthermore", "additionally", "notably", "undeniably",
-        "remarkably", "inherently", "profoundly", "pivotal", "paramount",
-        "imperative", "multifaceted", "synergy", "paradigm", "holistic",
-    }
-    _FILLER_PHRASES = [
-        "it is worth noting", "it is important to note", "it should be noted",
-        "in the context of", "in terms of", "with respect to",
-        "plays a crucial role", "plays a vital role", "plays a key role",
-        "it goes without saying", "needless to say",
-        "in today's rapidly evolving", "in an increasingly",
-        "serves as a testament", "paving the way for",
-    ]
-    paragraphs2 = [p.strip() for p in text.split('\n\n') if p.strip()]
+            paragraphs2 = [p.strip() for p in text.split('\n\n') if p.strip()]
     if len(paragraphs2) > 2:
         kept = []
         removed = 0
@@ -175,20 +134,6 @@ def _clean_llm_output(text: str) -> str:
                                   f"({len(p_words)} words, trigram uniqueness {p_unique:.0%})")
                     continue
                 
-                # Check 3b: filler-word density — buzzword-stuffed paragraphs.
-                # olmo-only: olmo's sampling produces these; Gemma/Phi/Llama
-                # don't, so the filter would over-trim their measured prose.
-                if aggressive:
-                    filler_hits = sum(1 for w in p_words if w.strip('.,;:!?') in _FILLER_WORDS)
-                    # Also count multi-word filler phrases
-                    p_lower = p.lower()
-                    filler_hits += sum(1 for ph in _FILLER_PHRASES if ph in p_lower)
-                    filler_pct = filler_hits / len(p_words)
-                    if filler_pct > 0.05 and len(p_words) > 60:
-                        removed += 1
-                        logger.warning(f"[PostProcess] Removed filler-heavy paragraph "
-                                      f"({len(p_words)} words, {filler_pct:.0%} buzzwords)")
-                        continue
             kept.append(p)
         if removed > 0:
             text = '\n\n'.join(kept)
@@ -1901,259 +1846,10 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
         raise HTTPException(status_code=500, detail=f"Content generation failed: {str(e)}")
 
 
-@router.post("/generate/stream")
-async def generate_content_stream(request: ContentGenerateRequest):
-    """Stream content generation for real-time display.
-
-    ⚠️ D1 GUARD: this path bypasses the shared post-pipeline that `generate_content`
-    (non-streaming) runs — it does NOT apply visual injection/resolution (charts),
-    citation validation, section-completeness backfill, or content_store persistence.
-    Studio uses the non-streaming endpoint; this one has no UI callers today. Do NOT
-    wire it for docs without first routing the finalized content through the same
-    post-pipeline + persistence, or the user silently loses charts, citations, and the
-    saved artifact.
-    """
-    logger.warning("[STUDIO] /content/generate/stream used — bypasses visual/citation/"
-                   "persistence post-pipeline (see D1 guard). Prefer /content/generate.")
-    try:
-        # Get skill
-        skill = await skills_store.get(request.skill_id)
-        if not skill:
-            raise HTTPException(status_code=404, detail="Skill not found")
-        
-        # Derive effective topic for source selection (same as non-streaming)
-        effective_topic = request.topic
-        if not effective_topic and request.chat_context:
-            effective_topic = _extract_topic_from_chat(request.chat_context)
-            logger.info(f"[STUDIO-STREAM] Derived topic from chat context: '{effective_topic}'")
-        
-        # Build adaptive context using the centralized context builder
-        built = await context_builder.build_context(
-            notebook_id=request.notebook_id,
-            skill_id=request.skill_id,
-            topic=effective_topic,
-        )
-        
-        if built.sources_used == 0:
-            raise HTTPException(status_code=400, detail="No sources in notebook")
-        
-        skill_name = skill.get("name", "Content")
-        topic_focus = effective_topic or request.topic or "the main topics and insights"
-
-        # Citation contract (Tier 1.1) — mirrored from the non-streaming endpoint.
-        citation_rule = """
-CITATION CONTRACT — required for every factual claim:
-- Each source in the content below is preceded by a tag like `[S1] filename.pdf`.
-- Every factual claim, statistic, quote, or specific finding in your output MUST end with the `[Sn]` tag of the source it came from. Example: "Adoption grew 47% YoY [S2]."
-- When a claim synthesizes across multiple sources, append all tags: "Both studies converge on this point [S1][S3]."
-- Connective tissue, transitions, and the user's own framing don't need citations.
-- Do NOT invent `[Sn]` references beyond what's in the legend — invalid tags get stripped after generation."""
-
-        # Use professional template if available
-        if request.skill_id in DOCUMENT_TEMPLATES:
-            template_system, template_format = build_document_prompt(
-                request.skill_id,
-                topic_focus,
-                request.style or "professional",
-                built.sources_used,
-                register=request.register,
-                include_visuals=request.include_visuals,
-            )
-            system_prompt = f"""{template_system}
-
-{template_format}
-
-FOCUS: {topic_focus}
-{citation_rule}
-
-CRITICAL: Use ONLY the provided source content. Synthesize across multiple sources.
-Do not make up information."""
-        else:
-            skill_prompt = skill.get("system_prompt", "")
-            format_instructions = _get_format_instructions(request.skill_id)
-            style_instructions = _get_style_instructions(request.style)
-
-            system_prompt = f"""{skill_prompt}
-
-{format_instructions}
-
-{PRESENTATION_QUALITY}
-
-{style_instructions}
-
-Focus on: {topic_focus}
-{citation_rule}
-
-Use ONLY the provided source content. Do not make up information."""
-
-        # Inject chat context if provided ("From Chat" mode)
-        chat_preamble = ""
-        if request.chat_context:
-            chat_preamble = f"""The user has been exploring this topic in a chat conversation. Use their discussion to focus on what matters most to them:
-
---- RECENT CHAT ---
-{request.chat_context[:3000]}
---- END CHAT ---
-
-"""
-
-        legend_block = ""
-        legend = built.citation_legend()
-        if legend:
-            legend_block = f"""SOURCE LEGEND (use these `[Sn]` tags in your citations):
-{legend}
-
-"""
-
-        user_prompt = f"""{chat_preamble}{legend_block}Based on the following {built.sources_used} source document(s), create a world-class {skill_name}:
-
-{built.context}
-
-Generate the {skill_name} now, ensuring you synthesize insights across ALL sources and cite every factual claim with the matching `[Sn]` tag:"""
-
-        # Use template-specific token limit for thorough generation
-        template = DOCUMENT_TEMPLATES.get(request.skill_id)
-        doc_num_predict = template.recommended_tokens if template else 2000
-        
-        logger.info(f"[STUDIO] Streaming context: {built.total_chars} chars from {built.sources_used} sources "
-                    f"(strategy={built.strategy_used}, build_time={built.build_time_ms}ms)")
-
-        # Get adaptive temperature from context profile
-        from services.context_builder import CONTEXT_PROFILES
-        skill_temp = CONTEXT_PROFILES.get(request.skill_id, CONTEXT_PROFILES["default"]).temperature
-
-        async def stream_generator():
-            # Feynman v2: multi-phase pipeline (non-streaming internally, sent as complete result)
-            if request.skill_id == 'feynman_curriculum':
-                logger.info(f"[STREAM] Using Feynman Pipeline v2 (non-streaming internally)")
-                content = await _generate_feynman_v2(
-                    system_prompt=system_prompt,
-                    source_context=built.context,
-                    topic_focus=topic_focus,
-                    temperature=skill_temp,
-                    chat_preamble=chat_preamble,
-                    notebook_id=request.notebook_id,
-                )
-                yield f"data: {json.dumps({'content': content})}\n\n"
-                yield "data: [DONE]\n\n"
-                return
-
-            # Use Outline-First streaming for long-form skills
-            if request.skill_id in OUTLINE_FIRST_SKILLS and template and template.structure_requirements:
-                reqs = template.structure_requirements
-                num_sections = len(reqs)
-                tokens_per_section = max(600, int(doc_num_predict * 0.9 // num_sections))
-
-                # Step 1: Generate outline (non-streaming — fast, ~800 tokens)
-                outline_prompt = f"""{chat_preamble}You are planning a {skill_name} about: {topic_focus}
-
-Based on the source material below, create a DETAILED OUTLINE with exactly {num_sections} sections.
-For each section, write the section title and 2-3 bullet points of what to cover.
-
-REQUIRED SECTIONS:
-{chr(10).join(f'{i+1}. {r}' for i, r in enumerate(reqs))}
-
-Source material:
-{built.context[:8000]}
-
-Write the outline now — section titles and bullet points only:"""
-
-                outline = await rag_engine._call_ollama(
-                    system_prompt, outline_prompt,
-                    model=settings.ollama_model,
-                    num_predict=800, temperature=max(0.3, skill_temp - 0.1),
-                )
-                logger.info(f"[STREAM-OUTLINE] Outline ready ({len(outline)} chars)")
-
-                # Step 2: Stream each section expansion
-                running_summary = ""
-                for i, requirement in enumerate(reqs):
-                    is_first = i == 0
-                    is_last = i == num_sections - 1
-
-                    continuity = ""
-                    if running_summary:
-                        continuity = f"\nCONTENT WRITTEN SO FAR (summary):\n{running_summary}\nDo NOT repeat information already covered."
-
-                    position_note = ("This is the OPENING section." if is_first
-                                     else "This is the CLOSING section. Synthesize all prior sections." if is_last
-                                     else f"This is section {i+1} of {num_sections}.")
-
-                    sec_prompt = f"""{chat_preamble}{position_note}
-
-DOCUMENT OUTLINE (for context — you are writing section {i+1} only):
-{outline}
-
-YOUR TASK: Write section {i+1}: {requirement}
-
-RULES:
-- Write ONLY the content for this one section — start with a markdown heading, then prose.
-- Do NOT reprint the outline, other section titles, or the document structure.
-- Do NOT echo these instructions or use phrases like "SECTION TO WRITE NOW".
-- Use SHORT sentences (under 30 words each). Break complex ideas into multiple sentences.
-- Every claim must come from the source material — no filler or vague generalizations.
-- Target length: {tokens_per_section // 4}-{tokens_per_section // 2} words of substantive content.
-{continuity}
-
-Source material:
-{built.context[:6000]}
-
-Begin writing section {i+1} now — start with the heading:"""
-
-                    # Per-section temperature scheduling
-                    sec_temp = _get_section_temperature(skill_temp, requirement)
-
-                    # Stream this section's tokens with Mirostat to prevent degeneration
-                    section_chunks = []
-                    async for chunk in rag_engine._stream_ollama(
-                        system_prompt, sec_prompt,
-                        num_predict=tokens_per_section,
-                        temperature_override=sec_temp,
-                        extra_options={
-                            "mirostat": 2,
-                            "mirostat_tau": 3.0,   # Tuned for ~750 token sections
-                            "mirostat_eta": 0.1,
-                            "repeat_penalty": 1.15,
-                            "repeat_last_n": 512,
-                        },
-                    ):
-                        section_chunks.append(chunk)
-                        yield f"data: {json.dumps({'content': chunk})}\n\n"
-
-                    # Section separator
-                    yield f"data: {json.dumps({'content': chr(10) + chr(10)})}\n\n"
-
-                    # Update running summary for next section (non-streaming, background)
-                    section_text = "".join(section_chunks)
-                    if len(section_text) > 200 and not is_last:
-                        all_so_far = section_text if i == 0 else f"{running_summary}\n\n{section_text}"
-                        running_summary = await rag_engine._call_ollama(
-                            "You are a precise summarizer. Preserve ALL key topics and conclusions.",
-                            f"Summarize in 150-200 words:\n\n{all_so_far[:6000]}",
-                            model=settings.ollama_model,
-                            num_predict=300, temperature=0.2,
-                        )
-
-                    logger.info(f"[STREAM-OUTLINE] Section {i+1}/{num_sections} streamed ({len(section_text.split())} words)")
-
-            else:
-                # Standard single-stream for shorter document types
-                async for chunk in rag_engine._stream_ollama(system_prompt, user_prompt, num_predict=doc_num_predict, temperature_override=skill_temp):
-                    yield f"data: {json.dumps({'content': chunk})}\n\n"
-
-            yield "data: [DONE]\n\n"
-        
-        return StreamingResponse(
-            stream_generator(),
-            media_type="text/event-stream"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[STUDIO] Content streaming failed for skill={request.skill_id}, notebook={request.notebook_id}")
-        logger.error(f"[STUDIO] Error: {type(e).__name__}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Content streaming failed: {str(e)}")
+# NOTE (2026-07-03, simplification S1/A3): the old POST /generate/stream endpoint
+# was DELETED — it had zero UI callers and bypassed the entire post-pipeline
+# (visual injection/resolve, citation strip, section verify, persistence). If doc
+# streaming is ever wanted, build it THROUGH the generate_content post-pipeline.
 
 
 @router.get("/list/{notebook_id}")

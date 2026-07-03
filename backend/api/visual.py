@@ -655,7 +655,7 @@ async def generate_smart_visual_stream(request: SmartVisualRequest):
             from services.visual_capability import get_capability
             from services.visual_composer import visual_composer
             cap = await get_capability()
-            if cap.can_freeform_gemma or cap.can_freeform_olmo:
+            if cap.can_freeform_gemma:
                 print(f"[Visual Stream] v2 path: {cap.summary()}")
                 # Pass topic explicitly so the classifier judges the user's
                 # prompt, not the (topic + 3KB notebook sources) blob built
@@ -1241,11 +1241,9 @@ async def v2_capability():
         "models": {
             "gemma": cap.gemma_model,
             "klein": cap.klein_model,
-            "olmo": cap.olmo_model,
             "vision": cap.vision_model,
         },
         "can_freeform_gemma": cap.can_freeform_gemma,
-        "can_freeform_olmo": cap.can_freeform_olmo,
         "can_critic_gemma_vision": cap.can_critic_gemma_vision,
         "can_critic_separate_vision": cap.can_critic_separate_vision,
         "can_diffusion_klein": cap.can_diffusion_klein,

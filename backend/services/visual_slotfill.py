@@ -16,7 +16,7 @@ from __future__ import annotations
 
 # Per-idiom slot-fill system prompts. Each one tells Olmo exactly which
 # placeholder slots to populate and the verbosity ceiling per slot.
-_OLMO_SLOTFILL_SYSTEMS = {
+_SLOTFILL_SYSTEMS = {
     "linear_process": """You are filling slots in a pre-built infographic showing 5 stages of a process. Each stage has a short LABEL and one BODY block that wraps to ~3 lines (max 12 words). Return JSON with these exact keys:
 
 {
@@ -330,8 +330,8 @@ The HERO_IMAGE_B64 slot is reserved — leave it out of your output; the compose
 }
 
 
-def _olmo_slotfill_system(idiom_id: str) -> str:
-    return _OLMO_SLOTFILL_SYSTEMS.get(idiom_id, _OLMO_SLOTFILL_SYSTEMS["linear_process"])
+def _slotfill_system(idiom_id: str) -> str:
+    return _SLOTFILL_SYSTEMS.get(idiom_id, _SLOTFILL_SYSTEMS["linear_process"])
 
 
 # ──────────────────────────────────────────────────────────────────────
