@@ -26,7 +26,6 @@
     "@types/three": "^0.182.0",
     "clsx": "^2.1.1",
     "dompurify": "^3.3.1",
-    "jspdf": "^4.0.0",
     "lucide-react": "^0.554.0",
     "mermaid": "^11.4.0",
     "qrcode.react": "^4.2.0",

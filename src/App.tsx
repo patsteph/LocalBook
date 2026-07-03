@@ -9,7 +9,6 @@ import { AppShellProvider, CanvasItemsProvider, AppShellContextValue, CanvasItem
 import { CanvasItem } from './components/canvas/types';
 import { LayoutNode, PanelView, countLeaves, replaceLeaf, removeLeaf, findLeaf } from './components/canvas/types';
 import { useMainViewShortcuts } from './hooks/useMainViewShortcuts';
-import { useHtmlFixtureShortcut } from './hooks/useHtmlFixtureShortcut';
 import { CommandPalette } from './components/CommandPalette';
 import { MainNavStrip } from './components/MainNavStrip';
 import { pulseView } from './lib/viewPulse';
@@ -456,8 +455,6 @@ function App() {
   });
 
   // Phase 2 of v2-information-cortex — dev-only HTML fixture injector.
-  // Gated by localStorage.lb.devHtmlFixture === '1'. Remove with Phase 4.
-  useHtmlFixtureShortcut(addCanvasItem);
 
   // Library pulse — when something lands in the user's library archive
   // (a finished generation, a saved-as-note, a new uploaded source), gently

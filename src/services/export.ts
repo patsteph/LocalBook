@@ -4,7 +4,6 @@
 
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
-import { jsPDF } from 'jspdf';
 import { API_BASE_URL, localFetch } from './api';
 import type { CanvasItem } from '../components/canvas/types';
 
@@ -153,10 +152,6 @@ export const exportService = {
     },
 
     /**
-     * Generate a PDF directly using jsPDF
-     * Returns a Blob containing the PDF data
-     */
-    /**
      * Generate PPTX slide preview as JSON for the revision UI
      */
     async previewPptxSlides(notebookId: string, theme?: string): Promise<{ slides: SlideData[]; theme: string }> {
@@ -228,140 +223,6 @@ export const exportService = {
         return response.json();
     },
 
-    async generatePDF(notebookTitle: string, sources: any[], chatHistory?: any[]): Promise<Blob> {
-        const doc = new jsPDF();
-        const pageWidth = doc.internal.pageSize.getWidth();
-        const margin = 20;
-        const maxWidth = pageWidth - (margin * 2);
-        let yPosition = 20;
-
-        // Helper function to add text with automatic page breaks
-        const addText = (text: string, fontSize: number = 12, isBold: boolean = false) => {
-            doc.setFontSize(fontSize);
-            if (isBold) {
-                doc.setFont('helvetica', 'bold');
-            } else {
-                doc.setFont('helvetica', 'normal');
-            }
-
-            const lines = doc.splitTextToSize(text, maxWidth);
-            for (const line of lines) {
-                if (yPosition > 270) { // Near bottom of page
-                    doc.addPage();
-                    yPosition = 20;
-                }
-                doc.text(line, margin, yPosition);
-                yPosition += fontSize * 0.5;
-            }
-        };
-
-        // Title
-        addText(notebookTitle, 24, true);
-        yPosition += 10;
-
-        // Timestamp
-        doc.setFontSize(10);
-        doc.setTextColor(100);
-        doc.text(`Exported: ${new Date().toLocaleString()}`, margin, yPosition);
-        yPosition += 15;
-        doc.setTextColor(0);
-
-        // Sources Section
-        addText('📚 Sources', 18, true);
-        yPosition += 5;
-
-        if (sources && sources.length > 0) {
-            addText(`Total Sources: ${sources.length}`, 12, false);
-            yPosition += 5;
-
-            sources.forEach((source, index) => {
-                if (yPosition > 250) {
-                    doc.addPage();
-                    yPosition = 20;
-                }
-
-                addText(`${index + 1}. ${source.filename || 'Unknown'}`, 14, true);
-                yPosition += 2;
-
-                doc.setFontSize(10);
-                doc.setTextColor(80);
-                doc.text(`Format: ${(source.format || 'unknown').toUpperCase()}`, margin + 10, yPosition);
-                yPosition += 5;
-                doc.text(`Chunks: ${source.chunks || 0} | Characters: ${(source.characters || 0).toLocaleString()}`, margin + 10, yPosition);
-                yPosition += 5;
-                doc.text(`Status: ${source.status || 'unknown'}`, margin + 10, yPosition);
-                yPosition += 8;
-                doc.setTextColor(0);
-            });
-        } else {
-            addText('No sources in this notebook', 12, false);
-            yPosition += 5;
-        }
-
-        yPosition += 10;
-
-        // Chat History Section
-        if (chatHistory && chatHistory.length > 0) {
-            addText('💬 Q&A History', 18, true);
-            yPosition += 5;
-
-            chatHistory.forEach((exchange, index) => {
-                if (yPosition > 230) {
-                    doc.addPage();
-                    yPosition = 20;
-                }
-
-                addText(`Q${index + 1}: ${exchange.question || ''}`, 12, true);
-                yPosition += 3;
-
-                if (exchange.timestamp) {
-                    doc.setFontSize(9);
-                    doc.setTextColor(100);
-                    doc.text(`Asked: ${exchange.timestamp}`, margin + 5, yPosition);
-                    yPosition += 5;
-                    doc.setTextColor(0);
-                }
-
-                addText('Answer:', 11, true);
-                yPosition += 2;
-                addText(exchange.answer || '', 10, false);
-                yPosition += 5;
-
-                if (exchange.citations && exchange.citations.length > 0) {
-                    addText('Citations:', 10, true);
-                    yPosition += 2;
-                    exchange.citations.forEach((citation: any) => {
-                        const citationText = `[${citation.number}] ${citation.filename}: ${(citation.snippet || '').substring(0, 100)}...`;
-                        doc.setFontSize(9);
-                        const citationLines = doc.splitTextToSize(citationText, maxWidth - 10);
-                        citationLines.forEach((line: string) => {
-                            if (yPosition > 270) {
-                                doc.addPage();
-                                yPosition = 20;
-                            }
-                            doc.text(line, margin + 5, yPosition);
-                            yPosition += 4;
-                        });
-                    });
-                    yPosition += 3;
-                }
-
-                yPosition += 5;
-            });
-        }
-
-        // Footer
-        const pageCount = doc.getNumberOfPages();
-        doc.setFontSize(8);
-        doc.setTextColor(150);
-        for (let i = 1; i <= pageCount; i++) {
-            doc.setPage(i);
-            doc.text('Generated by LocalBook', pageWidth / 2, 285, { align: 'center' });
-            doc.text(`Page ${i} of ${pageCount}`, pageWidth - margin, 285, { align: 'right' });
-        }
-
-        return doc.output('blob');
-    },
 
     // === Custom PPTX template management ===
 

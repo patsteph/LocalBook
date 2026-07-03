@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
 import { emitEvent } from '../../lib/events';
-import { createPortal } from 'react-dom';
 import DOMPurify from 'dompurify';
 import {
   FileText, Palette, Target, Layers, Mic, MessageSquare, PenLine,
@@ -8,7 +7,6 @@ import {
 } from 'lucide-react';
 import { useCanvas } from '../canvas/CanvasContext';
 import { CanvasItem } from '../canvas/types';
-import { contentService } from '../../services/content';
 import { exportService, canvasItemToArtifact } from '../../services/export';
 import { VisualHeroOverlay, OverlayPosition } from '../shared/VisualHeroOverlay';
 import { VisualRegenerateButton } from '../shared/VisualRegenerateButton';
@@ -214,9 +212,9 @@ const ExportMenu: React.FC<{ item: CanvasItem }> = ({ item }) => {
   const title = item.title || 'document';
   const filename = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'document';
 
-  // Phase 5: try the backend Playwright path first (works for any Artifact-
-  // renderable canvas item). Fall back to the legacy jsPDF path for
-  // markdown-y types if the artifact mapping fails (defensive).
+  // S2/B3 (2026-07-03): the backend Playwright path is the ONLY PDF exporter
+  // (jsPDF removed). If the artifact mapping fails but content exists, wrap it
+  // as a markdown artifact — same server path, no client-side degraded render.
   const artifact = canvasItemToArtifact(item);
 
   const handlePdf = async () => {
@@ -225,7 +223,10 @@ const ExportMenu: React.FC<{ item: CanvasItem }> = ({ item }) => {
       if (artifact) {
         await exportService.downloadArtifact(artifact, 'pdf', filename);
       } else if (item.content) {
-        await contentService.downloadAsPDF(item.content, title, filename, 'clean');
+        await exportService.downloadArtifact(
+          { id: item.id, type: 'markdown', payload: item.content, title },
+          'pdf', filename,
+        );
       }
     } catch (err) {
       console.error('PDF download failed:', err);
@@ -300,64 +301,6 @@ const ExportMenu: React.FC<{ item: CanvasItem }> = ({ item }) => {
   );
 };
 
-// ─── InteractiveQuizModal ─────────────────────────────────────────────────────
-// 2026-06-16: interactive HTML quizzes need real width to be usable. The
-// chat column is too narrow — questions wrap heavily, options scroll,
-// the Check button + feedback land off-screen. Quiz items now render as
-// a compact tile in chat and open a centered modal portal when expanded.
-const InteractiveQuizModal: React.FC<{
-  title: string;
-  html: string;
-  onClose: () => void;
-}> = ({ title, html, onClose }) => {
-  // Esc-to-close. Backdrop click also closes via the outer div onClick.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-  return createPortal(
-    <div
-      onClick={onClose}
-      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden"
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <Target className="w-4 h-4 text-amber-500 flex-shrink-0" />
-            <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{title}</h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors flex-shrink-0"
-            title="Close (Esc)"
-            aria-label="Close"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto bg-white dark:bg-gray-900">
-          <ArtifactRender
-            artifact={{
-              id: 'quiz-modal',
-              type: 'interactive-html',
-              payload: html,
-              title,
-            }}
-            context="canvas-full"
-          />
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
-};
 
 export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
   const ctx = useCanvas();
@@ -382,11 +325,6 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
     ctx.toggleCanvasItemCollapse(item.id);
   };
 
-  // 2026-06-16: interactive HTML quizzes render in a portal modal instead
-  // of inline. Chat-column width was too narrow for the quiz UI to function.
-  const isInteractiveQuiz =
-    item.type === 'quiz' && !!item.metadata?.interactive_html;
-
   // Compute word count for tombstone subtitle
   const wordCount = item.content ? item.content.trim().split(/\s+/).filter(Boolean).length : 0;
   const isGenerating = item.status === 'generating';
@@ -407,9 +345,7 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
     : '';
 
   // ─── COLLAPSED: Tombstone mode ────────────────────────────────────────
-  // 2026-06-16: interactive quizzes ALWAYS render as a tombstone in chat
-  // and overlay a modal when "expanded" — so the quiz UI gets real width.
-  if ((item.collapsed || isInteractiveQuiz) && item.type !== 'note') {
+  if (item.collapsed && item.type !== 'note') {
     return (
       <>
       <div
@@ -460,13 +396,6 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
           </div>
         </div>
       </div>
-      {isInteractiveQuiz && !item.collapsed && (
-        <InteractiveQuizModal
-          title={item.title || 'Quiz'}
-          html={item.metadata!.interactive_html as string}
-          onClose={handleToggle}
-        />
-      )}
       </>
     );
   }
@@ -563,8 +492,8 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
             </div>
           )}
           {/* Phase 12 — Perspectives synthesis HTML. Uses the strict
-              HtmlArtifactRenderer; lives on metadata.synthesis_html so
-              it doesn't collide with Phase 11's metadata.interactive_html. */}
+              HtmlArtifactRenderer; lives on metadata.synthesis_html (its
+              own distinct metadata key). */}
           {item.type === 'document' && item.metadata?.synthesis_html && (
             <ArtifactRender
               artifact={{
@@ -630,22 +559,7 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
               <p className="text-gray-400 text-sm">No visual content</p>
             ) : null
           )}
-          {/* Phase 11 — when an interactive HTML composition is present
-              (Studio drawer "Render as interactive HTML" toggle), dispatch
-              via the sandboxed-iframe renderer. Otherwise fall back to the
-              existing StudioQuizBlock path. */}
-          {item.type === 'quiz' && item.metadata?.interactive_html && (
-            <ArtifactRender
-              artifact={{
-                id: item.id,
-                type: 'interactive-html',
-                payload: item.metadata.interactive_html as string,
-                title: item.title,
-              }}
-              context="canvas-full"
-            />
-          )}
-          {item.type === 'quiz' && !item.metadata?.interactive_html && item.content && (
+          {item.type === 'quiz' && item.content && (
             item.content.trimStart().startsWith('[')
               ? <StudioQuizBlock json={item.content} />
               : <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(item.content) }} />

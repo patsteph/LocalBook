@@ -120,20 +120,6 @@ export const quizService = {
     return response.json();
   },
 
-  /** Phase 11 — compose a sandboxed interactive HTML page from a quiz.
-   *  Returned string goes into a CanvasItem's metadata.interactive_html
-   *  so CanvasItemCard can dispatch it through the InteractiveHtml
-   *  artifact renderer. */
-  async toInteractiveHtml(questions: QuizQuestion[], title?: string): Promise<string> {
-    const response = await localFetch(`${API_BASE}/quiz/interactive-html`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ questions, title: title || undefined }),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    return data.html || '';
-  },
 
   // Library: list persisted quizzes for a notebook, newest first (Tier 5).
   async list(notebookId: string): Promise<any[]> {
