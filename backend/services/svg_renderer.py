@@ -14,30 +14,11 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_browser = None
-_browser_lock = asyncio.Lock()
-
-
+# S3/C4 (2026-07-03): the module-global browser moved to playwright_utils —
+# ONE shared chromium for svg/mermaid/slide rendering.
 async def _get_browser():
-    global _browser
-    async with _browser_lock:
-        if _browser is not None and _browser.is_connected():
-            return _browser
-        try:
-            from services.playwright_utils import ensure_playwright_browsers_path
-            from playwright.async_api import async_playwright
-            ensure_playwright_browsers_path()
-            pw = await async_playwright().start()
-            _browser = await pw.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
-            )
-            logger.info("[svg_renderer] browser launched")
-            return _browser
-        except Exception as e:
-            logger.error(f"[svg_renderer] browser launch failed: {e}")
-            _browser = None
-            return None
+    from services.playwright_utils import get_shared_browser
+    return await get_shared_browser()
 
 
 async def render_svg_to_png(
@@ -94,11 +75,6 @@ async def render_svg_to_png(
 
 
 async def shutdown():
-    """Close the shared browser. Called on app shutdown."""
-    global _browser
-    if _browser is not None:
-        try:
-            await _browser.close()
-        except Exception as e:
-            logger.debug(f"[svg_renderer] shutdown warn: {e}")
-        _browser = None
+    """Close the shared browser (delegates to playwright_utils)."""
+    from services.playwright_utils import shutdown_shared_browser
+    await shutdown_shared_browser()

@@ -37,7 +37,7 @@ from services import rag_query_analyzer
 from services import rag_chunking
 from services import rag_generation
 from services import rag_embeddings
-from services import rag_llm
+from services import llm_service
 from services import rag_search
 from services import rag_context
 from services import rag_verification
@@ -1367,7 +1367,7 @@ Answer the question, citing sources inline as [N]. Do not list references at the
                 Defaults True (chat / synthesis / docs benefit). Set False for callers that
                 produce structured output OR need natural conversational flow (audio scripts).
         """
-        return await rag_llm.call_ollama(system_prompt, prompt, model=model, num_predict=num_predict, num_ctx=num_ctx, temperature=temperature, repeat_penalty=repeat_penalty, extra_options=extra_options, voice_modifier=voice_modifier)
+        return await llm_service.generate_text(system_prompt, prompt, model=model, num_predict=num_predict, num_ctx=num_ctx, temperature=temperature, repeat_penalty=repeat_penalty, extra_options=extra_options, voice_modifier=voice_modifier)
 
     async def _stream_ollama(self, system_prompt: str, prompt: str, deep_think: bool = False, use_fast_model: bool = False, num_predict: Optional[int] = None, temperature_override: Optional[float] = None, extra_options: dict = None) -> AsyncGenerator[str, None]:
         """Stream response from Ollama API with stop sequences to prevent citation lists
@@ -1380,7 +1380,7 @@ Answer the question, citing sources inline as [N]. Do not list references at the
             temperature_override: Per-skill adaptive temperature. None = use model defaults.
             extra_options: Additional Ollama options merged last (e.g., Mirostat overrides).
         """
-        async for token in rag_llm.stream_ollama(system_prompt, prompt, deep_think=deep_think, use_fast_model=use_fast_model, num_predict=num_predict, temperature_override=temperature_override, extra_options=extra_options):
+        async for token in llm_service.stream_text(system_prompt, prompt, deep_think=deep_think, use_fast_model=use_fast_model, num_predict=num_predict, temperature_override=temperature_override, extra_options=extra_options):
             yield token
 
     def _chunk_text_smart(self, text: str, source_type: str, filename: str) -> List[str]:

@@ -1,12 +1,16 @@
-"""
-RAG LLM — LLM call wrappers for Ollama, OpenAI, and Anthropic.
+"""LLM service — the task-facing engine seam (doc-20 abstraction).
 
-Extracted from rag_engine.py Phase 2. Owns all LLM API communication,
-model routing (two-tier fast/deep), streaming, stop sequences, and
-parameter tuning (temperature, repeat penalty, context window sizing).
+This is THE single seam the engine-strategy decision (AUDIT_2026-06-15/20) calls
+for: `generate_text` / `stream_text` / `generate_with_vision` / `ocr_backend`.
+Engines swap BEHIND these names — today they route to Ollama; the Wave-9 MLX
+text port (and any future engine) plugs in here, invisible to callers.
 
-External callers continue to use rag_engine._call_ollama() etc. —
-RAGEngine delegates here.
+History: this file IS the former services/rag_llm.py (git-mv'd, S3/C1
+2026-07-03) — call_ollama→generate_text, stream_ollama→stream_text, plus the
+two vision seam functions. Logic is byte-preserved from rag_llm; the deeper
+options-builder unification with ollama_service is deferred to Wave 9 (it
+needs live-Ollama runtime testing). ollama_service remains the Ollama-engine
+client (lanes, num_ctx math, embeddings); this module is the task router.
 """
 import json
 from typing import AsyncGenerator, Optional
@@ -66,7 +70,7 @@ def _record_ollama_tokens(data: dict):
 
 # ─── Ollama Non-Streaming ────────────────────────────────────────────────────────
 
-async def call_ollama(
+async def generate_text(
     system_prompt: str,
     prompt: str,
     model: str = None,
@@ -245,7 +249,7 @@ async def call_ollama(
         # ctx here too — otherwise doc/RAG/needle generations are invisible in the
         # ctx logs (only the small phi4 ollama_service calls show up).
         logger.info(
-            f"[rag_llm] generate OK model={use_model} caller=call_ollama "
+            f"[llm_service] generate OK model={use_model} caller=call_ollama "
             f"ctx={options.get('num_ctx', 'def')} num_predict={options.get('num_predict')} "
             f"resp_chars={len(result.get('response', ''))}"
         )
@@ -254,7 +258,7 @@ async def call_ollama(
 
 # ─── Ollama Streaming ────────────────────────────────────────────────────────────
 
-async def stream_ollama(
+async def stream_text(
     system_prompt: str,
     prompt: str,
     deep_think: bool = False,
@@ -381,7 +385,7 @@ async def stream_ollama(
         # Visibility: streaming also bypasses ollama_service — log the ctx so the
         # streamed chat/doc answer shows its window (otherwise it's invisible).
         logger.info(
-            f"[rag_llm] stream start model={model} "
+            f"[llm_service] stream start model={model} "
             f"ctx={stream_options.get('num_ctx')} num_predict={stream_options.get('num_predict')}"
         )
 
@@ -409,7 +413,7 @@ async def stream_ollama(
         _use_chat = rag_profile.get("use_chat_endpoint", False) and _route.api_style == "ollama"
 
         # Hold the per-model priority lane for the whole stream at FOREGROUND
-        # priority. stream_ollama is always user-initiated (chat answer or doc
+        # priority. stream_text is always user-initiated (chat answer or doc
         # generation), so it must (a) not run as a 2nd concurrent gemma call
         # against background work — the thrash the lane prevents — and (b) jump
         # ahead of background ingest. This is the rag_llm half of PB-2d: it owns
@@ -503,3 +507,20 @@ async def stream_ollama(
 # hatches were removed — LocalBook is 100% local; no UI ever surfaced a cloud
 # provider. `anthropic` left requirements.in with them. (`openai` stays: BERTopic's
 # representation model uses its client pointed at LOCAL Ollama.)
+
+
+# ─── Vision / OCR seam (doc-20) ─────────────────────────────────────────────
+
+async def generate_with_vision(image_b64: str, prompt: str, **kwargs):
+    """Engine-routed vision generation (currently Ollama; resolve_vision_model
+    picks gemma4 on Option-A boxes, the configured fallback otherwise)."""
+    from services.ollama_service import ollama_service
+    return await ollama_service.vision_describe(image_b64, prompt, **kwargs)
+
+
+async def ocr_backend(image_b64: str, prompt: str, **kwargs):
+    """Engine-routed OCR slice (currently Apple Vision with Ollama fallback,
+    via vision_describe's ocr_mode routing)."""
+    from services.ollama_service import ollama_service
+    kwargs.setdefault("ocr_mode", True)
+    return await ollama_service.vision_describe(image_b64, prompt, **kwargs)

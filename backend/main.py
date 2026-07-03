@@ -449,6 +449,13 @@ async def lifespan(app: FastAPI):
     from services.enrichment_worker import enrichment_worker
     await enrichment_worker.stop()
 
+    # Close the shared headless chromium (svg/mermaid/slide renderers — S3/C4)
+    try:
+        from services.playwright_utils import shutdown_shared_browser
+        await shutdown_shared_browser()
+    except Exception as _e:
+        logger.debug(f"[main] shared browser shutdown: {_e}")
+
     # Stop the event-loop lag monitor + fatal-freeze watchdog
     from services.loop_monitor import loop_monitor
     await loop_monitor.stop()

@@ -1,12 +1,16 @@
 """Shared Playwright browser utilities.
 
 Ensures Playwright always finds Chromium at the system cache location,
-not inside a PyInstaller bundle. Used by:
-  - video_slide_renderer.py (headless slide → PNG rendering)
-  - mermaid_renderer.py (headless Mermaid → PNG rendering)
-  - social_auth.py (visible browser for social login)
+not inside a PyInstaller bundle — AND (S3/C4, 2026-07-03) owns the ONE
+shared headless chromium used by every PNG renderer (svg_renderer,
+mermaid_renderer, video_slide_renderer). Previously svg + mermaid each
+cached their own module-global browser and video launched a fresh one per
+render — 2-3 chromium processes where one suffices (a real memory win on
+the 16 GB floor). social_auth keeps its own VISIBLE browser; web_scraper
+keeps ephemeral launches (isolation is a feature for long scrapes).
 """
 
+import asyncio
 import logging
 import os
 import stat
@@ -121,3 +125,49 @@ def ensure_playwright_browsers_path():
         "[Playwright] All auto-install strategies failed. "
         "Please run manually: playwright install chromium"
     )
+
+
+# ── Shared headless browser (S3/C4) ─────────────────────────────────────────
+_shared_browser = None
+_shared_lock = None  # created lazily so it binds to the running loop
+
+
+def _get_lock():
+    global _shared_lock
+    if _shared_lock is None:
+        _shared_lock = asyncio.Lock()
+    return _shared_lock
+
+
+async def get_shared_browser():
+    """Return the process-wide headless chromium, launching it on first use.
+    Returns None on launch failure (callers fall back / degrade)."""
+    global _shared_browser
+    async with _get_lock():
+        if _shared_browser is not None and _shared_browser.is_connected():
+            return _shared_browser
+        try:
+            from playwright.async_api import async_playwright
+            ensure_playwright_browsers_path()
+            pw = await async_playwright().start()
+            _shared_browser = await pw.chromium.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
+            )
+            _log.info("[playwright_utils] shared headless browser launched")
+            return _shared_browser
+        except Exception as e:
+            _log.error(f"[playwright_utils] shared browser launch failed: {e}")
+            _shared_browser = None
+            return None
+
+
+async def shutdown_shared_browser():
+    """Close the shared browser. Wired into main.py lifespan shutdown."""
+    global _shared_browser
+    if _shared_browser is not None:
+        try:
+            await _shared_browser.close()
+        except Exception as e:
+            _log.debug(f"[playwright_utils] shared browser shutdown warn: {e}")
+        _shared_browser = None

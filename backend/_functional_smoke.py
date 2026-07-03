@@ -110,10 +110,10 @@ async def _run():
                 visual_analyzer.analyze_with_llm(_viz_sample),
                 lambda r: bool(r.get("visual_type")) and isinstance(r.get("key_items"), list))
 
-    # rag_llm.call_ollama — D4 (2026-06-23): now lane-joined (model_lane) + priority
+    # llm_service.generate_text (ex rag_llm.call_ollama) — D4 (2026-06-23): now lane-joined (model_lane) + priority
     # param. Shape guard that the wrap didn't break the hot non-stream path.
-    from services.rag_llm import call_ollama
-    await check("rag_llm.call_ollama (lane-joined)",
+    from services.llm_service import generate_text as call_ollama
+    await check("llm_service.generate_text (lane-joined)",
                 call_ollama("You are concise.", "Reply with one word: ok",
                             model=settings.ollama_fast_model, num_predict=10),
                 lambda s: isinstance(s, str) and bool(s.strip()))

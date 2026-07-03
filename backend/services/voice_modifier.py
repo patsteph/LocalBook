@@ -19,7 +19,7 @@ Design rules:
 
 Wired in:
   - services/ollama_service.generate / chat (every agent call)
-  - services/rag_llm.call_ollama / stream_ollama (RAG + content gen)
+  - services/llm_service.generate_text / stream_text (RAG + content gen)
 
 Family modifiers are keyed by registry `family` field, so adding a new
 family is a one-line addition here.

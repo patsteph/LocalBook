@@ -14,7 +14,7 @@ Safety invariants enforced by this module:
 - When no sidecar models are registered, `resolve()` always returns the Ollama
   endpoint — behaviour is byte-identical to the pre-existing code path.
 - Every caller gets the same `ProviderRoute` dataclass; branching on api_style
-  is done in exactly two places (rag_llm.stream_ollama, ollama_service) and
+  is done in exactly two places (llm_service.stream_text, ollama_service) and
   nowhere else in the codebase.
 - Health checks are opt-in and cheap; they never block request-time calls.
 """

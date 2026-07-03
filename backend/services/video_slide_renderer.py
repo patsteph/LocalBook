@@ -336,14 +336,15 @@ class VideoSlideRenderer:
         png_paths = []
 
         try:
-            from services.playwright_utils import ensure_playwright_browsers_path
-            from playwright.async_api import async_playwright
+            # S3/C4 (2026-07-03): reuse the process-wide shared chromium
+            # (playwright_utils) instead of launching a fresh one per video.
+            from services.playwright_utils import get_shared_browser
 
-            ensure_playwright_browsers_path()
-
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page(viewport={"width": 1920, "height": 1080})
+            browser = await get_shared_browser()
+            if browser is None:
+                raise RuntimeError("shared browser unavailable")
+            page = await browser.new_page(viewport={"width": 1920, "height": 1080})
+            try:
 
                 for scene in scenes:
                     visual = scene.visual if hasattr(scene, 'visual') else scene.get("visual", {})
@@ -383,7 +384,8 @@ class VideoSlideRenderer:
 
                     logger.info(f"[SlideRenderer] Rendered scene {scene_id}: {v_type} → {png_path.name}")
 
-                await browser.close()
+            finally:
+                await page.close()
 
         except Exception as e:
             logger.error(f"[SlideRenderer] Playwright rendering failed: {e}")

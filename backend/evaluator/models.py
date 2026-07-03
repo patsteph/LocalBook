@@ -101,7 +101,7 @@ class ModelInfo:
     # Per-model Ollama generation options (temperature, top_p, top_k, etc.)
     ollama_options: dict = field(default_factory=dict)
 
-    # RAG-specific tuning profile — overrides global defaults in rag_llm.py.
+    # RAG-specific tuning profile — overrides global defaults in llm_service.py.
     # Supported keys: think, repeat_penalty, use_chat_endpoint, num_ctx_cap, temperature,
     # aggressive_repetition_cleanup (bool), stop_sequences (list[str]).
     # Empty dict (default) means: use global defaults unchanged.

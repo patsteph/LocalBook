@@ -18,83 +18,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Browser instance — lazy loaded, reused across renders
-_browser = None
-_browser_lock = asyncio.Lock()
-
-# Resolve Mermaid.js from local node_modules (no CDN dependency)
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # LocalBook/
-_MERMAID_LOCAL = _PROJECT_ROOT / "node_modules" / "mermaid" / "dist" / "mermaid.min.js"
-_MERMAID_SRC = (
-    f"file://{_MERMAID_LOCAL}" if _MERMAID_LOCAL.exists()
-    else "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"  # last-resort fallback
-)
-
-# Minimal HTML template that loads Mermaid.js and renders a diagram
-_HTML_TEMPLATE = """<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <script src="__MERMAID_SRC__"></script>
-  <style>
-    body { margin: 0; padding: 20px; background: white; }
-    #diagram { display: inline-block; }
-  </style>
-</head>
-<body>
-  <pre class="mermaid" id="diagram">
-  </pre>
-  <script>
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'default',
-      securityLevel: 'loose',
-      flowchart: { curve: 'basis', padding: 15 },
-      themeVariables: {
-        fontSize: '14px',
-        fontFamily: 'Inter, system-ui, sans-serif'
-      }
-    });
-
-    async function renderDiagram(code) {
-      const el = document.getElementById('diagram');
-      el.textContent = code;
-      try {
-        const { svg } = await mermaid.render('rendered', code);
-        el.innerHTML = svg;
-        return true;
-      } catch (e) {
-        el.textContent = 'Render error: ' + e.message;
-        return false;
-      }
-    }
-
-    window.renderDiagram = renderDiagram;
-  </script>
-</body>
-</html>""".replace("__MERMAID_SRC__", _MERMAID_SRC)
-
-
+# S3/C4 (2026-07-03): the module-global browser moved to playwright_utils —
+# ONE shared chromium for svg/mermaid/slide rendering. Public name kept
+# (artifact_renderer imports _get_browser).
 async def _get_browser():
-    """Get or create the shared Playwright browser instance."""
-    global _browser
-    async with _browser_lock:
-        if _browser is not None and _browser.is_connected():
-            return _browser
-        try:
-            from services.playwright_utils import ensure_playwright_browsers_path
-            from playwright.async_api import async_playwright
-            ensure_playwright_browsers_path()
-            pw = await async_playwright().start()
-            _browser = await pw.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
-            )
-            print("[MermaidRenderer] Browser launched")
-            return _browser
-        except Exception as e:
-            print(f"[MermaidRenderer] Failed to launch browser: {e}")
-            _browser = None
-            return None
+    from services.playwright_utils import get_shared_browser
+    return await get_shared_browser()
 
 
 async def render_mermaid_to_png(

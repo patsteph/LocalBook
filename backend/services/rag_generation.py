@@ -9,7 +9,7 @@ import re
 from typing import Dict, List, Optional
 
 from config import settings
-from services import rag_llm
+from services import llm_service
 
 
 # ─── Prompt Templates ────────────────────────────────────────────────────────────
@@ -246,7 +246,7 @@ Answer the question, citing sources inline as [N]. Do not list references at the
     # Simplification S1/B2 (2026-07-03): cloud providers removed — LocalBook is
     # 100% local by design; no UI ever surfaced openai/anthropic. llm_provider is
     # kept in signatures only to avoid a wide call-chain refactor.
-    answer = await rag_llm.call_ollama(system_prompt, prompt)
+    answer = await llm_service.generate_text(system_prompt, prompt)
 
     return {
         "answer": answer,
@@ -268,7 +268,7 @@ Questions should:
 Output ONLY the questions, one per line. No numbering, no preamble."""
         prompt = f"Topic: {question}\n\nContext: {context[:1000]}\n\n3 questions:"
 
-        response = await rag_llm.call_ollama(system_prompt, prompt, model=settings.ollama_fast_model)
+        response = await llm_service.generate_text(system_prompt, prompt, model=settings.ollama_fast_model)
 
         questions = []
         for line in response.strip().split('\n'):
@@ -321,7 +321,7 @@ Generate {limit} insights in this format (one per line):
 
 Be specific and actionable. Focus on patterns, comparisons, or notable findings."""
 
-        response = await rag_llm.call_ollama(
+        response = await llm_service.generate_text(
             "You are a helpful analyst. Generate brief, specific insights.",
             prompt,
             model=settings.ollama_fast_model
@@ -377,7 +377,7 @@ Documents:
 Generate exactly 3 questions, one per line. Questions should be specific to the content, not generic.
 No numbering, no preamble, just the questions."""
 
-        response = await rag_llm.call_ollama(
+        response = await llm_service.generate_text(
             "Generate 3 specific questions based on document content. Output only questions, one per line.",
             prompt,
             model=settings.ollama_fast_model

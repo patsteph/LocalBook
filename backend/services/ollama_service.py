@@ -206,7 +206,7 @@ def _semaphore_for_model(model: str) -> PriorityLane:
 @asynccontextmanager
 async def model_lane(model: str, priority: int = PRIORITY_NORMAL):
     """Public accessor to a model's priority lane, for inference callers that
-    own their own httpx streaming (e.g. rag_llm's chat stream) or haven't been
+    own their own httpx streaming (e.g. llm_service's chat stream) or haven't been
     fully migrated to generate()/chat() yet. Acquiring this makes a raw-httpx
     call serialize on the SAME lane as generate/chat/embed, so it can't run as
     a 2nd concurrent call to the heavy model (the thrash the lane prevents) and
@@ -298,7 +298,7 @@ def _apply_rag_profile(
 # Root fix for the "~2048 default" clog: callers through ollama_service never set
 # num_ctx, so Ollama fell back to its small default and truncated large prompts /
 # long JSON output (the quiz "1090-token" truncation, empty-SVG diagrams, choked
-# ingest). This mirrors rag_llm's auto-size formula and is shared by both wrappers.
+# ingest). This mirrors llm_service's auto-size formula and is shared by both wrappers.
 # The cap is RAM-tier-aware: 16-18GB machines keep the safe 16K/8K baseline; bigger
 # Macs step up (2x / 4x), bounded by the model's native context window.
 _TOTAL_RAM_GB: Optional[float] = None
