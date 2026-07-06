@@ -47,7 +47,28 @@ def _clean_llm_output(text: str) -> str:
     text = re.sub(r'^.*CONTENT WRITTEN SO FAR.*$', '', text, flags=re.MULTILINE)
     # Strip "Write section" instruction echoes
     text = re.sub(r'^Write (?:section|ONLY this section).*$', '', text, flags=re.MULTILINE)
-    
+
+    # --- 0a. Normalize LaTeX artifacts (2026-07-06) ---
+    # gemma sometimes reaches for math notation ("$\to$", "$\times$") in prose —
+    # it renders as raw source in the markdown viewer (the "Thought $\to$ Action"
+    # leak the user flagged). Convert the common tokens to their unicode glyphs.
+    # Tightly scoped to backslash-commands so real "$5" prices are untouched.
+    _LATEX_GLYPHS = {
+        r'\to': '→', r'\rightarrow': '→', r'\Rightarrow': '⇒', r'\gets': '←',
+        r'\leftarrow': '←', r'\times': '×', r'\cdot': '·', r'\leq': '≤',
+        r'\geq': '≥', r'\neq': '≠', r'\approx': '≈', r'\rightleftarrows': '⇄',
+    }
+    def _delatex(m):
+        inner = m.group(1)
+        for tok, glyph in _LATEX_GLYPHS.items():
+            inner = inner.replace(tok, glyph)
+        return inner.strip()
+    # $...$ spans that contain a backslash command → unwrap + glyph-substitute.
+    text = re.sub(r'\$([^$\n]*\\[a-zA-Z]+[^$\n]*)\$', _delatex, text)
+    # Bare commands outside math delimiters (e.g. "A \to B").
+    for tok, glyph in _LATEX_GLYPHS.items():
+        text = text.replace(tok, glyph)
+
     # --- 0b. Truncate degenerate run-on sentences ---
     # Detect individual "sentences" that are 100+ words with no period — a sign
     # the model is looping.  Break them at the last clause boundary.
@@ -1286,12 +1307,77 @@ def _wants_debate(topic: str) -> bool:
     return hits >= 2
 
 
+async def _build_debate_scorecard(
+    clash: List[str], for_side: str, against_side: str, ctx: str, chat_preamble: str,
+) -> Optional[str]:
+    """Build a RELIABLE debate visual — a grouped-bar scorecard rating how strongly
+    the evidence supports each side on each contested point (1-5).
+
+    Why deterministic: a local-vs-cloud debate is qualitative, so the generic
+    chart-injection pass (which mines the prose for numbers) fails ~every time and
+    the plottability gate correctly drops it → no visual (the 2026-07-06 finding).
+    Here the ONLY LLM work is a tiny, well-constrained scoring call; the chart JSON
+    is assembled in Python so it is plottable BY CONSTRUCTION (2 numeric series,
+    one row per clash point). Returns an lb-chart fence or None on failure."""
+    import json as _json
+    from utils.json_repair import robust_json_parse
+
+    def _score(v):
+        try:
+            return max(1.0, min(5.0, float(str(v).strip())))
+        except (ValueError, TypeError):
+            return None
+    try:
+        raw = await rag_engine._call_ollama(
+            "You output ONLY valid JSON — no prose.",
+            f"{chat_preamble}Rate how strongly the EVIDENCE in the sources supports each side on "
+            f"each contested point, 1 (weak) to 5 (strong).\n"
+            f'AFFIRMATIVE side: "{for_side}"\nOPPOSING side: "{against_side}"\n'
+            f"CONTESTED POINTS (score every one, in order): {clash}\n\n"
+            f"SOURCES:\n{ctx[:4000]}\n\n"
+            'Respond as JSON exactly: {"scores": [{"point": "<point>", "affirmative": <1-5>, '
+            '"opposing": <1-5>}, ...]} — one entry per contested point.',
+            model=settings.ollama_model, num_predict=300, temperature=0.2,
+        )
+        parsed = robust_json_parse(raw, expect="object", fallback=None, label="DebateScore")
+        rows = []
+        scores = parsed.get("scores") if isinstance(parsed, dict) else None
+        if isinstance(scores, list):
+            for i, sc in enumerate(scores[:len(clash)]):
+                if not isinstance(sc, dict):
+                    continue
+                a, o = _score(sc.get("affirmative")), _score(sc.get("opposing"))
+                if a is None or o is None:
+                    continue
+                pt = str(sc.get("point") or (clash[i] if i < len(clash) else f"Point {i+1}"))
+                rows.append({"label": pt[:36], "affirmative": a, "opposing": o})
+        if len(rows) < 2:
+            logger.info("[DEBATE] scorecard: <2 scored points, skipping visual")
+            return None
+        obj = {
+            "chart_type": "bar",
+            "title": "Scorecard — strength of evidence per contested point (1–5)",
+            "x_axis": {"key": "label"},
+            "series": [
+                {"key": "affirmative", "label": for_side[:40]},
+                {"key": "opposing", "label": against_side[:40]},
+            ],
+            "data": rows,
+        }
+        logger.info(f"[DEBATE] scorecard built: {len(rows)} contested points scored")
+        return "```lb-chart\n" + _json.dumps(obj, ensure_ascii=False) + "\n```"
+    except Exception as e:
+        logger.debug(f"[DEBATE] scorecard failed: {e}")
+        return None
+
+
 async def _generate_debate(
     source_context: str,
     topic_focus: str,
     temperature: float,
     chat_preamble: str = "",
     total_token_budget: int = 6000,
+    include_visuals: bool = False,
 ) -> str:
     """Multi-voice debate synthesis — THREE distinct personas over the same sources.
 
@@ -1440,6 +1526,13 @@ async def _generate_debate(
     except Exception as _ie:
         logger.debug(f"[DEBATE] intro pass skipped: {_ie}")
 
+    # ── The reliable debate visual: a scorecard between the cases and the ruling ──
+    scorecard_section = ""
+    if include_visuals:
+        fence = await _build_debate_scorecard(clash, for_side, against_side, ctx, chat_preamble)
+        if fence:
+            scorecard_section = f"## 📊 The Scorecard\n\n{fence}\n\n---\n\n"
+
     intro_block = f"{intro_text}\n\n" if intro_text.strip() else ""
     doc = (
         f"# {question}\n\n"
@@ -1447,11 +1540,12 @@ async def _generate_debate(
         f"*Contested on: {', '.join(clash)}.*\n\n"
         f"## 🗣️ The Advocate — for {for_side}\n\n{for_text}\n\n---\n\n"
         f"## 🗣️ The Skeptic — for {against_side}\n\n{against_text}\n\n---\n\n"
+        f"{scorecard_section}"
         f"## ⚖️ The Judge's Ruling\n\n{judge_text}\n"
     )
     logger.info(f"[DEBATE] 3-voice synthesis complete: intro={len(intro_text)}c advocate={len(for_text)}c "
-                f"skeptic={len(against_text)}c judge={len(judge_text)}c budget={per_lens}tok/lens "
-                f"clash={clash} in {_t.time() - t0:.1f}s")
+                f"skeptic={len(against_text)}c judge={len(judge_text)}c scorecard={'y' if scorecard_section else 'n'} "
+                f"budget={per_lens}tok/lens clash={clash} in {_t.time() - t0:.1f}s")
     return doc
 
 
@@ -1942,6 +2036,7 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
                 temperature=skill_temp,
                 chat_preamble=chat_preamble,
                 total_token_budget=doc_num_predict,
+                include_visuals=request.include_visuals,
             )
         elif request.skill_id in OUTLINE_FIRST_SKILLS and template and template.structure_requirements:
             logger.info(f"[STUDIO] Using Outline-First pipeline for {request.skill_id} "
