@@ -1124,7 +1124,7 @@ def _insert_fences_at_anchors(content: str, fences: List[str]) -> str:
     return "\n".join(lines)
 
 
-async def _inject_doc_visuals(content: str, topic_focus: str, source_context: str, temperature: float) -> str:
+async def _inject_doc_visuals(content: str, topic_focus: str, source_context: str, temperature: float, chart_brief: str = "") -> str:
     """Generate 1-2 data charts for a document and insert them as `lb-chart` fences.
 
     Runs only when the doc has NO visual yet — notably the outline-first path, whose
@@ -1136,34 +1136,6 @@ async def _inject_doc_visuals(content: str, topic_focus: str, source_context: st
         from services.chart_spec import ChartConfig
         from utils.json_repair import robust_json_parse
         import json as _json
-
-        prompt = (
-            "Design 1-2 DATA VISUALIZATIONS that support the key quantitative comparisons "
-            "or trends in the document below. Return ONLY a JSON array (no prose) of 1-2 "
-            "chart objects, each shaped exactly like:\n"
-            '{"chart_type": "bar", "title": "...", "x_axis": {"key": "label"}, '
-            '"series": [{"key": "value", "label": "..."}], '
-            '"data": [{"label": "A", "value": 3}, {"label": "B", "value": 5}]}\n'
-            "Rules: chart_type is one of bar|line|pie; every data row's keys must match "
-            "x_axis.key and the series keys; 3-6 data points; use only values supported by "
-            "the material; no commentary outside the JSON array.\n\n"
-            f"DOCUMENT TOPIC: {topic_focus[:500]}\n\n"
-            f"DOCUMENT:\n{content[:6000]}\n\n"
-            f"SOURCE MATERIAL:\n{source_context[:4000]}\n\n"
-            "JSON array of 1-2 charts:"
-        )
-        raw = await rag_engine._call_ollama(
-            "You output ONLY valid JSON — no markdown, no prose.",
-            prompt,
-            model=settings.ollama_model,
-            num_predict=800,
-            temperature=max(0.2, temperature - 0.2),
-        )
-        parsed = robust_json_parse(raw, expect="array", fallback=None, label="DocVisuals")
-        if isinstance(parsed, dict):
-            parsed = [parsed]
-        if not isinstance(parsed, list):
-            return content
 
         def _num(v):
             """Coerce chart values: 42, 42.5, '42', '42%', '$1,200' → float; else None."""
@@ -1179,19 +1151,13 @@ async def _inject_doc_visuals(content: str, topic_focus: str, source_context: st
 
         def _make_plottable(obj: dict):
             """Ensure the chart will actually DRAW: every data row must carry the
-            x-axis key + NUMERIC values under every series key. gemma often
-            mismatches keys or emits '42%' strings — Recharts then renders a
-            frame + legend with an EMPTY plot area (the reported bug). Repairs:
-            numeric coercion, and single-series key remap when the data rows use
-            a different (single) numeric key. Returns fixed obj or None (drop —
-            no chart beats an empty frame)."""
+            x-axis key + NUMERIC values under every series key (repairs: numeric
+            coercion, single-series key remap). Returns fixed obj or None."""
             x_key = (obj.get("x_axis") or {}).get("key") or "label"
-            s_keys = [s.get("key") for s in (obj.get("series") or []) if isinstance(s, dict) and s.get("key")]
+            s_keys = [sd.get("key") for sd in (obj.get("series") or []) if isinstance(sd, dict) and sd.get("key")]
             rows = [r for r in (obj.get("data") or []) if isinstance(r, dict)]
             if not s_keys or not rows:
                 return None
-            # Single-series remap: if NO row has the series key but rows share
-            # exactly one other numeric key, rename it to the series key.
             if len(s_keys) == 1 and not any(s_keys[0] in r for r in rows):
                 cand = {k for k in rows[0] if k != x_key and _num(rows[0].get(k)) is not None}
                 for r in rows[1:]:
@@ -1214,26 +1180,77 @@ async def _inject_doc_visuals(content: str, topic_focus: str, source_context: st
                 if ok:
                     fixed.append(new_row)
             if len(fixed) < 2:
-                return None  # <2 plottable points isn't a chart
+                return None
             obj = dict(obj)
             obj["data"] = fixed
             return obj
 
+        # Prescriptive prompt (2026-07-06): the keys are LOCKED — gemma's free-form
+        # key choices failed plottability ~3/4 of the time in built-app testing.
+        # Removing that degree of freedom (exactly 'label' + 'value', values as
+        # PLAIN NUMBERS) plus one feedback retry lifts the hit rate.
+        instructions = (
+            f"{chart_brief}\n" if chart_brief else ""
+        ) + (
+            "Design 2 DATA VISUALIZATIONS that support the key quantitative comparisons "
+            "or trends in the document below. Return ONLY a JSON array (no prose) of 2 "
+            "chart objects. THE KEYS ARE FIXED — copy this shape EXACTLY, changing only "
+            "titles, labels, and numbers:\n"
+            '[{"chart_type": "bar", "title": "<chart title>", "x_axis": {"key": "label"}, '
+            '"series": [{"key": "value", "label": "<what the numbers measure>"}], '
+            '"data": [{"label": "<category>", "value": 42}, {"label": "<category>", "value": 58}]}]\n'
+            "HARD RULES:\n"
+            "- chart_type: one of bar|line|pie.\n"
+            "- every data row has EXACTLY the keys \"label\" (string) and \"value\" (a PLAIN "
+            "NUMBER — never a string, never %, $, or units; put units in the series label).\n"
+            "- 3-6 data rows per chart; only values supported by the material.\n"
+            "- no commentary outside the JSON array."
+        )
+
         fences: List[str] = []
-        for obj in parsed[:2]:
-            if not isinstance(obj, dict):
-                continue
-            try:
-                cfg = ChartConfig(**obj)
-            except Exception:
-                continue
-            if not cfg.series or not cfg.data:
-                continue  # empty charts are dropped downstream anyway
-            obj = _make_plottable(obj)
-            if obj is None:
-                logger.info("[STUDIO] visual injection: chart dropped (data keys/values not plottable)")
-                continue
-            fences.append("```lb-chart\n" + _json.dumps(obj, ensure_ascii=False) + "\n```")
+        feedback = ""
+        for _attempt in (1, 2):
+            prompt = (
+                f"{instructions}{feedback}\n\n"
+                f"DOCUMENT TOPIC: {topic_focus[:500]}\n\n"
+                f"DOCUMENT:\n{content[:6000]}\n\n"
+                f"SOURCE MATERIAL:\n{source_context[:4000]}\n\n"
+                "JSON array of 2 charts:"
+            )
+            raw = await rag_engine._call_ollama(
+                "You output ONLY valid JSON — no markdown, no prose.",
+                prompt,
+                model=settings.ollama_model,
+                num_predict=800,
+                temperature=max(0.2, temperature - 0.2),
+            )
+            parsed = robust_json_parse(raw, expect="array", fallback=None, label="DocVisuals")
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            if not isinstance(parsed, list):
+                parsed = []
+            for obj in parsed[:2]:
+                if not isinstance(obj, dict):
+                    continue
+                try:
+                    cfg = ChartConfig(**obj)
+                except Exception:
+                    continue
+                if not cfg.series or not cfg.data:
+                    continue
+                obj = _make_plottable(obj)
+                if obj is None:
+                    logger.info("[STUDIO] visual injection: chart dropped (data keys/values not plottable)")
+                    continue
+                fences.append("```lb-chart\n" + _json.dumps(obj, ensure_ascii=False) + "\n```")
+            if fences:
+                break
+            feedback = (
+                "\n\nYOUR PREVIOUS ATTEMPT WAS REJECTED: every chart failed validation. "
+                "The failures were: data-row keys not exactly \"label\"/\"value\", or "
+                "\"value\" was not a plain number. Follow the HARD RULES literally this time."
+            )
+            logger.info("[STUDIO] visual injection: all charts unplottable — retrying once with feedback")
 
         if not fences:
             logger.info("[STUDIO] visual injection: no valid chart produced")
@@ -1247,7 +1264,26 @@ async def _inject_doc_visuals(content: str, topic_focus: str, source_context: st
 
 # Multi-lens debate synthesis tuning.
 _LENS_CTX = 12000       # chars of source context handed to each lens
-_LENS_PREDICT = 900     # output tokens per lens (3-5 tight paragraphs)
+
+# Deterministic debate-intent detector: users describe the format in the TOPIC
+# ("two voices with a judge…") without picking the `debate` skill — the 2026-07-06
+# built-app test showed all four debate-shaped requests routing to the generic
+# outline pipeline and reading single-voice. Signal groups; ≥2 distinct groups →
+# route to the multi-lens pipeline. Deliberately keyword-based (transparent, no
+# LLM call, no false positives from a lone "pros and cons").
+_DEBATE_SIGNALS = (
+    ("debate", ("debate",)),
+    ("voices", ("two voices", "2 voices", "three voices", "3 voices", "opposing voice",
+                "both sides", "two sides", "2 sides", "opposing sides", "for and against",
+                "one side for", "side for and", "distinct voices")),
+    ("judge", ("judge", "verdict", "ruling", "arbiter")),
+)
+
+
+def _wants_debate(topic: str) -> bool:
+    t = (topic or "").lower()
+    hits = sum(1 for _name, words in _DEBATE_SIGNALS if any(w in t for w in words))
+    return hits >= 2
 
 
 async def _generate_debate(
@@ -1255,78 +1291,127 @@ async def _generate_debate(
     topic_focus: str,
     temperature: float,
     chat_preamble: str = "",
+    total_token_budget: int = 6000,
 ) -> str:
-    """Multi-lens synthesis: argue a proposition from THREE independent lenses —
-    FOR, AGAINST, then an impartial JUDGE who weighs both and renders a reasoned
-    verdict with its own opinion. Each lens is a separate pass over the same sources
-    (the against-lens sees the for-argument to rebut it; the judge sees both). This
-    produces a genuine two-sided debate with a synthesized conclusion instead of the
-    generic multi-section outline. Charts (if visuals on) are injected downstream."""
+    """Multi-voice debate synthesis — THREE distinct personas over the same sources.
+
+    Structure (2026-07-06 'fully embrace the format' upgrade):
+      0. FRAME  — one cheap call names the central question, the two stances, AND
+                  three shared CLASH POINTS. Both advocates must argue the same
+                  axes — that forced engagement is what makes it read as a real
+                  debate instead of two parallel essays.
+      1. FOR    — persona-voiced advocate: opening position → argues each clash
+                  point with [Sn]-cited evidence → closing appeal to the judge.
+      2. AGAINST— same structure + point-by-point rebuttal of FOR's strongest claims.
+      3. JUDGE  — the voice of reason and logic: scores each clash point (naming a
+                  winner + why), calls out each side's overreach, renders a clear
+                  verdict, and MUST add a unique perspective neither side raised.
+    Lens budgets scale with the skill's token budget (7-10 min reads get long
+    lenses). Charts (if visuals on) are injected downstream — one per side."""
     import time as _t
     from utils.json_repair import robust_json_parse
     t0 = _t.time()
 
-    # ── Frame the two opposing sides from the topic (one cheap call) ──
+    # Length scaling: split the doc budget across the three voices.
+    per_lens = max(700, min(1600, total_token_budget // 4))
+    lens_words = int(per_lens * 0.66)  # ~words the model should target per voice
+
+    # ── Frame: question + stances + the three shared clash points ──
     frame = {"question": topic_focus[:300], "for_side": "the affirmative case",
-             "against_side": "the opposing case"}
+             "against_side": "the opposing case", "clash_points": []}
     try:
         raw = await rag_engine._call_ollama(
             "You output ONLY valid JSON — no prose.",
-            f'{chat_preamble}A user asked for a debate on:\n"{topic_focus}"\n\n'
-            "Identify the central question and the TWO opposing positions to argue. Respond as "
-            'JSON: {"question": "<the core question, one sentence>", "for_side": "<stance, <=10 words>", '
-            '"against_side": "<opposing stance, <=10 words>"}.',
-            model=settings.ollama_model, num_predict=200, temperature=0.2,
+            f'{chat_preamble}A user asked for a formal debate on:\n"{topic_focus}"\n\n'
+            "Respond as JSON:\n"
+            '{"question": "<the core question, one sentence>",\n'
+            ' "for_side": "<affirmative stance, <=10 words>",\n'
+            ' "against_side": "<opposing stance, <=10 words>",\n'
+            ' "clash_points": ["<axis 1, <=8 words>", "<axis 2>", "<axis 3>"]}\n'
+            "The clash_points are the 3 concrete axes BOTH sides must fight over "
+            "(e.g. cost, privacy, performance) — pick the 3 most contested.",
+            model=settings.ollama_model, num_predict=300, temperature=0.2,
         )
         parsed = robust_json_parse(raw, expect="object", fallback=None, label="DebateFrame")
         if isinstance(parsed, dict) and parsed.get("for_side") and parsed.get("against_side"):
-            frame.update({k: str(parsed[k]) for k in ("question", "for_side", "against_side") if parsed.get(k)})
+            for k in ("question", "for_side", "against_side"):
+                if parsed.get(k):
+                    frame[k] = str(parsed[k])
+            cps = parsed.get("clash_points")
+            if isinstance(cps, list):
+                frame["clash_points"] = [str(c) for c in cps[:3] if c]
     except Exception as _e:
         logger.debug(f"[DEBATE] framing fell back to defaults: {_e}")
 
     question, for_side, against_side = frame["question"], frame["for_side"], frame["against_side"]
+    clash = frame["clash_points"] or ["the strongest practical argument",
+                                      "the biggest risk or cost", "the long-term picture"]
+    clash_block = "\n".join(f"  {i+1}. {c}" for i, c in enumerate(clash))
     ctx = source_context[:_LENS_CTX]
+    cite_rule = ("Cite evidence inline as [S1], [S2] etc. matching the source tags in the "
+                 "SOURCES block. Every factual claim needs a citation.")
 
-    # ── Lens 1: FOR ──
+    # ── Voice 1: THE ADVOCATE (for) ──
     for_text = _clean_llm_output(await rag_engine._call_ollama(
-        f"You are a sharp advocate arguing FOR: {for_side}. Build the STRONGEST evidence-based "
-        "case using ONLY the provided sources. Be persuasive, specific, cite concrete points. Do "
-        "NOT present the other side — that is another advocate's job. 3-5 tight paragraphs, no heading.",
-        f"{chat_preamble}CENTRAL QUESTION: {question}\n\nSOURCES:\n{ctx}\n\nMake the case FOR {for_side}:",
-        model=settings.ollama_model, num_predict=_LENS_PREDICT, temperature=min(0.75, temperature + 0.1),
+        f"You are THE ADVOCATE — a sharp, confident debater arguing FOR: {for_side}. "
+        f"Write in a distinct FIRST-PERSON voice (\"I\", \"my opponent will tell you…\"). "
+        f"REQUIRED STRUCTURE (use it, no headings):\n"
+        f"1. An opening that states your position in one punchy paragraph.\n"
+        f"2. One substantial paragraph arguing EACH of the three clash points below, in order, "
+        f"with concrete evidence from the sources. {cite_rule}\n"
+        f"3. A short closing appeal addressed to the Judge.\n"
+        f"Do NOT concede the other side's case — rebuttal is their job. Target ~{lens_words} words.",
+        f"{chat_preamble}CENTRAL QUESTION: {question}\n\nTHE THREE CLASH POINTS:\n{clash_block}\n\n"
+        f"SOURCES:\n{ctx}\n\nDeliver your case FOR {for_side}:",
+        model=settings.ollama_model, num_predict=per_lens, temperature=min(0.75, temperature + 0.1),
     ))
 
-    # ── Lens 2: AGAINST (sees the for-argument to rebut it) ──
+    # ── Voice 2: THE SKEPTIC (against — sees the FOR case and must rebut it) ──
     against_text = _clean_llm_output(await rag_engine._call_ollama(
-        f"You are a sharp advocate arguing FOR: {against_side} (i.e. AGAINST {for_side}). Build the "
-        "STRONGEST evidence-based case using ONLY the provided sources, and directly rebut the "
-        "opposing argument's strongest points where the sources allow. 3-5 tight paragraphs, no heading.",
-        f"{chat_preamble}CENTRAL QUESTION: {question}\n\nOPPOSING ARGUMENT TO REBUT:\n{for_text[:3000]}\n\n"
-        f"SOURCES:\n{ctx}\n\nMake the case FOR {against_side}:",
-        model=settings.ollama_model, num_predict=_LENS_PREDICT, temperature=min(0.75, temperature + 0.1),
+        f"You are THE SKEPTIC — an incisive debater arguing FOR: {against_side} "
+        f"(i.e. AGAINST {for_side}). Write in a distinct FIRST-PERSON voice, clearly different "
+        f"from your opponent's. REQUIRED STRUCTURE (no headings):\n"
+        f"1. An opening that directly challenges the Advocate's framing.\n"
+        f"2. One substantial paragraph on EACH of the three clash points, in order — and in each, "
+        f"QUOTE or paraphrase the Advocate's specific claim on that point, then dismantle it with "
+        f"evidence. {cite_rule}\n"
+        f"3. A short closing appeal addressed to the Judge.\n"
+        f"Target ~{lens_words} words.",
+        f"{chat_preamble}CENTRAL QUESTION: {question}\n\nTHE THREE CLASH POINTS:\n{clash_block}\n\n"
+        f"THE ADVOCATE'S CASE (rebut its strongest claims):\n{for_text[:3500]}\n\n"
+        f"SOURCES:\n{ctx}\n\nDeliver your case FOR {against_side}:",
+        model=settings.ollama_model, num_predict=per_lens, temperature=min(0.75, temperature + 0.1),
     ))
 
-    # ── Lens 3: JUDGE (weighs both + renders own verdict) ──
+    # ── Voice 3: THE JUDGE (reason + logic + a unique perspective) ──
     judge_text = _clean_llm_output(await rag_engine._call_ollama(
-        "You are an impartial, incisive judge who has read both advocates' cases. Weigh them against "
-        "the evidence: name the strongest point on each side and where each overreaches, then render "
-        "YOUR OWN reasoned verdict — a clear decision and WHY. Do not merely split the difference; take "
-        "a position and justify it from the evidence. 2-4 paragraphs ending in a crisp verdict, no heading.",
-        f"{chat_preamble}CENTRAL QUESTION: {question}\n\nTHE CASE FOR {for_side}:\n{for_text[:3500]}\n\n"
-        f"THE CASE FOR {against_side}:\n{against_text[:3500]}\n\nSOURCES (ground your verdict):\n{ctx}\n\n"
-        "Deliver your ruling:",
-        model=settings.ollama_model, num_predict=_LENS_PREDICT, temperature=max(0.3, temperature - 0.1),
+        f"You are THE JUDGE — the pronounced voice of reason and logic, with a wholly distinct "
+        f"measured first-person voice unlike either advocate. You have heard both cases in full. "
+        f"REQUIRED STRUCTURE (no headings):\n"
+        f"1. For EACH of the three clash points: name which side argued it better and WHY, in one "
+        f"tight paragraph each. Quote the winning argument.\n"
+        f"2. One paragraph calling out where EACH side overreached or ignored inconvenient evidence.\n"
+        f"3. Your VERDICT: a clear decision — do not split the difference — justified from the evidence. {cite_rule}\n"
+        f"4. YOUR UNIQUE PERSPECTIVE: end with one genuine insight or reframing that NEITHER advocate "
+        f"raised — the thing both sides missed. This is mandatory and must be clearly your own.\n"
+        f"Target ~{lens_words} words.",
+        f"{chat_preamble}CENTRAL QUESTION: {question}\n\nTHE THREE CLASH POINTS:\n{clash_block}\n\n"
+        f"THE ADVOCATE'S CASE ({for_side}):\n{for_text[:3500]}\n\n"
+        f"THE SKEPTIC'S CASE ({against_side}):\n{against_text[:3500]}\n\n"
+        f"SOURCES (ground your ruling):\n{ctx}\n\nDeliver your ruling:",
+        model=settings.ollama_model, num_predict=per_lens, temperature=max(0.3, temperature - 0.1),
     ))
 
     doc = (
         f"# {question}\n\n"
-        f"*A structured debate weighing two positions, with a final verdict.*\n\n"
-        f"## The Case For: {for_side}\n\n{for_text}\n\n"
-        f"## The Case Against: {against_side}\n\n{against_text}\n\n"
-        f"## The Verdict\n\n{judge_text}\n"
+        f"*A three-voice debate: **The Advocate** argues for {for_side}; **The Skeptic** argues for "
+        f"{against_side}; **The Judge** weighs both and rules. Contested on: {', '.join(clash)}.*\n\n"
+        f"## 🗣️ The Advocate — for {for_side}\n\n{for_text}\n\n---\n\n"
+        f"## 🗣️ The Skeptic — for {against_side}\n\n{against_text}\n\n---\n\n"
+        f"## ⚖️ The Judge's Ruling\n\n{judge_text}\n"
     )
-    logger.info(f"[DEBATE] Multi-lens synthesis complete: for={len(for_text)}c against={len(against_text)}c "
-                f"verdict={len(judge_text)}c in {_t.time() - t0:.1f}s")
+    logger.info(f"[DEBATE] 3-voice synthesis complete: advocate={len(for_text)}c skeptic={len(against_text)}c "
+                f"judge={len(judge_text)}c budget={per_lens}tok/lens clash={clash} in {_t.time() - t0:.1f}s")
     return doc
 
 
@@ -1792,6 +1877,7 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
         # 1. Feynman v2: dedicated multi-phase pipeline (analyze → generate → enrich → map → assemble)
         # 2. Outline-First: generic multi-section pipeline for long-form skills
         # 3. Single-pass: standard generation for shorter document types
+        used_debate_pipeline = False
         if request.skill_id == 'feynman_curriculum':
             logger.info(f"[STUDIO] Using Feynman Pipeline v2 for {request.skill_id}")
             content = await _generate_feynman_v2(
@@ -1803,13 +1889,19 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
                 notebook_id=request.notebook_id,
             )
             # v2 handles everything internally — skip normalization, verification, and embedding
-        elif request.skill_id == 'debate':
-            logger.info("[STUDIO] Using multi-lens debate synthesis (For/Against/Judge)")
+        elif request.skill_id == 'debate' or _wants_debate(topic_focus):
+            if request.skill_id != 'debate':
+                logger.info(f"[STUDIO] debate-intent detected in topic → multi-voice debate "
+                            f"pipeline (selected skill was {request.skill_id})")
+            else:
+                logger.info("[STUDIO] Using multi-voice debate synthesis (Advocate/Skeptic/Judge)")
+            used_debate_pipeline = True
             content = await _generate_debate(
                 source_context=built.context,
                 topic_focus=topic_focus,
                 temperature=skill_temp,
                 chat_preamble=chat_preamble,
+                total_token_budget=doc_num_predict,
             )
         elif request.skill_id in OUTLINE_FIRST_SKILLS and template and template.structure_requirements:
             logger.info(f"[STUDIO] Using Outline-First pipeline for {request.skill_id} "
@@ -1834,9 +1926,10 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
                 logger.warning(f"[STUDIO] Post-processing removed {len(raw_content) - len(content)} chars "
                               f"({len(raw_content)} → {len(content)})")
         
-        # Post-pipeline steps. feynman_v2 handles its own; debate owns its For/Against/
-        # Verdict structure, so the generic template-section verify would fight it.
-        if request.skill_id not in ('feynman_curriculum', 'debate'):
+        # Post-pipeline steps. feynman_v2 handles its own; the debate pipeline owns its
+        # Advocate/Skeptic/Judge structure (whether selected as a skill or routed by
+        # topic intent), so the generic template-section verify would fight it.
+        if request.skill_id != 'feynman_curriculum' and not used_debate_pipeline:
             # Completion verification gate — ensure all required sections present
             if template and template.structure_requirements:
                 content = await _verify_and_fill_sections(
@@ -1869,7 +1962,13 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
         # and the doc has none, run a dedicated pass to add 1-2 real charts before resolve.
         if (request.include_visuals and request.skill_id != 'feynman_curriculum'
                 and 'lb-chart' not in content and 'lb-visual-hint' not in content):
-            content = await _inject_doc_visuals(content, topic_focus, built.context, skill_temp)
+            _chart_brief = (
+                "This document is a two-sided DEBATE. Produce EXACTLY 2 charts: the first "
+                "visualizing data that supports the Advocate's side, the second supporting "
+                "the Skeptic's side."
+            ) if used_debate_pipeline else ""
+            content = await _inject_doc_visuals(content, topic_focus, built.context, skill_temp,
+                                                chart_brief=_chart_brief)
 
         # Phase 4 mixed-medium: resolve inline visualization fences
         # (`lb-chart`, `lb-visual-hint`) before persistence so cached docs
