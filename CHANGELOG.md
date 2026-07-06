@@ -21,6 +21,29 @@ sprawl, so the CORE loop (upload→ingest→ask→answer→output) always preemp
 - **Phase 5d — fatal-freeze watchdog** (`services/loop_watchdog.py`) — `faulthandler.dump_traceback_later` re-armed by an asyncio heartbeat dumps the exact blocking stack on a freeze the loop-monitor can't log live. Diagnostics only (does not prevent).
 - **Phase 5a — all background timers folded** — correspondent poller (DEEP), digest-composer (NIGHT), weekly-journal (NIGHT), and collection-scheduler (DEEP, per-notebook) keep their cadence locally but route execution through the worker. Every LLM-bearing background actor now flows through the one traffic cop.
 
+### Codebase simplification (S1–S3 + C5) — 2026-07-01 → 07-06 (built-app verified)
+
+A no-functionality-loss simplification pass: ~2,500 LOC and 2 dependencies removed, every deletion grep-verified for zero callers and runtime-smoked. Aligns the tree with the doc-20 engine strategy.
+
+- **The MLX engine seam (C1)** — `services/rag_llm.py` → `services/llm_service.py` exposing `generate_text` / `stream_text` / `generate_with_vision` / `ocr_backend`. Wave 9's MLX text port now swaps engines *inside one file*, invisible to callers. Logic byte-preserved.
+- **Dead-code deletions** — the interactive-quiz backend+frontend island (renderer, endpoint, `QuizPanel`, dev HTML-fixture island), the unused `/content/generate/stream` endpoint + `generateStream`, the `visual_labels` transport, migration progress-theater.
+- **Approved drops** — olmo's bespoke visual/cleanup branches (olmo still runnable on the standard paths); cloud LLM escape hatches (`call_openai`/`call_anthropic` + the `anthropic` dep); **jsPDF fully removed** — all PDF export routes through the server Playwright path (main bundle **−16% / −409 KB**, the 202 KB html2canvas chunk gone).
+- **Consolidations** — ONE shared headless Chromium for svg/mermaid/slide rendering (2–3 processes → 1); `stuck_source_recovery` folded into the enrichment worker (the one background timer the Night-Shift fold missed); ONE shared `/constellation/ws` client (6 sockets → 1, ~90 LOC of duplicated reconnect logic gone).
+
+### Studio — debate / judge document format (NEW) — 2026-07-06 (built-app verified)
+
+A first-class multi-voice document format. Debate intent is detected in the **topic text** (not just the skill picker), so a deep_dive/briefing phrased as a debate routes to the pipeline: frame (central question + two stances + three shared **clash points**) → **The Advocate** → **The Skeptic** (rebuts the Advocate point-by-point) → **The Judge** (scores each clash point, delivers a no-fence-sitting verdict, and adds a unique perspective neither side raised). De-scaffolded persona prompts keep the structure invisible; the judge's `VERDICT:` / `UNIQUE PERSPECTIVE:` markers are harvested into headings; a magazine-style **standfirst** "fold" pass opens the piece. Charts use a **deterministic scorecard** (a small 1–5 scoring call → grouped-bar built in Python) because qualitative debates have no numbers for the generic chart path.
+
+### Built-app fixes — 2026-06-30 → 07-06
+
+- **Chat blank-answer regression** — the bibliography-strip regex wiped answers whose lead was a `\nSources:` heading (phi4 factual path); both strip sites now never empty the answer.
+- **num_ctx scales continuously with RAM** (not two buckets); the evaluator reports the true deployed context window.
+- **Klein "Invalid SVG"** — `sanitize_svg` was dropping the `<image>` tag and truncating the ~1 MB base64 hero mid-stream; now `data:image/*`-only `<image>` is allowed and oversize is **rejected, never truncated** (8 MB cap). XSS posture unchanged.
+- **Empty document charts** — the injection pass validated only that data *existed*, not that keys/values were plottable; added numeric coercion + single-series key remap + drop-if-unplottable + one feedback retry.
+- **Unanswerable quiz question** — a backend `justify`-type with no options rendered zero answer controls; any question without ≥2 options now routes to the open-answer (LLM-graded) flow.
+- **LaTeX artifacts** — `$\to$`/`\times`/etc. leaking into prose are normalized to unicode glyphs (real `$5` prices preserved).
+- **`record_user_signal` TypeError** — a vestigial kwarg was silently killing curator user-capture/highlight/topic-interest learning signals.
+
 ## v2.0.0 — Information Cortex: Universal Canvas, Correspondent, Synthesis Layer
 
 LocalBook's largest release: an Information Cortex that turns documents and
