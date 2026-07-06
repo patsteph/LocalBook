@@ -1348,19 +1348,21 @@ async def _generate_debate(
                                       "the biggest risk or cost", "the long-term picture"]
     clash_block = "\n".join(f"  {i+1}. {c}" for i, c in enumerate(clash))
     ctx = source_context[:_LENS_CTX]
-    cite_rule = ("Cite evidence inline as [S1], [S2] etc. matching the source tags in the "
-                 "SOURCES block. Every factual claim needs a citation.")
+    cite_rule = ("Cite evidence inline using the SPECIFIC source tag that supports each claim "
+                 "([S1], [S2], [S3]… as tagged in the SOURCES block) — do not default every "
+                 "citation to the same source. Every factual claim needs a citation.")
 
     # ── Voice 1: THE ADVOCATE (for) ──
     for_text = _clean_llm_output(await rag_engine._call_ollama(
         f"You are THE ADVOCATE — a sharp, confident debater arguing FOR: {for_side}. "
         f"Write in a distinct FIRST-PERSON voice (\"I\", \"my opponent will tell you…\"). "
-        f"REQUIRED STRUCTURE (use it, no headings):\n"
-        f"1. An opening that states your position in one punchy paragraph.\n"
-        f"2. One substantial paragraph arguing EACH of the three clash points below, in order, "
-        f"with concrete evidence from the sources. {cite_rule}\n"
-        f"3. A short closing appeal addressed to the Judge.\n"
-        f"Do NOT concede the other side's case — rebuttal is their job. Target ~{lens_words} words.",
+        f"Cover, in flowing persuasive prose: a punchy opening position; your case on each of "
+        f"the three clash points below (concrete evidence, not generalities); a short closing "
+        f"appeal addressed to the Judge. {cite_rule}\n"
+        f"STYLE RULES: continuous speech-like paragraphs — NO numbered lists, NO headings, NO "
+        f"meta-labels, and NEVER echo these instructions or the clash-point names as labels; "
+        f"weave them in naturally. Do NOT concede the other side's case — rebuttal is their "
+        f"job. Target ~{lens_words} words.",
         f"{chat_preamble}CENTRAL QUESTION: {question}\n\nTHE THREE CLASH POINTS:\n{clash_block}\n\n"
         f"SOURCES:\n{ctx}\n\nDeliver your case FOR {for_side}:",
         model=settings.ollama_model, num_predict=per_lens, temperature=min(0.75, temperature + 0.1),
@@ -1370,12 +1372,12 @@ async def _generate_debate(
     against_text = _clean_llm_output(await rag_engine._call_ollama(
         f"You are THE SKEPTIC — an incisive debater arguing FOR: {against_side} "
         f"(i.e. AGAINST {for_side}). Write in a distinct FIRST-PERSON voice, clearly different "
-        f"from your opponent's. REQUIRED STRUCTURE (no headings):\n"
-        f"1. An opening that directly challenges the Advocate's framing.\n"
-        f"2. One substantial paragraph on EACH of the three clash points, in order — and in each, "
-        f"QUOTE or paraphrase the Advocate's specific claim on that point, then dismantle it with "
-        f"evidence. {cite_rule}\n"
-        f"3. A short closing appeal addressed to the Judge.\n"
+        f"from your opponent's. Cover, in flowing prose: an opening that directly challenges the "
+        f"Advocate's framing; on each of the three clash points, QUOTE or paraphrase the "
+        f"Advocate's specific claim, then dismantle it with evidence; a short closing appeal "
+        f"addressed to the Judge. {cite_rule}\n"
+        f"STYLE RULES: continuous speech-like paragraphs — NO numbered lists, NO headings, NO "
+        f"meta-labels, NEVER echo these instructions or the clash-point names as labels. "
         f"Target ~{lens_words} words.",
         f"{chat_preamble}CENTRAL QUESTION: {question}\n\nTHE THREE CLASH POINTS:\n{clash_block}\n\n"
         f"THE ADVOCATE'S CASE (rebut its strongest claims):\n{for_text[:3500]}\n\n"
@@ -1387,13 +1389,15 @@ async def _generate_debate(
     judge_text = _clean_llm_output(await rag_engine._call_ollama(
         f"You are THE JUDGE — the pronounced voice of reason and logic, with a wholly distinct "
         f"measured first-person voice unlike either advocate. You have heard both cases in full. "
-        f"REQUIRED STRUCTURE (no headings):\n"
-        f"1. For EACH of the three clash points: name which side argued it better and WHY, in one "
-        f"tight paragraph each. Quote the winning argument.\n"
-        f"2. One paragraph calling out where EACH side overreached or ignored inconvenient evidence.\n"
-        f"3. Your VERDICT: a clear decision — do not split the difference — justified from the evidence. {cite_rule}\n"
-        f"4. YOUR UNIQUE PERSPECTIVE: end with one genuine insight or reframing that NEITHER advocate "
-        f"raised — the thing both sides missed. This is mandatory and must be clearly your own.\n"
+        f"Write flowing judicial prose (no numbered lists, no headings, never echo these "
+        f"instructions) covering: for each of the three clash points, which side argued it "
+        f"better and why (quote the winning argument); where EACH side overreached or ignored "
+        f"inconvenient evidence. {cite_rule}\n"
+        f"Then EXACTLY two final paragraphs with these literal prefixes (they become section "
+        f"headers, so use them verbatim):\n"
+        f"VERDICT: <your clear decision — do not split the difference — justified from the evidence>\n"
+        f"UNIQUE PERSPECTIVE: <one genuine insight or reframing NEITHER advocate raised — the "
+        f"thing both sides missed; clearly your own>\n"
         f"Target ~{lens_words} words.",
         f"{chat_preamble}CENTRAL QUESTION: {question}\n\nTHE THREE CLASH POINTS:\n{clash_block}\n\n"
         f"THE ADVOCATE'S CASE ({for_side}):\n{for_text[:3500]}\n\n"
@@ -1402,16 +1406,52 @@ async def _generate_debate(
         model=settings.ollama_model, num_predict=per_lens, temperature=max(0.3, temperature - 0.1),
     ))
 
+    # ── Harvest the judge's marker contract into real document structure ──
+    # (The 2026-07-06 built-app test showed scaffold labels LEAKING into prose —
+    # "YOUR UNIQUE PERSPECTIVE:", "The VERDICT is that". Now the judge is told to
+    # use exact prefixes, and WE convert them into styled sub-headings.)
+    import re as _re
+    judge_text = _re.sub(r"(?:^|\n)\s*(?:YOUR\s+)?UNIQUE\s+PERSPECTIVE\s*[:—-]\s*",
+                         "\n\n### What Both Sides Missed\n\n", judge_text, count=1, flags=_re.IGNORECASE)
+    judge_text = _re.sub(r"(?:^|\n)\s*(?:The\s+)?VERDICT\s*(?:is\s+that)?\s*[:—-]?\s*",
+                         "\n\n### The Verdict\n\n", judge_text, count=1, flags=_re.IGNORECASE)
+    # Belt: strip any scaffold labels the advocates leaked despite instructions.
+    _leak = _re.compile(r"(?:^|\n)\s*(?:REQUIRED STRUCTURE|STYLE RULES|OPENING POSITION|CLOSING APPEAL)\s*[:—-].*", _re.IGNORECASE)
+    for_text = _leak.sub("", for_text)
+    against_text = _leak.sub("", against_text)
+
+    # ── The "fold" pass: a blog-ready standfirst introducing the debate ──
+    # (One cheap call. A FULL-document editor rewrite is deliberately avoided —
+    # rewriting 2,500 words in one call recreates the single-pass failure mode.)
+    intro_text = ""
+    try:
+        intro_text = _clean_llm_output(await rag_engine._call_ollama(
+            "You are the editor writing the standfirst (intro) for a published three-voice "
+            "debate. In 120-180 words of engaging, magazine-quality prose: hook the reader on "
+            "why this question matters NOW, state what is genuinely at stake, and introduce the "
+            "three voices they are about to hear (The Advocate, The Skeptic, The Judge) without "
+            "spoiling the verdict. No headings, no lists, no meta-labels.",
+            f"{chat_preamble}THE QUESTION: {question}\n"
+            f"THE ADVOCATE argues for: {for_side}\nTHE SKEPTIC argues for: {against_side}\n"
+            f"CONTESTED ON: {', '.join(clash)}\n\n"
+            f"OPENING OF THE ADVOCATE'S CASE (context only):\n{for_text[:600]}\n\nWrite the standfirst:",
+            model=settings.ollama_model, num_predict=350, temperature=min(0.8, temperature + 0.15),
+        ))
+    except Exception as _ie:
+        logger.debug(f"[DEBATE] intro pass skipped: {_ie}")
+
+    intro_block = f"{intro_text}\n\n" if intro_text.strip() else ""
     doc = (
         f"# {question}\n\n"
-        f"*A three-voice debate: **The Advocate** argues for {for_side}; **The Skeptic** argues for "
-        f"{against_side}; **The Judge** weighs both and rules. Contested on: {', '.join(clash)}.*\n\n"
+        f"{intro_block}"
+        f"*Contested on: {', '.join(clash)}.*\n\n"
         f"## 🗣️ The Advocate — for {for_side}\n\n{for_text}\n\n---\n\n"
         f"## 🗣️ The Skeptic — for {against_side}\n\n{against_text}\n\n---\n\n"
         f"## ⚖️ The Judge's Ruling\n\n{judge_text}\n"
     )
-    logger.info(f"[DEBATE] 3-voice synthesis complete: advocate={len(for_text)}c skeptic={len(against_text)}c "
-                f"judge={len(judge_text)}c budget={per_lens}tok/lens clash={clash} in {_t.time() - t0:.1f}s")
+    logger.info(f"[DEBATE] 3-voice synthesis complete: intro={len(intro_text)}c advocate={len(for_text)}c "
+                f"skeptic={len(against_text)}c judge={len(judge_text)}c budget={per_lens}tok/lens "
+                f"clash={clash} in {_t.time() - t0:.1f}s")
     return doc
 
 
