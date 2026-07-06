@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { API_BASE_URL, WS_BASE_URL, localFetch } from '../services/api';
+import { API_BASE_URL, localFetch } from '../services/api';
+import { useConstellationWS } from '../hooks/useConstellationWS';
 import { graphService } from '../services/graph';
 
 interface GraphNode {
@@ -91,7 +92,6 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
   const [processingSources, setProcessingSources] = useState<Set<string>>(new Set());  // Track sources being processed
   // Living-view: "synthesizing N/M sources" partial-state indicator (NS-B1).
   const [synthProgress, setSynthProgress] = useState<{ synthesized: number; total: number; communities_built: number; communities_total: number } | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
   const notebookIdRef = useRef<string | null>(notebookId);
   const autoBuiltNotebooks = useRef<Set<string>>(new Set());  // Track auto-triggered builds to prevent loops
   
@@ -819,134 +819,96 @@ export function Constellation3D({ notebookId, selectedSourceId, rightSidebarColl
   }, [sceneReady, notebookId, crossNotebook]);
   
 
-  // Load stats and connect WebSocket
+  // Load stats on mount; clear the living-view fallback interval on unmount.
   useEffect(() => {
     loadStats();
-    
-    // Connect to WebSocket for real-time updates (optional - falls back to polling)
-    let wsRetryCount = 0;
-    const maxRetries = 3;
-    
-    const connectWebSocket = () => {
-      if (wsRetryCount >= maxRetries) {
-        return;
-      }
-      
-      try {
-        const ws = new WebSocket(`${WS_BASE_URL}/constellation/ws`);
-        
-        ws.onopen = () => {
-          wsRetryCount = 0;  // Reset on successful connection
-        };
-        
-        ws.onmessage = (event) => {
-          try {
-            const message = JSON.parse(event.data);
-            
-            switch (message.type) {
-              case 'connected':
-                break;
-              case 'concept_added':
-                loadGraph();
-                loadStats();
-                break;
-              case 'build_progress':
-                setBuildProgress(prev => Math.max(prev, message.data.progress));
-                break;
-              case 'build_complete':
-                // v0.6.5: BERTopic handles topic discovery automatically
-                setBuilding(false);
-                setBuildProgress(100);
-                loadGraph();
-                loadStats();
-                break;
-              case 'cluster_progress':
-                break;
-              case 'cluster_complete':
-                loadGraph();
-                loadStats();
-                break;
-              case 'enhancement_progress':
-                if (message.data.status === 'starting' || message.data.status === 'enhancing') {
-                  setEnhancing(true);
-                  setEnhanceProgress({ current: message.data.current, total: message.data.total });
-                } else if (message.data.status === 'complete') {
-                  setEnhancing(false);
-                  setEnhanceProgress({ current: 0, total: 0 });
-                  loadGraph();
-                  loadStats();
-                }
-                break;
-              case 'source_updated':
-                // Track source processing status
-                const sourceData = message.data;
-                if (sourceData.notebook_id === notebookIdRef.current) {
-                  if (sourceData.status === 'processing') {
-                    setProcessingSources(prev => new Set(prev).add(sourceData.source_id));
-                  } else if (sourceData.status === 'completed' || sourceData.status === 'failed') {
-                    setProcessingSources(prev => {
-                      const next = new Set(prev);
-                      next.delete(sourceData.source_id);
-                      return next;
-                    });
-                    // Refresh graph when source completes
-                    if (sourceData.status === 'completed') {
-                      loadGraph();
-                      loadStats();
-                    }
-                  }
-                }
-                break;
-              case 'synthesis_progress': {
-                // Living-view (NS-B1): per-notebook "synthesizing N/M" from the
-                // enrichment worker. Update the indicator + re-emphasize the
-                // existing edges IN PLACE — no reload, no node churn.
-                const d = message.data;
-                if (d && d.notebook_id === notebookIdRef.current) {
-                  setSynthProgress({
-                    synthesized: d.synthesized ?? 0,
-                    total: d.total ?? 0,
-                    communities_built: d.communities_built ?? 0,
-                    communities_total: d.communities_total ?? 0,
-                  });
-                  enrichmentEmphasisRef.current = d.total > 0 ? (d.synthesized ?? 0) / d.total : 1;
-                  if (lastDataRef.current && lastLayoutRef.current) {
-                    updateEdges(lastDataRef.current, lastLayoutRef.current);
-                  }
-                }
-                break;
-              }
-            }
-          } catch (err) {
-            console.error('WebSocket parse error:', err);
-          }
-        };
-        
-        ws.onclose = () => {
-          wsRetryCount++;
-          if (wsRetryCount < maxRetries) {
-            setTimeout(connectWebSocket, 5000);
-          }
-        };
-        
-        ws.onerror = () => {
-          // Silent - will trigger onclose
-        };
-        
-        wsRef.current = ws;
-      } catch {
-        // WebSocket not supported or blocked
-      }
-    };
-    
-    // Try WebSocket but don't block on it
-    setTimeout(connectWebSocket, 1000);
-    
     return () => {
       if (refreshIntervalRef.current) clearInterval(refreshIntervalRef.current);
-      if (wsRef.current) wsRef.current.close();
     };
   }, []);
+
+  // Real-time constellation updates via the ONE shared socket (S3/C5). The
+  // handler reads notebookIdRef/lastDataRef/etc. so it never needs re-subscribing.
+  useConstellationWS((message: any) => {
+    try {
+  switch (message.type) {
+                case 'connected':
+                  break;
+                case 'concept_added':
+                  loadGraph();
+                  loadStats();
+                  break;
+                case 'build_progress':
+                  setBuildProgress(prev => Math.max(prev, message.data.progress));
+                  break;
+                case 'build_complete':
+                  // v0.6.5: BERTopic handles topic discovery automatically
+                  setBuilding(false);
+                  setBuildProgress(100);
+                  loadGraph();
+                  loadStats();
+                  break;
+                case 'cluster_progress':
+                  break;
+                case 'cluster_complete':
+                  loadGraph();
+                  loadStats();
+                  break;
+                case 'enhancement_progress':
+                  if (message.data.status === 'starting' || message.data.status === 'enhancing') {
+                    setEnhancing(true);
+                    setEnhanceProgress({ current: message.data.current, total: message.data.total });
+                  } else if (message.data.status === 'complete') {
+                    setEnhancing(false);
+                    setEnhanceProgress({ current: 0, total: 0 });
+                    loadGraph();
+                    loadStats();
+                  }
+                  break;
+                case 'source_updated':
+                  // Track source processing status
+                  const sourceData = message.data;
+                  if (sourceData.notebook_id === notebookIdRef.current) {
+                    if (sourceData.status === 'processing') {
+                      setProcessingSources(prev => new Set(prev).add(sourceData.source_id));
+                    } else if (sourceData.status === 'completed' || sourceData.status === 'failed') {
+                      setProcessingSources(prev => {
+                        const next = new Set(prev);
+                        next.delete(sourceData.source_id);
+                        return next;
+                      });
+                      // Refresh graph when source completes
+                      if (sourceData.status === 'completed') {
+                        loadGraph();
+                        loadStats();
+                      }
+                    }
+                  }
+                  break;
+                case 'synthesis_progress': {
+                  // Living-view (NS-B1): per-notebook "synthesizing N/M" from the
+                  // enrichment worker. Update the indicator + re-emphasize the
+                  // existing edges IN PLACE — no reload, no node churn.
+                  const d = message.data;
+                  if (d && d.notebook_id === notebookIdRef.current) {
+                    setSynthProgress({
+                      synthesized: d.synthesized ?? 0,
+                      total: d.total ?? 0,
+                      communities_built: d.communities_built ?? 0,
+                      communities_total: d.communities_total ?? 0,
+                    });
+                    enrichmentEmphasisRef.current = d.total > 0 ? (d.synthesized ?? 0) / d.total : 1;
+                    if (lastDataRef.current && lastLayoutRef.current) {
+                      updateEdges(lastDataRef.current, lastLayoutRef.current);
+                    }
+                  }
+                  break;
+                }
+              }
+    } catch (err) {
+      console.error('WebSocket parse error:', err);
+    }
+  });
 
   // Load stats when notebook changes (graph loading handled by sceneReady effect)
   useEffect(() => {

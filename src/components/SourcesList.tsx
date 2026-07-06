@@ -8,8 +8,7 @@ import { ErrorMessage } from './shared/ErrorMessage';
 import { SourceNotesViewer } from './SourceNotesViewer';
 import { OutgoingLinksPanel } from './sources/OutgoingLinksPanel';
 import { useCanvas } from './canvas/CanvasContext';
-import { API_BASE_URL } from '../services/api';
-import { useReconnectingWebSocket } from '../hooks/useReconnectingWebSocket';
+import { useConstellationWS } from '../hooks/useConstellationWS';
 
 interface SourcesListProps {
   notebookId: string | null;
@@ -127,18 +126,16 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
     };
   }, [showSortMenu]);
 
-  // WebSocket connection for real-time source updates (auto-reconnecting)
-  const wsUrl = useMemo(() => API_BASE_URL.replace('http', 'ws') + '/constellation/ws', []);
-  useReconnectingWebSocket({
-    url: wsUrl,
-    enabled: !!notebookId,
-    onMessage: useCallback((message: any) => {
+  // Real-time source updates via the ONE shared constellation socket (S3/C5).
+  useConstellationWS(
+    useCallback((message: any) => {
       if (message.type === 'source_updated' && message.data?.notebook_id === notebookId) {
         loadSources(true);
         onSourcesChange?.();
       }
     }, [notebookId, onSourcesChange]),
-  });
+    !!notebookId,
+  );
 
   useEffect(() => {
     if (notebookId) {

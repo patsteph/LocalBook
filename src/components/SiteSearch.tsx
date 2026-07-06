@@ -14,7 +14,7 @@ import {
   TIME_RANGE_OPTIONS 
 } from '../services/siteSearch';
 import { webService } from '../services/web';
-import { API_BASE_URL } from '../services/api';
+import { useConstellationWS } from '../hooks/useConstellationWS';
 import { Button } from './shared/Button';
 import { LoadingSpinner } from './shared/LoadingSpinner';
 
@@ -40,7 +40,6 @@ export const SiteSearch: React.FC<SiteSearchProps> = ({
   const [addedUrls, setAddedUrls] = useState<Set<string>>(new Set());
   const [failedUrls, setFailedUrls] = useState<Map<string, string>>(new Map());
   const inputRef = useRef<HTMLInputElement>(null);
-  const wsRef = useRef<WebSocket | null>(null);
 
   // Load supported sites on mount
   useEffect(() => {
@@ -49,46 +48,26 @@ export const SiteSearch: React.FC<SiteSearchProps> = ({
       .catch(console.error);
   }, []);
 
-  // WebSocket to listen for source processing failures
-  useEffect(() => {
-    if (!notebookId) return;
-
-    const wsUrl = API_BASE_URL.replace('http', 'ws') + '/constellation/ws';
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        if (message.type === 'source_updated' && message.data?.notebook_id === notebookId) {
-          const { status, title, error: errorMsg } = message.data;
-          
-          // Find the URL that matches this title
-          const matchingResult = results.find(r => r.title === title || r.url.includes(title));
-          
-          if (status === 'failed' && matchingResult) {
-            setAddedUrls(prev => {
-              const next = new Set(prev);
-              next.delete(matchingResult.url);
-              return next;
-            });
-            setFailedUrls(prev => {
-              const next = new Map(prev);
-              next.set(matchingResult.url, errorMsg || 'Failed to process');
-              return next;
-            });
-          }
-        }
-      } catch (e) {
-        console.error('WebSocket message parse error:', e);
+  // Source-processing updates via the ONE shared constellation socket (S3/C5).
+  useConstellationWS((message: any) => {
+    if (message.type === 'source_updated' && message.data?.notebook_id === notebookId) {
+      const { status, title, error: errorMsg } = message.data;
+      // Find the URL that matches this title
+      const matchingResult = results.find(r => r.title === title || r.url.includes(title));
+      if (status === 'failed' && matchingResult) {
+        setAddedUrls(prev => {
+          const next = new Set(prev);
+          next.delete(matchingResult.url);
+          return next;
+        });
+        setFailedUrls(prev => {
+          const next = new Map(prev);
+          next.set(matchingResult.url, errorMsg || 'Failed to process');
+          return next;
+        });
       }
-    };
-
-    return () => {
-      ws.close();
-      wsRef.current = null;
-    };
-  }, [notebookId, results]);
+    }
+  }, !!notebookId);
 
   // Add single result to notebook with optimistic UI
   const handleAddSingle = async (url: string, title: string) => {

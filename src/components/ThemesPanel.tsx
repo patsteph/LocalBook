@@ -3,7 +3,7 @@
  */
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { themesService, Theme, TopConcept } from '../services/themes';
-import { WS_BASE_URL } from '../services/api';
+import { useConstellationWS } from '../hooks/useConstellationWS';
 
 interface ThemesPanelProps {
     notebookId: string | null;
@@ -37,98 +37,59 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ notebookId, highlighte
         }
     }, [notebookId]);
 
-    // WebSocket connection for real-time updates during builds
-    const wsRef = useRef<WebSocket | null>(null);
+    // Real-time build/cluster updates via the ONE shared constellation socket (S3/C5).
     const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
-    
-    useEffect(() => {
-        if (!notebookId) return;
-        
-        const connectWebSocket = () => {
-            try {
-                // Connect to the same WebSocket as Constellation3D for synchronized updates
-                const ws = new WebSocket(`${WS_BASE_URL}/constellation/ws`);
-                
-                ws.onmessage = (event) => {
-                    try {
-                        const message = JSON.parse(event.data);
-                        
-                        // v0.6.5: Topics updated from BERTopic - refresh themes
-                        // Handle both direct topics_updated event and legacy concept_added
-                        if (message.type === 'topics_updated') {
-                            loadThemes();
-                        }
-                        
-                        // Enhancement complete - refresh to show enhanced names
-                        if (message.type === 'enhancement_progress' && message.data?.status === 'complete') {
-                            loadThemes();
-                        }
-                        
-                        // Build is in progress - show "Waiting..." status
-                        // Only react if this is for OUR notebook (or no notebook specified)
-                        if (message.type === 'build_progress') {
-                            const msgNotebook = message.data?.notebook_id;
-                            if (!msgNotebook || msgNotebook === notebookId) {
-                                setStatus('waiting');
-                                setClusterProgress(null);
-                                // Start auto-refresh during build progress (fallback)
-                                if (!refreshIntervalRef.current) {
-                                    refreshIntervalRef.current = setInterval(loadThemes, 15000);
-                                }
-                                // Fallback: clear waiting after 60s if build_complete never arrives
-                                setTimeout(() => {
-                                    setStatus(prev => prev === 'waiting' ? 'idle' : prev);
-                                }, 60000);
-                            }
-                        }
-                        
-                        // Build complete - topics ready
-                        if (message.type === 'build_complete') {
-                            setStatus('idle');
-                            // Small delay to ensure topics are saved before fetching
-                            setTimeout(() => loadThemes(), 500);
-                            // Clear polling interval
-                            if (refreshIntervalRef.current) {
-                                clearInterval(refreshIntervalRef.current);
-                                refreshIntervalRef.current = null;
-                            }
-                        }
-                        
-                        // Clustering in progress - show "Discovering..." status
-                        if (message.type === 'cluster_progress') {
-                            setStatus('discovering');
-                            setClusterProgress(message.data);
-                        }
-                        
-                        // Clustering complete - refresh and clear status
-                        if (message.type === 'cluster_complete') {
-                            setStatus('idle');
-                            setClusterProgress(null);
-                            loadThemes();
-                        }
-                    } catch {
-                        // Ignore parse errors
-                    }
-                };
-                
-                ws.onclose = () => {
-                    // Reconnect after delay
-                    setTimeout(connectWebSocket, 5000);
-                };
-                
-                wsRef.current = ws;
-            } catch {
-                // WebSocket not supported
+
+    useConstellationWS((message: any) => {
+        // v0.6.5: Topics updated from BERTopic - refresh themes
+        if (message.type === 'topics_updated') {
+            loadThemes();
+        }
+        // Enhancement complete - refresh to show enhanced names
+        if (message.type === 'enhancement_progress' && message.data?.status === 'complete') {
+            loadThemes();
+        }
+        // Build is in progress - show "Waiting..." status (only for OUR notebook)
+        if (message.type === 'build_progress') {
+            const msgNotebook = message.data?.notebook_id;
+            if (!msgNotebook || msgNotebook === notebookId) {
+                setStatus('waiting');
+                setClusterProgress(null);
+                if (!refreshIntervalRef.current) {
+                    refreshIntervalRef.current = setInterval(loadThemes, 15000);
+                }
+                // Fallback: clear waiting after 60s if build_complete never arrives
+                setTimeout(() => {
+                    setStatus(prev => prev === 'waiting' ? 'idle' : prev);
+                }, 60000);
             }
-        };
-        
-        connectWebSocket();
-        
-        return () => {
-            if (wsRef.current) wsRef.current.close();
-            if (refreshIntervalRef.current) clearInterval(refreshIntervalRef.current);
-        };
-    }, [notebookId]);
+        }
+        // Build complete - topics ready
+        if (message.type === 'build_complete') {
+            setStatus('idle');
+            setTimeout(() => loadThemes(), 500);
+            if (refreshIntervalRef.current) {
+                clearInterval(refreshIntervalRef.current);
+                refreshIntervalRef.current = null;
+            }
+        }
+        // Clustering in progress
+        if (message.type === 'cluster_progress') {
+            setStatus('discovering');
+            setClusterProgress(message.data);
+        }
+        // Clustering complete
+        if (message.type === 'cluster_complete') {
+            setStatus('idle');
+            setClusterProgress(null);
+            loadThemes();
+        }
+    }, !!notebookId);
+
+    // Clear the build-progress fallback interval on unmount (S3/C5).
+    useEffect(() => () => {
+        if (refreshIntervalRef.current) clearInterval(refreshIntervalRef.current);
+    }, []);
 
     const loadExplorationQuestions = useCallback(async (theme: Theme) => {
         if (!notebookId || !theme.topic_id) return;

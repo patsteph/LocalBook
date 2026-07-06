@@ -3,10 +3,10 @@
  * Allows users to search, preview, and scrape web content
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import DOMPurify from 'dompurify';
 import { webService, WebSearchResult } from '../services/web';
-import { API_BASE_URL } from '../services/api';
+import { useConstellationWS } from '../hooks/useConstellationWS';
 
 interface WebSource {
     id: string;
@@ -42,7 +42,6 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
     const [addedUrls, setAddedUrls] = useState<Set<string>>(new Set());    // Track which URLs have been added
     const [failedUrls, setFailedUrls] = useState<Map<string, string>>(new Map()); // Track failed URLs with error message
     const [error, setError] = useState<string | null>(null);
-    const wsRef = useRef<WebSocket | null>(null);
     const [currentOffset, setCurrentOffset] = useState(0);
     const [hasMore, setHasMore] = useState(false);
     const [lastQuery, setLastQuery] = useState('');
@@ -58,47 +57,26 @@ export const WebSearchResults: React.FC<WebSearchResultsProps> = ({
         }
     }, [notebookId]);
 
-    // WebSocket to listen for source processing failures and update UI
-    useEffect(() => {
-        if (!notebookId) return;
-
-        const wsUrl = API_BASE_URL.replace('http', 'ws') + '/constellation/ws';
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
-
-        ws.onmessage = (event) => {
-            try {
-                const message = JSON.parse(event.data);
-                if (message.type === 'source_updated' && message.data?.notebook_id === notebookId) {
-                    const { status, title, error: errorMsg } = message.data;
-                    
-                    // Find the URL that matches this title (best effort)
-                    const matchingResult = results.find(r => r.title === title || r.url.includes(title));
-                    
-                    if (status === 'failed' && matchingResult) {
-                        // Mark as failed - remove from added, add to failed
-                        setAddedUrls(prev => {
-                            const next = new Set(prev);
-                            next.delete(matchingResult.url);
-                            return next;
-                        });
-                        setFailedUrls(prev => {
-                            const next = new Map(prev);
-                            next.set(matchingResult.url, errorMsg || 'Failed to process');
-                            return next;
-                        });
-                    }
-                }
-            } catch (e) {
-                console.error('WebSocket message parse error:', e);
+    // Source-processing updates via the ONE shared constellation socket (S3/C5).
+    useConstellationWS((message: any) => {
+        if (message.type === 'source_updated' && message.data?.notebook_id === notebookId) {
+            const { status, title, error: errorMsg } = message.data;
+            // Find the URL that matches this title (best effort)
+            const matchingResult = results.find(r => r.title === title || r.url.includes(title));
+            if (status === 'failed' && matchingResult) {
+                setAddedUrls(prev => {
+                    const next = new Set(prev);
+                    next.delete(matchingResult.url);
+                    return next;
+                });
+                setFailedUrls(prev => {
+                    const next = new Map(prev);
+                    next.set(matchingResult.url, errorMsg || 'Failed to process');
+                    return next;
+                });
             }
-        };
-
-        return () => {
-            ws.close();
-            wsRef.current = null;
-        };
-    }, [notebookId, results]);
+        }
+    }, !!notebookId);
 
     const isUrl = (text: string): boolean => {
         try {

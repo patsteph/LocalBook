@@ -20,7 +20,7 @@ import { Settings } from './components/Settings';
 import { LLMSelector } from './components/LLMSelector';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
 import { API_BASE_URL, localFetch } from './services/api';
-import { useReconnectingWebSocket } from './hooks/useReconnectingWebSocket';
+import { useConstellationWS } from './hooks/useConstellationWS';
 import { useMorningBriefFetcher } from './hooks/useMorningBriefFetcher';
 import { emitEvent, onEvent } from './lib/events';
 import { prewarmMermaid } from './components/shared/MermaidRenderer';
@@ -364,12 +364,10 @@ function App() {
       .catch(() => {});
   }, [selectedNotebookId]);
 
-  // WebSocket for background task notifications (source processing failures)
-  const wsUrl = useMemo(() => API_BASE_URL.replace('http', 'ws') + '/constellation/ws', []);
-  useReconnectingWebSocket({
-    url: wsUrl,
-    enabled: !!selectedNotebookId,
-    onMessage: useCallback((message: any) => {
+  // WebSocket for background task notifications (source processing failures).
+  // S3/C5: shares the ONE app-wide constellation socket.
+  useConstellationWS(
+    useCallback((message: any) => {
       if (message.type === 'source_updated' && message.data?.notebook_id === selectedNotebookId) {
         setRefreshSources(prev => prev + 1);
         if (message.data.status === 'completed') {
@@ -407,7 +405,8 @@ function App() {
         }
       }
     }, [selectedNotebookId, addToast]),
-  });
+    !!selectedNotebookId,
+  );
 
   useEffect(() => {
     // Check for saved theme preference
