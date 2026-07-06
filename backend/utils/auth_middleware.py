@@ -90,9 +90,15 @@ class AppTokenAuthMiddleware(BaseHTTPMiddleware):
 
         provided = request.headers.get(HEADER_NAME, "")
         if not provided or not hmac.compare_digest(expected, provided):
+            # A WRONG (vs missing) token right after startup is almost always a
+            # client holding the PREVIOUS launch's token — the per-launch token
+            # rotated, and both the webview (api.ts) and the extension
+            # (tokenFetch) are DESIGNED to catch this 401 and re-bootstrap once.
+            # Expected once per client per backend (re)start; say so in the log
+            # instead of reading like a break-in.
             logger.warning(
                 f"[auth] {request.method} {path}: "
-                f"{'invalid token' if provided else 'missing header'} "
+                f"{'stale/invalid token — 401; client should auto-refresh (expected once per client after a backend restart)' if provided else 'missing header'} "
                 f"({'enforce' if self.enforce else 'warn-only'})"
             )
             if self.enforce:

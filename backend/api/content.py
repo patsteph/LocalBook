@@ -123,7 +123,7 @@ def _clean_llm_output(text: str) -> str:
     # Remove individual paragraphs that are degenerate (low unique trigram ratio
     # OR high filler-word density).
     # This catches phrase-level loops that sentence/paragraph exact-match misses.
-            paragraphs2 = [p.strip() for p in text.split('\n\n') if p.strip()]
+    paragraphs2 = [p.strip() for p in text.split('\n\n') if p.strip()]
     if len(paragraphs2) > 2:
         kept = []
         removed = 0
