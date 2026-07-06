@@ -327,7 +327,7 @@ const OpenEndedQuestion: React.FC<{ index: number; q: StudioQuestion }> = ({ ind
           onChange={e => !revealed && setValue(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') handleCheck(); }}
           disabled={revealed}
-          placeholder={q.question_type === 'fill_in_the_blank' ? 'Fill in the blank...' : 'Identify and correct the error...'}
+          placeholder={q.question_type === 'fill_in_the_blank' ? 'Fill in the blank...' : q.question_type === 'spot_the_error' ? 'Identify and correct the error...' : 'Type your answer...'}
           className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 text-sm disabled:opacity-60 mb-2"
         />
       )}
@@ -365,8 +365,15 @@ export const StudioQuizBlock: React.FC<{ json: string }> = ({ json }) => {
   return (
     <div className="space-y-3 py-1">
       {questions.map((q, i) => {
-        if (OPEN_ENDED_CANVAS.has(q.question_type) || q.question_type === 'visual_diagram') {
-          // visual_diagram = a diagram with a blanked label → open-answer flow.
+        // 2026-07-06 fix: a question with NO usable options (e.g. the backend's
+        // 'justify' type, or a malformed MC) previously fell into InlineQuestion
+        // and rendered ZERO answer buttons — an unanswerable question. Route:
+        // known open-ended types, visual_diagram, AND anything without >=2
+        // options (true_false synthesizes its own) to the open-answer flow,
+        // which grades free text server-side for any question_type.
+        const optionCount = q.options?.length ?? 0;
+        const isChoice = optionCount >= 2 || q.question_type === 'true_false';
+        if (OPEN_ENDED_CANVAS.has(q.question_type) || q.question_type === 'visual_diagram' || !isChoice) {
           return <OpenEndedQuestion key={q.id || i} index={i} q={q} />;
         }
         // Choice-based: adapt to CachedQuestion shape for InlineQuestion

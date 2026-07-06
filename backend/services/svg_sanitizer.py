@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Allowed SVG element tags (compared lowercased). Anything else is unwrapped
 # (children/text kept, wrapper dropped).
 _ALLOWED_TAGS = {
+    "image",  # data:image/* href only — enforced in _scrub_attrs (Klein hero rasters)
     "svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline",
     "polygon", "text", "tspan", "textpath", "defs", "marker", "lineargradient",
     "radialgradient", "stop", "clippath", "use", "symbol", "pattern", "mask",
@@ -30,8 +31,11 @@ _ALLOWED_TAGS = {
     "fecolormatrix", "fedropshadow",
 }
 # Hard XSS / exfiltration vectors — decompose the whole subtree.
+# NOTE (2026-07-06): "image" is NOT dropped — Klein full-bleed/hero visuals embed
+# their raster as <image href="data:image/png;base64,...">. _scrub_attrs allows
+# image hrefs ONLY when they are data:image/* URIs (no external fetch, no JS).
 _DROP_TAGS = {
-    "script", "foreignobject", "image", "a", "animate", "animatetransform",
+    "script", "foreignobject", "a", "animate", "animatetransform",
     "animatemotion", "set", "iframe", "object", "embed", "handler", "audio",
     "video", "link", "meta", "base", "style-import",
 }
@@ -43,7 +47,12 @@ _STYLE_IMPORT_RE = re.compile(r"@import\b[^;]*;?", re.IGNORECASE)
 _STYLE_EXPRESSION_RE = re.compile(r"expression\s*\([^)]*\)", re.IGNORECASE)
 _JS_URI_RE = re.compile(r"(javascript:|vbscript:|data\s*:\s*text/html)", re.IGNORECASE)
 
-_MAX_SVG_BYTES = 200_000
+# Cap raised 200KB→8MB (2026-07-06): Klein hero SVGs embed a ~1MB+ base64 PNG;
+# the old cap TRUNCATED them mid-base64 → guaranteed-invalid SVG (the "Invalid
+# SVG" canvas error). Oversize input is now REJECTED outright (returns ""),
+# never truncated — truncation always corrupts.
+_MAX_SVG_BYTES = 8_000_000
+_DATA_IMAGE_RE = re.compile(r"^\s*data:image/(png|jpe?g|gif|webp);base64,", re.IGNORECASE)
 
 
 def sanitize_svg(svg: str) -> str:
@@ -51,7 +60,7 @@ def sanitize_svg(svg: str) -> str:
     if not svg or "<svg" not in svg.lower():
         return ""
     if len(svg) > _MAX_SVG_BYTES:
-        svg = svg[:_MAX_SVG_BYTES]
+        return ""  # reject, never truncate (truncation corrupts base64/markup)
 
     try:
         from bs4 import BeautifulSoup
@@ -112,9 +121,13 @@ def _scrub_attrs(tag) -> None:
             del tag.attrs[attr]
             continue
         if low in ("href", "xlink:href"):
-            # Only local anchors (#id) for <use>/gradient references.
-            if not val.lstrip().startswith("#"):
-                del tag.attrs[attr]
+            # Local anchors (#id) for <use>/gradients; and on <image> elements
+            # ONLY, inline data:image/* rasters (Klein hero) — no external URLs.
+            if val.lstrip().startswith("#"):
+                continue
+            if tag.name and tag.name.lower() == "image" and _DATA_IMAGE_RE.match(val):
+                continue
+            del tag.attrs[attr]
             continue
         if low == "style":
             cleaned = _STYLE_URL_RE.sub("", val)

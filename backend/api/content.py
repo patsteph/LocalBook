@@ -1165,6 +1165,60 @@ async def _inject_doc_visuals(content: str, topic_focus: str, source_context: st
         if not isinstance(parsed, list):
             return content
 
+        def _num(v):
+            """Coerce chart values: 42, 42.5, '42', '42%', '$1,200' → float; else None."""
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return float(v)
+            if isinstance(v, str):
+                cleaned = v.strip().replace(",", "").replace("%", "").replace("$", "")
+                try:
+                    return float(cleaned)
+                except ValueError:
+                    return None
+            return None
+
+        def _make_plottable(obj: dict):
+            """Ensure the chart will actually DRAW: every data row must carry the
+            x-axis key + NUMERIC values under every series key. gemma often
+            mismatches keys or emits '42%' strings — Recharts then renders a
+            frame + legend with an EMPTY plot area (the reported bug). Repairs:
+            numeric coercion, and single-series key remap when the data rows use
+            a different (single) numeric key. Returns fixed obj or None (drop —
+            no chart beats an empty frame)."""
+            x_key = (obj.get("x_axis") or {}).get("key") or "label"
+            s_keys = [s.get("key") for s in (obj.get("series") or []) if isinstance(s, dict) and s.get("key")]
+            rows = [r for r in (obj.get("data") or []) if isinstance(r, dict)]
+            if not s_keys or not rows:
+                return None
+            # Single-series remap: if NO row has the series key but rows share
+            # exactly one other numeric key, rename it to the series key.
+            if len(s_keys) == 1 and not any(s_keys[0] in r for r in rows):
+                cand = {k for k in rows[0] if k != x_key and _num(rows[0].get(k)) is not None}
+                for r in rows[1:]:
+                    cand &= {k for k in r if k != x_key and _num(r.get(k)) is not None}
+                if len(cand) == 1:
+                    old = cand.pop()
+                    rows = [{**{kk: vv for kk, vv in r.items() if kk != old}, s_keys[0]: r[old]} for r in rows]
+            fixed = []
+            for r in rows:
+                if x_key not in r:
+                    continue
+                new_row = {x_key: str(r[x_key])}
+                ok = True
+                for k in s_keys:
+                    n = _num(r.get(k))
+                    if n is None:
+                        ok = False
+                        break
+                    new_row[k] = n
+                if ok:
+                    fixed.append(new_row)
+            if len(fixed) < 2:
+                return None  # <2 plottable points isn't a chart
+            obj = dict(obj)
+            obj["data"] = fixed
+            return obj
+
         fences: List[str] = []
         for obj in parsed[:2]:
             if not isinstance(obj, dict):
@@ -1175,6 +1229,10 @@ async def _inject_doc_visuals(content: str, topic_focus: str, source_context: st
                 continue
             if not cfg.series or not cfg.data:
                 continue  # empty charts are dropped downstream anyway
+            obj = _make_plottable(obj)
+            if obj is None:
+                logger.info("[STUDIO] visual injection: chart dropped (data keys/values not plottable)")
+                continue
             fences.append("```lb-chart\n" + _json.dumps(obj, ensure_ascii=False) + "\n```")
 
         if not fences:
