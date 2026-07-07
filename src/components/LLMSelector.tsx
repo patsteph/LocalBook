@@ -470,7 +470,9 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                   {switchMsg.text}
                 </div>
               )}
-              <div className="flex gap-3">
+              {/* 2×2 grid (Main/Fast on top, Vision/Embeddings below) instead of
+                  four cramped columns across — reads far better in the modal. */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {(['main', 'fast', 'vision', 'embeddings'] as Role[]).map(renderRoleColumn)}
               </div>
               <div className="flex items-center justify-between pt-1 gap-3 flex-wrap">

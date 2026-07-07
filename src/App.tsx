@@ -1222,7 +1222,7 @@ function App() {
         </Modal>
 
         {/* LLM Selector Modal */}
-        <Modal isOpen={showLLMModal} onClose={() => setShowLLMModal(false)} title="Select AI Brain" size="lg">
+        <Modal isOpen={showLLMModal} onClose={() => setShowLLMModal(false)} title="Select AI Brain" size="xl">
           <LLMSelector selectedProvider={selectedLLMProvider} onProviderChange={setSelectedLLMProvider} />
         </Modal>
 
