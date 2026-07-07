@@ -24,7 +24,9 @@ async def get_tray_status():
     out = {
         "ok": True,
         "models": {"main": "", "fast": "", "vision": ""},
-        "metrics": {"total_tokens": 0, "tokens_per_sec": 0.0, "avg_response_ms": 0},
+        # Aligned 1:1 with the Health Portal's counters (same rag_metrics source)
+        # so the two never disagree: Tokens In/Out + AVG Tokens/Sec + Avg Latency.
+        "metrics": {"tokens_in": 0, "tokens_out": 0, "tokens_per_sec": 0.0, "avg_latency_ms": 0},
         "enrichment": {"queue_depth": 0},
     }
     try:
@@ -40,11 +42,12 @@ async def get_tray_status():
     try:
         from services.rag_metrics import rag_metrics
         ts = rag_metrics.get_token_stats() or {}
-        agg = rag_metrics.get_aggregate_metrics(24)
+        hs = rag_metrics.get_health_summary() or {}
         out["metrics"] = {
-            "total_tokens": int(ts.get("total_tokens", 0) or 0),
+            "tokens_in": int(ts.get("prompt_tokens", 0) or 0),
+            "tokens_out": int(ts.get("completion_tokens", 0) or 0),
             "tokens_per_sec": float(ts.get("avg_tokens_per_sec", 0) or 0),
-            "avg_response_ms": int(round(getattr(agg, "avg_total_time_ms", 0) or 0)),
+            "avg_latency_ms": int(round(hs.get("avg_latency_ms", 0) or 0)),
         }
     except Exception as e:
         logger.debug(f"[system.tray] metrics snapshot failed: {e}")

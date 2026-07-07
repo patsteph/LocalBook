@@ -46,6 +46,11 @@ EXEMPT_PATHS = frozenset({
     "/health/portal",
     "/auth/bootstrap",
     "/favicon.ico",
+    # The macOS menu-bar tray polls this from a native (non-webview) HTTP client
+    # that can't attach the per-launch token. It's a read-only local status
+    # snapshot (models + token counters + queue depth) — same trust class as
+    # /health — so exempt it. Without this the tray 401s and shows all-zeros.
+    "/system/tray-status",
 })
 
 # Path prefixes that bypass auth. Used for media/file endpoints the browser

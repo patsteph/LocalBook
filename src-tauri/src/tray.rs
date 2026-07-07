@@ -20,16 +20,20 @@ struct Models {
     #[serde(default)]
     main: String,
     #[serde(default)]
+    fast: String,
+    #[serde(default)]
     vision: String,
 }
 #[derive(Deserialize, Default)]
 struct Metrics {
     #[serde(default)]
-    total_tokens: u64,
+    tokens_in: u64,
+    #[serde(default)]
+    tokens_out: u64,
     #[serde(default)]
     tokens_per_sec: f64,
     #[serde(default)]
-    avg_response_ms: u64,
+    avg_latency_ms: u64,
 }
 #[derive(Deserialize, Default)]
 struct Enrich {
@@ -52,12 +56,12 @@ pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
     let models = MenuItem::with_id(app, "models", "Models: …", false, None::<&str>)?;
     let metrics = MenuItem::with_id(app, "metrics", "Metrics: …", false, None::<&str>)?;
     let synth = MenuItem::with_id(app, "synth", "🧠 …", false, None::<&str>)?;
-    let open = MenuItem::with_id(app, "open", "Open LocalBook", true, None::<&str>)?;
-    let portal = MenuItem::with_id(app, "portal", "Open Health Portal", true, None::<&str>)?;
-    let labs = MenuItem::with_id(app, "labs", "LLM Locker / Evaluator (Labs)", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Launch App", true, None::<&str>)?;
+    let portal = MenuItem::with_id(app, "portal", "Health Portal", true, None::<&str>)?;
+    let labs = MenuItem::with_id(app, "labs", "Labs (LLM)", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
-    let restart = MenuItem::with_id(app, "restart", "Restart Backend", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit LocalBook", true, None::<&str>)?;
+    let restart = MenuItem::with_id(app, "restart", "🔄 Backend", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
@@ -73,9 +77,12 @@ pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .tooltip("LocalBook")
         .on_menu_event(|app, event| on_menu(app, event.id.as_ref()));
-    // Reuse the app icon as a template image (macOS tints it for light/dark).
+    // Use the FULL-COLOR LocalBook icon (royal-blue book + grey pages). NOT a
+    // template — template mode flattens it to monochrome. A colored icon renders
+    // identically in light + dark menu bars (macOS doesn't invert it), and the
+    // blue/purple outline reads on both.
     if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon).icon_as_template(true);
+        builder = builder.icon(icon).icon_as_template(false);
     }
     builder.build(app)?;
 
@@ -103,31 +110,37 @@ async fn update(
         .timeout(Duration::from_secs(4))
         .send()
         .await;
+    // Only treat a real 2xx with a parseable body as "up" — a 401/500 must NOT
+    // masquerade as running (serde(default) would otherwise parse an error body
+    // into an all-zeros Status). This is what made the top half read as broken.
     if let Ok(r) = resp {
-        if let Ok(st) = r.json::<Status>().await {
-            let _ = status.set_text("● LocalBook — running (:8000)");
-            let _ = models.set_text(format!(
-                "Main: {}  ·  Vision: {}",
-                short(&st.models.main),
-                short(&st.models.vision)
-            ));
-            let _ = metrics.set_text(format!(
-                "{} tok · {:.0} tok/s · {} ms avg",
-                human(st.metrics.total_tokens),
-                st.metrics.tokens_per_sec,
-                st.metrics.avg_response_ms
-            ));
-            let _ = synth.set_text(if st.enrichment.queue_depth > 0 {
-                format!("🧠 Synthesizing — {} in queue", st.enrichment.queue_depth)
-            } else {
-                "🧠 Idle".to_string()
-            });
-            return;
+        if r.status().is_success() {
+            if let Ok(st) = r.json::<Status>().await {
+                let _ = status.set_text("🟢 LocalBook running (:8000)");
+                let _ = models.set_text(format!(
+                    "Main {} · Fast {} · Vision {}",
+                    short(&st.models.main),
+                    short(&st.models.fast),
+                    short(&st.models.vision)
+                ));
+                let total = st.metrics.tokens_in + st.metrics.tokens_out;
+                let mut line = format!("{} tok · {:.0} tok/s", human(total), st.metrics.tokens_per_sec);
+                if st.metrics.avg_latency_ms > 0 {
+                    line.push_str(&format!(" · {}", latency(st.metrics.avg_latency_ms)));
+                }
+                let _ = metrics.set_text(line);
+                let _ = synth.set_text(if st.enrichment.queue_depth > 0 {
+                    format!("🧠 Synthesizing — {} in queue", st.enrichment.queue_depth)
+                } else {
+                    "🧠 Idle".to_string()
+                });
+                return;
+            }
         }
     }
     // Backend unreachable → clear the metrics + show stopped.
-    let _ = status.set_text("○ LocalBook — backend stopped");
-    let _ = models.set_text("Main: —");
+    let _ = status.set_text("🔴 LocalBook — backend stopped");
+    let _ = models.set_text("Main —");
     let _ = metrics.set_text("");
     let _ = synth.set_text("");
 }
@@ -171,5 +184,14 @@ fn human(n: u64) -> String {
         format!("{:.0}k", n as f64 / 1e3)
     } else {
         n.to_string()
+    }
+}
+
+// Match the Health Portal's latency formatting (seconds once past 1s).
+fn latency(ms: u64) -> String {
+    if ms >= 1000 {
+        format!("{:.1}s avg", ms as f64 / 1000.0)
+    } else {
+        format!("{}ms avg", ms)
     }
 }
