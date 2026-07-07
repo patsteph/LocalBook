@@ -122,6 +122,42 @@ def _parse_param_count_b(param_size: str) -> float:
     return parse_param_count_b(param_size)
 
 
+# ── Shared, cached raw /api/show (reused by the probe AND run_profile) ────────────
+_SHOW_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def ollama_show(model: str, base_url: Optional[str] = None, timeout: float = 5.0) -> Optional[dict]:
+    """POST /api/show for `model`, cached (TTL). Returns the raw payload or None
+    when Ollama is unreachable / the model isn't pulled."""
+    if not model:
+        return None
+    if base_url is None:
+        try:
+            from config import settings
+            base_url = settings.ollama_base_url
+        except Exception:
+            base_url = "http://localhost:11434"
+    base_url = base_url.rstrip("/")
+    key = f"{base_url}::{model}"
+    hit = _SHOW_CACHE.get(key)
+    if hit and (time.time() - hit[0]) < _TTL:
+        return hit[1]
+    try:
+        req = urllib.request.Request(
+            f"{base_url}/api/show",
+            data=json.dumps({"name": model}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+        _SHOW_CACHE[key] = (time.time(), data)
+        return data
+    except Exception as e:
+        logger.debug(f"[capability_probe] /api/show failed for {model!r}: {e}")
+        return None
+
+
 # ── Ollama implementation ────────────────────────────────────────────────────────
 class OllamaCapabilityProbe:
     provider = "ollama"
@@ -137,18 +173,7 @@ class OllamaCapabilityProbe:
         self.timeout = timeout
 
     def _show(self, model: str) -> Optional[dict]:
-        try:
-            req = urllib.request.Request(
-                f"{self.base_url}/api/show",
-                data=json.dumps({"name": model}).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return json.loads(resp.read().decode())
-        except Exception as e:  # unreachable / not pulled → caller falls back
-            logger.debug(f"[capability_probe] /api/show failed for {model!r}: {e}")
-            return None
+        return ollama_show(model, base_url=self.base_url, timeout=self.timeout)
 
     @staticmethod
     def from_show(model: str, data: dict) -> ProbedCapabilities:
