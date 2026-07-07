@@ -9,8 +9,42 @@ import json
 import time
 from typing import Optional
 from evaluator.models import EvalResult, _score_to_grade
+from evaluator import output_filters
 import logging
 logger = logging.getLogger(__name__)
+
+
+# ─── RunProfile-aware normalization (Locker rebuild — build C) ────────────────
+# THE fix for "any model that isn't olmo/gemma scores terribly": raw output used
+# to go straight into the scorers, so a thinking model's <think> blocks and
+# differently-templated wrapping tanked format/keyword/JSON checks. We now
+# normalize BEFORE every score using the active model's RunProfile filters
+# (lm-eval-harness's filters-before-scoring principle). One eval run tests ONE
+# model, so a single active profile is correct; it's set in run_full_evaluation.
+_ACTIVE_PROFILE = None
+
+
+def set_active_run_profile(profile) -> None:
+    """Set the RunProfile whose normalize filters apply to subsequent scoring."""
+    global _ACTIVE_PROFILE
+    _ACTIVE_PROFILE = profile
+
+
+def clear_active_run_profile() -> None:
+    global _ACTIVE_PROFILE
+    _ACTIVE_PROFILE = None
+
+
+def _normalize(output: str) -> str:
+    """Strip reasoning traces (and any non-JSON active filters) so scoring sees the
+    model's FINAL answer. Defaults to strip_thinking even with no active profile —
+    a no-op on plain text, so always safe. The 'json' filter is excluded here; JSON
+    extraction is applied explicitly inside score_json_validity."""
+    if not output:
+        return output or ""
+    filters = getattr(_ACTIVE_PROFILE, "normalize_filters", None) or ["strip_thinking"]
+    filters = [f for f in filters if f != "json"]
+    return output_filters.apply_filters(output, filters)
 
 
 # ─── Deterministic Scoring ───────────────────────────────────────────────────
@@ -21,6 +55,7 @@ def score_must_contain(output: str, expected_facts: list[str], case_insensitive:
         return 100
     if not output:
         return 0
+    output = _normalize(output)
 
     text = output.lower() if case_insensitive else output
     found = sum(1 for fact in expected_facts if fact.lower() in text)
@@ -32,7 +67,14 @@ def score_json_validity(output: str) -> tuple[int, str]:
     if not output:
         return 0, "Empty output"
 
-    # Try to extract JSON from output (may have surrounding text)
+    # Build C: strip reasoning first (a thinker's <think> block would otherwise
+    # sit before the JSON), then let the robust extractor find the payload.
+    output = _normalize(output)
+    _extracted = output_filters.extract_json(output)
+    if _extracted is not None:
+        # 100 if the (de-thought) output IS the JSON, else 90 for extract-needed.
+        return (100 if output.strip() == _extracted else 90), ""
+    # Fall through to the legacy graduated checks for partial credit / error text.
     json_str = output.strip()
 
     # Try direct parse
@@ -77,6 +119,7 @@ def score_format_compliance(output: str, expected_format: dict) -> int:
     """
     if not output:
         return 0
+    output = _normalize(output)
 
     score = 100
     penalties = []
@@ -162,6 +205,7 @@ def score_output_length(output: str, min_words: int = 0, max_words: int = 0) -> 
     """Score based on word count being within expected range. Returns 0-100."""
     if not output:
         return 0
+    output = _normalize(output)
 
     word_count = len(output.split())
 
@@ -180,6 +224,7 @@ def score_has_citations(output: str, min_citations: int = 1) -> int:
     """Score based on presence of citation markers [1], [2], etc."""
     if not output:
         return 0
+    output = _normalize(output)
     citations = re.findall(r'\[(\d+)\]', output)
     unique_citations = len(set(citations))
     if unique_citations >= min_citations:
@@ -193,6 +238,7 @@ def score_has_headings(output: str, min_headings: int = 1) -> int:
     """Score based on presence of markdown headings."""
     if not output:
         return 0
+    output = _normalize(output)
     headings = re.findall(r'^#{1,4}\s+\S', output, re.MULTILINE)
     if len(headings) >= min_headings:
         return 100
@@ -214,6 +260,7 @@ async def score_semantic_similarity(answer: str, reference_answer: str) -> int:
     """
     if not answer or not reference_answer:
         return 0
+    answer = _normalize(answer)  # strip reasoning so similarity judges the answer
     try:
         from services.rag_embeddings import encode_async
         import numpy as np
@@ -274,6 +321,8 @@ async def score_faithfulness(answer: str, citations: list[dict], judge_model: st
     
     LLM judge evaluates whether claims in the answer are supported by citations.
     This catches hallucination — the most critical RAG failure mode.
+
+    Build C: the answer is normalized (reasoning stripped) before judging.
     """
     if not answer or not citations:
         return 50
@@ -288,7 +337,7 @@ Unfaithful = answer contains information NOT in the context (hallucination).
 Context:
 {context[:2000]}
 
-Answer: {answer[:1500]}
+Answer: {_normalize(answer)[:1500]}
 
 Respond ONLY with JSON: {{"faithful": <0-100>, "reason": "<brief>"}}.
 100 = fully faithful, 50 = mixed, 0 = mostly hallucinated."""
@@ -339,7 +388,7 @@ Evaluate based on: {criteria}
 
 Question: {question}
 
-Answer: {answer[:3000]}
+Answer: {_normalize(answer)[:3000]}
 
 Respond with ONLY a JSON object: {{"score": <0-100>, "reason": "<one sentence>"}}"""
 

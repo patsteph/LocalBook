@@ -155,6 +155,22 @@ async def run_full_evaluation() -> ComboEvalSummary:
         "embedding_model": getattr(settings, "embedding_model", "") or "",
     }
 
+    # Build C (2026-07-07): derive the tested model's RunProfile ONCE and make the
+    # scorer normalize every output through it (strip <think>, extract JSON) BEFORE
+    # scoring — so a thinking / differently-templated model is scored on its final
+    # answer, not penalised for not behaving like olmo/gemma. One run = one model,
+    # so a single active profile is correct. Cleared in the finally below.
+    try:
+        from evaluator.run_profile import derive_run_profile
+        from evaluator import scoring as _scoring
+        _rp = derive_run_profile(combo_snapshot["ollama_model"])
+        _scoring.set_active_run_profile(_rp)
+        print(f"[EVALUATOR] RunProfile: {combo_snapshot['ollama_model']} "
+              f"thinking_capable={_rp.thinking_capable} stops={len(_rp.stop_sequences)} "
+              f"filters={_rp.normalize_filters}")
+    except Exception as _e:
+        print(f"[EVALUATOR] RunProfile derivation skipped (non-fatal): {_e}")
+
     try:
         # ── Pre-flight (memory + all backends the combo uses) ──────────
         from evaluator.preflight import run_preflight, providers_used_summary
@@ -464,6 +480,13 @@ async def run_full_evaluation() -> ComboEvalSummary:
                 await ingestion.cleanup_test_notebook(notebook_id)
             except Exception as ce:
                 print(f"[EVALUATOR] Cleanup error (non-fatal): {ce}")
+
+        # Build C: drop the active RunProfile so scoring outside a run is unbiased.
+        try:
+            from evaluator import scoring as _scoring
+            _scoring.clear_active_run_profile()
+        except Exception:
+            pass
 
         _progress.running = False
         _progress.elapsed_seconds = time.time() - run_start
