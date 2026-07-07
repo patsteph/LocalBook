@@ -273,6 +273,24 @@ function App() {
   const openLLMSelector = useCallback(() => setShowLLMModal(true), []);
   const openEmbeddingSelector = useCallback(() => setShowEmbeddingModal(true), []);
 
+  // Menu-bar tray (tray v1): the Rust tray emits `tray-navigate` with a target so
+  // its quick-links reuse the existing in-app handlers (Locker modal / Settings /
+  // Health Portal). Safe no-op outside Tauri (listen import resolves at runtime).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<string>('tray-navigate', (e) => {
+          if (e.payload === 'labs') openLLMSelector();
+          else if (e.payload === 'settings') openSettings();
+          else if (e.payload === 'portal') openUrl(`${API_BASE_URL}/health/portal`);
+        }),
+      )
+      .then((fn) => { unlisten = fn; })
+      .catch(() => { /* not in Tauri — ignore */ });
+    return () => { if (unlisten) unlisten(); };
+  }, [openLLMSelector, openSettings]);
+
   const toggleDarkMode = useCallback(() => {
     setDarkMode(prev => {
       const next = !prev;

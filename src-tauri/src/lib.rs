@@ -4,6 +4,23 @@ use std::time::Duration;
 use std::path::PathBuf;
 use serde::Serialize;
 
+mod tray;
+
+/// Tray "Restart Backend": kill the running backend (by name/port) and re-spawn.
+/// Lives here (same module as the private lifecycle fns) so tray.rs can call it.
+pub(crate) fn restart_backend_from_tray(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        println!("[Tray] Restarting backend…");
+        kill_existing_backend();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        match start_backend(&app).await {
+            Ok(_) => println!("[Tray] Backend restart requested."),
+            Err(e) => eprintln!("[Tray] Backend restart failed: {e}"),
+        }
+    });
+}
+
 // P0.1b (2026-05-15) → revised P0.1f (2026-05-21): cache the app token in
 // process memory. CHANGED from OnceLock to Mutex<Option<String>> so we
 // can invalidate the cache when the backend restarts (e.g. after a
@@ -1067,6 +1084,11 @@ pub fn run() {
         .setup(|app| {
             let backend_state = setup_backend(&app.handle())?;
             app.manage(backend_state);
+
+            // macOS menu-bar tray companion (tray v1) — status + quick-launch.
+            if let Err(e) = tray::init(&app.handle()) {
+                eprintln!("[Tray] init failed (non-fatal): {e}");
+            }
 
             Ok(())
         })

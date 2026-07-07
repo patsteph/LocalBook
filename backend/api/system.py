@@ -13,6 +13,49 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/tray-status")
+async def get_tray_status():
+    """Compact one-shot status for the macOS menu-bar tray poller (build: tray v1).
+
+    Everything the tray shows in a single cheap call: active models, token totals +
+    throughput + avg response time, and the background-worker queue depth. Never
+    raises — always returns a usable (possibly partial) payload."""
+    from config import settings
+    out = {
+        "ok": True,
+        "models": {"main": "", "fast": "", "vision": ""},
+        "metrics": {"total_tokens": 0, "tokens_per_sec": 0.0, "avg_response_ms": 0},
+        "enrichment": {"queue_depth": 0},
+    }
+    try:
+        main = getattr(settings, "ollama_model", "") or ""
+        from evaluator.model_registry import model_registry
+        out["models"] = {
+            "main": main,
+            "fast": getattr(settings, "ollama_fast_model", "") or "",
+            "vision": model_registry.resolve_vision_model(main, getattr(settings, "vision_model", "") or ""),
+        }
+    except Exception as e:
+        logger.debug(f"[system.tray] models snapshot failed: {e}")
+    try:
+        from services.rag_metrics import rag_metrics
+        ts = rag_metrics.get_token_stats() or {}
+        agg = rag_metrics.get_aggregate_metrics(24)
+        out["metrics"] = {
+            "total_tokens": int(ts.get("total_tokens", 0) or 0),
+            "tokens_per_sec": float(ts.get("avg_tokens_per_sec", 0) or 0),
+            "avg_response_ms": int(round(getattr(agg, "avg_total_time_ms", 0) or 0)),
+        }
+    except Exception as e:
+        logger.debug(f"[system.tray] metrics snapshot failed: {e}")
+    try:
+        from services.enrichment_worker import enrichment_worker
+        out["enrichment"] = {"queue_depth": int(enrichment_worker.queue_depth() or 0)}
+    except Exception as e:
+        logger.debug(f"[system.tray] enrichment snapshot failed: {e}")
+    return out
+
+
 @router.get("/schedule")
 async def get_schedule():
     """Live background-worker schedule/observability snapshot.
