@@ -454,6 +454,7 @@ class OllamaService:
         images: Optional[List[str]] = None,
         keep_alive: Optional[Any] = None,
         voice_modifier: bool = True,
+        think: Optional[bool] = None,  # explicit override of the rag_profile think flag
         respect_rag_profile: bool = True,
         priority: int = PRIORITY_NORMAL,
     ) -> Dict[str, Any]:
@@ -527,8 +528,9 @@ class OllamaService:
             payload["format"] = format
         if images:
             payload["images"] = images
-        if _profile_think is not None:
-            payload["think"] = _profile_think
+        _final_think = think if think is not None else _profile_think
+        if _final_think is not None:
+            payload["think"] = _final_think
 
         client = self._get_client()
         read_timeout = timeout or 600.0
@@ -601,6 +603,7 @@ class OllamaService:
         voice_modifier: bool = True,
         respect_rag_profile: bool = True,
         priority: int = PRIORITY_NORMAL,
+        think: Optional[bool] = None,  # explicit override of the rag_profile think flag
     ) -> Dict[str, Any]:
         """Non-streaming chat call to Ollama /api/chat.
 
@@ -664,8 +667,9 @@ class OllamaService:
             "keep_alive": keep_alive if keep_alive is not None else _keep_alive_for(use_model),
             "options": options,
         }
-        if _profile_think is not None:
-            payload["think"] = _profile_think
+        _final_think = think if think is not None else _profile_think
+        if _final_think is not None:
+            payload["think"] = _final_think
 
         client = self._get_client()
         read_timeout = timeout or 600.0
@@ -792,8 +796,12 @@ class OllamaService:
                     images=[image_b64],
                     voice_modifier=False,
                     priority=priority,
+                    think=False,  # 2026-07-07: gemma4 & other thinking-capable vision
+                    # models route the WHOLE description to the `thinking` field when
+                    # think is on, leaving content empty. We want the description.
                 )
-                return (result.get("message") or {}).get("content", "")
+                _msg = result.get("message") or {}
+                return _msg.get("content") or _msg.get("thinking") or "" 
             else:
                 # Granite / LLaVA — images are top-level in /api/generate.
                 result = await self.generate(
@@ -806,8 +814,9 @@ class OllamaService:
                     images=[image_b64],
                     voice_modifier=False,
                     priority=priority,
+                    think=False,  # see chat path note above
                 )
-                return result.get("response", "")
+                return result.get("response") or result.get("thinking") or "" 
         except Exception as e:
             logger.error(f"[OllamaService] vision_describe FAILED model={model}: {e}")
             return f"Error: {str(e)}"
