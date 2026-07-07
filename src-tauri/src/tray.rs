@@ -51,11 +51,14 @@ struct Status {
 }
 
 pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
-    // Disabled header rows (poll-updated) + action rows.
-    let status = MenuItem::with_id(app, "status", "LocalBook — starting…", false, None::<&str>)?;
-    let models = MenuItem::with_id(app, "models", "Models: …", false, None::<&str>)?;
-    let metrics = MenuItem::with_id(app, "metrics", "Metrics: …", false, None::<&str>)?;
-    let synth = MenuItem::with_id(app, "synth", "🧠 …", false, None::<&str>)?;
+    // Header rows (poll-updated). ENABLED so macOS renders them at full brightness
+    // — disabled items are greyed/near-unreadable; clicking a header is a harmless
+    // no-op (on_menu's default arm ignores these ids).
+    let status = MenuItem::with_id(app, "status", "LocalBook — starting…", true, None::<&str>)?;
+    let models = MenuItem::with_id(app, "models", "Models: …", true, None::<&str>)?;
+    let models2 = MenuItem::with_id(app, "models2", "", true, None::<&str>)?;
+    let metrics = MenuItem::with_id(app, "metrics", "Metrics: …", true, None::<&str>)?;
+    let synth = MenuItem::with_id(app, "synth", "🧠 …", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Launch App", true, None::<&str>)?;
     let portal = MenuItem::with_id(app, "portal", "Health Portal", true, None::<&str>)?;
     let labs = MenuItem::with_id(app, "labs", "Labs (LLM)", true, None::<&str>)?;
@@ -68,8 +71,8 @@ pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::with_items(
         app,
         &[
-            &status, &models, &metrics, &synth, &sep1, &open, &portal, &labs, &settings, &sep2,
-            &restart, &quit,
+            &status, &models, &models2, &metrics, &synth, &sep1, &open, &portal, &labs, &settings,
+            &sep2, &restart, &quit,
         ],
     )?;
 
@@ -86,61 +89,90 @@ pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
     }
     builder.build(app)?;
 
-    // Poll loop — one cheap /system/tray-status call updates the header rows.
-    let (s, m, me, sy) = (status.clone(), models.clone(), metrics.clone(), synth.clone());
+    // Poll loop — /system/tray-status every 5s. DEBOUNCED: a single failed/slow poll
+    // does NOT flip to red (the backend's event loop is briefly busy during LLM work
+    // — a 2–9s stall shouldn't read as "dead"). Only ≥2 consecutive failures show
+    // stopped; a lone blip keeps the last-good state.
+    let (s, m, m2, me, sy) = (status.clone(), models.clone(), models2.clone(), metrics.clone(), synth.clone());
     tauri::async_runtime::spawn(async move {
         let client = reqwest::Client::new();
+        let mut fails: u32 = 0;
         loop {
-            update(&client, &s, &m, &me, &sy).await;
+            match fetch(&client).await {
+                Some(st) => {
+                    fails = 0;
+                    render_up(&s, &m, &m2, &me, &sy, &st);
+                }
+                None => {
+                    fails += 1;
+                    if fails >= 2 {
+                        render_down(&s, &m, &m2, &me, &sy);
+                    }
+                    // else: single blip — leave the last-good state untouched.
+                }
+            }
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     });
     Ok(())
 }
 
-async fn update(
-    client: &reqwest::Client,
+/// Fetch the status. Some(status) only on a real 2xx with a parseable body — a
+/// 401/500 must NOT masquerade as running (serde(default) would parse an error
+/// body into an all-zeros Status). None on any failure. Generous 10s timeout so a
+/// transiently-busy backend isn't misreported.
+async fn fetch(client: &reqwest::Client) -> Option<Status> {
+    let r = client
+        .get("http://localhost:8000/system/tray-status")
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .ok()?;
+    if !r.status().is_success() {
+        return None;
+    }
+    r.json::<Status>().await.ok()
+}
+
+fn render_up(
     status: &MenuItem<Wry>,
     models: &MenuItem<Wry>,
+    models2: &MenuItem<Wry>,
+    metrics: &MenuItem<Wry>,
+    synth: &MenuItem<Wry>,
+    st: &Status,
+) {
+    let _ = status.set_text("🟢 LocalBook running (:8000)");
+    // Two lines keeps the menu narrow (was one very wide row).
+    let _ = models.set_text(format!(
+        "Main: {} · Vision: {}",
+        short(&st.models.main),
+        short(&st.models.vision)
+    ));
+    let _ = models2.set_text(format!("Fast: {}", short(&st.models.fast)));
+    let total = st.metrics.tokens_in + st.metrics.tokens_out;
+    let mut line = format!("{} tok · {:.0} tok/s", human(total), st.metrics.tokens_per_sec);
+    if st.metrics.avg_latency_ms > 0 {
+        line.push_str(&format!(" · {}", latency(st.metrics.avg_latency_ms)));
+    }
+    let _ = metrics.set_text(line);
+    let _ = synth.set_text(if st.enrichment.queue_depth > 0 {
+        format!("🧠 Synthesizing — {} in queue", st.enrichment.queue_depth)
+    } else {
+        "🧠 Idle".to_string()
+    });
+}
+
+fn render_down(
+    status: &MenuItem<Wry>,
+    models: &MenuItem<Wry>,
+    models2: &MenuItem<Wry>,
     metrics: &MenuItem<Wry>,
     synth: &MenuItem<Wry>,
 ) {
-    let resp = client
-        .get("http://localhost:8000/system/tray-status")
-        .timeout(Duration::from_secs(4))
-        .send()
-        .await;
-    // Only treat a real 2xx with a parseable body as "up" — a 401/500 must NOT
-    // masquerade as running (serde(default) would otherwise parse an error body
-    // into an all-zeros Status). This is what made the top half read as broken.
-    if let Ok(r) = resp {
-        if r.status().is_success() {
-            if let Ok(st) = r.json::<Status>().await {
-                let _ = status.set_text("🟢 LocalBook running (:8000)");
-                let _ = models.set_text(format!(
-                    "Main {} · Fast {} · Vision {}",
-                    short(&st.models.main),
-                    short(&st.models.fast),
-                    short(&st.models.vision)
-                ));
-                let total = st.metrics.tokens_in + st.metrics.tokens_out;
-                let mut line = format!("{} tok · {:.0} tok/s", human(total), st.metrics.tokens_per_sec);
-                if st.metrics.avg_latency_ms > 0 {
-                    line.push_str(&format!(" · {}", latency(st.metrics.avg_latency_ms)));
-                }
-                let _ = metrics.set_text(line);
-                let _ = synth.set_text(if st.enrichment.queue_depth > 0 {
-                    format!("🧠 Synthesizing — {} in queue", st.enrichment.queue_depth)
-                } else {
-                    "🧠 Idle".to_string()
-                });
-                return;
-            }
-        }
-    }
-    // Backend unreachable → clear the metrics + show stopped.
     let _ = status.set_text("🔴 LocalBook — backend stopped");
-    let _ = models.set_text("Main —");
+    let _ = models.set_text("Main: —");
+    let _ = models2.set_text("");
     let _ = metrics.set_text("");
     let _ = synth.set_text("");
 }
