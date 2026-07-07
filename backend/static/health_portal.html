@@ -671,156 +671,6 @@
         .grade-c { background: rgba(234, 179, 8, 0.2); color: var(--yellow); }
         .grade-d { background: rgba(249, 115, 11, 0.2); color: #f97316; }
 
-        /* LLM Locker Styles */
-        .locker-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-top: 20px;
-        }
-        .locker-column {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-        .column-title {
-            font-size: 18px;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 8px;
-            padding-bottom: 8px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        .model-card {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 16px;
-            position: relative;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        .model-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
-        .model-card.active {
-            border-color: var(--blue);
-            box-shadow: 0 0 0 2px var(--blue);
-        }
-        .model-card.is-local {
-            border: 2px solid var(--green);
-            background: rgba(34, 197, 94, 0.03);
-        }
-        .model-card.not-installed {
-            opacity: 0.7; /* restore visibility */
-        }
-        .local-badge {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            background: var(--green);
-            color: white;
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 11px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-            font-size: 10px;
-            font-weight: bold;
-            text-transform: uppercase;
-        }
-        .model-main-info {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 12px;
-        }
-        .model-name-title {
-            font-weight: 600;
-            font-size: 15px;
-            margin-bottom: 4px;
-        }
-        .model-vendor {
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-        .model-meta {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-            font-size: 12px;
-            margin-bottom: 16px;
-        }
-        .meta-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .locker-actions {
-            display: flex;
-            gap: 8px;
-        }
-        .swap-btn {
-            flex: 1;
-            padding: 8px;
-            border-radius: 6px;
-            border: 1px solid var(--blue);
-            background: transparent;
-            color: var(--blue);
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .swap-btn:hover:not(:disabled) {
-            background: var(--blue);
-            color: white;
-        }
-        .swap-btn:disabled {
-            border-color: var(--border-color);
-            color: var(--text-secondary);
-            cursor: not-allowed;
-        }
-        .vision-supported-badge {
-            background: #a855f7;
-            color: white;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 9px;
-            font-weight: bold;
-            margin-left: 8px;
-        }
-        .capability-badge {
-            display: inline-block;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 9px;
-            font-weight: bold;
-            margin-left: 4px;
-        }
-        .badge-json { background: rgba(59, 130, 246, 0.2); color: var(--blue); }
-        .badge-eval { background: rgba(234, 179, 8, 0.2); color: #ca8a04; }
-        .model-stats {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 6px;
-            font-size: 11px;
-            color: var(--text-secondary);
-            margin-bottom: 12px;
-        }
-        .model-stats .stat-item {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        .model-subtitle {
-            font-size: 12px;
-            color: var(--text-secondary);
-            margin-bottom: 2px;
-        }
-
-        .grade-f { background: rgba(239, 68, 68, 0.2); color: var(--red); }
     </style>
 </head>
 <body>
@@ -828,7 +678,7 @@
         <header style="position: relative;">
             <h1>🛡️ LocalBook Smoke Screen Portal</h1>
             <p>System Health & Diagnostics</p>
-            <label class="labs-toggle-container" for="labsToggle" title="Show/hide Labs features (LLM Evaluator &amp; Locker)">
+            <label class="labs-toggle-container" for="labsToggle" title="Show/hide Labs features (LLM Evaluator)">
                 <span class="labs-icon">🧪</span>
                 <span class="labs-text">Labs</span>
                 <input type="checkbox" id="labsToggle" onchange="toggleLabs()">
@@ -839,7 +689,6 @@
         <div class="tabs">
             <button id="tabBtn-health" class="tab-btn active" onclick="switchTab('health')">System Health</button>
             <button id="tabBtn-evaluator" class="tab-btn labs-tab hidden" onclick="switchTab('evaluator')">LLM Evaluator</button>
-            <button id="tabBtn-locker" class="tab-btn labs-tab hidden" onclick="switchTab('locker')">LLM Locker</button>
         </div>
         
         <!-- ================= SYSTEM HEALTH TAB ================= -->
@@ -1062,73 +911,6 @@
             </div>
         </div>
 
-        <!-- ================= LLM LOCKER TAB ================= -->
-        <div id="lockerTab" class="tab-content">
-            <div class="evaluator-header">
-                <div>
-                    <h2 class="section-title">LLM Locker</h2>
-                    <p style="color: var(--text-secondary); font-size: 14px; margin-top: 4px;">Dynamic model hot-swapping with hardware guardrails.</p>
-                </div>
-                <div style="display: flex; gap: 12px; align-items: center;">
-                    <button onclick="loadLockerRegistry()" style="padding: 8px 16px; border-radius: 20px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); font-size: 14px; cursor: pointer;">🔄 Refresh</button>
-                </div>
-            </div>
-
-            <!-- Persistent Default Combo -->
-            <div id="defaultComboBar" style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; padding: 12px 20px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                    <span style="font-size: 13px; color: var(--text-secondary);">Startup Default:</span>
-                    <span id="defaultComboLabel" style="font-weight: 600; margin-left: 8px;">Loading...</span>
-                </div>
-                <div style="display: flex; gap: 8px;">
-                    <button id="saveDefaultBtn" onclick="saveCurrentAsDefault()" style="padding: 6px 16px; border-radius: 8px; border: 1px solid var(--blue); background: transparent; color: var(--blue); font-size: 13px; cursor: pointer;">Save Current as Default</button>
-                    <button id="clearDefaultBtn" onclick="clearDefault()" style="padding: 6px 16px; border-radius: 8px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); font-size: 13px; cursor: pointer; display: none;">Reset to OLMo + Phi4</button>
-                </div>
-            </div>
-
-            <!-- v1.8.0: Sidecar status card (llama-server for Bonsai-8B etc.) -->
-            <div id="sidecarCard" style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; padding: 12px 20px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; gap: 12px;">
-                <div style="display: flex; align-items: center; gap: 10px;">
-                    <span id="sidecarDot" style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #999;"></span>
-                    <div>
-                        <div style="font-size: 13px; font-weight: 600;">llama-server Sidecar</div>
-                        <div id="sidecarSubtitle" style="font-size: 12px; color: var(--text-secondary);">Checking…</div>
-                    </div>
-                </div>
-                <div style="display: flex; gap: 8px;">
-                    <button id="sidecarStartBtn" onclick="startSidecar()" style="padding: 6px 14px; border-radius: 8px; border: 1px solid var(--blue); background: transparent; color: var(--blue); font-size: 13px; cursor: pointer;">Start</button>
-                    <button id="sidecarStopBtn" onclick="stopSidecar()" style="padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); font-size: 13px; cursor: pointer;">Stop</button>
-                </div>
-            </div>
-
-            <div class="locker-grid" id="lockerGrid">
-                <div class="locker-column">
-                    <div class="column-title"><span>🚀</span> Main Reasoning Models</div>
-                    <div id="mainModelsList">
-                        <div style="padding: 20px; color: var(--text-secondary);">Loading registry...</div>
-                    </div>
-                </div>
-                <div class="locker-column">
-                    <div class="column-title"><span>⚡</span> Fast Routing Models</div>
-                    <div id="fastModelsList">
-                        <div style="padding: 20px; color: var(--text-secondary);">Loading registry...</div>
-                    </div>
-                </div>
-                <div class="locker-column">
-                    <div class="column-title"><span>👁️</span> Vision Models</div>
-                    <div id="visionModelsList">
-                        <div style="padding: 20px; color: var(--text-secondary);">Loading registry...</div>
-                    </div>
-                </div>
-                <div class="locker-column">
-                    <div class="column-title"><span>🧩</span> Embeddings</div>
-                    <div id="embeddingsList">
-                        <div style="padding: 20px; color: var(--text-secondary);">Loading registry...</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
         <footer>
             <span id="lastChecked">Last checked: Never</span> • LocalBook Health & Evaluator Portal
         </footer>
@@ -1147,11 +929,6 @@
 
             if (tabName === 'evaluator') {
                 loadEvaluatorData();
-            } else if (tabName === 'locker') {
-                loadLockerRegistry();
-                loadDefaultCombo();
-                loadSidecarStatus();
-            }
         }
 
         // ── v1.8.0: Sidecar status + controls ─────────────────────────
@@ -1210,8 +987,6 @@
                 alert(`Network error starting sidecar: ${e.message}`);
             }
             await loadSidecarStatus();
-            // Locker model list depends on sidecar health → refresh
-            await loadLockerRegistry();
         }
 
         async function stopSidecar() {
@@ -1222,17 +997,15 @@
                 alert(`Network error stopping sidecar: ${e.message}`);
             }
             await loadSidecarStatus();
-            await loadLockerRegistry();
         }
 
-        // Labs toggle - show/hide LLM Evaluator and LLM Locker tabs
+        // Labs toggle - show/hide the LLM Evaluator tab
         function toggleLabs() {
             const isEnabled = document.getElementById('labsToggle').checked;
             localStorage.setItem('labsMode', isEnabled ? 'true' : 'false');
 
             const labsTabs = document.querySelectorAll('.labs-tab');
             const evaluatorTab = document.getElementById('evaluatorTab');
-            const lockerTab = document.getElementById('lockerTab');
 
             if (isEnabled) {
                 labsTabs.forEach(tab => tab.classList.remove('hidden'));
@@ -1243,286 +1016,6 @@
                 if (activeTab && activeTab.classList.contains('labs-tab')) {
                     switchTab('health');
                 }
-            }
-        }
-
-        // --- LLM LOCKER LOGIC ---
-        async function loadLockerRegistry() {
-            const mainList = document.getElementById('mainModelsList');
-            const fastList = document.getElementById('fastModelsList');
-            const visionList = document.getElementById('visionModelsList');
-            const embedList = document.getElementById('embeddingsList');
-            mainList.innerHTML = '<div style="padding: 20px; color: var(--text-secondary);">Loading...</div>';
-            fastList.innerHTML = '';
-            visionList.innerHTML = '';
-            embedList.innerHTML = '';
-            try {
-                const [liveRes, hwRes] = await Promise.all([
-                    fetch(`${API_BASE}/settings/ollama/models`),
-                    fetch(`${API_BASE}/evaluator/hardware`)
-                ]);
-
-                const liveData = await liveRes.json();
-                const hwData = await hwRes.json();
-                const currentCombo = hwData.combo;
-                const sysRam = hwData.hardware.memory_gb;
-
-                mainList.innerHTML = '';
-                fastList.innerHTML = '';
-                visionList.innerHTML = '';
-                embedList.innerHTML = '';
-
-                // Live endpoint returns only installed models — sort by display name
-                const models = (liveData.models || []).sort((a, b) =>
-                    a.display_name.localeCompare(b.display_name)
-                );
-
-                if (models.length === 0) {
-                    const empty = '<div style="padding: 20px; color: var(--text-secondary); font-size: 13px;">No models pulled yet</div>';
-                    mainList.innerHTML = empty;
-                    return;
-                }
-
-                models.forEach(model => {
-                    const role = model.suggested_role; // 'main' | 'fast' | 'vision' | 'embeddings'
-                    // Place card in primary role column
-                    const card = createModelCard(model, currentCombo, sysRam, role);
-                    if (role === 'main') {
-                        mainList.appendChild(card);
-                    } else if (role === 'fast') {
-                        fastList.appendChild(card);
-                    } else if (role === 'vision') {
-                        visionList.appendChild(card);
-                    } else if (role === 'embeddings') {
-                        embedList.appendChild(card);
-                    } else {
-                        mainList.appendChild(card); // fallback for unknown roles
-                    }
-                    // Dual-role models (e.g. gemma3:4b is fast+vision) also surface
-                    // in the Vision column with a "Set as Vision" button so users
-                    // can pick them as the standalone vision model independently
-                    // of their primary role.
-                    if (model.also_vision && role !== 'vision') {
-                        const visionCard = createModelCard(model, currentCombo, sysRam, 'vision');
-                        visionList.appendChild(visionCard);
-                    }
-                });
-
-                // Show empty state for columns with no models
-                [mainList, fastList, visionList, embedList].forEach(list => {
-                    if (list.children.length === 0) {
-                        list.innerHTML = '<div style="padding: 16px; color: var(--text-secondary); font-size: 12px;">No models in this category</div>';
-                    }
-                });
-
-                // Attach event listeners
-                document.querySelectorAll('.swap-btn').forEach(btn => {
-                    btn.onclick = (e) => executeSwap(e.target.dataset.model, e.target.dataset.role, e.target);
-                });
-
-            } catch (e) {
-                console.error("Failed to load locker", e);
-                mainList.innerHTML = '<div style="padding: 20px; color: var(--red);">Failed to load models — is Ollama running?</div>';
-            }
-        }
-
-        // Origin country → flag emoji map
-        const COUNTRY_FLAGS = {US:'🇺🇸',CN:'🇨🇳',FR:'🇫🇷',DE:'🇩🇪',CA:'🇨🇦','US/EU':'🇺🇸','FR/US':'🇫🇷'};
-
-        function formatCtx(ctx) {
-            if (!ctx || ctx <= 0) return '';
-            if (ctx >= 1000) return Math.round(ctx / 1024) + 'K';
-            return ctx.toString();
-        }
-
-        function createModelCard(model, currentCombo, sysRam, displayRole) {
-            // displayRole controls which column-specific button label / api role
-            // to render. Defaults to model.suggested_role for backward compat.
-            const role = displayRole || model.suggested_role;
-            const card = document.createElement('div');
-            card.className = 'model-card is-local';
-
-            // Use backend's active_as (handles ":latest" normalization) with combo fallback
-            const isMainActive = model.active_as === 'main' || currentCombo.main_model === model.name;
-            const isFastActive = model.active_as === 'fast' || currentCombo.fast_model === model.name;
-            const isEmbedActive = model.active_as === 'embeddings' || currentCombo.embedding_model === model.name;
-            const isVisionActive = model.active_as === 'vision' || currentCombo.vision_model === model.name;
-            // For the active-card highlight: only highlight the column variant
-            // that matches the model's currently-active role. Otherwise a model
-            // that's active as Fast would also show "active" in its Vision card.
-            let columnIsActive = false;
-            if (role === 'main') columnIsActive = isMainActive;
-            else if (role === 'fast') columnIsActive = isFastActive;
-            else if (role === 'vision') columnIsActive = isVisionActive;
-            else if (role === 'embeddings') columnIsActive = isEmbedActive;
-
-            if (columnIsActive) card.classList.add('active');
-
-            const ramColor = model.ram_required_gb > sysRam ? 'var(--red)' : 'inherit';
-            const ramWarning = model.ram_required_gb > sysRam ? ' ⚠️' : '';
-            const apiRole = role === 'main' ? 'main_model'
-                          : role === 'fast' ? 'fast_model'
-                          : role === 'vision' ? 'vision_model'
-                          : role === 'embeddings' ? 'embedding_model'
-                          : 'main_model';
-            // activeLabel is shown only in the column matching the active role
-            const activeLabel = columnIsActive
-                ? (role === 'main' ? 'Main Active'
-                  : role === 'fast' ? 'Fast Active'
-                  : role === 'vision' ? 'Vision Active'
-                  : role === 'embeddings' ? 'Embed Active'
-                  : null)
-                : null;
-
-            // Subtitle line: vendor · params
-            const flag = COUNTRY_FLAGS[model.origin_country] || '';
-            const vendorStr = model.vendor || 'Community';
-            const paramStr = model.parameter_count ? ` · ${model.parameter_count} params` : '';
-            const subtitle = `${flag ? flag + ' ' : ''}${vendorStr}${paramStr}`;
-
-            // Capability badges
-            let badges = '';
-            if (model.supports_vision) badges += '<span class="vision-supported-badge">VISION</span>';
-            if (model.supports_json_mode) badges += '<span class="capability-badge badge-json">JSON</span>';
-            if (!model.in_registry) badges += '<span style="font-size:10px;background:#444;padding:1px 5px;border-radius:4px;margin-left:4px;">Community</span>';
-
-            // Context window display
-            const ctxStr = formatCtx(model.context_window);
-
-            // Eval score
-            const evalHtml = model.eval_score > 0
-                ? `<div class="stat-item"><span class="capability-badge badge-eval">⭐ ${model.eval_score.toFixed(1)}</span> tested</div>`
-                : `<div class="stat-item" style="opacity:0.5">Not tested</div>`;
-
-            // Quantization
-            const quantStr = model.quantization ? model.quantization : '';
-
-            // Swap button — every column (including Vision) is selectable.
-            const btnLabel = activeLabel || (
-                role === 'embeddings' ? 'Set as Embed'
-                : role === 'fast' ? 'Set as Fast'
-                : role === 'vision' ? 'Set as Vision'
-                : 'Set as Main'
-            );
-            const actionsHtml = `<div class="locker-actions">
-                <button class="swap-btn" data-model="${model.name}" data-role="${apiRole}"
-                    ${columnIsActive || model.ram_required_gb > sysRam ? 'disabled' : ''}>
-                    ${btnLabel}
-                </button>
-            </div>`;
-
-            card.innerHTML = `
-                <div class="local-badge">Local</div>
-                <div class="model-main-info">
-                    <div>
-                        <div class="model-name-title">${model.display_name} ${badges}</div>
-                        <div class="model-subtitle">${subtitle}</div>
-                    </div>
-                </div>
-                <div class="model-stats">
-                    <div class="stat-item">💾 ${model.size_gb} GB${quantStr ? ' · ' + quantStr : ''}</div>
-                    <div class="stat-item" style="color:${ramColor}">🧠 ${model.in_registry ? '' : '~'}${model.ram_required_gb} GB RAM${ramWarning}</div>
-                    ${ctxStr ? `<div class="stat-item">📐 ${ctxStr} ctx</div>` : '<div></div>'}
-                    ${evalHtml}
-                </div>
-                ${actionsHtml}
-            `;
-            return card;
-        }
-
-        async function executeSwap(modelName, role, btn) {
-            const originalText = btn.innerText;
-            btn.innerText = '🔄 Swapping...';
-            btn.disabled = true;
-
-            try {
-                const res = await fetch(`${API_BASE}/evaluator/swap`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ target_model: modelName, role: role })
-                });
-                
-                const data = await res.json();
-                if (res.ok) {
-                    alert(`Success: ${data.message}\nLocalBook settings updated.`);
-                    location.reload(); 
-                } else {
-                    alert(`Swap Failed: ${data.detail}`);
-                    btn.innerText = originalText;
-                    btn.disabled = false;
-                }
-            } catch (e) {
-                alert("Network error during swap. Ensure Ollama is running.");
-                btn.innerText = originalText;
-                btn.disabled = false;
-            }
-        }
-        
-        // --- DEFAULT COMBO MANAGEMENT ---
-        async function loadDefaultCombo() {
-            try {
-                const res = await fetch(`${API_BASE}/evaluator/save-default`);
-                const data = await res.json();
-                const label = document.getElementById('defaultComboLabel');
-                const clearBtn = document.getElementById('clearDefaultBtn');
-                
-                if (data.has_custom_default) {
-                    label.textContent = `${data.combo.main_model} + ${data.combo.fast_model}`;
-                    label.style.color = 'var(--blue)';
-                    clearBtn.style.display = 'inline-block';
-                } else {
-                    label.textContent = 'olmo-3:7b-instruct + phi4-mini:latest (built-in)';
-                    label.style.color = 'var(--text-secondary)';
-                    clearBtn.style.display = 'none';
-                }
-            } catch (e) {
-                console.error("Failed to load default combo", e);
-            }
-        }
-        
-        async function saveCurrentAsDefault() {
-            if (!confirm('Save the current active models as your permanent startup default?\n\nThis means on next app restart, these models will be loaded automatically.')) return;
-            
-            try {
-                const hwRes = await fetch(`${API_BASE}/evaluator/hardware`);
-                const hwData = await hwRes.json();
-                
-                const res = await fetch(`${API_BASE}/evaluator/save-default`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        main_model: hwData.combo.main_model,
-                        fast_model: hwData.combo.fast_model,
-                        vision_model: hwData.combo.vision_model
-                    })
-                });
-                
-                const data = await res.json();
-                if (res.ok) {
-                    alert(`✅ ${data.message}`);
-                    loadDefaultCombo();
-                } else {
-                    alert(`❌ Failed: ${data.detail}`);
-                }
-            } catch (e) {
-                alert("Network error saving default combo.");
-            }
-        }
-        
-        async function clearDefault() {
-            if (!confirm('Reset startup default back to OLMo + Phi4?')) return;
-            
-            try {
-                const res = await fetch(`${API_BASE}/evaluator/save-default`, { method: 'DELETE' });
-                const data = await res.json();
-                if (res.ok) {
-                    alert(`✅ ${data.message}`);
-                    loadDefaultCombo();
-                } else {
-                    alert(`❌ Failed: ${data.detail}`);
-                }
-            } catch (e) {
-                alert("Network error clearing default combo.");
             }
         }
 
