@@ -302,6 +302,42 @@ async def get_ollama_models():
                 # Parameter count: registry > Ollama metadata > name parse
                 param_count = (reg.parameter_count if reg else "") or _extract_param_count(name, show)
 
+                # Build E (2026-07-07): probe-derived capabilities + capability-based
+                # role eligibility + RAM-fit on THIS Mac, built from the already-
+                # fetched /api/show (no extra call). Lets the Locker UI show a model
+                # in EVERY column it's eligible for (not one size-based column) +
+                # capability badges + a fits/tight/over chip.
+                _caps_flags = {"vision": _vision, "embedding": False,
+                               "tools": False, "thinking": False, "audio": False}
+                _supported_roles = list(reg.supported_roles) if (reg and reg.supported_roles) else []
+                _ram_fit = None
+                try:
+                    from evaluator.capability_probe import OllamaCapabilityProbe
+                    from evaluator import ram_fit as _ramfit
+                    from evaluator.hardware_profiler import get_hardware_profile as _ghp
+                    _pc = OllamaCapabilityProbe.from_show(name, show)
+                    _caps_flags = {"vision": _vision or _pc.vision, "embedding": _pc.embedding,
+                                   "tools": _pc.tools, "thinking": _pc.thinking, "audio": _pc.audio}
+                    for _r in _pc.roles():
+                        if _r not in _supported_roles:
+                            _supported_roles.append(_r)
+                    _total_ram = float(getattr(_ghp(), "memory_gb", 0) or 0)
+                    if _total_ram > 0 and _pc.param_count_b > 0:
+                        # Fit against the DEPLOYED window (RAM-scaled effective cap),
+                        # not the model's native ceiling — the app never runs 131k on
+                        # a 16GB Mac, so a native-ctx KV estimate would falsely say
+                        # "over" for every large-window model.
+                        try:
+                            from services.ollama_service import effective_num_ctx_cap
+                            _deployed_ctx = effective_num_ctx_cap(name) or 8192
+                        except Exception:
+                            _deployed_ctx = 8192
+                        _f = _ramfit.ram_fit(_pc.param_count_b, _pc.quantization, _total_ram, _deployed_ctx)
+                        _ram_fit = {"fits": _f["fits"], "recommendation": _f["recommendation"],
+                                    "weight_gb": _f["weight_gb"], "budget_gb": _f["budget_gb"]}
+                except Exception as _ce:
+                    logger.debug(f"[settings] capability enrichment failed for {name}: {_ce}")
+
                 return {
                     "name": name,
                     "display_name": (reg.display_name if reg else name.split(":")[0].replace("-", " ").title()),
@@ -311,7 +347,10 @@ async def get_ollama_models():
                     "ram_required_gb": ram_required,
                     "context_window": context_window,
                     "suggested_role": suggested_role,
-                    "supports_vision": _vision,
+                    "supported_roles": _supported_roles,
+                    "capabilities": _caps_flags,
+                    "ram_fit": _ram_fit,
+                    "supports_vision": _caps_flags["vision"],
                     "also_vision": _also_vision,
                     "supports_json_mode": (reg.supports_json_mode if reg else False),
                     "vendor": (reg.vendor if reg else "Community"),

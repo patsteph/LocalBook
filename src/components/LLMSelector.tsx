@@ -23,6 +23,11 @@ interface OllamaModel {
   in_registry: boolean;
   // v1.7.0: backend that serves this model — "ollama" (default) or "llama_server" (sidecar)
   provider?: string;
+  // Locker rebuild build E: probe-derived capability truth (may be absent on an
+  // older backend — the UI falls back to suggested_role/supports_vision then).
+  supported_roles?: string[];  // e.g. ["main_model","fast_model","vision_model"]
+  capabilities?: { vision?: boolean; embedding?: boolean; tools?: boolean; thinking?: boolean; audio?: boolean };
+  ram_fit?: { fits: boolean; recommendation: 'ok' | 'tight' | 'over' | 'unknown'; weight_gb: number; budget_gb: number } | null;
 }
 
 interface ActiveModels {
@@ -233,11 +238,45 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     { id: 'google_ai',   name: 'Google AI',    subtitle: 'Gemini 1.5 Flash',   available: availableProviders.google_ai },
   ];
 
+  // Build E: a model appears in EVERY column its CAPABILITIES make it eligible for
+  // (from the probe-derived supported_roles), not one size-classified column — the
+  // frontend half of the "5 models all land in Main" fix. Falls back to the old
+  // suggested_role/also_vision logic when the backend didn't send supported_roles.
   const modelsForRole = (role: Role) => {
-    if (role === 'vision') {
-      return models.filter(m => m.suggested_role === 'vision' || m.also_vision);
-    }
-    return models.filter(m => m.suggested_role === role);
+    const apiRole = ROLE_META[role].api_role; // main_model | fast_model | vision_model | embedding_model
+    return models.filter(m => {
+      if (m.supported_roles && m.supported_roles.length) {
+        return m.supported_roles.includes(apiRole);
+      }
+      // Legacy fallback (older backend response).
+      if (role === 'vision') return m.suggested_role === 'vision' || m.also_vision;
+      return m.suggested_role === role;
+    });
+  };
+
+  const FIT_META: Record<string, { label: string; cls: string; title: string }> = {
+    ok:      { label: '✓ Fits',   cls: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300', title: 'Comfortable fit on this Mac' },
+    tight:   { label: '~ Tight',  cls: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',       title: 'Fits but leaves little headroom on this Mac' },
+    over:    { label: '⚠ Too big', cls: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300',               title: "Exceeds this Mac's memory budget — expect swapping/crashes" },
+    unknown: { label: '', cls: '', title: '' },
+  };
+
+  const renderCapabilityBadges = (m: OllamaModel) => {
+    const c = m.capabilities || {};
+    const badges: Array<[boolean | undefined, string, string, string]> = [
+      [c.vision, '👁 Vision', 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300', 'Understands images'],
+      [c.embedding, '🔤 Embed', 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300', 'Embedding model'],
+      [c.thinking, '🧠 Thinks', 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300', 'Has a reasoning mode'],
+      [c.tools, '🛠 Tools', 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300', 'Supports tool/function calling'],
+      [c.audio, '🎧 Audio', 'bg-teal-100 dark:bg-teal-900/30 text-teal-700 dark:text-teal-300', 'Understands audio'],
+    ];
+    // Fallback to supports_vision when the probe capabilities block is absent.
+    if (!m.capabilities && m.supports_vision) badges[0][0] = true;
+    return badges
+      .filter(([on]) => on)
+      .map(([, label, cls, title], i) => (
+        <span key={i} title={title} className={`px-1.5 py-0.5 text-xs rounded ${cls}`}>{label}</span>
+      ));
   };
 
   const renderModelRow = (m: OllamaModel, role: Role) => {
@@ -272,9 +311,11 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                 ⚗ Sidecar
               </span>
             )}
-            {m.supports_vision && (
-              <span className="px-1.5 py-0.5 text-xs rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
-                👁 Vision
+            {renderCapabilityBadges(m)}
+            {m.ram_fit && m.ram_fit.recommendation !== 'unknown' && FIT_META[m.ram_fit.recommendation]?.label && (
+              <span title={FIT_META[m.ram_fit.recommendation].title}
+                    className={`px-1.5 py-0.5 text-xs rounded ${FIT_META[m.ram_fit.recommendation].cls}`}>
+                {FIT_META[m.ram_fit.recommendation].label}
               </span>
             )}
             {!m.in_registry && (
@@ -434,7 +475,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
               </div>
               <div className="flex items-center justify-between pt-1 gap-3 flex-wrap">
                 <p className="text-xs text-gray-400 dark:text-gray-500">
-                  {models.length} model{models.length !== 1 ? 's' : ''} installed · roles auto-classified by size
+                  {models.length} model{models.length !== 1 ? 's' : ''} installed · roles &amp; RAM-fit by probed capability
                 </p>
                 <div className="flex items-center gap-2">
                   <button
