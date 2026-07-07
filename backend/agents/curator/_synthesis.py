@@ -73,7 +73,8 @@ Be concise and cite which notebook each insight comes from."""
                 temperature=0.5
             )
             
-            synthesis = response.get("response", "Unable to synthesize.")
+            from utils.json_repair import sanitize_prose_output
+            synthesis = sanitize_prose_output(response.get("response", "")) or "Unable to synthesize."
             
             # Store synthesis in Curator namespace
             entry = ArchivalMemoryEntry(
@@ -431,7 +432,8 @@ Rules:
                 model=settings.ollama_model,
                 temperature=0.5
             )
-            reply_text = response.get("response", "I'm having trouble processing that right now.")
+            from utils.json_repair import sanitize_prose_output
+            reply_text = sanitize_prose_output(response.get("response", "")) or "I'm having trouble processing that right now."
             # Curator Phase 1: emit observability event so the brain's
             # consumer loop knows the user just talked to the curator.
             try:

@@ -21,6 +21,34 @@ _MARKDOWN_FENCE_RE = re.compile(r"```(?:json)?\s*\n?([\s\S]*?)```", re.IGNORECAS
 _TRAILING_COMMA_OBJ_RE = re.compile(r",\s*}")
 _TRAILING_COMMA_ARR_RE = re.compile(r",\s*]")
 
+_THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.IGNORECASE)
+_JSON_FENCE_RE = re.compile(r"```json\b[\s\S]*?```", re.IGNORECASE)
+
+
+def sanitize_prose_output(text: str) -> str:
+    """Defend a PROSE-intended LLM output against JSON / think-block leakage.
+
+    Curator (and other) surfaces prompt for prose but occasionally get a JSON
+    object, a ```json fenced block, or a `<think>…</think>` residue from the
+    model — which then renders raw to the user (the 2026-07-07 "raw JSON in
+    Curator text" report). This strips those; if what REMAINS is a bare
+    top-level JSON object/array (the model ignored the prose instruction
+    entirely), it returns "" so the caller falls back to its own prose default.
+    Never raises. Prose that merely contains braces is preserved — the discard
+    only fires when the whole thing actually parses as JSON.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    t = _THINK_RE.sub("", text)
+    t = _JSON_FENCE_RE.sub("", t).strip()
+    if t[:1] in ("{", "[") and t[-1:] in ("}", "]"):
+        try:
+            json.loads(t)
+            return ""  # entire output is a JSON blob → not prose
+        except Exception:
+            pass  # looks JSON-ish but isn't valid JSON → keep (likely real prose)
+    return t
+
 
 def robust_json_parse(
     raw: str,

@@ -357,14 +357,18 @@ class MentalModelMixin:
             v = parsed.get(field)
             if field == "goals":
                 if isinstance(v, list):
-                    inferred[field] = [str(x).strip() for x in v if x][:6]
+                    # Guard: skip nested dict/list elements so a "{'goal':...}" repr
+                    # never lands in the goals list (2026-07-07 curator JSON-leak audit)
+                    inferred[field] = [str(x).strip() for x in v if x and not isinstance(x, (dict, list))][:6]
                 elif isinstance(v, str):
                     # Comma-separated fallback
                     inferred[field] = [g.strip() for g in v.split(",") if g.strip()][:6]
                 else:
                     inferred[field] = []
             else:
-                inferred[field] = str(v).strip() if v else ""
+                # Guard against str(dict)/str(list) Python-repr leaking into a
+                # displayed field (thesis/audience/stage/...). (2026-07-07)
+                inferred[field] = str(v).strip() if v and not isinstance(v, (dict, list)) else ""
 
         try:
             confidence = float(parsed.get("confidence", 0.5))

@@ -148,6 +148,11 @@ class DigestMixin:
                     # Discard error strings
                     if summary.startswith(("Error:", "Request timed out")):
                         summary = ""
+                    # Blank JSON/think leakage so the code-built fallback below
+                    # runs instead of storing raw JSON in current_summary
+                    # (highest-blast-radius curator prose field). (2026-07-07)
+                    from utils.json_repair import sanitize_prose_output
+                    summary = sanitize_prose_output(summary)
                 except Exception as e:
                     logger.debug(f"[CuratorBrain] Digest LLM call failed (non-fatal): {e}")
 

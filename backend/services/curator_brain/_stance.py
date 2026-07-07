@@ -319,7 +319,8 @@ class StanceMixin:
         except (TypeError, ValueError):
             confidence = 0.5
 
-        rationale = str(parsed.get("rationale", "")).strip()[:300]
+        _rat = parsed.get("rationale", "")
+        rationale = _rat.strip()[:300] if isinstance(_rat, str) else ""
 
         ok = self.upsert_stance(
             source_id=source_id,

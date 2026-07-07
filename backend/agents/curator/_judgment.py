@@ -593,7 +593,8 @@ State the thesis in one clear sentence."""
                 model=settings.ollama_fast_model,
                 temperature=0.3
             )
-            return response.get("response", "Unable to infer thesis.")
+            from utils.json_repair import sanitize_prose_output
+            return sanitize_prose_output(response.get("response", "")) or "Unable to infer thesis."
         except Exception as e:
             logger.error(f"Thesis inference failed: {e}")
             return "Unable to infer thesis."

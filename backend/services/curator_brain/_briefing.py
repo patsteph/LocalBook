@@ -21,6 +21,9 @@ class BriefingMixin:
             if not digests:
                 return ""
 
+            parts = []  # (S1/curator-audit 2026-07-07: was never initialized → NameError
+            # swallowed by the outer except, silently dropping the whole digest block
+            # from every brief since the Wave 4 split)
             for d in digests:
                 summary = d.get("current_summary", "")
                 if summary:

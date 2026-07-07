@@ -153,7 +153,8 @@ Keep it conversational and short (1-2 sentences). Return just the message, no JS
                 temperature=0.5
             )
             
-            text = response.get("response", "").strip()
+            from utils.json_repair import sanitize_prose_output
+            text = sanitize_prose_output(response.get("response", ""))
             if text and len(text) < 300:
                 return text
         except Exception as e:
