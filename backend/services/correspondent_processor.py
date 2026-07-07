@@ -446,6 +446,11 @@ async def _summarize_articles_background_unlocked(source_id: str) -> None:
         # and just run the downstream work (embed, entity, event).
         needs_batch = existing_confidence == 0.0 or not a.get("summary")
         section_result: Optional[Dict[str, Any]] = None
+        # Init before the conditional: when needs_batch is False (article already
+        # has kind + summary — e.g. a re-run/attempt≥1), the batch block is skipped
+        # and effective_summary below must fall back to the stored summary rather
+        # than reference an unbound local (soak 2026-07-06 UnboundLocalError).
+        new_summary = None
 
         if needs_batch:
             try:
