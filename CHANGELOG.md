@@ -43,6 +43,7 @@ A first-class multi-voice document format. Debate intent is detected in the **to
 - **Unanswerable quiz question** — a backend `justify`-type with no options rendered zero answer controls; any question without ≥2 options now routes to the open-answer (LLM-graded) flow.
 - **LaTeX artifacts** — `$\to$`/`\times`/etc. leaking into prose are normalized to unicode glyphs (real `$5` prices preserved).
 - **`record_user_signal` TypeError** — a vestigial kwarg was silently killing curator user-capture/highlight/topic-interest learning signals.
+- **article-summarize UnboundLocalError** (18GB overnight soak) — `new_summary` was read after an `if needs_batch:` block that assigns it, so a re-queued article that already had a summary crashed its summarize job; now initialized before the conditional.
 
 ## v2.0.0 — Information Cortex: Universal Canvas, Correspondent, Synthesis Layer
 
