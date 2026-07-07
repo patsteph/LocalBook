@@ -164,6 +164,24 @@ def capabilities_for(model_name: str) -> ModelCapabilities:
     supports_embeddings = bool(getattr(info, "embedding_dim", 0)) if info else False
     supports_json = getattr(info, "supports_json_mode", True) if info else True
 
+    # Build A (2026-07-07): PROBE-FIRST. Ask the engine for real capabilities so
+    # the evaluator gates uncurated models on truth, not registry text-only
+    # defaults. The probe only turns capabilities ON (never off a registry-declared
+    # one) and supplies a real native ctx when the registry lacked one.
+    if provider_str == "ollama":
+        try:
+            from evaluator.capability_probe import probe_capabilities
+            probed = probe_capabilities(model_name)
+            if probed is not None:
+                supports_vision = supports_vision or probed.vision
+                supports_embeddings = supports_embeddings or probed.embedding
+                if (not native_ctx or native_ctx == 4096) and probed.native_ctx:
+                    native_ctx = probed.native_ctx
+                    if ctx == 4096:
+                        ctx = probed.native_ctx
+        except Exception:
+            pass
+
     # Provider-specific corrections
     skip_reasons: dict = {}
     supports_keep_alive = True

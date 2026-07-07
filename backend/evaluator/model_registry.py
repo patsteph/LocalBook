@@ -226,24 +226,45 @@ class ModelRegistry:
         return out
 
     def _live_card(self, tag: dict) -> dict:
-        """Build a card from live Ollama /api/tags metadata for a model that
-        isn't in the curated registry — uses the model's REAL name, family,
-        parameter size and disk size instead of borrowing a sibling's entry."""
+        """Build a card from live Ollama metadata for a model that isn't in the
+        curated registry — uses the model's REAL name/family/params, and (build A,
+        2026-07-07) its REAL capabilities + role eligibility by PROBING the engine
+        (/api/show `capabilities`) instead of defaulting to text-only/no-vision/
+        no-roles. This is what stops 5 fresh models all landing in Main and a
+        Qwen-VL from being told to install granite."""
         name = tag.get("name", "")
         details = tag.get("details") or {}
         size_bytes = tag.get("size") or 0
+
+        supports_vision = False
+        supported_roles: list = []
+        context_window = 0
+        embedding_dim = 0
+        param_size = details.get("parameter_size", "") or ""
+        try:
+            from evaluator.capability_probe import probe_capabilities
+            caps = probe_capabilities(name)
+            if caps is not None:
+                supports_vision = caps.vision
+                supported_roles = caps.roles()
+                context_window = caps.native_ctx
+                embedding_dim = caps.embedding_dim
+                param_size = caps.param_size or param_size
+        except Exception as _e:
+            logger.debug(f"[model-registry] live capability probe failed for {name}: {_e}")
+
         return {
             "ollama_name": name,
             "display_name": name,
             "family": details.get("family", "") or "",
-            "parameter_count": details.get("parameter_size", "") or "",
+            "parameter_count": param_size,
             "vendor": "",
             "origin_country": "",
             "license": "",
-            "supported_roles": [],
-            "context_window": 0,
-            "supports_vision": False,
-            "embedding_dim": 0,
+            "supported_roles": supported_roles,
+            "context_window": context_window,
+            "supports_vision": supports_vision,
+            "embedding_dim": embedding_dim,
             "disk_size_gb": round(size_bytes / 1e9, 1) if size_bytes else 0.0,
             "min_ram_gb": 0,
             "policy_tags": ["uncurated"],

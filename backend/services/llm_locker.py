@@ -60,10 +60,20 @@ class LLMLocker:
             size_bytes = data.get("size", 0)
             size_gb = size_bytes / (1024 ** 3)
             ram_gb = round(size_gb * 1.3, 1)
+            # Build A (2026-07-07): stop hardcoding vision=False. The /api/show
+            # payload carries a `capabilities` array — parse it so an uncurated
+            # vision model (e.g. Qwen-VL) is correctly recognized instead of being
+            # told to install granite.
+            supports_vision = False
+            try:
+                from evaluator.capability_probe import OllamaCapabilityProbe
+                supports_vision = OllamaCapabilityProbe.from_show(ollama_name, data).vision
+            except Exception:
+                pass
             return {
                 "size_gb": size_gb,
                 "ram_required_gb": ram_gb,
-                "supports_vision": False,  # conservative default for unknown models
+                "supports_vision": supports_vision,
             }
         except Exception:
             return None
