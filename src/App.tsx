@@ -17,7 +17,8 @@ import { ToastContainer, ToastMessage } from './components/shared/Toast';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { Modal } from './components/shared/Modal';
 import { Settings } from './components/Settings';
-import { LLMSelector } from './components/LLMSelector';
+import { LLMStudio } from './components/llm/LLMStudio';
+import { HealthPanel } from './components/health/HealthPanel';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
 import { API_BASE_URL, localFetch } from './services/api';
 import { useConstellationWS } from './hooks/useConstellationWS';
@@ -25,7 +26,6 @@ import { useMorningBriefFetcher } from './hooks/useMorningBriefFetcher';
 import { emitEvent, onEvent } from './lib/events';
 import { prewarmMermaid } from './components/shared/MermaidRenderer';
 import { useSystemHealth, STATUS_COLORS } from './hooks/useSystemHealth';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import { noteService } from './services/noteService';
 
 function App() {
@@ -60,6 +60,7 @@ function App() {
   const [curatorBriefData, setCuratorBriefData] = useState<any>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showLLMModal, setShowLLMModal] = useState(false);
+  const [showHealthModal, setShowHealthModal] = useState(false);
   const [showEmbeddingModal, setShowEmbeddingModal] = useState(false);
   const [canvasItems, setCanvasItems] = useState<CanvasItem[]>([]);
   const [generationStatus, setGenerationStatusRaw] = useState<'idle' | 'generating' | 'complete' | 'error'>('idle');
@@ -271,6 +272,7 @@ function App() {
 
   const openSettings = useCallback(() => setShowSettingsModal(true), []);
   const openLLMSelector = useCallback(() => setShowLLMModal(true), []);
+  const openHealth = useCallback(() => setShowHealthModal(true), []);
   const openEmbeddingSelector = useCallback(() => setShowEmbeddingModal(true), []);
 
   // Menu-bar tray (tray v1): the Rust tray emits `tray-navigate` with a target so
@@ -283,13 +285,13 @@ function App() {
         listen<string>('tray-navigate', (e) => {
           if (e.payload === 'labs') openLLMSelector();
           else if (e.payload === 'settings') openSettings();
-          else if (e.payload === 'portal') openUrl(`${API_BASE_URL}/health/portal`);
+          else if (e.payload === 'portal') openHealth();
         }),
       )
       .then((fn) => { unlisten = fn; })
       .catch(() => { /* not in Tauri — ignore */ });
     return () => { if (unlisten) unlisten(); };
-  }, [openLLMSelector, openSettings]);
+  }, [openLLMSelector, openSettings, openHealth]);
 
   const toggleDarkMode = useCallback(() => {
     setDarkMode(prev => {
@@ -427,12 +429,23 @@ function App() {
   );
 
   useEffect(() => {
-    // Check for saved theme preference
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'dark') {
-      setDarkMode(true);
-      document.documentElement.classList.add('dark');
-    }
+    // Theme: follow the OS by default; a manual toggle (persisted to localStorage)
+    // overrides it. The pre-paint script in index.html has already set the class —
+    // here we sync React state and live-follow OS changes while there's no override.
+    const mql = window.matchMedia('(prefers-color-scheme: dark)');
+    const saved = localStorage.getItem('theme');
+    const initialDark = saved ? saved === 'dark' : mql.matches;
+    setDarkMode(initialDark);
+    document.documentElement.classList.toggle('dark', initialDark);
+
+    const onSystemChange = () => {
+      // A user's explicit choice wins; only track the OS when none is set.
+      if (localStorage.getItem('theme')) return;
+      setDarkMode(mql.matches);
+      document.documentElement.classList.toggle('dark', mql.matches);
+    };
+    mql.addEventListener('change', onSystemChange);
+    return () => mql.removeEventListener('change', onSystemChange);
   }, []);
 
   // Save LLM provider preference when it changes
@@ -1192,7 +1205,7 @@ function App() {
                           <svg className={`w-3.5 h-3.5 flex-shrink-0 ${STATUS_COLORS[health.embedding] || 'text-blue-600 dark:text-blue-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
                           Embedding Model {health.embedding === 'error' && <span className="text-red-500 text-[10px]">●</span>}
                         </button>
-                        <button onClick={() => { openUrl(`${API_BASE_URL}/health/portal`); setShowUtilMenu(false); }} className="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2.5 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
+                        <button onClick={() => { setShowHealthModal(true); setShowUtilMenu(false); }} className="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2.5 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300">
                           <svg className={`w-3.5 h-3.5 flex-shrink-0 ${STATUS_COLORS[health.system] || 'text-green-600 dark:text-green-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
                           System Health {health.system === 'error' && <span className="text-red-500 text-[10px]">●</span>}
                         </button>
@@ -1221,9 +1234,14 @@ function App() {
           <Settings />
         </Modal>
 
-        {/* LLM Selector Modal */}
-        <Modal isOpen={showLLMModal} onClose={() => setShowLLMModal(false)} title="Select AI Brain" size="xl">
-          <LLMSelector selectedProvider={selectedLLMProvider} onProviderChange={setSelectedLLMProvider} />
+        {/* LLM Studio Modal — Locker + Evaluator + History in one place */}
+        <Modal isOpen={showLLMModal} onClose={() => setShowLLMModal(false)} title="LLM Studio" size="full">
+          <LLMStudio selectedProvider={selectedLLMProvider} onProviderChange={setSelectedLLMProvider} />
+        </Modal>
+
+        {/* System Health Modal — in-app smoke/health portal (browser page is the fallback) */}
+        <Modal isOpen={showHealthModal} onClose={() => setShowHealthModal(false)} title="System Health" size="full">
+          <HealthPanel />
         </Modal>
 
         {/* Embedding Selector Modal */}

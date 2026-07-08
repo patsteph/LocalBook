@@ -21,6 +21,15 @@ sprawl, so the CORE loop (upload→ingest→ask→answer→output) always preemp
 - **Phase 5d — fatal-freeze watchdog** (`services/loop_watchdog.py`) — `faulthandler.dump_traceback_later` re-armed by an asyncio heartbeat dumps the exact blocking stack on a freeze the loop-monitor can't log live. Diagnostics only (does not prevent).
 - **Phase 5a — all background timers folded** — correspondent poller (DEEP), digest-composer (NIGHT), weekly-journal (NIGHT), and collection-scheduler (DEEP, per-notebook) keep their cadence locally but route execution through the worker. Every LLM-bearing background actor now flows through the one traffic cop.
 
+### LLM Studio + in-app System Health + theme-follows-system — 2026-07-08 (built-app verified)
+
+Unifies LLM management into one in-app surface and modernizes the health portal, so "pick a brain →
+benchmark it → compare runs" is a single flow instead of a React modal plus a browser-only page.
+
+- **LLM Studio** — the Locker modal became a tabbed **Locker · Evaluator · History** modal (`src/components/llm/`). The **Evaluator + run History moved out of the browser-only `health_portal.html` into React** (typed `/evaluator/*` client, live 2s progress polling, shared result-detail renderer for readiness / providers / feature-parity / preflight / categories, llama-server sidecar controls). The Locker gained a **"Test this combo →"** jump to the Evaluator. `health_portal.html` is now health/smoke only.
+- **In-app System Health panel** (`src/components/health/`) — the health/smoke portal rebuilt as an in-app modal (status banner, system resources, token economy, collapsible check sections, issues + Repair, live console). Tray "Health Portal" + the util-menu now open it in-app; the static `health_portal.html` stays reachable as a **degraded-mode lifeboat** (via a "↗ Browser" button) for when the React app can't load.
+- **Theme follows the OS** — the app now initializes light/dark from `prefers-color-scheme` and live-follows OS appearance changes (pre-paint script in `index.html` avoids the flash); the manual toggle still overrides. All surfaces (LLM Studio, Health, and the static portal) now agree with the system setting.
+
 ### Codebase simplification (S1–S3 + C5) — 2026-07-01 → 07-06 (built-app verified)
 
 A no-functionality-loss simplification pass: ~2,500 LOC and 2 dependencies removed, every deletion grep-verified for zero callers and runtime-smoked. Aligns the tree with the doc-20 engine strategy.

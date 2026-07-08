@@ -678,19 +678,8 @@
         <header style="position: relative;">
             <h1>🛡️ LocalBook Smoke Screen Portal</h1>
             <p>System Health & Diagnostics</p>
-            <label class="labs-toggle-container" for="labsToggle" title="Show/hide Labs features (LLM Evaluator)">
-                <span class="labs-icon">🧪</span>
-                <span class="labs-text">Labs</span>
-                <input type="checkbox" id="labsToggle" onchange="toggleLabs()">
-                <span class="toggle-track"></span>
-            </label>
         </header>
 
-        <div class="tabs">
-            <button id="tabBtn-health" class="tab-btn active" onclick="switchTab('health')">System Health</button>
-            <button id="tabBtn-evaluator" class="tab-btn labs-tab hidden" onclick="switchTab('evaluator')">LLM Evaluator</button>
-        </div>
-        
         <!-- ================= SYSTEM HEALTH TAB ================= -->
         <div id="healthTab" class="tab-content active">
             <!-- Status Banner -->
@@ -1856,19 +1845,9 @@
 
         // Initialize on page load - fetch logs immediately and run health check
         document.addEventListener('DOMContentLoaded', async () => {
-            // Initialize Labs toggle from localStorage (default: hidden)
-            const labsMode = localStorage.getItem('labsMode') === 'true';
-            document.getElementById('labsToggle').checked = labsMode;
-            if (labsMode) {
-                document.querySelectorAll('.labs-tab').forEach(tab => tab.classList.remove('hidden'));
-            }
-
-            // Predictably load evaluator hardware data so the tab is populated eagerly
-            loadEvaluatorData();
-
-            // Load logs first so user sees activity immediately
+            // The LLM Evaluator moved into the in-app "LLM Studio" (React). This
+            // page is now health/smoke only. Load logs first, then run the check.
             await refreshLogs();
-            // Then run health check
             await runHealthCheck();
         });
     </script>

@@ -5,6 +5,9 @@ import { API_BASE_URL, localFetch } from '../services/api';
 interface LLMSelectorProps {
   selectedProvider: string;
   onProviderChange: (provider: string) => void;
+  // Optional: when rendered inside LLM Studio, jump to the Evaluator tab to
+  // benchmark the currently-selected combo. Absent when used standalone.
+  onTestCombo?: () => void;
 }
 
 interface OllamaModel {
@@ -94,7 +97,7 @@ function ActiveBadge() {
   );
 }
 
-export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onProviderChange }) => {
+export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onProviderChange, onTestCombo }) => {
   const [mode, setMode] = useState<'local' | 'cloud'>('local');
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [active, setActive] = useState<ActiveModels>({ main: '', fast: '', embeddings: '', vision: '' });
@@ -491,6 +494,15 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                   {models.length} model{models.length !== 1 ? 's' : ''} installed · roles &amp; RAM-fit by probed capability
                 </p>
                 <div className="flex items-center gap-2">
+                  {onTestCombo && (
+                    <button
+                      onClick={onTestCombo}
+                      title="Benchmark the current Main / Fast / Vision combo in the Evaluator."
+                      className="px-3 py-1.5 text-xs font-medium rounded-lg border border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all"
+                    >
+                      Test this combo →
+                    </button>
+                  )}
                   <button
                     onClick={saveCurrentAsDefault}
                     disabled={savingDefault || currentMatchesSaved || !active.main}
