@@ -333,8 +333,15 @@ async def get_ollama_models():
                         except Exception:
                             _deployed_ctx = 8192
                         _f = _ramfit.ram_fit(_pc.param_count_b, _pc.quantization, _total_ram, _deployed_ctx)
+                        # Surface the FULL breakdown (not just fits/weight/budget) so
+                        # a "too big" verdict is explainable in the UI/tooltip and
+                        # diagnosable off-machine — kv + total_needed + deployed ctx
+                        # are what actually decide the recommendation.
                         _ram_fit = {"fits": _f["fits"], "recommendation": _f["recommendation"],
-                                    "weight_gb": _f["weight_gb"], "budget_gb": _f["budget_gb"]}
+                                    "weight_gb": _f["weight_gb"], "kv_gb": _f["kv_gb"],
+                                    "budget_gb": _f["budget_gb"], "total_needed_gb": _f["total_needed_gb"],
+                                    "headroom_gb": _f["headroom_gb"], "deployed_ctx": _f["context_tokens"],
+                                    "total_ram_gb": _total_ram}
                 except Exception as _ce:
                     logger.debug(f"[settings] capability enrichment failed for {name}: {_ce}")
 

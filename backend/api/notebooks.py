@@ -132,7 +132,21 @@ async def delete_notebook(notebook_id: str):
             print(f"[CLEANUP] Deleted sources for {notebook_id}")
     except Exception as e:
         cleanup_errors.append(f"sources: {e}")
-    
+
+    # 6. Purge derived knowledge stores (entities / graph / communities) — these
+    #    are single dict-keyed-by-notebook files that otherwise retain orphaned
+    #    notebooks forever (the "11 notebooks loaded, only 2 live" symptom).
+    try:
+        from services.entity_extractor import entity_extractor
+        from services.entity_graph import entity_graph
+        from services.community_detection import community_detector
+        entity_extractor.delete_notebook(notebook_id)
+        entity_graph.delete_notebook(notebook_id)
+        community_detector.delete_notebook(notebook_id)
+        print(f"[CLEANUP] Purged entities/graph/communities for {notebook_id}")
+    except Exception as e:
+        cleanup_errors.append(f"derived knowledge stores: {e}")
+
     if cleanup_errors:
         print(f"[CLEANUP] Non-fatal cleanup errors for {notebook_id}: {cleanup_errors}")
     

@@ -339,6 +339,30 @@ async def _run_startup_tasks():
 
         safe_create_task(_migrate_shallow_flags(), name="migrate-shallow-flags")
 
+        # Reconcile derived knowledge stores against the live notebook list —
+        # drop entities/graph/communities left behind by notebooks deleted before
+        # the delete-cascade existed (the "loaded N notebooks, only M live" drift).
+        async def _reconcile_derived_stores():
+            try:
+                from storage.notebook_store import notebook_store
+                live = {nb["id"] for nb in await notebook_store.list() if nb.get("id")}
+                if not live:
+                    return  # never reconcile against an empty/unloaded list
+                from services.entity_extractor import entity_extractor
+                from services.entity_graph import entity_graph
+                from services.community_detection import community_detector
+                dropped = (
+                    entity_extractor.reconcile_notebooks(live)
+                    + entity_graph.reconcile_notebooks(live)
+                    + community_detector.reconcile_notebooks(live)
+                )
+                if dropped:
+                    print(f"🧹 Reconciled derived stores — dropped {dropped} orphaned notebook entr(ies)")
+            except Exception as e:
+                print(f"⚠️ Derived-store reconcile failed (non-fatal): {e}")
+
+        safe_create_task(_reconcile_derived_stores(), name="reconcile-derived-stores")
+
     await _step("starting", "Starting background services...", 75, _start_services())
 
     # ── Step 7: Preparing workspace ───────────────────────────────────────

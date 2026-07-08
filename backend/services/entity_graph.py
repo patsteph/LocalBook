@@ -83,7 +83,32 @@ class EntityGraph:
                 json.dump(data, f, indent=2)
         except Exception as e:
             print(f"[EntityGraph] Could not save graph: {e}")
-    
+
+    def delete_notebook(self, notebook_id: str) -> bool:
+        """Purge ALL graph data (relationships + nodes) for a notebook."""
+        removed = False
+        if notebook_id in self._relationships:
+            del self._relationships[notebook_id]
+            removed = True
+        if notebook_id in self._nodes:
+            del self._nodes[notebook_id]
+            removed = True
+        if removed:
+            self._save_graph()
+        return removed
+
+    def reconcile_notebooks(self, live_ids: set) -> int:
+        """Drop graph data for any notebook_id not in the live set."""
+        orphans = {nb for nb in self._relationships if nb not in live_ids}
+        orphans |= {nb for nb in self._nodes if nb not in live_ids}
+        for nb in orphans:
+            self._relationships.pop(nb, None)
+            self._nodes.pop(nb, None)
+        if orphans:
+            self._save_graph()
+            print(f"[EntityGraph] Reconciled — dropped {len(orphans)} orphaned notebook(s)")
+        return len(orphans)
+
     def _entity_key(self, name: str, entity_type: str) -> str:
         """Create unique key for entity."""
         return f"{entity_type}:{name.lower().strip()}"

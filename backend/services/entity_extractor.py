@@ -481,9 +481,29 @@ JSON:"""
         
         for key in to_delete:
             del self._entities[notebook_id][key]
-        
+
         self._save_entities()
-    
+
+    def delete_notebook(self, notebook_id: str) -> bool:
+        """Purge ALL entities for a notebook (called on notebook delete so the
+        derived store doesn't retain orphaned notebooks). Returns True if removed."""
+        if notebook_id in self._entities:
+            del self._entities[notebook_id]
+            self._save_entities()
+            return True
+        return False
+
+    def reconcile_notebooks(self, live_ids: set) -> int:
+        """Drop entity data for any notebook_id not in the live set (self-heals
+        orphans left by deletes that predated the cascade). Returns count dropped."""
+        orphans = [nb for nb in self._entities if nb not in live_ids]
+        for nb in orphans:
+            del self._entities[nb]
+        if orphans:
+            self._save_entities()
+            print(f"[EntityExtractor] Reconciled — dropped {len(orphans)} orphaned notebook(s)")
+        return len(orphans)
+
     # =========================================================================
     # Backfill Methods
     # =========================================================================

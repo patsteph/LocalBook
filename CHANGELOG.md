@@ -34,8 +34,11 @@ A no-functionality-loss simplification pass: ~2,500 LOC and 2 dependencies remov
 
 A first-class multi-voice document format. Debate intent is detected in the **topic text** (not just the skill picker), so a deep_dive/briefing phrased as a debate routes to the pipeline: frame (central question + two stances + three shared **clash points**) → **The Advocate** → **The Skeptic** (rebuts the Advocate point-by-point) → **The Judge** (scores each clash point, delivers a no-fence-sitting verdict, and adds a unique perspective neither side raised). De-scaffolded persona prompts keep the structure invisible; the judge's `VERDICT:` / `UNIQUE PERSPECTIVE:` markers are harvested into headings; a magazine-style **standfirst** "fold" pass opens the piece. Charts use a **deterministic scorecard** (a small 1–5 scoring call → grouped-bar built in Python) because qualitative debates have no numbers for the generic chart path.
 
-### Built-app fixes — 2026-06-30 → 07-06
+### Built-app fixes — 2026-06-30 → 07-08
 
+- **Health Portal fully broken** — the "remove duplicate LLM Locker" cleanup cut one brace too many, leaving `switchTab()` unterminated → a JS syntax error killed the whole `<script>` (no auto-run on open, dead Run button, Labs toggle revealed nothing). Restored the brace; portal is live again.
+- **RAM-fit false "too big"** — the KV-cache estimate scaled *linearly* off total params (calibrated to a 14B), wildly over-counting large GQA models, so a ~20GB model read "over" on a 48GB Mac. Now scales √-sublinearly off a GQA anchor; the fit chip's tooltip surfaces the full breakdown (weights + KV vs budget @ deployed ctx) so any verdict is explainable.
+- **Orphaned derived-store notebooks** — `delete_notebook` never purged `entities.json` / communities / entity-graph, so those stores accumulated deleted notebooks forever ("loaded 11 notebooks, only 2 live"). Added a per-notebook delete cascade plus a startup reconcile that drops any notebook_id not in the live list (self-heals existing orphans).
 - **Chat blank-answer regression** — the bibliography-strip regex wiped answers whose lead was a `\nSources:` heading (phi4 factual path); both strip sites now never empty the answer.
 - **num_ctx scales continuously with RAM** (not two buckets); the evaluator reports the true deployed context window.
 - **Klein "Invalid SVG"** — `sanitize_svg` was dropping the `<image>` tag and truncating the ~1 MB base64 hero mid-stream; now `data:image/*`-only `<image>` is allowed and oversize is **rejected, never truncated** (8 MB cap). XSS posture unchanged.

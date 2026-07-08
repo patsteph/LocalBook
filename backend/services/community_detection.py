@@ -93,7 +93,32 @@ class CommunityDetector:
                 json.dump(data, f, indent=2)
         except Exception as e:
             print(f"[CommunityDetector] Could not save communities: {e}")
-    
+
+    def delete_notebook(self, notebook_id: str) -> bool:
+        """Purge ALL communities for a notebook (called on notebook delete)."""
+        removed = False
+        if notebook_id in self._communities:
+            del self._communities[notebook_id]
+            removed = True
+        if notebook_id in self._entity_to_community:
+            del self._entity_to_community[notebook_id]
+            removed = True
+        if removed:
+            self._save_communities()
+        return removed
+
+    def reconcile_notebooks(self, live_ids: set) -> int:
+        """Drop community data for any notebook_id not in the live set."""
+        orphans = {nb for nb in self._communities if nb not in live_ids}
+        orphans |= {nb for nb in self._entity_to_community if nb not in live_ids}
+        for nb in orphans:
+            self._communities.pop(nb, None)
+            self._entity_to_community.pop(nb, None)
+        if orphans:
+            self._save_communities()
+            print(f"[CommunityDetector] Reconciled — dropped {len(orphans)} orphaned notebook(s)")
+        return len(orphans)
+
     def _simple_community_detection(
         self,
         nodes: Dict[str, Set[str]]  # entity -> connected entities

@@ -82,15 +82,28 @@ def estimate_weight_gb(param_count_b: float, quant: Optional[str]) -> float:
     return round(param_count_b * bytes_per_weight(quant), 2)
 
 
+# KV-cache anchor: a modern GQA model (Llama-3 / Qwen2.5 / Gemma-class) holds
+# ~4 GB of fp16 KV at 14B @ 32K. (Earlier this module used 6 GB and scaled the
+# cache LINEARLY with param count — but KV size tracks n_layers × n_kv_heads ×
+# head_dim, NOT total params. On GQA models n_kv_heads is tiny and fixed, so a
+# 70B holds only ~2× the KV of an 8B, not ~9×. The old linear form over-counted
+# big models so badly it flagged models that fit comfortably as "too big" on
+# high-RAM Macs. We now scale SUB-linearly (√) off the anchor.)
+_KV_ANCHOR_GB = 4.0        # fp16 KV for a 14B-class GQA model @ 32K
+_KV_ANCHOR_PARAM_B = 14.0
+_KV_ANCHOR_CTX_K = 32.0
+
+
 def estimate_kv_cache_gb(param_count_b: float, context_tokens: int) -> float:
-    """Rough KV-cache footprint in GB — scales ~linearly with context and model
-    size. Calibrated to the research anchor (~4–8 GB for a 14B @ 32K ≈ midpoint
-    6 GB): ~6 GB / (14B × 32k) per (B·token). Deliberately approximate; used only
-    for headroom warnings, not hard gating."""
+    """Rough KV-cache footprint in GB. Linear in context, SUB-linear (√) in model
+    size — KV tracks layer count / kv-head geometry, which grows far slower than
+    total params on GQA models. Anchored to ~4 GB for a 14B @ 32K. Deliberately
+    approximate; feeds the fit recommendation, so it must not over-count."""
     if param_count_b <= 0 or context_tokens <= 0:
         return 0.0
-    per_b_per_ktok = 6.0 / (14.0 * 32.0)  # GB per (billion-param · 1k-token)
-    return round(param_count_b * (context_tokens / 1000.0) * per_b_per_ktok, 2)
+    size_factor = (param_count_b / _KV_ANCHOR_PARAM_B) ** 0.5
+    ctx_factor = (context_tokens / 1000.0) / _KV_ANCHOR_CTX_K
+    return round(_KV_ANCHOR_GB * size_factor * ctx_factor, 2)
 
 
 def ram_fit(
@@ -125,6 +138,7 @@ def ram_fit(
         "budget_gb": budget,
         "total_needed_gb": total_needed,
         "headroom_gb": headroom,
+        "context_tokens": int(context_tokens or 0),
         "fits": fits,
         "recommendation": rec,
     }

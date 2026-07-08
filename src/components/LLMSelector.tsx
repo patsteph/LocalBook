@@ -27,7 +27,7 @@ interface OllamaModel {
   // older backend — the UI falls back to suggested_role/supports_vision then).
   supported_roles?: string[];  // e.g. ["main_model","fast_model","vision_model"]
   capabilities?: { vision?: boolean; embedding?: boolean; tools?: boolean; thinking?: boolean; audio?: boolean };
-  ram_fit?: { fits: boolean; recommendation: 'ok' | 'tight' | 'over' | 'unknown'; weight_gb: number; budget_gb: number } | null;
+  ram_fit?: { fits: boolean; recommendation: 'ok' | 'tight' | 'over' | 'unknown'; weight_gb: number; budget_gb: number; kv_gb?: number; total_needed_gb?: number; headroom_gb?: number; deployed_ctx?: number; total_ram_gb?: number } | null;
 }
 
 interface ActiveModels {
@@ -261,6 +261,17 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     unknown: { label: '', cls: '', title: '' },
   };
 
+  // Explainable fit tooltip: the base verdict + the actual numbers that drove it
+  // (weights + KV cache vs this Mac's budget), so a "too big" is never a mystery.
+  const fitTooltip = (f: NonNullable<OllamaModel['ram_fit']>): string => {
+    const base = FIT_META[f.recommendation]?.title || '';
+    if (f.total_needed_gb == null || f.budget_gb == null) return base;
+    const kv = f.kv_gb != null ? ` (weights ${f.weight_gb} + KV ${f.kv_gb})` : '';
+    const ctx = f.deployed_ctx ? ` @ ${Math.round(f.deployed_ctx / 1024)}K ctx` : '';
+    const ram = f.total_ram_gb ? ` of ${f.total_ram_gb}GB RAM` : '';
+    return `${base}\nNeeds ~${f.total_needed_gb}GB${kv}${ctx} vs ${f.budget_gb}GB budget${ram}`;
+  };
+
   const renderCapabilityBadges = (m: OllamaModel) => {
     const c = m.capabilities || {};
     const badges: Array<[boolean | undefined, string, string, string]> = [
@@ -313,7 +324,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
             )}
             {renderCapabilityBadges(m)}
             {m.ram_fit && m.ram_fit.recommendation !== 'unknown' && FIT_META[m.ram_fit.recommendation]?.label && (
-              <span title={FIT_META[m.ram_fit.recommendation].title}
+              <span title={fitTooltip(m.ram_fit)}
                     className={`px-1.5 py-0.5 text-xs rounded ${FIT_META[m.ram_fit.recommendation].cls}`}>
                 {FIT_META[m.ram_fit.recommendation].label}
               </span>
