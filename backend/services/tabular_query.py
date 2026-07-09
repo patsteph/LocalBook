@@ -141,14 +141,19 @@ async def answer_tabular(
         return {"ok": False, "reason": "no structured tables for this notebook"}
 
     prompt = _build_prompt(question, schema)
+    # Use the fast model (phi4) by default: it's warm + light (no 9.6GB gemma load on a
+    # 16GB box) and reliable for filter/count/aggregate SQL. Loading gemma for this timed
+    # out at 60s under a background-ingest flood (2026-07-09). Overridable if a complex
+    # schema needs stronger SQL. Tight timeout so a contended box falls back to RAG fast.
+    sql_model = settings.tabular_sql_model or settings.ollama_fast_model
     try:
         result = await ollama_service.generate(
             prompt=prompt,
-            model=settings.ollama_model,   # foreground user query — use the main model
+            model=sql_model,
             temperature=0.1,
             num_predict=400,
             think=False,                   # no thinking tokens polluting the SQL
-            timeout=60.0,
+            timeout=25.0,
         )
         raw = (result or {}).get("response", "")
     except Exception as e:

@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     # instead of vector top-k retrieval which cannot aggregate. Additive + tabular-only;
     # set LOCALBOOK_TABULAR_STRUCTURED_ENABLED=false to fully disable (pure vector RAG).
     tabular_structured_enabled: bool = True
+    # Model for the text-to-SQL generation. Default: the fast model (phi4) — it's warm,
+    # light (no 9.6GB gemma load on a 16GB box), and reliable for filter/count/aggregate
+    # SQL. Override to the main model via LOCALBOOK_TABULAR_SQL_MODEL if a complex real-world
+    # schema needs stronger SQL (accepts the heavier residency cost).
+    tabular_sql_model: str | None = None
 
     # Debug mode — enables diagnostic endpoints (health portal, RAG health)
     debug_mode: bool = False  # Set LOCALBOOK_DEBUG_MODE=true to enable
