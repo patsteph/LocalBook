@@ -2,12 +2,21 @@
 
 All notable changes to LocalBook will be documented in this file.
 
-## Unreleased — post-v2.0: Background Enrichment Worker ("Night Shift") + RAG/stability overhaul
+## Unreleased — post-v2.0 maintenance (ready to promote to v2.0.5)
+
+The post-v2.0 stability + quality + maintainability cycle, all built-app verified. Headlines:
+the **Night Shift** background worker (below), a **retrieval/synthesis quality** pass, the
+**god-file split** maintainability arc, **LLM Studio** + in-app Health + a macOS **tray companion**,
+the Studio **debate/judge** format, and a codebase **simplification** pass (~2,500 LOC + deps removed).
+Validated by a long 18 GB overnight soak (2026-07-06→07, ~16.5 h — zero crashes/restarts, watchdog
+never fired). The only work held back for a possible v2.1.0 is the opt-in MLX text port.
+
+### Background Enrichment Worker ("Night Shift")
 
 A presence-aware, cancellable, dose-budgeted background worker that replaces fire-and-forget
 sprawl, so the CORE loop (upload→ingest→ask→answer→output) always preempts ENRICHMENT
-(synthesis runs in idle gaps, like sleep consolidation). Overnight soak validated (2026-06-25→26,
-14 h, zero stalls / zero restarts / NIGHT consolidation completed cleanly).
+(synthesis runs in idle gaps, like sleep consolidation). Overnight soaks validated (2026-06-25→26,
+14 h; and 2026-07-06→07, ~16.5 h — zero stalls / zero restarts / NIGHT consolidation clean).
 
 - **One worker, not fire-and-forget** (`services/enrichment_worker.py` + `enrichment_jobs.py` + `presence.py`) — every enrichment is an enqueued, coalesced job through a single presence-gated chokepoint. Tiers: DAYDREAM (short-idle, source-local) / DEEP (long-idle, corpus-global) / NIGHT (away/overnight, heavy maintenance). Cancels the in-flight job the instant a foreground op starts and re-queues it; adaptive dose budget drains backlogs across idle windows.
 - **Answer cache in the streaming chat path** — repeat/near-dup questions replay instantly (`⚡ Instant answer`), notebook-scoped invalidation on ingest so a stale answer is never served.
@@ -21,10 +30,21 @@ sprawl, so the CORE loop (upload→ingest→ask→answer→output) always preemp
 - **Phase 5d — fatal-freeze watchdog** (`services/loop_watchdog.py`) — `faulthandler.dump_traceback_later` re-armed by an asyncio heartbeat dumps the exact blocking stack on a freeze the loop-monitor can't log live. Diagnostics only (does not prevent).
 - **Phase 5a — all background timers folded** — correspondent poller (DEEP), digest-composer (NIGHT), weekly-journal (NIGHT), and collection-scheduler (DEEP, per-notebook) keep their cadence locally but route execution through the worker. Every LLM-bearing background actor now flows through the one traffic cop.
 
-### LLM Studio + in-app System Health + theme-follows-system — 2026-07-08 (built-app verified)
+### LLM Studio + capability-probe Locker + in-app Health + macOS tray — 2026-06-30 → 07-08 (built-app verified)
 
 Unifies LLM management into one in-app surface and modernizes the health portal, so "pick a brain →
 benchmark it → compare runs" is a single flow instead of a React modal plus a browser-only page.
+
+- **Probe-first capability detection (Locker builds A–E)** — the Locker now *probes* each installed
+  model for real capabilities (text / vision / JSON-mode / thinking) and slots roles by capability
+  rather than by name-guessing, surfaces a **RAM-fit** estimate (weights + KV vs budget at the deployed
+  context, √-sublinear GQA scaling so large models aren't falsely flagged "too big"), and shows a
+  **live card** built from each model's own `/api/tags` metadata when there's no curated registry entry.
+- **RunProfile-aware Evaluator (builds B–C)** — output-normalization filters + an auto-derived RunProfile
+  so scoring is fair to any model (a small/thinking model isn't penalized for a different output shape).
+- **macOS tray menu-bar companion** — a lightweight status + metrics + quick-launch companion in the
+  menu bar (colored icon/orb reflecting backend health, two-line model readout, debounced status so a
+  single blip doesn't flash red, auth-exempt status read).
 
 - **LLM Studio** — the Locker modal became a tabbed **Locker · Evaluator · History** modal (`src/components/llm/`). The **Evaluator + run History moved out of the browser-only `health_portal.html` into React** (typed `/evaluator/*` client, live 2s progress polling, shared result-detail renderer for readiness / providers / feature-parity / preflight / categories, llama-server sidecar controls). The Locker gained a **"Test this combo →"** jump to the Evaluator. `health_portal.html` is now health/smoke only.
 - **In-app System Health panel** (`src/components/health/`) — the health/smoke portal rebuilt as an in-app modal (status banner, system resources, token economy, collapsible check sections, issues + Repair, live console). Tray "Health Portal" + the util-menu now open it in-app; the static `health_portal.html` stays reachable as a **degraded-mode lifeboat** (via a "↗ Browser" button) for when the React app can't load.
@@ -43,6 +63,42 @@ A no-functionality-loss simplification pass: ~2,500 LOC and 2 dependencies remov
 
 A first-class multi-voice document format. Debate intent is detected in the **topic text** (not just the skill picker), so a deep_dive/briefing phrased as a debate routes to the pipeline: frame (central question + two stances + three shared **clash points**) → **The Advocate** → **The Skeptic** (rebuts the Advocate point-by-point) → **The Judge** (scores each clash point, delivers a no-fence-sitting verdict, and adds a unique perspective neither side raised). De-scaffolded persona prompts keep the structure invisible; the judge's `VERDICT:` / `UNIQUE PERSPECTIVE:` markers are harvested into headings; a magazine-style **standfirst** "fold" pass opens the piece. Charts use a **deterministic scorecard** (a small 1–5 scoring call → grouped-bar built in Python) because qualitative debates have no numbers for the generic chart path.
 
+### Retrieval + synthesis quality — 2026-06-30 → 07-01 (built-app verified)
+
+- **num_ctx coherence overhaul** — `ollama_service` never set `num_ctx`, so Ollama fell back to a
+  ~2048-token window and truncated everything structured/visual/ingest (the quiz "1090" bug). A shared
+  `compute_num_ctx` + RAM-tier-aware cap, unified across `ollama_service` + the `llm_service` seam, now
+  sizes the window continuously off available RAM; `context_builder`'s budget is window-aware.
+- **Corrective-CaRR** — on a high-hallucination answer the streaming retry now fetches **new** evidence
+  via `_corrective_retrieval` (query variants → re-search, deduped) and rebuilds citations/context before
+  the retry, instead of re-prompting the same evidence. Quality gates stay the safety floor (zero regression).
+- **BM25 index cache** — `hybrid_search` no longer pulls 10k docs and re-tokenizes a fresh `BM25Okapi`
+  per query; a cached, row-count-invalidated, LRU-bounded index is reused (identical ranking, no recall change).
+- **chart→table extraction** — figure-bearing PDFs now also get a markdown data table (anti-hallucination
+  guarded) appended to the chart's prose, so questions about chart values retrieve.
+- **Living-view Constellation** — the knowledge graph renders skeleton-instant and thickens edges
+  progressively as `graph-deep` jobs complete, with a "synthesizing N/M" partial-state signal.
+- **`GET /system/schedule`** — read-only observability endpoint (worker queue depth, current/last job,
+  presence tier, memory-pressure) wiring the enrichment worker + presence primitives.
+
+### Structural + local-ML plugins — 2026-06-29 → 06-30 (built-app verified)
+
+- **God-file split arc** — the four largest modules split into behavior-preserving packages via
+  deterministic AST extraction (public API byte-identical): `agents/curator.py` (5755 LOC),
+  `services/curator_brain.py` (3855), `api/chat.py` (5516), `agents/collector.py` (2716).
+- **Apple Vision OCR activated** — the dormant Apple-Vision OCR path (document/receipt/invoice/
+  slide-text/PDF-page modes) now ships in the `.app` (CoreML bundling fix); sub-second/page vs the
+  Gemma fallback, offline; semantic images (charts/diagrams/photos) still route to Gemma.
+- **spaCy entities** — the flaky phi4-JSON NER is replaced by deterministic spaCy NER behind the
+  `entity_extractor` interface (bundled `en_core_web_sm`, off-loop, zero net dependency), removing a
+  per-article LLM call and the "50%-done" knowledge-graph gap.
+- **Touch ID key gate** — search/YouTube API keys gated behind a TTL'd local-auth (Touch ID / device
+  password) session; clean on notarized `release.sh` builds.
+- **Memory off the event loop (PB-3)** — archival/core memory + `search_chunks` embeds run via
+  `asyncio.to_thread` (23 call sites) — the post-chat loop-stall source is gone.
+- **Vision-model routing** — vision execution resolves to the vision-capable **main** model (gemma4,
+  already resident) before the configured `granite` fallback, so machines without granite no longer 404.
+
 ### Built-app fixes — 2026-06-30 → 07-08
 
 - **Health Portal fully broken** — the "remove duplicate LLM Locker" cleanup cut one brace too many, leaving `switchTab()` unterminated → a JS syntax error killed the whole `<script>` (no auto-run on open, dead Run button, Labs toggle revealed nothing). Restored the brace; portal is live again.
@@ -56,6 +112,8 @@ A first-class multi-voice document format. Debate intent is detected in the **to
 - **LaTeX artifacts** — `$\to$`/`\times`/etc. leaking into prose are normalized to unicode glyphs (real `$5` prices preserved).
 - **`record_user_signal` TypeError** — a vestigial kwarg was silently killing curator user-capture/highlight/topic-interest learning signals.
 - **article-summarize UnboundLocalError** (18GB overnight soak) — `new_summary` was read after an `if needs_batch:` block that assigns it, so a re-queued article that already had a summary crashed its summarize job; now initialized before the conditional.
+- **Vision returned EMPTY on thinking-capable models** — a thinking-capable vision model spent its budget on reasoning tokens and returned no description; vision calls now force `think=False`.
+- **Curator raw-JSON leak** — internal `{query,content,score}` structures were rendering literally in user-facing Curator text (devil's-advocate counterpoint, brief block); now rendered as clean prose snippets.
 
 ## v2.0.0 — Information Cortex: Universal Canvas, Correspondent, Synthesis Layer
 
