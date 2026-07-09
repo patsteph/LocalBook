@@ -31,6 +31,97 @@ _MAX_PROMPT_VALUES = 60
 # Rows rendered in a list/table answer.
 _MAX_ANSWER_ROWS = 50
 
+# US state full-name <-> abbreviation, so a question can use either form regardless of
+# which form the column stores (users spell states out on ingest; models tend to abbreviate).
+US_STATES = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA",
+    "colorado": "CO", "connecticut": "CT", "delaware": "DE", "florida": "FL", "georgia": "GA",
+    "hawaii": "HI", "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA",
+    "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV", "new hampshire": "NH",
+    "new jersey": "NJ", "new mexico": "NM", "new york": "NY", "north carolina": "NC",
+    "north dakota": "ND", "ohio": "OH", "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA",
+    "rhode island": "RI", "south carolina": "SC", "south dakota": "SD", "tennessee": "TN",
+    "texas": "TX", "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY", "district of columbia": "DC",
+}
+_STATE_FULL = set(US_STATES.keys())
+_STATE_ABBR = {v.lower() for v in US_STATES.values()}
+
+
+def _state_form(values: List[str]) -> str:
+    """Return 'full' / 'abbr' / '' — whether a column's values are US states, and in which form."""
+    vals = [str(v).strip().lower() for v in values if str(v).strip()]
+    if len(vals) < 2:
+        return ""
+    full_hits = sum(1 for v in vals if v in _STATE_FULL)
+    abbr_hits = sum(1 for v in vals if v in _STATE_ABBR)
+    if full_hits >= max(2, 0.6 * len(vals)):
+        return "full"
+    if abbr_hits >= max(2, 0.6 * len(vals)):
+        return "abbr"
+    return ""
+
+
+_ABBR_TO_FULL = {v.lower(): k for k, v in US_STATES.items()}
+
+
+def _resolve_states(question: str, schema: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Deterministically resolve US-state mentions in the question to the EXACT value
+    stored in a state column, regardless of whether the user or the data used the full
+    name or the abbreviation. Returns [{col, value, term}] — used both to hint the prompt
+    AND to post-correct the generated SQL (LLMs are unreliable at this mapping: phi4 mapped
+    California→CA but not Texas→TX, so we neither ask nor trust it for a matched state).
+    """
+    out: List[Dict[str, str]] = []
+    ql = question.lower()
+    for t in schema:
+        for c in t.get("columns", []):
+            if not c.get("low_cardinality") or not c.get("values"):
+                continue
+            form = _state_form(c["values"])
+            if not form:
+                continue
+            stored_by_lower = {str(v).strip().lower(): str(v).strip() for v in c["values"]}
+            found: Dict[str, str] = {}  # stored value -> the term the user wrote
+
+            # Full names (incl. multi-word: "new york") — case-insensitive whole-phrase.
+            for full, abbr in US_STATES.items():
+                if re.search(r"\b" + re.escape(full) + r"\b", ql):
+                    key = full if form == "full" else abbr.lower()
+                    sv = stored_by_lower.get(key.lower())
+                    if sv:
+                        found[sv] = full.title()
+            # Abbreviations — ONLY uppercase standalone 2-letter tokens, to avoid matching
+            # common words (in→IN, or→OR, me→ME) that aren't state references.
+            for m in re.finditer(r"\b([A-Z]{2})\b", question):
+                ab = m.group(1).lower()
+                if ab in _ABBR_TO_FULL:
+                    full = _ABBR_TO_FULL[ab]
+                    key = full if form == "full" else ab
+                    sv = stored_by_lower.get(key.lower())
+                    if sv:
+                        found.setdefault(sv, m.group(1))
+
+            for sv, term in found.items():
+                out.append({"col": c["sanitized"], "value": sv, "term": term})
+    return out
+
+
+def _apply_directives_to_sql(sql: str, directives: List[Dict[str, str]]) -> str:
+    """Force the generated SQL to use the deterministically-resolved value for a resolved
+    column, overriding whatever literal the model chose (handles `col = 'x'`, `col='x'`,
+    and `LOWER(col) = 'x'`). This is the enforcement that makes state matching exact."""
+    for d in directives:
+        col, val = d["col"], d["value"].replace("'", "''")
+        pattern = (
+            r"(?:LOWER\s*\(\s*)?\b" + re.escape(col) + r"\b\s*\)?\s*"
+            r"=\s*(?:LOWER\s*\(\s*)?'[^']*'\)?"
+        )
+        sql = re.sub(pattern, f"{col} = '{val}'", sql, flags=re.IGNORECASE)
+    return sql
+
 
 def _extract_sql(text: str) -> str:
     """Pull a single SQL statement out of an LLM response (handles ``` fences, prose)."""
@@ -63,7 +154,7 @@ def safe_sql(raw: str) -> Dict[str, Any]:
     return {"ok": True, "sql": sql}
 
 
-def _build_prompt(question: str, schema: List[Dict[str, Any]]) -> str:
+def _build_prompt(question: str, schema: List[Dict[str, Any]], directives: List[Dict[str, str]]) -> str:
     lines: List[str] = []
     for t in schema:
         cols = t["columns"]
@@ -84,46 +175,66 @@ def _build_prompt(question: str, schema: List[Dict[str, Any]]) -> str:
         lines.append("")
     schema_text = "\n".join(lines)
 
+    directive_block = ""
+    if directives:
+        directive_block = (
+            "\nValue directives — use these EXACT filters (already resolved for you):\n"
+            + "\n".join(f"- the question's \"{d['term']}\" means {d['col']} = '{d['value']}'"
+                        for d in directives) + "\n"
+        )
+
     return (
         "Translate the user's question into ONE read-only SQLite SELECT over the tables below.\n\n"
         f"{schema_text}\n"
+        f"{directive_block}"
         "Rules:\n"
         "- Output ONLY the SQL. No explanation, no markdown fences.\n"
         "- Use exactly the table and column names shown (snake_case).\n"
-        "- Map natural-language values to the EXACT values listed for a column "
-        "(e.g. \"Texas\" -> state = 'TX'; \"located in Dallas\" -> city = 'Dallas'). "
-        "Value matching is case-sensitive — use the listed spelling.\n"
+        "- CRITICAL: filter using ONLY the EXACT values listed for a column. Do not abbreviate, "
+        "expand, reword, or guess a value — copy the listed spelling verbatim "
+        "(e.g. if the column lists 'Texas', write state = 'Texas', never 'TX'). Obey any value "
+        "directive above verbatim.\n"
+        "- For case-insensitive matching on OTHER text columns, compare LOWER(col) = LOWER('value').\n"
         "- \"how many\" / \"number of\" -> SELECT COUNT(*). Totals -> SUM(...). Averages -> AVG(...).\n"
         "- A single read-only SELECT only. Never modify data.\n\n"
         f"Question: {question}\nSQL:"
     )
 
 
+def _pretty(name: str) -> str:
+    """Human-friendly column header for the table (num_accounts -> Num Accounts)."""
+    return str(name).replace("_", " ").strip().title()
+
+
+def _cell(v: Any) -> str:
+    return "" if v is None else str(v)
+
+
 def _render_answer(question: str, sql: str, filename: str, result: Dict[str, Any]) -> str:
+    """Clean, user-facing answer — NO SQL / "computed from" line (that lives in the
+    expandable source citation). Scalars stand alone; multi-row results render as a
+    GFM markdown table."""
     cols = result.get("columns", [])
     rows = result.get("rows", [])
-    prov = f"\n\n_Computed directly from **{filename}** — `{sql}`_"
 
     if not rows:
-        return f"No rows matched.{prov}"
+        return "No matching rows found."
 
     # Scalar (single value) — the count/sum/avg case.
     if len(rows) == 1 and len(cols) == 1:
-        val = rows[0][0]
-        return f"**{val}**{prov}"
+        return f"**{_cell(rows[0][0])}**"
 
     # Single row, multiple columns.
     if len(rows) == 1:
-        pairs = ", ".join(f"{c} = **{v}**" for c, v in zip(cols, rows[0]))
-        return f"{pairs}{prov}"
+        return ", ".join(f"{_pretty(c)}: **{_cell(v)}**" for c, v in zip(cols, rows[0]))
 
-    # Multi-row list/table.
+    # Multi-row → GFM table.
     shown = rows[:_MAX_ANSWER_ROWS]
-    header = "| " + " | ".join(str(c) for c in cols) + " |"
+    header = "| " + " | ".join(_pretty(c) for c in cols) + " |"
     sep = "| " + " | ".join("---" for _ in cols) + " |"
-    body = "\n".join("| " + " | ".join(str(v) for v in r) + " |" for r in shown)
+    body = "\n".join("| " + " | ".join(_cell(v) for v in r) + " |" for r in shown)
     more = "" if len(rows) <= _MAX_ANSWER_ROWS else f"\n\n_…and {len(rows) - _MAX_ANSWER_ROWS} more rows._"
-    return f"**{len(rows)} result(s):**\n\n{header}\n{sep}\n{body}{more}{prov}"
+    return f"{header}\n{sep}\n{body}{more}"
 
 
 async def answer_tabular(
@@ -140,7 +251,8 @@ async def answer_tabular(
     if not schema:
         return {"ok": False, "reason": "no structured tables for this notebook"}
 
-    prompt = _build_prompt(question, schema)
+    directives = _resolve_states(question, schema)
+    prompt = _build_prompt(question, schema, directives)
     # Use the fast model (phi4) by default: it's warm + light (no 9.6GB gemma load on a
     # 16GB box) and reliable for filter/count/aggregate SQL. Loading gemma for this timed
     # out at 60s under a background-ingest flood (2026-07-09). Overridable if a complex
@@ -166,6 +278,13 @@ async def answer_tabular(
         return {"ok": False, "reason": check["reason"]}
     sql = check["sql"]
     print(f"[tabular-sql] generated: {sql}")
+
+    # Enforce the deterministically-resolved state values over whatever literal the model chose.
+    if directives:
+        corrected = _apply_directives_to_sql(sql, directives)
+        if corrected != sql:
+            print(f"[tabular-sql] directive-corrected: {corrected}")
+            sql = corrected
 
     exec_res = tabular_store.execute_readonly(sql)
     if not exec_res.get("ok"):

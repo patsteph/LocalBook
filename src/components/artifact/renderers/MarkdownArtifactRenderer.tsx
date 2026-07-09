@@ -15,6 +15,7 @@
 
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { emitEvent } from '../../../lib/events';
 import { Target } from 'lucide-react';
 import type { RendererProps } from '../../../types/artifact';
@@ -255,7 +256,7 @@ export const MarkdownArtifactRenderer: React.FC<MarkdownArtifactRendererProps> =
 
   return (
     <div className={`${proseClasses[context]} ${className}`.trim()}>
-      <ReactMarkdown components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {text}
       </ReactMarkdown>
     </div>
