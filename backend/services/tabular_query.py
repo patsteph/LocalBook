@@ -111,16 +111,78 @@ def _resolve_states(question: str, schema: List[Dict[str, Any]]) -> List[Dict[st
 
 def _apply_directives_to_sql(sql: str, directives: List[Dict[str, str]]) -> str:
     """Force the generated SQL to use the deterministically-resolved value for a resolved
-    column, overriding whatever literal the model chose (handles `col = 'x'`, `col='x'`,
-    and `LOWER(col) = 'x'`). This is the enforcement that makes state matching exact."""
+    column, overriding whatever literal/predicate the model chose. Handles `col = 'x'`,
+    `col='x'`, `LOWER(col) = 'x'`, and `col LIKE '%x%'`. This is the enforcement that makes
+    state + fuzzy value matching exact regardless of what the model wrote."""
     for d in directives:
         col, val = d["col"], d["value"].replace("'", "''")
         pattern = (
             r"(?:LOWER\s*\(\s*)?\b" + re.escape(col) + r"\b\s*\)?\s*"
-            r"=\s*(?:LOWER\s*\(\s*)?'[^']*'\)?"
+            r"(?:=|LIKE)\s*(?:LOWER\s*\(\s*)?'[^']*'\)?"
         )
         sql = re.sub(pattern, f"{col} = '{val}'", sql, flags=re.IGNORECASE)
     return sql
+
+
+# Generic tokens that don't help identify a coded value (STR_RED_RIVER_OPERATION -> {red, river}).
+_VALUE_STOPWORDS = {
+    "str", "inc", "llc", "corp", "co", "ltd", "group", "team", "unit", "div", "division",
+    "operation", "operations", "region", "regions", "area", "areas", "dept", "department",
+    "the", "of", "and", "for", "with", "its", "name", "account", "accounts",
+}
+
+
+def _content_tokens(value: str, col_name: str) -> List[str]:
+    """Distinctive tokens of a coded value — drops generic/prefix/suffix + column-name tokens."""
+    col_toks = set(re.split(r"[^a-z0-9]+", str(col_name).lower()))
+    toks = re.split(r"[^a-z0-9]+", str(value).lower())
+    return [t for t in toks if len(t) >= 3 and t not in _VALUE_STOPWORDS and t not in col_toks]
+
+
+def _resolve_fuzzy_values(question: str, schema: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Deterministically map a fuzzy phrase in the question to the EXACT stored value of a
+    low-cardinality text column (e.g. "Red River" -> operation = 'STR_RED_RIVER_OPERATION').
+
+    A value matches only if ALL of its distinctive content tokens appear as whole words in the
+    question (strict, to avoid false positives). Per column, resolve only when the best match's
+    token-count is unique (else it's ambiguous — leave it to the model). State columns are
+    handled by _resolve_states. Returns [{col, value, term}] for prompt + SQL post-correction.
+    """
+    qnorm = " " + re.sub(r"[^a-z0-9]+", " ", question.lower()).strip() + " "
+    out: List[Dict[str, str]] = []
+    for t in schema:
+        for c in t.get("columns", []):
+            if not c.get("low_cardinality") or not c.get("values"):
+                continue
+            if _state_form(c["values"]):
+                continue
+            matches = []  # (value, score, term)
+            for v in c["values"]:
+                ctoks = _content_tokens(v, c["sanitized"])
+                if not ctoks:
+                    continue
+                if all(f" {tok} " in qnorm for tok in ctoks):
+                    matches.append((str(v).strip(), len(ctoks), " ".join(ctoks)))
+            if not matches:
+                continue
+            matches.sort(key=lambda m: m[1], reverse=True)
+            if len(matches) > 1 and matches[0][1] == matches[1][1]:
+                continue  # ambiguous top score — don't force it
+            value, _score, term = matches[0]
+            out.append({"col": c["sanitized"], "value": value, "term": term})
+    return out
+
+
+def _resolve_directives(question: str, schema: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """All deterministic value resolutions: US states first, then generic fuzzy matches for
+    the remaining low-cardinality text columns (one per column, states take precedence)."""
+    directives = _resolve_states(question, schema)
+    seen = {d["col"] for d in directives}
+    for d in _resolve_fuzzy_values(question, schema):
+        if d["col"] not in seen:
+            directives.append(d)
+            seen.add(d["col"])
+    return directives
 
 
 def _extract_sql(text: str) -> str:
@@ -194,6 +256,9 @@ def _build_prompt(question: str, schema: List[Dict[str, Any]], directives: List[
         "expand, reword, or guess a value — copy the listed spelling verbatim "
         "(e.g. if the column lists 'Texas', write state = 'Texas', never 'TX'). Obey any value "
         "directive above verbatim.\n"
+        "- Add a WHERE condition ONLY for a constraint the question explicitly states. NEVER invent "
+        "an extra filter on a column the question does not mention — do NOT add clauses like "
+        "account = '...', person IN (...), etc. unless the question asks for them.\n"
         "- For case-insensitive matching on OTHER text columns, compare LOWER(col) = LOWER('value').\n"
         "- \"how many\" / \"number of\" -> SELECT COUNT(*). Totals -> SUM(...). Averages -> AVG(...).\n"
         "- A single read-only SELECT only. Never modify data.\n\n"
@@ -237,6 +302,25 @@ def _render_answer(question: str, sql: str, filename: str, result: Dict[str, Any
     return f"{header}\n{sep}\n{body}{more}"
 
 
+async def _gen_sql(prompt: str, model: str, timeout: float) -> Optional[str]:
+    """One generate+validate attempt. Returns a safe SELECT string, or None on error/timeout/
+    invalid output (so the caller can fall back to another model)."""
+    try:
+        result = await ollama_service.generate(
+            prompt=prompt, model=model, temperature=0.1, num_predict=400,
+            think=False, timeout=timeout,
+        )
+        raw = (result or {}).get("response", "")
+    except Exception as e:
+        print(f"[tabular-sql] LLM error ({model}): {type(e).__name__}: {e}")
+        return None
+    check = safe_sql(raw)
+    if not check["ok"]:
+        print(f"[tabular-sql] {model}: no valid SQL ({check['reason']}): {raw[:150]!r}")
+        return None
+    return check["sql"]
+
+
 async def answer_tabular(
     notebook_id: str,
     question: str,
@@ -251,32 +335,22 @@ async def answer_tabular(
     if not schema:
         return {"ok": False, "reason": "no structured tables for this notebook"}
 
-    directives = _resolve_states(question, schema)
+    directives = _resolve_directives(question, schema)
     prompt = _build_prompt(question, schema, directives)
-    # Use the fast model (phi4) by default: it's warm + light (no 9.6GB gemma load on a
-    # 16GB box) and reliable for filter/count/aggregate SQL. Loading gemma for this timed
-    # out at 60s under a background-ingest flood (2026-07-09). Overridable if a complex
-    # schema needs stronger SQL. Tight timeout so a contended box falls back to RAG fast.
-    sql_model = settings.tabular_sql_model or settings.ollama_fast_model
-    try:
-        result = await ollama_service.generate(
-            prompt=prompt,
-            model=sql_model,
-            temperature=0.1,
-            num_predict=400,
-            think=False,                   # no thinking tokens polluting the SQL
-            timeout=25.0,
-        )
-        raw = (result or {}).get("response", "")
-    except Exception as e:
-        print(f"[tabular-sql] LLM error: {type(e).__name__}: {e}")
-        return {"ok": False, "reason": f"llm error: {e}"}
 
-    check = safe_sql(raw)
-    if not check["ok"]:
-        print(f"[tabular-sql] REJECTED unsafe/empty ({check['reason']}): {raw[:200]!r}")
-        return {"ok": False, "reason": check["reason"]}
-    sql = check["sql"]
+    # Primary = the main model (gemma): far more reliable at text-to-SQL. The fast model (phi4)
+    # hallucinated spurious WHERE clauses (2026-07-09: invented account=/person IN filters), so
+    # it's only the FALLBACK — used when gemma times out or errors under load, so a contended box
+    # still answers (or cleanly falls back to vector RAG) without a long hang. The event-loop
+    # freeze that made the original gemma timeout fatal is fixed separately (query_stream encode_async).
+    primary = settings.tabular_sql_model or settings.ollama_model
+    fast = settings.ollama_fast_model
+    sql = await _gen_sql(prompt, primary, 25.0)
+    if sql is None and primary != fast:
+        print(f"[tabular-sql] primary ({primary}) failed/timed out -> retry with {fast}")
+        sql = await _gen_sql(prompt, fast, 20.0)
+    if sql is None:
+        return {"ok": False, "reason": "sql generation failed"}
     print(f"[tabular-sql] generated: {sql}")
 
     # Enforce the deterministically-resolved state values over whatever literal the model chose.
