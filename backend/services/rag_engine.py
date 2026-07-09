@@ -862,8 +862,12 @@ JSON:"""
             analysis_task = safe_create_task(self._analyze_query_with_llm(question), name="stream-query-analysis")
         
         # Generate embedding with basic expansion (runs in parallel with LLM analysis)
+        # NOTE: use the ASYNC encode — the sync self.encode() does a blocking requests.post
+        # on the event loop, which froze the loop under embed-flood saturation and tripped the
+        # watchdog (2026-07-09 faulthandler dump). encode_async keeps the loop alive (slow but
+        # not fatal) when Ollama is contended.
         basic_expanded = self._expand_query(question)
-        query_embedding = self.encode(basic_expanded)[0].tolist()
+        query_embedding = (await self.encode_async(basic_expanded))[0].tolist()
 
         # Phase 1b (2026-06-24): answer cache on the STREAMING path. The WS2 audit
         # found answer_cache was wired ONLY into the non-streaming query() — so
