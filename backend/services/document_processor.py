@@ -117,6 +117,25 @@ class DocumentProcessor:
             source["characters"] = characters
             source["status"] = "completed"
 
+            # Tabular structured store (2026-07-09): for spreadsheet/CSV sources, ALSO load
+            # the original typed rows into SQLite so aggregate/count questions can be answered
+            # via text-to-SQL (vector top-k can't aggregate). Additive + tabular-only + fully
+            # guarded — a failure here never affects the (already-completed) vector ingest.
+            try:
+                from config import settings as _settings
+                if _settings.tabular_structured_enabled and \
+                   str(file_format).lower() in {"xlsx", "xls", "csv", "ods"}:
+                    from storage import tabular_store
+                    tabular_store.index_source(
+                        notebook_id=notebook_id,
+                        source_id=source["id"],
+                        filename=filename,
+                        content=content,
+                        file_type=file_format,
+                    )
+            except Exception as _te:
+                print(f"[tabular] ingest hook error (non-fatal): {type(_te).__name__}: {_te}")
+
             # Curator Phase 2a: emit source_ingested so the brain knows a
             # new source landed in this notebook (consumer marks the
             # notebook digest as dirty for the next consolidation cycle).

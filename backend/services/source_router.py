@@ -324,6 +324,22 @@ class SourceRouter:
         
         return None
 
+    # ── Structured (text-to-SQL) routing ────────────────────────────────────
+    # Intents whose answers require scanning/aggregating ALL matching rows — the
+    # cases vector top-k retrieval cannot serve. These divert to the structured
+    # tabular path (SQLite + text-to-SQL) when the notebook has a tabular table.
+    STRUCTURED_INTENTS = {QueryIntent.NUMERIC, QueryIntent.COMPARISON, QueryIntent.LIST}
+
+    def structured_intent(self, query: str) -> Tuple[bool, str]:
+        """Return (wants_structured, intent_name) for the tabular SQL branch.
+
+        wants_structured is True only for aggregate/list/comparison intents — the
+        ones that need every matching row, not a semantic top-k. LOOKUP / EXPLANATION
+        / SUMMARY stay on vector RAG (they work today and read better as prose).
+        """
+        decision = self.route(query)
+        return (decision.intent in self.STRUCTURED_INTENTS, decision.intent.value)
+
 
 # Singleton instance
 source_router = SourceRouter()

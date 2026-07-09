@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     retrieval_overcollect: int = 12  # Candidates from vector search before reranking
     retrieval_top_k: int = 5  # Final chunks after reranking
 
+    # Tabular structured Q&A — load xlsx/xls/csv into typed SQLite tables at ingest and
+    # answer aggregate/count/list questions via local text-to-SQL (100% accurate counts),
+    # instead of vector top-k retrieval which cannot aggregate. Additive + tabular-only;
+    # set LOCALBOOK_TABULAR_STRUCTURED_ENABLED=false to fully disable (pure vector RAG).
+    tabular_structured_enabled: bool = True
+
     # Debug mode — enables diagnostic endpoints (health portal, RAG health)
     debug_mode: bool = False  # Set LOCALBOOK_DEBUG_MODE=true to enable
 

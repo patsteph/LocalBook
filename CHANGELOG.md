@@ -11,6 +11,26 @@ the Studio **debate/judge** format, and a codebase **simplification** pass (~2,5
 Validated by a long 18 GB overnight soak (2026-07-06→07, ~16.5 h — zero crashes/restarts, watchdog
 never fired). The only work held back for a possible v2.1.0 is the opt-in MLX text port.
 
+### Tabular structured Q&A — exact counts/aggregates over XLS/CSV (code-complete, awaiting built-app verify)
+
+Spreadsheets now get a **structured query path** alongside vector RAG, so aggregate/count/list
+questions return exact answers. Vector top-k can't aggregate — a 150-row sheet becomes ~188 chunks
+and retrieval returns ~5, so "how many accounts are located in Dallas, Texas" (9 rows across 23
+chunks) was unanswerable ("No info found"). Now those questions run as deterministic SQL.
+
+- **Typed SQLite store at ingest** (`storage/tabular_store.py`) — each `xlsx`/`xls`/`csv` sheet loads
+  into a typed table plus a catalog that records distinct values for low-cardinality text columns
+  (so the model maps "Texas"→`'TX'`, "located in Dallas"→`city='Dallas'`). Read-only execution, row cap.
+- **Local text-to-SQL** (`services/tabular_query.py`) — schema prompt → one local-LLM call → SQL-safety
+  validation (single `SELECT` only) → execute → deterministic answer (the number comes from SQL, never
+  the LLM), with the executed SQL + source as provenance.
+- **Auto-routed by intent** — `source_router.structured_intent()` sends numeric/list/comparison
+  questions to the structured path; lookups/semantic questions and all non-tabular sources stay on
+  vector RAG unchanged; any structured-path miss falls back to vector RAG. Env kill-switch
+  `LOCALBOOK_TABULAR_STRUCTURED_ENABLED=false`.
+- **Additive + guarded** — no change to general RAG logic; a delete cascade drops the tables with the
+  source (no orphans). Dev-box end-to-end verified 6/6 vs a known oracle (Dallas=9, SF=17, CA=45).
+
 ### Background Enrichment Worker ("Night Shift")
 
 A presence-aware, cancellable, dose-budgeted background worker that replaces fire-and-forget

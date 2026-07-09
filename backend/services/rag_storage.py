@@ -471,6 +471,14 @@ async def delete_source(notebook_id: str, source_id: str) -> bool:
         # v1.0.3: Clean up entities for this source
         entity_extractor.delete_source_entities(notebook_id, source_id)
 
+        # 2026-07-09: drop any structured tabular tables for this source (no orphans,
+        # matching the derived-store delete cascade). No-op for non-tabular sources.
+        try:
+            from storage import tabular_store
+            tabular_store.delete_source(source_id)
+        except Exception as _te:
+            print(f"[tabular] delete cascade error (non-fatal): {_te}")
+
         return True
     except Exception as e:
         print(f"[RAG] Error deleting source {source_id} from LanceDB: {e}")
