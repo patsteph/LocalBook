@@ -35,6 +35,7 @@ from services.visual_idioms import (
 )
 from services.visual_skeletons import get_skeleton
 from services.visual_slotfill import (
+    _KEY_SLOTS_BY_IDIOM,
     _apply_slot_fill,
     _has_unfilled_slots,
     _slotfill_system,
@@ -287,6 +288,19 @@ class SkeletonGenerator:
     async def _run_slotfill(self, content, idiom_id, model, seed) -> Optional[dict]:
         logger.info(f"[visual_freeform] {self._family} pass 2 (slotfill) idiom={idiom_id}")
         system = _slotfill_system(idiom_id)
+        # Path B — grammar-constrain the fill to the idiom's KEY slots so an MLX (or weak) model
+        # can't blank the structurally critical labels (the "empty boxes" bug). Required + non-empty
+        # strings; other slots stay optional. json_schema is MLX-only (Ollama ignores it — its own
+        # format=json is already grammar-constrained).
+        _spec = _KEY_SLOTS_BY_IDIOM.get(idiom_id)
+        _schema = None
+        if _spec and _spec[0]:
+            _keys = list(_spec[0])
+            _schema = {
+                "type": "object",
+                "properties": {k: {"type": "string", "minLength": 1} for k in _keys},
+                "required": _keys,
+            }
         result = await ollama_service.generate(
             prompt=(
                 f"SOURCE CONTENT:\n{content}\n\n"
@@ -302,6 +316,7 @@ class SkeletonGenerator:
             num_predict=self._slotfill_num_predict,
             timeout=WARM_TIMEOUT,
             format="json",
+            json_schema=_schema,
             voice_modifier=False,
         )
         raw = result.get("response", "")
