@@ -21,18 +21,7 @@ _ollama_models_lock = threading.Lock()
 
 
 # ─── MLX model card helpers (Wave 9.6) ───────────────────────────────────────
-def _mlx_friendly_name(mid: str) -> str:
-    """'mlx-community/gemma-4-e4b-it-4bit' → 'Gemma 4 e4b (MLX)'. Short, human names
-    so MLX cards read like the Ollama ones (which have display_name) instead of the
-    raw HF path (user #1)."""
-    import re
-    base = mid.split("/")[-1]
-    base = re.sub(r'-(4bit|8bit|bf16|fp16|q4|q8|q4_k_m|q8_0)$', '', base, flags=re.I)
-    base = re.sub(r'-(it|instruct|chat)$', '', base, flags=re.I)
-    words = []
-    for w in base.replace('-', ' ').split():
-        words.append(w if re.match(r'^[a-z]?\d', w) else w.capitalize())  # keep e4b/2b/4 as-is
-    return (" ".join(words) + " (MLX)").strip()
+from utils.model_display import friendly_model_name  # shared: friendly names EVERYWHERE
 
 
 def _mlx_cache_size_gb(mid: str, installed: bool) -> float:
@@ -510,9 +499,20 @@ async def get_ollama_models():
                     _c = _mprobe(_mid, provider="mlx")
                     if not _c:
                         continue
-                    _roles = _c.roles()
-                    _sr = ("vision" if _roles == ["vision_model"]
-                           else "fast" if ("fast_model" in _roles and "main_model" not in _roles)
+                    # Constrain each MLX card to the role SLOT it fills in config, not every
+                    # role its capabilities allow — so the MLX gemma shows only under Main
+                    # (+ Vision) and MLX phi only under Fast, mirroring their Ollama
+                    # counterparts instead of flooding both columns (user #2).
+                    _role_slots = []
+                    if _mid == getattr(app_settings, "mlx_main_model", None):
+                        _role_slots.append("main_model")
+                    if _mid == getattr(app_settings, "mlx_fast_model", None):
+                        _role_slots.append("fast_model")
+                    if _mid == getattr(app_settings, "mlx_vision_model", None):
+                        _role_slots.append("vision_model")
+                    _roles = list(dict.fromkeys(_role_slots)) or _c.roles()
+                    _sr = ("fast" if _role_slots == ["fast_model"]
+                           else "vision" if _role_slots == ["vision_model"]
                            else "main")
                     _installed = _tlfc(_mid, "config.json") is not None
                     # Real disk size if downloaded; otherwise an estimate so the card is
@@ -520,7 +520,7 @@ async def get_ollama_models():
                     _size_gb = _mlx_cache_size_gb(_mid, _installed) or \
                         _mlx_estimate_size_gb(_c.param_count_b, _c.quantization)
                     _card = {
-                        "name": _mid, "display_name": _mlx_friendly_name(_mid),
+                        "name": _mid, "display_name": friendly_model_name(_mid),
                         "family": _c.family, "size_gb": _size_gb,
                         "ram_required_gb": round(_size_gb * 1.3, 1) if _size_gb else 0,
                         "context_window": _c.native_ctx, "suggested_role": _sr,

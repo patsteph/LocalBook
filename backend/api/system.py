@@ -45,7 +45,11 @@ async def get_tray_status():
         fast = getattr(settings, "mlx_fast_model", "") if fast_eng == "mlx" else (getattr(settings, "ollama_fast_model", "") or "")
         vision = (getattr(settings, "mlx_vision_model", "") if vision_eng == "mlx"
                   else model_registry.resolve_vision_model(ollama_main, getattr(settings, "vision_model", "") or ""))
-        out["models"] = {"main": main, "fast": fast, "vision": vision}
+        # Friendly names in the menu bar too (user #4) — same short names as the Evaluator.
+        from utils.model_display import friendly_model_name
+        out["models"] = {"main": friendly_model_name(main),
+                         "fast": friendly_model_name(fast),
+                         "vision": friendly_model_name(vision)}
         engines = [main_eng, fast_eng, vision_eng]
         out["engine"] = ("mlx" if all(e == "mlx" for e in engines)
                          else "mixed" if any(e == "mlx" for e in engines) else "ollama")

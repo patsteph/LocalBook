@@ -166,6 +166,11 @@ class ModelCombo:
     main_engine: str = "ollama"
     fast_engine: str = "ollama"
     vision_engine: str = "ollama"
+    # Friendly display names (raw ids stay in *_model for matching/history) — the UI shows
+    # these so the Test Environment never renders the long HF path (user #3).
+    main_model_display: str = ""
+    fast_model_display: str = ""
+    vision_model_display: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -179,6 +184,9 @@ class ModelCombo:
             "main_engine": self.main_engine,
             "fast_engine": self.fast_engine,
             "vision_engine": self.vision_engine,
+            "main_model_display": self.main_model_display or self.main_model,
+            "fast_model_display": self.fast_model_display or self.fast_model,
+            "vision_model_display": self.vision_model_display or self.vision_model,
         }
 
     @classmethod
@@ -204,11 +212,14 @@ class ModelCombo:
                                                   getattr(settings, "vision_model", "") or "")
             except Exception:
                 vision = getattr(settings, "vision_model", "") or ""
-        # Build a human-readable combo name from the actual models (+ ⚡ when on MLX)
-        def _short(m, engine):
-            base = m.split("/")[-1] if "/" in m else (m.split(":")[0] if ":" in m else m)
-            return f"⚡{base}" if engine == "mlx" else base
-        combo_name = f"{_short(main, main_engine)} + {_short(fast, fast_engine)}"
+        # Friendly display names (shared helper — same names as Labs + the menu bar).
+        from utils.model_display import friendly_model_name
+        main_disp = friendly_model_name(main)
+        fast_disp = friendly_model_name(fast)
+        vision_disp = friendly_model_name(vision)
+        # Human-readable combo name from the friendly names (+ ⚡ when on MLX)
+        combo_name = (f"{'⚡' if main_engine == 'mlx' else ''}{main_disp} + "
+                      f"{'⚡' if fast_engine == 'mlx' else ''}{fast_disp}")
         return cls(
             name=combo_name,
             main_model=main,
@@ -220,6 +231,9 @@ class ModelCombo:
             main_engine=main_engine,
             fast_engine=fast_engine,
             vision_engine=vision_engine,
+            main_model_display=main_disp,
+            fast_model_display=fast_disp,
+            vision_model_display=vision_disp,
         )
 
 

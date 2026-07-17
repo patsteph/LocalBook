@@ -123,14 +123,14 @@ export function EvaluatorPanel() {
             <div className="text-xs text-gray-500 dark:text-gray-400 uppercase">Main model</div>
             <div className="text-base font-semibold text-blue-600 dark:text-blue-400 truncate flex items-center justify-center gap-1">
               {hw?.combo.main_engine === 'mlx' && <EngineTag />}
-              <span className="truncate">{hw?.combo.main_model || '—'}</span>
+              <span className="truncate">{hw?.combo.main_model_display || hw?.combo.main_model || '—'}</span>
             </div>
           </div>
           <div>
             <div className="text-xs text-gray-500 dark:text-gray-400 uppercase">Fast model</div>
             <div className="text-base font-semibold text-emerald-600 dark:text-emerald-400 truncate flex items-center justify-center gap-1">
               {hw?.combo.fast_engine === 'mlx' && <EngineTag />}
-              <span className="truncate">{hw?.combo.fast_model || '—'}</span>
+              <span className="truncate">{hw?.combo.fast_model_display || hw?.combo.fast_model || '—'}</span>
             </div>
           </div>
         </div>

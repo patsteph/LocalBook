@@ -371,11 +371,13 @@ def providers_used_summary(settings_obj) -> dict:
         ("embedding_model",   None,            None,               "embedding"),
         ("vision_model",      "vision_engine", "mlx_vision_model", "vision"),
     ):
+        from utils.model_display import friendly_model_name
         engine = getattr(settings_obj, engine_attr, "ollama") if engine_attr else "ollama"
         if engine == "mlx" and mlx_attr:
             mlx_name = getattr(settings_obj, mlx_attr, "") or ""
             if mlx_name:
-                out[role_key] = {"model": mlx_name, "provider": "mlx", "backend_url": "in-process"}
+                out[role_key] = {"model": mlx_name, "model_display": friendly_model_name(mlx_name),
+                                 "provider": "mlx", "backend_url": "in-process"}
                 continue
         model_name = getattr(settings_obj, role_attr, "") or ""
         if role_key == "vision" and model_name:
@@ -390,6 +392,7 @@ def providers_used_summary(settings_obj) -> dict:
         route = _resolve_provider(model_name)
         out[role_key] = {
             "model": model_name,
+            "model_display": friendly_model_name(model_name),
             "provider": route.provider.value,
             "backend_url": route.base_url,
         }

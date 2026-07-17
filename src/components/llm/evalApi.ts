@@ -30,6 +30,10 @@ export interface ComboInfo {
   main_engine?: string;
   fast_engine?: string;
   vision_engine?: string;
+  // Friendly short display names (raw *_model stays for history/matching).
+  main_model_display?: string;
+  fast_model_display?: string;
+  vision_model_display?: string;
 }
 export interface HardwareResponse {
   hardware: HardwareInfo;
@@ -100,6 +104,7 @@ export interface ProviderUsed {
   provider: string;
   backend_url?: string;
   model?: string;
+  model_display?: string;   // Wave 9.6 — friendly short name
 }
 export interface PreflightCheck {
   name: string;

@@ -1,4 +1,5 @@
 import { EvalResult, FeatureParity, gradeBand, GRADE_BADGE } from './evalApi';
+import { friendlyModelName } from '../../lib/friendlyModel';
 
 // Shared detail view for a single evaluation run. Rendered by the Evaluator tab
 // (auto-shown after a run) and the History tab (on card click). Faithful React
@@ -82,7 +83,7 @@ export function EvalResultDetail({ run }: { run: EvalResult }) {
                       : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
                   }`}>{info.provider}</span>
                 </div>
-                <div className="text-sm text-gray-900 dark:text-gray-100 mt-0.5 truncate">{info.model || '—'}</div>
+                <div className="text-sm text-gray-900 dark:text-gray-100 mt-0.5 truncate">{info.model_display || friendlyModelName(info.model)}</div>
                 {info.backend_url && <div className="text-xs text-gray-400 dark:text-gray-500 truncate">{info.backend_url}</div>}
               </div>
             ))}

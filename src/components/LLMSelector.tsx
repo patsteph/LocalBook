@@ -293,6 +293,14 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   // suggested_role/also_vision logic when the backend didn't send supported_roles.
   const hasMLX = models.some(m => m.provider === 'mlx');
 
+  // Friendly display name for a raw model id, via the loaded model list (which carries
+  // display_name for both Ollama and MLX). Falls back to the raw id. Used by the
+  // "Built-in default" summary line so it never shows the long HF path (user #3).
+  const friendlyName = (id?: string) => {
+    if (!id) return '—';
+    return models.find(m => m.name === id)?.display_name || id;
+  };
+
   const modelsForRole = (role: Role) => {
     const apiRole = ROLE_META[role].api_role; // main_model | fast_model | vision_model | embedding_model
     return models.filter(m => {
@@ -519,35 +527,12 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
 
   return (
     <div className="p-4 space-y-4">
-      {/* Mode Toggle */}
-      <div className="flex items-center justify-center">
-        <div className="relative inline-flex items-center bg-gray-200 dark:bg-gray-700 rounded-full p-1">
-          <button
-            onClick={() => { setMode('local'); onProviderChange('ollama'); }}
-            className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${
-              mode === 'local'
-                ? 'bg-blue-600 text-white shadow-lg'
-                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-            }`}
-          >
-            🏠 Local
-          </button>
-          <button
-            onClick={() => setMode('cloud')}
-            className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${
-              mode === 'cloud'
-                ? 'bg-blue-600 text-white shadow-lg'
-                : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-            }`}
-          >
-            ☁️ Cloud
-          </button>
-        </div>
-      </div>
+      {/* Local/Cloud toggle intentionally hidden — no cloud provider is in use right now,
+          so the Ollama/MLX engine toggle below is the primary control (keeps the view clean). */}
 
-      {/* Wave 9.6 — Engine sub-toggle (only when MLX models exist). Filters the model
-          grid to one engine so the view isn't overwhelming (#2). Embeddings always show
-          the Ollama arctic-embed regardless — there's no MLX embedding model yet. */}
+      {/* Wave 9.6 — Engine toggle (only when MLX models exist). Filters the model grid to
+          one engine so the view isn't overwhelming (#2). Embeddings always show the Ollama
+          arctic-embed regardless — there's no MLX embedding model yet. */}
       {mode === 'local' && hasMLX && (
         <div className="flex items-center justify-center">
           <div className="relative inline-flex items-center bg-gray-100 dark:bg-gray-800 rounded-full p-1 border border-gray-200 dark:border-gray-700">
@@ -612,7 +597,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                       {savedDefault.has_custom_default ? 'Saved default' : 'Built-in default'}
                     </span>
                     <span className="text-gray-600 dark:text-gray-400 truncate">
-                      {savedDefault.combo.main_model} · {savedDefault.combo.fast_model} · {savedDefault.combo.vision_model}
+                      {friendlyName(savedDefault.combo.main_model)} · {friendlyName(savedDefault.combo.fast_model)} · {friendlyName(savedDefault.combo.vision_model)}
                     </span>
                   </div>
                 </div>

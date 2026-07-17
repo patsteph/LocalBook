@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { evalApi, RunSummary, EvalResult, gradeBand, GRADE_BADGE } from './evalApi';
 import { EvalResultDetail } from './EvalResultDetail';
+import { friendlyModelName } from '../../lib/friendlyModel';
 
 // History tab: the top runs (backend returns them ranked by score) as clickable
 // cards → shared detail view. Faithful port of the portal's historical-runs grid.
@@ -76,8 +77,8 @@ export function EvalHistoryPanel() {
                 </span>
               </div>
               <div className="text-xs text-gray-500 dark:text-gray-400 space-y-0.5">
-                <div>Main: <b className="text-gray-700 dark:text-gray-300">{run.main_model || '?'}</b></div>
-                <div>Fast: <b className="text-gray-700 dark:text-gray-300">{run.fast_model || '?'}</b></div>
+                <div>Main: <b className="text-gray-700 dark:text-gray-300">{run.main_model ? friendlyModelName(run.main_model) : '?'}</b></div>
+                <div>Fast: <b className="text-gray-700 dark:text-gray-300">{run.fast_model ? friendlyModelName(run.fast_model) : '?'}</b></div>
                 <div>Time: {Math.round(run.total_time_seconds / 60)} min</div>
               </div>
             </button>

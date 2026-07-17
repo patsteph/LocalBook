@@ -446,11 +446,15 @@ async def get_default_combo():
         except Exception as _e:
             logger.debug(f"[evaluator] {type(_e).__name__}: {_e}")
     
+    # No saved custom default → report the CURRENT engine-aware config defaults (was a
+    # stale hardcoded olmo/granite combo). Keeps the "Built-in default" line truthful.
+    from evaluator.models import ModelCombo
+    c = ModelCombo.from_config(settings)
     return {
         "has_custom_default": False,
         "combo": {
-            "main_model": "olmo-3:7b-instruct",
-            "fast_model": "phi4-mini:latest",
-            "vision_model": "granite3.2-vision:2b",
+            "main_model": c.main_model,
+            "fast_model": c.fast_model,
+            "vision_model": c.vision_model,
         },
     }

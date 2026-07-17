@@ -278,6 +278,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=utils \
     --hidden-import=utils.tasks \
     --hidden-import=utils.diagnostics \
+    --hidden-import=utils.model_display \
     --hidden-import=agents \
     --hidden-import=agents.collector \
     --hidden-import=agents.curator \
