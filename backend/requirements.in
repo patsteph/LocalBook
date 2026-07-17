@@ -86,6 +86,12 @@ transformers>=5.5,<5.13
 # replaces the image_processor with its own afterwards, so torchvision is only needed to satisfy
 # the import — but the import is unavoidable via AutoProcessor. Pinned to the torch-2.9.1 sibling.
 torchvision==0.24.1; sys_platform == "darwin"
+# Wave 9.6 Path B — grammar-constrained JSON for the MLX engine. mlx-vlm's
+# `build_json_schema_logits_processor` (in mlx_vlm.structured) forces gemma/phi output to a JSON
+# schema via llguidance (a single Rust wheel — 1/10th of Outlines' weight). Makes MLX JSON as
+# reliable as Ollama's grammar-constrained mode; the fix for empty visuals / blank slot labels.
+# It's mlx-vlm's own declared dep; we install it explicitly (clean wheel, macOS arm64).
+llguidance>=1.7.0; sys_platform == "darwin"
 # Kokoro-82M TTS via kokoro-mlx (Apple Silicon, no PyTorch required)
 # Install with: pip install --no-deps kokoro-mlx
 # Only needs mlx, numpy, misaki, huggingface_hub (all already present)

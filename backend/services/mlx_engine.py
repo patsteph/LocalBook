@@ -128,8 +128,50 @@ def _ollama_shaped_generate_result(
     }
 
 
+# ─── Grammar-constrained JSON (Wave 9.6, Path B) ─────────────────────────────────
+# MLX has no native `format=json` grammar like Ollama, so JSON used to be only prompt-nudged
+# → gemma-MLX returned blank/truncated/mis-typed JSON on demanding structured outputs (empty
+# visuals, the chat 'list'.lower crash). mlx-vlm ships `build_json_schema_logits_processor`
+# (backed by llguidance, a single Rust wheel) which FORCES tokens to a JSON schema — the same
+# guarantee Ollama's JSON mode gives. Applied via the `logits_processors` hook both mlx-lm and
+# mlx-vlm honor. Permissive default ({"type":"object"}) guarantees a valid JSON object even when
+# the caller has no explicit schema.
+_PERMISSIVE_JSON_SCHEMA: Dict[str, Any] = {"type": "object"}
+
+
+def _raw_fast_tokenizer(tok_or_proc):
+    """llguidance needs a HF *fast* tokenizer (is_fast=True). The right object differs by engine:
+    mlx-vlm's `processor.tokenizer` (GemmaTokenizer) is ALREADY fast; mlx-lm's `TokenizerWrapper`
+    needs `._tokenizer` (the TokenizersBackend). Probe candidates and return the first fast one."""
+    proc_tok = getattr(tok_or_proc, "tokenizer", None)      # mlx-vlm processor → GemmaTokenizer
+    candidates = [
+        proc_tok,                                           # vlm: already fast
+        tok_or_proc,                                        # a bare tokenizer
+        getattr(tok_or_proc, "_tokenizer", None),           # mlx-lm wrapper → TokenizersBackend
+        getattr(proc_tok, "_tokenizer", None),
+    ]
+    for c in candidates:
+        if c is not None and getattr(c, "is_fast", False):
+            return c
+    return proc_tok or tok_or_proc                          # best-effort (will raise in llguidance → nudge fallback)
+
+
+def _json_logits_processor(tok_or_proc, schema):
+    """Build a fresh (stateful) JSON-schema logits processor, or None if llguidance is
+    unavailable (→ caller keeps the prompt-nudge fallback). Never raises."""
+    try:
+        from mlx_vlm.structured import build_json_schema_logits_processor  # lazy
+        raw = _raw_fast_tokenizer(tok_or_proc)
+        return build_json_schema_logits_processor(raw, schema or _PERMISSIVE_JSON_SCHEMA)
+    except Exception as e:
+        logger.warning(f"[mlx-engine] grammar-constrained JSON unavailable ({type(e).__name__}: {e}); "
+                       f"using prompt-nudge fallback")
+        return None
+
+
 # ─── Blocking generation helpers (run via thread) ────────────────────────────────
-def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, stop):
+def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, stop,
+                      logits_processors=None):
     """mlx-lm non-streaming (accumulate). Returns (text, prompt_tokens, gen_tokens, gen_ns).
     gen_ns is decode-only time (first→last token) for tokens/sec parity with Ollama."""
     from mlx_lm import stream_generate  # lazy
@@ -137,6 +179,8 @@ def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, 
     if temperature is not None:
         from mlx_lm.sample_utils import make_sampler
         kwargs["sampler"] = make_sampler(temp=max(float(temperature), 0.0))
+    if logits_processors:
+        kwargs["logits_processors"] = logits_processors  # grammar-constrained JSON
     text = ""
     ptoks = gtoks = 0
     t_first = None
@@ -153,15 +197,19 @@ def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, 
     return text, ptoks, gtoks, _since(t_first)
 
 
-def _vlm_generate_sync(model, processor, config, prompt_str, *, max_tokens, stop):
+def _vlm_generate_sync(model, processor, config, prompt_str, *, max_tokens, stop,
+                       logits_processors=None):
     """mlx-vlm text-only non-streaming (gemma). Returns (text, prompt_tokens, gen_tokens, gen_ns)."""
     from mlx_vlm import stream_generate  # lazy
     from mlx_vlm.prompt_utils import apply_chat_template
     formatted = apply_chat_template(processor, config, prompt_str, num_images=0)
+    vkwargs: Dict[str, Any] = {"image": [], "max_tokens": max_tokens}
+    if logits_processors:
+        vkwargs["logits_processors"] = logits_processors  # grammar-constrained JSON
     text = ""
     ptoks = gtoks = 0
     t_first = None
-    for resp in stream_generate(model, processor, formatted, image=[], max_tokens=max_tokens):
+    for resp in stream_generate(model, processor, formatted, **vkwargs):
         if t_first is None:
             t_first = time.perf_counter()
         text += resp.text
@@ -323,13 +371,20 @@ class MLXEngine:
         images: Optional[List[str]] = None, **kwargs: Any,
     ) -> Dict[str, Any]:
         """Non-streaming text generate → Ollama-shaped dict. Routes gemma→mlx-vlm, phi→mlx-lm."""
-        if format == "json":
-            # MLX has no `format=json` grammar; nudge the prompt (caller's robust_json_parse
-            # + schema-in-prompt do the rest — validated 9/9). Outlines is a future guarantee-tier.
-            prompt = f"{prompt}\n\nOutput ONLY valid JSON — no prose, no markdown code fences."
         kind = self._model_kind(model)
         pair = await self._load(model)
         lock = self._model_locks.setdefault(model, asyncio.Lock())
+        # Grammar-constrained JSON (Path B): force valid, schema-compliant JSON via llguidance —
+        # the Ollama-parity guarantee. Callers may pass an explicit `json_schema`; otherwise the
+        # permissive object schema still guarantees valid JSON. Falls back to the prompt-nudge if
+        # llguidance is unavailable.
+        lps = None
+        if format == "json":
+            lp = _json_logits_processor(pair[1], kwargs.get("json_schema"))
+            if lp is not None:
+                lps = [lp]
+            else:
+                prompt = f"{prompt}\n\nOutput ONLY valid JSON — no prose, no markdown code fences."
         t0 = time.perf_counter()
         async with lock:
             if kind == "vlm":
@@ -337,7 +392,7 @@ class MLXEngine:
                 cfg = self._vlm_config.get(model)
                 text, ptoks, gtoks, gen_ns = await self._run(
                     _vlm_generate_sync, mobj, processor, cfg, _combine(system, prompt),
-                    max_tokens=num_predict, stop=stop)
+                    max_tokens=num_predict, stop=stop, logits_processors=lps)
             else:
                 mobj, tok = pair
                 messages = ([{"role": "system", "content": system}] if system else []) + \
@@ -348,7 +403,7 @@ class MLXEngine:
                     prompt_str = _combine(system, prompt)
                 text, ptoks, gtoks, gen_ns = await self._run(
                     _lm_generate_sync, mobj, tok, prompt_str,
-                    max_tokens=num_predict, temperature=temperature, stop=stop)
+                    max_tokens=num_predict, temperature=temperature, stop=stop, logits_processors=lps)
         # Prefer decode-only time (Ollama parity for tokens/sec); fall back to total wall-clock.
         eval_ns = gen_ns or int((time.perf_counter() - t0) * 1e9)
         return _ollama_shaped_generate_result(

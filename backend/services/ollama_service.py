@@ -451,6 +451,7 @@ class OllamaService:
         timeout: Optional[float] = None,
         extra_options: Optional[Dict[str, Any]] = None,
         format: Optional[str] = None,
+        json_schema: Optional[Dict[str, Any]] = None,  # Wave 9.6 — grammar-constrain MLX JSON to this schema
         images: Optional[List[str]] = None,
         keep_alive: Optional[Any] = None,
         voice_modifier: bool = True,
@@ -549,7 +550,8 @@ class OllamaService:
                         prompt, model=_mlx_id, system=system,
                         temperature=options.get("temperature", 0.3),
                         num_predict=options.get("num_predict", 500),
-                        num_ctx=options.get("num_ctx"), format=format, stop=None)
+                        num_ctx=options.get("num_ctx"), format=format, stop=None,
+                        json_schema=json_schema)  # grammar-constrained JSON when a schema is given
                     _record_tokens(_res)
                     _mark_model_used(use_model)
                     logger.info(f"[OllamaService] MLX generate OK model={use_model}→{_mlx_id} "

@@ -299,6 +299,7 @@ python -W ignore -m PyInstaller \
     --collect-all=mlx_vlm \
     --collect-all=mflux \
     --collect-all=torchvision \
+    --collect-all=llguidance \
     --collect-all=misaki \
     --collect-all=spacy \
     --collect-all=en_core_web_sm \
@@ -503,7 +504,8 @@ failed = []
 # NOT shipped in the build — it was a one-off used to prove the fix; too heavy for every build.)
 mods = ['mlx_lm','mlx_lm.sample_utils','mlx_vlm','mlx_vlm.models.gemma4',
         'mlx_vlm.prompt_utils','mlx_vlm.utils','torchvision',
-        'transformers.models.diffusion_gemma']
+        'transformers.models.diffusion_gemma',
+        'llguidance','llguidance.hf','mlx_vlm.structured']  # grammar-constrained JSON (Path B)
 for m in mods:
     try:
         importlib.import_module(m)

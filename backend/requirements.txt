@@ -921,6 +921,8 @@ torch==2.9.1
     #   torchvision
 torchvision==0.24.1 ; sys_platform == "darwin"
     # via -r requirements.in
+llguidance==1.7.6 ; sys_platform == "darwin"
+    # via -r requirements.in  (grammar-constrained JSON for the MLX engine, Path B)
 tqdm==4.67.1
     # via
     #   -c /tmp/core_constraints.txt

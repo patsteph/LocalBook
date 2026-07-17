@@ -332,6 +332,27 @@ class LLMLocker:
             except Exception:
                 pass
         cls._patch_environment(changes)
+        # When the user has gone all-MLX for the text/vision roles, bring image generation onto
+        # MLX too (klein/mflux) and kick off its ~4 GB download in the background, so photorealistic
+        # visuals are ready instead of erroring "Klein model not installed" (user request 2026-07-17).
+        try:
+            from config import settings as _s
+            text_all_mlx = (getattr(_s, "main_engine", "") == "mlx"
+                            and getattr(_s, "fast_engine", "") == "mlx"
+                            and getattr(_s, "vision_engine", "") == "mlx")
+            if text_all_mlx and getattr(_s, "image_engine", "ollama") != "mlx":
+                cls._patch_environment({"image_engine": "mlx"})
+                klein = getattr(_s, "mlx_image_model", "") or getattr(_s, "mlx_image_model", "")
+                if klein:
+                    import asyncio
+                    from services.mlx_download import mlx_download_manager
+                    try:
+                        asyncio.get_running_loop().create_task(mlx_download_manager.start(klein))
+                        extra += " · image→MLX (klein downloading)"
+                    except RuntimeError:
+                        pass  # no running loop; klein downloads on first use
+        except Exception as _e:
+            logger.debug(f"[llm_locker] all-MLX klein hook skipped: {_e}")
         return f"Switched {role} to the MLX engine: {mlx_model}{extra}"
         
     @classmethod
