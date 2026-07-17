@@ -18,10 +18,12 @@ Design invariants:
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
@@ -215,6 +217,19 @@ class MLXEngine:
         self._model_locks: Dict[str, asyncio.Lock] = {}  # per-model serialization
         self._load_lock = asyncio.Lock()
         self._mem_limit_set = False
+        # ALL MLX work (load + generate + stream producer) runs on this ONE thread.
+        # mlx-lm uses thread-local GPU streams — if a model loads on pool-thread A and a
+        # later generate runs on pool-thread B, MLX raises "There is no Stream(gpu, N) in
+        # current thread" and the call fails (→ Ollama fallback, and the streaming eval
+        # test scores 0). Pinning to a single worker keeps the thread-local stream
+        # consistent. Serialization is fine: one GPU + the memory-safety invariant already
+        # want one model computing at a time.
+        self._exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx-engine")
+
+    async def _run(self, fn, *args, **kwargs):
+        """Run a blocking MLX callable on the single dedicated MLX thread."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._exec, functools.partial(fn, *args, **kwargs))
 
     @staticmethod
     def available() -> bool:
@@ -295,7 +310,7 @@ class MLXEngine:
                 from mlx_lm import load
                 return load(model_id)
 
-            pair = await asyncio.to_thread(_load)
+            pair = await self._run(_load)
             self._resident[model_id] = pair
             logger.info(f"[mlx-engine] loaded {model_id} in {time.perf_counter() - t0:.1f}s")
             return pair
@@ -320,7 +335,7 @@ class MLXEngine:
             if kind == "vlm":
                 mobj, processor = pair
                 cfg = self._vlm_config.get(model)
-                text, ptoks, gtoks, gen_ns = await asyncio.to_thread(
+                text, ptoks, gtoks, gen_ns = await self._run(
                     _vlm_generate_sync, mobj, processor, cfg, _combine(system, prompt),
                     max_tokens=num_predict, stop=stop)
             else:
@@ -331,7 +346,7 @@ class MLXEngine:
                     prompt_str = tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
                 except Exception:
                     prompt_str = _combine(system, prompt)
-                text, ptoks, gtoks, gen_ns = await asyncio.to_thread(
+                text, ptoks, gtoks, gen_ns = await self._run(
                     _lm_generate_sync, mobj, tok, prompt_str,
                     max_tokens=num_predict, temperature=temperature, stop=stop)
         # Prefer decode-only time (Ollama parity for tokens/sec); fall back to total wall-clock.
@@ -406,7 +421,7 @@ class MLXEngine:
                 loop.call_soon_threadsafe(q.put_nowait, _SENTINEL)
 
         async with lock:
-            fut = loop.run_in_executor(None, _producer)
+            fut = loop.run_in_executor(self._exec, _producer)
             try:
                 while True:
                     item = await q.get()
@@ -432,7 +447,7 @@ class MLXEngine:
         lock = self._model_locks.setdefault(model, asyncio.Lock())
         t0 = time.perf_counter()
         async with lock:
-            text, ptoks, gtoks = await asyncio.to_thread(
+            text, ptoks, gtoks = await self._run(
                 _vlm_vision_sync, mobj, processor, cfg, _combine(system, prompt), img,
                 max_tokens=num_predict)
         dur_ns = int((time.perf_counter() - t0) * 1e9)

@@ -355,7 +355,9 @@ def build_search_query(analysis: Dict, original_question: str) -> str:
         parts.append(period)
     
     if analysis.get("key_metric"):
-        metric = analysis["key_metric"].lower()
+        # str() guard: MLX's non-grammar JSON can hand back a list here (see the
+        # type-coercion in rag_engine._analyze_query_with_llm).
+        metric = str(analysis["key_metric"]).lower()
         parts.append(metric)
         parts.append("record count")
     
@@ -441,7 +443,7 @@ def verify_retrieval_quality(results: List[Dict], analysis: Dict) -> Tuple[bool,
     
     time_found = False
     for period in time_periods:
-        period_lower = period.lower()
+        period_lower = str(period).lower()
         if period_lower in combined_text:
             time_found = True
             break
@@ -459,7 +461,7 @@ def verify_retrieval_quality(results: List[Dict], analysis: Dict) -> Tuple[bool,
     
     metric_found = True
     if key_metric:
-        metric_lower = key_metric.lower()
+        metric_lower = str(key_metric).lower()
         metric_found = (
             metric_lower in combined_text or
             metric_lower.rstrip('s') in combined_text or

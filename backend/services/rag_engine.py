@@ -646,12 +646,31 @@ JSON:"""
                 from utils.json_repair import robust_json_parse
                 analysis = robust_json_parse(result, label="RAG-QueryAnalysis", fallback=None)
                 if analysis and isinstance(analysis, dict):
-                    # Sanitize: LLM can return null for any field — guard all expected keys
-                    analysis["search_terms"] = analysis.get("search_terms") or []
-                    analysis["entities"] = analysis.get("entities") or []
-                    analysis["time_periods"] = analysis.get("time_periods") or []
-                    analysis["data_type"] = analysis.get("data_type") or "explanation"
-                    analysis["key_metric"] = analysis.get("key_metric") or ""
+                    # Sanitize by TYPE, not just null. Ollama's grammar-constrained JSON mode
+                    # returns the right types; MLX (opt-in engine) only prompt-nudges JSON, so a
+                    # field can come back as a list where a string is expected (e.g. key_metric
+                    # = ["latency"]) or vice-versa. Downstream does key_metric.lower() /
+                    # period.lower() etc., so a wrong type crashed the whole query with
+                    # "'list' object has no attribute 'lower'". Coerce to the expected shape.
+                    def _as_str(v, default=""):
+                        if isinstance(v, str):
+                            return v
+                        if isinstance(v, list):
+                            return str(v[0]) if v else default
+                        return default if v is None else str(v)
+
+                    def _as_str_list(v):
+                        if isinstance(v, list):
+                            return [str(x) for x in v if x is not None and str(x).strip()]
+                        if isinstance(v, str):
+                            return [v] if v.strip() else []
+                        return []
+
+                    analysis["search_terms"] = _as_str_list(analysis.get("search_terms"))
+                    analysis["entities"] = _as_str_list(analysis.get("entities"))
+                    analysis["time_periods"] = _as_str_list(analysis.get("time_periods"))
+                    analysis["data_type"] = _as_str(analysis.get("data_type"), "explanation") or "explanation"
+                    analysis["key_metric"] = _as_str(analysis.get("key_metric"), "")
                     print(f"[RAG] LLM Query Analysis: {analysis}")
                     return analysis
         except Exception as e:
