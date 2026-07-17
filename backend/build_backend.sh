@@ -441,6 +441,20 @@ if [ -n "$VENV_TORCH" ] && [ -d "$BUNDLE_TORCH" ]; then
         "$VENV_TORCH/" "$BUNDLE_TORCH/" 2>/dev/null || true
 fi
 
+# Bring in ALL of transformers' Python source — SAME reason as torch above. PyInstaller's
+# collect_submodules("transformers") silently drops lazy model submodules that raise during its
+# import-based discovery (e.g. transformers.models.diffusion_gemma, which mlx-vlm's prompt_utils
+# imports on EVERY gemma generation via apply_chat_template). Missing it → "No module named
+# 'transformers.models.diffusion_gemma'" → gemma MLX dies and falls back to Ollama. transformers
+# is pure Python (no compiled libs to shadow), so a plain --ignore-existing rsync of the whole
+# tree is safe and ends the lazy-submodule whack-a-mole permanently (~+60 MB).
+VENV_TF=$(find .venv/lib -maxdepth 4 -path "*/site-packages/transformers" -type d 2>/dev/null | head -1)
+BUNDLE_TF="$OUTPUT_DIR/localbook-backend/_internal/transformers"
+if [ -n "$VENV_TF" ] && [ -d "$BUNDLE_TF" ]; then
+    echo -e "${YELLOW}Completing transformers Python source in bundle (lazy model submodules e.g. diffusion_gemma)...${NC}"
+    rsync -a --ignore-existing "$VENV_TF/" "$BUNDLE_TF/" 2>/dev/null || true
+fi
+
 echo -e "${GREEN}✓ Backend built: $OUTPUT_DIR/localbook-backend/${NC}"
 
 # Verify kokoro-mlx TTS bundled correctly — fail fast if any dep is missing
@@ -477,37 +491,38 @@ fi
 # MLX in Labs — assert at build time instead. Non-fatal (Ollama path unaffected).
 echo -e "${YELLOW}Verifying MLX LLM engine (mlx-lm / mlx-vlm) bundle integrity...${NC}"
 MLXLLM_EXIT=0
-PYTHONPATH="$OUTPUT_DIR/localbook-backend/_internal" python -c "
+MLX_OUT=$(PYTHONPATH="$OUTPUT_DIR/localbook-backend/_internal" python -c "
 import sys, importlib
-# Import-level checks: mlx-lm / mlx-vlm and the gemma-4 MLX model code.
-mods = ['mlx_lm','mlx_vlm','mlx_lm.sample_utils','mlx_vlm.models.gemma4']
 failed = []
+# Import the EXACT module chain the gemma runtime touches — cheap, no model load. mlx_vlm's
+# load()/apply_chat_template() pull in transformers.models.diffusion_gemma at load time (via the
+# transformers auto-registry); PyInstaller's collect_submodules drops that lazy submodule, which
+# is why gemma fell back with 'No module named transformers.models.diffusion_gemma'. Importing it
+# (+ torchvision + Gemma4Processor) directly asserts the bundle is complete. The bring-in-ALL-
+# transformers rsync above is the actual fix; this is the guard. (A full real-load smoke test is
+# NOT shipped in the build — it was a one-off used to prove the fix; too heavy for every build.)
+mods = ['mlx_lm','mlx_lm.sample_utils','mlx_vlm','mlx_vlm.models.gemma4',
+        'mlx_vlm.prompt_utils','mlx_vlm.utils','torchvision',
+        'transformers.models.diffusion_gemma']
 for m in mods:
     try:
         importlib.import_module(m)
     except Exception as e:
-        failed.append(f'{m}: {e}')
-# Runtime-path check (the one that actually matters): mlx-vlm loads gemma-4 via
-# transformers AutoProcessor -> Gemma4Processor, whose image processor eagerly imports
-# torchvision. If EITHER is missing, EVERY gemma MLX call dies and silently falls back to
-# Ollama (the 2026-07-17 fallback storm). The old check imported only the MLX model code and
-# missed this entirely — so it green-lit a broken bundle. Exercise the true path here.
+        failed.append(f'{m}: {type(e).__name__}: {e}')
 try:
-    import torchvision  # noqa: F401  (gemma-4 image processor hard-needs this)
+    from transformers import Gemma4Processor  # noqa: F401  (the processor→torchvision chain)
 except Exception as e:
-    failed.append(f'torchvision: {e}')
-try:
-    from transformers import Gemma4Processor  # noqa: F401  (triggers the torchvision import chain)
-except Exception as e:
-    failed.append(f'transformers.Gemma4Processor (gemma MLX vision/text): {e}')
+    failed.append(f'transformers.Gemma4Processor: {type(e).__name__}: {e}')
 if failed:
     print('MLX LLM ENGINE BUNDLE VERIFICATION FAILED:')
     for f in failed:
         print(f'  ✗ {f}')
     sys.exit(1)
 else:
-    print('MLX LLM engine + gemma-4 processor (torchvision) runtime path verified OK')
-" 2>/dev/null || MLXLLM_EXIT=$?
+    print('MLX LLM engine + gemma-4 import chain verified OK')
+" 2>&1); MLXLLM_EXIT=$?
+# Show the verdict line(s) without any HF noise.
+echo "$MLX_OUT" | grep -vE 'Fetching|Warning: You are sending|UserWarning|warnings.warn|mel filter|rope_parameters|zero values|it/s\]' | tail -5
 if [ $MLXLLM_EXIT -eq 0 ]; then
     echo -e "${GREEN}✓ MLX LLM engine bundle verified${NC}"
 else
