@@ -49,19 +49,27 @@ fi
 # mlx-lm / mlx-vlm: Wave 9 in-process MLX LLM engine (opt-in, dual-engine).
 # Install --no-deps because their declared trees conflict with LocalBook's (mlx-vlm pins
 # starlette>=1.0.1 vs fastapi <0.51.0; both pin transformers 5.x) — but they run fine on the
-# existing transformers 4.x. Real runtime needs (mlx>=0.32, sentencepiece, protobuf) are in
-# requirements.in. Lazy-imported: only loaded when a role's engine == "mlx".
-if ! python -c "import mlx_lm, mlx_vlm" 2>/dev/null; then
-    echo -e "${YELLOW}Installing mlx-lm + mlx-vlm (--no-deps, Wave 9 MLX engine)...${NC}"
-    pip install -q --no-deps "mlx-lm>=0.31.3" "mlx-vlm>=0.6.4" 2>/dev/null || echo -e "${YELLOW}  mlx-lm/mlx-vlm install warning (non-fatal — MLX opt-in only)${NC}"
+# existing transformers 5.12.1. Real runtime needs (mlx, torchvision, sentencepiece, protobuf)
+# are in requirements.in. Lazy-imported: only loaded when a role's engine == "mlx".
+#
+# PIN EXACT VERSIONS. Unpinned `>=` let a fresh machine pull *latest* — mlx-vlm 0.6.5 (2026-07)
+# requires transformers>=5.14, but our validated lock is 5.12.1 (0.6.4 caps at <5.13). That drift
+# is the source of the "rebuild flagging errors" reports. The version-aware guard reinstalls the
+# pinned build even when a WRONG version is already present (downgrades 0.6.5 → 0.6.4).
+MLXLM_VER="0.31.3"; MLXVLM_VER="0.6.4"
+if ! python -c "import importlib.metadata as m; assert m.version('mlx-lm')=='$MLXLM_VER' and m.version('mlx-vlm')=='$MLXVLM_VER'" 2>/dev/null; then
+    echo -e "${YELLOW}Installing mlx-lm==$MLXLM_VER + mlx-vlm==$MLXVLM_VER (--no-deps, Wave 9 MLX engine)...${NC}"
+    pip install -q --no-deps "mlx-lm==$MLXLM_VER" "mlx-vlm==$MLXVLM_VER" 2>/dev/null || echo -e "${YELLOW}  mlx-lm/mlx-vlm install warning (non-fatal — MLX opt-in only)${NC}"
 fi
 
 # mflux: FLUX.2 Klein image generation on MLX (Wave 9.3b, opt-in image_engine=mlx).
-# --no-deps to avoid re-pinning our stack; its runtime deps (mlx, numpy, Pillow,
-# huggingface_hub, tqdm) are already present. Lazy-imported.
-if ! python -c "import mflux" 2>/dev/null; then
-    echo -e "${YELLOW}Installing mflux (--no-deps, Wave 9.3b Klein/FLUX image engine)...${NC}"
-    pip install -q --no-deps "mflux>=0.18.0" 2>/dev/null || echo -e "${YELLOW}  mflux install warning (non-fatal — MLX image opt-in only)${NC}"
+# --no-deps to avoid re-pinning our stack; its runtime deps (mlx, numpy, Pillow, huggingface_hub,
+# tqdm) are already present. Lazy-imported. PINNED for the same reproducibility reason: mflux 0.18.0
+# validated against our mlx 0.32 (its declared mlx<0.32 cap is advisory — it imports + runs fine).
+MFLUX_VER="0.18.0"
+if ! python -c "import importlib.metadata as m; assert m.version('mflux')=='$MFLUX_VER'" 2>/dev/null; then
+    echo -e "${YELLOW}Installing mflux==$MFLUX_VER (--no-deps, Wave 9.3b Klein/FLUX image engine)...${NC}"
+    pip install -q --no-deps "mflux==$MFLUX_VER" 2>/dev/null || echo -e "${YELLOW}  mflux install warning (non-fatal — MLX image opt-in only)${NC}"
 fi
 
 # Ensure Playwright Chromium browser is installed — required by People Profiler social auth.
