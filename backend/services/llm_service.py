@@ -167,6 +167,40 @@ async def generate_text(
     # Merge caller-supplied overrides LAST (e.g., Mirostat for outline-first sections)
     if extra_options:
         options.update(extra_options)
+
+    # Wave 9.1 — MLX engine route (dual-engine). When the role that `use_model` fills is
+    # configured engine="mlx" (fast in 9.1; main in 9.2), generate IN-PROCESS via mlx-lm
+    # instead of the Ollama httpx path — reusing the options/num_ctx/temperature computed
+    # above and recording tokens identically. On ANY failure we fall through to the Ollama
+    # path (dual-engine safety). No-op when every engine is "ollama" (the default).
+    try:
+        from services.mlx_engine import mlx_engine, mlx_model_for_role
+        _mlx_id = mlx_model_for_role(use_model)
+    except Exception:
+        _mlx_id = None
+    if _mlx_id and mlx_engine.available():
+        try:
+            _res = await mlx_engine.generate(
+                prompt, model=_mlx_id, system=system_prompt,
+                temperature=options.get("temperature", 0.3),
+                num_predict=options.get("num_predict", num_predict),
+                num_ctx=options.get("num_ctx"),
+                stop=rag_profile.get("stop_sequences"),
+            )
+            _record_ollama_tokens(_res)
+            try:
+                from services.model_warmup import mark_fast_model_used, mark_main_model_used
+                (mark_fast_model_used if use_model == settings.ollama_fast_model
+                 else mark_main_model_used)()
+            except Exception:
+                pass
+            print(f"[mlx-engine] {use_model}→{_mlx_id} generate OK "
+                  f"({_res.get('eval_count', 0)} tok, {_res.get('eval_duration', 0)/1e9:.1f}s)")
+            return _res.get("response", "")
+        except Exception as _mlx_e:
+            logger.warning(f"[mlx-engine] generate failed ({use_model}→{_mlx_id}); "
+                           f"falling back to Ollama: {_mlx_e}")
+
     async with httpx.AsyncClient(timeout=timeout) as client:
         print(f"Calling LLM with model: {use_model}, num_predict: {num_predict}, num_ctx: {num_ctx or 'default'}")
         # Short keep_alive — warmup loop re-pings active models every 4 min
@@ -398,6 +432,39 @@ async def stream_text(
             mark_fast_model_used()
         else:
             mark_main_model_used()
+
+        # Wave 9.2 — MLX main streaming route (dual-engine). Stream in-process (gemma via
+        # mlx-vlm / phi via mlx-lm) when the model's role is engine=mlx. Yields token
+        # strings like the Ollama path + records tokens on done. Falls back to Ollama ONLY
+        # if MLX fails before emitting any token (can't cleanly resume mid-stream).
+        try:
+            from services.mlx_engine import mlx_engine, mlx_model_for_role
+            _mlx_id = mlx_model_for_role(model)
+        except Exception:
+            _mlx_id = None
+        if _mlx_id and mlx_engine.available():
+            _emitted = False
+            try:
+                async for _chunk in mlx_engine.stream_generate(
+                    prompt, model=_mlx_id, system=system_prompt,
+                    temperature=stream_options.get("temperature", 0.3),
+                    num_predict=effective_num_predict,
+                    num_ctx=stream_options.get("num_ctx"),
+                    stop=stop_sequences or None,
+                ):
+                    _t = _chunk.get("response")
+                    if _t:
+                        _emitted = True
+                        yield _t
+                    if _chunk.get("done"):
+                        _record_ollama_tokens(_chunk)
+                print(f"[mlx-engine] {model}→{_mlx_id} stream OK")
+                return
+            except Exception as _mlx_e:
+                logger.warning(f"[mlx-engine] stream failed ({model}→{_mlx_id}): {_mlx_e}")
+                if _emitted:
+                    return  # already streamed partial output — cannot restart on Ollama
+                # else fall through to the Ollama streaming path below
 
         # ── v1.7.0: provider routing ─────────────────────────────────────
         # Resolve the backend for this model. Ollama-backed models keep the

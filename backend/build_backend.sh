@@ -46,6 +46,24 @@ if ! python -c "import kokoro_mlx; import misaki; import soundfile" 2>/dev/null;
     echo -e "${RED}  Try: pip install --no-deps kokoro-mlx && pip install misaki soundfile${NC}"
 fi
 
+# mlx-lm / mlx-vlm: Wave 9 in-process MLX LLM engine (opt-in, dual-engine).
+# Install --no-deps because their declared trees conflict with LocalBook's (mlx-vlm pins
+# starlette>=1.0.1 vs fastapi <0.51.0; both pin transformers 5.x) — but they run fine on the
+# existing transformers 4.x. Real runtime needs (mlx>=0.32, sentencepiece, protobuf) are in
+# requirements.in. Lazy-imported: only loaded when a role's engine == "mlx".
+if ! python -c "import mlx_lm, mlx_vlm" 2>/dev/null; then
+    echo -e "${YELLOW}Installing mlx-lm + mlx-vlm (--no-deps, Wave 9 MLX engine)...${NC}"
+    pip install -q --no-deps "mlx-lm>=0.31.3" "mlx-vlm>=0.6.4" 2>/dev/null || echo -e "${YELLOW}  mlx-lm/mlx-vlm install warning (non-fatal — MLX opt-in only)${NC}"
+fi
+
+# mflux: FLUX.2 Klein image generation on MLX (Wave 9.3b, opt-in image_engine=mlx).
+# --no-deps to avoid re-pinning our stack; its runtime deps (mlx, numpy, Pillow,
+# huggingface_hub, tqdm) are already present. Lazy-imported.
+if ! python -c "import mflux" 2>/dev/null; then
+    echo -e "${YELLOW}Installing mflux (--no-deps, Wave 9.3b Klein/FLUX image engine)...${NC}"
+    pip install -q --no-deps "mflux>=0.18.0" 2>/dev/null || echo -e "${YELLOW}  mflux install warning (non-fatal — MLX image opt-in only)${NC}"
+fi
+
 # Ensure Playwright Chromium browser is installed — required by People Profiler social auth.
 # Without this, playwright.chromium.launch() fails with "Executable doesn't exist" error.
 if ! python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); p.chromium.executable_path; p.stop()" 2>/dev/null; then
@@ -64,6 +82,13 @@ fi
 OUTPUT_DIR="../src-tauri/resources/backend"
 
 echo -e "${YELLOW}Output: ${OUTPUT_DIR}${NC}"
+
+# Wave 9 — strip dev-only spike artifacts before bundling. scripts/ is --add-data'd whole,
+# but scripts/local/ is throwaway spikes; the sidecar-spike Swift .build alone was ~1.6 GB and
+# doubled the .app. Production only uses scripts/ root (e.g. start_bonsai_sidecar.sh).
+echo -e "${YELLOW}Stripping dev-only spike build artifacts from scripts/local...${NC}"
+rm -rf "$SCRIPT_DIR"/scripts/local/*/.build "$SCRIPT_DIR"/scripts/local/*/.swiftpm \
+       "$SCRIPT_DIR"/scripts/local/*_venv "$SCRIPT_DIR"/scripts/local/*/results 2>/dev/null || true
 
 # Clean previous build
 rm -rf "$OUTPUT_DIR"
@@ -259,6 +284,9 @@ python -W ignore -m PyInstaller \
     --collect-all=justext \
     --collect-all=mlx \
     --collect-all=mlx_whisper \
+    --collect-all=mlx_lm \
+    --collect-all=mlx_vlm \
+    --collect-all=mflux \
     --collect-all=misaki \
     --collect-all=spacy \
     --collect-all=en_core_web_sm \
@@ -382,6 +410,25 @@ if [ -n "$PANDAS_CONFIG" ]; then
     cp -r "$PANDAS_CONFIG" "$OUTPUT_DIR/localbook-backend/_internal/pandas/" 2>/dev/null || true
 fi
 
+# Bring in ALL of torch's Python source. PyInstaller's collect_submodules("torch") silently
+# drops several submodules (distributed, testing, _inductor.test_operators, …) that transformers
+# 5.x pulls in when mlx-lm/mlx-vlm resolve AutoTokenizer/AutoProcessor — without them MLX fails to
+# import and silently falls back to Ollama. Rather than chase each missing submodule, copy the whole
+# torch .py tree from the venv (only ~+48 MB — the bulk of torch is its binaries, already bundled).
+# EXCLUDE: lib/bin (the compiled .dylibs — PyInstaller already bundles them; re-copying duplicates
+# ~200 MB and risks a double-load) and _C/csrc/include/share (C-extension type stubs + headers — the
+# _C stub DIR shadows the real _C .so extension and breaks torch's init: "torch has no attribute
+# float16" circular import). --ignore-existing preserves PyInstaller's processed files.
+VENV_TORCH=$(find .venv/lib -maxdepth 4 -path "*/site-packages/torch" -type d 2>/dev/null | head -1)
+BUNDLE_TORCH="$OUTPUT_DIR/localbook-backend/_internal/torch"
+if [ -n "$VENV_TORCH" ] && [ -d "$BUNDLE_TORCH" ]; then
+    echo -e "${YELLOW}Completing torch Python source in bundle (required for MLX via transformers 5.x)...${NC}"
+    rsync -a --ignore-existing \
+        --exclude='lib/' --exclude='bin/' --exclude='_C/' --exclude='csrc/' \
+        --exclude='include/' --exclude='share/' \
+        "$VENV_TORCH/" "$BUNDLE_TORCH/" 2>/dev/null || true
+fi
+
 echo -e "${GREEN}✓ Backend built: $OUTPUT_DIR/localbook-backend/${NC}"
 
 # Verify kokoro-mlx TTS bundled correctly — fail fast if any dep is missing
@@ -411,6 +458,34 @@ if [ $TTS_EXIT -eq 0 ]; then
 else
     echo -e "${RED}✗ kokoro-mlx TTS bundle verification FAILED — check missing deps above${NC}"
     echo -e "${YELLOW}  The build will continue but TTS may not work at runtime${NC}"
+fi
+
+# Verify MLX LLM engine (Wave 9) bundled. mlx-lm/mlx-vlm are lazy-imported (only when
+# a role's engine == "mlx"), so a bundling miss would stay hidden until a user opts into
+# MLX in Labs — assert at build time instead. Non-fatal (Ollama path unaffected).
+echo -e "${YELLOW}Verifying MLX LLM engine (mlx-lm / mlx-vlm) bundle integrity...${NC}"
+MLXLLM_EXIT=0
+PYTHONPATH="$OUTPUT_DIR/localbook-backend/_internal" python -c "
+import sys, importlib
+mods = ['mlx_lm','mlx_vlm','mlx_lm.sample_utils','mlx_vlm.models.gemma4']
+failed = []
+for m in mods:
+    try:
+        importlib.import_module(m)
+    except Exception as e:
+        failed.append(f'{m}: {e}')
+if failed:
+    print('MLX LLM ENGINE BUNDLE VERIFICATION FAILED:')
+    for f in failed:
+        print(f'  ✗ {f}')
+    sys.exit(1)
+else:
+    print('MLX LLM engine (mlx-lm/mlx-vlm) imports verified OK')
+" 2>/dev/null || MLXLLM_EXIT=$?
+if [ $MLXLLM_EXIT -eq 0 ]; then
+    echo -e "${GREEN}✓ MLX LLM engine bundle verified${NC}"
+else
+    echo -e "${YELLOW}⚠ MLX LLM engine bundle verification failed — MLX opt-in won't work until fixed (Ollama path unaffected)${NC}"
 fi
 
 # Verify PyObjC frameworks (Apple Vision OCR + Touch ID keychain). These fall

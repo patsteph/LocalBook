@@ -266,16 +266,73 @@ class LLMLocker:
     def execute_swap(cls, target_ollama_name: str, role: str) -> str:
         """
         Executes the swap physically into the environment and config states.
+        Wave 9.4: engine-aware — an MLX target flips the role's engine flag to "mlx"
+        (and sets the mlx_* model id); an Ollama target flips it back to "ollama". So
+        selecting an MLX model in the Locker adopts MLX with NO .env editing.
         """
+        # MLX target → engine=mlx swap (bypasses Ollama analyze_swap / disk math).
+        if cls._is_mlx_target(target_ollama_name):
+            return cls._execute_mlx_swap(target_ollama_name, role)
+
         is_safe, message, changes = cls.analyze_swap(target_ollama_name, role)
-        
+
         if not is_safe:
             raise ModelSwapError(message)
-            
+
+        # Ensure the role's engine flag reflects an Ollama target (undo a prior MLX pin).
+        _eng = {"main_model": "main_engine", "fast_model": "fast_engine",
+                "vision_model": "vision_engine"}.get(role)
+        if _eng:
+            changes[_eng] = "ollama"
+        # Option A (reverse) — switching MAIN back to Ollama returns vision to Ollama too;
+        # its runtime `resolve_vision_model` then rides the (vision-capable) main model.
+        if role == "main_model":
+            changes["vision_engine"] = "ollama"
+
         # Write changes to the config environment
         cls._patch_environment(changes)
-        
+
         return message
+
+    @staticmethod
+    def _is_mlx_target(name: str) -> bool:
+        """True if `name` refers to an MLX model (a configured mlx_* id or a known MLX org repo)."""
+        from config import settings as s
+        if name in {getattr(s, "mlx_main_model", None), getattr(s, "mlx_fast_model", None),
+                    getattr(s, "mlx_vision_model", None)}:
+            return True
+        return "/" in name and any(name.startswith(o) for o in (
+            "mlx-community/", "Runpod/", "lmstudio-community/", "unsloth/",
+            "AITRADER/", "themindstudio/"))
+
+    @classmethod
+    def _execute_mlx_swap(cls, mlx_model: str, role: str) -> str:
+        """Flip a role to the MLX engine + set its mlx model id. Persisted + in-memory."""
+        role_map = {
+            "main_model": ("main_engine", "mlx_main_model"),
+            "fast_model": ("fast_engine", "mlx_fast_model"),
+            "vision_model": ("vision_engine", "mlx_vision_model"),
+        }
+        if role not in role_map:
+            raise ModelSwapError(f"MLX engine swap is not supported for role '{role}'")
+        eng_attr, model_attr = role_map[role]
+        changes = {eng_attr: "mlx", model_attr: mlx_model}
+        # Option A — a vision-capable MLX MAIN model absorbs the vision slot too (one gemma
+        # load serves text + vision; the memory win depends on NOT loading it twice). Mirrors
+        # the Ollama `resolve_vision_model` behaviour. Only when the model actually has vision.
+        extra = ""
+        if role == "main_model":
+            try:
+                from evaluator.capability_probe import probe_capabilities
+                caps = probe_capabilities(mlx_model, provider="mlx")
+                if caps and caps.vision:
+                    changes["vision_engine"] = "mlx"
+                    changes["mlx_vision_model"] = mlx_model
+                    extra = " (vision follows — Option A)"
+            except Exception:
+                pass
+        cls._patch_environment(changes)
+        return f"Switched {role} to the MLX engine: {mlx_model}{extra}"
         
     @classmethod
     def _patch_environment(cls, changes: Dict[str, Any]):
@@ -305,7 +362,13 @@ class LLMLocker:
                 "vision_model": "LOCALBOOK_VISION_MODEL",
                 "embedding_model": "LOCALBOOK_EMBEDDING_MODEL",
                 "embedding_dim": "LOCALBOOK_EMBEDDING_DIM",
-                "MAX_RAG_CONTEXT": "LOCALBOOK_MAX_RAG_CONTEXT"
+                "MAX_RAG_CONTEXT": "LOCALBOOK_MAX_RAG_CONTEXT",
+                # Wave 9.4 — engine flags + mlx model ids use BARE field names (pydantic
+                # reads these from .env by field name; LOCALBOOK_-prefixed keys are ignored).
+                "main_engine": "main_engine", "fast_engine": "fast_engine",
+                "vision_engine": "vision_engine", "image_engine": "image_engine",
+                "mlx_main_model": "mlx_main_model", "mlx_fast_model": "mlx_fast_model",
+                "mlx_vision_model": "mlx_vision_model",
             }
             env_key = key_map.get(k, k.upper())
             
@@ -327,6 +390,11 @@ class LLMLocker:
             setattr(settings, 'embedding_model', changes["embedding_model"])
         if "embedding_dim" in changes:
             setattr(settings, 'embedding_dim', int(changes["embedding_dim"]))
+        # Wave 9.4 — sync engine flags + mlx model ids to the live settings (session-immediate).
+        for _attr in ("main_engine", "fast_engine", "vision_engine", "image_engine",
+                      "mlx_main_model", "mlx_fast_model", "mlx_vision_model"):
+            if _attr in changes:
+                setattr(settings, _attr, changes[_attr])
             
         # Invalidate the settings/ollama/models cache so the next fetch reflects changes
         try:

@@ -378,10 +378,23 @@ async def save_default_combo(payload: dict):
         "main_model": main_model,
         "fast_model": fast_model,
         "vision_model": vision_model,
+        # Wave 9 — persist the per-role engine flags + MLX model ids from the LIVE settings
+        # (which reflect the user's Locker swaps) so an adopted MLX config survives the restart
+        # .env purge. main.py SafeStart restores these. Old prefs files without them default to
+        # "ollama" via config, so this is backward-compatible.
+        "main_engine": settings.main_engine,
+        "fast_engine": settings.fast_engine,
+        "vision_engine": settings.vision_engine,
+        "image_engine": settings.image_engine,
+        "mlx_main_model": settings.mlx_main_model,
+        "mlx_fast_model": settings.mlx_fast_model,
+        "mlx_vision_model": settings.mlx_vision_model,
+        "mlx_image_model": settings.mlx_image_model,
     }
-    
+
     prefs_path.write_text(json.dumps(existing, indent=2))
-    logger.info(f"Saved default combo: {main_model} + {fast_model}")
+    logger.info(f"Saved default combo: {main_model} + {fast_model} "
+                f"(engines: main={settings.main_engine} fast={settings.fast_engine} vision={settings.vision_engine})")
     
     return {
         "status": "success",

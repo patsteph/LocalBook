@@ -57,6 +57,27 @@ youtube-transcript-api>=0.6.0
 # Audio/Video transcription (requires ffmpeg: brew install ffmpeg)
 # v1.20: Moved to Python 3.12+ — dropped openai-whisper
 mlx-whisper; sys_platform == "darwin"  # Apple MLX Whisper — fast transcription on Apple Silicon
+# Wave 9 — in-process MLX LLM engine (dual-engine, opt-in). mlx-lm / mlx-vlm are installed
+# --no-deps in build_backend.sh (like kokoro-mlx) because their DECLARED trees conflict with
+# LocalBook's — mlx-vlm pins starlette>=1.0.1 (vs fastapi's <0.51.0) and both pin transformers
+# 5.x — yet they RUN fine on the existing transformers 4.57.5 (proven: doc 26 spike + the Wave 9.0
+# --no-deps import test: mlx_lm/mlx_vlm/gemma4 all import, and mlx-whisper/kokoro survive). So here
+# we pin only their REAL runtime needs:
+#   • bump mlx 0.30.6 -> >=0.32 (mlx-lm/mlx-vlm need mlx.core.new_thread_local_stream, absent in
+#     0.30.6; mlx-whisper needs only >=0.11 and kokoro is loose, so the bump is verified safe)
+#   • sentencepiece + protobuf (gemma / phi tokenizers)
+# All lazy-imported — never loaded unless a role's engine == "mlx".
+mlx>=0.32; sys_platform == "darwin"        # bumped from 0.30.6 (was transitive via mlx-whisper) for mlx-lm/mlx-vlm
+sentencepiece; sys_platform == "darwin"    # mlx-lm/mlx-vlm tokenizers (gemma, phi)
+protobuf; sys_platform == "darwin"         # mlx-lm/mlx-vlm tokenizers
+# Wave 9.2 — MLX gemma-4 (mlx-vlm/mlx-lm) needs the gemma-4 processor from transformers 5.x
+# (4.57.5 raises "Unrecognized processing class"). sentence-transformers 5.2.0 permits it
+# (transformers<6.0.0,>=4.41.0); mlx-vlm 0.6.4 caps at <5.13.0. The 5.x cascade forces a
+# small consistent subtree bump (huggingface-hub 1.x, click>=8.4.2, safetensors, hf-xet) —
+# each verified unconstrained (nothing caps them below). VERIFIED: backend imports,
+# sentence-transformers embeds, MLX gemma streams. ⚠️ hf-hub 0→1 has broad HF blast radius
+# (TTS/whisper/downloads) — verify in the built app.
+transformers>=5.5,<5.13
 # Kokoro-82M TTS via kokoro-mlx (Apple Silicon, no PyTorch required)
 # Install with: pip install --no-deps kokoro-mlx
 # Only needs mlx, numpy, misaki, huggingface_hub (all already present)

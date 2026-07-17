@@ -415,12 +415,69 @@ async def get_ollama_models():
                     "provider": "llama_server",
                 })
 
-    # Attach active-role flags from current settings
+        # Wave 9.4 — append MLX models (opt-in engine). Surface the configured mlx_* models so
+        # the Locker can show + select them. Caps via config.json probe (no model load); RAM-fit
+        # via ram_fit; installed = HF snapshot cached. Never fatal.
+        try:
+            from services.mlx_engine import MLXEngine as _MLXEngine
+            _mlx_ok = _MLXEngine.available()
+        except Exception:
+            _mlx_ok = False
+        if _mlx_ok:
+            try:
+                from evaluator.capability_probe import probe_capabilities as _mprobe
+                from evaluator import ram_fit as _ramfit_mod
+                from huggingface_hub import try_to_load_from_cache as _tlfc
+                try:
+                    from services.hardware_profiler import get_hardware_profile as _ghp
+                    _total_ram_mlx = float(_ghp().memory_gb)
+                except Exception:
+                    _total_ram_mlx = 0.0
+                _seen = {e.get("name") for e in enriched}
+                _mlx_ids = dict.fromkeys(
+                    getattr(app_settings, k, None)
+                    for k in ("mlx_main_model", "mlx_fast_model", "mlx_vision_model"))
+                for _mid in [x for x in _mlx_ids if x and x not in _seen]:
+                    _c = _mprobe(_mid, provider="mlx")
+                    if not _c:
+                        continue
+                    _roles = _c.roles()
+                    _sr = ("vision" if _roles == ["vision_model"]
+                           else "fast" if ("fast_model" in _roles and "main_model" not in _roles)
+                           else "main")
+                    _card = {
+                        "name": _mid, "display_name": _mid.split("/")[-1],
+                        "family": _c.family, "size_gb": 0, "ram_required_gb": 0,
+                        "context_window": _c.native_ctx, "suggested_role": _sr,
+                        "supported_roles": _roles,
+                        "capabilities": {"vision": _c.vision, "embedding": _c.embedding,
+                                         "thinking": _c.thinking, "tools": False, "audio": False},
+                        "supports_vision": _c.vision, "also_vision": _c.vision,
+                        "supports_json_mode": True, "vendor": "MLX Community",
+                        "origin_country": "", "parameter_count": _c.param_size or f"{_c.param_count_b}B",
+                        "quantization": _c.quantization, "provider": "mlx",
+                        "installed": _tlfc(_mid, "config.json") is not None,
+                        "in_registry": False, "eval_score": 0, "modified_at": "",
+                    }
+                    if _total_ram_mlx > 0 and _c.param_count_b > 0:
+                        try:
+                            _f = _ramfit_mod.ram_fit(_c.param_count_b, _c.quantization,
+                                                     _total_ram_mlx, _c.native_ctx or 8192)
+                            _card["ram_fit"] = {"fits": _f["fits"], "recommendation": _f["recommendation"]}
+                        except Exception:
+                            pass
+                    enriched.append(_card)
+            except Exception as _mlx_e:
+                logger.debug(f"[settings] MLX model enumeration failed: {_mlx_e}")
+
+    # Attach active-role flags from current settings (engine-aware: mlx role → mlx model)
+    def _active_for(engine_attr, mlx_attr, ollama_val):
+        return getattr(app_settings, mlx_attr) if getattr(app_settings, engine_attr, "ollama") == "mlx" else ollama_val
     active = {
-        "main": app_settings.ollama_model,
-        "fast": app_settings.ollama_fast_model,
+        "main": _active_for("main_engine", "mlx_main_model", app_settings.ollama_model),
+        "fast": _active_for("fast_engine", "mlx_fast_model", app_settings.ollama_fast_model),
         "embeddings": app_settings.embedding_model,
-        "vision": app_settings.vision_model,
+        "vision": _active_for("vision_engine", "mlx_vision_model", app_settings.vision_model),
     }
 
     def _names_match(config_name: str, ollama_name: str) -> bool:

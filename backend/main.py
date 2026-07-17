@@ -53,12 +53,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 # ── Safe Startup: purge LLM Locker .env overrides ────────────────────────────
-# The LLM Locker writes model swaps to .env so they take effect in-process.
-# On restart we ALWAYS revert to known-good defaults (OLMo + Phi4) so users
-# never get stuck with an OOM-inducing config they can't recover from.
+# The LLM Locker writes model/engine swaps to .env so they take effect in-process.
+# On restart we ALWAYS purge that .env so users never get stuck with an OOM-inducing
+# session config they can't recover from. The user's EXPLICITLY-SAVED default combo
+# (user_preferences.json) is re-applied below — including the Wave-9 engine flags.
 _env_path = Path(__file__).parent / ".env"
 if _env_path.exists():
-    print("[SafeStart] Removing .env overrides — reverting to known-good model config")
+    print("[SafeStart] Removing .env session overrides — reverting to the saved/default config")
     _env_path.unlink()
 
 from config import settings
@@ -79,7 +80,16 @@ if _prefs_path.exists():
             settings.ollama_fast_model = _default_combo["fast_model"]
         if _default_combo.get("vision_model"):
             settings.vision_model = _default_combo["vision_model"]
-        print(f"[SafeStart] Applied user default combo: {settings.ollama_model} + {settings.ollama_fast_model}")
+        # Wave 9 — restore per-role engine flags + MLX model ids so an adopted MLX config
+        # survives the .env purge above (persisted in user_preferences.json, the durable
+        # safe store, exactly like the Ollama model names). Absent keys keep the config
+        # defaults (all "ollama"), so an old prefs file is fully backward-compatible.
+        for _k in ("main_engine", "fast_engine", "vision_engine", "image_engine",
+                   "mlx_main_model", "mlx_fast_model", "mlx_vision_model", "mlx_image_model"):
+            if _default_combo.get(_k):
+                setattr(settings, _k, _default_combo[_k])
+        print(f"[SafeStart] Applied user default combo: {settings.ollama_model} + {settings.ollama_fast_model} "
+              f"(engines: main={settings.main_engine} fast={settings.fast_engine} vision={settings.vision_engine})")
     except Exception as e:
         print(f"[SafeStart] Failed to load user preferences, using built-in defaults: {e}")
 

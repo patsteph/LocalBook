@@ -238,13 +238,61 @@ class OllamaCapabilityProbe:
         return caps
 
 
+def _estimate_param_b_from_id(model: str, cfg: dict) -> float:
+    """Best-effort param count (billions) for RAM-fit. config.json has no direct count,
+    so parse the model id (…-4B, e4b, mini) with a hidden-size fallback."""
+    import re
+    m = re.search(r"(\d+(?:\.\d+)?)\s*b\b", model.lower())
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            pass
+    low = model.lower()
+    if "e4b" in low or "mini" in low:
+        return 4.0
+    if "e2b" in low:
+        return 2.0
+    return 0.0
+
+
 class MLXCapabilityProbe:
-    """Stub for build D — reads config.json (model_type/architectures/vision_config)
-    + tokenizer chat_template(.jinja). Not wired until the MLX engine lands."""
+    """Wave 9.4 — reads the MLX checkpoint's config.json to derive capabilities.
+    vision ← `vision_config`; embedding ← model_type/architectures; native_ctx ←
+    max_position_embeddings; quantization ← `quantization.bits`. Only a cheap
+    config.json fetch (never the whole model)."""
     provider = "mlx"
 
-    def probe(self, model: str) -> Optional[ProbedCapabilities]:  # pragma: no cover
-        return None
+    def probe(self, model: str) -> Optional[ProbedCapabilities]:
+        if not model:
+            return None
+        try:
+            from huggingface_hub import hf_hub_download
+            import json
+            cfg = json.load(open(hf_hub_download(model, "config.json")))
+        except Exception:
+            return None
+        tcfg = cfg.get("text_config", cfg) if isinstance(cfg.get("text_config"), dict) else cfg
+        model_type = str(cfg.get("model_type", "") or "")
+        archs = [str(a) for a in (cfg.get("architectures") or [])]
+        vision = cfg.get("vision_config") is not None
+        is_embed = ("embed" in model_type.lower()
+                    or any("embed" in a.lower() or "roberta" in a.lower() for a in archs))
+        quant = cfg.get("quantization")
+        bits = quant.get("bits") if isinstance(quant, dict) else None
+        ctx = int(tcfg.get("max_position_embeddings") or cfg.get("max_position_embeddings") or 0)
+        hidden = int(tcfg.get("hidden_size") or cfg.get("hidden_size") or 0)
+        return ProbedCapabilities(
+            model=model, provider="mlx", source="probe",
+            text=not is_embed, vision=vision, embedding=is_embed,
+            thinking=False,  # rag_profile controls thinking suppression at call time
+            native_ctx=ctx,
+            embedding_dim=hidden if is_embed else 0,
+            quantization=(f"Q{bits}" if bits else ""),
+            param_count_b=_estimate_param_b_from_id(model, cfg),
+            family=model_type,
+            raw_capabilities=(["vision"] if vision else []) + (["embedding"] if is_embed else ["completion"]),
+        )
 
 
 # ── Dispatcher: probe-first, registry as OVERRIDE only ───────────────────────────

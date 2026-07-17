@@ -532,6 +532,33 @@ class OllamaService:
         if _final_think is not None:
             payload["think"] = _final_think
 
+        # Wave 9.2b — MLX engine route for text + STRUCTURED (dual-engine). structured_llm's
+        # JSON methods call this with the main model + format="json"; when main_engine=mlx we
+        # generate in-process via mlx-vlm (gemma) and let the caller's robust_json_parse handle
+        # validity (prompt+parse validated 9/9 — no Outlines dep needed). Vision (images) routes
+        # through vision_describe (9.3), not here. Falls back to Ollama on error.
+        if not images:
+            try:
+                from services.mlx_engine import mlx_engine, mlx_model_for_role
+                _mlx_id = mlx_model_for_role(use_model)
+            except Exception:
+                _mlx_id = None
+            if _mlx_id and mlx_engine.available():
+                try:
+                    _res = await mlx_engine.generate(
+                        prompt, model=_mlx_id, system=system,
+                        temperature=options.get("temperature", 0.3),
+                        num_predict=options.get("num_predict", 500),
+                        num_ctx=options.get("num_ctx"), format=format, stop=None)
+                    _record_tokens(_res)
+                    _mark_model_used(use_model)
+                    logger.info(f"[OllamaService] MLX generate OK model={use_model}→{_mlx_id} "
+                                f"format={format} tokens={_res.get('eval_count', '?')}")
+                    return _res
+                except Exception as _mlx_e:
+                    logger.warning(f"[OllamaService] MLX generate failed ({use_model}→{_mlx_id}); "
+                                   f"Ollama fallback: {_mlx_e}")
+
         client = self._get_client()
         read_timeout = timeout or 600.0
         _caller = _get_caller()
@@ -770,6 +797,25 @@ class OllamaService:
                 model = model_registry.resolve_vision_model(settings.ollama_model, settings.vision_model)
             except Exception:
                 model = settings.vision_model
+
+        # Wave 9.3 — MLX semantic-vision route (dual-engine). OCR already went to Apple Vision
+        # (fast-path above); this is chart/diagram/photo DESCRIPTION → mlx-vlm gemma when
+        # vision_engine=mlx (same one gemma load as text). Falls back to Ollama on error.
+        try:
+            from services.mlx_engine import mlx_engine, mlx_vision_model_if_enabled
+            _mlx_vid = mlx_vision_model_if_enabled()
+        except Exception:
+            _mlx_vid = None
+        if _mlx_vid and mlx_engine.available():
+            try:
+                _res = await mlx_engine.vision_describe(
+                    image_b64, prompt, model=_mlx_vid, num_predict=num_predict or 400)
+                _mark_model_used(_mlx_vid)
+                _desc = _res.get("response", "")
+                logger.info(f"[OllamaService] MLX vision OK model→{_mlx_vid} ({len(_desc)} chars)")
+                return _desc
+            except Exception as _mlx_e:
+                logger.warning(f"[OllamaService] MLX vision failed (→{_mlx_vid}); Ollama fallback: {_mlx_e}")
 
         profile: Dict[str, Any] = {}
         try:

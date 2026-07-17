@@ -26,6 +26,8 @@ interface OllamaModel {
   in_registry: boolean;
   // v1.7.0: backend that serves this model — "ollama" (default) or "llama_server" (sidecar)
   provider?: string;
+  // Wave 9: MLX models — whether the HF snapshot is already downloaded to the local cache.
+  installed?: boolean;
   // Locker rebuild build E: probe-derived capability truth (may be absent on an
   // older backend — the UI falls back to suggested_role/supports_vision then).
   supported_roles?: string[];  // e.g. ["main_model","fast_model","vision_model"]
@@ -298,9 +300,11 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     const isSwitching = switching === key;
     const isActive = active[role] === m.name;
     const isSidecar = m.provider === 'llama_server';
+    const isMLX = m.provider === 'mlx';
     // Phase 2 (v1.8.0): sidecar models are fully selectable. The backend
     // auto-starts llama-server when the swap endpoint receives a
-    // llama_server-provider target.
+    // llama_server-provider target. Wave 9: MLX models run in-process (Apple
+    // Silicon) — selecting one flips that role's engine to MLX.
 
     return (
       <div
@@ -308,11 +312,21 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
         className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all ${
           isActive
             ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50 dark:bg-emerald-900/10'
+            : isMLX
+            ? 'border-amber-300 dark:border-amber-700/60 bg-amber-50/40 dark:bg-amber-900/10 hover:border-amber-400 dark:hover:border-amber-600'
             : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600'
         }`}
       >
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+            {isMLX && (
+              <span
+                title="Runs in-process on Apple MLX — faster, ~½ the RAM of the Ollama build. Selecting this flips the role to the MLX engine."
+                className="px-2 py-0.5 text-xs font-bold rounded-md bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-sm tracking-wide"
+              >
+                ⚡ MLX
+              </span>
+            )}
             <span className="font-medium text-sm text-gray-900 dark:text-white truncate">
               {m.display_name}
             </span>
@@ -337,6 +351,14 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                 Community
               </span>
             )}
+            {isMLX && m.installed === false && (
+              <span
+                title="Not downloaded yet. These models are large (2–5 GB); the first use downloads it from Hugging Face — this may take a few minutes."
+                className="px-1.5 py-0.5 text-xs rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
+              >
+                ⬇ Downloads on first use
+              </span>
+            )}
           </div>
           <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500 dark:text-gray-400">
             <span>{m.size_gb} GB disk</span>
@@ -348,7 +370,15 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
         <button
           onClick={() => !isActive && handleSwitch(m.name, role)}
           disabled={isActive || isSwitching}
-          title={isSidecar ? 'Switching to this model will auto-start the llama-server sidecar (may take 10–20 s on first use).' : undefined}
+          title={
+            isSidecar
+              ? 'Switching to this model will auto-start the llama-server sidecar (may take 10–20 s on first use).'
+              : isMLX && m.installed === false
+              ? 'First use downloads this model (2–5 GB) from Hugging Face — may take a few minutes.'
+              : isMLX
+              ? 'Runs in-process on Apple MLX. Switches this role (and Vision, if this is a vision-capable Main model) to the MLX engine.'
+              : undefined
+          }
           className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
             isActive
               ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 cursor-default'
@@ -484,6 +514,39 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                   {switchMsg.text}
                 </div>
               )}
+              {/* Wave 9 — engine-consistency nudge. Mixing MLX + Ollama across the text/
+                  vision roles keeps a model family resident on BOTH engines (≈2× RAM), which
+                  defeats the MLX memory win. Encourage going all-MLX (or all-Ollama). */}
+              {(() => {
+                const providerOf = (name?: string) =>
+                  models.find(mm => mm.name === name)?.provider ?? 'ollama';
+                const engines = (['main', 'fast', 'vision'] as Role[]).map(r => providerOf(active[r]));
+                const anyMLX = engines.includes('mlx');
+                const allMLX = anyMLX && engines.every(e => e === 'mlx');
+                if (anyMLX && !allMLX) {
+                  return (
+                    <div className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200">
+                      <span className="text-base leading-none">⚡</span>
+                      <span>
+                        <strong>Mixed engines — go all-MLX for the full benefit.</strong> Some roles run on
+                        MLX and others on Ollama. Running the same model family on both engines keeps it
+                        loaded twice (≈2× RAM), which cancels out MLX's memory savings. Switch the remaining
+                        roles to their <span className="font-semibold">⚡ MLX</span> variants (Main, Fast, Vision)
+                        for the best speed + footprint.
+                      </span>
+                    </div>
+                  );
+                }
+                if (allMLX) {
+                  return (
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200">
+                      <span className="text-base leading-none">⚡</span>
+                      <span><strong>Fully on MLX.</strong> Main, Fast, and Vision all run in-process — Ollama can idle.</span>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
               {/* 2×2 grid (Main/Fast on top, Vision/Embeddings below) instead of
                   four cramped columns across — reads far better in the modal. */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

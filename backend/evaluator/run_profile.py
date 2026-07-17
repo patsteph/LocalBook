@@ -78,9 +78,26 @@ def derive_run_profile(model: str, provider: str = "ollama", caps=None) -> RunPr
     be passed to avoid a redundant probe. Never raises — falls back to a safe
     default profile when the engine is unreachable."""
     if provider == "mlx":
-        # Build D: read tokenizer_config.json chat_template OR chat_template.jinja,
-        # plus generation_config for thinking/stops. Stubbed for now.
-        return RunProfile(model=model, provider="mlx", source="default", template_source="none")
+        # Wave 9.4 — mlx-lm/mlx-vlm apply the model's own HF chat template internally
+        # (tokenizer_config.json / chat_template.jinja), so template_source is hf-tokenizer.
+        # Thinking is suppressed at the prompt/rag_profile layer (no engine `think` param);
+        # the normalizer strips <think> either way. Stops are handled in the MLX generate loop.
+        if caps is None:
+            try:
+                from evaluator.capability_probe import probe_capabilities
+                caps = probe_capabilities(model, provider="mlx")
+            except Exception:
+                caps = None
+        return RunProfile(
+            model=model, provider="mlx",
+            source="probe" if caps is not None else "default",
+            thinking_capable=bool(getattr(caps, "thinking", False)),
+            thinking_enabled=False,
+            thinking_param=None,
+            stop_sequences=[],
+            template_source="hf-tokenizer",
+            normalize_filters=["strip_thinking"],
+        )
 
     # ── Ollama ──
     if caps is None:

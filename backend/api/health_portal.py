@@ -371,6 +371,40 @@ async def full_health_check():
               },
           })
 
+          # Wave 9 — MLX engine status. Reports which roles run in-process on MLX and whether
+          # their models are downloaded. Non-fatal (MLX is opt-in; Ollama is the fallback).
+          try:
+              _mlx_active = {r: getattr(settings, f"{r}_engine", "ollama")
+                             for r in ("main", "fast", "vision", "image")
+                             if getattr(settings, f"{r}_engine", "ollama") == "mlx"}
+              if _mlx_active:
+                  from services.mlx_engine import MLXEngine
+                  from huggingface_hub import try_to_load_from_cache
+                  _deps_ok = MLXEngine.available()
+                  _model_of = {"main": settings.mlx_main_model, "fast": settings.mlx_fast_model,
+                               "vision": settings.mlx_vision_model, "image": settings.mlx_image_model}
+                  _pending = [_model_of[r] for r in _mlx_active
+                              if try_to_load_from_cache(_model_of[r], "config.json") is None]
+                  add_check("ai_models", {
+                      "name": "mlx_engine",
+                      "display": "MLX Engine (in-process)",
+                      "status": "fail" if not _deps_ok else ("warn" if _pending else "pass"),
+                      "details": {
+                          "roles_on_mlx": list(_mlx_active.keys()),
+                          "deps_available": _deps_ok,
+                          "models_pending_download": _pending,
+                      },
+                  })
+                  if not _deps_ok:
+                      results["issues"].append({
+                          "severity": "medium",
+                          "title": "MLX engine unavailable",
+                          "message": "A role is set to the MLX engine but mlx-lm/mlx-vlm aren't importable — those roles are falling back to Ollama. Rebuild the app to bundle the MLX deps.",
+                          "repair": None,
+                      })
+          except Exception as _mlxe:
+              logger.debug(f"[health] MLX check skipped: {_mlxe}")
+
           if not main_loaded:
               if main_route.provider is _Provider.LLAMA_SERVER:
                   results["issues"].append({

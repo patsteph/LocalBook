@@ -81,6 +81,23 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     anthropic_api_key: str = ""
 
+    # ── Engine selection (Wave 9 — dual-engine Ollama|MLX, per role) ──────────
+    # Default "ollama" everywhere = byte-identical to today. A role is flipped to
+    # "mlx" in LLM Labs after the user validates it (opt-in; MLX models are never
+    # auto-downloaded on startup). These are INERT until the MLX engine is wired
+    # into the llm_service seam (Wave 9.1+); adding them here is scaffolding only.
+    # See READFIRST/in-progress/wave9-mlx-production.md.
+    main_engine: str = "ollama"     # ollama | mlx — main chat / RAG / structured
+    fast_engine: str = "ollama"     # ollama | mlx — intent, follow-ups, classify
+    vision_engine: str = "ollama"   # ollama | mlx — semantic image description
+    image_engine: str = "ollama"    # ollama | mlx — Klein / FLUX image generation
+    embed_engine: str = "ollama"    # ollama only for v2.1.0 (MLX swap needs re-index)
+    # MLX model ids per role — used only when that role's engine == "mlx".
+    mlx_main_model: str = "mlx-community/gemma-4-e4b-it-4bit"
+    mlx_fast_model: str = "mlx-community/Phi-4-mini-instruct-4bit"
+    mlx_vision_model: str = "mlx-community/gemma-4-e4b-it-4bit"
+    mlx_image_model: str = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+
     # Embedding settings
     # snowflake-arctic-embed2: 1024 dims, frontier model, excellent retrieval quality
     # Upgrade from nomic-embed-text (768 dims) for better semantic matching

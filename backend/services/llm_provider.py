@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 class Provider(str, Enum):
     OLLAMA = "ollama"                 # default — native /api/generate, /api/chat
     LLAMA_SERVER = "llama_server"     # OpenAI-compatible sidecar (/v1/chat/completions)
+    MLX = "mlx"                       # Wave 9 — in-process MLX (mlx-lm / mlx-vlm); routed
+                                      # via the engine check in llm_service, not an HTTP route.
 
     @classmethod
     def from_str(cls, value: Optional[str]) -> "Provider":

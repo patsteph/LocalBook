@@ -101,6 +101,9 @@ class KleinDiffusionService:
     def __init__(self):
         self._warmed = False
         self._warm_lock = asyncio.Lock()
+        # Wave 9.3b — mflux (FLUX.2 Klein on MLX) resident model, lazy-loaded once.
+        self._mflux_model = None
+        self._mflux_lock = asyncio.Lock()
 
     async def generate(
         self,
@@ -134,6 +137,24 @@ class KleinDiffusionService:
                 On concurrent-mode machines you can leave it loaded.
         """
         cap = capability or await get_capability()
+
+        # Wave 9.3b — MLX image engine (Klein/FLUX via mflux). When image_engine=mlx, generate
+        # in-process via mflux instead of Ollama x/flux2-klein — same dims/steps, no negative
+        # prompt (FLUX.2 is CFG-distilled). Bypasses the Ollama klein_model check. Dual-engine
+        # fallback to Ollama on error.
+        if getattr(settings, "image_engine", "ollama") == "mlx":
+            rw, rh, rs = resolve_dimensions(aspect_ratio, quality_tier)
+            res = await self._generate_mflux(
+                prompt,
+                width=width if width is not None else rw,
+                height=height if height is not None else rh,
+                steps=steps if steps is not None else rs,
+            )
+            if res.success:
+                return res
+            logger.warning(f"[visual_diffusion] mflux failed ({res.error}); Ollama fallback")
+            # fall through to the Ollama path below
+
         if not cap.klein_model:
             return DiffusionResult(
                 success=False,
@@ -233,6 +254,62 @@ class KleinDiffusionService:
             model=model,
             prompt_used=prompt,
         )
+
+    async def _load_mflux(self):
+        """Load (cache) the mflux FLUX.2 Klein model. Loads once; runs off-loop."""
+        if self._mflux_model is not None:
+            return self._mflux_model
+        async with self._mflux_lock:
+            if self._mflux_model is not None:
+                return self._mflux_model
+
+            def _load():
+                from mflux.models.common.config import ModelConfig  # lazy
+                from mflux.models.flux2.variants import Flux2Klein
+                cfg = ModelConfig.from_name(model_name="flux2-klein-4b")
+                # model_path = the pre-quantized 4-bit mflux weights (HF repo);
+                # quantize=4 matches. NOTE: confirm these constructor args on the
+                # first real generate (the ~4.3 GB download is the build DoD).
+                return Flux2Klein(
+                    model_config=cfg, quantize=4,
+                    model_path=settings.mlx_image_model,
+                    lora_paths=None, lora_scales=None)
+
+            self._mflux_model = await asyncio.to_thread(_load)
+            logger.info(f"[visual_diffusion] mflux Klein loaded ({settings.mlx_image_model})")
+            return self._mflux_model
+
+    async def _generate_mflux(self, prompt: str, *, width: int, height: int, steps: int) -> DiffusionResult:
+        """Generate a PNG via mflux FLUX.2 Klein (MLX, in-process). → DiffusionResult."""
+        t0 = time.time()
+        try:
+            model = await self._load_mflux()
+        except Exception as e:
+            return DiffusionResult(success=False, model=settings.mlx_image_model,
+                                   error=f"mflux Klein load failed: {e}")
+
+        def _gen() -> bytes:
+            import io
+            image = model.generate_image(
+                seed=42, prompt=prompt, width=width, height=height,
+                guidance=1.0, num_inference_steps=steps,
+                scheduler="flow_match_euler_discrete")
+            pil = getattr(image, "image", image)   # GeneratedImage.image is a PIL Image
+            buf = io.BytesIO()
+            pil.save(buf, format="PNG")
+            return buf.getvalue()
+
+        try:
+            logger.info(f"[visual_diffusion] mflux generate {width}x{height} steps={steps}")
+            png = await asyncio.to_thread(_gen)
+        except Exception as e:
+            return DiffusionResult(success=False, model=settings.mlx_image_model,
+                                   elapsed_ms=int((time.time() - t0) * 1000),
+                                   error=f"mflux Klein generate failed: {e}")
+        return DiffusionResult(
+            success=True, png_bytes=png, width=width, height=height,
+            elapsed_ms=int((time.time() - t0) * 1000),
+            model=settings.mlx_image_model, prompt_used=prompt)
 
     async def _prewarm(self, model: str) -> bool:
         """Tiny first request to load Klein into VRAM. Best-effort."""

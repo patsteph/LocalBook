@@ -38,7 +38,7 @@ REQUIRED_MODELS = [
     (m, d) for m, d in _RAW_REQUIRED_MODELS if not (m in _seen_models or _seen_models.add(m))
 ]
 
-# Minimum Ollama version required for OLMO model support
+# Minimum Ollama version (broad floor for the current gemma/phi models)
 MIN_OLLAMA_VERSION = "0.5.0"
 
 # Expected embedding dimension for snowflake-arctic-embed2
@@ -75,14 +75,14 @@ async def run_all_startup_checks(status_callback=None) -> Dict[str, Any]:
         update_status("checking", "Verifying data directory...", 10)
         results["data_migration"] = verify_data_directory()
         
-        # Step 2: Check Ollama version (required for OLMO support)
+        # Step 2: Check Ollama version (broad floor)
         update_status("checking", "Checking Ollama version...", 15)
         version_ok, current_version, min_version = await check_ollama_version()
         results["ollama_version"] = current_version
         results["ollama_version_ok"] = version_ok
         
         if not version_ok:
-            error_msg = f"Ollama version {current_version} is too old. Please update to {min_version}+ for OLMO support. Run: ollama --version to check, then update Ollama from ollama.ai"
+            error_msg = f"Ollama version {current_version} is too old. Please update to {min_version}+. Run: ollama --version to check, then update Ollama from ollama.ai"
             results["errors"].append(error_msg)
             update_status("error", error_msg, 20)
         
@@ -93,13 +93,14 @@ async def run_all_startup_checks(status_callback=None) -> Dict[str, Any]:
         results["models_missing"] = missing
         
         if missing:
-            update_status("warning", f"Missing models: {', '.join([m[0] for m in missing])}", 25)
-            # Try to pull missing models
-            for model_name, description in missing:
-                update_status("downloading", f"Downloading {model_name}...", 30)
-                success = await pull_ollama_model(model_name)
-                if not success:
-                    results["errors"].append(f"Failed to download {model_name}")
+            # Wave 9 (decision #1) — NEVER auto-download on startup. Report the missing
+            # models and let the user install them explicitly (LLM Labs, or `ollama pull`).
+            # Auto-pulling at boot surprised users with multi-GB downloads and stalled launch.
+            _missing_names = ", ".join([m[0] for m in missing])
+            update_status("warning", f"Models not installed (install in LLM Labs): {_missing_names}", 25)
+            results["errors"].append(
+                f"Models not installed: {_missing_names}. Install them in LLM Labs "
+                f"or run `ollama pull <model>`. (Not auto-downloaded — Wave 9 decision.)")
         
         # Step 3: Check RAG embedding dimensions
         update_status("checking", "Checking embedding compatibility...", 50)
@@ -164,7 +165,7 @@ def parse_version(version_str: str) -> Tuple[int, int, int]:
 
 async def check_ollama_version() -> Tuple[bool, str, str]:
     """
-    Check if Ollama version meets minimum requirements for OLMO support.
+    Check if Ollama version meets minimum requirements.
     
     Returns:
         Tuple of (version_ok, current_version, min_version)
@@ -180,7 +181,7 @@ async def check_ollama_version() -> Tuple[bool, str, str]:
                 
                 version_ok = current_tuple >= min_tuple
                 if not version_ok:
-                    print(f"[Startup] Ollama version {current} is below minimum {MIN_OLLAMA_VERSION} required for OLMO")
+                    print(f"[Startup] Ollama version {current} is below minimum {MIN_OLLAMA_VERSION}")
                 else:
                     print(f"[Startup] Ollama version {current} meets requirements")
                 
