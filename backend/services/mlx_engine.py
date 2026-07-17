@@ -374,16 +374,19 @@ class MLXEngine:
         kind = self._model_kind(model)
         pair = await self._load(model)
         lock = self._model_locks.setdefault(model, asyncio.Lock())
-        # Grammar-constrained JSON (Path B): force valid, schema-compliant JSON via llguidance —
-        # the Ollama-parity guarantee. Callers may pass an explicit `json_schema`; otherwise the
-        # permissive object schema still guarantees valid JSON. Falls back to the prompt-nudge if
-        # llguidance is unavailable.
+        # Grammar-constrained JSON (Path B): force schema-compliant JSON via llguidance — but ONLY
+        # when the caller passes an explicit `json_schema`. A permissive `{"type":"object"}` grammar
+        # is a trap: the model can satisfy it with an empty `{}` and skip every field, which broke the
+        # schema-less idiom picker (it got `{}` → failed → fell to the template path). So schema-less
+        # `format=json` keeps the prompt-nudge (its long-proven behaviour); grammar is opt-in per schema.
         lps = None
         if format == "json":
-            lp = _json_logits_processor(pair[1], kwargs.get("json_schema"))
-            if lp is not None:
-                lps = [lp]
-            else:
+            schema = kwargs.get("json_schema")
+            if schema:
+                lp = _json_logits_processor(pair[1], schema)
+                if lp is not None:
+                    lps = [lp]
+            if lps is None:
                 prompt = f"{prompt}\n\nOutput ONLY valid JSON — no prose, no markdown code fences."
         t0 = time.perf_counter()
         async with lock:
