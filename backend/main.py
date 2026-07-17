@@ -74,11 +74,16 @@ if _prefs_path.exists():
     try:
         _prefs = _json.loads(_prefs_path.read_text())
         _default_combo = _prefs.get("default_combo", {})
-        if _default_combo.get("main_model"):
+        # Only overwrite the OLLAMA model name for a role that's actually on Ollama. When the
+        # saved default is MLX, main_model is a HuggingFace id (mlx-community/…); writing that
+        # into settings.ollama_model would break the Ollama FALLBACK path (Ollama 404s on an HF
+        # id). For MLX roles the engine flags + mlx_* ids below carry the config, and ollama_model
+        # stays at its valid config default so a fallback still works. (Wave 9.6.)
+        if _default_combo.get("main_model") and _default_combo.get("main_engine", "ollama") != "mlx":
             settings.ollama_model = _default_combo["main_model"]
-        if _default_combo.get("fast_model"):
+        if _default_combo.get("fast_model") and _default_combo.get("fast_engine", "ollama") != "mlx":
             settings.ollama_fast_model = _default_combo["fast_model"]
-        if _default_combo.get("vision_model"):
+        if _default_combo.get("vision_model") and _default_combo.get("vision_engine", "ollama") != "mlx":
             settings.vision_model = _default_combo["vision_model"]
         # Wave 9 — restore per-role engine flags + MLX model ids so an adopted MLX config
         # survives the .env purge above (persisted in user_preferences.json, the durable

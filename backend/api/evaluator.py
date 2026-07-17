@@ -353,10 +353,17 @@ async def save_default_combo(payload: dict):
     fast_model = payload.get("fast_model") or settings.ollama_fast_model
     vision_model = payload.get("vision_model") or settings.vision_model
     
-    # Validate models are installed in Ollama (registry match preferred, live fallback for community models)
+    # Validate models are installed (registry match preferred, live fallback for community models).
+    # Wave 9.6 — MLX models are HuggingFace ids (org/repo), NOT Ollama models: the Ollama /api/show
+    # check would always 404 ("not installed in Ollama"), blocking Save-as-default for an MLX combo.
+    # Skip the Ollama check for a role whose engine is mlx (or whose name is an HF path) — those are
+    # validated at adopt/download time, and the combo being saved is the one currently running.
     import httpx as _httpx
     from config import settings as _s
-    for name, role in [(main_model, "main"), (fast_model, "fast")]:
+    for name, role, engine in [(main_model, "main", settings.main_engine),
+                               (fast_model, "fast", settings.fast_engine)]:
+        if engine == "mlx" or "/" in (name or ""):
+            continue
         info = model_registry.get_model(name)
         if not info:
             try:
