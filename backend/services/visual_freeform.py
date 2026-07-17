@@ -288,19 +288,29 @@ class SkeletonGenerator:
     async def _run_slotfill(self, content, idiom_id, model, seed) -> Optional[dict]:
         logger.info(f"[visual_freeform] {self._family} pass 2 (slotfill) idiom={idiom_id}")
         system = _slotfill_system(idiom_id)
-        # Path B — grammar-constrain the fill to the idiom's KEY slots so an MLX (or weak) model
-        # can't blank the structurally critical labels (the "empty boxes" bug). Required + non-empty
-        # strings; other slots stay optional. json_schema is MLX-only (Ollama ignores it — its own
-        # format=json is already grammar-constrained).
-        _spec = _KEY_SLOTS_BY_IDIOM.get(idiom_id)
+        # Path B — grammar-constrain the fill so an MLX (or weak) model can't blank the labels.
+        # The schema MUST list EVERY skeleton placeholder (not just the key slots): with only the key
+        # slots, llguidance's grammar FORBIDS the other placeholders (TITLE, roles, descriptions…) →
+        # they never fill → get stripped → blank diagram. So: all non-seed placeholders are fillable
+        # (grammar-legal), the idiom's KEY slots are required + non-empty. (json_schema is MLX-only;
+        # Ollama ignores it — its own format=json is already grammar-constrained.)
         _schema = None
-        if _spec and _spec[0]:
-            _keys = list(_spec[0])
-            _schema = {
-                "type": "object",
-                "properties": {k: {"type": "string", "minLength": 1} for k in _keys},
-                "required": _keys,
-            }
+        try:
+            import re as _re
+            _skel_for_schema = get_skeleton(idiom_id)
+            _seed_present = {k for k, v in seed.items() if v}   # TITLE/SUBTITLE come from seed, not the model
+            _all_ph = [s for s in sorted(set(_re.findall(r"\{\{([A-Z0-9_]+)\}\}", _skel_for_schema)))
+                       if s not in _seed_present]
+            if _all_ph:
+                # Require EVERY placeholder (non-empty) so the grammar forces a fully-labeled diagram
+                # — requiring only the key slots left the rest optional → blank. Verified: gemma fills
+                # all 30 cqrs slots. The grammar can't stop until every slot is present, so the budget
+                # below must be generous enough or the JSON truncates.
+                _props = {s: {"type": "string", "minLength": 1} for s in _all_ph}
+                _schema = {"type": "object", "properties": _props,
+                           "required": _all_ph, "additionalProperties": False}
+        except Exception as _se:
+            logger.debug(f"[visual_freeform] slotfill schema build skipped: {_se}")
         result = await ollama_service.generate(
             prompt=(
                 f"SOURCE CONTENT:\n{content}\n\n"
