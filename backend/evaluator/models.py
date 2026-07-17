@@ -161,6 +161,11 @@ class ModelCombo:
     embedding_dim: int = 0
     vision_model: str = ""
     tts_engine: str = "kokoro-mlx"
+    # Wave 9.6 — which engine serves each text/vision role ("ollama" | "mlx"), so the
+    # evaluator can label the combo (⚡ MLX) instead of silently showing an Ollama name (#4).
+    main_engine: str = "ollama"
+    fast_engine: str = "ollama"
+    vision_engine: str = "ollama"
 
     def to_dict(self) -> dict:
         return {
@@ -171,25 +176,39 @@ class ModelCombo:
             "embedding_dim": self.embedding_dim,
             "vision_model": self.vision_model,
             "tts_engine": self.tts_engine,
+            "main_engine": self.main_engine,
+            "fast_engine": self.fast_engine,
+            "vision_engine": self.vision_engine,
         }
 
     @classmethod
     def from_config(cls, settings) -> "ModelCombo":
-        """Build from current app config.py settings."""
-        main = getattr(settings, "ollama_model", "unknown")
-        fast = getattr(settings, "ollama_fast_model", main)
-        # Resolve the vision model the app actually uses (env > vision-capable main >
-        # configured) so the combo reflects reality, not an uninstalled granite.
-        # Deferred import avoids a circular dependency (model_registry imports models).
-        try:
-            from evaluator.model_registry import model_registry as _mr
-            vision = _mr.resolve_vision_model(main, getattr(settings, "vision_model", "") or "")
-        except Exception:
-            vision = getattr(settings, "vision_model", "") or ""
-        # Build a human-readable combo name from the actual models
-        main_short = main.split(":")[0] if ":" in main else main
-        fast_short = fast.split(":")[0] if ":" in fast else fast
-        combo_name = f"{main_short} + {fast_short}"
+        """Build from current app config.py settings (engine-aware)."""
+        def _eng(attr):
+            return getattr(settings, attr, "ollama") or "ollama"
+        main_engine, fast_engine, vision_engine = _eng("main_engine"), _eng("fast_engine"), _eng("vision_engine")
+        # Report the model that ACTUALLY serves each role — the MLX id when that role's
+        # engine is mlx, else the Ollama model.
+        main = (getattr(settings, "mlx_main_model", "") if main_engine == "mlx"
+                else getattr(settings, "ollama_model", "unknown"))
+        fast = (getattr(settings, "mlx_fast_model", "") if fast_engine == "mlx"
+                else getattr(settings, "ollama_fast_model", main))
+        if vision_engine == "mlx":
+            vision = getattr(settings, "mlx_vision_model", "")
+        else:
+            # Resolve the vision model the app actually uses (env > vision-capable main >
+            # configured) so the combo reflects reality, not an uninstalled granite.
+            try:
+                from evaluator.model_registry import model_registry as _mr
+                vision = _mr.resolve_vision_model(getattr(settings, "ollama_model", "") or "",
+                                                  getattr(settings, "vision_model", "") or "")
+            except Exception:
+                vision = getattr(settings, "vision_model", "") or ""
+        # Build a human-readable combo name from the actual models (+ ⚡ when on MLX)
+        def _short(m, engine):
+            base = m.split("/")[-1] if "/" in m else (m.split(":")[0] if ":" in m else m)
+            return f"⚡{base}" if engine == "mlx" else base
+        combo_name = f"{_short(main, main_engine)} + {_short(fast, fast_engine)}"
         return cls(
             name=combo_name,
             main_model=main,
@@ -198,6 +217,9 @@ class ModelCombo:
             embedding_dim=getattr(settings, "embedding_dim", 0),
             vision_model=vision,
             tts_engine="kokoro-mlx",
+            main_engine=main_engine,
+            fast_engine=fast_engine,
+            vision_engine=vision_engine,
         )
 
 

@@ -48,6 +48,10 @@ struct Status {
     metrics: Metrics,
     #[serde(default)]
     enrichment: Enrich,
+    // Wave 9.6 — "mlx" (all roles) | "mixed" | "ollama". Surfaced in the status line
+    // so the menu bar persists which engine is live (user #5).
+    #[serde(default)]
+    engine: String,
 }
 
 pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
@@ -142,7 +146,12 @@ fn render_up(
     synth: &MenuItem<Wry>,
     st: &Status,
 ) {
-    let _ = status.set_text("🟢 LocalBook running (:8000)");
+    let engine_tag = match st.engine.as_str() {
+        "mlx" => " · ⚡ MLX",
+        "mixed" => " · ⚡ MLX+Ollama",
+        _ => "",
+    };
+    let _ = status.set_text(format!("🟢 LocalBook running (:8000){}", engine_tag));
     // Two lines keeps the menu narrow (was one very wide row).
     let _ = models.set_text(format!(
         "Main: {} · Vision: {}",

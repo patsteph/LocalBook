@@ -39,7 +39,7 @@ When a user asks a question, the system:
 2. Searches the LanceDB vector store for the top-k most relevant chunks
 3. Reranks results using cross-encoder scoring
 4. Builds an adaptive context window based on available token budget
-5. Generates an answer using the main reasoning model (OLMo 3 7B by default)
+5. Generates an answer using the main reasoning model (Gemma 4 E4B by default)
 6. Extracts and formats citations from the source material
 
 The embedding model produces 1024-dimensional dense vectors. Each document is chunked
@@ -50,9 +50,9 @@ uses semantic boundaries (paragraphs, headers) rather than fixed character count
 
 LocalBook uses a multi-model architecture with specialized roles:
 
-Main Model (olmo-3:7b-instruct): Handles complex reasoning, document generation,
-and streaming chat responses. Runs with a context window of up to 65536 tokens.
-Typical throughput: 15-25 tokens/second on M4 16GB.
+Main Model (gemma4:e4b): Handles complex reasoning, document generation, native image
+understanding, and streaming chat responses. Runs with a context window of up to 16384
+tokens. Typical throughput: 15-25 tokens/second on M4 16GB. Apache-2.0 license.
 
 Fast Model (phi4-mini): Used for quick tasks like intent classification, follow-up
 questions, and simple lookups. 3.8B parameters with MIT license.
@@ -60,16 +60,16 @@ questions, and simple lookups. 3.8B parameters with MIT license.
 Embedding Model (snowflake-arctic-embed2): Generates vector embeddings for semantic
 search. 568M parameters, produces 1024-dimensional vectors. Apache-2.0 license.
 
-Vision Model (granite3.2-vision:2b): Analyzes images, charts, and diagrams in uploaded
-documents. 2B parameters, processes images during document ingestion.
+Vision: Gemma 4 E4B is natively multimodal, so it also analyzes images, charts, and
+diagrams during document ingestion — no separate vision model is required by default.
 
 4. Performance Benchmarks
 
 On an Apple M4 chip with 16GB RAM:
-- OLMo 3 7B: 18 tokens/sec average, 1.2s time-to-first-token
+- Gemma 4 E4B: 15-25 tokens/sec average, ~1s time-to-first-token
 - Phi-4 Mini: 35 tokens/sec average, 0.6s time-to-first-token
 - Snowflake Arctic Embed 2: 120 embeddings/sec for 512-token passages
-- Granite Vision 2B: 3-5 seconds per image description
+- Gemma 4 vision: 3-5 seconds per image description
 """
 
 PPTX_SLIDES = [
@@ -204,7 +204,7 @@ def generate_pdf():
     chart.width = 300
     chart.height = 140
     chart.data = [[18, 35, 120]]
-    chart.categoryAxis.categoryNames = ['OLMo 3 7B', 'Phi-4 Mini', 'Arctic Embed']
+    chart.categoryAxis.categoryNames = ['Gemma 4 E4B', 'Phi-4 Mini', 'Arctic Embed']
     chart.valueAxis.valueMin = 0
     chart.valueAxis.valueMax = 150
     chart.bars[0].fillColor = HexColor('#4A90D9')

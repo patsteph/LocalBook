@@ -26,6 +26,10 @@ export interface ComboInfo {
   embedding_dim?: number;
   vision_model?: string;
   tts_engine?: string;
+  // Wave 9.6 — which engine serves each role ("ollama" | "mlx"), for the ⚡ MLX badge.
+  main_engine?: string;
+  fast_engine?: string;
+  vision_engine?: string;
 }
 export interface HardwareResponse {
   hardware: HardwareInfo;

@@ -358,14 +358,25 @@ async def run_preflight(settings_obj) -> PreflightReport:
 # ─── Provider provenance summary ───────────────────────────────────────────
 
 def providers_used_summary(settings_obj) -> dict:
-    """Build the {role: {provider, backend_url, model}} map for the summary."""
+    """Build the {role: {provider, backend_url, model}} map for the summary.
+
+    Wave 9.6 — engine-aware: when a role's engine == "mlx", report the MLX model +
+    provider="mlx" (in-process), not the Ollama default. Previously every role was
+    resolved by the Ollama model name, so MLX runs were silently stamped "ollama" —
+    making it impossible to tell in the evaluator which engine actually ran (#7/#4)."""
     out: dict = {}
-    for role_attr, role_key in (
-        ("ollama_model", "main"),
-        ("ollama_fast_model", "fast"),
-        ("embedding_model", "embedding"),
-        ("vision_model", "vision"),
+    for role_attr, engine_attr, mlx_attr, role_key in (
+        ("ollama_model",      "main_engine",   "mlx_main_model",   "main"),
+        ("ollama_fast_model", "fast_engine",   "mlx_fast_model",   "fast"),
+        ("embedding_model",   None,            None,               "embedding"),
+        ("vision_model",      "vision_engine", "mlx_vision_model", "vision"),
     ):
+        engine = getattr(settings_obj, engine_attr, "ollama") if engine_attr else "ollama"
+        if engine == "mlx" and mlx_attr:
+            mlx_name = getattr(settings_obj, mlx_attr, "") or ""
+            if mlx_name:
+                out[role_key] = {"model": mlx_name, "provider": "mlx", "backend_url": "in-process"}
+                continue
         model_name = getattr(settings_obj, role_attr, "") or ""
         if role_key == "vision" and model_name:
             # Report the RESOLVED vision model (gemma4 on an Option-A box), not the

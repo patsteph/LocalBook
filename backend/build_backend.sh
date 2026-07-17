@@ -212,6 +212,8 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.source_router \
     --hidden-import=services.startup_checks \
     --hidden-import=services.structured_llm \
+    --hidden-import=services.mlx_engine \
+    --hidden-import=services.mlx_download \
     --hidden-import=services.stuck_source_recovery \
     --hidden-import=services.keychain_manager \
     --hidden-import=services.shallow_scrape_remediation \
@@ -287,6 +289,7 @@ python -W ignore -m PyInstaller \
     --collect-all=mlx_lm \
     --collect-all=mlx_vlm \
     --collect-all=mflux \
+    --collect-all=torchvision \
     --collect-all=misaki \
     --collect-all=spacy \
     --collect-all=en_core_web_sm \
@@ -467,6 +470,7 @@ echo -e "${YELLOW}Verifying MLX LLM engine (mlx-lm / mlx-vlm) bundle integrity..
 MLXLLM_EXIT=0
 PYTHONPATH="$OUTPUT_DIR/localbook-backend/_internal" python -c "
 import sys, importlib
+# Import-level checks: mlx-lm / mlx-vlm and the gemma-4 MLX model code.
 mods = ['mlx_lm','mlx_vlm','mlx_lm.sample_utils','mlx_vlm.models.gemma4']
 failed = []
 for m in mods:
@@ -474,13 +478,26 @@ for m in mods:
         importlib.import_module(m)
     except Exception as e:
         failed.append(f'{m}: {e}')
+# Runtime-path check (the one that actually matters): mlx-vlm loads gemma-4 via
+# transformers AutoProcessor -> Gemma4Processor, whose image processor eagerly imports
+# torchvision. If EITHER is missing, EVERY gemma MLX call dies and silently falls back to
+# Ollama (the 2026-07-17 fallback storm). The old check imported only the MLX model code and
+# missed this entirely — so it green-lit a broken bundle. Exercise the true path here.
+try:
+    import torchvision  # noqa: F401  (gemma-4 image processor hard-needs this)
+except Exception as e:
+    failed.append(f'torchvision: {e}')
+try:
+    from transformers import Gemma4Processor  # noqa: F401  (triggers the torchvision import chain)
+except Exception as e:
+    failed.append(f'transformers.Gemma4Processor (gemma MLX vision/text): {e}')
 if failed:
     print('MLX LLM ENGINE BUNDLE VERIFICATION FAILED:')
     for f in failed:
         print(f'  ✗ {f}')
     sys.exit(1)
 else:
-    print('MLX LLM engine (mlx-lm/mlx-vlm) imports verified OK')
+    print('MLX LLM engine + gemma-4 processor (torchvision) runtime path verified OK')
 " 2>/dev/null || MLXLLM_EXIT=$?
 if [ $MLXLLM_EXIT -eq 0 ]; then
     echo -e "${GREEN}✓ MLX LLM engine bundle verified${NC}"

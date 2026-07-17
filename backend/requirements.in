@@ -78,6 +78,14 @@ protobuf; sys_platform == "darwin"         # mlx-lm/mlx-vlm tokenizers
 # sentence-transformers embeds, MLX gemma streams. ⚠️ hf-hub 0→1 has broad HF blast radius
 # (TTS/whisper/downloads) — verify in the built app.
 transformers>=5.5,<5.13
+# Wave 9.6 — torchvision is a HARD requirement for the gemma-4 MLX vision path. transformers 5.x
+# `Gemma4Processor` eagerly imports `transformers.models.gemma4.image_processing_gemma4`, whose
+# module-level `from torchvision.transforms.v2 import functional` raises ModuleNotFoundError when
+# torchvision is absent — surfacing as "Could not import module 'Gemma4Processor'" and forcing an
+# Ollama fallback on EVERY gemma MLX call (root cause of the 2026-07-17 fallback storm). mlx-vlm
+# replaces the image_processor with its own afterwards, so torchvision is only needed to satisfy
+# the import — but the import is unavoidable via AutoProcessor. Pinned to the torch-2.9.1 sibling.
+torchvision==0.24.1; sys_platform == "darwin"
 # Kokoro-82M TTS via kokoro-mlx (Apple Silicon, no PyTorch required)
 # Install with: pip install --no-deps kokoro-mlx
 # Only needs mlx, numpy, misaki, huggingface_hub (all already present)

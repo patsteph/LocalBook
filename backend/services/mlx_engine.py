@@ -128,7 +128,8 @@ def _ollama_shaped_generate_result(
 
 # ─── Blocking generation helpers (run via thread) ────────────────────────────────
 def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, stop):
-    """mlx-lm non-streaming (accumulate). Returns (text, prompt_tokens, gen_tokens)."""
+    """mlx-lm non-streaming (accumulate). Returns (text, prompt_tokens, gen_tokens, gen_ns).
+    gen_ns is decode-only time (first→last token) for tokens/sec parity with Ollama."""
     from mlx_lm import stream_generate  # lazy
     kwargs: Dict[str, Any] = {"max_tokens": max_tokens}
     if temperature is not None:
@@ -136,33 +137,44 @@ def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, 
         kwargs["sampler"] = make_sampler(temp=max(float(temperature), 0.0))
     text = ""
     ptoks = gtoks = 0
+    t_first = None
     for resp in stream_generate(model, tokenizer, prompt_str, **kwargs):
+        if t_first is None:
+            t_first = time.perf_counter()
         text += resp.text
         ptoks = getattr(resp, "prompt_tokens", ptoks) or ptoks
         gtoks = getattr(resp, "generation_tokens", gtoks) or gtoks
         if stop:
             cut = min((text.find(s) for s in stop if s and s in text), default=-1)
             if cut != -1:
-                return text[:cut], ptoks, gtoks
-    return text, ptoks, gtoks
+                return text[:cut], ptoks, gtoks, _since(t_first)
+    return text, ptoks, gtoks, _since(t_first)
 
 
 def _vlm_generate_sync(model, processor, config, prompt_str, *, max_tokens, stop):
-    """mlx-vlm text-only non-streaming (gemma). Returns (text, prompt_tokens, gen_tokens)."""
+    """mlx-vlm text-only non-streaming (gemma). Returns (text, prompt_tokens, gen_tokens, gen_ns)."""
     from mlx_vlm import stream_generate  # lazy
     from mlx_vlm.prompt_utils import apply_chat_template
     formatted = apply_chat_template(processor, config, prompt_str, num_images=0)
     text = ""
     ptoks = gtoks = 0
+    t_first = None
     for resp in stream_generate(model, processor, formatted, image=[], max_tokens=max_tokens):
+        if t_first is None:
+            t_first = time.perf_counter()
         text += resp.text
         ptoks = getattr(resp, "prompt_tokens", ptoks) or ptoks
         gtoks = getattr(resp, "generation_tokens", gtoks) or gtoks
         if stop:
             cut = min((text.find(s) for s in stop if s and s in text), default=-1)
             if cut != -1:
-                return text[:cut], ptoks, gtoks
-    return text, ptoks, gtoks
+                return text[:cut], ptoks, gtoks, _since(t_first)
+    return text, ptoks, gtoks, _since(t_first)
+
+
+def _since(t_first: Optional[float]) -> int:
+    """Nanoseconds since the first-token timestamp (0 if no tokens produced)."""
+    return int((time.perf_counter() - t_first) * 1e9) if t_first else 0
 
 
 def _resolve_image(image_path_or_b64: str):
@@ -308,7 +320,7 @@ class MLXEngine:
             if kind == "vlm":
                 mobj, processor = pair
                 cfg = self._vlm_config.get(model)
-                text, ptoks, gtoks = await asyncio.to_thread(
+                text, ptoks, gtoks, gen_ns = await asyncio.to_thread(
                     _vlm_generate_sync, mobj, processor, cfg, _combine(system, prompt),
                     max_tokens=num_predict, stop=stop)
             else:
@@ -319,12 +331,13 @@ class MLXEngine:
                     prompt_str = tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
                 except Exception:
                     prompt_str = _combine(system, prompt)
-                text, ptoks, gtoks = await asyncio.to_thread(
+                text, ptoks, gtoks, gen_ns = await asyncio.to_thread(
                     _lm_generate_sync, mobj, tok, prompt_str,
                     max_tokens=num_predict, temperature=temperature, stop=stop)
-        dur_ns = int((time.perf_counter() - t0) * 1e9)
+        # Prefer decode-only time (Ollama parity for tokens/sec); fall back to total wall-clock.
+        eval_ns = gen_ns or int((time.perf_counter() - t0) * 1e9)
         return _ollama_shaped_generate_result(
-            text, prompt_tokens=ptoks, eval_tokens=gtoks, eval_ns=dur_ns, model=model)
+            text, prompt_tokens=ptoks, eval_tokens=gtoks, eval_ns=eval_ns, model=model)
 
     async def stream_generate(
         self, prompt: str, *, model: str, system: Optional[str] = None,
@@ -364,7 +377,10 @@ class MLXEngine:
                               sampler=make_sampler(temp=max(float(temperature), 0.0)))
                 acc = ""
                 ptoks = gtoks = 0
+                t_first = None          # decode start = first token (parity with Ollama eval_duration)
                 for resp in gen:
+                    if t_first is None:
+                        t_first = time.perf_counter()
                     tok_text = resp.text
                     acc += tok_text
                     ptoks = getattr(resp, "prompt_tokens", ptoks) or ptoks
@@ -378,9 +394,12 @@ class MLXEngine:
                                 loop.call_soon_threadsafe(q.put_nowait, {"response": keep, "done": False})
                             break
                     loop.call_soon_threadsafe(q.put_nowait, {"response": tok_text, "done": False})
+                # eval_duration = generation-only ns (first→last token), matching Ollama's field so
+                # tokens/sec computes identically across engines (was hardcoded 0 → blank MLX stats).
+                gen_ns = int((time.perf_counter() - t_first) * 1e9) if t_first else 0
                 loop.call_soon_threadsafe(q.put_nowait, {
                     "response": "", "done": True,
-                    "prompt_eval_count": ptoks, "eval_count": gtoks, "eval_duration": 0})
+                    "prompt_eval_count": ptoks, "eval_count": gtoks, "eval_duration": gen_ns})
             except Exception as e:
                 loop.call_soon_threadsafe(q.put_nowait, {"__error__": f"{type(e).__name__}: {e}"})
             finally:

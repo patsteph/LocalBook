@@ -110,6 +110,10 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   const [availableProviders, setAvailableProviders] = useState<{ [key: string]: boolean }>({});
   const [savedDefault, setSavedDefault] = useState<SavedDefaultResponse | null>(null);
   const [savingDefault, setSavingDefault] = useState(false);
+  // Wave 9.6 — within Local, filter cards by engine so the view isn't overwhelming (#2).
+  const [engineFilter, setEngineFilter] = useState<'ollama' | 'mlx'>('ollama');
+  // Wave 9.6 — in-flight MLX downloads keyed by model name (#3).
+  const [downloads, setDownloads] = useState<Record<string, { status: string; pct: number | null; downloaded_gb: number; total_gb: number; error?: string }>>({});
 
   useEffect(() => {
     if (selectedProvider !== 'ollama') setMode('cloud');
@@ -236,6 +240,46 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     }
   }, [onProviderChange]);
 
+  // Wave 9.6 — selecting a not-yet-downloaded MLX model downloads it immediately with a
+  // progress bar, then swaps automatically (user #3). Installed models swap directly.
+  const handleUse = useCallback(async (m: OllamaModel, role: Role) => {
+    if (m.provider === 'mlx' && m.installed === false) {
+      setSwitchMsg(null);
+      setDownloads(d => ({ ...d, [m.name]: { status: 'downloading', pct: 0, downloaded_gb: 0, total_gb: 0 } }));
+      try {
+        await localFetch(`${API_BASE_URL}/settings/mlx/download`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model_id: m.name }),
+        });
+      } catch (e: any) {
+        setDownloads(d => { const n = { ...d }; delete n[m.name]; return n; });
+        setSwitchMsg({ text: e.message ?? 'Could not start download', ok: false });
+        return;
+      }
+      const iv = setInterval(async () => {
+        try {
+          const res = await localFetch(`${API_BASE_URL}/settings/mlx/download-status?model_id=${encodeURIComponent(m.name)}`);
+          if (!res.ok) return;
+          const st = await res.json();
+          setDownloads(d => ({ ...d, [m.name]: st }));
+          if (st.status === 'done') {
+            clearInterval(iv);
+            setDownloads(d => { const n = { ...d }; delete n[m.name]; return n; });
+            await loadModels();
+            await handleSwitch(m.name, role);
+          } else if (st.status === 'error') {
+            clearInterval(iv);
+            setDownloads(d => { const n = { ...d }; delete n[m.name]; return n; });
+            setSwitchMsg({ text: `Download failed: ${st.error ?? 'unknown error'}`, ok: false });
+          }
+        } catch { /* transient — keep polling */ }
+      }, 1500);
+    } else {
+      await handleSwitch(m.name, role);
+    }
+  }, [handleSwitch]);
+
   const cloudProviders = [
     { id: 'custom_llm',  name: 'Custom LLM',  subtitle: 'Company Internal',  available: availableProviders.custom_llm,  special: true },
     { id: 'openai',      name: 'OpenAI',       subtitle: 'GPT-4o',             available: availableProviders.openai },
@@ -247,9 +291,20 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   // (from the probe-derived supported_roles), not one size-classified column — the
   // frontend half of the "5 models all land in Main" fix. Falls back to the old
   // suggested_role/also_vision logic when the backend didn't send supported_roles.
+  const hasMLX = models.some(m => m.provider === 'mlx');
+
   const modelsForRole = (role: Role) => {
     const apiRole = ROLE_META[role].api_role; // main_model | fast_model | vision_model | embedding_model
     return models.filter(m => {
+      const isMLXm = m.provider === 'mlx';
+      // Engine filter (#2). Embeddings always stay on Ollama (no MLX embeddings yet —
+      // arctic-embed shows regardless of which text engine is selected).
+      if (role === 'embeddings') {
+        if (isMLXm) return false;
+      } else if (hasMLX) {
+        if (engineFilter === 'mlx' && !isMLXm) return false;
+        if (engineFilter === 'ollama' && isMLXm) return false;
+      }
       if (m.supported_roles && m.supported_roles.length) {
         return m.supported_roles.includes(apiRole);
       }
@@ -301,6 +356,8 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     const isActive = active[role] === m.name;
     const isSidecar = m.provider === 'llama_server';
     const isMLX = m.provider === 'mlx';
+    const dl = downloads[m.name];
+    const isDownloading = !!dl;
     // Phase 2 (v1.8.0): sidecar models are fully selectable. The backend
     // auto-starts llama-server when the swap endpoint receives a
     // llama_server-provider target. Wave 9: MLX models run in-process (Apple
@@ -361,20 +418,38 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
             )}
           </div>
           <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500 dark:text-gray-400">
-            <span>{m.size_gb} GB disk</span>
-            <span>~{m.ram_required_gb} GB RAM</span>
+            <span>{m.size_gb > 0 ? `${m.size_gb} GB` : '—'} {isMLX && m.installed === false ? 'to download' : 'disk'}</span>
+            {m.ram_required_gb > 0 && <span>~{m.ram_required_gb} GB RAM</span>}
             {m.context_window > 0 && <span>{(m.context_window / 1000).toFixed(0)}K ctx</span>}
+            {m.parameter_count && <span>{m.parameter_count}</span>}
             {m.origin_country && <span>{m.origin_country}</span>}
           </div>
+          {isDownloading && (
+            <div className="mt-1.5">
+              <div className="h-1.5 w-full rounded-full bg-amber-100 dark:bg-amber-900/30 overflow-hidden">
+                <div
+                  className={`h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all ${dl.pct == null ? 'animate-pulse w-full' : ''}`}
+                  style={dl.pct != null ? { width: `${dl.pct}%` } : undefined}
+                />
+              </div>
+              <div className="text-[11px] text-amber-700 dark:text-amber-300 mt-0.5">
+                {dl.pct != null
+                  ? `Downloading… ${dl.pct}%${dl.total_gb ? ` (${dl.downloaded_gb}/${dl.total_gb} GB)` : ''}`
+                  : `Downloading…${dl.downloaded_gb ? ` ${dl.downloaded_gb} GB` : ''}`}
+              </div>
+            </div>
+          )}
         </div>
         <button
-          onClick={() => !isActive && handleSwitch(m.name, role)}
-          disabled={isActive || isSwitching}
+          onClick={() => !isActive && !isDownloading && handleUse(m, role)}
+          disabled={isActive || isSwitching || isDownloading}
           title={
-            isSidecar
+            isDownloading
+              ? 'Downloading from Hugging Face — will switch automatically when finished.'
+              : isSidecar
               ? 'Switching to this model will auto-start the llama-server sidecar (may take 10–20 s on first use).'
               : isMLX && m.installed === false
-              ? 'First use downloads this model (2–5 GB) from Hugging Face — may take a few minutes.'
+              ? 'Downloads this model from Hugging Face now (a few minutes), then switches this role to the MLX engine.'
               : isMLX
               ? 'Runs in-process on Apple MLX. Switches this role (and Vision, if this is a vision-capable Main model) to the MLX engine.'
               : undefined
@@ -382,12 +457,18 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
           className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
             isActive
               ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 cursor-default'
-              : isSwitching
+              : isSwitching || isDownloading
               ? 'bg-gray-200 dark:bg-gray-700 text-gray-400 cursor-wait'
+              : isMLX && m.installed === false
+              ? 'bg-amber-500 hover:bg-amber-600 text-white'
               : 'bg-blue-600 hover:bg-blue-700 text-white'
           }`}
         >
-          {isActive ? 'Active' : isSwitching ? '…' : 'Use'}
+          {isActive ? 'Active'
+            : isSwitching ? '…'
+            : isDownloading ? (dl.pct != null ? `${dl.pct}%` : '⬇')
+            : isMLX && m.installed === false ? '⬇ Get'
+            : 'Use'}
         </button>
       </div>
     );
@@ -463,6 +544,37 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
           </button>
         </div>
       </div>
+
+      {/* Wave 9.6 — Engine sub-toggle (only when MLX models exist). Filters the model
+          grid to one engine so the view isn't overwhelming (#2). Embeddings always show
+          the Ollama arctic-embed regardless — there's no MLX embedding model yet. */}
+      {mode === 'local' && hasMLX && (
+        <div className="flex items-center justify-center">
+          <div className="relative inline-flex items-center bg-gray-100 dark:bg-gray-800 rounded-full p-1 border border-gray-200 dark:border-gray-700">
+            <button
+              onClick={() => setEngineFilter('ollama')}
+              className={`px-5 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                engineFilter === 'ollama'
+                  ? 'bg-blue-600 text-white shadow'
+                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              🦙 Ollama
+            </button>
+            <button
+              onClick={() => setEngineFilter('mlx')}
+              title="Apple MLX — in-process, faster, ~½ the RAM. Selecting a model downloads it if needed."
+              className={`px-5 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                engineFilter === 'mlx'
+                  ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow'
+                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              ⚡ MLX
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Local — Dynamic Ollama Model Table */}
       {mode === 'local' && (

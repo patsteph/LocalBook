@@ -19,6 +19,75 @@ router = APIRouter()
 _ollama_models_cache: dict = {"ts": None, "data": None}
 _ollama_models_lock = threading.Lock()
 
+
+# ─── MLX model card helpers (Wave 9.6) ───────────────────────────────────────
+def _mlx_friendly_name(mid: str) -> str:
+    """'mlx-community/gemma-4-e4b-it-4bit' → 'Gemma 4 e4b (MLX)'. Short, human names
+    so MLX cards read like the Ollama ones (which have display_name) instead of the
+    raw HF path (user #1)."""
+    import re
+    base = mid.split("/")[-1]
+    base = re.sub(r'-(4bit|8bit|bf16|fp16|q4|q8|q4_k_m|q8_0)$', '', base, flags=re.I)
+    base = re.sub(r'-(it|instruct|chat)$', '', base, flags=re.I)
+    words = []
+    for w in base.replace('-', ' ').split():
+        words.append(w if re.match(r'^[a-z]?\d', w) else w.capitalize())  # keep e4b/2b/4 as-is
+    return (" ".join(words) + " (MLX)").strip()
+
+
+def _mlx_cache_size_gb(mid: str, installed: bool) -> float:
+    """Real on-disk size of the HF snapshot (config + weights + tokenizer), summed via
+    the blob symlinks. 0.0 when not installed (the card then shows an estimate)."""
+    if not installed:
+        return 0.0
+    try:
+        import os
+        from huggingface_hub import try_to_load_from_cache
+        p = try_to_load_from_cache(mid, "config.json")
+        if not p or not isinstance(p, str):
+            return 0.0
+        snap = os.path.dirname(p)
+        total = 0
+        for root, _dirs, files in os.walk(snap):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.realpath(os.path.join(root, f)))
+                except OSError:
+                    pass
+        return round(total / (1024 ** 3), 1)
+    except Exception:
+        return 0.0
+
+
+def _mlx_estimate_size_gb(param_count_b: float, quantization: str) -> float:
+    """Rough download/disk estimate when a model isn't installed yet, from param count
+    + quant (4bit≈0.5 B/param, 8bit≈1, bf16/fp16≈2) with ~10% metadata overhead."""
+    if not param_count_b or param_count_b <= 0:
+        return 0.0
+    q = (quantization or "").lower()
+    bpp = 0.5 if "4" in q else 1.0 if "8" in q else 2.0
+    return round(param_count_b * bpp * 1.1, 1)
+
+
+class MLXDownloadRequest(BaseModel):
+    model_id: str
+
+
+@router.post("/mlx/download")
+async def mlx_download_start(req: MLXDownloadRequest):
+    """Start (or no-op if running/installed) an MLX model download so selecting a
+    not-yet-downloaded MLX model fetches it immediately with progress, instead of the
+    silent lazy first-use pull (user #3)."""
+    from services.mlx_download import mlx_download_manager
+    return await mlx_download_manager.start(req.model_id)
+
+
+@router.get("/mlx/download-status")
+async def mlx_download_status(model_id: str):
+    """Poll target for the MLX download progress bar: {status, pct, downloaded_gb, total_gb}."""
+    from services.mlx_download import mlx_download_manager
+    return mlx_download_manager.status(model_id)
+
 # User profile storage path
 USER_PROFILE_PATH = settings.data_dir / "user_profile.json"
 
@@ -445,9 +514,15 @@ async def get_ollama_models():
                     _sr = ("vision" if _roles == ["vision_model"]
                            else "fast" if ("fast_model" in _roles and "main_model" not in _roles)
                            else "main")
+                    _installed = _tlfc(_mid, "config.json") is not None
+                    # Real disk size if downloaded; otherwise an estimate so the card is
+                    # never a blank "0 GB" (user #1 — MLX cards must carry the same data).
+                    _size_gb = _mlx_cache_size_gb(_mid, _installed) or \
+                        _mlx_estimate_size_gb(_c.param_count_b, _c.quantization)
                     _card = {
-                        "name": _mid, "display_name": _mid.split("/")[-1],
-                        "family": _c.family, "size_gb": 0, "ram_required_gb": 0,
+                        "name": _mid, "display_name": _mlx_friendly_name(_mid),
+                        "family": _c.family, "size_gb": _size_gb,
+                        "ram_required_gb": round(_size_gb * 1.3, 1) if _size_gb else 0,
                         "context_window": _c.native_ctx, "suggested_role": _sr,
                         "supported_roles": _roles,
                         "capabilities": {"vision": _c.vision, "embedding": _c.embedding,
@@ -456,7 +531,7 @@ async def get_ollama_models():
                         "supports_json_mode": True, "vendor": "MLX Community",
                         "origin_country": "", "parameter_count": _c.param_size or f"{_c.param_count_b}B",
                         "quantization": _c.quantization, "provider": "mlx",
-                        "installed": _tlfc(_mid, "config.json") is not None,
+                        "installed": _installed,
                         "in_registry": False, "eval_score": 0, "modified_at": "",
                     }
                     if _total_ram_mlx > 0 and _c.param_count_b > 0:
@@ -464,6 +539,9 @@ async def get_ollama_models():
                             _f = _ramfit_mod.ram_fit(_c.param_count_b, _c.quantization,
                                                      _total_ram_mlx, _c.native_ctx or 8192)
                             _card["ram_fit"] = {"fits": _f["fits"], "recommendation": _f["recommendation"]}
+                            # Prefer the fit calc's total (weights+KV) for the RAM figure.
+                            if _f.get("total_needed_gb"):
+                                _card["ram_required_gb"] = round(float(_f["total_needed_gb"]), 1)
                         except Exception:
                             pass
                     enriched.append(_card)

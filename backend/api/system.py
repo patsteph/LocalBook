@@ -24,19 +24,31 @@ async def get_tray_status():
     out = {
         "ok": True,
         "models": {"main": "", "fast": "", "vision": ""},
+        # Wave 9.6 — which engine is actually serving: "mlx" (all roles), "mixed"
+        # (some MLX, some Ollama), or "ollama". Lets the menu-bar show ⚡ MLX so the
+        # user can tell at a glance which stack is live (persisted knowledge, #5).
+        "engine": "ollama",
         # Aligned 1:1 with the Health Portal's counters (same rag_metrics source)
         # so the two never disagree: Tokens In/Out + AVG Tokens/Sec + Avg Latency.
         "metrics": {"tokens_in": 0, "tokens_out": 0, "tokens_per_sec": 0.0, "avg_latency_ms": 0},
         "enrichment": {"queue_depth": 0},
     }
     try:
-        main = getattr(settings, "ollama_model", "") or ""
         from evaluator.model_registry import model_registry
-        out["models"] = {
-            "main": main,
-            "fast": getattr(settings, "ollama_fast_model", "") or "",
-            "vision": model_registry.resolve_vision_model(main, getattr(settings, "vision_model", "") or ""),
-        }
+        # Engine-aware: when a role's engine == "mlx", the live model is the mlx_* one,
+        # not the Ollama default — report what's actually resident so the tray is truthful.
+        def _eng(attr):
+            return getattr(settings, attr, "ollama") or "ollama"
+        main_eng, fast_eng, vision_eng = _eng("main_engine"), _eng("fast_engine"), _eng("vision_engine")
+        ollama_main = getattr(settings, "ollama_model", "") or ""
+        main = getattr(settings, "mlx_main_model", "") if main_eng == "mlx" else ollama_main
+        fast = getattr(settings, "mlx_fast_model", "") if fast_eng == "mlx" else (getattr(settings, "ollama_fast_model", "") or "")
+        vision = (getattr(settings, "mlx_vision_model", "") if vision_eng == "mlx"
+                  else model_registry.resolve_vision_model(ollama_main, getattr(settings, "vision_model", "") or ""))
+        out["models"] = {"main": main, "fast": fast, "vision": vision}
+        engines = [main_eng, fast_eng, vision_eng]
+        out["engine"] = ("mlx" if all(e == "mlx" for e in engines)
+                         else "mixed" if any(e == "mlx" for e in engines) else "ollama")
     except Exception as e:
         logger.debug(f"[system.tray] models snapshot failed: {e}")
     try:
