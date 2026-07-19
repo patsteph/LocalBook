@@ -533,11 +533,36 @@ class OllamaService:
         if _final_think is not None:
             payload["think"] = _final_think
 
+        # Wave 9.6 — MLX VISION route (single-gemma invariant). Image calls (notably the visual
+        # CRITIC) route to MLX gemma vision when vision_engine==mlx, so a SECOND (Ollama) gemma never
+        # loads during a visual — that 2×-gemma memory doubling on an 18 GB box drove the swap thrash
+        # that corrupted MLX decode into garbage. One image (the rendered SVG). Falls back to Ollama.
+        if images:
+            try:
+                from services.mlx_engine import mlx_engine, mlx_vision_model_if_enabled
+                _mlx_vid = mlx_vision_model_if_enabled()
+            except Exception:
+                _mlx_vid = None
+            if _mlx_vid and mlx_engine.available():
+                try:
+                    _res = await mlx_engine.vision_describe(
+                        images[0], prompt, model=_mlx_vid, system=system,
+                        num_predict=options.get("num_predict", 500),
+                        format=format, json_schema=json_schema,
+                        temperature=options.get("temperature", 0.3))
+                    _record_tokens(_res)
+                    _mark_model_used(use_model)
+                    logger.info(f"[OllamaService] MLX vision generate OK model={use_model}→{_mlx_vid} "
+                                f"format={format} tokens={_res.get('eval_count', '?')}")
+                    return _res
+                except Exception as _mlx_ve:
+                    logger.warning(f"[OllamaService] MLX vision generate failed (→{_mlx_vid}); "
+                                   f"Ollama fallback: {_mlx_ve}")
+
         # Wave 9.2b — MLX engine route for text + STRUCTURED (dual-engine). structured_llm's
         # JSON methods call this with the main model + format="json"; when main_engine=mlx we
         # generate in-process via mlx-vlm (gemma) and let the caller's robust_json_parse handle
-        # validity (prompt+parse validated 9/9 — no Outlines dep needed). Vision (images) routes
-        # through vision_describe (9.3), not here. Falls back to Ollama on error.
+        # validity (prompt+parse validated 9/9 — no Outlines dep needed). Falls back to Ollama on error.
         if not images:
             try:
                 from services.mlx_engine import mlx_engine, mlx_model_for_role

@@ -169,6 +169,60 @@ def _json_logits_processor(tok_or_proc, schema):
         return None
 
 
+# ─── Decoding config (Wave 9.6) ──────────────────────────────────────────────────
+# The MLX path used to run GREEDY (no sampler) with NO repetition penalty — the textbook
+# recipe for repetition-loop degeneration on long output (the `<pad>어서어서…` garbage seen
+# under memory pressure). Apply sane sampling (temp + top_p) + a repetition penalty, composed
+# with any grammar (llguidance) processor. engine = "lm" (mlx-lm) | "vlm" (mlx-vlm).
+_MLX_TOP_P = 0.95
+_MLX_REP_PENALTY = 1.15
+_MLX_REP_CONTEXT = 64
+
+
+def _decode_kwargs(engine: str, temperature: Optional[float], grammar_lps) -> Dict[str, Any]:
+    """{sampler, logits_processors} for stream_generate: proper sampling + repetition penalty,
+    composed with any grammar processor (rep-penalty first, then the grammar mask). Never raises."""
+    out: Dict[str, Any] = {}
+    try:
+        if engine == "vlm":
+            from mlx_vlm.sample_utils import make_sampler, make_logits_processors
+        else:
+            from mlx_lm.sample_utils import make_sampler, make_logits_processors
+        temp = max(float(temperature if temperature is not None else 0.3), 0.0)
+        out["sampler"] = make_sampler(temp=temp, top_p=_MLX_TOP_P)
+        procs = list(make_logits_processors(repetition_penalty=_MLX_REP_PENALTY,
+                                            repetition_context_size=_MLX_REP_CONTEXT))
+        if grammar_lps:
+            procs = procs + list(grammar_lps)
+        if procs:
+            out["logits_processors"] = procs
+    except Exception as e:  # fall back to just the grammar processor
+        logger.debug(f"[mlx-engine] decode kwargs fallback ({type(e).__name__}: {e})")
+        if grammar_lps:
+            out["logits_processors"] = list(grammar_lps)
+    return out
+
+
+# ─── Degeneration guard (Wave 9.6) ───────────────────────────────────────────────
+def _looks_degenerate(text: str) -> bool:
+    """Cheap detector for the memory-pressure garbage output (repeated non-Latin tokens, <pad>,
+    runaway word repetition). Used to trigger one clean-cache retry."""
+    if not text or len(text) < 40:
+        return False
+    n = len(text)
+    nonascii = sum(1 for c in text if ord(c) > 0x2000) / n
+    if nonascii > 0.15:
+        return True
+    if text.count("<pad>") >= 3 or text.count("�") >= 3:
+        return True
+    words = text.split()
+    if len(words) > 24:
+        reps = sum(1 for i in range(len(words) - 1) if words[i] == words[i + 1])
+        if reps / len(words) > 0.30:
+            return True
+    return False
+
+
 # ─── Blocking generation helpers (run via thread) ────────────────────────────────
 def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, stop,
                       logits_processors=None):
@@ -176,11 +230,7 @@ def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, 
     gen_ns is decode-only time (first→last token) for tokens/sec parity with Ollama."""
     from mlx_lm import stream_generate  # lazy
     kwargs: Dict[str, Any] = {"max_tokens": max_tokens}
-    if temperature is not None:
-        from mlx_lm.sample_utils import make_sampler
-        kwargs["sampler"] = make_sampler(temp=max(float(temperature), 0.0))
-    if logits_processors:
-        kwargs["logits_processors"] = logits_processors  # grammar-constrained JSON
+    kwargs.update(_decode_kwargs("lm", temperature, logits_processors))
     text = ""
     ptoks = gtoks = 0
     t_first = None
@@ -198,14 +248,13 @@ def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, 
 
 
 def _vlm_generate_sync(model, processor, config, prompt_str, *, max_tokens, stop,
-                       logits_processors=None):
+                       temperature=0.3, logits_processors=None):
     """mlx-vlm text-only non-streaming (gemma). Returns (text, prompt_tokens, gen_tokens, gen_ns)."""
     from mlx_vlm import stream_generate  # lazy
     from mlx_vlm.prompt_utils import apply_chat_template
     formatted = apply_chat_template(processor, config, prompt_str, num_images=0)
     vkwargs: Dict[str, Any] = {"image": [], "max_tokens": max_tokens}
-    if logits_processors:
-        vkwargs["logits_processors"] = logits_processors  # grammar-constrained JSON
+    vkwargs.update(_decode_kwargs("vlm", temperature, logits_processors))
     text = ""
     ptoks = gtoks = 0
     t_first = None
@@ -244,12 +293,14 @@ def _resolve_image(image_path_or_b64: str):
         return s  # let mlx-vlm try to interpret it (URL/path)
 
 
-def _vlm_vision_sync(model, processor, config, prompt_str, image, *, max_tokens):
+def _vlm_vision_sync(model, processor, config, prompt_str, image, *, max_tokens,
+                     temperature=0.3, logits_processors=None):
     """mlx-vlm vision (gemma, one image). Returns (text, prompt_tokens, gen_tokens)."""
     from mlx_vlm import generate as vl_generate  # lazy
     from mlx_vlm.prompt_utils import apply_chat_template
     formatted = apply_chat_template(processor, config, prompt_str, num_images=1)
-    out = vl_generate(model, processor, formatted, [image], max_tokens=max_tokens, verbose=False)
+    gkw = _decode_kwargs("vlm", temperature, logits_processors)  # sampling + rep penalty (+ grammar)
+    out = vl_generate(model, processor, formatted, [image], max_tokens=max_tokens, verbose=False, **gkw)
     if isinstance(out, str):
         return out, 0, 0
     text = getattr(out, "text", str(out))
@@ -389,24 +440,43 @@ class MLXEngine:
             if lps is None:
                 prompt = f"{prompt}\n\nOutput ONLY valid JSON — no prose, no markdown code fences."
         t0 = time.perf_counter()
-        async with lock:
+
+        async def _gen(_temp, _lps):
             if kind == "vlm":
                 mobj, processor = pair
                 cfg = self._vlm_config.get(model)
-                text, ptoks, gtoks, gen_ns = await self._run(
+                return await self._run(
                     _vlm_generate_sync, mobj, processor, cfg, _combine(system, prompt),
-                    max_tokens=num_predict, stop=stop, logits_processors=lps)
-            else:
-                mobj, tok = pair
-                messages = ([{"role": "system", "content": system}] if system else []) + \
-                           [{"role": "user", "content": prompt}]
+                    max_tokens=num_predict, stop=stop, temperature=_temp, logits_processors=_lps)
+            mobj, tok = pair
+            messages = ([{"role": "system", "content": system}] if system else []) + \
+                       [{"role": "user", "content": prompt}]
+            try:
+                prompt_str = tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+            except Exception:
+                prompt_str = _combine(system, prompt)
+            return await self._run(
+                _lm_generate_sync, mobj, tok, prompt_str,
+                max_tokens=num_predict, temperature=_temp, stop=stop, logits_processors=_lps)
+
+        async with lock:
+            text, ptoks, gtoks, gen_ns = await _gen(temperature, lps)
+            # Degeneration guard (item 4): the memory-pressure garbage. One clean-cache retry with a
+            # little more temperature usually recovers. Grammar processors are stateful, so rebuild a
+            # fresh one for the retry.
+            if _looks_degenerate(text):
+                logger.warning(f"[mlx-engine] degenerate output for {model} ({len(text)} chars); "
+                               f"clearing cache + retrying once")
                 try:
-                    prompt_str = tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+                    import mlx.core as mx
+                    (getattr(mx, "clear_cache", None) or getattr(getattr(mx, "metal", None), "clear_cache", lambda: None))()
                 except Exception:
-                    prompt_str = _combine(system, prompt)
-                text, ptoks, gtoks, gen_ns = await self._run(
-                    _lm_generate_sync, mobj, tok, prompt_str,
-                    max_tokens=num_predict, temperature=temperature, stop=stop, logits_processors=lps)
+                    pass
+                _lps2 = None
+                if format == "json" and kwargs.get("json_schema"):
+                    _lp = _json_logits_processor(pair[1], kwargs.get("json_schema"))
+                    _lps2 = [_lp] if _lp is not None else None
+                text, ptoks, gtoks, gen_ns = await _gen(min(1.0, (temperature or 0.3) + 0.3), _lps2)
         # Prefer decode-only time (Ollama parity for tokens/sec); fall back to total wall-clock.
         eval_ns = gen_ns or int((time.perf_counter() - t0) * 1e9)
         return _ollama_shaped_generate_result(
@@ -494,20 +564,30 @@ class MLXEngine:
     # -- vision (Wave 9.3) -------------------------------------------------------
     async def vision_describe(
         self, image_path_or_b64: str, prompt: str, *, model: str,
-        system: Optional[str] = None, num_predict: int = 400, **kwargs: Any,
+        system: Optional[str] = None, num_predict: int = 400,
+        format: Optional[str] = None, json_schema: Optional[Dict[str, Any]] = None,
+        temperature: float = 0.3, **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Semantic image description via mlx-vlm (gemma, vision-only). Same one gemma load
-        as text/structured. Accepts a path or base64. → Ollama-shaped dict."""
+        """Image → text/JSON via mlx-vlm (gemma vision). Same one gemma load as text/structured —
+        keeps the visual CRITIC on MLX so a second (Ollama) gemma never loads (the 2×-gemma memory
+        doubling that caused degeneration). Grammar-constrains JSON when a schema is given. → Ollama-shaped."""
         pair = await self._load(model)          # vlm (gemma)
         mobj, processor = pair
         cfg = self._vlm_config.get(model)
         img = _resolve_image(image_path_or_b64)
         lock = self._model_locks.setdefault(model, asyncio.Lock())
+        lps = None
+        if format == "json":
+            if json_schema:
+                _lp = _json_logits_processor(processor, json_schema)
+                lps = [_lp] if _lp is not None else None
+            if lps is None:
+                prompt = f"{prompt}\n\nOutput ONLY valid JSON — no prose, no markdown code fences."
         t0 = time.perf_counter()
         async with lock:
             text, ptoks, gtoks = await self._run(
                 _vlm_vision_sync, mobj, processor, cfg, _combine(system, prompt), img,
-                max_tokens=num_predict)
+                max_tokens=num_predict, temperature=temperature, logits_processors=lps)
         dur_ns = int((time.perf_counter() - t0) * 1e9)
         return _ollama_shaped_generate_result(
             text, prompt_tokens=ptoks, eval_tokens=gtoks, eval_ns=dur_ns, model=model)
