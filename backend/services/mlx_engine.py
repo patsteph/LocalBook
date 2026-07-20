@@ -139,34 +139,40 @@ def _ollama_shaped_generate_result(
 _PERMISSIVE_JSON_SCHEMA: Dict[str, Any] = {"type": "object"}
 
 
-def _raw_fast_tokenizer(tok_or_proc):
-    """llguidance needs a HF *fast* tokenizer (is_fast=True). The right object differs by engine:
-    mlx-vlm's `processor.tokenizer` (GemmaTokenizer) is ALREADY fast; mlx-lm's `TokenizerWrapper`
-    needs `._tokenizer` (the TokenizersBackend). Probe candidates and return the first fast one."""
+def _tokenizer_candidates(tok_or_proc):
+    """Yield tokenizer objects to try with llguidance, most-likely-accepted first. The accepted
+    object differs by engine AND some wrappers report is_fast=True yet are rejected (mlx-lm's
+    TokenizerWrapper), so we TRY each rather than guess: mlx-lm wrapper `._tokenizer`
+    (TokenizersBackend) works; mlx-vlm `processor.tokenizer` (GemmaTokenizer) works."""
     proc_tok = getattr(tok_or_proc, "tokenizer", None)      # mlx-vlm processor → GemmaTokenizer
-    candidates = [
-        proc_tok,                                           # vlm: already fast
-        tok_or_proc,                                        # a bare tokenizer
-        getattr(tok_or_proc, "_tokenizer", None),           # mlx-lm wrapper → TokenizersBackend
-        getattr(proc_tok, "_tokenizer", None),
-    ]
-    for c in candidates:
-        if c is not None and getattr(c, "is_fast", False):
-            return c
-    return proc_tok or tok_or_proc                          # best-effort (will raise in llguidance → nudge fallback)
+    seen = set()
+    for c in (getattr(tok_or_proc, "_tokenizer", None),     # mlx-lm wrapper → TokenizersBackend (accepted)
+              getattr(proc_tok, "_tokenizer", None),
+              proc_tok,                                       # mlx-vlm processor.tokenizer (accepted)
+              tok_or_proc):
+        if c is not None and id(c) not in seen:
+            seen.add(id(c))
+            yield c
 
 
 def _json_logits_processor(tok_or_proc, schema):
-    """Build a fresh (stateful) JSON-schema logits processor, or None if llguidance is
-    unavailable (→ caller keeps the prompt-nudge fallback). Never raises."""
+    """Build a fresh (stateful) JSON-schema logits processor, or None if llguidance can't accept any
+    tokenizer candidate (→ caller keeps the prompt-nudge fallback). Never raises. from_tokenizer is
+    the cheap gate — it raises for a bad tokenizer before the grammar compile — so trying candidates
+    is inexpensive."""
     try:
         from mlx_vlm.structured import build_json_schema_logits_processor  # lazy
-        raw = _raw_fast_tokenizer(tok_or_proc)
-        return build_json_schema_logits_processor(raw, schema or _PERMISSIVE_JSON_SCHEMA)
     except Exception as e:
-        logger.warning(f"[mlx-engine] grammar-constrained JSON unavailable ({type(e).__name__}: {e}); "
-                       f"using prompt-nudge fallback")
+        logger.warning(f"[mlx-engine] grammar JSON unavailable ({type(e).__name__}: {e}); prompt-nudge fallback")
         return None
+    last = None
+    for raw in _tokenizer_candidates(tok_or_proc):
+        try:
+            return build_json_schema_logits_processor(raw, schema or _PERMISSIVE_JSON_SCHEMA)
+        except Exception as e:
+            last = e
+    logger.warning(f"[mlx-engine] grammar JSON unavailable (no accepted fast tokenizer: {last}); prompt-nudge fallback")
+    return None
 
 
 # ─── Decoding config (Wave 9.6) ──────────────────────────────────────────────────
