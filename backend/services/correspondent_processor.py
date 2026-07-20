@@ -351,6 +351,16 @@ async def summarize_article(title: str, body_text: str) -> Dict[str, Any]:
             temperature=0.2,
             num_predict=200,
             format="json",
+            # Grammar (MLX-only; Ollama ignores) — {summary, topic_tags[str]}.
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"},
+                    "topic_tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["summary"],
+                "additionalProperties": False,
+            },
         )
         raw = (result or {}).get("response", "").strip()
         data = json.loads(raw)
@@ -660,6 +670,20 @@ async def classify_email(parsed: ParsedEmail) -> Classification:
             temperature=0.2,
             num_predict=400,
             format="json",
+            # Grammar (MLX-only; Ollama ignores) — `kind` constrained to the 3
+            # categories the prompt + parser agree on; rest optional.
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": [
+                        "newsletter", "personal", "transactional"]},
+                    "confidence": {"type": "number"},
+                    "summary": {"type": "string"},
+                    "topic_tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["kind"],
+                "additionalProperties": False,
+            },
         )
         raw = (result or {}).get("response", "").strip()
         data = json.loads(raw)
@@ -1200,6 +1224,28 @@ async def classify_link_candidates(
             temperature=0.1,
             num_predict=600,
             format="json",
+            # Grammar (MLX-only; Ollama ignores) — array-of-objects (proven pattern),
+            # each {index:int, kind:enum}. Matches the parser's items[] read exactly.
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "index": {"type": "integer"},
+                                "kind": {"type": "string", "enum": [
+                                    "newsletter", "blog", "podcast", "other"]},
+                            },
+                            "required": ["index", "kind"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["items"],
+                "additionalProperties": False,
+            },
         )
         raw = (result or {}).get("response", "").strip()
         data = json.loads(raw)

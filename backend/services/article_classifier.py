@@ -68,6 +68,19 @@ async def classify_article(title: str, body_text: str) -> Dict[str, Any]:
             temperature=0.1,
             num_predict=120,
             format="json",
+            # Grammar (MLX-only; Ollama ignores) — flat enum classification, the
+            # ideal grammar fit. `kind` constrained to VALID_KINDS so an MLX model
+            # can't invent a category; reason/confidence optional (parser defaults).
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": list(VALID_KINDS)},
+                    "reason": {"type": "string"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["kind"],
+                "additionalProperties": False,
+            },
         )
         raw = (result or {}).get("response", "").strip()
         data = json.loads(raw)
