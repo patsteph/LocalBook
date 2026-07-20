@@ -261,6 +261,22 @@ JSON:"""
                 temperature=0.2,
                 timeout=60.0,
                 format="json",  # 2026-06-26: was free-form → No-valid-JSON failures + 60s timeouts
+                # MLX grammar-constrain to the exact shape the parser below reads (array of
+                # {name,type,context?}). Guarantees valid JSON on MLX; Ollama ignores it. Minimal
+                # schema (only the fields we consume) so we never over-constrain the model.
+                json_schema={
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "type": {"type": "string"},
+                            "context": {"type": "string"},
+                        },
+                        "required": ["name", "type"],
+                        "additionalProperties": False,
+                    },
+                },
             )
             result = _resp.get("response", "")
             if result:
