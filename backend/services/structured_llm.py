@@ -171,7 +171,7 @@ class StructuredLLMService:
         # swaps and sidecar routing take effect without needing a restart.
         self.max_retries = 3
 
-    async def _call_ollama_json(self, system_prompt: str, user_prompt: str, temperature: float = 0.7, timeout_seconds: float = 60.0, num_predict: int = 3000) -> Dict[str, Any]:
+    async def _call_ollama_json(self, system_prompt: str, user_prompt: str, temperature: float = 0.7, timeout_seconds: float = 60.0, num_predict: int = 3000, json_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Call the active LLM with JSON mode enabled.
 
         Provider-aware (v1.8.0):
@@ -224,6 +224,7 @@ class StructuredLLMService:
             num_predict=num_predict,
             timeout=timeout_seconds,
             format="json" if prefer_json_mode else None,
+            json_schema=json_schema,  # MLX grammar-constrain to this schema when provided (Ollama ignores it)
             extra_options={"repeat_penalty": 1.2, "repeat_last_n": 128},
             keep_alive="5m",
             voice_modifier=False,
