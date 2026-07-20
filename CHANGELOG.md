@@ -11,6 +11,19 @@ the Studio **debate/judge** format, and a codebase **simplification** pass (~2,5
 Validated by a long 18 GB overnight soak (2026-07-06→07, ~16.5 h — zero crashes/restarts, watchdog
 never fired). The only work held back for a possible v2.1.0 is the opt-in MLX text port.
 
+### Fixed — visuals rendered with no words (foreignObject stripped on delivery) (code-complete, awaiting built-app verify)
+
+Skeleton-based visuals (v2 gemma-freeform + legacy templates) render 100% of their label
+text inside `<foreignObject>`. The server-side SVG sanitizer listed `foreignobject` in its
+drop set and decomposed the whole subtree on the way to the client — so every label was
+generated correctly, stored raw in the DB, scored well by the critic (which renders the RAW
+SVG in Chromium), yet arrived at the app's WKWebView as boxes/arrows with **zero text**. The
+foreignObject drop is correct only for the *untrusted* quiz/flashcard path (model authors the
+whole inline SVG); skeleton visuals are trusted (server structure + XML-escaped slot values).
+`sanitize_svg` now takes `keep_foreignobject` — when set (trusted visual delivery) it preserves
+foreignObject + its structural HTML so text survives, while still scrubbing script/iframe/
+`on*` handlers/`javascript:` hrefs inside it. Quiz path keeps the default drop.
+
 ### Tabular structured Q&A — exact counts/aggregates over XLS/CSV (code-complete, awaiting built-app verify)
 
 Spreadsheets now get a **structured query path** alongside vector RAG, so aggregate/count/list
