@@ -30,12 +30,20 @@ router = APIRouter(prefix="/visual", tags=["visual"])
 
 def _safe_svg(svg: Optional[str]) -> Optional[str]:
     """Canonical server-side SVG scrub before any markup reaches the client
-    (SVGRenderer deliberately skips DOMPurify). Never raises."""
+    (SVGRenderer deliberately skips DOMPurify). Never raises.
+
+    keep_foreignobject=True: these are TRUSTED server-authored visuals — v2
+    skeletons + legacy templates whose text lives in <foreignObject> and whose
+    slot values are XML-escaped server-side. Dropping foreignObject here blanked
+    every label (2026-07-19 root-cause). The sanitizer still scrubs scripts/
+    handlers/js-hrefs inside the preserved foreignObject, so it stays safe. The
+    UNTRUSTED model-authored quiz/flashcard path calls sanitize_svg() directly
+    with the default drop behavior."""
     if not svg:
         return svg
     try:
         from services.svg_sanitizer import sanitize_svg
-        return sanitize_svg(svg)
+        return sanitize_svg(svg, keep_foreignobject=True)
     except Exception:
         return svg
 

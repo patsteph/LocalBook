@@ -40,6 +40,19 @@ _DROP_TAGS = {
     "video", "link", "meta", "base", "style-import",
 }
 
+# Structural HTML tags that legitimately appear INSIDE <foreignObject> for the
+# skeleton text-wrap system (see visual_skeletons.emit_wrapped_text). Only
+# consulted when keep_foreignobject=True. These are still run through
+# _scrub_attrs (on*-handlers, js: hrefs, dangerous style url()s stripped), and
+# genuinely dangerous descendants (script/iframe/object/…) remain in _DROP_TAGS
+# and are decomposed even inside a preserved foreignObject — so this stays safe.
+_FOREIGNOBJECT_HTML_TAGS = {
+    "div", "span", "p", "br", "b", "strong", "i", "em", "u",
+    "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+    "small", "sub", "sup", "blockquote", "code", "pre",
+}
+_FOREIGNOBJECT_TAGS = {"foreignobject"} | _FOREIGNOBJECT_HTML_TAGS
+
 # url() is allowed ONLY when it references a local anchor — url(#gradientId) —
 # which SVG needs for fills/clips; any other url(...) is stripped.
 _STYLE_URL_RE = re.compile(r"url\s*\(\s*(?!['\"]?#)[^)]*\)", re.IGNORECASE)
@@ -55,8 +68,18 @@ _MAX_SVG_BYTES = 8_000_000
 _DATA_IMAGE_RE = re.compile(r"^\s*data:image/(png|jpe?g|gif|webp);base64,", re.IGNORECASE)
 
 
-def sanitize_svg(svg: str) -> str:
-    """Return a sanitized copy of `svg`, or "" if nothing safe survives."""
+def sanitize_svg(svg: str, keep_foreignobject: bool = False) -> str:
+    """Return a sanitized copy of `svg`, or "" if nothing safe survives.
+
+    keep_foreignobject: when True, `<foreignObject>` and the structural HTML
+    inside it (div/span/…) are PRESERVED so their text survives, instead of the
+    whole subtree being dropped. Use ONLY for TRUSTED, server-authored skeleton
+    visuals whose slot values are already XML-escaped server-side
+    (visual_slotfill._apply_slot_fill). Dangerous descendants
+    (script/iframe/on*-handlers/js: hrefs) are STILL scrubbed, so this remains
+    safe as defense-in-depth. Default False keeps the original drop-foreignObject
+    behavior for UNTRUSTED, model-authored inline SVG (quiz/flashcard diagrams).
+    """
     if not svg or "<svg" not in svg.lower():
         return ""
     if len(svg) > _MAX_SVG_BYTES:
@@ -81,16 +104,21 @@ def sanitize_svg(svg: str) -> str:
     if soup is None:
         return ""
 
+    # Trusted-skeleton mode: keep <foreignObject> + its structural HTML so the
+    # text survives; everything genuinely dangerous is still dropped/scrubbed.
+    drop_tags = (_DROP_TAGS - {"foreignobject"}) if keep_foreignobject else _DROP_TAGS
+    allowed_tags = (_ALLOWED_TAGS | _FOREIGNOBJECT_TAGS) if keep_foreignobject else _ALLOWED_TAGS
+
     try:
         # 1. Drop dangerous subtrees outright.
         for tag in list(soup.find_all(True)):
-            if (tag.name or "").lower() in _DROP_TAGS:
+            if (tag.name or "").lower() in drop_tags:
                 tag.decompose()
 
         # 2. Enforce the allowlist + scrub attributes on survivors.
         for tag in list(soup.find_all(True)):
             name = (tag.name or "").lower()
-            if name not in _ALLOWED_TAGS:
+            if name not in allowed_tags:
                 tag.unwrap()  # keep children/text, drop the unknown wrapper
                 continue
             _scrub_attrs(tag)
