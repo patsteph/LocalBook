@@ -53,6 +53,49 @@ class QuizOutput(BaseModel):
     source_summary: str = Field(default="", description="Brief summary of source material used")
 
 
+# MLX grammar schema for quiz generation (Ollama ignores it). Deliberately PERMISSIVE:
+# it forces the CANONICAL shape `_parse_quiz_result` prefers (top-level `questions`, and
+# per-question `question_type`/`answer`/`options` rather than the wrong-key variants the
+# lenient parser only exists to catch — `quiz`/`items`/`type`/`correct_answer`/`choices`),
+# and constrains the two enums. It does NOT enforce the TYPE-CONDITIONAL field rules
+# (options-count for MC, applied_scenario for medium, etc.) — those stay in the prompt +
+# sanitizer, so a single schema can't force a wrong shape onto true_false/short_answer.
+# All 12 QuizQuestion fields are listed so additionalProperties:false never rejects a
+# legitimate field; only question/answer/explanation are required. Array-of-objects is the
+# pattern already proven on entity_extractor + correspondent classify_link_candidates.
+_QUIZ_JSON_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "questions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string"},
+                    "answer": {"type": "string"},
+                    "explanation": {"type": "string"},
+                    "difficulty": {"type": "string", "enum": ["easy", "medium", "hard"]},
+                    "question_type": {"type": "string", "enum": [
+                        "multiple_choice", "true_false", "short_answer",
+                        "fill_in_the_blank", "spot_the_error", "justify", "visual_diagram"]},
+                    "options": {"type": "array", "items": {"type": "string"}},
+                    "source_reference": {"type": "string"},
+                    "visual_svg": {"type": "string"},
+                    "evidence_quote": {"type": "string"},
+                    "citation_tag": {"type": "string"},
+                    "applied_scenario": {"type": "string"},
+                    "chunks_combined": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["question", "answer", "explanation"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["questions"],
+    "additionalProperties": False,
+}
+
+
 def _render_quiz_diagram(components: List[str], answer: str) -> str:
     """Labels→template: deterministically render an ordered list of stage labels as a
     boxes-and-arrows SVG, blanking the component that matches `answer` to "???".
@@ -480,6 +523,7 @@ Return ONLY a JSON object like this:
                     temperature=0.2 + (attempt * 0.1),
                     timeout_seconds=120.0,
                     num_predict=predict_tokens,
+                    json_schema=_QUIZ_JSON_SCHEMA,  # MLX grammar (Ollama ignores) — canonical shape
                 )
                 logger.info(f"[Quiz] Attempt {attempt+1}: LLM returned keys={list(result.keys()) if result else 'empty'}")
 
