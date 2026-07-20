@@ -505,11 +505,13 @@ class MLXEngine:
                     from mlx_vlm import stream_generate as _sg
                     from mlx_vlm.prompt_utils import apply_chat_template
                     formatted = apply_chat_template(processor, cfg, _combine(system, prompt), num_images=0)
-                    gen = _sg(mobj, processor, formatted, image=[], max_tokens=num_predict)
+                    # Was GREEDY (no sampler / no repetition penalty) — the loop-trigger that garbled
+                    # long chat answers. Apply the same decoding config as the non-streaming path.
+                    gen = _sg(mobj, processor, formatted, image=[], max_tokens=num_predict,
+                              **_decode_kwargs("vlm", temperature, None))
                 else:
                     mobj, tok = pair
                     from mlx_lm import stream_generate as _sg
-                    from mlx_lm.sample_utils import make_sampler
                     messages = ([{"role": "system", "content": system}] if system else []) + \
                                [{"role": "user", "content": prompt}]
                     try:
@@ -517,7 +519,7 @@ class MLXEngine:
                     except Exception:
                         prompt_str = _combine(system, prompt)
                     gen = _sg(mobj, tok, prompt_str, max_tokens=num_predict,
-                              sampler=make_sampler(temp=max(float(temperature), 0.0)))
+                              **_decode_kwargs("lm", temperature, None))
                 acc = ""
                 ptoks = gtoks = 0
                 t_first = None          # decode start = first token (parity with Ollama eval_duration)
