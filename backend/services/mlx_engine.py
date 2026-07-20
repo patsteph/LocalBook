@@ -229,6 +229,33 @@ def _looks_degenerate(text: str) -> bool:
     return False
 
 
+def _streaming_degenerate(text: str) -> bool:
+    """HARD degeneration signals that are SAFE to fire mid-stream — a stricter subset of
+    _looks_degenerate. Deliberately EXCLUDES the non-ASCII-ratio heuristic: on a live chat
+    stream that would false-positive on legitimate non-English answers (Chinese/Japanese/…)
+    and truncate them. Only the unambiguous memory-corruption signatures remain:
+      • repeated <pad> / replacement (�) tokens (the Metal-buffer-eviction signature), or
+      • a run of ≥8 identical consecutive tokens (no natural language does this).
+    Callers pass a RECENT window (degeneration is a tail phenomenon), so cost stays ~0."""
+    if not text or len(text) < 60:
+        return False
+    if text.count("<pad>") >= 4 or text.count("�") >= 4:
+        return True
+    words = text.split()
+    if len(words) >= 12:
+        run = best = 1
+        for i in range(1, len(words)):
+            if words[i] == words[i - 1]:
+                run += 1
+                if run > best:
+                    best = run
+            else:
+                run = 1
+        if best >= 8:
+            return True
+    return False
+
+
 def _json_complete(text: str) -> bool:
     """True if `text` is a complete parseable JSON value. Used to STOP grammar-constrained
     generation the instant the value closes — llguidance forces EOS after it, but MLX doesn't
@@ -552,6 +579,8 @@ class MLXEngine:
                               **_decode_kwargs("lm", temperature, None))
                 acc = ""
                 ptoks = gtoks = 0
+                since_check = 0
+                degenerate = False      # streaming guard: set if we abort on garbage
                 t_first = None          # decode start = first token (parity with Ollama eval_duration)
                 for resp in gen:
                     if t_first is None:
@@ -569,11 +598,25 @@ class MLXEngine:
                                 loop.call_soon_threadsafe(q.put_nowait, {"response": keep, "done": False})
                             break
                     loop.call_soon_threadsafe(q.put_nowait, {"response": tok_text, "done": False})
+                    # Streaming degeneration guard: if the answer has clearly gone to garbage
+                    # (memory-pressure corruption), ABORT rather than stream hundreds of junk
+                    # tokens. Checked every 32 tokens on a recent window (cost ~0). Proper
+                    # decoding already makes this rare; this is the safety net for the tail.
+                    since_check += 1
+                    if since_check >= 32:
+                        since_check = 0
+                        if _streaming_degenerate(acc[-600:]):
+                            degenerate = True
+                            logger.warning(
+                                "[mlx-engine] streaming ABORTED — degeneration detected "
+                                f"(model={model}, ~{gtoks} tokens in). Likely memory pressure; "
+                                "output truncated at onset instead of emitting garbage.")
+                            break
                 # eval_duration = generation-only ns (first→last token), matching Ollama's field so
                 # tokens/sec computes identically across engines (was hardcoded 0 → blank MLX stats).
                 gen_ns = int((time.perf_counter() - t_first) * 1e9) if t_first else 0
                 loop.call_soon_threadsafe(q.put_nowait, {
-                    "response": "", "done": True,
+                    "response": "", "done": True, "degenerate": degenerate,
                     "prompt_eval_count": ptoks, "eval_count": gtoks, "eval_duration": gen_ns})
             except Exception as e:
                 loop.call_soon_threadsafe(q.put_nowait, {"__error__": f"{type(e).__name__}: {e}"})
