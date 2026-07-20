@@ -229,9 +229,25 @@ def _looks_degenerate(text: str) -> bool:
     return False
 
 
+def _json_complete(text: str) -> bool:
+    """True if `text` is a complete parseable JSON value. Used to STOP grammar-constrained
+    generation the instant the value closes — llguidance forces EOS after it, but MLX doesn't
+    always halt on that token and otherwise emits hundreds of trailing <|endoftext|> pad tokens
+    (pure wasted latency). Only attempts a parse when the text already ends in }/] (cheap)."""
+    t = text.rstrip()
+    if not t or t[-1] not in "}]":
+        return False
+    try:
+        import json as _j
+        _j.loads(t)
+        return True
+    except Exception:
+        return False
+
+
 # ─── Blocking generation helpers (run via thread) ────────────────────────────────
 def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, stop,
-                      logits_processors=None):
+                      logits_processors=None, json_stop=False):
     """mlx-lm non-streaming (accumulate). Returns (text, prompt_tokens, gen_tokens, gen_ns).
     gen_ns is decode-only time (first→last token) for tokens/sec parity with Ollama."""
     from mlx_lm import stream_generate  # lazy
@@ -250,11 +266,13 @@ def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, 
             cut = min((text.find(s) for s in stop if s and s in text), default=-1)
             if cut != -1:
                 return text[:cut], ptoks, gtoks, _since(t_first)
+        if json_stop and resp.text and resp.text.rstrip()[-1:] in "}]" and _json_complete(text):
+            return text, ptoks, gtoks, _since(t_first)
     return text, ptoks, gtoks, _since(t_first)
 
 
 def _vlm_generate_sync(model, processor, config, prompt_str, *, max_tokens, stop,
-                       temperature=0.3, logits_processors=None):
+                       temperature=0.3, logits_processors=None, json_stop=False):
     """mlx-vlm text-only non-streaming (gemma). Returns (text, prompt_tokens, gen_tokens, gen_ns)."""
     from mlx_vlm import stream_generate  # lazy
     from mlx_vlm.prompt_utils import apply_chat_template
@@ -274,6 +292,8 @@ def _vlm_generate_sync(model, processor, config, prompt_str, *, max_tokens, stop
             cut = min((text.find(s) for s in stop if s and s in text), default=-1)
             if cut != -1:
                 return text[:cut], ptoks, gtoks, _since(t_first)
+        if json_stop and resp.text and resp.text.rstrip()[-1:] in "}]" and _json_complete(text):
+            return text, ptoks, gtoks, _since(t_first)
     return text, ptoks, gtoks, _since(t_first)
 
 
@@ -447,13 +467,16 @@ class MLXEngine:
                 prompt = f"{prompt}\n\nOutput ONLY valid JSON — no prose, no markdown code fences."
         t0 = time.perf_counter()
 
+        _json_stop = (format == "json")  # halt at the first complete JSON (no wasted trailing EOS pad)
+
         async def _gen(_temp, _lps):
             if kind == "vlm":
                 mobj, processor = pair
                 cfg = self._vlm_config.get(model)
                 return await self._run(
                     _vlm_generate_sync, mobj, processor, cfg, _combine(system, prompt),
-                    max_tokens=num_predict, stop=stop, temperature=_temp, logits_processors=_lps)
+                    max_tokens=num_predict, stop=stop, temperature=_temp, logits_processors=_lps,
+                    json_stop=_json_stop)
             mobj, tok = pair
             messages = ([{"role": "system", "content": system}] if system else []) + \
                        [{"role": "user", "content": prompt}]
@@ -463,7 +486,8 @@ class MLXEngine:
                 prompt_str = _combine(system, prompt)
             return await self._run(
                 _lm_generate_sync, mobj, tok, prompt_str,
-                max_tokens=num_predict, temperature=_temp, stop=stop, logits_processors=_lps)
+                max_tokens=num_predict, temperature=_temp, stop=stop, logits_processors=_lps,
+                json_stop=_json_stop)
 
         async with lock:
             text, ptoks, gtoks, gen_ns = await _gen(temperature, lps)

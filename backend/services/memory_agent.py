@@ -150,6 +150,24 @@ Respond ONLY with the JSON, no other text."""
             model=self.extraction_model,
             temperature=0.1,  # Low temperature for consistent extraction
             num_predict=500,
+            format="json",  # native JSON mode + MLX grammar (below); robust_json_parse still guards
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "user_facts": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {"key": {"type": "string"}, "value": {"type": "string"},
+                                       "category": {"type": "string"}, "importance": {"type": "string"}},
+                        "required": ["key", "value"], "additionalProperties": False}},
+                    "topics_mentioned": {"type": "array", "items": {"type": "string"}},
+                    "entities_mentioned": {"type": "array", "items": {"type": "string"}},
+                    "should_remember_long_term": {"type": "string"},
+                },
+                # additionalProperties:false is what stops the model inventing its own key names;
+                # require only the primary key so we don't force verbose output that overruns num_predict.
+                "required": ["user_facts"],
+                "additionalProperties": False,
+            },
             timeout=60.0,
         )
         text = _resp.get("response", "")
@@ -542,6 +560,19 @@ Rules:
                 temperature=0.1,
                 num_predict=600,
                 format="json",
+                # MLX grammar → the exact shape the parser reads via .get() (Ollama ignores it).
+                json_schema={
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "key_points": {"type": "array", "items": {"type": "string"}},
+                        "decisions_made": {"type": "array", "items": {"type": "string"}},
+                        "action_items": {"type": "array", "items": {"type": "string"}},
+                        "critical_context": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["summary"],
+                    "additionalProperties": False,
+                },
                 timeout=60.0,
             )
             text = _resp.get("response", "")
