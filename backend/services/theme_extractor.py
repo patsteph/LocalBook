@@ -356,9 +356,26 @@ RULES:
             prompt=extraction_prompt,
             model=settings.ollama_fast_model,
             temperature=0,
-            num_predict=800,
+            # Trimmed 800→300 (audit 2026-07-19): themes are short topic names +
+            # one insight line; even a theme-rich doc lands ~150-200 tokens, and
+            # grammar + json_stop halt at the complete object anyway. 300 keeps
+            # generous headroom while shrinking the degeneration blast radius.
+            num_predict=300,
             format="json",
             timeout=30.0,
+            # Grammar (MLX-only; Ollama ignores) — force {themes: [str,...], insight: str},
+            # exactly what the parser reads. No maxItems (prompt intentionally says
+            # "NO LIMIT"); insight left unbounded so the model completes the thought
+            # (the parser strips any trailing ellipsis itself).
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "themes": {"type": "array", "items": {"type": "string"}},
+                    "insight": {"type": "string"},
+                },
+                "required": ["themes", "insight"],
+                "additionalProperties": False,
+            },
         )
         result = _resp.get("response", "{}")
         logger.info(f"[Theme Extractor] LLM response: {result[:300]}...")

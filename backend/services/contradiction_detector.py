@@ -153,6 +153,25 @@ If they do NOT contradict (they agree, are unrelated, or compatible), respond:
                 num_predict=400,
                 format="json",
                 timeout=60.0,
+                # Grammar (MLX-only; Ollama ignores). Only `contradicts` is required
+                # so the model can still answer the negative case with just
+                # {"contradicts": false}; the enum'd fields (a perfect grammar fit)
+                # are optional and consulted only when contradicts=true. The parser
+                # already defaults any missing field.
+                json_schema={
+                    "type": "object",
+                    "properties": {
+                        "contradicts": {"type": "boolean"},
+                        "type": {"type": "string", "enum": [
+                            "factual", "statistical", "temporal",
+                            "methodological", "interpretive"]},
+                        "severity": {"type": "string", "enum": ["low", "medium", "high"]},
+                        "explanation": {"type": "string"},
+                        "resolution_hint": {"type": "string"},
+                    },
+                    "required": ["contradicts"],
+                    "additionalProperties": False,
+                },
             )
             result = _resp.get("response", "")
             if not result:

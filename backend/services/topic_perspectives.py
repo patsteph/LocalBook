@@ -252,6 +252,18 @@ async def _perspective_for_source(query: str, source: Dict[str, Any]) -> Optiona
             temperature=0.2,
             num_predict=400,
             format="json",
+            # Grammar (MLX-only; Ollama ignores) — force the exact shape the parser
+            # below reads: {take: str, claims: [str, ...]}. Prevents an MLX model
+            # from emitting prose or the wrong keys.
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "take": {"type": "string"},
+                    "claims": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+                },
+                "required": ["take", "claims"],
+                "additionalProperties": False,
+            },
         )
         raw = (result or {}).get("response", "").strip()
         data = json.loads(raw)
