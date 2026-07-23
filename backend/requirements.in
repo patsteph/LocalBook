@@ -92,6 +92,15 @@ torchvision==0.24.1; sys_platform == "darwin"
 # reliable as Ollama's grammar-constrained mode; the fix for empty visuals / blank slot labels.
 # It's mlx-vlm's own declared dep; we install it explicitly (clean wheel, macOS arm64).
 llguidance>=1.7.0; sys_platform == "darwin"
+# Wave 9.6 — MLX-native embeddings (opt-in embed_engine=mlx). Runs the SAME
+# snowflake-arctic-embed-l-v2.0 as Ollama `arctic-embed2` at the SAME 1024 dim → same vector
+# space, NO re-index (verified: CLS-pooled MLX vs stored Ollama-fp16 cosine 0.9997 8-bit /
+# 1.0000 bf16). Installed --no-deps in build_backend.sh like the rest of the MLX roster: its
+# declared deps (huggingface-hub, mlx, mlx-vlm, transformers) are ALL already present, so
+# --no-deps adds only the tiny lib itself + avoids any re-pin. Arctic weights download from HF
+# at first embed (runtime, like gemma/phi) — NOT bundled. Lazy-imported inside mlx_engine._embed_
+# on_thread; never loaded unless embed_engine == "mlx", and any failure falls back to Ollama.
+# mlx-embeddings>=0.1.0  # Installed via --no-deps in build_backend.sh
 # Kokoro-82M TTS via kokoro-mlx (Apple Silicon, no PyTorch required)
 # Install with: pip install --no-deps kokoro-mlx
 # Only needs mlx, numpy, misaki, huggingface_hub (all already present)

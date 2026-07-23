@@ -896,6 +896,27 @@ class OllamaService:
 
     # ── Embeddings (/api/embed) ───────────────────────────────────────
 
+    async def _mlx_embed_or_none(self, texts: List[str]) -> Optional[List[List[float]]]:
+        """When embed_engine==mlx, embed via the in-process MLX engine (arctic on MLX,
+        same 1024-dim space → no re-index). Returns None to mean 'use Ollama' — flag off,
+        engine/lib unavailable, shape mismatch, or ANY error — so every embed path falls
+        back to Ollama transparently (retrieval never breaks)."""
+        if getattr(settings, "embed_engine", "ollama") != "mlx":
+            return None
+        try:
+            from services.mlx_engine import mlx_engine
+            if not mlx_engine.available():
+                return None
+            vecs = await mlx_engine.embed(texts, model=settings.mlx_embedding_model)
+            if vecs and len(vecs) == len(texts):
+                return vecs
+            logger.warning(
+                f"[OllamaService] MLX embed shape {len(vecs) if vecs else 0}≠{len(texts)} — Ollama fallback")
+            return None
+        except Exception as e:
+            logger.warning(f"[OllamaService] MLX embed failed ({e}) — Ollama fallback")
+            return None
+
     async def embed(
         self,
         text: str,
@@ -915,6 +936,11 @@ class OllamaService:
             Full Ollama response dict (with 'embeddings' key).
         """
         use_model = model or settings.embedding_model
+
+        _mlx = await self._mlx_embed_or_none([text])
+        if _mlx is not None:
+            logger.info(f"[OllamaService] MLX embed OK model={settings.mlx_embedding_model} caller={_get_caller()}")
+            return {"embeddings": _mlx}
 
         payload = {
             "model": use_model,
@@ -966,10 +992,17 @@ class OllamaService:
         if not texts:
             return []
         use_model = model or settings.embedding_model
+        zero = [0.0] * settings.embedding_dim
+
+        _mlx = await self._mlx_embed_or_none(texts)
+        if _mlx is not None:
+            logger.info(
+                f"[OllamaService] MLX embed_batch OK model={settings.mlx_embedding_model} n={len(texts)}")
+            return [v if (v and len(v) == settings.embedding_dim) else zero for v in _mlx]
+
         read_timeout = timeout or 120.0
         client = self._get_client()
         sem = _semaphore_for_model(use_model)
-        zero = [0.0] * settings.embedding_dim
         out: List[List[float]] = []
         for start in range(0, len(texts), max_batch):
             sub = texts[start:start + max_batch]

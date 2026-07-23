@@ -89,8 +89,9 @@ if _prefs_path.exists():
         # survives the .env purge above (persisted in user_preferences.json, the durable
         # safe store, exactly like the Ollama model names). Absent keys keep the config
         # defaults (all "ollama"), so an old prefs file is fully backward-compatible.
-        for _k in ("main_engine", "fast_engine", "vision_engine", "image_engine",
-                   "mlx_main_model", "mlx_fast_model", "mlx_vision_model", "mlx_image_model"):
+        for _k in ("main_engine", "fast_engine", "vision_engine", "image_engine", "embed_engine",
+                   "mlx_main_model", "mlx_fast_model", "mlx_vision_model", "mlx_image_model",
+                   "mlx_embedding_model"):
             if _default_combo.get(_k):
                 setattr(settings, _k, _default_combo[_k])
         print(f"[SafeStart] Applied user default combo: {settings.ollama_model} + {settings.ollama_fast_model} "

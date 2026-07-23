@@ -77,6 +77,15 @@ async def mlx_download_status(model_id: str):
     from services.mlx_download import mlx_download_manager
     return mlx_download_manager.status(model_id)
 
+
+@router.get("/mlx/downloads")
+async def mlx_downloads_active():
+    """All MLX downloads tracked this session, keyed by model id — for the background-download
+    progress chips. Covers the klein (image) / arctic (embeddings) downloads the Locker auto-starts
+    on all-MLX adoption, which have no pickable model card of their own."""
+    from services.mlx_download import mlx_download_manager
+    return mlx_download_manager.active()
+
 # User profile storage path
 USER_PROFILE_PATH = settings.data_dir / "user_profile.json"
 
@@ -494,7 +503,8 @@ async def get_ollama_models():
                 _seen = {e.get("name") for e in enriched}
                 _mlx_ids = dict.fromkeys(
                     getattr(app_settings, k, None)
-                    for k in ("mlx_main_model", "mlx_fast_model", "mlx_vision_model"))
+                    for k in ("mlx_main_model", "mlx_fast_model", "mlx_vision_model",
+                              "mlx_embedding_model"))
                 for _mid in [x for x in _mlx_ids if x and x not in _seen]:
                     _c = _mprobe(_mid, provider="mlx")
                     if not _c:
@@ -510,9 +520,12 @@ async def get_ollama_models():
                         _role_slots.append("fast_model")
                     if _mid == getattr(app_settings, "mlx_vision_model", None):
                         _role_slots.append("vision_model")
+                    if _mid == getattr(app_settings, "mlx_embedding_model", None):
+                        _role_slots.append("embedding_model")
                     _roles = list(dict.fromkeys(_role_slots)) or _c.roles()
                     _sr = ("fast" if _role_slots == ["fast_model"]
                            else "vision" if _role_slots == ["vision_model"]
+                           else "embeddings" if _role_slots == ["embedding_model"]
                            else "main")
                     _installed = _tlfc(_mid, "config.json") is not None
                     # Real disk size if downloaded; otherwise an estimate so the card is
@@ -554,7 +567,7 @@ async def get_ollama_models():
     active = {
         "main": _active_for("main_engine", "mlx_main_model", app_settings.ollama_model),
         "fast": _active_for("fast_engine", "mlx_fast_model", app_settings.ollama_fast_model),
-        "embeddings": app_settings.embedding_model,
+        "embeddings": _active_for("embed_engine", "mlx_embedding_model", app_settings.embedding_model),
         "vision": _active_for("vision_engine", "mlx_vision_model", app_settings.vision_model),
     }
 

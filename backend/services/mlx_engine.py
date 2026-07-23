@@ -360,10 +360,52 @@ def _vlm_vision_sync(model, processor, config, prompt_str, image, *, max_tokens,
     return text, getattr(out, "prompt_tokens", 0) or 0, getattr(out, "generation_tokens", 0) or 0
 
 
+def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
+    """Load (cache) the MLX embedding model and encode `texts` → list[list[float]].
+    Runs ONLY on the single MLX executor thread (both async embed() and sync
+    embed_sync() route here), so the resident-cache check/set needs no lock. Raises
+    on any error → the caller's Ollama fallback.
+
+    Pools with the [CLS] token + L2-normalize — NOT the lib's default `text_embeds`,
+    which is MEAN-pooled. arctic-embed-l-v2.0 (XLM-RoBERTa) is trained with CLS
+    pooling, and CLS matches the Ollama `arctic-embed2` vectors EXACTLY (verified
+    cosine 1.0000 on identical text), which is what makes the MLX swap a
+    same-vector-space, ZERO-re-index change. Mean pooling drifts ~0.84 vs the stored
+    Ollama vectors and would silently degrade retrieval. If a future embedding model
+    is mean-pooled, gate the pooling on model_id — do not blindly switch to
+    text_embeds."""
+    import mlx.core as mx
+    pair = engine._embed_resident.get(model_id)
+    if pair is None:
+        engine._ensure_memory_limit()
+        from mlx_embeddings import load as _eload
+        logger.info(f"[mlx-engine] loading embedding model {model_id} …")
+        _t0 = time.perf_counter()
+        pair = _eload(model_id)
+        engine._embed_resident[model_id] = pair
+        logger.info(f"[mlx-engine] loaded embedding model {model_id} in {time.perf_counter() - _t0:.1f}s")
+    model, tokenizer = pair
+    out: List[List[float]] = []
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i:i + batch_size]
+        inputs = tokenizer.batch_encode_plus(
+            chunk, return_tensors="mlx", padding=True, truncation=True, max_length=max_length)
+        res = model(inputs["input_ids"], attention_mask=inputs.get("attention_mask"))
+        lhs = getattr(res, "last_hidden_state", None)
+        if lhs is None:
+            lhs = res[0]
+        embs = lhs[:, 0, :]  # CLS pooling (arctic / XLM-RoBERTa) — matches Ollama exactly
+        embs = embs / mx.linalg.norm(embs, axis=-1, keepdims=True)
+        mx.eval(embs)
+        out.extend([[float(v) for v in row] for row in embs.tolist()])
+    return out
+
+
 # ─── The engine ──────────────────────────────────────────────────────────────────
 class MLXEngine:
     def __init__(self) -> None:
         self._resident: Dict[str, Any] = {}              # model_id -> (model, tokenizer/processor)
+        self._embed_resident: Dict[str, Any] = {}        # embedding model_id -> (model, tokenizer)
         self._vlm_config: Dict[str, Any] = {}            # model_id -> config (vlm only)
         self._kind: Dict[str, str] = {}                  # model_id -> "lm" | "vlm"
         self._model_locks: Dict[str, asyncio.Lock] = {}  # per-model serialization
@@ -667,9 +709,30 @@ class MLXEngine:
         return _ollama_shaped_generate_result(
             text, prompt_tokens=ptoks, eval_tokens=gtoks, eval_ns=dur_ns, model=model)
 
-    # -- embeddings (deferred — stays Ollama for v2.1.0, re-index-gated) ----------
-    async def embed(self, texts: List[str], *, model: str, **kwargs: Any) -> List[List[float]]:
-        raise NotImplementedError("MLX embeddings are deferred (re-index-gated); stays Ollama")
+    # -- embeddings (Wave 9.6 — arctic-embed-l-v2.0 native on MLX) ----------------
+    # Same model + same 1024 dim as Ollama arctic-embed2 → NO re-index (same vector
+    # space). Uses the mlx-embeddings lib (XLM-RoBERTa is first-class), a SEPARATE
+    # model cache from the LLM roster, and the same single MLX thread for GPU-stream
+    # consistency. Both entrypoints RAISE on any failure so callers fall back to
+    # Ollama embeddings (retrieval never breaks). Prefix discipline (arctic is
+    # asymmetric) is the CALLER's job — embed() embeds text exactly as given.
+    async def embed(self, texts: List[str], *, model: str,
+                    batch_size: int = 32, max_length: Optional[int] = None,
+                    **kwargs: Any) -> List[List[float]]:
+        if not texts:
+            return []
+        ml = max_length or int(os.environ.get("LOCALBOOK_MLX_EMBED_MAX_LENGTH", "2048"))
+        return await self._run(_embed_on_thread, self, list(texts), model, batch_size, ml)
+
+    def embed_sync(self, texts: List[str], *, model: str,
+                   batch_size: int = 32, max_length: Optional[int] = None) -> List[List[float]]:
+        """Blocking variant for the raw-`requests` sync embed helpers in rag_embeddings.
+        Submits to the single MLX thread and waits — same blocking contract those callers
+        already have. Must NOT be called from the MLX thread itself."""
+        if not texts:
+            return []
+        ml = max_length or int(os.environ.get("LOCALBOOK_MLX_EMBED_MAX_LENGTH", "2048"))
+        return self._exec.submit(_embed_on_thread, self, list(texts), model, batch_size, ml).result()
 
 
 mlx_engine = MLXEngine()

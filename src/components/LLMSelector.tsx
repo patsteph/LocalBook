@@ -46,6 +46,7 @@ interface DefaultCombo {
   main_model: string;
   fast_model: string;
   vision_model: string;
+  embeddings?: string;  // resolved active embedding (engine-aware); absent in pre-9.6 saves
 }
 
 interface SavedDefaultResponse {
@@ -91,6 +92,16 @@ const ROLE_META: Record<Role, { label: string; api_role: string; color: string; 
   embeddings: { label: 'Embeddings', api_role: 'embedding_model',  color: 'purple', desc: 'Vector search embeddings' },
 };
 
+// Friendly name for a background-download chip (klein/arctic have no pickable card → no label).
+function friendlyModelLabel(id: string): string {
+  const low = id.toLowerCase();
+  if (low.includes('arctic-embed')) return 'Embeddings (Arctic)';
+  if (low.includes('klein') || low.includes('flux')) return 'Image generation (Klein)';
+  if (low.includes('gemma')) return 'Main model (Gemma)';
+  if (low.includes('phi')) return 'Fast model (Phi)';
+  return id.split('/').pop() || id;
+}
+
 function ActiveBadge() {
   return (
     <span className="px-2 py-0.5 text-xs font-medium rounded-md bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300">
@@ -114,11 +125,33 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   const [engineFilter, setEngineFilter] = useState<'ollama' | 'mlx'>('ollama');
   // Wave 9.6 — in-flight MLX downloads keyed by model name (#3).
   const [downloads, setDownloads] = useState<Record<string, { status: string; pct: number | null; downloaded_gb: number; total_gb: number; error?: string }>>({});
+  // Wave 9.6 — background MLX downloads the backend auto-starts on all-MLX adoption (klein image /
+  // arctic embeddings). These models have no pickable card, so we poll /settings/mlx/downloads and
+  // surface them in a strip. Keyed by model id.
+  const [bgDownloads, setBgDownloads] = useState<Record<string, { status: string; pct: number | null; downloaded_gb: number; total_gb: number; error?: string }>>({});
 
   useEffect(() => {
     if (selectedProvider !== 'ollama') setMode('cloud');
     else setMode('local');
   }, [selectedProvider]);
+
+  // Poll background downloads while the local panel is open so the auto-started klein/arctic
+  // downloads show live progress. Cheap GET; the strip only renders when something is in flight.
+  useEffect(() => {
+    if (mode !== 'local') return;
+    let stopped = false;
+    const tick = async () => {
+      try {
+        const res = await localFetch(`${API_BASE_URL}/settings/mlx/downloads`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!stopped) setBgDownloads(data || {});
+      } catch { /* transient — keep polling */ }
+    };
+    tick();
+    const iv = setInterval(tick, 2000);
+    return () => { stopped = true; clearInterval(iv); };
+  }, [mode]);
 
   useEffect(() => {
     loadModels();
@@ -190,7 +223,10 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   const currentMatchesSaved = !!savedDefault && (
     savedDefault.combo.main_model === active.main &&
     savedDefault.combo.fast_model === active.fast &&
-    savedDefault.combo.vision_model === active.vision
+    savedDefault.combo.vision_model === active.vision &&
+    // Embeddings too (Wave 9.6) so a standalone MLX-embedding adoption can be saved. Absent in
+    // pre-9.6 saved combos → treat as matching so it never wrongly blocks Save for old defaults.
+    (savedDefault.combo.embeddings === undefined || savedDefault.combo.embeddings === active.embeddings)
   );
 
   const loadModels = async () => {
@@ -305,10 +341,11 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     const apiRole = ROLE_META[role].api_role; // main_model | fast_model | vision_model | embedding_model
     return models.filter(m => {
       const isMLXm = m.provider === 'mlx';
-      // Engine filter (#2). Embeddings always stay on Ollama (no MLX embeddings yet —
-      // arctic-embed shows regardless of which text engine is selected).
+      // Engine filter (#2). Embeddings show BOTH engines' arctic-embed (same model, same 1024
+      // dim → no re-index) so the MLX embedding can be adopted standalone and benchmarked in the
+      // Evaluator; the row isn't gated by the main/fast/vision engine toggle.
       if (role === 'embeddings') {
-        if (isMLXm) return false;
+        /* show all embedding models regardless of engineFilter */
       } else if (hasMLX) {
         if (engineFilter === 'mlx' && !isMLXm) return false;
         if (engineFilter === 'ollama' && isMLXm) return false;
@@ -531,8 +568,9 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
           so the Ollama/MLX engine toggle below is the primary control (keeps the view clean). */}
 
       {/* Wave 9.6 — Engine toggle (only when MLX models exist). Filters the model grid to
-          one engine so the view isn't overwhelming (#2). Embeddings always show the Ollama
-          arctic-embed regardless — there's no MLX embedding model yet. */}
+          one engine so the view isn't overwhelming (#2). The embeddings role isn't picked per
+          column — embed_engine follows all-MLX adoption automatically and the arctic MLX
+          download shows in the background-downloads strip below. */}
       {mode === 'local' && hasMLX && (
         <div className="flex items-center justify-center">
           <div className="relative inline-flex items-center bg-gray-100 dark:bg-gray-800 rounded-full p-1 border border-gray-200 dark:border-gray-700">
@@ -560,6 +598,61 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
           </div>
         </div>
       )}
+
+      {/* Wave 9.6 — background MLX downloads the Locker auto-starts on all-MLX adoption (klein
+          image / arctic embeddings). These have no pickable card, so their progress is surfaced
+          here. Exclude anything already shown as a per-card download (user-picked main/fast/vision)
+          to avoid a double chip. Renders on either engine tab; hidden when nothing is in flight. */}
+      {mode === 'local' && (() => {
+        const entries = Object.entries(bgDownloads).filter(
+          ([id, st]) => (st.status === 'downloading' || st.status === 'error') && !(id in downloads),
+        );
+        if (entries.length === 0) return null;
+        return (
+          <div className="space-y-2">
+            {entries.map(([id, dl]) => (
+              <div
+                key={id}
+                className="rounded-lg border border-amber-200 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-900/10 px-3 py-2"
+              >
+                <div className="flex items-center justify-between text-xs mb-1">
+                  <span className="font-semibold text-amber-800 dark:text-amber-300">
+                    ⚡ {friendlyModelLabel(id)}
+                    <span className="ml-1.5 font-normal text-amber-600/70 dark:text-amber-400/60">
+                      preparing for MLX
+                    </span>
+                  </span>
+                  <span className="text-amber-700 dark:text-amber-400 tabular-nums">
+                    {dl.status === 'error'
+                      ? 'failed — using Ollama'
+                      : dl.pct != null
+                        ? `${dl.pct}%${dl.total_gb ? ` · ${dl.downloaded_gb}/${dl.total_gb} GB` : ''}`
+                        : 'starting…'}
+                  </span>
+                </div>
+                <div className="h-1.5 w-full bg-amber-200/60 dark:bg-amber-900/40 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all ${
+                      dl.status === 'error'
+                        ? 'bg-red-500 w-full'
+                        : `bg-gradient-to-r from-amber-500 to-orange-500 ${dl.pct == null ? 'animate-pulse w-full' : ''}`
+                    }`}
+                    style={dl.pct != null && dl.status !== 'error' ? { width: `${dl.pct}%` } : undefined}
+                  />
+                </div>
+                {dl.status === 'error' && dl.error && (
+                  <div
+                    className="mt-1 text-[10px] text-red-600 dark:text-red-400 truncate"
+                    title={dl.error}
+                  >
+                    {dl.error}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Local — Dynamic Ollama Model Table */}
       {mode === 'local' && (

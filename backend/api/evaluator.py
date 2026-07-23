@@ -352,6 +352,11 @@ async def save_default_combo(payload: dict):
     main_model = payload.get("main_model") or settings.ollama_model
     fast_model = payload.get("fast_model") or settings.ollama_fast_model
     vision_model = payload.get("vision_model") or settings.vision_model
+    # Resolved active embedding (engine-aware) — persisted so the frontend can tell when a
+    # standalone embedding adoption differs from the saved default (enables the Save button).
+    embeddings_model = (settings.mlx_embedding_model
+                        if getattr(settings, "embed_engine", "ollama") == "mlx"
+                        else settings.embedding_model)
     
     # Validate models are installed (registry match preferred, live fallback for community models).
     # Wave 9.6 — MLX models are HuggingFace ids (org/repo), NOT Ollama models: the Ollama /api/show
@@ -385,6 +390,7 @@ async def save_default_combo(payload: dict):
         "main_model": main_model,
         "fast_model": fast_model,
         "vision_model": vision_model,
+        "embeddings": embeddings_model,
         # Wave 9 — persist the per-role engine flags + MLX model ids from the LIVE settings
         # (which reflect the user's Locker swaps) so an adopted MLX config survives the restart
         # .env purge. main.py SafeStart restores these. Old prefs files without them default to
@@ -393,10 +399,12 @@ async def save_default_combo(payload: dict):
         "fast_engine": settings.fast_engine,
         "vision_engine": settings.vision_engine,
         "image_engine": settings.image_engine,
+        "embed_engine": settings.embed_engine,
         "mlx_main_model": settings.mlx_main_model,
         "mlx_fast_model": settings.mlx_fast_model,
         "mlx_vision_model": settings.mlx_vision_model,
         "mlx_image_model": settings.mlx_image_model,
+        "mlx_embedding_model": settings.mlx_embedding_model,
     }
 
     prefs_path.write_text(json.dumps(existing, indent=2))

@@ -76,6 +76,17 @@ class _MLXDownloadManager:
                 "total_gb": round(total / (1024 ** 3), 2) if total else 0.0,
                 "error": st.get("error")}
 
+    def active(self) -> Dict[str, Dict[str, Any]]:
+        """Every model this session has a tracked download state for, keyed by model id, with
+        computed progress. Lets the UI render download chips without knowing the ids in advance —
+        specifically the klein (image) / arctic (embeddings) downloads the Locker auto-starts on
+        all-MLX adoption, which never appear as pickable model cards. (Snapshot the keys under the
+        lock, then release before calling status() per id — status() re-locks and the lock is not
+        reentrant.)"""
+        with self._lock:
+            ids = list(self._state.keys())
+        return {mid: self.status(mid) for mid in ids}
+
     async def start(self, model_id: str) -> Dict[str, Any]:
         if not model_id:
             return {"status": "error", "error": "empty model_id"}

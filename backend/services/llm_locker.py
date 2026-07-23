@@ -281,7 +281,7 @@ class LLMLocker:
 
         # Ensure the role's engine flag reflects an Ollama target (undo a prior MLX pin).
         _eng = {"main_model": "main_engine", "fast_model": "fast_engine",
-                "vision_model": "vision_engine"}.get(role)
+                "vision_model": "vision_engine", "embedding_model": "embed_engine"}.get(role)
         if _eng:
             changes[_eng] = "ollama"
         # Option A (reverse) — switching MAIN back to Ollama returns vision to Ollama too;
@@ -299,7 +299,7 @@ class LLMLocker:
         """True if `name` refers to an MLX model (a configured mlx_* id or a known MLX org repo)."""
         from config import settings as s
         if name in {getattr(s, "mlx_main_model", None), getattr(s, "mlx_fast_model", None),
-                    getattr(s, "mlx_vision_model", None)}:
+                    getattr(s, "mlx_vision_model", None), getattr(s, "mlx_embedding_model", None)}:
             return True
         return "/" in name and any(name.startswith(o) for o in (
             "mlx-community/", "Runpod/", "lmstudio-community/", "unsloth/",
@@ -312,6 +312,7 @@ class LLMLocker:
             "main_model": ("main_engine", "mlx_main_model"),
             "fast_model": ("fast_engine", "mlx_fast_model"),
             "vision_model": ("vision_engine", "mlx_vision_model"),
+            "embedding_model": ("embed_engine", "mlx_embedding_model"),
         }
         if role not in role_map:
             raise ModelSwapError(f"MLX engine swap is not supported for role '{role}'")
@@ -332,27 +333,45 @@ class LLMLocker:
             except Exception:
                 pass
         cls._patch_environment(changes)
-        # When the user has gone all-MLX for the text/vision roles, bring image generation onto
-        # MLX too (klein/mflux) and kick off its ~4 GB download in the background, so photorealistic
-        # visuals are ready instead of erroring "Klein model not installed" (user request 2026-07-17).
+        # When the user has gone all-MLX for the text/vision roles, bring the two remaining
+        # capabilities onto MLX too and kick off their downloads in the background NOW — so the
+        # first time they're used the model is already on disk instead of stalling on a lazy
+        # first-use fetch mid-session (user requests 2026-07-17 image, 2026-07-22 embeddings):
+        #   • image generation (klein/mflux, ~4 GB) — else "Klein model not installed"
+        #   • embeddings (arctic-embed-l-v2.0, ~0.6 GB) — else the first RAG search / @curator
+        #     routing / constellation clustering / memory recall blocks on the download.
+        # Embeddings run the SAME arctic model at the SAME 1024 dim as Ollama → NO re-index; both
+        # hooks are fallback-safe (a failed download just falls back to the Ollama path).
         try:
             from config import settings as _s
             text_all_mlx = (getattr(_s, "main_engine", "") == "mlx"
                             and getattr(_s, "fast_engine", "") == "mlx"
                             and getattr(_s, "vision_engine", "") == "mlx")
-            if text_all_mlx and getattr(_s, "image_engine", "ollama") != "mlx":
-                cls._patch_environment({"image_engine": "mlx"})
-                klein = getattr(_s, "mlx_image_model", "") or getattr(_s, "mlx_image_model", "")
-                if klein:
-                    import asyncio
-                    from services.mlx_download import mlx_download_manager
+            if text_all_mlx:
+                import asyncio
+                from services.mlx_download import mlx_download_manager
+
+                def _prefetch(model_id: str) -> bool:
+                    """Start a background HF download so the model is ready, not fetched mid-use.
+                    No running loop (sync caller) → returns False; the model still downloads lazily."""
+                    if not model_id:
+                        return False
                     try:
-                        asyncio.get_running_loop().create_task(mlx_download_manager.start(klein))
-                        extra += " · image→MLX (klein downloading)"
+                        asyncio.get_running_loop().create_task(mlx_download_manager.start(model_id))
+                        return True
                     except RuntimeError:
-                        pass  # no running loop; klein downloads on first use
+                        return False
+
+                if getattr(_s, "image_engine", "ollama") != "mlx":
+                    cls._patch_environment({"image_engine": "mlx"})
+                    if _prefetch(getattr(_s, "mlx_image_model", "")):
+                        extra += " · image→MLX (klein downloading)"
+                if getattr(_s, "embed_engine", "ollama") != "mlx":
+                    cls._patch_environment({"embed_engine": "mlx"})
+                    if _prefetch(getattr(_s, "mlx_embedding_model", "")):
+                        extra += " · embed→MLX (arctic downloading)"
         except Exception as _e:
-            logger.debug(f"[llm_locker] all-MLX klein hook skipped: {_e}")
+            logger.debug(f"[llm_locker] all-MLX prefetch hook skipped: {_e}")
         return f"Switched {role} to the MLX engine: {mlx_model}{extra}"
         
     @classmethod
@@ -388,8 +407,9 @@ class LLMLocker:
                 # reads these from .env by field name; LOCALBOOK_-prefixed keys are ignored).
                 "main_engine": "main_engine", "fast_engine": "fast_engine",
                 "vision_engine": "vision_engine", "image_engine": "image_engine",
+                "embed_engine": "embed_engine",
                 "mlx_main_model": "mlx_main_model", "mlx_fast_model": "mlx_fast_model",
-                "mlx_vision_model": "mlx_vision_model",
+                "mlx_vision_model": "mlx_vision_model", "mlx_embedding_model": "mlx_embedding_model",
             }
             env_key = key_map.get(k, k.upper())
             
@@ -412,8 +432,8 @@ class LLMLocker:
         if "embedding_dim" in changes:
             setattr(settings, 'embedding_dim', int(changes["embedding_dim"]))
         # Wave 9.4 — sync engine flags + mlx model ids to the live settings (session-immediate).
-        for _attr in ("main_engine", "fast_engine", "vision_engine", "image_engine",
-                      "mlx_main_model", "mlx_fast_model", "mlx_vision_model"):
+        for _attr in ("main_engine", "fast_engine", "vision_engine", "image_engine", "embed_engine",
+                      "mlx_main_model", "mlx_fast_model", "mlx_vision_model", "mlx_embedding_model"):
             if _attr in changes:
                 setattr(settings, _attr, changes[_attr])
             

@@ -24,7 +24,21 @@ async def _embed(text: str, model: str) -> list[float]:
     v1.8.2: uses the provider resolver's base URL instead of hardcoding
     localhost:11434. If the embedding model isn't actually an embedding
     model on its backend, callers should skip the test via capabilities.
+
+    Wave 9.6: when MLX embeddings are adopted (embed_engine==mlx), embed through the app's
+    real seam (`ollama_service.embed`, which dispatches to the in-process MLX arctic engine
+    with an Ollama fallback) so the Evaluator measures exactly what RAG runs — not Ollama.
     """
+    from config import settings
+    if getattr(settings, "embed_engine", "ollama") == "mlx":
+        try:
+            from services.ollama_service import ollama_service
+            res = await ollama_service.embed(text)
+            embs = (res or {}).get("embeddings") or []
+            return embs[0] if embs else []
+        except Exception as e:
+            print(f"[EVAL-EMBED] MLX seam embed failed ({e})")
+            return []
     from services.llm_provider import resolve as _resolve_provider, Provider as _Provider
     route = _resolve_provider(model)
     # Ollama is the only backend that serves /api/embeddings today; sidecar
@@ -46,7 +60,11 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     """Test embedding model quality: dimensions, throughput, semantic discrimination."""
     from config import settings
 
-    embed_model = settings.embedding_model
+    # Wave 9.6 — report the model actually exercised: the MLX arctic id when embed_engine==mlx
+    # (the seam runs it at the same 1024 dim), else the Ollama embedding model.
+    _mlx_embed = getattr(settings, "embed_engine", "ollama") == "mlx"
+    embed_model = (getattr(settings, "mlx_embedding_model", "") if _mlx_embed
+                   else settings.embedding_model)
     expected_dim = getattr(settings, 'embedding_dim', 0)
 
     results = []
@@ -67,12 +85,15 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         result.mark_skipped("No embedding model configured")
         print("[EVAL-EMBED] skipped — no embedding model configured")
         return [result]
-    _caps = capabilities_for(embed_model)
-    if not _caps.supports(FEATURES.EMBEDDINGS):
-        reason = _caps.skip_reason(FEATURES.EMBEDDINGS) or f"{embed_model} backend has no /api/embeddings"
-        result.mark_skipped(reason)
-        print(f"[EVAL-EMBED] skipped — {reason}")
-        return [result]
+    # The capability gate is Ollama-oriented (probes /api/show). Skip it on MLX — the arctic
+    # model is a known embedding model and is served in-process, not via /api/embeddings.
+    if not _mlx_embed:
+        _caps = capabilities_for(embed_model)
+        if not _caps.supports(FEATURES.EMBEDDINGS):
+            reason = _caps.skip_reason(FEATURES.EMBEDDINGS) or f"{embed_model} backend has no /api/embeddings"
+            result.mark_skipped(reason)
+            print(f"[EVAL-EMBED] skipped — {reason}")
+            return [result]
 
     test_passages = [
         "Retrieval-augmented generation combines retrieval with generation.",

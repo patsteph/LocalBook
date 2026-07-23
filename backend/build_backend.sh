@@ -72,6 +72,17 @@ if ! python -c "import importlib.metadata as m; assert m.version('mflux')=='$MFL
     pip install -q --no-deps "mflux==$MFLUX_VER" 2>/dev/null || echo -e "${YELLOW}  mflux install warning (non-fatal — MLX image opt-in only)${NC}"
 fi
 
+# mlx-embeddings: MLX-native embeddings (Wave 9.6, opt-in embed_engine=mlx). Runs the SAME
+# snowflake-arctic-embed-l-v2.0 as Ollama `arctic-embed2` at the SAME 1024 dim → no re-index.
+# --no-deps: its declared deps (huggingface-hub, mlx, mlx-vlm, transformers) are ALL already
+# present, so this adds only the tiny lib + avoids re-pinning our stack. Lazy-imported (only when
+# embed_engine=="mlx"); any failure falls back to Ollama embeddings. PINNED for reproducibility.
+MLXEMB_VER="0.1.0"
+if ! python -c "import importlib.metadata as m; assert m.version('mlx-embeddings')=='$MLXEMB_VER'" 2>/dev/null; then
+    echo -e "${YELLOW}Installing mlx-embeddings==$MLXEMB_VER (--no-deps, Wave 9.6 MLX embeddings)...${NC}"
+    pip install -q --no-deps "mlx-embeddings==$MLXEMB_VER" 2>/dev/null || echo -e "${YELLOW}  mlx-embeddings install warning (non-fatal — MLX embeddings opt-in only)${NC}"
+fi
+
 # Ensure Playwright Chromium browser is installed — required by People Profiler social auth.
 # Without this, playwright.chromium.launch() fails with "Executable doesn't exist" error.
 if ! python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); p.chromium.executable_path; p.stop()" 2>/dev/null; then
@@ -297,6 +308,7 @@ python -W ignore -m PyInstaller \
     --collect-all=mlx_whisper \
     --collect-all=mlx_lm \
     --collect-all=mlx_vlm \
+    --collect-all=mlx_embeddings \
     --collect-all=mflux \
     --collect-all=torchvision \
     --collect-all=llguidance \
@@ -505,7 +517,8 @@ failed = []
 mods = ['mlx_lm','mlx_lm.sample_utils','mlx_vlm','mlx_vlm.models.gemma4',
         'mlx_vlm.prompt_utils','mlx_vlm.utils','torchvision',
         'transformers.models.diffusion_gemma',
-        'llguidance','llguidance.hf','mlx_vlm.structured']  # grammar-constrained JSON (Path B)
+        'llguidance','llguidance.hf','mlx_vlm.structured',  # grammar-constrained JSON (Path B)
+        'mlx_embeddings','mlx_embeddings.utils']  # Wave 9.6 MLX-native embeddings (opt-in)
 for m in mods:
     try:
         importlib.import_module(m)

@@ -45,12 +45,35 @@ def load_embedding_model():
 
 # ─── Sync Embedding ─────────────────────────────────────────────────────────────
 
+def _mlx_embed_sync_or_none(texts: List[str]) -> Optional[List[List[float]]]:
+    """When embed_engine==mlx, embed via the in-process MLX engine synchronously (same
+    arctic model + 1024 dim → no re-index). Returns None (→ Ollama fallback) on flag-off,
+    unavailable engine, shape mismatch, or ANY error. Mirrors ollama_service._mlx_embed_or_none
+    for the sync `requests`-based paths so query and doc encoders stay consistent."""
+    if getattr(settings, "embed_engine", "ollama") != "mlx":
+        return None
+    try:
+        from services.mlx_engine import mlx_engine
+        if not mlx_engine.available():
+            return None
+        vecs = mlx_engine.embed_sync(texts, model=settings.mlx_embedding_model)
+        if vecs and len(vecs) == len(texts):
+            return vecs
+        return None
+    except Exception as e:
+        print(f"[RAG] ⚠️ MLX embed_sync failed ({e}) — Ollama fallback")
+        return None
+
+
 def _get_ollama_embedding_sync(text: str) -> List[float]:
     """Get a single embedding from Ollama synchronously (legacy / rarely used).
 
     Kept for non-async callers that embed one string; bulk paths use the batched
     helpers below. Uses /api/embed (input list of one) for consistency.
     """
+    _mlx = _mlx_embed_sync_or_none([text])
+    if _mlx is not None:
+        return _mlx[0]
     import requests
     response = requests.post(
         f"{settings.ollama_base_url}/api/embed",
@@ -76,6 +99,11 @@ def _get_ollama_embeddings_batch_sync(texts: List[str]) -> List[List[float]]:
     if not texts:
         return []
     zero = [0.0] * settings.embedding_dim
+
+    _mlx = _mlx_embed_sync_or_none(texts)
+    if _mlx is not None:
+        return [v if (v and len(v) == settings.embedding_dim) else zero for v in _mlx]
+
     batch = 64
     out: List[List[float]] = []
     for start in range(0, len(texts), batch):
