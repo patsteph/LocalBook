@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional, List
 
 from config import settings
+from utils.json_repair import robust_json_parse
 
 logger = logging.getLogger(__name__)
 
@@ -230,14 +231,15 @@ async def classify_intent(
         )
         raw = result.get("response", "").strip()
 
-        # Strip markdown fences if present
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-            if raw.endswith("```"):
-                raw = raw[:-3]
-            raw = raw.strip()
-
-        parsed = json.loads(raw)
+        # The response may carry a valid JSON object followed by trailing markdown fences +
+        # prose — phi4 on the MLX path does this because format="json" isn't grammar-clamped
+        # the way Ollama's is (user report 2026-07-23: intent classify "got worse" on MLX,
+        # every case falling to the fallback intent). robust_json_parse extracts the first
+        # balanced JSON object and is the mandated shared parser (CLAUDE.md centralization
+        # rule) — replaces the old leading-fence-only strip + raw json.loads.
+        parsed = robust_json_parse(raw, expect="object", fallback=None, label="IntentClassifier")
+        if not isinstance(parsed, dict):
+            raise json.JSONDecodeError("no JSON object found in LLM output", raw or "", 0)
 
         valid_ids = {i["id"] for i in intents}
 

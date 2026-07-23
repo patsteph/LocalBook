@@ -256,6 +256,43 @@ def _streaming_degenerate(text: str) -> bool:
     return False
 
 
+def _first_json_value(text: str) -> Optional[str]:
+    """Return the substring spanning the FIRST complete top-level JSON value (object or array),
+    or None if none is found. Drops trailing markdown fences / prose that a non-grammar-clamped
+    model appends after valid JSON — MLX `format=json` isn't hard-clamped like Ollama's grammar,
+    so phi4 e.g. emits `{...}\\n\\n```\\n\\nThe confidence level…` (user report 2026-07-23). The
+    streaming `json_stop` heuristic misses this when a token glues the closing brace to following
+    chars; this is the post-hoc safety net. String-aware so braces inside quoted strings don't
+    unbalance the scan. Returns None (not a partial) when no value closes, so callers keep the raw
+    text for their own repair/logging."""
+    if not text:
+        return None
+    obj_i, arr_i = text.find("{"), text.find("[")
+    starts = sorted(s for s in ((obj_i, "{", "}"), (arr_i, "[", "]")) if s[0] != -1)
+    for start, open_c, close_c in starts:
+        depth = 0
+        in_str = esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == open_c:
+                depth += 1
+            elif ch == close_c:
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+    return None
+
+
 def _json_complete(text: str) -> bool:
     """True if `text` is a complete parseable JSON value. Used to STOP grammar-constrained
     generation the instant the value closes — llguidance forces EOS after it, but MLX doesn't
@@ -576,6 +613,13 @@ class MLXEngine:
                     _lp = _json_logits_processor(pair[1], kwargs.get("json_schema"))
                     _lps2 = [_lp] if _lp is not None else None
                 text, ptoks, gtoks, gen_ns = await _gen(min(1.0, (temperature or 0.3) + 0.3), _lps2)
+        # Safety net for format=json: strip any trailing markdown/prose the model appended after
+        # the JSON value (the streaming json_stop can miss it on glued tokens). No-op on clean
+        # (grammar-wired) output; leaves non-JSON output untouched for downstream repair.
+        if format == "json":
+            _trimmed = _first_json_value(text)
+            if _trimmed is not None and _trimmed != text.strip():
+                text = _trimmed
         # Prefer decode-only time (Ollama parity for tokens/sec); fall back to total wall-clock.
         eval_ns = gen_ns or int((time.perf_counter() - t0) * 1e9)
         return _ollama_shaped_generate_result(

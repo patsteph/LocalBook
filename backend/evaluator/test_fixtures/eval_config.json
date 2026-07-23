@@ -123,6 +123,36 @@
     ]
   },
 
+  "embedding_discrimination_sets": [
+    {
+      "label": "rag-vs-adjacent",
+      "anchor": "Retrieval-augmented generation retrieves relevant documents and feeds them to a language model as grounding context.",
+      "similar": "RAG uses vector search to find pertinent passages, then conditions the LLM's answer on that retrieved context.",
+      "distractors": [
+        "Fine-tuning updates a model's weights on a labeled dataset so it specializes for a downstream task.",
+        "The recipe calls for two cups of flour, one egg, and a tablespoon of vanilla extract mixed until smooth."
+      ]
+    },
+    {
+      "label": "vector-store-lexical-trap",
+      "anchor": "A vector database stores dense embeddings and serves fast approximate nearest-neighbor similarity search.",
+      "similar": "Vector stores index high-dimensional embeddings to enable efficient nearest-neighbor retrieval over documents.",
+      "distractors": [
+        "A relational database stores rows in tables and answers queries using SQL joins across primary keys.",
+        "The museum stored its ancient vases behind reinforced glass to protect them from visitors."
+      ]
+    },
+    {
+      "label": "attention-lexical-trap",
+      "anchor": "Transformer models use self-attention to weigh the relationship between every pair of tokens in a sequence.",
+      "similar": "The attention mechanism lets each token attend to all other tokens, capturing long-range dependencies.",
+      "distractors": [
+        "Recurrent neural networks process a sequence one step at a time, carrying a hidden state forward.",
+        "Electrical transformers step voltage up or down between circuits using magnetically coupled coils."
+      ]
+    }
+  ],
+
   "content_generation": {
     "skill_id": "executive_brief",
     "topic": "RAG systems and embedding models",

@@ -166,6 +166,7 @@ class ModelCombo:
     main_engine: str = "ollama"
     fast_engine: str = "ollama"
     vision_engine: str = "ollama"
+    embed_engine: str = "ollama"
     # Friendly display names (raw ids stay in *_model for matching/history) — the UI shows
     # these so the Test Environment never renders the long HF path (user #3).
     main_model_display: str = ""
@@ -184,6 +185,7 @@ class ModelCombo:
             "main_engine": self.main_engine,
             "fast_engine": self.fast_engine,
             "vision_engine": self.vision_engine,
+            "embed_engine": self.embed_engine,
             "main_model_display": self.main_model_display or self.main_model,
             "fast_model_display": self.fast_model_display or self.fast_model,
             "vision_model_display": self.vision_model_display or self.vision_model,
@@ -195,6 +197,12 @@ class ModelCombo:
         def _eng(attr):
             return getattr(settings, attr, "ollama") or "ollama"
         main_engine, fast_engine, vision_engine = _eng("main_engine"), _eng("fast_engine"), _eng("vision_engine")
+        embed_engine = _eng("embed_engine")
+        # Report the embedding model that ACTUALLY serves retrieval — the MLX arctic id when
+        # embed_engine==mlx, else the Ollama arctic name. (Previously hardcoded to the Ollama
+        # name, so an MLX-adopted combo was silently labeled Ollama — user report 2026-07-23.)
+        embed_model = (getattr(settings, "mlx_embedding_model", "") if embed_engine == "mlx"
+                       else getattr(settings, "embedding_model", ""))
         # Report the model that ACTUALLY serves each role — the MLX id when that role's
         # engine is mlx, else the Ollama model.
         main = (getattr(settings, "mlx_main_model", "") if main_engine == "mlx"
@@ -224,13 +232,14 @@ class ModelCombo:
             name=combo_name,
             main_model=main,
             fast_model=fast,
-            embedding_model=getattr(settings, "embedding_model", ""),
+            embedding_model=embed_model,
             embedding_dim=getattr(settings, "embedding_dim", 0),
             vision_model=vision,
             tts_engine="kokoro-mlx",
             main_engine=main_engine,
             fast_engine=fast_engine,
             vision_engine=vision_engine,
+            embed_engine=embed_engine,
             main_model_display=main_disp,
             fast_model_display=fast_disp,
             vision_model_display=vision_disp,
@@ -298,6 +307,12 @@ class EvalResult:
             self.provider = caps.provider
             self.backend_url = caps.backend_url
             self.model_context_window = caps.context_window
+            # MLX models are HuggingFace ids (org/repo) served in-process — the Ollama-oriented
+            # resolver defaults them to "ollama". Recognize the HF-path shape so per-test provenance
+            # reflects the real engine (user report 2026-07-23: MLX arctic stamped "ollama").
+            if self.provider == "ollama" and "/" in (model_name or ""):
+                self.provider = "mlx"
+                self.backend_url = "in-process"
         except Exception:
             # Never let telemetry break a run
             self.model_used = model_name or self.model_used

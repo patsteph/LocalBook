@@ -123,11 +123,19 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         all_same_dim = all(d == actual_dim for d in dims)
 
         dim_score = 100 if (expected_dim == 0 or actual_dim == expected_dim) and all_same_dim else 0
-        throughput_score = min(100, int(result.tokens_per_second * 20))  # 5/sec = 100
+        # Target raised to 40 embeds/sec = 100 (was 5/sec, which EVERY model trivially
+        # saturated → the score never moved between engines/models and a large MLX speedup
+        # was invisible; user report 2026-07-23 "always 88"). 40/sec keeps headroom for a
+        # heavy arctic-l embedder so a faster engine genuinely scores higher.
+        throughput_score = min(100, int(round(result.tokens_per_second / 40.0 * 100)))
 
         result.accuracy_score = dim_score
         result.actual_output_preview = f"Dim={actual_dim}, expected={expected_dim}, throughput={result.tokens_per_second:.1f}/sec"
-        result.overall_score = int(dim_score * 0.50 + throughput_score * 0.50)
+        # Dim is a HARD gate (wrong dim = broken for this app → 0). It used to be 50% of the
+        # score AND tautological (the Locker sets embedding_dim to match the adopted model, so
+        # actual==expected always), pinning half the score at 100. Now throughput dominates so
+        # the number reflects real speed instead of a constant.
+        result.overall_score = 0 if dim_score == 0 else int(dim_score * 0.35 + throughput_score * 0.65)
         result.passed = dim_score > 0
 
         if not result.passed:
@@ -155,51 +163,62 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     result2.stamp_provider(embed_model)
 
     try:
-        embed_tests = config.get("embedding_test_passages", {})
-        similar = embed_tests.get("similar_pair", [])
-        dissimilar = embed_tests.get("dissimilar_pair", [])
+        # Prefer the multi-set discriminator: each set anchors a sentence, a genuine
+        # paraphrase (should be CLOSE), and hard NEAR-MISS distractors — topically adjacent
+        # or lexical traps ("electrical transformers", "the museum STORED vases") that a weak
+        # bag-of-words-ish embedder can't separate. The old single RAG-vs-cake-recipe pair was
+        # so easy every competent model aced it, pinning the category near-constant regardless
+        # of engine/model (user report 2026-07-23). Falls back to the legacy pair when unset.
+        sets = config.get("embedding_discrimination_sets") or []
+        margins: list[float] = []
+        details: list[str] = []
+        discriminated_all = True
 
-        if len(similar) >= 2 and len(dissimilar) >= 2:
-            start = time.time()
+        start = time.time()
+        if sets:
+            for s in sets:
+                anchor, similar_s, distractors = s.get("anchor", ""), s.get("similar", ""), s.get("distractors", []) or []
+                if not anchor or not similar_s or not distractors:
+                    continue
+                e_anchor = await _embed(anchor, embed_model)
+                sim = _cosine_similarity(e_anchor, await _embed(similar_s, embed_model))
+                dis_scores = [_cosine_similarity(e_anchor, await _embed(d, embed_model)) for d in distractors]
+                max_dis = max(dis_scores) if dis_scores else 0.0
+                margins.append(sim - max_dis)
+                if sim <= max_dis:
+                    discriminated_all = False
+                details.append(f"{s.get('label', 'set')}: sim={sim:.3f} vs max_dis={max_dis:.3f} (Δ{sim - max_dis:.3f})")
+        else:
+            embed_tests = config.get("embedding_test_passages", {})
+            similar = embed_tests.get("similar_pair", [])
+            dissimilar = embed_tests.get("dissimilar_pair", [])
+            if len(similar) >= 2 and len(dissimilar) >= 2:
+                sim = _cosine_similarity(await _embed(similar[0], embed_model), await _embed(similar[1], embed_model))
+                dis = _cosine_similarity(await _embed(dissimilar[0], embed_model), await _embed(dissimilar[1], embed_model))
+                margins.append(sim - dis)
+                discriminated_all = sim > dis
+                details.append(f"sim={sim:.3f} vs dis={dis:.3f} (Δ{sim - dis:.3f})")
 
-            emb_sim_a = await _embed(similar[0], embed_model)
-            emb_sim_b = await _embed(similar[1], embed_model)
-            emb_dis_a = await _embed(dissimilar[0], embed_model)
-            emb_dis_b = await _embed(dissimilar[1], embed_model)
+        result2.total_time_ms = (time.time() - start) * 1000
 
-            elapsed = (time.time() - start) * 1000
-            result2.total_time_ms = elapsed
-
-            sim_score = _cosine_similarity(emb_sim_a, emb_sim_b)
-            dis_score = _cosine_similarity(emb_dis_a, emb_dis_b)
-
-            # Similar texts should have higher similarity than dissimilar
-            discrimination = sim_score > dis_score
-            margin = sim_score - dis_score
-
-            result2.actual_output_preview = (
-                f"Similar pair cosine: {sim_score:.3f}, "
-                f"Dissimilar pair cosine: {dis_score:.3f}, "
-                f"Margin: {margin:.3f}"
-            )
-
-            if discrimination:
-                # Score based on margin (bigger margin = better discrimination)
-                result2.overall_score = min(100, int(50 + margin * 200))
+        if margins:
+            mean_margin = sum(margins) / len(margins)
+            result2.actual_output_preview = "; ".join(details) + f" | mean Δ={mean_margin:.3f}"
+            if discriminated_all:
+                # Harder pairs → smaller margins → real spread. 250×margin so a strong embedder
+                # (~0.20 mean margin on near-miss distractors) reaches ~100 while a mediocre one
+                # (~0.05) scores ~62 — the category now separates models instead of flatlining.
+                result2.overall_score = max(0, min(100, int(50 + mean_margin * 250)))
             else:
-                result2.overall_score = 20  # Failed discrimination
-
+                result2.overall_score = 20  # failed to separate at least one set
             result2.accuracy_score = result2.overall_score
-            result2.passed = discrimination
-
-            if not discrimination:
-                result2.failure_reason = f"Similar pair ({sim_score:.3f}) <= dissimilar pair ({dis_score:.3f})"
-
-            print(f"[EVAL-EMBED] Discrimination: sim={sim_score:.3f} vs dis={dis_score:.3f} "
-                  f"(margin={margin:.3f}, score={result2.overall_score})")
+            result2.passed = discriminated_all
+            if not discriminated_all:
+                result2.failure_reason = f"Failed to discriminate a set: {'; '.join(details)}"
+            print(f"[EVAL-EMBED] Discrimination: mean Δ={mean_margin:.3f}, score={result2.overall_score} ({len(margins)} set(s))")
         else:
             result2.skipped = True
-            result2.skip_reason = "Missing embedding test passages in config"
+            result2.skip_reason = "Missing embedding discrimination pairs/sets in config"
             result2.overall_score = 50
 
     except Exception as e:

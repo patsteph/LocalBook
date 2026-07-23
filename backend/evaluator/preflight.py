@@ -366,10 +366,10 @@ def providers_used_summary(settings_obj) -> dict:
     making it impossible to tell in the evaluator which engine actually ran (#7/#4)."""
     out: dict = {}
     for role_attr, engine_attr, mlx_attr, role_key in (
-        ("ollama_model",      "main_engine",   "mlx_main_model",   "main"),
-        ("ollama_fast_model", "fast_engine",   "mlx_fast_model",   "fast"),
-        ("embedding_model",   None,            None,               "embedding"),
-        ("vision_model",      "vision_engine", "mlx_vision_model", "vision"),
+        ("ollama_model",      "main_engine",   "mlx_main_model",      "main"),
+        ("ollama_fast_model", "fast_engine",   "mlx_fast_model",      "fast"),
+        ("embedding_model",   "embed_engine",  "mlx_embedding_model", "embedding"),
+        ("vision_model",      "vision_engine", "mlx_vision_model",    "vision"),
     ):
         from utils.model_display import friendly_model_name
         engine = getattr(settings_obj, engine_attr, "ollama") if engine_attr else "ollama"

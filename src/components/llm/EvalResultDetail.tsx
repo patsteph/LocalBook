@@ -80,8 +80,10 @@ export function EvalResultDetail({ run }: { run: EvalResult }) {
                   <span className={`px-1.5 py-0.5 text-xs rounded ${
                     info.provider === 'llama_server'
                       ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
+                      : info.provider === 'mlx'
+                      ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
                       : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
-                  }`}>{info.provider}</span>
+                  }`}>{info.provider === 'mlx' ? '⚡ mlx' : info.provider}</span>
                 </div>
                 <div className="text-sm text-gray-900 dark:text-gray-100 mt-0.5 truncate">{info.model_display || friendlyModelName(info.model)}</div>
                 {info.backend_url && <div className="text-xs text-gray-400 dark:text-gray-500 truncate">{info.backend_url}</div>}

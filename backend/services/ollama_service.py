@@ -552,11 +552,11 @@ class OllamaService:
                         temperature=options.get("temperature", 0.3))
                     _record_tokens(_res)
                     _mark_model_used(use_model)
-                    logger.info(f"[OllamaService] MLX vision generate OK model={use_model}→{_mlx_vid} "
+                    logger.info(f"[OllamaService→MLX] vision generate OK model={use_model}→{_mlx_vid} "
                                 f"format={format} tokens={_res.get('eval_count', '?')}")
                     return _res
                 except Exception as _mlx_ve:
-                    logger.warning(f"[OllamaService] MLX vision generate failed (→{_mlx_vid}); "
+                    logger.warning(f"[OllamaService→MLX] vision generate failed (→{_mlx_vid}); "
                                    f"Ollama fallback: {_mlx_ve}")
 
         # Wave 9.2b — MLX engine route for text + STRUCTURED (dual-engine). structured_llm's
@@ -579,11 +579,11 @@ class OllamaService:
                         json_schema=json_schema)  # grammar-constrained JSON when a schema is given
                     _record_tokens(_res)
                     _mark_model_used(use_model)
-                    logger.info(f"[OllamaService] MLX generate OK model={use_model}→{_mlx_id} "
+                    logger.info(f"[OllamaService→MLX] generate OK model={use_model}→{_mlx_id} "
                                 f"format={format} tokens={_res.get('eval_count', '?')}")
                     return _res
                 except Exception as _mlx_e:
-                    logger.warning(f"[OllamaService] MLX generate failed ({use_model}→{_mlx_id}); "
+                    logger.warning(f"[OllamaService→MLX] generate failed ({use_model}→{_mlx_id}); "
                                    f"Ollama fallback: {_mlx_e}")
 
         client = self._get_client()
@@ -839,10 +839,10 @@ class OllamaService:
                     image_b64, prompt, model=_mlx_vid, num_predict=num_predict or 400)
                 _mark_model_used(_mlx_vid)
                 _desc = _res.get("response", "")
-                logger.info(f"[OllamaService] MLX vision OK model→{_mlx_vid} ({len(_desc)} chars)")
+                logger.info(f"[OllamaService→MLX] vision OK model→{_mlx_vid} ({len(_desc)} chars)")
                 return _desc
             except Exception as _mlx_e:
-                logger.warning(f"[OllamaService] MLX vision failed (→{_mlx_vid}); Ollama fallback: {_mlx_e}")
+                logger.warning(f"[OllamaService→MLX] vision failed (→{_mlx_vid}); Ollama fallback: {_mlx_e}")
 
         profile: Dict[str, Any] = {}
         try:
@@ -911,10 +911,10 @@ class OllamaService:
             if vecs and len(vecs) == len(texts):
                 return vecs
             logger.warning(
-                f"[OllamaService] MLX embed shape {len(vecs) if vecs else 0}≠{len(texts)} — Ollama fallback")
+                f"[OllamaService→MLX] embed shape {len(vecs) if vecs else 0}≠{len(texts)} — Ollama fallback")
             return None
         except Exception as e:
-            logger.warning(f"[OllamaService] MLX embed failed ({e}) — Ollama fallback")
+            logger.warning(f"[OllamaService→MLX] embed failed ({e}) — Ollama fallback")
             return None
 
     async def embed(
@@ -939,7 +939,7 @@ class OllamaService:
 
         _mlx = await self._mlx_embed_or_none([text])
         if _mlx is not None:
-            logger.info(f"[OllamaService] MLX embed OK model={settings.mlx_embedding_model} caller={_get_caller()}")
+            logger.info(f"[OllamaService→MLX] embed OK model={settings.mlx_embedding_model} caller={_get_caller()}")
             return {"embeddings": _mlx}
 
         payload = {
@@ -997,7 +997,7 @@ class OllamaService:
         _mlx = await self._mlx_embed_or_none(texts)
         if _mlx is not None:
             logger.info(
-                f"[OllamaService] MLX embed_batch OK model={settings.mlx_embedding_model} n={len(texts)}")
+                f"[OllamaService→MLX] embed_batch OK model={settings.mlx_embedding_model} n={len(texts)}")
             return [v if (v and len(v) == settings.embedding_dim) else zero for v in _mlx]
 
         read_timeout = timeout or 120.0
