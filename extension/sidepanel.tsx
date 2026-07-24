@@ -188,7 +188,9 @@ function SidePanel() {
       const newNb = await createNotebookApi(name)
       if (newNb) {
         setSelectedNotebook(newNb.id)
-        showMessage(`Created "${newNb.name || name}"`, "success")
+        // /notebooks/ (create) returns `title`; /browser/notebooks maps title→`name`.
+        // Read both so the toast shows the real name regardless of which shape came back.
+        showMessage(`Created "${(newNb as { title?: string }).title || newNb.name || name}"`, "success")
         await handleFetchNotebooks()
       } else {
         showMessage("Failed to create notebook", "error")
@@ -619,6 +621,18 @@ function SidePanel() {
     setChatInput("")
     setLoading(true)
 
+    // Idle-timeout guard: if the backend accepts the connection but goes SILENT mid-stream
+    // (vs. refusing outright), reader.read() would await forever and the spinner would never
+    // clear. Abort after IDLE_TIMEOUT_MS of no data; the timer resets on every chunk, so a slow-
+    // but-progressing generation is never killed. (Mirrors the background poller's abort discipline.)
+    const streamCtrl = new AbortController()
+    let idleTimer: ReturnType<typeof setTimeout> | undefined
+    const IDLE_TIMEOUT_MS = 60000
+    const armIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => streamCtrl.abort(), IDLE_TIMEOUT_MS)
+    }
+
     try {
       // Detect @mention routing
       const mention = parseMention(inputSnapshot)
@@ -673,10 +687,12 @@ function SidePanel() {
         }
       }
 
+      armIdle()
       const res = await tokenFetch(streamUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(requestBody),
+        signal: streamCtrl.signal
       })
 
       if (!res.ok) throw new Error(await res.text())
@@ -689,6 +705,7 @@ function SidePanel() {
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
+          armIdle()  // progress → reset the idle timer
 
           const chunk = decoder.decode(value, { stream: true })
           const lines = chunk.split("\n")
@@ -738,13 +755,17 @@ function SidePanel() {
         )
       }
     } catch (e: any) {
+      const aborted = e?.name === "AbortError"
       const errorMessage: ChatMessage = {
         role: "assistant",
-        content: `Error: ${e.message || "Failed to get response"}`,
+        content: aborted
+          ? "Response timed out — the backend stopped responding mid-answer. Make sure the app is still running, then try again."
+          : `Error: ${e.message || "Failed to get response"}`,
         timestamp: Date.now()
       }
       setChatMessages(prev => [...prev, errorMessage])
     } finally {
+      if (idleTimer) clearTimeout(idleTimer)
       setLoading(false)
     }
   }

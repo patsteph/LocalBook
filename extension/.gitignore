@@ -1,0 +1,10 @@
+# Build output (Plasmo)
+build/
+.plasmo/
+out/
+
+# TypeScript incremental-compile cache — a build artifact, not source
+tsconfig.tsbuildinfo
+
+# Deps
+node_modules/
