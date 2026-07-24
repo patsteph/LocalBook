@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import "./style.css"
 
 import type {
@@ -101,14 +101,25 @@ function SidePanel() {
   // Journey tracking
   const [pageActions, setPageActions] = useState<string[]>([])
 
+  // Refs mirror the latest state so the mount-once listeners/handlers below don't read a
+  // stale render closure (the `[]`-deps init effect otherwise captured pageInfo===null and
+  // selectedNotebook==="" forever — causing the notebook-restore clobber and background-tab
+  // state-wipe bugs found 2026-07-24).
+  const selectedNotebookRef = useRef(selectedNotebook)
+  useEffect(() => { selectedNotebookRef.current = selectedNotebook }, [selectedNotebook])
+  const pageInfoRef = useRef(pageInfo)
+  useEffect(() => { pageInfoRef.current = pageInfo }, [pageInfo])
+
   // Initialize — register listeners and clean them up on unmount
   useEffect(() => {
     handleCheckConnection()
     handleGetCurrentPage()
 
     const onActivated = () => handleGetCurrentPage()
-    const onUpdated = (_: number, changeInfo: chrome.tabs.TabChangeInfo) => {
-      if (changeInfo.status === 'complete') handleGetCurrentPage()
+    // Only react to the ACTIVE tab finishing load — otherwise any background tab completing
+    // fired a full restore/reset of the current page's state (wiping in-flight summary/chat).
+    const onUpdated = (_: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => {
+      if (changeInfo.status === 'complete' && tab.active) handleGetCurrentPage()
     }
 
     chrome.tabs.onActivated.addListener(onActivated)
@@ -159,18 +170,22 @@ function SidePanel() {
   async function handleFetchNotebooks() {
     const nbs = await fetchNotebooksApi()
     setNotebooks(nbs)
-    if (nbs.length > 0 && !selectedNotebook) {
+    // Read the CURRENT selection via ref — this runs after two network round-trips, by which
+    // time loadSavedNotebook (a ~1ms storage read) has restored the saved notebook. Reading the
+    // stale render closure ("") here used to unconditionally override the restored selection with
+    // the first/primary notebook (and then persist it, decaying the saved value permanently).
+    if (nbs.length > 0 && !selectedNotebookRef.current) {
       setSelectedNotebook(nbs[0].id)
     }
 
     const primaryId = await fetchPrimaryNotebookId()
     setPrimaryNotebookId(primaryId)
-    if (!selectedNotebook && primaryId) {
+    if (!selectedNotebookRef.current && primaryId) {
       setSelectedNotebook(primaryId)
     }
 
     // Check Collector pending for the selected notebook
-    const nbId = selectedNotebook || primaryId || (nbs.length > 0 ? nbs[0].id : null)
+    const nbId = selectedNotebookRef.current || primaryId || (nbs.length > 0 ? nbs[0].id : null)
     if (nbId) {
       try {
         const pendingRes = await tokenFetch(`${API_BASE}/collector/${nbId}/pending`)
@@ -203,7 +218,7 @@ function SidePanel() {
   async function handleGetCurrentPage() {
     const info = await getCurrentPageInfo()
     if (info) {
-      if (pageInfo?.cleanUrl !== info.cleanUrl) {
+      if (pageInfoRef.current?.cleanUrl !== info.cleanUrl) {
         const restored = await restoreSessionState(info.cleanUrl)
         if (restored) {
           if (restored.summaryResult) setSummaryResult(restored.summaryResult)
@@ -220,6 +235,14 @@ function SidePanel() {
           setSearchResults([])
           setChatMessages([])
           setViewMode("actions")
+          // Also clear the page-scoped capture state — otherwise page A's outbound links /
+          // captured source id / scrape result leaked onto page B (wrong SuggestedLinks + a
+          // mis-targeted expand-links call). Found 2026-07-24.
+          setOutboundLinks([])
+          setCapturedSourceId(null)
+          setScrapeResult(null)
+          setLinksResult(null)
+          setCompareResult(null)
         }
       }
       setPageInfo(info)
@@ -250,8 +273,8 @@ function SidePanel() {
             answer_preview: `Actions: ${newActions.join(", ")} on ${pageInfo.domain}`
           })
         })
-      } catch (e) {
-        console.log("Journey tracking failed (non-critical):", e)
+      } catch {
+        /* journey tracking is non-critical — ignore */
       }
     }
   }
@@ -380,7 +403,10 @@ function SidePanel() {
         summary: data.summary || "",
         key_points: data.key_points || [],
         key_concepts: data.key_concepts || [],
-        reading_time: data.reading_time_minutes || 0,
+        // /browser/summarize doesn't return reading_time_minutes (only /browser/capture does),
+        // so it always rendered as 0. Compute it client-side from the page text (~200 wpm).
+        reading_time: data.reading_time_minutes
+          || Math.max(1, Math.round((content.content || "").trim().split(/\s+/).filter(Boolean).length / 200)),
         raw_content: content.content.substring(0, 8000),
         outbound_links: content.outboundLinks
       })
@@ -638,7 +664,11 @@ function SidePanel() {
       const mention = parseMention(inputSnapshot)
 
       // Add a placeholder assistant message that we'll stream into
-      const placeholderId = Date.now()
+      // +1 guarantees the assistant placeholder's id differs from the user message's timestamp.
+      // Both were Date.now() and frequently landed in the SAME millisecond, so the streaming
+      // map (m.timestamp === placeholderId) matched BOTH and overwrote the user's own question
+      // with the answer text (found 2026-07-24).
+      const placeholderId = userMessage.timestamp + 1
       setChatMessages(prev => [...prev, {
         role: "assistant" as const,
         content: "",
@@ -660,7 +690,11 @@ function SidePanel() {
         // Default: page-context Q&A endpoint
         const historyForRequest = currentMessages
           .filter(m => {
-            if (m.role === "assistant" && m.content.includes("I've analyzed")) return false
+            // Drop the assistant WELCOME banners from chat history — both the "I've analyzed…"
+            // (context mode) and the actual "Ask me anything about…" (direct mode) variants. The
+            // filter previously only matched the former, so the real welcome leaked into history.
+            if (m.role === "assistant" &&
+                (m.content.includes("I've analyzed") || m.content.includes("Ask me anything about"))) return false
             return true
           })
           .slice(-12)
@@ -739,6 +773,14 @@ function SidePanel() {
                 )
               } else if (data.type === "error") {
                 accumulated += `\n\nError: ${data.content || data.error}`
+                // Flush immediately — a backend `error` is often the LAST event before `done`,
+                // and without this render it would never appear (the final-flush guard sees a
+                // non-empty `accumulated` and skips). Found 2026-07-24.
+                setChatMessages(prev =>
+                  prev.map(m =>
+                    m.timestamp === placeholderId ? { ...m, content: accumulated } : m
+                  )
+                )
               }
               // status, citations, done events are silently consumed
             } catch { /* skip malformed lines */ }
@@ -771,10 +813,20 @@ function SidePanel() {
   }
 
   // Research handlers
-  async function handleResearchThis() {
-    if (!pageInfo) return
-
-    const searchTerms = summaryResult?.key_concepts?.slice(0, 3).join(" ") || pageInfo.title
+  async function handleResearchThis(queryOverride?: string) {
+    // Use what the user TYPED (the search box passes searchQuery); only when that's empty
+    // (or the initial "Research this" action) do we auto-derive terms from the page. Previously
+    // this recomputed the query from key_concepts on every call and overwrote the user's edit,
+    // making the search box non-functional (found 2026-07-24).
+    const typed = (queryOverride ?? searchQuery ?? "").trim()
+    const searchTerms = typed
+      || summaryResult?.key_concepts?.slice(0, 3).join(" ")
+      || pageInfo?.title
+      || ""
+    if (!searchTerms) {
+      showMessage("Enter something to search for", "info")
+      return
+    }
     setSearchQuery(searchTerms)
     setViewMode("research")
     setLoading(true)
@@ -986,7 +1038,7 @@ function SidePanel() {
               loading={loading}
               onQueryChange={setSearchQuery}
               onSiteChange={setSelectedSite}
-              onSearch={handleResearchThis}
+              onSearch={() => handleResearchThis()}
               onQuickAdd={quickAddToNotebook}
               onBack={() => setViewMode("actions")}
             />

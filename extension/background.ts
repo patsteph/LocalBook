@@ -336,12 +336,16 @@ async function pollPendingScrapes() {
   }
 }
 
-function setScrapeAlarmSpeed(fast: boolean) {
-  if (fast === scrapeAlarmFast) return  // no change needed
+async function setScrapeAlarmSpeed(fast: boolean) {
   scrapeAlarmFast = fast
-  chrome.alarms.create(SCRAPE_POLL_ALARM, {
-    periodInMinutes: fast ? SCRAPE_POLL_FAST_MINUTES : SCRAPE_POLL_SLOW_MINUTES
-  })
+  const wantPeriod = fast ? SCRAPE_POLL_FAST_MINUTES : SCRAPE_POLL_SLOW_MINUTES
+  // Reconcile against the ACTUAL persisted alarm, not the in-memory flag. The flag resets to
+  // false on every MV3 worker respawn while chrome.alarms persist across respawns, so the old
+  // `fast === scrapeAlarmFast` guard could leave the alarm stuck at the 3s FAST period forever
+  // (silent battery/CPU drain) after a teardown mid-poll. Found 2026-07-24.
+  const existing = await chrome.alarms.get(SCRAPE_POLL_ALARM)
+  if (existing && existing.periodInMinutes === wantPeriod) return
+  chrome.alarms.create(SCRAPE_POLL_ALARM, { periodInMinutes: wantPeriod })
 }
 
 async function handleScrapeRequest(requestId: string, url: string) {
@@ -406,6 +410,15 @@ async function handleScrapeRequest(requestId: string, url: string) {
       }
     }
 
+    // Both extraction attempts came up empty (content-script absent AND scripting fallback
+    // failed / a JS-heavy page hadn't rendered). Do NOT submit an empty "success" — that made
+    // the backend ingest a blank source with no error surfaced. Skipping lets the backend's
+    // 45s waiter time out and correctly mark the scrape FAILED. Found 2026-07-24.
+    if (!content.trim()) {
+      console.warn(`[ExtScrape] Empty extraction for ${url} (req ${requestId}) — skipping submit; backend will time out as failed`)
+      return
+    }
+
     // Post result back to backend (with timeout)
     const postController = new AbortController()
     const postTimeout = setTimeout(() => postController.abort(), 10000)
@@ -416,8 +429,6 @@ async function handleScrapeRequest(requestId: string, url: string) {
       signal: postController.signal
     })
     clearTimeout(postTimeout)
-
-    console.log(`[ExtScrape] Submitted result for ${requestId}: ${content.length} chars`)
   } catch (err) {
     console.error(`[ExtScrape] Failed to process ${requestId}:`, err)
   } finally {

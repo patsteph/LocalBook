@@ -51,7 +51,9 @@ function extractMainContent(): string {
       return turndown.turndown(html)
     }
   }
-  // Fallback to body — cap to prevent lockup
+  // Fallback to body — cap to prevent lockup. Guard the null <body> (bare XML/SVG docs)
+  // so the getPageContent listener doesn't throw synchronously and drop the response.
+  if (!document.body) return ""
   const bodyHtml = document.body.innerHTML
   if (bodyHtml.length > MAX_HTML_FOR_TURNDOWN) {
     return document.body.innerText || ""

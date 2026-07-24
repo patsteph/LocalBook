@@ -58,8 +58,8 @@ export function SuggestedLinks({ links, pageTitle, notebookIntent, notebookId, s
         const data = await res.json()
         setSuggestions(data.suggestions || [])
       }
-    } catch (e) {
-      console.log("Link suggestions failed:", e)
+    } catch {
+      /* link suggestions are non-critical — ignore */
     } finally {
       setLoading(false)
       setAnalyzed(true)
