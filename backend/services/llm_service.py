@@ -68,6 +68,17 @@ def _record_ollama_tokens(data: dict):
         pass  # Never let metrics recording break LLM calls
 
 
+def _record_engine_fallback(detail: str, role_model: str, severity: str = "warn") -> None:
+    """Best-effort quality signal when a preferred MLX call degrades to Ollama (never raises).
+    An engine fallback is a SILENT slowdown/behaviour-shift the user can't see — a sustained
+    pattern of these is exactly what the Rough-edges rollup should surface."""
+    try:
+        from services.quality_signals import record_signal
+        record_signal("fallback", "llm_service", detail, severity=severity, key=str(role_model))
+    except Exception:
+        pass
+
+
 # ─── Ollama Non-Streaming ────────────────────────────────────────────────────────
 
 async def generate_text(
@@ -200,6 +211,7 @@ async def generate_text(
         except Exception as _mlx_e:
             logger.warning(f"[mlx-engine] generate failed ({use_model}→{_mlx_id}); "
                            f"falling back to Ollama: {_mlx_e}")
+            _record_engine_fallback(f"MLX generate failed → Ollama ({type(_mlx_e).__name__})", use_model)
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         print(f"Calling LLM with model: {use_model}, num_predict: {num_predict}, num_ctx: {num_ctx or 'default'}")
@@ -462,6 +474,9 @@ async def stream_text(
                 return
             except Exception as _mlx_e:
                 logger.warning(f"[mlx-engine] stream failed ({model}→{_mlx_id}): {_mlx_e}")
+                _record_engine_fallback(
+                    f"MLX stream failed{' mid-output (no Ollama restart)' if _emitted else ' → Ollama'} "
+                    f"({type(_mlx_e).__name__})", model)
                 if _emitted:
                     return  # already streamed partial output — cannot restart on Ollama
                 # else fall through to the Ollama streaming path below

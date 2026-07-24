@@ -1090,6 +1090,19 @@ JSON:"""
         # Step 4: Handle low confidence case - refuse to answer if no valid sources
         if low_confidence or num_citations == 0 or not context.strip():
             no_info_msg = "I don't have enough relevant information in your documents to answer this question accurately. Try uploading more documents related to this topic, or rephrase your question."
+            # Quality signal: a "no info found" is a SILENT miss — the user asked, retrieval came
+            # up empty, and they just get a polite refusal. A recurring pattern here means a real
+            # coverage gap or a retrieval-tuning edge worth surfacing (Rough edges rollup).
+            try:
+                from services.quality_signals import record_signal
+                record_signal(
+                    "empty", "rag_engine",
+                    f"no answer: {num_citations} citations, low_confidence={low_confidence}",
+                    input_text=question, severity="notable",
+                    key="no_info", notebook_id=notebook_id,
+                )
+            except Exception:
+                pass
             yield {"type": "token", "content": no_info_msg}
             followup_task.cancel()
             yield {"type": "done", "follow_up_questions": []}

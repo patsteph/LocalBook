@@ -49,6 +49,24 @@ export interface LogEntry {
   source?: string;
 }
 
+// ── Quality signals ("Rough edges") — recurrence-ranked silent near-misses ──
+export interface SignalGroup {
+  type: string;        // misroute | fallback | empty | recovered | degraded
+  component: string;
+  key: string;
+  count: number;
+  severity: 'info' | 'notable' | 'warn' | string;
+  first_seen: string;
+  last_seen: string;
+  detail: string;
+  samples: string[];
+}
+export interface SignalsResponse {
+  days: number;
+  total: number;
+  groups: SignalGroup[];
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const res = await localFetch(`${API_BASE_URL}${path}`);
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
@@ -57,6 +75,7 @@ async function getJSON<T>(path: string): Promise<T> {
 
 export const healthApi = {
   full: () => getJSON<HealthFull>('/health/full'),
+  signals: (days = 7) => getJSON<SignalsResponse>(`/signals/recent?days=${days}`),
   logs: (limit = 200) => getJSON<{ logs: LogEntry[] }>(`/health/logs?limit=${limit}`),
   clearLogs: async () => {
     await localFetch(`${API_BASE_URL}/health/logs`, { method: 'DELETE' });

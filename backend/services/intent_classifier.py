@@ -276,6 +276,18 @@ async def classify_intent(
         if not actions:
             actions.append({"intent": fallback, "params": {}, "confidence": 0.1})
 
+        # Quality signal: a LOW-CONFIDENCE classification is a silent-misroute risk — the agent
+        # will still run SOMETHING, just maybe the wrong routine, with no error surfaced. Records
+        # uncertain picks + fallbacks; confidently-WRONG picks aren't detectable here without
+        # ground truth (that's what the Evaluator's labeled cases are for). See
+        # READFIRST/in-progress/quality-signals-observability.md.
+        _top = actions[0]
+        if _top["confidence"] < 0.5:
+            _record_misroute(
+                f"low-confidence intent '{_top['intent']}' ({_top['confidence']:.2f}) for @{agent_type}",
+                message, key=_top["intent"], severity="notable",
+            )
+
         # Return legacy top-level fields (intent/params) for backward compat plus
         # the new 'actions' list that multi-intent dispatchers can iterate over.
         return {
@@ -287,6 +299,8 @@ async def classify_intent(
 
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.warning(f"Intent classification parse error: {e}, raw='{raw[:200] if 'raw' in dir() else 'N/A'}'")
+        _record_misroute(f"parse failed ({type(e).__name__}) → fell to '{fallback}' for @{agent_type}",
+                          message, key=fallback, severity="warn")
         return {
             "intent": fallback,
             "params": {},
@@ -295,9 +309,21 @@ async def classify_intent(
         }
     except Exception as e:
         logger.warning(f"Intent classification failed: {e}")
+        _record_misroute(f"classifier error ({type(e).__name__}) → fell to '{fallback}' for @{agent_type}",
+                          message, key=fallback, severity="warn")
         return {
             "intent": fallback,
             "params": {},
             "confidence": 0.1,
             "actions": [{"intent": fallback, "params": {}, "confidence": 0.1}],
         }
+
+
+def _record_misroute(detail: str, message: str, *, key: str, severity: str) -> None:
+    """Best-effort quality signal for an intent near-miss (never raises)."""
+    try:
+        from services.quality_signals import record_signal
+        record_signal("misroute", "intent_classifier", detail,
+                      input_text=message, severity=severity, key=key)
+    except Exception:
+        pass
