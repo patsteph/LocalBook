@@ -3,7 +3,6 @@ import { API_BASE, tokenFetch } from "../types"
 
 interface AutomationViewProps {
   pageUrl: string
-  pageHtml?: string
   onMessage: (msg: string, type: "success" | "error" | "info") => void
 }
 
@@ -107,52 +106,142 @@ async function runStructuredAction(payload: ActionPayload): Promise<ActionResult
   }
 }
 
+// ----------------------------------------------------------------------------
+// Page-context builder — the backend's /agent-browser endpoints now require a
+// structured `page_context: {url, title, elements[], text_content}` (elements
+// each carry tag/text/selector/xpath/attributes/position, matching ElementInfo
+// in backend/api/agent_browser.py). We extract that LIVE from the active tab
+// via executeScript (the extension used to send raw page_html, which the
+// refactored backend rejects with 422). Runs in the page — self-contained.
+// ----------------------------------------------------------------------------
+interface PageElement {
+  tag: string
+  text: string
+  selector: string
+  xpath: string | null
+  attributes: Record<string, string>
+  position: { x: number; y: number; width: number; height: number }
+}
+interface PageContextPayload {
+  url: string
+  title: string
+  elements: PageElement[]
+  text_content: string
+}
+
+function extractPageForAgent(maxEls: number): { title: string; text_content: string; elements: PageElement[] } {
+  const cssPath = (start: Element): string => {
+    const parts: string[] = []
+    let node: Element | null = start
+    while (node && node.nodeType === 1 && parts.length < 5) {
+      if (node.id) {
+        try { parts.unshift(`#${CSS.escape(node.id)}`); break } catch { /* fall through */ }
+      }
+      let sel = node.tagName.toLowerCase()
+      const parent: Element | null = node.parentElement
+      if (parent) {
+        const sameTag = Array.from(parent.children).filter((c) => c.tagName === node!.tagName)
+        if (sameTag.length > 1) sel += `:nth-of-type(${sameTag.indexOf(node) + 1})`
+      }
+      parts.unshift(sel)
+      node = node.parentElement
+    }
+    return parts.join(" > ")
+  }
+  const ATTRS = ["type", "name", "id", "aria-label", "placeholder", "href", "role", "title", "value"]
+  let nodes: Element[] = []
+  try {
+    nodes = Array.from(
+      document.querySelectorAll("a[href], button, input, select, textarea, [role=button], [role=link], [onclick], summary, label")
+    ).slice(0, maxEls)
+  } catch { /* querySelectorAll can throw on exotic docs */ }
+  const elements: PageElement[] = nodes.map((node) => {
+    const rect = (node as HTMLElement).getBoundingClientRect()
+    const attributes: Record<string, string> = {}
+    for (const name of ATTRS) {
+      const v = node.getAttribute(name)
+      if (v) attributes[name] = v.slice(0, 120)
+    }
+    return {
+      tag: node.tagName.toLowerCase(),
+      text: ((node as HTMLElement).innerText || node.textContent || "").trim().slice(0, 120),
+      selector: cssPath(node),
+      xpath: null,
+      attributes,
+      position: {
+        x: Math.round(rect.x), y: Math.round(rect.y),
+        width: Math.round(rect.width), height: Math.round(rect.height),
+      },
+    }
+  })
+  return {
+    title: document.title,
+    text_content: (document.body?.innerText || "").slice(0, 2000),
+    elements,
+  }
+}
+
+async function collectPageContext(url: string): Promise<PageContextPayload | null> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
+  const tabId = tabs[0]?.id
+  if (!tabId) return null
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: extractPageForAgent,
+      args: [200],
+    })
+    const r = results?.[0]?.result
+    if (!r) return null
+    return { url, title: r.title, elements: r.elements, text_content: r.text_content }
+  } catch {
+    // Restricted page (chrome://, Web Store), no permission, etc.
+    return null
+  }
+}
+
 interface ActionStep {
   action: string
   target?: string
   value?: string
-  reasoning: string
 }
 
-interface ActionPlan {
-  goal: string
-  steps: ActionStep[]
-  estimated_time: string
-}
-
-export function AutomationView({ pageUrl, pageHtml, onMessage }: AutomationViewProps) {
+export function AutomationView({ pageUrl, onMessage }: AutomationViewProps) {
   const [goal, setGoal] = useState("")
   const [loading, setLoading] = useState(false)
-  const [plan, setPlan] = useState<ActionPlan | null>(null)
+  const [steps, setSteps] = useState<ActionStep[]>([])
   const [currentStep, setCurrentStep] = useState(-1)
   const [elementDescription, setElementDescription] = useState("")
-  const [foundElement, setFoundElement] = useState<any>(null)
+  const [foundElement, setFoundElement] = useState<{ selector?: string; element_type?: string; confidence?: number } | null>(null)
 
   const planActions = async () => {
     if (!goal.trim()) return
-    
     setLoading(true)
-    setPlan(null)
-    
+    setSteps([])
+    setCurrentStep(-1)
     try {
+      const page_context = await collectPageContext(pageUrl)
+      if (!page_context) {
+        onMessage("Couldn't read this page (it may be a restricted page).", "error")
+        return
+      }
       const response = await tokenFetch(`${API_BASE}/agent-browser/plan-actions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          goal: goal,
-          page_url: pageUrl,
-          page_html: pageHtml?.substring(0, 50000)
-        })
+        body: JSON.stringify({ goal, page_context })
       })
-      
-      if (!response.ok) throw new Error("Failed to plan actions")
-      
+      if (!response.ok) throw new Error(await response.text())
       const data = await response.json()
-      setPlan(data)
+      const planned: ActionStep[] = Array.isArray(data.actions) ? data.actions : []
+      if (planned.length === 0) {
+        onMessage("No actions planned for that goal on this page.", "info")
+        return
+      }
+      setSteps(planned)
       setCurrentStep(0)
-      onMessage("Action plan created", "success")
+      onMessage(`Planned ${planned.length} step${planned.length !== 1 ? "s" : ""}`, "success")
     } catch (err) {
-      onMessage(`Planning failed: ${err}`, "error")
+      onMessage(`Planning failed: ${err instanceof Error ? err.message : err}`, "error")
     } finally {
       setLoading(false)
     }
@@ -160,62 +249,86 @@ export function AutomationView({ pageUrl, pageHtml, onMessage }: AutomationViewP
 
   const findElement = async () => {
     if (!elementDescription.trim()) return
-    
     setLoading(true)
     setFoundElement(null)
-    
     try {
+      const page_context = await collectPageContext(pageUrl)
+      if (!page_context) {
+        onMessage("Couldn't read this page (it may be a restricted page).", "error")
+        return
+      }
       const response = await tokenFetch(`${API_BASE}/agent-browser/find-element`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          description: elementDescription,
-          page_url: pageUrl,
-          page_html: pageHtml?.substring(0, 50000)
-        })
+        body: JSON.stringify({ description: elementDescription, page_context })
       })
-      
-      if (!response.ok) throw new Error("Failed to find element")
-      
+      if (!response.ok) throw new Error(await response.text())
       const data = await response.json()
-      setFoundElement(data)
-      onMessage(`Found: ${data.element_type} - ${data.selector}`, "success")
+      if (data.found && data.element) {
+        setFoundElement({
+          selector: data.element.selector,
+          element_type: data.element.element_type,
+          confidence: data.confidence,
+        })
+        onMessage(`Found: ${data.element.element_type || "element"} — ${data.element.selector || "?"}`, "success")
+      } else {
+        onMessage("No matching element found on this page.", "info")
+      }
     } catch (err) {
-      onMessage(`Element search failed: ${err}`, "error")
+      onMessage(`Element search failed: ${err instanceof Error ? err.message : err}`, "error")
     } finally {
       setLoading(false)
     }
   }
 
-  const executeStep = async (step: ActionStep) => {
+  const executeStep = async (step: ActionStep, index: number) => {
+    setLoading(true)
     try {
-      const response = await tokenFetch(`${API_BASE}/agent-browser/prepare-action`, {
+      const page_context = await collectPageContext(pageUrl)
+      if (!page_context) {
+        onMessage("Couldn't read this page (it may be a restricted page).", "error")
+        return
+      }
+      // 1. Resolve the step's natural-language target to a concrete selector.
+      let selector: string | undefined
+      let xpath: string | undefined
+      if (step.target) {
+        const findRes = await tokenFetch(`${API_BASE}/agent-browser/find-element`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ description: step.target, page_context })
+        })
+        if (findRes.ok) {
+          const found = await findRes.json()
+          if (found.found && found.element) {
+            selector = found.element.selector ?? undefined
+            xpath = found.element.xpath ?? undefined
+          }
+        }
+      }
+      // 2. Prepare the action payload (backend builds {action, selector, xpath, description, value}).
+      const prepRes = await tokenFetch(`${API_BASE}/agent-browser/prepare-action`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: step.action,
-          target_description: step.target,
-          value: step.value,
-          page_url: pageUrl,
-          page_html: pageHtml?.substring(0, 50000)
+          element_description: step.target || step.action,
+          element_selector: selector,
+          element_xpath: xpath,
+          value: step.value
         })
       })
-      
-      if (!response.ok) throw new Error("Failed to prepare action")
-      
-      const data = await response.json()
+      if (!prepRes.ok) throw new Error(await prepRes.text())
+      const data = await prepRes.json()
 
-      // Structured-action interpreter (P0.3+, 2026-05-15). Runs the
-      // backend-provided action_payload in the active tab via
-      // chrome.scripting.executeScript with a finite verb switch. No eval.
+      // 3. Run the action_payload in the active tab (finite verb switch, no eval).
       const payload: ActionPayload | undefined = data?.action_payload
       if (payload && payload.action) {
         const result = await runStructuredAction(payload)
         if (!result.ok) {
-          onMessage(`Action failed: ${result.error ?? "unknown"}`, "error")
+          onMessage(`Step ${index + 1} failed: ${result.error ?? "unknown"}`, "error")
           return
         }
-        // Surface any extracted data so the user sees the result.
         if (result.text) {
           onMessage(`Extracted: ${result.text.slice(0, 120)}${result.text.length > 120 ? "…" : ""}`, "info")
         } else if (result.value !== undefined && result.value !== null) {
@@ -223,12 +336,12 @@ export function AutomationView({ pageUrl, pageHtml, onMessage }: AutomationViewP
         }
       }
 
-      onMessage(`Executed: ${step.action}`, "success")
-      if (plan && currentStep < plan.steps.length - 1) {
-        setCurrentStep(currentStep + 1)
-      }
+      onMessage(`Executed step ${index + 1}: ${step.action}`, "success")
+      if (index < steps.length - 1) setCurrentStep(index + 1)
     } catch (err) {
-      onMessage(`Action failed: ${err}`, "error")
+      onMessage(`Action failed: ${err instanceof Error ? err.message : err}`, "error")
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -254,16 +367,16 @@ export function AutomationView({ pageUrl, pageHtml, onMessage }: AutomationViewP
           onClick={planActions}
           disabled={loading || !goal.trim()}
         >
-          {loading ? "Planning..." : "🎯 Plan Actions"}
+          {loading ? "Working..." : "🎯 Plan Actions"}
         </button>
       </div>
 
       {/* Action Plan */}
-      {plan && (
+      {steps.length > 0 && (
         <div className="bg-gray-800 rounded p-3 space-y-2">
-          <div className="text-xs text-gray-400">Action Plan ({plan.estimated_time})</div>
+          <div className="text-xs text-gray-400">Action Plan ({steps.length} steps)</div>
           <div className="space-y-2">
-            {plan.steps.map((step, i) => (
+            {steps.map((step, i) => (
               <div
                 key={i}
                 className={`p-2 rounded text-sm ${
@@ -285,8 +398,9 @@ export function AutomationView({ pageUrl, pageHtml, onMessage }: AutomationViewP
                 </div>
                 {i === currentStep && (
                   <button
-                    className="mt-2 px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs"
-                    onClick={() => executeStep(step)}
+                    className="mt-2 px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs disabled:opacity-50"
+                    onClick={() => executeStep(step, i)}
+                    disabled={loading}
                   >
                     ▶ Execute
                   </button>
@@ -326,11 +440,11 @@ export function AutomationView({ pageUrl, pageHtml, onMessage }: AutomationViewP
         <div className="bg-gray-800 rounded p-3 text-sm">
           <div className="text-xs text-gray-400 mb-1">Found Element:</div>
           <div className="font-mono text-xs bg-gray-900 p-2 rounded overflow-x-auto">
-            {foundElement.selector}
+            {foundElement.selector || "(no selector)"}
           </div>
           <div className="text-xs text-gray-400 mt-2">
-            Type: {foundElement.element_type} | 
-            Confidence: {(foundElement.confidence * 100).toFixed(0)}%
+            Type: {foundElement.element_type || "unknown"} |
+            Confidence: {Math.round((foundElement.confidence ?? 0) * 100)}%
           </div>
         </div>
       )}
