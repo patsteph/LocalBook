@@ -512,6 +512,17 @@ def _build_category(name: str, display_name: str, results: list[EvalResult]) -> 
     """
     score, grade = scoring.compute_category_score(results)
     all_skipped = bool(results) and all(r.skipped for r in results)
+    # Strict verdict — the SINGLE source of truth for every view (breakdown table, feature-parity
+    # list, top-line counts). Matches feature_parity._verdict_for so a 69 can't be "Pass" in the
+    # table and "degraded" in the parity list (user report 2026-07-24).
+    if all_skipped:
+        verdict = "not_applicable"
+    elif score < 40:
+        verdict = "fail"
+    elif score < 70:
+        verdict = "degraded"
+    else:
+        verdict = "pass"
     cat = CategoryResult(
         category=name,
         display_name=display_name,
@@ -519,6 +530,7 @@ def _build_category(name: str, display_name: str, results: list[EvalResult]) -> 
         score=score,
         grade=grade,
         passed=(score >= 40) or all_skipped,
+        verdict=verdict,
         total_time_ms=sum(r.total_time_ms for r in results),
         skipped=all_skipped,
         skip_reason=(results[0].skip_reason if all_skipped and results else ""),

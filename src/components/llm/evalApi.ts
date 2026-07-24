@@ -87,6 +87,7 @@ export interface CategoryResult {
   score: number;
   grade: string;
   passed?: boolean;
+  verdict?: 'pass' | 'degraded' | 'fail' | 'not_applicable' | string;
   warnings?: string[];
   total_time_ms?: number;
   skipped?: boolean;

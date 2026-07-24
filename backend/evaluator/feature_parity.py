@@ -34,27 +34,31 @@ from typing import Iterable
 
 # ─── Mapping: category → user-facing feature name ──────────────────────────
 
+# Technical category display names — kept IDENTICAL to the `display_name` passed to
+# _build_category so the feature-parity list, the category-breakdown table, and the top-line
+# counts all label a category the same way (user report 2026-07-24: friendly-vs-technical
+# names made the two views look like different tests; "Semantic search" for embedding quality
+# also misled into thinking retrieval was broken). One name per category, everywhere.
 _CATEGORY_TO_FEATURE = {
-    "ingestion": "Source ingestion",
-    "rag_chat": "RAG chat (Q&A)",
-    "streaming": "Live streaming chat",
-    "fast_followup": "Conversational follow-up",
-    "document_gen": "Document & brief generation",
-    "structured_json": "Quiz / structured JSON",
-    "intent_classify": "Agent intent routing",
-    "embedding_quality": "Semantic search",
-    "vision": "Image / vision analysis",
-    "tts_audio": "Podcast (TTS)",
-    "instruction_follow": "Prompt / format compliance",
-    "concurrency": "Multiple users / concurrency",
-    "needle_haystack": "Long-context retention",
-    "prompt_safety": "Prompt injection robustness",
-    # New categories (apples-to-apples + feature coverage):
-    "voice_modifier": "Agent voice consistency",
-    "capture_modes": "Multi-mode scan",
-    "refinement": "Visual refinement pass",
-    "translation": "Capture translation",
-    "confidence": "Capture confidence calibration",
+    "ingestion": "Source Ingestion",
+    "rag_chat": "RAG Chat Q&A",
+    "streaming": "Streaming Generation",
+    "fast_followup": "Fast Follow-Up",
+    "document_gen": "Document Generation",
+    "structured_json": "Structured JSON",
+    "intent_classify": "Intent Classification",
+    "embedding_quality": "Embedding Quality",
+    "vision": "Vision / Image",
+    "tts_audio": "TTS Audio",
+    "instruction_follow": "Instruction Following",
+    "concurrency": "Concurrency & Load",
+    "needle_haystack": "Context Capacity",
+    "prompt_safety": "Prompt Safety",
+    "voice_modifier": "Voice Modifier",
+    "capture_modes": "Capture Modes",
+    "refinement": "Refinement Pass",
+    "translation": "Translation",
+    "confidence": "Confidence Calibration",
 }
 
 
@@ -78,8 +82,14 @@ def _category_has_degraded_test(cat: dict) -> bool:
 def _verdict_for(cat: dict) -> str:
     if cat.get("skipped"):
         return NOT_APPLICABLE
-    score = float(cat.get("score", 0) or 0)
+    # Prefer the shared verdict computed in _build_category (single source of truth, so the
+    # breakdown table and this list can't disagree). A degraded SUB-test still forces DEGRADED
+    # even when the aggregate cleared 70. Falls back to the tiers for pre-verdict payloads.
+    shared = cat.get("verdict")
     is_degraded_input = _category_has_degraded_test(cat)
+    if shared in (PASS, DEGRADED, FAIL, NOT_APPLICABLE):
+        return DEGRADED if (shared == PASS and is_degraded_input) else shared
+    score = float(cat.get("score", 0) or 0)
     if score < 40:
         return FAIL
     if score < 70 or is_degraded_input:

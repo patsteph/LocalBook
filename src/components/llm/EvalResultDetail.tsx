@@ -160,7 +160,13 @@ export function EvalResultDetail({ run }: { run: EvalResult }) {
                       {cat.skipped ? <span className="text-gray-400">—</span> : <GradeBadge score={cat.score} grade={cat.grade} />}
                     </td>
                     <td className="px-3 py-2 text-gray-600 dark:text-gray-400">
-                      {cat.skipped ? `⊘ Skipped${cat.skip_reason ? ` (${cat.skip_reason})` : ''}` : cat.passed ? '✅ Pass' : '❌ Fail'}
+                      {cat.skipped
+                        ? `⊘ Skipped${cat.skip_reason ? ` (${cat.skip_reason})` : ''}`
+                        : cat.verdict === 'degraded'
+                        ? '⚠️ Degraded'
+                        : cat.verdict === 'fail' || (cat.verdict === undefined && !cat.passed)
+                        ? '❌ Fail'
+                        : '✅ Pass'}
                     </td>
                   </tr>
                 ))}

@@ -391,6 +391,10 @@ class CategoryResult:
     score: float = 0.0                           # 0–100
     grade: str = ""
     passed: bool = False
+    # Strict verdict shared by ALL views (breakdown table + feature-parity list + top-line
+    # counts) so a score can't read "Pass" in one place and "degraded" in another (user report
+    # 2026-07-24). Tiers: ≥70 pass · 40–69 degraded · <40 fail · all-skipped not_applicable.
+    verdict: str = "pass"
     warnings: list = field(default_factory=list)
     total_time_ms: float = 0.0
     # v1.8.2: a category is "skipped" when every test in it was skipped.
@@ -407,6 +411,7 @@ class CategoryResult:
             "score": round(self.score, 1),
             "grade": self.grade,
             "passed": self.passed,
+            "verdict": self.verdict,
             "warnings": self.warnings,
             "total_time_ms": round(self.total_time_ms, 1),
             "skipped": self.skipped,
