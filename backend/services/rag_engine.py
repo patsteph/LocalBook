@@ -771,6 +771,7 @@ JSON:"""
         llm_provider: Optional[str] = None,
         deep_think: bool = False,
         extra_system_context: Optional[str] = None,
+        use_cache: bool = True,
     ) -> AsyncGenerator[Dict, None]:
         """Query the RAG system with streaming response.
 
@@ -895,7 +896,10 @@ JSON:"""
         # 0.92): on a hit, replay the cached answer + citations instantly with NO
         # retrieval and NO generation. Per-notebook invalidation on ingest keeps
         # it from ever serving a stale answer.
-        _cached = await answer_cache.get(question, notebook_id, query_embedding)
+        # use_cache=False forces a REAL retrieval+generation (the Evaluator's streaming test
+        # passes this so it measures actual TTFT/throughput, not a ~20ms cache replay that
+        # inflates tok/s into the hundreds — user report 2026-07-24).
+        _cached = await answer_cache.get(question, notebook_id, query_embedding) if use_cache else None
         if _cached:
             if not cached_analysis:
                 analysis_task.cancel()  # short-circuiting before analysis is used
