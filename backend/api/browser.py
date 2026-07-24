@@ -416,7 +416,13 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
         from agents.tools import summarize_page_tool, extract_page_metadata_tool
         import trafilatura
         import asyncio
-        
+
+        # INFO-level so extension captures are VISIBLE in backend.log. The rest of this module
+        # logs via print()/logger.debug — print() is swallowed (no terminal in the bundled app)
+        # and debug is below INFO, so extension traffic looked invisible in a `tail` even though
+        # it routes through here (user report 2026-07-24). This one line makes it observable.
+        logger.info(f"[browser] capture: {(request.url or '')[:120]} → notebook={request.notebook_id}")
+
         # Auto-detect YouTube URLs and redirect to YouTube capture pipeline
         # YouTube pages yield garbage from DOM extraction — transcript is what we need
         import re

@@ -96,16 +96,39 @@ def _check_memory() -> PreflightCheck:
         return PreflightCheck(name="memory", status="warn", message="psutil not installed")
 
 
-async def _check_model_backend(role: str, model_name: str) -> PreflightCheck:
+async def _check_model_backend(role: str, model_name: str, engine: str = "ollama") -> PreflightCheck:
     """Probe the backend that will serve `model_name` for this role.
 
     Returns pass/warn/fail plus the resolved provider+url for UI display.
+
+    Wave 9.6 — engine-aware: when `engine == "mlx"`, the model runs IN-PROCESS (no HTTP
+    backend to probe), so report MLX-engine availability + the MLX id instead of probing
+    Ollama and citing the Ollama name. Without this, an all-MLX run's preflight showed
+    "ollama healthy for gemma4:e4b" while Providers-used showed the MLX ids — the two lists
+    disagreed (user report 2026-07-24).
     """
     if not model_name:
         return PreflightCheck(
             name=f"{role}_backend",
             status="warn",
             message=f"No {role} configured",
+        )
+    if engine == "mlx":
+        try:
+            from services.mlx_engine import mlx_engine
+            ok = mlx_engine.available()
+        except Exception:
+            ok = False
+        details = {"role": role, "model": model_name, "provider": "mlx", "backend_url": "in-process"}
+        if ok:
+            return PreflightCheck(
+                name=f"{role}_backend", status="pass",
+                message=f"mlx (in-process) ready for {model_name}", details=details,
+            )
+        return PreflightCheck(
+            name=f"{role}_backend", status="warn",
+            message=f"MLX engine not available for {model_name} — this role will fall back to Ollama.",
+            details=details,
         )
     route = _resolve_provider(model_name)
     provider_str = route.provider.value
@@ -145,17 +168,21 @@ async def _check_model_backend(role: str, model_name: str) -> PreflightCheck:
     )
 
 
-async def _warm_text_model(model_name: str, role: str = "main") -> PreflightCheck:
+async def _warm_text_model(model_name: str, role: str = "main", display_name: str = "") -> PreflightCheck:
     """Fire a tiny throwaway generation so the first real test isn't penalised
     by cold-start time. Bounded by a 25s ceiling so a stuck backend cannot
     block the evaluator forever.
 
     Used for any text-completion model — `role` only affects the check name
     and log messages; the warmup payload is identical across roles to keep
-    cross-role comparisons fair.
+    cross-role comparisons fair. `model_name` is the ROLE name used for routing
+    (ollama_service maps it to MLX when that role's engine is mlx); `display_name`
+    (when given) is what the message shows, so the label matches the engine that
+    actually runs instead of always citing the Ollama name.
     """
     import time as _time
     check_name = f"warmup_{role}"
+    disp = display_name or model_name
     if not model_name:
         return PreflightCheck(name=check_name, status="warn", message=f"No {role} model configured")
     try:
@@ -179,13 +206,13 @@ async def _warm_text_model(model_name: str, role: str = "main") -> PreflightChec
                 name=check_name,
                 status="warn",
                 message=f"{role.capitalize()} warmup did not return text after {elapsed:.1f}s — first real test may be slow",
-                details={"role": role, "model": model_name, "elapsed_seconds": round(elapsed, 2)},
+                details={"role": role, "model": disp, "elapsed_seconds": round(elapsed, 2)},
             )
         return PreflightCheck(
             name=check_name,
             status="pass",
-            message=f"{role.capitalize()} model {model_name} warmed in {elapsed:.1f}s",
-            details={"role": role, "model": model_name, "elapsed_seconds": round(elapsed, 2)},
+            message=f"{role.capitalize()} model {disp} warmed in {elapsed:.1f}s",
+            details={"role": role, "model": disp, "elapsed_seconds": round(elapsed, 2)},
         )
     except Exception as e:
         return PreflightCheck(
@@ -322,11 +349,23 @@ async def run_preflight(settings_obj) -> PreflightReport:
         main_model, getattr(settings_obj, "vision_model", "") or ""
     )
 
-    report.checks.append(await _check_model_backend("main", main_model))
+    # Engine + DISPLAY model per role (Wave 9.6). The *_model vars above stay the Ollama role
+    # names so warmup ROUTING works (ollama_service maps them to MLX internally); the checks
+    # below report the engine-aware id so preflight matches Providers-used on an MLX run.
+    def _role_engine_disp(engine_attr: str, mlx_attr: str, ollama_name: str):
+        eng = getattr(settings_obj, engine_attr, "ollama") or "ollama"
+        if eng == "mlx":
+            return "mlx", (getattr(settings_obj, mlx_attr, "") or ollama_name)
+        return "ollama", ollama_name
+    main_eng, main_disp = _role_engine_disp("main_engine", "mlx_main_model", main_model)
+    fast_eng, fast_disp = _role_engine_disp("fast_engine", "mlx_fast_model", fast_model)
+    embed_eng, embed_disp = _role_engine_disp("embed_engine", "mlx_embedding_model", embedding_model)
+
+    report.checks.append(await _check_model_backend("main", main_disp, main_eng))
     if fast_model and fast_model != main_model:
-        report.checks.append(await _check_model_backend("fast", fast_model))
+        report.checks.append(await _check_model_backend("fast", fast_disp, fast_eng))
     if embedding_model:
-        report.checks.append(await _check_model_backend("embedding", embedding_model))
+        report.checks.append(await _check_model_backend("embedding", embed_disp, embed_eng))
     if vision_model and vision_model != main_model:
         report.checks.append(await _check_model_backend("vision", vision_model))
 
@@ -344,9 +383,9 @@ async def run_preflight(settings_obj) -> PreflightReport:
         return any(c.name == name and c.status == "pass" for c in report.checks)
 
     if main_model and _backend_ok("main_backend"):
-        report.checks.append(await _warm_text_model(main_model, role="main"))
+        report.checks.append(await _warm_text_model(main_model, role="main", display_name=main_disp))
     if fast_model and fast_model != main_model and _backend_ok("fast_backend"):
-        report.checks.append(await _warm_text_model(fast_model, role="fast"))
+        report.checks.append(await _warm_text_model(fast_model, role="fast", display_name=fast_disp))
     if vision_model and vision_model != main_model and _backend_ok("vision_backend"):
         report.checks.append(await _warm_vision_model(vision_model))
     # Embedding model warmup intentionally skipped — first embed call is

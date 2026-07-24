@@ -123,19 +123,17 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         all_same_dim = all(d == actual_dim for d in dims)
 
         dim_score = 100 if (expected_dim == 0 or actual_dim == expected_dim) and all_same_dim else 0
-        # Target raised to 40 embeds/sec = 100 (was 5/sec, which EVERY model trivially
-        # saturated → the score never moved between engines/models and a large MLX speedup
-        # was invisible; user report 2026-07-23 "always 88"). 40/sec keeps headroom for a
-        # heavy arctic-l embedder so a faster engine genuinely scores higher.
-        throughput_score = min(100, int(round(result.tokens_per_second / 40.0 * 100)))
 
         result.accuracy_score = dim_score
         result.actual_output_preview = f"Dim={actual_dim}, expected={expected_dim}, throughput={result.tokens_per_second:.1f}/sec"
-        # Dim is a HARD gate (wrong dim = broken for this app → 0). It used to be 50% of the
-        # score AND tautological (the Locker sets embedding_dim to match the adopted model, so
-        # actual==expected always), pinning half the score at 100. Now throughput dominates so
-        # the number reflects real speed instead of a constant.
-        result.overall_score = 0 if dim_score == 0 else int(dim_score * 0.35 + throughput_score * 0.65)
+        # Dimension correctness is the real gate (wrong dim = broken for this app → 0). Throughput
+        # here is a LATENCY-bound micro-measurement — 5 sequential single embeds dominated by
+        # per-call overhead, not a true batch benchmark: a fast engine still measures only ~8/sec,
+        # so scoring it (the 2026-07-23 "40/sec=100" attempt) produced a false "degraded" even on a
+        # correctly-wired strong embedder on EITHER engine (user report 2026-07-24). It's now
+        # REPORTED (preview + tokens_per_second) but NOT scored. Model-quality discrimination — the
+        # axis that actually fixes the old "always 88" — lives in Test 2 below.
+        result.overall_score = dim_score
         result.passed = dim_score > 0
 
         if not result.passed:
