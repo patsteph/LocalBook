@@ -2,7 +2,7 @@
 
 All notable changes to LocalBook will be documented in this file.
 
-## [2.1.0] - 2026-07-27
+## v2.1.0 — Local MLX engine, Quality Signals, extension audit
 
 The **opt-in local MLX engine** release. LocalBook can now run its models in-process on Apple
 Silicon via MLX (Metal) — preferred, with automatic Ollama fallback — alongside the full post-v2.0
