@@ -2,14 +2,58 @@
 
 All notable changes to LocalBook will be documented in this file.
 
-## Unreleased — post-v2.0 maintenance (ready to promote to v2.0.5)
+## [2.1.0] - 2026-07-27
 
-The post-v2.0 stability + quality + maintainability cycle, all built-app verified. Headlines:
-the **Night Shift** background worker (below), a **retrieval/synthesis quality** pass, the
-**god-file split** maintainability arc, **LLM Studio** + in-app Health + a macOS **tray companion**,
-the Studio **debate/judge** format, and a codebase **simplification** pass (~2,500 LOC + deps removed).
-Validated by a long 18 GB overnight soak (2026-07-06→07, ~16.5 h — zero crashes/restarts, watchdog
-never fired). The only work held back for a possible v2.1.0 is the opt-in MLX text port.
+The **opt-in local MLX engine** release. LocalBook can now run its models in-process on Apple
+Silicon via MLX (Metal) — preferred, with automatic Ollama fallback — alongside the full post-v2.0
+maintenance cycle. Everything MLX is **opt-in + fallback-safe**: with engines left on Ollama the app
+behaves exactly as v2.0. Validated by long overnight soaks (18 GB, zero crashes/restarts) plus an
+all-MLX roster soak.
+
+### Added — MLX in-process engine (dual-engine, opt-in)
+
+- **Text + vision on MLX** — main (gemma-4-e4b via mlx-vlm, streaming), fast (phi-4-mini via mlx-lm),
+  structured JSON, and vision all run in-process behind per-role engine flags, each dual-engine with
+  automatic Ollama fallback. Selecting an MLX model in the LLM Locker flips the engine (no `.env`
+  editing) and persists across restart; no models auto-download at boot.
+- **MLX-native embeddings** — the SAME `snowflake-arctic-embed-l-v2.0` at the SAME 1024-dim on MLX →
+  **no re-index** (CLS-pooling verified 0.9997 cross-engine cosine). First-class Locker/Evaluator role
+  on both engines; all-MLX adoption prefetches the arctic weights with a background progress chip.
+- **Grammar-wired quiz + streaming degeneration guard** on the MLX path; Klein/FLUX image via mflux
+  (opt-in). Kokoro TTS + whisper survive the transformers 5.x / hf-hub 1.x bump (HF blast-radius soak PASS).
+
+### Added — Quality Signals (silent-failure observability)
+
+A local-only ledger that records the near-misses the system already computes but used to discard —
+low-confidence / fallback intent misroutes, MLX→Ollama fallbacks, empty retrieval — surfaced as a
+grep-able `[signal]` log line and a recurrence-ranked **Rough Edges** panel in the Health view. The
+foundation for turning daily-use edges into regression tests.
+
+### Fixed — MLX / Evaluator honesty pass
+
+- **Intent classification on MLX** — phi-4 emitted valid JSON then trailing prose (MLX `format=json`
+  isn't grammar-clamped like Ollama's), so the classifier fell to the fallback intent and mis-routed
+  agent commands. Now uses the shared `robust_json_parse`, and the MLX seam trims to the first complete
+  JSON value; plus a curator few-shot to disambiguate discover-patterns vs. cross-notebook-search.
+- **Evaluator engine-awareness** — preflight, Providers-used, the combo card, and per-test provenance
+  now report the real engine (⚡ MLX, in-process) instead of silently showing Ollama; the drift detector
+  no longer phantom-fires "model swap detected"; streaming tok/s + TTFT measure a real generation
+  (bypass the answer cache) instead of a ~20 ms cache replay; the embedding-quality and instruction-
+  format scorers were recalibrated to be fair (a latency micro-bench no longer gates the verdict;
+  numbered-list markers matched line-anchored, not as decimal substrings). Category names + pass/
+  degraded verdicts unified across all Evaluator views.
+
+### Fixed — Browser extension v2.1 audit (five-agent sweep)
+
+- **Automate feature repaired** — all three `/agent-browser/*` calls were 422-broken against the
+  refactored backend (flat `page_html` vs. the required structured `page_context`); rebuilt to extract
+  a live element list and match the current contract.
+- Chat-stream **idle-timeout** (fixes a frozen spinner when the backend hangs mid-stream); **last-used
+  notebook** now restored on open; per-page **session-key collision** fixed (whole-URL hash);
+  stale-closure **tab listeners** (a background tab no longer wipes the active page's state); the
+  **fast-poll alarm** can no longer stick at 3s after a worker respawn; empty extraction no longer
+  posts a silent blank source. Plus version bump, redundant-permission trim, and INFO logging so
+  extension activity is visible.
 
 ### Fixed — visuals rendered with no words (foreignObject stripped on delivery) (code-complete, awaiting built-app verify)
 
