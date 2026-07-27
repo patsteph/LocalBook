@@ -148,10 +148,14 @@ def score_format_compliance(output: str, expected_format: dict) -> int:
             score -= penalty
             penalties.append(f"Expected {expected} paragraphs, found {actual}")
 
-    # Check forbidden elements
+    # Check forbidden elements — LINE-ANCHORED. These are line-level formatting markers
+    # (bullets "- "/"* ", numbered "1."…"5."). The old raw-substring check false-positived on
+    # ordinary prose: "1." inside "1.5 billion" / "GPT-3.5" / a citation tripped the "no numbered
+    # list" constraint and unfairly tanked the score (user report 2026-07-27). A real bullet/number
+    # marker only ever appears at the start of a line (optionally indented), so anchor there.
     if "forbidden_elements" in expected_format:
         for elem in expected_format["forbidden_elements"]:
-            if elem in output:
+            if re.search(r'(?m)^\s*' + re.escape(elem), output):
                 score -= 15
                 penalties.append(f"Contains forbidden element: '{elem}'")
 

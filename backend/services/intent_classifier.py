@@ -213,6 +213,25 @@ async def classify_intent(
     intent_list = "\n".join(intent_lines)
 
     system = _SYSTEM_PROMPT.format(intent_list=intent_list)
+
+    # Curator-only few-shot disambiguation. The discover_patterns vs cross_notebook_search
+    # boundary is genuinely ambiguous ("across my notebooks" appears in both), and the smaller /
+    # 4-bit-quantized fast model kept misrouting pattern-discovery queries to the search fallback
+    # despite the sharpened descriptions (user report — persisted on MLX phi). Concrete examples
+    # are a far stronger signal than prose for a small model. Scoped to curator so it can't bias
+    # the collector/research/studio intent sets.
+    if agent_type == "curator":
+        system += (
+            "\n\nDisambiguation examples (apply the same reasoning):\n"
+            '- "what patterns exist across my notebooks?" -> discover_patterns\n'
+            '- "what themes connect my research?" -> discover_patterns\n'
+            '- "find common threads across my notes" -> discover_patterns\n'
+            '- "what do my notes say about transformers?" -> cross_notebook_search\n'
+            '- "find the paper about RAG in my notebooks" -> cross_notebook_search\n'
+            "Rule: a question about PATTERNS / THEMES / TRENDS / CONNECTIONS across notebooks is "
+            "discover_patterns; a question seeking a SPECIFIC fact or summary is cross_notebook_search."
+        )
+
     prompt = f'User message: "{message}"'
 
     try:
