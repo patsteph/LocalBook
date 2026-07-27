@@ -220,7 +220,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.rag_query_analyzer \
     --hidden-import=services.rag_context \
     --hidden-import=services.rag_embeddings \
-    --hidden-import=services.rag_llm \
+    --hidden-import=services.llm_service \
     --hidden-import=services.rag_search \
     --hidden-import=services.rag_storage \
     --hidden-import=services.rag_verification \
