@@ -2,6 +2,23 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## v2.1.1 — MLX memory-pressure fix (Ollama twin warmup)
+
+A contained fix for a memory-pressure bug in the v2.1.0 MLX path. With all engine roles set to MLX,
+the `model_warmup` service still kept the **Ollama twins** of MLX-served models resident (~4 GB on an
+18 GB machine) — it only distinguished Ollama vs the llama-server sidecar, never Ollama vs in-process
+MLX. So gemma (and the embedding model) loaded twice: once in MLX, once in Ollama. Ollama-default
+installs are unaffected.
+
+### Fixed
+
+- **Warmup now honors the MLX engine flags.** `model_warmup` skips warming an Ollama model whose role
+  (`main` / `fast` / `embed`) is served in-process by MLX, mirroring the llm_service runtime decision
+  (`{role}_engine == "mlx"` AND `mlx_engine.available()`). Fallback-safe: if MLX is configured but
+  unavailable, calls fall back to Ollama and its model is still warmed. Also reconciles the legacy
+  `use_ollama_embeddings` flag with `embed_engine`. Net effect on an all-MLX box: Ollama no longer
+  holds a redundant ~4 GB resident and the periodic memory-pressure log lines stop.
+
 ## v2.1.0 — Local MLX engine, Quality Signals, extension audit
 
 The **opt-in local MLX engine** release. LocalBook can now run its models in-process on Apple
