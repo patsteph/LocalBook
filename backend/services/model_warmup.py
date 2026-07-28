@@ -54,6 +54,30 @@ def mark_embedding_used():
     _last_embedding_use = time.time()
 
 
+def _mlx_available() -> bool:
+    """True iff the in-process MLX engine is usable (mlx/mlx_lm/mlx_vlm importable).
+    Stable from startup — does not depend on whether a model is currently resident."""
+    try:
+        from services.mlx_engine import mlx_engine
+        return mlx_engine.available()
+    except Exception:
+        return False
+
+
+def _role_on_mlx(role: str) -> bool:
+    """True when `role` ('main'|'fast') is actually served in-process by MLX right now
+    (its `{role}_engine` flag == 'mlx' AND MLX available). When True the Ollama twin
+    of that role must NOT be warmed — MLX holds/loads it in-process, so warming Ollama
+    would leave a redundant model resident (the 2.1.0 memory-pressure bug). This mirrors
+    the llm_service runtime decision (`mlx_model_for_role(...) and mlx_engine.available()`)
+    so warmup and generation always agree on which backend serves the role: if MLX is
+    configured but unavailable, calls fall back to Ollama and its twin still gets warmed."""
+    try:
+        return getattr(settings, f"{role}_engine", "ollama") == "mlx" and _mlx_available()
+    except Exception:
+        return False
+
+
 async def warm_ollama_model(model: str, keep_alive = "30m") -> bool:
     """Send a minimal request to keep an Ollama model loaded in memory"""
     try:
@@ -79,8 +103,16 @@ async def warm_ollama_model(model: str, keep_alive = "30m") -> bool:
 async def warm_embedding_model() -> bool:
     """Warm up the embedding model by encoding a short text"""
     try:
+        # Warm Ollama's embedding model ONLY when embeddings are actually served by the
+        # Ollama daemon. When embed_engine == "mlx" (and MLX is available) embeddings run
+        # in-process (MLX arctic, same 1024-dim → no re-index) and encode() routes there —
+        # so warming Ollama would load a redundant ~1GB model. NB: the legacy
+        # `use_ollama_embeddings` flag is independent of `embed_engine`; this reconciles
+        # them (2.1.1 fix). If embed_engine=mlx but MLX is unavailable, _embed_on_mlx is
+        # False and we correctly warm the Ollama model that real embeds then fall back to.
+        _embed_on_mlx = getattr(settings, "embed_engine", "ollama") == "mlx" and _mlx_available()
         # Check if using Ollama embeddings
-        if getattr(settings, 'use_ollama_embeddings', False):
+        if getattr(settings, 'use_ollama_embeddings', False) and not _embed_on_mlx:
             # Warm Ollama embedding model via API
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -157,8 +189,9 @@ async def warmup_cycle(force_all: bool = False):
     # keep_alive="5m" — short TTL so Ollama reclaims RAM quickly.
     # The warmup loop (every 4 min) re-pings active models before expiry.
     if force_all or (now - _last_main_model_use < MODEL_IDLE_TIMEOUT):
-        if _is_sidecar(settings.ollama_model):
-            # Sidecar models are always loaded by llama-server — no warmup needed
+        if _is_sidecar(settings.ollama_model) or _role_on_mlx("main"):
+            # Served by llama-server (sidecar, always resident) or in-process MLX — the
+            # Ollama twin must NOT be warmed or it sits redundantly resident (2.1.1 fix).
             result_map["main"] = True
         else:
             try:
@@ -170,7 +203,8 @@ async def warmup_cycle(force_all: bool = False):
     # Lazy-loads on first ingestion/auto-tag — saves ~4GB RAM at boot.
     if not force_all and (now - _last_fast_model_use < MODEL_IDLE_TIMEOUT):
         if settings.ollama_fast_model != settings.ollama_model or "main" not in result_map:
-            if _is_sidecar(settings.ollama_fast_model):
+            if _is_sidecar(settings.ollama_fast_model) or _role_on_mlx("fast"):
+                # Sidecar (llama-server) or in-process MLX — skip the Ollama twin (2.1.1 fix).
                 result_map["fast"] = True
             else:
                 try:
