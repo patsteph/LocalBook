@@ -2,7 +2,7 @@
 
 **Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
-[![Version](https://img.shields.io/badge/version-2.1.0-blue.svg)](https://github.com/patsteph/LocalBook/releases)
+[![Version](https://img.shields.io/badge/version-2.1.1-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
 [![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -25,17 +25,19 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v2.0.0
-LocalBook's largest release: an Information Cortex that turns documents and
-forwarded email into a synthesizing knowledge system — one artifact/renderer
-spec (Universal Canvas), an email cortex (Correspondent), and a cross-source
-synthesis layer. Highlights below.
-### Highlights
-- **Universal Canvas** — single artifact spec + renderer registry routes markdown / strict HTML / interactive HTML (iframe sandbox) / SVG / Mermaid / Klein / `json:<kind>` through one dispatch. Mixed-medium documents interleave prose + Recharts + SVG via gemma4 `VISUAL_INTERLEAVE` injection + post-processor.
-- **Correspondent (email cortex)** — IMAP poller (Gmail / Fastmail / iCloud+ / Outlook via app password), tool-less LLM classification, cross-notebook auto-routing via embedding similarity, sister-newsletter auto-subscribe through Collector queue, reply-to-ingest, outbound SMTP via `aiosmtplib`, newsletter HTML rendered in source viewer.
-- **Synthesis layer** — Curator HTML morning brief with consensus detection + deep-read auto-trigger, interactive HTML artifacts (iframe `sandbox="allow-scripts"` + postMessage), cross-source perspectives view (consensus vs contested), per-notebook dashboards, entity-anchored topic deep-dives, source-graph entity proposals, weekly auto-journal via SMTP.
-- **Correspondent Tier 2 (all 10 capabilities)** — per-article extraction + summary + RAG indexing, hot/cold clusters via embedding agglomeration, deep-read with newsletter context, cross-notebook entity tagging at ingest, per-newsletter scorecard, RFC 2369 List-Unsubscribe one-click POST with two-step confirmation, frequency tuner, smart digest grouping, effectiveness dashboard, routing histogram with auto/manual/queued series.
-- **Gemma4 flip** — `ollama_model` default switched from `olmo-3:7b-instruct` to `gemma4:e4b`. Native vision absorbs the vision slot on 16 GB Macs.
+## 🎉 What's New in v2.1.1
+A contained fix for a memory-pressure bug in the v2.1.0 MLX path. With all engine roles set to MLX,
+the `model_warmup` service still kept the **Ollama twins** of MLX-served models resident (~4 GB on an
+18 GB machine) — it only distinguished Ollama vs the llama-server sidecar, never Ollama vs in-process
+MLX. So gemma (and the embedding model) loaded twice: once in MLX, once in Ollama. Ollama-default
+installs are unaffected.
+### Fixed
+- **Warmup now honors the MLX engine flags.** `model_warmup` skips warming an Ollama model whose role
+  (`main` / `fast` / `embed`) is served in-process by MLX, mirroring the llm_service runtime decision
+  (`{role}_engine == "mlx"` AND `mlx_engine.available()`). Fallback-safe: if MLX is configured but
+  unavailable, calls fall back to Ollama and its model is still warmed. Also reconciles the legacy
+  `use_ollama_embeddings` flag with `embed_engine`. Net effect on an all-MLX box: Ollama no longer
+  holds a redundant ~4 GB resident and the periodic memory-pressure log lines stop.
 
 ---
 
@@ -186,7 +188,7 @@ To upgrade an existing install, append `-- --upgrade`.
 
 ### Option 2: Download Release
 
-1. Download `LocalBook-v2.1.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-v2.1.1.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip and drag `LocalBook.app` to `/Applications`
 3. Launch LocalBook — it will download required AI models on first run
 
@@ -233,7 +235,7 @@ The **LocalBook Companion** extension lets you use LocalBook while browsing the 
 
 ### Installation
 
-1. Download `LocalBook-Extension-v2.1.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-Extension-v2.1.1.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip to a folder (e.g., `~/LocalBook-Extension`)
 3. Open Chrome/Edge and go to `chrome://extensions`
 4. Enable **Developer mode** (toggle in top right)
