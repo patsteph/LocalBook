@@ -93,30 +93,43 @@ class MemoryManager:
                 # job waits for its tier (the worker also coalesces by key).
                 from services.enrichment_worker import enrichment_worker
                 from services.enrichment_jobs import EnrichmentJob, JobTier
+                from services.schedule_store import schedule_store
+
+                # Rung C (Schedule Viewer): re-read each tier's cadence + enabled
+                # flag from the schedule store at the TOP of every poll so a user's
+                # edit takes effect on the next cycle without a restart. get_interval
+                # returns SECONDS; these tiers think in hours. Never raises → falls
+                # back to the module const on any error / unknown id.
+                def _interval_hours(sid: str, default_hours: float) -> float:
+                    return schedule_store.get_interval(sid, default_hours * 3600) / 3600.0
 
                 # Tier 1: Hourly compact (dedupe events) — light, non-LLM.
-                if self._should_run(self._last_compact, self.COMPACT_INTERVAL_HOURS):
+                if schedule_store.is_enabled("memory-compact") and self._should_run(
+                        self._last_compact, _interval_hours("memory-compact", self.COMPACT_INTERVAL_HOURS)):
                     enrichment_worker.enqueue(EnrichmentJob(
                         key="mem-compact", tier=JobTier.DEEP,
                         factory=lambda: self.run_compact(), label="mem-compact"))
                     self._last_compact = now
 
                 # Tier 2: 3-hour pattern analysis.
-                if self._should_run(self._last_pattern, self.PATTERN_INTERVAL_HOURS):
+                if schedule_store.is_enabled("memory-pattern") and self._should_run(
+                        self._last_pattern, _interval_hours("memory-pattern", self.PATTERN_INTERVAL_HOURS)):
                     enrichment_worker.enqueue(EnrichmentJob(
                         key="mem-pattern", tier=JobTier.DEEP,
                         factory=lambda: self.run_pattern_analysis(), label="mem-pattern"))
                     self._last_pattern = now
 
                 # Tier 3: 6-hour deep consolidation — heaviest; AWAY/night only.
-                if self._should_run(self._last_consolidation, self.DEEP_CONSOLIDATION_HOURS):
+                if schedule_store.is_enabled("memory-consolidation") and self._should_run(
+                        self._last_consolidation, _interval_hours("memory-consolidation", self.DEEP_CONSOLIDATION_HOURS)):
                     enrichment_worker.enqueue(EnrichmentJob(
                         key="mem-consolidation", tier=JobTier.NIGHT,
                         factory=lambda: self.run_consolidation(), label="mem-consolidation"))
                     self._last_consolidation = now
 
                 # Tier 4: Daily summary — AWAY/night only.
-                if self._should_run(self._last_daily, self.DAILY_SUMMARY_HOURS):
+                if schedule_store.is_enabled("memory-daily-summary") and self._should_run(
+                        self._last_daily, _interval_hours("memory-daily-summary", self.DAILY_SUMMARY_HOURS)):
                     enrichment_worker.enqueue(EnrichmentJob(
                         key="mem-daily-summary", tier=JobTier.NIGHT,
                         factory=lambda: self.run_daily_summary(), label="mem-daily-summary"))

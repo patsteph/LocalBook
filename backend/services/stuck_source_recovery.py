@@ -272,15 +272,21 @@ class StuckSourceRecovery:
                 print(f"[StuckRecovery] Background check error: {e}")
 
         while self._running:
-            enrichment_worker.enqueue(EnrichmentJob(
-                key="stuck-source-recovery",
-                tier=JobTier.DEEP,
-                factory=_run_check,
-                label="stuck-source-recovery",
-            ))
+            # Rung C (Schedule Viewer): re-read the sweep cadence + enabled flag
+            # from the schedule store each iteration so a user's edit lands on the
+            # next cycle without a restart. Never raises → falls back to the const.
+            from services.schedule_store import schedule_store
+            if schedule_store.is_enabled("stuck-source-recovery"):
+                enrichment_worker.enqueue(EnrichmentJob(
+                    key="stuck-source-recovery",
+                    tier=JobTier.DEEP,
+                    factory=_run_check,
+                    label="stuck-source-recovery",
+                ))
             # Wait for next check (worker coalesces by key, so a slow drain
             # can't stack duplicate jobs).
-            await asyncio.sleep(CHECK_INTERVAL_MINUTES * 60)
+            await asyncio.sleep(
+                schedule_store.get_interval("stuck-source-recovery", CHECK_INTERVAL_MINUTES * 60))
 
 
 # Singleton instance

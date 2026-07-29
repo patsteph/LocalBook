@@ -248,8 +248,12 @@ async def _warmup_loop_periodic():
     
     # Periodic warmup - only warms recently-used models
     while _should_run:
-        await asyncio.sleep(WARMUP_INTERVAL)
-        
+        # Rung C (Schedule Viewer): re-read the warmup interval from the schedule
+        # store each iteration so an edit lands on the next cycle without a
+        # restart. Never raises → falls back to WARMUP_INTERVAL.
+        from services.schedule_store import schedule_store
+        await asyncio.sleep(schedule_store.get_interval("model-warmup", WARMUP_INTERVAL))
+
         if not _should_run:
             break
             
