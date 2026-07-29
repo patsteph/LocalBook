@@ -40,3 +40,16 @@ jobs:
       - name: Type-check (tsc --noEmit)
         # Mirrors release.sh Step 1 pre-flight; catches unused-import/type errors esbuild skips.
         run: npx tsc --noEmit
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install slim test deps
+        # Slim set (no mlx/torch/lancedb/langgraph) — see backend/requirements-test.txt.
+        run: pip install -r backend/requirements-test.txt
+      - name: Run unit tier (CI-pure pre-existing checks)
+        run: cd backend && python -m pytest tests/ -v

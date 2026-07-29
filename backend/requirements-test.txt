@@ -1,0 +1,15 @@
+# Slim dependency set for the CI unit tier (backend/tests/) — 2.2.0 Wave 1.
+# Intentionally minimal: just enough to IMPORT the modules the CI-pure tests touch
+# (evaluator.*, services.llm_provider / ollama_service / rag_embeddings / entity_extractor,
+# and the enrichment_worker/loop_monitor import surface). Deliberately EXCLUDES the
+# Apple-Silicon-only stack (mlx-lm, mlx-vlm, kokoro-mlx, pyobjc) which cannot install on
+# the ubuntu CI runner, and the heavy ML/agent stack (torch, lancedb, langgraph) which the
+# CI-pure tests don't need. Tests that DO need those (e.g. _phase5_test.py → langgraph,
+# _runprofile_test.py → live Ollama) stay in the local-only tier and are not run in CI.
+pytest
+pydantic
+pydantic-settings
+numpy
+httpx
+psutil
+fastapi
