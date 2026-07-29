@@ -1606,7 +1606,7 @@ async def generate_infographic(request: InfographicRequest):
             lane = routing.get("lane", "L2")
         else:
             lane = raw_lane.upper()
-            if lane not in ("L1", "L2", "L4"):
+            if lane not in ("L1", "L2", "L3", "L4"):
                 lane = "L2"
             routing["lane"] = lane
 

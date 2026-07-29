@@ -11,8 +11,10 @@ markup). The reused `_apply_slot_fill` / `validate_key_slots` helpers live in
 from __future__ import annotations
 
 from services.infographic.icons import allowed_icon_names
+from services.infographic.stickers import sticker_names
 
 _ICON_LIST = ", ".join(allowed_icon_names())
+_STICKER_LIST = ", ".join(sticker_names())
 
 
 # ── L2 slot-fill system prompts ────────────────────────────────────────
@@ -149,3 +151,35 @@ L1_ANNOTATION_SYSTEM = (
 )
 
 L1_KEY_SLOTS = (["CALLOUT_TEXT", "PRIMARY_LABEL", "BASELINE_LABEL"], 2)
+
+
+# ── L3 scene graph prompt ──────────────────────────────────────────────
+# The L3 lane is a hand-drawn whiteboard SCENE. The model emits a coordinate-free
+# GRAPH only (HARD RULE §2.1): ordered phase `groups` + `nodes` (each mapped to a
+# hand-picked sticker), never x/y. Layout + drawing are 100% deterministic
+# (services.infographic.scene). Icons/stickers come from a fixed allowlist so an
+# off-list pick fails open to a neutral glyph rather than free markup.
+def l3_scene_system() -> str:
+    return (
+        "You turn content into a hand-drawn WHITEBOARD SCENE that tells a left-to-right "
+        "STORY in a few phases (like an assembly line: scattered parts -> combined -> "
+        "finished -> distributed). You emit ONLY a graph — never positions, coordinates, "
+        "sizes in pixels, colors, or drawing instructions. Return JSON:\n\n"
+        "{\n"
+        '  "title": "max 8 words naming the story",\n'
+        '  "groups": [ {"id":"g1","label":"max 3 words phase name"}, ... 2 to 4 phases in left-to-right order ],\n'
+        '  "nodes": [ {"id":"n1","label":"max 3 words","sticker":"<one sticker name>","group":"<a group id>","size":"small|hero"}, ... ],\n'
+        '  "edges": [ {"from":"g1","to":"g2"}, ... consecutive phases ]\n'
+        "}\n\n"
+        f"sticker MUST be one of: {_STICKER_LIST}.\n"
+        "Rules:\n"
+        "- Put 2-5 small nodes in the FIRST phase (the scattered inputs).\n"
+        "- Use size 'hero' for the ONE central object of a phase (e.g. the finished package or the machine); "
+        "'small' for the rest.\n"
+        "- Pick the sticker whose meaning best matches each node's label.\n"
+        "- Keep every label a short noun phrase, not a sentence."
+    )
+
+
+# must-have keys for a usable scene graph (validated in the builder)
+L3_KEY_TOP = ["groups", "nodes"]

@@ -71,6 +71,16 @@ def _build_infographic_page(payload: Dict[str, Any]) -> str:
     # user's on-screen restyle. restyle_css never raises → "" for the default.
     restyle = restyle_css(payload.get("style"))
 
+    if lane == "L3" and payload.get("scene_svg"):
+        # Scene lane — the hand-drawn SVG is the artifact source (self-contained
+        # with its own paper background + roughen filter). Emit it full-bleed and
+        # let Playwright rasterize it; reuses the shared browser singleton via the
+        # normal render_artifact path. No design-system CSS wrapper needed.
+        svg = str(payload.get("scene_svg"))
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>*{{margin:0;padding:0}}body{{background:#fdfdfb}}</style></head>
+<body>{svg}{legend}</body></html>"""
+
     if lane == "L4" and payload.get("image"):
         # Decorative lane — a textless Klein raster (data URI). The title, if
         # any, rides as a DOM overlay layer (HARD RULE §2.2: never baked into

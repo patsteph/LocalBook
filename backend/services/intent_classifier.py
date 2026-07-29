@@ -355,18 +355,17 @@ def _record_misroute(detail: str, message: str, *, key: str, severity: str) -> N
 # second router (plan §3.3): Stage A runs on the fast model; a low-confidence pick
 # escalates once to the main model (Stage B). The template-WITHIN-a-lane pick stays
 # deterministic (`services.infographic.builder.pick_archetype` /
-# `visual_router`). L1 + L2 + L4 build in v1; L3 is recognized but deferred,
-# and L0 means "reject upward to prose".
+# `visual_router`). L1 + L2 + L3 + L4 build; L0 means "reject upward to prose".
 INFOGRAPHIC_LANE_INTENTS: List[Dict[str, str]] = [
     {"id": "L1", "desc": "The content is a NUMERIC series, time series, magnitude comparison, or distribution — something best shown as an annotated CHART.", "params": "none"},
     {"id": "L2", "desc": "The content is a PROCESS / pipeline / sequence, a hierarchy or taxonomy, an entity comparison, a stat set, or a before/after — a STRUCTURED DIAGRAM. This is the default for most notebook content.", "params": "none"},
-    {"id": "L3", "desc": "The content is a conceptual narrative or metaphor with NO extractable structure — a teaching scene. (Deferred in v1; treated as L2.)", "params": "none"},
+    {"id": "L3", "desc": "The content is a conceptual NARRATIVE or METAPHOR told as a left-to-right story of a few phases (scattered parts -> combined -> finished -> distributed), with a teaching/explanatory intent and no clean numeric or tabular structure — a hand-drawn SCENE built from illustrated objects.", "params": "none"},
     {"id": "L4", "desc": "An explicit request for a DECORATIVE picture, hero image, or spot art with NO informational payload — 'draw/paint/illustrate a ...' where nothing needs to be labeled or measured. Rendered as a textless image.", "params": "none"},
     {"id": "L0", "desc": "The content is linear prose with no structure worth extracting — reject upward and return prose/table.", "params": "none"},
 ]
 
-# Buildable lanes in v1 (others collapse to the default).
-_INFOGRAPHIC_BUILDABLE = {"L1", "L2", "L4", "L0"}
+# Buildable lanes (others collapse to the default).
+_INFOGRAPHIC_BUILDABLE = {"L1", "L2", "L3", "L4", "L0"}
 _INFOGRAPHIC_FALLBACK = "L2"  # the volume lane
 _INFOGRAPHIC_STAGE_B_THRESHOLD = 0.55
 
@@ -378,7 +377,8 @@ Lanes:
 Respond with ONLY valid JSON: {{"lane": "<L0|L1|L2|L3|L4>", "confidence": <0.0-1.0>}}
 Rules:
 - If the content has clear numbers/trends to plot, pick L1.
-- If the content has steps, parts, groups, or a comparison, pick L2.
+- If the content has steps, parts, groups, or a comparison, pick L2 (the default).
+- If the content is a conceptual STORY or METAPHOR told as a few illustrated phases (a teaching scene, e.g. scattered pieces coming together into a finished thing), pick L3 rather than L2.
 - If the request is purely for a decorative picture / hero image with nothing to label or measure, pick L4.
 - Only pick L0 when there is genuinely no structure worth drawing.
 - confidence reflects how clearly the content fits the chosen lane."""
@@ -389,8 +389,6 @@ def _normalize_lane(lane: Optional[str]) -> str:
     lane = (lane or "").strip().upper()
     if lane in _INFOGRAPHIC_BUILDABLE:
         return lane
-    if lane == "L3":  # recognized but deferred -> volume lane
-        return _INFOGRAPHIC_FALLBACK
     return _INFOGRAPHIC_FALLBACK
 
 
