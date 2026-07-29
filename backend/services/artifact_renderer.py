@@ -51,6 +51,90 @@ def _esc(s: Optional[str]) -> str:
     return html_lib.escape(s or "", quote=True)
 
 
+def _build_infographic_page(payload: Dict[str, Any]) -> str:
+    """Full-bleed export page for a `json:infographic` artifact.
+
+    L2 (and degraded prose): the stored body HTML is styled by the injected
+    design-system stylesheet (the SAME `INFOGRAPHIC_L2_CSS` the frontend
+    Shadow-DOM renderer uses — the export mirror, per the design_system.py
+    header). L1: the recharts config is re-rendered with chart.js + a
+    coordinate-computed coral annotation overlay (an approximation of the
+    in-app recharts overlay; pixel-match is not the goal)."""
+    from services.infographic.design_system import INFOGRAPHIC_L2_CSS
+
+    lane = (payload.get("lane") or "L2").upper()
+
+    if lane == "L1" and isinstance(payload.get("chart"), dict):
+        cfg_json = json.dumps(payload.get("chart") or {})
+        ann = payload.get("annotations") or {}
+        overlay = []
+        if ann.get("callout_text"):
+            overlay.append(
+                '<div class="ib-callout" style="position:absolute;top:6%;right:4%">'
+                f'<b>{_esc(ann.get("callout_text"))}</b>'
+                + (f'<small>{_esc(ann.get("callout_subtext"))}</small>' if ann.get("callout_subtext") else "")
+                + "</div>"
+            )
+        if ann.get("primary_label"):
+            overlay.append(
+                '<div class="ib-series-label ib-series-label--accent" '
+                f'style="position:absolute;top:52%;left:46%">{_esc(ann.get("primary_label"))}</div>'
+            )
+        if ann.get("baseline_label"):
+            overlay.append(
+                '<div class="ib-series-label" '
+                f'style="position:absolute;bottom:14%;right:6%">{_esc(ann.get("baseline_label"))}</div>'
+            )
+        if ann.get("midpoint_note"):
+            overlay.append(
+                '<div class="ib-note" '
+                f'style="position:absolute;bottom:22%;left:22%;max-width:170px">{_esc(ann.get("midpoint_note"))}</div>'
+            )
+        inner = (
+            '<div class="ib"><div class="ib-card ib-bracketed" style="position:relative;height:520px">'
+            '<div style="position:absolute;inset:20px"><canvas id="chart"></canvas></div>'
+            + "".join(overlay)
+            + "</div></div>"
+        )
+        scripts = f"""
+<script src="{CHARTJS_CDN}"></script>
+<script>
+(function() {{
+  const cfg = {cfg_json};
+  if (!window.Chart || !cfg.chart_type) return;
+  const type = (cfg.chart_type === 'composed' ? 'line' : cfg.chart_type) || 'line';
+  const labels = (cfg.data || []).map(d => d[(cfg.x_axis && cfg.x_axis.key) || 'x'] || '');
+  const datasets = (cfg.series || []).map((s, i) => ({{
+    label: s.label || s.key,
+    data: (cfg.data || []).map(d => d[s.key]),
+    borderColor: s.color || (i === 0 ? '#e0503a' : '#1b1a18'),
+    backgroundColor: (s.color || '#e0503a') + '22',
+    borderWidth: i === 0 ? 4 : 2,
+    tension: 0.35,
+    pointRadius: 0,
+    fill: i === 0,
+  }}));
+  new Chart(document.getElementById('chart'), {{
+    type: type === 'area' ? 'line' : type,
+    data: {{ labels, datasets }},
+    options: {{ responsive: true, maintainAspectRatio: false,
+      plugins: {{ legend: {{ display: false }} }},
+      scales: {{ x: {{ grid: {{ color: '#d8d5cd' }} }}, y: {{ grid: {{ color: '#d8d5cd' }} }} }} }}
+  }});
+}})();
+</script>
+"""
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>{INFOGRAPHIC_L2_CSS}</style></head>
+<body style="margin:0">{inner}{scripts}</body></html>"""
+
+    # L2 / prose — the stored body is already the design-system HTML.
+    body = payload.get("body_html") or '<div class="ib"><div class="ib-fallback">No content.</div></div>'
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>{INFOGRAPHIC_L2_CSS}</style></head>
+<body style="margin:0">{body}</body></html>"""
+
+
 def _render_comparison_payload(payload: Dict[str, Any]) -> str:
     """Server-side mirror of ComparisonArtifactRenderer.tsx."""
     title_a = _esc((payload.get("source_a") or {}).get("title") or "Source A")
@@ -96,6 +180,12 @@ def _build_artifact_page(artifact: Dict[str, Any]) -> str:
     a_type = artifact.get("type") or "markdown"
     payload = artifact.get("payload")
     title = artifact.get("title")
+
+    # Infographics get a dedicated full-bleed page (no Tailwind wrapper) so the
+    # hand-authored design-system CSS controls the whole surface.
+    if a_type == "json:infographic":
+        return _build_infographic_page(payload if isinstance(payload, dict) else {})
+
     extra_head: list[str] = []
     extra_scripts: list[str] = []
     inner_html: str
