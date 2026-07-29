@@ -44,8 +44,22 @@ import {
   type CanvasLayout,
   type CanvasNode,
   type CanvasEdge,
+  type CanvasCandidate,
+  type CandidateNodeRef,
   type EdgeState,
 } from '../../services/canvas';
+
+// Unordered pair key so a candidate/edge is de-duped regardless of direction.
+function pairKey(a: string, b: string): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+// A latent-connection suggestion as seen from one node (its peer on the other end).
+interface NodeCandidate {
+  peerId: string;
+  score: number;
+  signal: string;
+}
 
 // ─── Edge visual language (from the journey-canvas spec) ─────────────────────
 interface EdgeVisual {
@@ -84,12 +98,20 @@ function recencyOpacity(createdAt: string | undefined): number {
 type ArtifactNodeData = {
   node: CanvasNode;
   tint: number;
+  candidates?: NodeCandidate[];
+  onPromote?: (peerId: string) => void;
 };
 type ArtifactFlowNode = Node<ArtifactNodeData, 'artifact'>;
 
+const SIGNAL_LABEL: Record<string, string> = {
+  concept: 'shared concepts',
+  embed: 'similar meaning',
+  shared_source: 'shared source',
+};
+
 function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   const rf = useReactFlow();
-  const { node, tint } = data;
+  const { node, tint, candidates, onPromote } = data;
 
   return (
     <div
@@ -106,6 +128,26 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
       {/* Connection handles — target on the left, source on the right. */}
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-gray-400 !bg-white" />
       <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-violet-500 !bg-violet-400" />
+
+      {/* Candidate dots (P5) — amber pulsing invitations to draw a latent connection.
+          Click one to promote that pair to a real `user` edge. */}
+      {candidates && candidates.length > 0 && (
+        <div className="nodrag nopan absolute -top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1">
+          {candidates.map((c) => (
+            <button
+              key={c.peerId}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onPromote?.(c.peerId);
+              }}
+              title={`Connect — ${SIGNAL_LABEL[c.signal] ?? c.signal} (${Math.round(c.score * 100)}%)`}
+              aria-label={`Draw a connection (${SIGNAL_LABEL[c.signal] ?? c.signal})`}
+              className="h-2.5 w-2.5 animate-pulse rounded-full border border-amber-500 bg-amber-400 shadow-sm transition-transform hover:scale-150 hover:animate-none"
+            />
+          ))}
+        </div>
+      )}
 
       {/* Title bar */}
       <div className="flex items-center justify-between gap-2 border-b border-gray-100 bg-gray-50/80 px-2.5 py-1.5 dark:border-gray-700 dark:bg-gray-900/50">
@@ -188,6 +230,13 @@ function fromFlowNode(fn: ArtifactFlowNode): CanvasNode {
   };
 }
 
+// Visible-node → candidate-engine ref (title + snapshot text feed embedding similarity).
+function toCandidateRef(n: CanvasNode): CandidateNodeRef {
+  const payload = (n.snapshot as { payload?: unknown } | undefined)?.payload;
+  const text = typeof payload === 'string' ? payload : '';
+  return { id: n.id, ref_type: n.ref_type, ref_id: n.ref_id, title: n.title, text };
+}
+
 // ─── Inner canvas (inside ReactFlowProvider so useReactFlow works) ────────────
 interface InnerProps {
   notebookId: string;
@@ -200,6 +249,7 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
   const [populating, setPopulating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedViewport, setSavedViewport] = useState<Viewport | null>(null);
+  const [candidates, setCandidates] = useState<CanvasCandidate[]>([]);
 
   // Refs mirror the latest state for the full-layout persistence path.
   const nodesRef = useRef<ArtifactFlowNode[]>([]);
@@ -208,6 +258,21 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   useEffect(() => { edgesRef.current = edges; }, [edges]);
 
+  // ── Candidate dots (P5): fetch transient latent-connection suggestions. ──
+  const refreshCandidates = useCallback(async (nodeList: CanvasNode[]) => {
+    if (!notebookId || nodeList.length < 2) {
+      setCandidates([]);
+      return;
+    }
+    try {
+      const found = await canvasService.getCandidates(notebookId, nodeList.map(toCandidateRef));
+      setCandidates(found);
+    } catch (e) {
+      console.warn('[JourneyCanvas] candidates', e);
+      setCandidates([]);
+    }
+  }, [notebookId]);
+
   const applyLayout = useCallback((layout: CanvasLayout) => {
     setNodes((layout.nodes || []).map(toFlowNode));
     setEdges((layout.edges || []).map(toFlowEdge));
@@ -215,7 +280,8 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
       setSavedViewport({ x: layout.viewport.x, y: layout.viewport.y, zoom: layout.viewport.zoom });
       viewportRef.current = { x: layout.viewport.x, y: layout.viewport.y, zoom: layout.viewport.zoom };
     }
-  }, [setNodes, setEdges]);
+    refreshCandidates(layout.nodes || []);
+  }, [setNodes, setEdges, refreshCandidates]);
 
   const load = useCallback(async () => {
     if (!notebookId) return;
@@ -281,6 +347,49 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
       setEdges((eds) => eds.filter((e) => e.id !== tempId)); // roll back
     }
   }, [notebookId, setEdges]);
+
+  // ── Promote a candidate dot to a real user edge (same gesture as onConnect). ──
+  const promoteCandidate = useCallback(async (aId: string, bId: string) => {
+    // Drop the suggestion immediately (optimistic — the edge effect will also hide it).
+    setCandidates((cs) => cs.filter((c) => pairKey(c.a_node, c.b_node) !== pairKey(aId, bId)));
+    const tempId = `tmp-${aId}-${bId}-${Date.now()}`;
+    const optimistic: CanvasEdge = {
+      id: tempId, source: aId, target: bId, state: 'user', created_at: new Date().toISOString(),
+    };
+    setEdges((eds) => [...eds, toFlowEdge(optimistic)]);
+    try {
+      const saved = await canvasService.createEdge(notebookId, { source: aId, target: bId, state: 'user' });
+      setEdges((eds) => eds.map((e) => (e.id === tempId ? toFlowEdge(saved) : e)));
+    } catch (e) {
+      console.warn('[JourneyCanvas] promoteCandidate failed', e);
+      setEdges((eds) => eds.filter((e) => e.id !== tempId)); // roll back
+    }
+  }, [notebookId, setEdges]);
+
+  // Project candidates onto their two endpoint nodes (skipping pairs already edged) and
+  // hand each node a stable promote callback — the custom node renders the amber dots.
+  useEffect(() => {
+    const connected = new Set(edges.map((e) => pairKey(e.source, e.target)));
+    const byNode = new Map<string, NodeCandidate[]>();
+    const add = (nodeId: string, peerId: string, score: number, signal: string) => {
+      const list = byNode.get(nodeId) ?? [];
+      list.push({ peerId, score, signal });
+      byNode.set(nodeId, list);
+    };
+    for (const c of candidates) {
+      if (connected.has(pairKey(c.a_node, c.b_node))) continue;
+      add(c.a_node, c.b_node, c.score, c.signal);
+      add(c.b_node, c.a_node, c.score, c.signal);
+    }
+    setNodes((nds) => nds.map((n) => ({
+      ...n,
+      data: {
+        ...n.data,
+        candidates: byNode.get(n.id) ?? [],
+        onPromote: (peerId: string) => promoteCandidate(n.id, peerId),
+      },
+    })));
+  }, [candidates, edges, promoteCandidate, setNodes]);
 
   // ── Delete: edges hit the DELETE endpoint; nodes persist via full-layout PUT. ──
   const onEdgesDelete = useCallback((deleted: Edge[]) => {

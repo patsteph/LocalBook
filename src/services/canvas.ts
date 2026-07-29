@@ -74,6 +74,23 @@ export interface NewEdge {
   meta?: Record<string, unknown>;
 }
 
+/** A visible-node ref sent to the candidate engine (title/text feed embedding similarity). */
+export interface CandidateNodeRef {
+  id: string;
+  ref_type?: string;
+  ref_id?: string;
+  title?: string;
+  text?: string;
+}
+
+/** A transient latent-connection suggestion between two visible nodes (never persisted). */
+export interface CanvasCandidate {
+  a_node: string;
+  b_node: string;
+  score: number;
+  signal: 'concept' | 'embed' | 'shared_source';
+}
+
 // ─── Debounce helper (per-key trailing-edge) ─────────────────────────────────
 // Keeps drag (per-node) and viewport (single) write-backs off the hot path.
 const _timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -109,20 +126,30 @@ export const canvasService = {
     if (!resp.ok) throw new Error(`canvas: putLayout failed (HTTP ${resp.status})`);
   },
 
-  /** Persist a single node's position. Fire-and-forget from the drag handler. */
-  async patchNode(notebookId: string, nodeId: string, x: number, y: number): Promise<void> {
+  /** Persist a single node's position (and optionally its resized dimensions). */
+  async patchNode(
+    notebookId: string, nodeId: string, x: number, y: number,
+    width?: number, height?: number,
+  ): Promise<void> {
+    const body: Record<string, number> = { x, y };
+    if (width != null) body.width = width;
+    if (height != null) body.height = height;
     const resp = await localFetch(`${API_BASE_URL}/canvas/node/${notebookId}/${nodeId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ x, y }),
+      body: JSON.stringify(body),
     });
     if (!resp.ok) throw new Error(`canvas: patchNode failed (HTTP ${resp.status})`);
   },
 
-  /** Debounced variant for the drag hot path (keyed per node). */
-  patchNodeDebounced(notebookId: string, nodeId: string, x: number, y: number, ms = 250): void {
+  /** Debounced variant for the drag/resize hot path (keyed per node). */
+  patchNodeDebounced(
+    notebookId: string, nodeId: string, x: number, y: number,
+    width?: number, height?: number, ms = 250,
+  ): void {
     debounced(`node:${notebookId}:${nodeId}`, () => {
-      this.patchNode(notebookId, nodeId, x, y).catch((e) => console.warn('[canvas] patchNode', e));
+      this.patchNode(notebookId, nodeId, x, y, width, height)
+        .catch((e) => console.warn('[canvas] patchNode', e));
     }, ms);
   },
 
@@ -169,5 +196,22 @@ export const canvasService = {
       method: 'POST',
     });
     return asJson<CanvasLayout>(resp, 'populate');
+  },
+
+  /**
+   * P5 candidate-dot engine — latent connections among the currently-visible nodes.
+   * Transient (recomputed, never persisted). POST (not GET): the visible-node payload
+   * carries titles/text for embedding similarity, and Fetch forbids a body on GET.
+   */
+  async getCandidates(
+    notebookId: string, nodes: CandidateNodeRef[],
+  ): Promise<CanvasCandidate[]> {
+    const resp = await localFetch(`${API_BASE_URL}/canvas/candidates/${notebookId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodes }),
+    });
+    const data = await asJson<{ candidates: CanvasCandidate[] }>(resp, 'getCandidates');
+    return data?.candidates ?? [];
   },
 };
