@@ -52,11 +52,20 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             snapshot_json TEXT DEFAULT '{}',
             title         TEXT DEFAULT '',
             z             INTEGER DEFAULT 0,
+            width         REAL,
+            height        REAL,
             created_at    TEXT NOT NULL,
             updated_at    TEXT NOT NULL
         )
         """
     )
+    # Migration-safe: existing prod DBs already have canvas_nodes without width/height
+    # (added 2.2.0 resize-persistence). ADD COLUMN only when absent — nullable, no default.
+    existing_cols = {r[1] for r in cur.execute("PRAGMA table_info(canvas_nodes)").fetchall()}
+    if "width" not in existing_cols:
+        cur.execute("ALTER TABLE canvas_nodes ADD COLUMN width REAL")
+    if "height" not in existing_cols:
+        cur.execute("ALTER TABLE canvas_nodes ADD COLUMN height REAL")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_canvas_nodes_nb ON canvas_nodes(notebook_id)")
     cur.execute(
         """
@@ -91,6 +100,16 @@ def _now() -> str:
     return datetime.utcnow().isoformat()
 
 
+def _as_float_or_none(v: Any) -> Optional[float]:
+    """Coerce a width/height to float, preserving None (a node that was never resized)."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 # --------------------------------------------------------------------------
 # Row <-> dict mappers
 # --------------------------------------------------------------------------
@@ -105,6 +124,8 @@ def _node_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "snapshot": json.loads(row["snapshot_json"] or "{}"),
         "title": row["title"] or "",
         "z": row["z"] or 0,
+        "width": row["width"],
+        "height": row["height"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -165,7 +186,8 @@ def _save_layout(
     for n in nodes or []:
         conn.execute(
             "INSERT INTO canvas_nodes (id, notebook_id, x, y, kind, ref_type, ref_id, "
-            "snapshot_json, title, z, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "snapshot_json, title, z, width, height, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 n.get("id") or str(uuid.uuid4()),
                 notebook_id,
@@ -177,6 +199,8 @@ def _save_layout(
                 json.dumps(n.get("snapshot", {}), default=str),
                 n.get("title", ""),
                 int(n.get("z", 0)),
+                _as_float_or_none(n.get("width")),
+                _as_float_or_none(n.get("height")),
                 n.get("created_at") or now,
                 now,
             ),
@@ -203,10 +227,22 @@ def _save_layout(
 
 
 def _patch_node(conn: sqlite3.Connection, notebook_id: str, node_id: str,
-                x: float, y: float) -> bool:
+                x: float, y: float,
+                width: Optional[float] = None, height: Optional[float] = None) -> bool:
+    """Move (and optionally resize) a single node. width/height are updated only when
+    supplied so a pure-drag patch never clobbers a previously-persisted size."""
+    sets = ["x = ?", "y = ?", "updated_at = ?"]
+    params: List[Any] = [float(x), float(y), _now()]
+    if width is not None:
+        sets.append("width = ?")
+        params.append(float(width))
+    if height is not None:
+        sets.append("height = ?")
+        params.append(float(height))
+    params.extend([node_id, notebook_id])
     cur = conn.execute(
-        "UPDATE canvas_nodes SET x = ?, y = ?, updated_at = ? WHERE id = ? AND notebook_id = ?",
-        (float(x), float(y), _now(), node_id, notebook_id),
+        f"UPDATE canvas_nodes SET {', '.join(sets)} WHERE id = ? AND notebook_id = ?",
+        params,
     )
     conn.commit()
     return cur.rowcount > 0
@@ -281,9 +317,10 @@ def save_layout(notebook_id: str, nodes, edges, viewport=None) -> bool:
         return False
 
 
-def patch_node(notebook_id: str, node_id: str, x: float, y: float) -> bool:
+def patch_node(notebook_id: str, node_id: str, x: float, y: float,
+               width: Optional[float] = None, height: Optional[float] = None) -> bool:
     try:
-        return _patch_node(_get_conn(), notebook_id, node_id, x, y)
+        return _patch_node(_get_conn(), notebook_id, node_id, x, y, width, height)
     except Exception as e:
         logger.warning(f"[canvas_layout] patch_node failed ({node_id}): {e}")
         return False

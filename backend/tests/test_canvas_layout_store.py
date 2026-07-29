@@ -88,3 +88,58 @@ def test_save_viewport_upsert(conn):
 
 def test_edge_states_constant():
     assert cl.EDGE_STATES == ("candidate", "provenance", "user", "curator", "researched")
+
+
+# ── width/height resize-persistence (2.2.0) ──────────────────────────────────────────
+def test_save_layout_persists_width_height(conn):
+    nodes = [
+        {"id": "n1", "x": 0.0, "y": 0.0, "kind": "k", "width": 320.0, "height": 210.0},
+        {"id": "n2", "x": 1.0, "y": 1.0, "kind": "k"},  # never resized → null dims
+    ]
+    cl._save_layout(conn, "nb1", nodes, [])
+    layout = cl._get_layout(conn, "nb1")
+    n1 = next(n for n in layout["nodes"] if n["id"] == "n1")
+    n2 = next(n for n in layout["nodes"] if n["id"] == "n2")
+    assert n1["width"] == 320.0 and n1["height"] == 210.0
+    assert n2["width"] is None and n2["height"] is None
+
+
+def test_patch_node_updates_dimensions(conn):
+    cl._save_layout(conn, "nb1", [{"id": "n1", "x": 0.0, "y": 0.0, "kind": "k"}], [])
+    assert cl._patch_node(conn, "nb1", "n1", 5.0, 6.0, width=400.0, height=250.0) is True
+    n1 = cl._get_layout(conn, "nb1")["nodes"][0]
+    assert (n1["x"], n1["y"], n1["width"], n1["height"]) == (5.0, 6.0, 400.0, 250.0)
+
+
+def test_patch_node_without_dims_preserves_existing_size(conn):
+    cl._save_layout(conn, "nb1",
+                    [{"id": "n1", "x": 0.0, "y": 0.0, "kind": "k", "width": 300.0, "height": 200.0}], [])
+    # A pure-drag patch (no width/height) must not clobber the persisted size.
+    assert cl._patch_node(conn, "nb1", "n1", 9.0, 9.0) is True
+    n1 = cl._get_layout(conn, "nb1")["nodes"][0]
+    assert n1["width"] == 300.0 and n1["height"] == 200.0
+    assert n1["x"] == 9.0 and n1["y"] == 9.0
+
+
+def test_ensure_schema_migrates_legacy_table():
+    """A prod DB whose canvas_nodes predates width/height gets the columns added in place."""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    # Legacy schema — no width/height.
+    c.execute(
+        "CREATE TABLE canvas_nodes (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL, "
+        "x REAL NOT NULL, y REAL NOT NULL, kind TEXT NOT NULL, ref_type TEXT, ref_id TEXT, "
+        "snapshot_json TEXT DEFAULT '{}', title TEXT DEFAULT '', z INTEGER DEFAULT 0, "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    c.execute(
+        "INSERT INTO canvas_nodes (id, notebook_id, x, y, kind, created_at, updated_at) "
+        "VALUES ('n1','nb1',0,0,'k','t','t')"
+    )
+    c.commit()
+    cl._ensure_schema(c)  # idempotent migration
+    cols = {r[1] for r in c.execute("PRAGMA table_info(canvas_nodes)").fetchall()}
+    assert "width" in cols and "height" in cols
+    # Existing row survives, new dims default to NULL, and it round-trips.
+    n1 = cl._get_layout(c, "nb1")["nodes"][0]
+    assert n1["id"] == "n1" and n1["width"] is None and n1["height"] is None

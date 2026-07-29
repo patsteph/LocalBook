@@ -24,6 +24,8 @@ class SaveLayoutRequest(BaseModel):
 class PatchNodeRequest(BaseModel):
     x: float
     y: float
+    width: Optional[float] = None
+    height: Optional[float] = None
 
 
 class EdgeRequest(BaseModel):
@@ -39,6 +41,19 @@ class ViewportRequest(BaseModel):
     x: float = 0.0
     y: float = 0.0
     zoom: float = 1.0
+
+
+class CandidateNodeRef(BaseModel):
+    """A currently-visible node the candidate engine may connect to another visible node."""
+    id: str
+    ref_type: Optional[str] = None
+    ref_id: Optional[str] = None
+    title: str = ""
+    text: str = ""
+
+
+class CandidatesRequest(BaseModel):
+    nodes: List[CandidateNodeRef] = []
 
 
 @router.get("/layout/{notebook_id}")
@@ -58,10 +73,12 @@ async def save_layout(notebook_id: str, req: SaveLayoutRequest):
 
 @router.patch("/node/{notebook_id}/{node_id}")
 async def patch_node(notebook_id: str, node_id: str, req: PatchNodeRequest):
-    """Move a single node (debounced drag hot path)."""
-    if not cl.patch_node(notebook_id, node_id, req.x, req.y):
+    """Move (and optionally resize) a single node — the debounced drag/resize hot path.
+    width/height are persisted only when supplied (a pure-drag patch omits them)."""
+    if not cl.patch_node(notebook_id, node_id, req.x, req.y, req.width, req.height):
         raise HTTPException(status_code=404, detail="node not found")
-    return {"status": "patched", "id": node_id, "x": req.x, "y": req.y}
+    return {"status": "patched", "id": node_id, "x": req.x, "y": req.y,
+            "width": req.width, "height": req.height}
 
 
 @router.post("/edge/{notebook_id}")
@@ -89,6 +106,25 @@ async def save_viewport(notebook_id: str, req: ViewportRequest):
     if not cl.save_viewport(notebook_id, req.x, req.y, req.zoom):
         raise HTTPException(status_code=500, detail="save_viewport failed")
     return {"status": "saved", "x": req.x, "y": req.y, "zoom": req.zoom}
+
+
+@router.post("/candidates/{notebook_id}")
+async def candidates(notebook_id: str, req: CandidatesRequest):
+    """P5 candidate-dot engine — latent connections between the currently-visible nodes.
+
+    Blends three already-available signals (KG shared entities + embedding similarity +
+    shared-source overlap), bounds them (only visible↔visible, top-K per node, score ≥ 0.5,
+    global cap), and returns transient suggestions — never persisted. The frontend renders
+    amber paired dots; clicking one promotes it to a real `user` edge (POST /canvas/edge).
+
+    POST (not GET) because the visible-node set — with titles/text for embeddings — is a body
+    payload, and the Fetch spec forbids a body on GET.
+    """
+    from services import canvas_candidates
+
+    nodes = [n.model_dump() for n in req.nodes]
+    pairs = await canvas_candidates.compute_candidates(notebook_id, nodes)
+    return {"candidates": pairs}
 
 
 @router.post("/populate/{notebook_id}")
