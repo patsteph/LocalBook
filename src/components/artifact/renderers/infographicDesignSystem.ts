@@ -100,7 +100,11 @@ export const INFOGRAPHIC_L2_CSS = `
 .ib-arrow--accent{color:var(--ib-accent);}
 
 /* -- Two-column compare ------------------------------------------ */
-.ib-compare{display:grid;grid-template-columns:1fr 1px 1fr;gap:26px;align-items:start;}
+/* minmax(0,1fr) (not bare 1fr) forces the two columns to stay equal-width:
+   a bare 1fr floors at min-content, so one wide child (the fan / branch)
+   would blow its column out to ~70%. min-width:0 lets wide children shrink
+   inside the column instead of overflowing off the canvas. */
+.ib-compare{display:grid;grid-template-columns:minmax(0,1fr) 1px minmax(0,1fr);gap:26px;align-items:start;max-width:100%;}
 .ib-vrule{background:var(--ib-line);width:1px;align-self:stretch;}
 .ib-col{display:flex;flex-direction:column;gap:16px;min-width:0;}
 
@@ -121,7 +125,8 @@ export const INFOGRAPHIC_L2_CSS = `
   font-size:16px;font-weight:800;color:var(--ib-ink);
   border:1.5px solid var(--ib-line);border-radius:8px;padding:2px 12px;background:var(--ib-card-a);
 }
-.ib-fan{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+.ib-fan{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;max-width:100%;}
+.ib-fan>*{min-width:0;}
 
 /* -- Facts table (task-optimized artifact) ----------------------- */
 .ib-table{
@@ -200,8 +205,8 @@ export const INFOGRAPHIC_L2_CSS = `
 .ib-looped{display:flex;flex-direction:column;gap:2px;align-items:stretch;}
 .ib-loop-arrow{display:flex;justify-content:center;color:var(--ib-accent);margin:1px 0;}
 .ib-loop-arrow svg{width:42px;height:26px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}
-.ib-branch{display:flex;justify-content:center;color:var(--ib-accent);margin:4px 0 2px;}
-.ib-branch svg{width:200px;height:38px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}
+.ib-branch{display:flex;justify-content:center;color:var(--ib-accent);margin:4px 0 2px;max-width:100%;}
+.ib-branch svg{width:100%;max-width:200px;height:auto;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}
 
 /* code block */
 .ib-code{

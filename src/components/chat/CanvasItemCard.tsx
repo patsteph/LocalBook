@@ -3,7 +3,7 @@ import { emitEvent } from '../../lib/events';
 import DOMPurify from 'dompurify';
 import {
   FileText, Palette, Target, Layers, Mic, MessageSquare, PenLine,
-  BookOpen, ChevronDown, X, Video, MoreHorizontal, Download, Presentation, Code, GitCompare,
+  BookOpen, ChevronDown, X, Video, MoreHorizontal, Download, Presentation, Code, GitCompare, BarChart3,
 } from 'lucide-react';
 import { useCanvas } from '../canvas/CanvasContext';
 import { CanvasItem } from '../canvas/types';
@@ -36,6 +36,7 @@ const TYPE_ICONS: Record<CanvasItem['type'], React.ReactNode> = {
   'note': <PenLine className={iconSm} />,
   'html': <Code className={iconSm} />,
   'comparison': <GitCompare className={iconSm} />,
+  'infographic': <BarChart3 className={iconSm} />,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -63,6 +64,7 @@ const TYPE_ACCENTS: Record<CanvasItem['type'], string> = {
   'note': 'border-l-indigo-400',
   'html': 'border-l-emerald-500',
   'comparison': 'border-l-cyan-500',
+  'infographic': 'border-l-[#e0503a]',
 };
 
 const TYPE_LABELS: Record<CanvasItem['type'], string> = {
@@ -76,6 +78,7 @@ const TYPE_LABELS: Record<CanvasItem['type'], string> = {
   'note': 'Note',
   'html': 'HTML',
   'comparison': 'Comparison',
+  'infographic': 'Infographic',
 };
 
 // VisualChatInlineContent — SVG renderer + thumbs row + critic badge for v2
@@ -311,9 +314,9 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
   // response) gets the ⋮ menu so users can grab PDF / PNG via the
   // unified backend pipeline.
   const isExportable =
-    (item.type === 'document' || item.type === 'note' || item.type === 'chat-response' || item.type === 'html' || item.type === 'comparison' || item.type === 'visual')
+    (item.type === 'document' || item.type === 'note' || item.type === 'chat-response' || item.type === 'html' || item.type === 'comparison' || item.type === 'visual' || item.type === 'infographic')
     && item.status === 'complete'
-    && (!!item.content || item.type === 'comparison');
+    && (!!item.content || item.type === 'comparison' || item.type === 'infographic');
 
   const handleRemove = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -533,6 +536,17 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
                 id: item.id,
                 type: 'json:comparison',
                 payload: item.metadata.comparison,
+                title: item.title,
+              }}
+              context="canvas-full"
+            />
+          )}
+          {item.type === 'infographic' && item.metadata?.infographic && (
+            <ArtifactRender
+              artifact={{
+                id: item.id,
+                type: 'json:infographic',
+                payload: item.metadata.infographic,
                 title: item.title,
               }}
               context="canvas-full"

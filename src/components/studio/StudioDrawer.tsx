@@ -21,7 +21,8 @@ import { emitEvent } from '../../lib/events';
 import {
   FileText, Mic, Video, Palette, Target, Layers, X, Sparkles, GitCompare, Telescope, BarChart3,
 } from 'lucide-react';
-import { InfographicPanel } from '../visual/InfographicPanel';
+import { InfographicLanePicker, type InfographicLane } from '../visual/InfographicLanePicker';
+import { infographicService } from '../../services/infographic';
 import { contentService } from '../../services/content';
 import { audioService } from '../../services/audio';
 import { videoService } from '../../services/video';
@@ -180,6 +181,8 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
   // Phase 13 — deep-dive drawer state.
   const [deepDiveEntity, setDeepDiveEntity] = useState<string>(() => localStorage.getItem('lb-studio-deepdive-entity') || '');
   const [deepDiveCrossNotebook, setDeepDiveCrossNotebook] = useState<boolean>(() => localStorage.getItem('lb-studio-deepdive-cross') !== '0');
+  // Infographic — lane override picker (Auto/L1/L2/L3/L4). Auto routes on content shape.
+  const [infographicLane, setInfographicLane] = useState<InfographicLane>('auto');
   useEffect(() => { localStorage.setItem('lb-studio-deepdive-entity', deepDiveEntity); }, [deepDiveEntity]);
   useEffect(() => { localStorage.setItem('lb-studio-deepdive-cross', deepDiveCrossNotebook ? '1' : '0'); }, [deepDiveCrossNotebook]);
 
@@ -590,6 +593,44 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
           }
           break;
         }
+        case 'infographic': {
+          // Same tombstone contract as visual/comparison: drop a generating
+          // canvas item, then fill it with the json:infographic artifact.
+          const itemId = `infographic-${Date.now()}`;
+          addCanvasItem({
+            id: itemId,
+            type: 'infographic' as any,
+            title: titleTopic ? `Infographic: ${titleTopic}` : 'Infographic',
+            content: '',
+            collapsed: false,
+            status: 'generating',
+            metadata: { notebookId, source: 'studio_drawer' } as any,
+          });
+          try {
+            const result = await infographicService.generate(
+              notebookId, trimmedTopic || '', infographicLane,
+            );
+            updateCanvasItem(itemId, {
+              status: 'complete',
+              metadata: {
+                notebookId,
+                source: 'studio_drawer',
+                infographic: (result.artifact as any)?.payload,
+                artifact: result.artifact,
+                lane: result.lane,
+                routing: result.routing,
+              } as any,
+            });
+            onToast?.('success', 'Infographic ready');
+          } catch (err) {
+            updateCanvasItem(itemId, {
+              status: 'error',
+              metadata: { notebookId, errorMessage: err instanceof Error ? err.message : 'Generation failed', source: 'studio_drawer' } as any,
+            });
+            throw err;
+          }
+          break;
+        }
         case 'quiz': {
           const itemId = `quiz-${Date.now()}`;
           addCanvasItem({
@@ -640,7 +681,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
     } finally {
       setGenerating(false);
     }
-  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoVisualStyle, videoIncludeVisuals, videoFormat, videoNarrationStyle, videoNarratorGender, videoAccent, quizCount, quizDifficulty, quizIncludeVisuals, docsIncludeVisuals, cardsCount, cardsDifficulty, cardsTutorGender, cardsTutorAccent, cardsTutorAutoplay, cardsIncludeVisuals, perspectivesQuery, perspectivesCrossNotebook, deepDiveEntity, deepDiveCrossNotebook, compareSourceA, compareSourceB, compareFocus, availableSources, chatContext, onClose, onToast, generateVisualToCanvas, addCanvasItem, updateCanvasItem, textSkills]);
+  }, [notebookId, topic, register, type, docsSkill, docsStyle, audioSkill, audioDuration, audioVoices, audioAccent, videoDuration, videoVisualStyle, videoIncludeVisuals, videoFormat, videoNarrationStyle, videoNarratorGender, videoAccent, quizCount, quizDifficulty, quizIncludeVisuals, docsIncludeVisuals, cardsCount, cardsDifficulty, cardsTutorGender, cardsTutorAccent, cardsTutorAutoplay, cardsIncludeVisuals, perspectivesQuery, perspectivesCrossNotebook, deepDiveEntity, deepDiveCrossNotebook, compareSourceA, compareSourceB, compareFocus, infographicLane, availableSources, chatContext, onClose, onToast, generateVisualToCanvas, addCanvasItem, updateCanvasItem, textSkills]);
 
   if (!open) return null;
 
@@ -714,28 +755,35 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
             );
           })()}
 
-          {/* Shared: Topic — hidden for the self-contained infographic panel,
-              which owns its own description field + lane picker + generate. */}
-          {type !== 'infographic' && (
-            <div>
-              <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">
-                Topic <span className="normal-case font-normal text-gray-400">(optional for most, required for visual)</span>
-              </label>
-              <textarea
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                rows={2}
-                placeholder={chatContext ? 'e.g. @chat transformers attention' : 'What should this be about?'}
-                className="w-full text-xs px-2 py-1.5 border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-y"
-              />
-            </div>
-          )}
+          {/* Shared: Topic — the description field. For infographic it doubles
+              as the description; when blank the backend infers from sources. */}
+          <div>
+            <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">
+              {type === 'infographic'
+                ? <>Describe the infographic <span className="normal-case font-normal text-gray-400">(optional — inferred from sources when blank)</span></>
+                : <>Topic <span className="normal-case font-normal text-gray-400">(optional for most, required for visual)</span></>}
+            </label>
+            <textarea
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              rows={2}
+              placeholder={
+                type === 'infographic'
+                  ? 'Compare runtime retrieval vs compile-time RAG; or chart token growth across agent-loop iterations.'
+                  : chatContext ? 'e.g. @chat transformers attention' : 'What should this be about?'
+              }
+              className="w-full text-xs px-2 py-1.5 border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-y"
+            />
+          </div>
 
-          {/* Infographic — self-contained Studio surface (L1 chart + L2
-              diagram). Owns its own generate + inline render + lane override,
-              so it renders in full here instead of using the shared footer. */}
+          {/* Infographic — lane override (Auto/L1/L2/L3/L4). Generation routes
+              through the shared footer Generate → the 'infographic' tombstone
+              case in handleGenerate, same as visual/comparison. */}
           {type === 'infographic' && (
-            <InfographicPanel notebookId={notebookId || ''} initialContent={chatContext || ''} />
+            <div>
+              <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">Lane</label>
+              <InfographicLanePicker value={infographicLane} onChange={setInfographicLane} />
+            </div>
           )}
 
           {/* Shared: Voice register (docs/audio/video) */}
@@ -1233,29 +1281,27 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
             </div>
           )}
 
-          {/* Generate — the infographic panel is self-contained (its own
-              generate button), so the shared footer only offers Close there. */}
+          {/* Generate — every type (infographic included) routes through the
+              shared handleGenerate tombstone flow into the chat canvas. */}
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-200 dark:border-gray-700">
             <button
               onClick={onClose}
               disabled={generating}
               className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
             >
-              {type === 'infographic' ? 'Close' : 'Cancel'}
+              Cancel
             </button>
-            {type !== 'infographic' && (
-              <button
-                onClick={handleGenerate}
-                disabled={generating || !notebookId}
-                className={`px-3 py-1.5 text-xs rounded-lg font-medium ${
-                  generating
-                    ? 'bg-blue-300 text-white cursor-wait'
-                    : 'bg-blue-600 hover:bg-blue-700 text-white disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed'
-                }`}
-              >
-                {generating ? 'Generating…' : 'Generate'}
-              </button>
-            )}
+            <button
+              onClick={handleGenerate}
+              disabled={generating || !notebookId}
+              className={`px-3 py-1.5 text-xs rounded-lg font-medium ${
+                generating
+                  ? 'bg-blue-300 text-white cursor-wait'
+                  : 'bg-blue-600 hover:bg-blue-700 text-white disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed'
+              }`}
+            >
+              {generating ? 'Generating…' : 'Generate'}
+            </button>
           </div>
         </div>
       </div>

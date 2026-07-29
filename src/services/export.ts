@@ -41,6 +41,10 @@ export function canvasItemToArtifact(item: CanvasItem): ArtifactEnvelope | null 
             return item.metadata?.comparison
                 ? { ...base, type: 'json:comparison', payload: item.metadata.comparison }
                 : null;
+        case 'infographic':
+            return item.metadata?.infographic
+                ? { ...base, type: 'json:infographic', payload: item.metadata.infographic }
+                : null;
         default:
             return null;
     }
