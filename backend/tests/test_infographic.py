@@ -158,12 +158,13 @@ def test_prose_fallback_shape_and_sources():
 
 # ── L4 lane routing + degradation (Klein decorative lane) ──────────────
 def test_normalize_lane_l4_is_buildable():
-    """L4 now builds (Klein) — it must NOT collapse to L2. L3 still defers."""
+    """L4 (Klein) and L3 (scene) now both build — neither collapses to L2."""
     from services.intent_classifier import _normalize_lane
     assert _normalize_lane("L4") == "L4"
     assert _normalize_lane("l4") == "L4"
-    assert _normalize_lane("L3") == "L2"       # still deferred -> volume lane
-    assert _normalize_lane("nonsense") == "L2"  # fail-open
+    assert _normalize_lane("L3") == "L3"       # Phase-4: scene lane now builds
+    assert _normalize_lane("l3") == "L3"
+    assert _normalize_lane("nonsense") == "L2"  # fail-open to the volume lane
 
 
 def _fake_cap(klein_model):
@@ -253,6 +254,127 @@ def test_l4_returns_none_on_klein_failure(monkeypatch):
     monkeypatch.setattr(vd.klein_diffusion, "generate", _generate)
 
     assert asyncio.run(build_l4("x", title="T")) is None
+
+
+# ── L3 scene: graph -> layout -> SVG (model-free) ──────────────────────
+from services.infographic import scene as l3scene       # noqa: E402
+from services.infographic import stickers as l3stickers  # noqa: E402
+from services.infographic.builder import build_l3, build_infographic  # noqa: E402
+
+_PLUGIN_GRAPH = {
+    "title": "Scattered to plugin",
+    "groups": [
+        {"id": "g1", "label": "Scattered", "color": "blue"},
+        {"id": "g2", "label": "Package", "color": "green"},
+        {"id": "g3", "label": "Install", "color": "violet"},
+    ],
+    "nodes": [
+        {"id": "n1", "label": "CLAUDE.md", "sticker": "document", "group": "g1", "size": "small"},
+        {"id": "n2", "label": "Skill", "sticker": "puzzle", "group": "g1", "size": "small"},
+        {"id": "n3", "label": "MCP", "sticker": "plug", "group": "g1", "size": "small"},
+        {"id": "n4", "label": "plugin.json", "sticker": "package", "group": "g2", "size": "hero"},
+        {"id": "n5", "label": "Laptop", "sticker": "laptop", "group": "g3", "size": "small"},
+    ],
+    "edges": [{"from": "g1", "to": "g2"}, {"from": "g2", "to": "g3"}],
+}
+
+
+def test_l3_parse_graph_fail_open():
+    assert l3scene.parse_graph("not a dict") is None
+    assert l3scene.parse_graph({"nodes": []}) is None       # no nodes
+    assert l3scene.parse_graph({"groups": [{"id": "g"}]}) is None  # no nodes
+    g = l3scene.parse_graph(_PLUGIN_GRAPH)
+    assert g and len(g["nodes"]) == 5 and len(g["groups"]) == 3
+
+
+def test_l3_parse_graph_orphan_node_gets_default_group():
+    g = l3scene.parse_graph({"nodes": [{"label": "x", "sticker": "gear"}]})
+    assert g and len(g["groups"]) == 1        # a synthetic default column
+    assert g["nodes"][0]["group"] == g["groups"][0]["id"]
+
+
+def test_l3_layout_positions_are_ordered_left_to_right():
+    g = l3scene.parse_graph(_PLUGIN_GRAPH)
+    lay = l3scene.layout_scene(g)
+    assert lay["width"] > 0 and lay["height"] > 0
+    # one pill per group, columns strictly increasing in x
+    assert len(lay["pills"]) == 3
+    assert lay["col_centers"] == sorted(lay["col_centers"])
+    # every placement sits inside the canvas
+    for p in lay["placements"]:
+        assert 0 <= p["x"] < lay["width"] and 0 <= p["y"] < lay["height"]
+
+
+def test_l3_compose_scene_contains_stickers_and_labels():
+    g = l3scene.parse_graph(_PLUGIN_GRAPH)
+    svg = l3scene.compose_scene(g)
+    assert svg.startswith("<svg") and svg.rstrip().endswith("</svg>")
+    assert "url(#rough)" in svg                       # roughen filter applied
+    assert "feDisplacementMap" in svg
+    assert "CLAUDE.md" in svg and "plugin.json" in svg  # node labels present
+    assert "Scattered" in svg and "Install" in svg      # phase pill labels
+    assert svg.count("stroke-dasharray") >= 2           # 2 connector arrows
+
+
+def test_l3_compose_escapes_untrusted_labels():
+    g = l3scene.parse_graph({
+        "groups": [{"id": "g1", "label": "<script>x</script>"}],
+        "nodes": [{"label": "a & b <hack>", "sticker": "box", "group": "g1"}],
+    })
+    svg = l3scene.compose_scene(g)
+    assert "<script>" not in svg and "<hack>" not in svg
+    assert "&amp;" in svg and "&lt;" in svg
+
+
+def test_sticker_render_fail_open():
+    assert "<" in l3stickers.render_sticker("does-not-exist")  # neutral box, never empty
+    assert "<path" in l3stickers.render_sticker("robot")
+    assert len(l3stickers.sticker_names()) >= 12
+
+
+# ── L3 build + degradation ladder (model-free via monkeypatch) ─────────
+def test_build_l3_composes_from_graph(monkeypatch):
+    """With the LLM returning a valid graph, build_l3 yields an L3 artifact
+    whose payload carries the composed scene SVG (the source, HARD RULE §2.4)."""
+    import services.infographic.builder as b
+
+    async def _fake_slotfill(system, content, model):
+        return _PLUGIN_GRAPH
+
+    monkeypatch.setattr(b, "_run_slotfill", _fake_slotfill)
+    out = asyncio.run(build_l3("plugins from scattered components", title="Plugins"))
+    assert out is not None
+    assert out["type"] == "json:infographic"
+    p = out["payload"]
+    assert p["lane"] == "L3" and p["archetype"] == "scene"
+    assert p["scene_svg"].startswith("<svg")
+    assert "plugin.json" in p["scene_svg"]
+
+
+def test_build_l3_degrades_to_prose_when_graph_unusable(monkeypatch):
+    """Unparseable graph -> build_l3 None -> the L3 branch of build_infographic
+    walks the ladder L3 -> L2 -> prose. All model-free (slot-fill returns None),
+    so the final rung is the prose fallback, tagged with the L3 lane."""
+    import services.infographic.builder as b
+
+    async def _none_slotfill(system, content, model):
+        return None
+
+    monkeypatch.setattr(b, "_run_slotfill", _none_slotfill)
+    out = asyncio.run(build_infographic("some vague prose", "L3"))
+    assert out["type"] == "json:infographic"
+    assert out["payload"]["degraded"] is True
+    assert out["payload"]["lane"] == "L3"
+
+
+def test_build_l3_returns_none_on_bad_graph_directly(monkeypatch):
+    import services.infographic.builder as b
+
+    async def _bad_slotfill(system, content, model):
+        return {"nodes": []}   # parses to None
+
+    monkeypatch.setattr(b, "_run_slotfill", _bad_slotfill)
+    assert asyncio.run(build_l3("x")) is None
 
 
 # ── Archetype heuristic ────────────────────────────────────────────────

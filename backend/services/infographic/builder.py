@@ -35,6 +35,7 @@ from services.infographic.icons import (
 )
 from services.infographic.skeletons import ARCHETYPES, get_skeleton
 from services.infographic import slotfill as sf
+from services.infographic.scene import parse_graph, compose_scene
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +260,59 @@ async def build_l2(
     return art.model_dump()
 
 
+# ── L3 (hand-drawn scene from hand-picked stickers) ────────────────────
+async def build_l3(
+    content: str,
+    *,
+    model: Optional[str] = None,
+    max_content_chars: int = 8000,
+    sources: Optional[list] = None,
+    title: Optional[str] = None,
+) -> Optional[dict]:
+    """L3 SCENE lane (plan §4 proof): the LLM emits a coordinate-free node/edge
+    GRAPH; `scene.py` computes the layout and composes a hand-drawn SVG from the
+    curated sticker set (`stickers.py`). No coordinates from the model (HARD RULE
+    §2.1), no generation (that is the gated Phase 5).
+
+    FAILS OPEN to None so the caller degrades L3 -> L2 -> prose (§3.5): an empty
+    LLM response, an unparseable graph, or a graph with no renderable node all
+    return None. Never raises."""
+    model = model or settings.ollama_model
+    trimmed = (content or "")[:max_content_chars]
+
+    graph_raw = await _run_slotfill(sf.l3_scene_system(), trimmed, model)
+    graph = parse_graph(graph_raw)
+    if not graph:
+        logger.info("[infographic] L3 graph unusable — degrading to L2")
+        return None
+
+    try:
+        svg = compose_scene(graph)
+    except Exception as e:  # composition must never take down the request
+        logger.warning(f"[infographic] L3 scene composition failed: {e}")
+        return None
+    if not svg or "<svg" not in svg:
+        return None
+
+    scene_title = (title or "").strip() or graph.get("title") or "Scene"
+    payload = {
+        "lane": "L3",
+        "archetype": "scene",
+        # The SVG is the artifact SOURCE (HARD RULE §2.4): stored, not rasterized.
+        # The frontend renders it inline; export rasterizes it via Playwright.
+        "scene_svg": svg,
+        "scene_graph": graph,   # kept for provenance / future re-layout
+        "sources": _normalize_sources(sources),
+    }
+    art = json_artifact(
+        id=_new_id(), kind="infographic", payload=payload,
+        title=str(scene_title)[:80],
+        metadata={"lane": "L3", "archetype": "scene",
+                  "node_count": len(graph.get("nodes", []))},
+    )
+    return art.model_dump()
+
+
 # ── L1 ─────────────────────────────────────────────────────────────────
 _ACCENT = "#e0503a"
 _BASELINE = "#1b1a18"
@@ -474,6 +528,23 @@ async def build_infographic(
         except Exception as e:
             logger.warning(f"[infographic] L4->L2 fallback error: {e}")
         return _prose_fallback(content, "decorative image unavailable", "L4", sources)
+
+    if lane == "L3":
+        try:
+            out = await build_l3(content, model=model, sources=sources, title=title)
+            if out:
+                return out
+        except Exception as e:
+            logger.warning(f"[infographic] L3 build error: {e}")
+        # Scene unavailable/failed -> down the ladder to L2 -> prose (§3.5).
+        try:
+            out = await build_l2(content, archetype, model=model, sources=sources)
+            if out:
+                out.setdefault("metadata", {})["degraded_from"] = "L3"
+                return out
+        except Exception as e:
+            logger.warning(f"[infographic] L3->L2 fallback error: {e}")
+        return _prose_fallback(content, "scene composition unavailable", "L3", sources)
 
     if lane == "L1":
         try:

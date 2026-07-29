@@ -48,6 +48,7 @@ const REGEN_LANES: { id: InfographicLane; label: string }[] = [
   { id: 'auto', label: 'Auto' },
   { id: 'L1', label: 'Chart' },
   { id: 'L2', label: 'Diagram' },
+  { id: 'L3', label: 'Scene' },
   { id: 'L4', label: 'Art' },
 ];
 

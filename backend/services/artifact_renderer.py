@@ -71,6 +71,16 @@ def _build_infographic_page(payload: Dict[str, Any]) -> str:
     # user's on-screen restyle. restyle_css never raises → "" for the default.
     restyle = restyle_css(payload.get("style"))
 
+    if lane == "L3" and payload.get("scene_svg"):
+        # Scene lane — the hand-drawn SVG is the artifact source (self-contained
+        # with its own paper background + roughen filter). Emit it full-bleed and
+        # let Playwright rasterize it; reuses the shared browser singleton via the
+        # normal render_artifact path. No design-system CSS wrapper needed.
+        svg = str(payload.get("scene_svg"))
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>*{{margin:0;padding:0}}body{{background:#fdfdfb}}</style></head>
+<body>{svg}{legend}</body></html>"""
+
     if lane == "L4" and payload.get("image"):
         # Decorative lane — a textless Klein raster (data URI). The title, if
         # any, rides as a DOM overlay layer (HARD RULE §2.2: never baked into
@@ -390,8 +400,15 @@ async def render_artifact_to_png(
         await page.set_content(_build_artifact_page(artifact), wait_until="networkidle", timeout=timeout_ms)
         # Slight settle delay so charts/mermaid finish painting.
         await page.wait_for_timeout(500)
+        # ElementHandle.screenshot() captures the full element inherently and
+        # rejects the `full_page` kwarg (that is a Page.screenshot option); pass
+        # it only on the page-level fallback. (Pre-existing bug that silently
+        # returned None for every infographic PNG export.)
         body = await page.query_selector("body")
-        png = await body.screenshot(type="png", full_page=True) if body else await page.screenshot(type="png", full_page=True)
+        png = (
+            await body.screenshot(type="png") if body
+            else await page.screenshot(type="png", full_page=True)
+        )
         return png
     except Exception as e:
         logger.error(f"[artifact_renderer] PNG render failed: {e}")
