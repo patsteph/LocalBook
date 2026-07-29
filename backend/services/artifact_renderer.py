@@ -62,9 +62,14 @@ def _build_infographic_page(payload: Dict[str, Any]) -> str:
     coordinate-computed coral annotation overlay (an approximation of the
     in-app recharts overlay; pixel-match is not the goal)."""
     from services.infographic.design_system import INFOGRAPHIC_L2_CSS
+    from services.infographic.restyle import restyle_css
 
     lane = (payload.get("lane") or "L2").upper()
     legend = _infographic_sources_legend(payload)
+    # Restyle overrides ride in the payload (set by the tombstone). They are
+    # CSS-variable overrides layered AFTER the base sheet so export matches the
+    # user's on-screen restyle. restyle_css never raises → "" for the default.
+    restyle = restyle_css(payload.get("style"))
 
     if lane == "L1" and isinstance(payload.get("chart"), dict):
         cfg_json = json.dumps(payload.get("chart") or {})
@@ -127,13 +132,13 @@ def _build_infographic_page(payload: Dict[str, Any]) -> str:
 </script>
 """
         return f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><style>{INFOGRAPHIC_L2_CSS}</style></head>
+<html><head><meta charset="UTF-8"><style>{INFOGRAPHIC_L2_CSS}{restyle}</style></head>
 <body style="margin:0">{inner}{legend}{scripts}</body></html>"""
 
     # L2 / prose — the stored body is already the design-system HTML.
     body = payload.get("body_html") or '<div class="ib"><div class="ib-fallback">No content.</div></div>'
     return f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><style>{INFOGRAPHIC_L2_CSS}</style></head>
+<html><head><meta charset="UTF-8"><style>{INFOGRAPHIC_L2_CSS}{restyle}</style></head>
 <body style="margin:0">{body}{legend}</body></html>"""
 
 

@@ -619,6 +619,10 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
                 artifact: result.artifact,
                 lane: result.lane,
                 routing: result.routing,
+                // Original topic + lane so the tombstone's regenerate-with-tweak
+                // can re-run POST /visual/infographic without the drawer.
+                topic: trimmedTopic || '',
+                infographicLane,
               } as any,
             });
             onToast?.('success', 'Infographic ready');

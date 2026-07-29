@@ -258,6 +258,28 @@ export const exportService = {
     },
 
     /**
+     * Render an Artifact envelope to PNG / PDF / HTML via the unified backend
+     * pipeline and return the raw Blob (no download side-effect). Callers on
+     * the Tauri/WKWebView path must pipe this into `downloadBlob` (the native
+     * save dialog) — `<a download>` / `window.open` are broken in WKWebView.
+     */
+    async exportArtifactBlob(
+        artifact: ArtifactEnvelope,
+        format: ArtifactDownloadFormat,
+        filename?: string,
+    ): Promise<Blob> {
+        const response = await localFetch(`${API_BASE}/export/artifact`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ artifact, format, filename }),
+        });
+        if (!response.ok) {
+            throw new Error(`Artifact export failed: HTTP ${response.status}`);
+        }
+        return response.blob();
+    },
+
+    /**
      * Phase 5 — render an Artifact envelope to PNG / PDF / HTML via the
      * unified backend pipeline and trigger a browser download.
      */

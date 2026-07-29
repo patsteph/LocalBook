@@ -22,6 +22,7 @@ import DOMPurify from 'dompurify';
 import type { RendererProps } from '../../../types/artifact';
 import { ChartRenderer, type ChartConfig } from '../../shared/ChartRenderer';
 import { INFOGRAPHIC_L2_CSS } from './infographicDesignSystem';
+import { buildRestyleCss, accentHex, type InfographicStyle } from './infographicRestyle';
 
 export interface InfographicAnnotations {
   callout_text?: string;
@@ -47,9 +48,11 @@ export interface InfographicPayload {
   sources?: InfographicSource[];
   degraded?: boolean;
   degrade_reason?: string;
+  // Restyle overrides (accent / tone / scale / glow). Set by the tombstone;
+  // rides in the payload so export mirrors the on-screen restyle.
+  style?: InfographicStyle;
 }
 
-const ACCENT = '#e0503a';
 const INK = '#1b1a18';
 const BRACKET = 'rgba(52,50,46,.5)';
 
@@ -62,15 +65,17 @@ const SANITIZE_CONFIG = {
 };
 
 // ── L2: Shadow-DOM + injected stylesheet ──────────────────────────────
-function L2Body({ html }: { html: string }) {
+function L2Body({ html, style }: { html: string; style?: InfographicStyle }) {
   const hostRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     const shadow = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
     const clean = DOMPurify.sanitize(html, SANITIZE_CONFIG);
-    shadow.innerHTML = `<style>${INFOGRAPHIC_L2_CSS}</style>${clean}`;
-  }, [html]);
+    // Base stylesheet + restyle overrides (empty for the default). The
+    // overrides come AFTER so their `.ib { --ib-* }` tokens win the cascade.
+    shadow.innerHTML = `<style>${INFOGRAPHIC_L2_CSS}${buildRestyleCss(style)}</style>${clean}`;
+  }, [html, style]);
   return <div ref={hostRef} />;
 }
 
@@ -92,10 +97,12 @@ function L1Chart({
   chart,
   annotations,
   height,
+  accent,
 }: {
   chart: ChartConfig;
   annotations: InfographicAnnotations;
   height: number;
+  accent: string;
 }) {
   const ann = annotations || {};
   return (
@@ -114,7 +121,7 @@ function L1Chart({
       <Bracket pos="tr" />
       <Bracket pos="bl" />
       <Bracket pos="br" />
-      <div style={{ filter: `drop-shadow(0 0 5px rgba(224,80,58,.45))` }}>
+      <div style={{ filter: `drop-shadow(0 0 5px ${accent}73)` }}>
         <ChartRenderer config={chart} height={height} darkMode={false} />
       </div>
 
@@ -122,9 +129,9 @@ function L1Chart({
         <div
           style={{
             position: 'absolute', top: 22, right: 26, maxWidth: 240,
-            background: '#fff', border: `2px solid ${ACCENT}`, borderRadius: 12,
+            background: '#fff', border: `2px solid ${accent}`, borderRadius: 12,
             padding: '9px 13px',
-            boxShadow: `0 0 0 1px rgba(224,80,58,.18), 0 0 20px 1px rgba(224,80,58,.4)`,
+            boxShadow: `0 0 0 1px ${accent}2e, 0 0 20px 1px ${accent}66`,
           }}
         >
           <b style={{ display: 'block', fontSize: 15, fontWeight: 800, color: INK, lineHeight: 1.15 }}>
@@ -138,7 +145,7 @@ function L1Chart({
         </div>
       )}
       {ann.primary_label && (
-        <div style={{ position: 'absolute', top: '46%', left: '44%', fontSize: 14, fontWeight: 800, color: ACCENT }}>
+        <div style={{ position: 'absolute', top: '46%', left: '44%', fontSize: 14, fontWeight: 800, color: accent }}>
           {ann.primary_label}
         </div>
       )}
@@ -180,12 +187,24 @@ function SourcesLegend({ sources }: { sources?: InfographicSource[] }) {
 
 export const InfographicArtifactRenderer = ({ artifact, context, className = '' }: RendererProps<InfographicPayload>) => {
   const payload = (artifact.payload || {}) as InfographicPayload;
+  const accent = accentHex(payload.style);
 
   if (payload.lane === 'L1' && payload.chart) {
     const height = context === 'chat-inline' ? 240 : 380;
+    // Recolor the primary series to the restyle accent (the coordinate-free
+    // annotation chrome already picks it up via `accent`). Non-mutating so the
+    // stored payload keeps the builder's original colors.
+    const chart: ChartConfig = payload.style?.accent && payload.style.accent !== 'coral'
+      ? {
+          ...payload.chart,
+          series: (payload.chart.series || []).map((s, i) =>
+            i === 0 ? { ...s, color: accent } : s,
+          ),
+        }
+      : payload.chart;
     return (
       <div className={className}>
-        <L1Chart chart={payload.chart} annotations={payload.annotations || {}} height={height} />
+        <L1Chart chart={chart} annotations={payload.annotations || {}} height={height} accent={accent} />
         <SourcesLegend sources={payload.sources} />
       </div>
     );
@@ -194,7 +213,7 @@ export const InfographicArtifactRenderer = ({ artifact, context, className = '' 
   if (payload.body_html) {
     return (
       <div className={className}>
-        <L2Body html={payload.body_html} />
+        <L2Body html={payload.body_html} style={payload.style} />
         <SourcesLegend sources={payload.sources} />
       </div>
     );

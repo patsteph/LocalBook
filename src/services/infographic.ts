@@ -21,12 +21,14 @@ export const infographicService = {
     notebookId: string,
     topic: string,
     lane: InfographicLane = 'auto',
+    archetype?: string,
   ): Promise<InfographicResponse> {
     const { data } = await api.post<InfographicResponse>('/visual/infographic', {
       notebook_id: notebookId,
       topic,
       lane,
       include_sources: true,
+      ...(archetype ? { archetype } : {}),
     });
     return data;
   },
