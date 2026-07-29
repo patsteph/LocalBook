@@ -52,14 +52,20 @@ class WeeklyJournalAgent:
         from services.enrichment_worker import enrichment_worker
         from services.enrichment_jobs import EnrichmentJob, JobTier
         while self._running:
+            # Rung C (Schedule Viewer): re-read the wake cadence + enabled flag
+            # from the schedule store each iteration so a user's edit lands on the
+            # next cycle without a restart. Never raises → falls back to the const.
+            from services.schedule_store import schedule_store
+            if schedule_store.is_enabled("weekly-journal"):
+                try:
+                    enrichment_worker.enqueue(EnrichmentJob(
+                        key="weekly-journal", tier=JobTier.NIGHT,
+                        factory=lambda: self._tick(), label="weekly-journal"))
+                except Exception as e:
+                    logger.warning(f"[weekly_journal] enqueue failed: {e}")
             try:
-                enrichment_worker.enqueue(EnrichmentJob(
-                    key="weekly-journal", tier=JobTier.NIGHT,
-                    factory=lambda: self._tick(), label="weekly-journal"))
-            except Exception as e:
-                logger.warning(f"[weekly_journal] enqueue failed: {e}")
-            try:
-                await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+                await asyncio.sleep(
+                    schedule_store.get_interval("weekly-journal", CHECK_INTERVAL_SECONDS))
             except asyncio.CancelledError:
                 break
 

@@ -122,7 +122,15 @@ class CollectionScheduler:
         while self._running:
             try:
                 await self._check_and_run_collections()
-                await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+                # Rung C (Schedule Viewer): re-read the scheduler WAKE cadence from
+                # the schedule store each iteration so an edit lands on the next
+                # cycle without a restart. Per-notebook Collector frequency is
+                # unaffected (it stays in collector.yaml). Never raises → falls
+                # back to CHECK_INTERVAL_SECONDS. The stagger offset below still
+                # uses the module const by design.
+                from services.schedule_store import schedule_store
+                await asyncio.sleep(
+                    schedule_store.get_interval("collector-scheduler-wake", CHECK_INTERVAL_SECONDS))
             except asyncio.CancelledError:
                 break
             except Exception as e:

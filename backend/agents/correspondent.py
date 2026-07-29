@@ -407,14 +407,21 @@ class CorrespondentAgent:
         from services.enrichment_worker import enrichment_worker
         from services.enrichment_jobs import EnrichmentJob, JobTier
         while self._running:
+            # Rung C (Schedule Viewer): re-read the poll cadence + enabled flag
+            # from the schedule store each iteration so a user's edit lands on the
+            # next cycle without a restart. Never raises → falls back to the
+            # __init__ default (DEFAULT_POLL_INTERVAL_MINUTES).
+            from services.schedule_store import schedule_store
+            if schedule_store.is_enabled("correspondent-poll"):
+                try:
+                    enrichment_worker.enqueue(EnrichmentJob(
+                        key="correspondent-poll", tier=JobTier.DEEP,
+                        factory=lambda: self.poll_all(), label="correspondent-poll"))
+                except Exception as e:
+                    logger.warning(f"[correspondent] enqueue failed: {e}")
             try:
-                enrichment_worker.enqueue(EnrichmentJob(
-                    key="correspondent-poll", tier=JobTier.DEEP,
-                    factory=lambda: self.poll_all(), label="correspondent-poll"))
-            except Exception as e:
-                logger.warning(f"[correspondent] enqueue failed: {e}")
-            try:
-                await asyncio.sleep(self.poll_interval_seconds)
+                await asyncio.sleep(
+                    schedule_store.get_interval("correspondent-poll", self.poll_interval_seconds))
             except asyncio.CancelledError:
                 break
 
