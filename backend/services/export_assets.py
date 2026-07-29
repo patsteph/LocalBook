@@ -19,6 +19,62 @@ MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"
 CHARTJS_CDN = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"
 
 # ---------------------------------------------------------------------------
+# Offline asset bundling — LocalBook's offline guarantee means the export
+# pipeline must not reach the network. Chart.js is vendored into
+# `backend/static/vendor/` (bundled by PyInstaller via `--add-data static:static`)
+# and inlined into the export page as a `<script>…</script>` instead of a
+# `<script src="{CDN}">`. Mirrors the frozen-aware resolution in
+# `api/health_portal.get_static_dir`. Falls open to the pinned CDN tag only if
+# the vendored file is genuinely missing (dev tree without the asset), logging
+# a warning so the offline violation is visible rather than silent.
+# ---------------------------------------------------------------------------
+import logging as _logging
+import sys as _sys
+from pathlib import Path as _Path
+
+_logger = _logging.getLogger(__name__)
+_CHARTJS_VENDOR_REL = ("static", "vendor", "chart.umd.min.js")
+_chartjs_src_cache: str | None = None
+
+
+def _vendor_base() -> _Path:
+    """Static-asset base, handling PyInstaller-frozen bundles (mirrors
+    `api.health_portal.get_static_dir`)."""
+    if getattr(_sys, "frozen", False):
+        return _Path(_sys._MEIPASS)  # type: ignore[attr-defined]
+    # export_assets.py lives in backend/services/ → backend/ is two up.
+    return _Path(__file__).resolve().parent.parent
+
+
+def _chartjs_source() -> str | None:
+    """Return the vendored Chart.js UMD source (cached), or None if missing."""
+    global _chartjs_src_cache
+    if _chartjs_src_cache is not None:
+        return _chartjs_src_cache or None
+    path = _vendor_base().joinpath(*_CHARTJS_VENDOR_REL)
+    try:
+        _chartjs_src_cache = path.read_text(encoding="utf-8")
+    except Exception as e:
+        _logger.warning(
+            "[export_assets] vendored Chart.js not found at %s (%s) — export "
+            "will fall back to the CDN, breaking the offline guarantee.", path, e
+        )
+        _chartjs_src_cache = ""
+    return _chartjs_src_cache or None
+
+
+def chartjs_script_tag() -> str:
+    """Offline-first Chart.js `<script>` for the export renderer.
+
+    Inlines the vendored UMD source so Playwright needs no network. Only if the
+    vendored file is absent does it degrade to the pinned CDN `<script src>`
+    (fail-open — a networked chart beats no chart in a broken-bundle dev tree)."""
+    src = _chartjs_source()
+    if src:
+        return f"<script>{src}</script>"
+    return f'<script src="{CHARTJS_CDN}"></script>'
+
+# ---------------------------------------------------------------------------
 # Tailwind subset — light theme only. Dark-mode is intentional drop for the
 # export path: PDFs / PNGs are read in print or document viewers where dark
 # mode behavior is unreliable. The frontend renderer keeps its own dark

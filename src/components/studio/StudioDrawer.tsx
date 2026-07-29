@@ -19,8 +19,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { emitEvent } from '../../lib/events';
 import {
-  FileText, Mic, Video, Palette, Target, Layers, X, Sparkles, GitCompare, Telescope,
+  FileText, Mic, Video, Palette, Target, Layers, X, Sparkles, GitCompare, Telescope, BarChart3,
 } from 'lucide-react';
+import { InfographicPanel } from '../visual/InfographicPanel';
 import { contentService } from '../../services/content';
 import { audioService } from '../../services/audio';
 import { videoService } from '../../services/video';
@@ -43,7 +44,7 @@ const AUDIO_FORMAT_LABELS: Record<string, string> = {
 };
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-type StudioType = 'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards' | 'comparison' | 'perspectives' | 'dashboard' | 'deep-dive';
+type StudioType = 'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards' | 'comparison' | 'perspectives' | 'dashboard' | 'deep-dive' | 'infographic';
 type Register = 'auto' | 'measured' | 'engaged' | 'warm' | 'urgent';
 
 interface StudioDrawerProps {
@@ -69,6 +70,7 @@ const TYPE_DEFS: Array<{
   { id: 'audio', icon: <Mic className="w-3.5 h-3.5" />, label: 'Audio', accent: 'purple' },
   { id: 'video', icon: <Video className="w-3.5 h-3.5" />, label: 'Video', accent: 'red' },
   { id: 'visual', icon: <Palette className="w-3.5 h-3.5" />, label: 'Visual', accent: 'amber' },
+  { id: 'infographic', icon: <BarChart3 className="w-3.5 h-3.5" />, label: 'Infographic', accent: 'coral' },
   { id: 'quiz', icon: <Target className="w-3.5 h-3.5" />, label: 'Quiz', accent: 'emerald' },
   { id: 'cards', icon: <Layers className="w-3.5 h-3.5" />, label: 'Cards', accent: 'fuchsia' },
   { id: 'comparison', icon: <GitCompare className="w-3.5 h-3.5" />, label: 'Compare', accent: 'cyan' },
@@ -653,6 +655,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
       amber: 'border-amber-500 bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
       emerald: 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300',
       fuchsia: 'border-fuchsia-500 bg-fuchsia-50 dark:bg-fuchsia-900/30 text-fuchsia-700 dark:text-fuchsia-300',
+      coral: 'border-[#e0503a] bg-[#e0503a]/10 text-[#e0503a]',
     }[a] || '';
   };
 
@@ -686,7 +689,7 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
 
           {/* Type rows — legacy generators on row 1, v2.0 synthesis types on row 2. */}
           {(() => {
-            const LEGACY_IDS: StudioType[] = ['docs', 'audio', 'video', 'visual', 'quiz', 'cards'];
+            const LEGACY_IDS: StudioType[] = ['docs', 'audio', 'video', 'visual', 'infographic', 'quiz', 'cards'];
             const legacy = TYPE_DEFS.filter(td => LEGACY_IDS.includes(td.id));
             const synthesis = TYPE_DEFS.filter(td => !LEGACY_IDS.includes(td.id));
             const renderRow = (defs: typeof TYPE_DEFS) => (
@@ -711,19 +714,29 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
             );
           })()}
 
-          {/* Shared: Topic */}
-          <div>
-            <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">
-              Topic <span className="normal-case font-normal text-gray-400">(optional for most, required for visual)</span>
-            </label>
-            <textarea
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              rows={2}
-              placeholder={chatContext ? 'e.g. @chat transformers attention' : 'What should this be about?'}
-              className="w-full text-xs px-2 py-1.5 border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-y"
-            />
-          </div>
+          {/* Shared: Topic — hidden for the self-contained infographic panel,
+              which owns its own description field + lane picker + generate. */}
+          {type !== 'infographic' && (
+            <div>
+              <label className="block text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">
+                Topic <span className="normal-case font-normal text-gray-400">(optional for most, required for visual)</span>
+              </label>
+              <textarea
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                rows={2}
+                placeholder={chatContext ? 'e.g. @chat transformers attention' : 'What should this be about?'}
+                className="w-full text-xs px-2 py-1.5 border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-y"
+              />
+            </div>
+          )}
+
+          {/* Infographic — self-contained Studio surface (L1 chart + L2
+              diagram). Owns its own generate + inline render + lane override,
+              so it renders in full here instead of using the shared footer. */}
+          {type === 'infographic' && (
+            <InfographicPanel notebookId={notebookId || ''} initialContent={chatContext || ''} />
+          )}
 
           {/* Shared: Voice register (docs/audio/video) */}
           {(type === 'docs' || type === 'audio' || type === 'video') && (
@@ -1220,26 +1233,29 @@ export const StudioDrawer: React.FC<StudioDrawerProps> = ({
             </div>
           )}
 
-          {/* Generate */}
+          {/* Generate — the infographic panel is self-contained (its own
+              generate button), so the shared footer only offers Close there. */}
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-200 dark:border-gray-700">
             <button
               onClick={onClose}
               disabled={generating}
               className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
             >
-              Cancel
+              {type === 'infographic' ? 'Close' : 'Cancel'}
             </button>
-            <button
-              onClick={handleGenerate}
-              disabled={generating || !notebookId}
-              className={`px-3 py-1.5 text-xs rounded-lg font-medium ${
-                generating
-                  ? 'bg-blue-300 text-white cursor-wait'
-                  : 'bg-blue-600 hover:bg-blue-700 text-white disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed'
-              }`}
-            >
-              {generating ? 'Generating…' : 'Generate'}
-            </button>
+            {type !== 'infographic' && (
+              <button
+                onClick={handleGenerate}
+                disabled={generating || !notebookId}
+                className={`px-3 py-1.5 text-xs rounded-lg font-medium ${
+                  generating
+                    ? 'bg-blue-300 text-white cursor-wait'
+                    : 'bg-blue-600 hover:bg-blue-700 text-white disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed'
+                }`}
+              >
+                {generating ? 'Generating…' : 'Generate'}
+              </button>
+            )}
           </div>
         </div>
       </div>

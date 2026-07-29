@@ -38,6 +38,7 @@ from services.export_assets import (
     MARKED_CDN,
     MERMAID_CDN,
     TAILWIND_SUBSET_CSS,
+    chartjs_script_tag,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ def _build_infographic_page(payload: Dict[str, Any]) -> str:
     from services.infographic.design_system import INFOGRAPHIC_L2_CSS
 
     lane = (payload.get("lane") or "L2").upper()
+    legend = _infographic_sources_legend(payload)
 
     if lane == "L1" and isinstance(payload.get("chart"), dict):
         cfg_json = json.dumps(payload.get("chart") or {})
@@ -97,7 +99,7 @@ def _build_infographic_page(payload: Dict[str, Any]) -> str:
             + "</div></div>"
         )
         scripts = f"""
-<script src="{CHARTJS_CDN}"></script>
+{chartjs_script_tag()}
 <script>
 (function() {{
   const cfg = {cfg_json};
@@ -126,13 +128,44 @@ def _build_infographic_page(payload: Dict[str, Any]) -> str:
 """
         return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>{INFOGRAPHIC_L2_CSS}</style></head>
-<body style="margin:0">{inner}{scripts}</body></html>"""
+<body style="margin:0">{inner}{legend}{scripts}</body></html>"""
 
     # L2 / prose — the stored body is already the design-system HTML.
     body = payload.get("body_html") or '<div class="ib"><div class="ib-fallback">No content.</div></div>'
     return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>{INFOGRAPHIC_L2_CSS}</style></head>
-<body style="margin:0">{body}</body></html>"""
+<body style="margin:0">{body}{legend}</body></html>"""
+
+
+def _infographic_sources_legend(payload: Dict[str, Any]) -> str:
+    """Render the provenance legend (the '[n] title' source map) as an
+    inline-styled block for the export page. Empty when no sources are
+    attached — provenance is only shown when it is real (HARD RULE §2.6)."""
+    sources = payload.get("sources") or []
+    if not isinstance(sources, list) or not sources:
+        return ""
+    items = []
+    for s in sources:
+        if not isinstance(s, dict):
+            continue
+        n = _esc(str(s.get("n", "")))
+        title = _esc(str(s.get("title") or s.get("source_id") or ""))
+        if not title:
+            continue
+        items.append(
+            f'<span style="display:inline-flex;align-items:baseline;gap:4px;margin:0 14px 4px 0">'
+            f'<sup style="color:#e0503a;font-weight:800;font-size:.7em">{n}</sup>'
+            f'<span>{title}</span></span>'
+        )
+    if not items:
+        return ""
+    return (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;'
+        'font-size:12px;color:#4a4844;background:#f4f2ee;padding:12px 34px 20px">'
+        '<div style="font-weight:700;font-size:11px;letter-spacing:.04em;'
+        'text-transform:uppercase;color:#8b8880;margin-bottom:6px">Sources</div>'
+        + "".join(items) + "</div>"
+    )
 
 
 def _render_comparison_payload(payload: Dict[str, Any]) -> str:

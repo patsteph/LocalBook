@@ -31,13 +31,20 @@ export interface InfographicAnnotations {
   midpoint_note?: string;
 }
 
+export interface InfographicSource {
+  n: number;
+  source_id?: string | null;
+  title: string;
+}
+
 export interface InfographicPayload {
   lane: 'L1' | 'L2';
   archetype: string;
   body_html?: string;
   chart?: ChartConfig;
   annotations?: InfographicAnnotations;
-  citations?: { id: number; label: string }[];
+  citations?: { id: number; label: string; cite?: string }[];
+  sources?: InfographicSource[];
   degraded?: boolean;
   degrade_reason?: string;
 }
@@ -149,6 +156,28 @@ function L1Chart({
   );
 }
 
+// ── Provenance legend (rendered OUTSIDE the shadow DOM; every citation
+//    number maps to a real notebook source — HARD RULE §2.6) ────────────
+function SourcesLegend({ sources }: { sources?: InfographicSource[] }) {
+  const rows = (sources || []).filter((s) => s && s.title);
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-2 px-1">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-1">
+        Sources
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        {rows.map((s) => (
+          <span key={s.n} className="inline-flex items-baseline gap-1 text-[11px] text-gray-500 dark:text-gray-400">
+            <sup className="text-[#e0503a] font-bold">{s.n}</sup>
+            <span className="truncate max-w-[220px]" title={s.title}>{s.title}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export const InfographicArtifactRenderer = ({ artifact, context, className = '' }: RendererProps<InfographicPayload>) => {
   const payload = (artifact.payload || {}) as InfographicPayload;
 
@@ -157,6 +186,7 @@ export const InfographicArtifactRenderer = ({ artifact, context, className = '' 
     return (
       <div className={className}>
         <L1Chart chart={payload.chart} annotations={payload.annotations || {}} height={height} />
+        <SourcesLegend sources={payload.sources} />
       </div>
     );
   }
@@ -165,6 +195,7 @@ export const InfographicArtifactRenderer = ({ artifact, context, className = '' 
     return (
       <div className={className}>
         <L2Body html={payload.body_html} />
+        <SourcesLegend sources={payload.sources} />
       </div>
     );
   }

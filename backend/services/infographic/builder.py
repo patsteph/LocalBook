@@ -123,7 +123,46 @@ def _finalize_body(skeleton: str, slots: dict) -> str:
     return body
 
 
-def _prose_fallback(content: str, reason: str, lane: str) -> dict:
+def _normalize_sources(sources: Optional[list]) -> list[dict]:
+    """Coerce the caller's provenance list into clean `{n, source_id, title}`
+    rows (1-based, in order). Never raises; drops malformed entries. This is
+    the real source identity behind every citation number (HARD RULE §2.6)."""
+    out: list[dict] = []
+    if not isinstance(sources, list):
+        return out
+    for i, s in enumerate(sources, start=1):
+        if not isinstance(s, dict):
+            continue
+        title = (s.get("title") or s.get("filename") or "").strip()
+        if not title:
+            continue
+        out.append({
+            "n": int(s.get("n") or i),
+            "source_id": s.get("source_id"),
+            "title": title,
+        })
+    # Re-number sequentially so the legend + superscripts always agree.
+    for idx, row in enumerate(out, start=1):
+        row["n"] = idx
+    return out
+
+
+def _cite_slots_for_rows(sources: list[dict], n_rows: int = 3) -> dict:
+    """Map each facts-table row to a REAL source number (round-robin over the
+    available sources). Empty when there is no provenance — a bare row rather
+    than a number that points at nothing."""
+    slots: dict[str, str] = {}
+    if not sources:
+        for i in range(1, n_rows + 1):
+            slots[f"CITE_{i}"] = ""
+        return slots
+    for i in range(1, n_rows + 1):
+        src = sources[(i - 1) % len(sources)]
+        slots[f"CITE_{i}"] = str(src["n"])
+    return slots
+
+
+def _prose_fallback(content: str, reason: str, lane: str, sources: Optional[list] = None) -> dict:
     """Ultimate fail-open: legible prose card (§3.5 'any -> L0 prose')."""
     snippet = _escape(content.strip()[:1200]) or "No content available."
     body = (
@@ -135,6 +174,7 @@ def _prose_fallback(content: str, reason: str, lane: str) -> dict:
         "lane": lane,
         "archetype": "prose",
         "body_html": body,
+        "sources": _normalize_sources(sources),
         "degraded": True,
         "degrade_reason": reason,
     }
@@ -163,6 +203,7 @@ async def build_l2(
     *,
     model: Optional[str] = None,
     max_content_chars: int = 8000,
+    sources: Optional[list] = None,
 ) -> Optional[dict]:
     archetype = archetype if archetype in ARCHETYPES else pick_archetype(content)
     skeleton = get_skeleton(archetype)
@@ -170,6 +211,7 @@ async def build_l2(
         return None
     model = model or settings.ollama_model
     trimmed = (content or "")[:max_content_chars]
+    prov = _normalize_sources(sources)
 
     slots = await _run_slotfill(sf.l2_system(archetype), trimmed, model)
     if not slots:
@@ -180,6 +222,19 @@ async def build_l2(
         return None
 
     skeleton = _apply_icons(skeleton, archetype, slots)
+
+    citations = []
+    if archetype == "facts_table":
+        # Bind each row's citation superscript to a REAL source number so
+        # every number carries a source ID (HARD RULE §2.6). No provenance ->
+        # empty superscripts rather than dangling [1][2][3].
+        slots.update(_cite_slots_for_rows(prov, n_rows=3))
+        citations = [
+            {"id": i, "label": slots.get(f"ROW_{i}_LABEL", f"Fact {i}"),
+             "cite": slots.get(f"CITE_{i}", "")}
+            for i in range(1, 4)
+        ]
+
     body = _finalize_body(skeleton, slots)
 
     title = (
@@ -188,18 +243,13 @@ async def build_l2(
         or slots.get("STAGE_1_TITLE")
         or "Infographic"
     )
-    citations = []
-    if archetype == "facts_table":
-        citations = [
-            {"id": i, "label": slots.get(f"ROW_{i}_LABEL", f"Fact {i}")}
-            for i in range(1, 4)
-        ]
 
     payload = {
         "lane": "L2",
         "archetype": archetype,
         "body_html": body,
         "citations": citations,
+        "sources": prov,
     }
     art = json_artifact(
         id=_new_id(), kind="infographic", payload=payload,
@@ -219,6 +269,7 @@ async def build_l1(
     *,
     model: Optional[str] = None,
     max_content_chars: int = 8000,
+    sources: Optional[list] = None,
 ) -> Optional[dict]:
     from services.structured_llm import structured_llm
 
@@ -260,6 +311,7 @@ async def build_l1(
         "archetype": "annotated_chart",
         "chart": chart,
         "annotations": annotations,
+        "sources": _normalize_sources(sources),
     }
     art = json_artifact(
         id=_new_id(), kind="infographic", payload=payload,
@@ -276,32 +328,38 @@ async def build_infographic(
     *,
     archetype: Optional[str] = None,
     model: Optional[str] = None,
+    sources: Optional[list] = None,
 ) -> dict:
     """Build an infographic Artifact for the given lane, applying the §3.5
-    degradation ladder. Always returns a dict (never None, never raises)."""
+    degradation ladder. Always returns a dict (never None, never raises).
+
+    `sources` is the real provenance behind every citation — the caller
+    (visual.py) resolves it from `context_builder` so each superscript maps
+    to an actual notebook source (HARD RULE §2.6). It rides through every
+    rung of the degradation ladder unchanged."""
     content = content or ""
     lane = (lane or "L2").upper()
 
     if lane == "L1":
         try:
-            out = await build_l1(content, model=model)
+            out = await build_l1(content, model=model, sources=sources)
             if out:
                 return out
         except Exception as e:
             logger.warning(f"[infographic] L1 build error: {e}")
         # L1 chart invalid -> try an L2 facts table -> prose
         try:
-            out = await build_l2(content, "facts_table", model=model)
+            out = await build_l2(content, "facts_table", model=model, sources=sources)
             if out:
                 out.setdefault("metadata", {})["degraded_from"] = "L1"
                 return out
         except Exception as e:
             logger.warning(f"[infographic] L1->L2 fallback error: {e}")
-        return _prose_fallback(content, "chart + table generation failed", "L1")
+        return _prose_fallback(content, "chart + table generation failed", "L1", sources)
 
     # Default lane = L2 (the volume lane).
     try:
-        out = await build_l2(content, archetype, model=model)
+        out = await build_l2(content, archetype, model=model, sources=sources)
         if out:
             return out
     except Exception as e:
@@ -309,10 +367,10 @@ async def build_infographic(
     # L2 failed -> try one alternate archetype before prose.
     alt = "pipeline_compare" if (archetype or pick_archetype(content)) != "pipeline_compare" else "facts_table"
     try:
-        out = await build_l2(content, alt, model=model)
+        out = await build_l2(content, alt, model=model, sources=sources)
         if out:
             out.setdefault("metadata", {})["degraded_from"] = "L2"
             return out
     except Exception as e:
         logger.warning(f"[infographic] L2 alt-archetype error: {e}")
-    return _prose_fallback(content, "slot-fill unusable for all archetypes", "L2")
+    return _prose_fallback(content, "slot-fill unusable for all archetypes", "L2", sources)
