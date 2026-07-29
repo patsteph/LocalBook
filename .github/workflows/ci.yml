@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, dev ]
   pull_request:
 
 jobs:
@@ -12,6 +12,31 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.13'
       - name: Check PyInstaller hidden-import drift
         run: python scripts/check_pyinstaller_hidden_imports.py
+
+  python-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile all backend Python (syntax sweep)
+        # Mirrors release.sh Step 1 pre-flight py_compile; pure stdlib, no backend deps.
+        run: python -m compileall -q backend -x '(\.venv|/build/)'
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install frontend deps
+        run: npm ci
+      - name: Type-check (tsc --noEmit)
+        # Mirrors release.sh Step 1 pre-flight; catches unused-import/type errors esbuild skips.
+        run: npx tsc --noEmit
