@@ -40,7 +40,10 @@ logger = logging.getLogger(__name__)
 #   empty     — a step produced nothing useful (0 chunks, "no info found")
 #   recovered — a repair salvaged a bad output (JSON repair, sanitizer) — info only
 #   degraded  — an output quality gate tripped (degeneration guard, heavy drop)
-SIGNAL_TYPES = ("misroute", "fallback", "empty", "recovered", "degraded")
+#   user_connection — POSITIVE first-class teach signal: the user drew a connection on
+#                     the Journey Canvas (2.2.0 Walk). Not a near-miss — recorded here so
+#                     the feedback surface can promote it into Evaluator/QS Phase 2 later.
+SIGNAL_TYPES = ("misroute", "fallback", "empty", "recovered", "degraded", "user_connection")
 # severity:  info (recovered) < notable (misroute/empty) < warn (fallback/degraded)
 _SEVERITY_RANK = {"info": 0, "notable": 1, "warn": 2}
 

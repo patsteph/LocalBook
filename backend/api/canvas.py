@@ -83,12 +83,23 @@ async def patch_node(notebook_id: str, node_id: str, req: PatchNodeRequest):
 
 @router.post("/edge/{notebook_id}")
 async def upsert_edge(notebook_id: str, req: EdgeRequest):
-    """Create (or update) an edge — the user-drawn gesture in Crawl."""
+    """Create (or update) an edge — the user-drawn gesture in Crawl.
+
+    A user-drawn edge (state='user') is the strongest learning signal on the map, so
+    it fans out into the Walk-phase feedback loop (curator_event_bus emit + a
+    user-authored knowledge-graph link + a Quality Signal). That fan-out is fired
+    fire-and-forget AFTER persistence — it never blocks or fails this response.
+    """
     if req.state not in cl.EDGE_STATES:
         raise HTTPException(status_code=422, detail=f"invalid edge state '{req.state}'")
     edge = cl.upsert_edge(notebook_id, req.model_dump())
     if edge is None:
         raise HTTPException(status_code=500, detail="upsert_edge failed")
+    # Feedback loop — user edges only; never raises, never blocks this response.
+    if edge.get("state") == "user":
+        from services import canvas_feedback
+
+        canvas_feedback.schedule_user_edge_feedback(notebook_id, edge)
     return edge
 
 
