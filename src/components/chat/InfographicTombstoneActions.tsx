@@ -48,6 +48,7 @@ const REGEN_LANES: { id: InfographicLane; label: string }[] = [
   { id: 'auto', label: 'Auto' },
   { id: 'L1', label: 'Chart' },
   { id: 'L2', label: 'Diagram' },
+  { id: 'L4', label: 'Art' },
 ];
 
 type Fmt = 'png' | 'pdf' | 'html';
@@ -306,7 +307,7 @@ export function InfographicTombstoneActions({ item }: { item: CanvasItem }) {
               </button>
             ))}
           </div>
-          {isL2 && regenLane !== 'L1' && (
+          {isL2 && (regenLane === 'L2' || regenLane === 'auto') && (
             <div className="flex flex-wrap items-center gap-1">
               <span className="text-[9px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mr-0.5">Layout</span>
               {ARCHETYPE_OPTIONS.map((a) => (
