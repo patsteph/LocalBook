@@ -115,7 +115,7 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
 
   return (
     <div
-      className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800"
+      className="flex h-full w-full cursor-grab flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm active:cursor-grabbing dark:border-gray-700 dark:bg-gray-800"
       style={{ opacity: tint }}
     >
       <NodeResizer
@@ -167,8 +167,10 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
         </button>
       </div>
 
-      {/* Body — the Artifact snapshot rendered through the canonical registry. */}
-      <div className="nodrag flex-1 overflow-auto p-2 text-[12px]">
+      {/* Body — the Artifact snapshot rendered through the canonical registry.
+          NOT `nodrag`: the node must drag from its body (the bulk of the card);
+          the delete button + candidate dots keep `nodrag`/`nopan` for interaction. */}
+      <div className="flex-1 overflow-hidden p-2 text-[12px]">
         <ArtifactRender artifact={node.snapshot} context="canvas-node" />
       </div>
     </div>
