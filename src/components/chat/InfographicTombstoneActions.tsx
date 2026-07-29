@@ -21,11 +21,10 @@
  * Fail-open throughout: a failed regenerate/export toasts and leaves the
  * existing artifact intact.
  */
-import { useEffect, useRef, useState } from 'react';
-import { Download, MoreHorizontal, Wand2, RefreshCw } from 'lucide-react';
+import { useState } from 'react';
+import { Wand2, RefreshCw } from 'lucide-react';
 import { useCanvasItems, useAppShell } from '../canvas/CanvasContext';
 import type { CanvasItem } from '../canvas/types';
-import { exportService, canvasItemToArtifact } from '../../services/export';
 import { infographicService } from '../../services/infographic';
 import type { InfographicLane } from '../visual/InfographicLanePicker';
 import {
@@ -52,7 +51,6 @@ const REGEN_LANES: { id: InfographicLane; label: string }[] = [
   { id: 'L4', label: 'Art' },
 ];
 
-type Fmt = 'png' | 'pdf' | 'html';
 
 export function InfographicTombstoneActions({ item }: { item: CanvasItem }) {
   const { updateCanvasItem } = useCanvasItems();
@@ -117,47 +115,6 @@ export function InfographicTombstoneActions({ item }: { item: CanvasItem }) {
     }
   };
 
-  // ── export (native save) ─────────────────────────────────────────────
-  const [exportOpen, setExportOpen] = useState(false);
-  const [exportBusy, setExportBusy] = useState(false);
-  const exportRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!exportOpen) return;
-    const close = (e: MouseEvent) => {
-      if (exportRef.current && !exportRef.current.contains(e.target as Node)) setExportOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [exportOpen]);
-
-  const filename = (item.title || 'infographic')
-    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'infographic';
-
-  const handleExport = async (fmt: Fmt) => {
-    // canvasItemToArtifact reads item.metadata.infographic — which already
-    // carries the current `style`, so the export matches the restyle.
-    const artifact = canvasItemToArtifact(item);
-    if (!artifact) {
-      addToast({ type: 'error', title: 'Nothing to export yet' });
-      return;
-    }
-    setExportBusy(true);
-    try {
-      const blob = await exportService.exportArtifactBlob(artifact, fmt, filename);
-      const saved = await exportService.downloadBlob(blob, `${filename}.${fmt}`);
-      if (saved) addToast({ type: 'success', title: `Saved ${fmt.toUpperCase()}` });
-    } catch (err) {
-      addToast({
-        type: 'error',
-        title: `${fmt.toUpperCase()} export failed`,
-        message: err instanceof Error ? err.message : 'Unknown error',
-        duration: 5000,
-      });
-    } finally {
-      setExportBusy(false);
-      setExportOpen(false);
-    }
-  };
 
   const confPct = typeof routing.confidence === 'number'
     ? `${Math.round(routing.confidence * 100)}%` : null;
@@ -253,8 +210,9 @@ export function InfographicTombstoneActions({ item }: { item: CanvasItem }) {
         </button>
       </div>
 
-      {/* 3 + 4. Regenerate-with-tweak + Export */}
-      <div className="flex items-center justify-between gap-2 flex-wrap">
+      {/* 3. Regenerate-with-tweak. (Download/export lives in the card's ⋮ menu —
+          the same ExportMenu visuals use — so it's consistent + not clipped.) */}
+      <div className="flex items-center gap-2 flex-wrap">
         <button
           type="button"
           onClick={() => setRegenOpen((v) => !v)}
@@ -265,34 +223,6 @@ export function InfographicTombstoneActions({ item }: { item: CanvasItem }) {
           <RefreshCw className={`w-3 h-3 ${busy ? 'animate-spin' : ''}`} />
           {busy ? 'Regenerating…' : 'Regenerate ⟳'}
         </button>
-
-        {/* export menu */}
-        <div ref={exportRef} className="relative">
-          <button
-            type="button"
-            onClick={() => setExportOpen((o) => !o)}
-            disabled={exportBusy}
-            className="p-1 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-wait"
-            title="Export"
-          >
-            <MoreHorizontal className="w-3.5 h-3.5" />
-          </button>
-          {exportOpen && (
-            <div className="absolute right-0 top-full mt-1 z-50 w-40 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg py-1">
-              {(['png', 'pdf', 'html'] as Fmt[]).map((fmt) => (
-                <button
-                  key={fmt}
-                  onClick={() => handleExport(fmt)}
-                  disabled={exportBusy}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-wait"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  {exportBusy ? 'Saving…' : `Download ${fmt.toUpperCase()}`}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
       </div>
 
       {/* regenerate panel */}
