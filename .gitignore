@@ -85,6 +85,7 @@ tests/
 # ...but the tracked CI unit suite (2.2.0 Wave 1) is an exception — must be committed.
 !backend/tests/
 !backend/tests/**
+backend/tests/**/__pycache__/
 verify_pipeline.py
 backend/verify_pipeline.py
 

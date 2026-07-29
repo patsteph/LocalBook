@@ -1,0 +1,91 @@
+"""Canvas API — per-notebook spatial layout for the Journey Canvas (2.2.0, Crawl P1).
+
+Load/save the layout, patch a node's position (the debounced drag hot path), create/
+delete user-drawn edges, and persist the viewport. Candidate-dot suggestions
+(GET /canvas/candidates) and first-entry population (POST /canvas/populate) arrive with
+their engines in Crawl P5 / P2.
+"""
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from storage import canvas_layout_store as cl
+
+router = APIRouter(prefix="/canvas", tags=["canvas"])
+
+
+class SaveLayoutRequest(BaseModel):
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+    viewport: Optional[Dict[str, float]] = None
+
+
+class PatchNodeRequest(BaseModel):
+    x: float
+    y: float
+
+
+class EdgeRequest(BaseModel):
+    source: str
+    target: str
+    state: str = "user"
+    label: str = ""
+    id: Optional[str] = None
+    meta: Dict[str, Any] = {}
+
+
+class ViewportRequest(BaseModel):
+    x: float = 0.0
+    y: float = 0.0
+    zoom: float = 1.0
+
+
+@router.get("/layout/{notebook_id}")
+async def get_layout(notebook_id: str):
+    """Full layout for a notebook: {nodes, edges, viewport}."""
+    return cl.get_layout(notebook_id)
+
+
+@router.put("/layout/{notebook_id}")
+async def save_layout(notebook_id: str, req: SaveLayoutRequest):
+    """Bulk replace of nodes + edges (autosave-on-idle). Viewport upserted if provided."""
+    ok = cl.save_layout(notebook_id, req.nodes, req.edges, req.viewport)
+    if not ok:
+        raise HTTPException(status_code=500, detail="save_layout failed")
+    return {"status": "saved", "nodes": len(req.nodes), "edges": len(req.edges)}
+
+
+@router.patch("/node/{notebook_id}/{node_id}")
+async def patch_node(notebook_id: str, node_id: str, req: PatchNodeRequest):
+    """Move a single node (debounced drag hot path)."""
+    if not cl.patch_node(notebook_id, node_id, req.x, req.y):
+        raise HTTPException(status_code=404, detail="node not found")
+    return {"status": "patched", "id": node_id, "x": req.x, "y": req.y}
+
+
+@router.post("/edge/{notebook_id}")
+async def upsert_edge(notebook_id: str, req: EdgeRequest):
+    """Create (or update) an edge — the user-drawn gesture in Crawl."""
+    if req.state not in cl.EDGE_STATES:
+        raise HTTPException(status_code=422, detail=f"invalid edge state '{req.state}'")
+    edge = cl.upsert_edge(notebook_id, req.model_dump())
+    if edge is None:
+        raise HTTPException(status_code=500, detail="upsert_edge failed")
+    return edge
+
+
+@router.delete("/edge/{notebook_id}/{edge_id}")
+async def delete_edge(notebook_id: str, edge_id: str):
+    """Remove an edge."""
+    if not cl.delete_edge(notebook_id, edge_id):
+        raise HTTPException(status_code=404, detail="edge not found")
+    return {"status": "deleted", "id": edge_id}
+
+
+@router.put("/viewport/{notebook_id}")
+async def save_viewport(notebook_id: str, req: ViewportRequest):
+    """Persist pan/zoom."""
+    if not cl.save_viewport(notebook_id, req.x, req.y, req.zoom):
+        raise HTTPException(status_code=500, detail="save_viewport failed")
+    return {"status": "saved", "x": req.x, "y": req.y, "zoom": req.zoom}
