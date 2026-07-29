@@ -5,8 +5,11 @@ frontend living-view can show "synthesizing N/M", current tier, and memory
 pressure. Wires existing primitives — no new state machinery.
 """
 import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +110,221 @@ async def get_schedule():
     except Exception as e:
         logger.debug(f"[system.schedule] presence snapshot failed: {e}")
     return out
+
+
+# ==========================================================================
+# Unified Schedule Viewer (2.2.0) — GET /system/schedules (merged read) +
+# PUT /system/schedules/{id} (Collector-delegated write). See
+# services/schedule_store.py and READFIRST/planning/schedule-viewer.md.
+# ==========================================================================
+
+# Collector frequency enum → the Schedule Viewer reuses this so the dropdown
+# matches the Collector UI 1:1. Mirrors collection_scheduler.INTERVALS keys.
+_COLLECTOR_FREQUENCIES = [
+    "hourly", "every_2_hours", "every_4_hours", "every_8_hours",
+    "twice_daily", "daily", "every_3_days", "weekly", "manual",
+]
+
+
+def _registry_row(d, ov: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Registry definition ⊕ stored override → one API row."""
+    from services.schedule_store import definition_as_dict
+    row = definition_as_dict(d)
+    default_seconds = d.default_seconds
+    override_interval = None
+    enabled = True
+    if ov:
+        override_interval = ov.get("interval_seconds")
+        if ov.get("enabled") is False:
+            enabled = False
+    effective = override_interval if override_interval is not None else default_seconds
+    row.update({
+        "interval_seconds": effective,
+        "overridden": bool(override_interval is not None),
+        "enabled": enabled,
+        # Read-only in Rung A/B: only Collector per-notebook rows are live-editable.
+        "editable": False,
+    })
+    return row
+
+
+async def _collector_rows() -> List[Dict[str, Any]]:
+    """One live-editable row per notebook with a configured Collector schedule.
+
+    Cadence lives in collector.yaml (read live by collection_scheduler) — the
+    only truly bidirectional schedule today. last_run/next_due come from the
+    scheduler's persisted state.
+    """
+    rows: List[Dict[str, Any]] = []
+    try:
+        from storage.notebook_store import notebook_store
+        from agents.collector import get_collector
+        from services.collection_scheduler import collection_scheduler
+
+        status = {}
+        try:
+            status = collection_scheduler.get_status().get("schedule_details", {}) or {}
+        except Exception as e:
+            logger.debug(f"[system.schedules] scheduler status failed: {e}")
+
+        notebooks = await notebook_store.list()
+        for nb in notebooks:
+            nb_id = nb.get("id")
+            if not nb_id:
+                continue
+            try:
+                config = get_collector(nb_id).get_config()
+            except Exception as e:
+                logger.debug(f"[system.schedules] collector cfg {nb_id}: {e}")
+                continue
+            intent = (getattr(config, "intent", "") or "").strip()
+            if not intent:
+                continue  # unconfigured collector — nothing scheduled
+            sched = config.schedule if isinstance(config.schedule, dict) else {}
+            freq = sched.get("frequency", "daily")
+            nb_name = nb.get("name") or nb.get("title") or nb_id[:8]
+            det = status.get(nb_id, {}) if isinstance(status, dict) else {}
+            rows.append({
+                "id": f"collector:{nb_id}",
+                "name": f"Collector — {nb_name}",
+                "agent": "collector",
+                "category": "agents",
+                "cadence_kind": "per_notebook",
+                "editable": True,
+                "enabled": freq != "manual",
+                "frequency": freq,
+                "max_items_per_run": sched.get("max_items_per_run"),
+                "frequency_options": _COLLECTOR_FREQUENCIES,
+                "notebook_id": nb_id,
+                "last_run": det.get("last_run"),
+                "next_due": det.get("next_due"),
+                "overdue": det.get("overdue"),
+                "note": "Per-notebook collection cadence — edited here, read live "
+                        "by the collection scheduler.",
+                "managed_in": None,
+                "advanced": False,
+                "overridden": False,
+                "module_const": "collector.yaml:schedule.frequency",
+                "min_seconds": None,
+                "max_seconds": None,
+                "default_seconds": None,
+                "tier": "DEEP",
+                "env_var": None,
+                "rung_c_candidate": False,
+            })
+    except Exception as e:
+        logger.debug(f"[system.schedules] collector rows failed: {e}")
+    return rows
+
+
+@router.get("/schedules")
+async def get_schedules():
+    """Comprehensive read of everything scheduled/timed across the app.
+
+    Merges: registry defaults ⊕ stored overrides ⊕ per-notebook Collector
+    schedules ⊕ the live enrichment-worker snapshot. Never raises — returns a
+    partial payload so a settings poll can't 500.
+    """
+    from services.schedule_store import schedule_store, SCHEDULE_REGISTRY
+
+    schedules: List[Dict[str, Any]] = []
+    try:
+        overrides = schedule_store.all_overrides()
+        for d in SCHEDULE_REGISTRY:
+            schedules.append(_registry_row(d, overrides.get(d.id)))
+    except Exception as e:
+        logger.debug(f"[system.schedules] registry merge failed: {e}")
+
+    schedules.extend(await _collector_rows())
+
+    live = await get_schedule()
+
+    return {
+        "schedules": schedules,
+        "live": live,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+class ScheduleUpdate(BaseModel):
+    interval_seconds: Optional[float] = None
+    enabled: Optional[bool] = None
+    frequency: Optional[str] = None            # Collector rows
+    max_items_per_run: Optional[int] = None    # Collector rows
+
+
+@router.put("/schedules/{schedule_id:path}")
+async def update_schedule(schedule_id: str, request: ScheduleUpdate):
+    """Edit a schedule.
+
+    Rung A/B scope: only Collector per-notebook schedules are live-editable —
+    they DELEGATE to `collector.update_config` (one writer per store, per the
+    Centralization Rule). Hardcoded/infra schedules are read-only until their
+    loop reads `schedule_store.get_interval` (Rung C, deferred); editing one
+    now would not be honored, so we reject it rather than lie.
+    """
+    if schedule_id.startswith("collector:"):
+        notebook_id = schedule_id.split(":", 1)[1]
+        if not notebook_id:
+            raise HTTPException(status_code=400, detail="missing notebook id")
+
+        freq = request.frequency
+        if request.enabled is False:
+            freq = "manual"
+        if freq is not None and freq not in _COLLECTOR_FREQUENCIES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid frequency '{freq}'; expected one of "
+                       f"{_COLLECTOR_FREQUENCIES}",
+            )
+        if request.max_items_per_run is not None and not (
+            1 <= request.max_items_per_run <= 100
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="max_items_per_run must be between 1 and 100",
+            )
+
+        try:
+            from agents.collector import get_collector
+            collector = get_collector(notebook_id)
+            current = collector.get_config()
+            sched = dict(current.schedule) if isinstance(current.schedule, dict) else {}
+            if freq is not None:
+                sched["frequency"] = freq
+            if request.max_items_per_run is not None:
+                sched["max_items_per_run"] = request.max_items_per_run
+            updated = collector.update_config({"schedule": sched})
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"[system.schedules] collector update {notebook_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"update failed: {e}")
+
+        new_sched = updated.schedule if isinstance(updated.schedule, dict) else {}
+        return {
+            "success": True,
+            "id": schedule_id,
+            "frequency": new_sched.get("frequency"),
+            "max_items_per_run": new_sched.get("max_items_per_run"),
+            "enabled": new_sched.get("frequency") != "manual",
+        }
+
+    # Registry (code-defined) schedule.
+    from services.schedule_store import get_definition
+    d = get_definition(schedule_id)
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"unknown schedule: {schedule_id}")
+
+    # Honest guard: these loops don't read the override store yet (Rung C).
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"'{d.name}' is read-only in this build. Code-defined schedules "
+            "become editable once their background loop reads the override "
+            "store (Rung C — deferred)."
+        ),
+    )
 
 
 @router.get("/schedule/{notebook_id}")

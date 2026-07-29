@@ -13,6 +13,7 @@ import { CuratorSettings } from './CuratorSettings';
 import { CorrespondentSettings } from './CorrespondentSettings';
 import { TemplatesSection } from './settings/TemplatesSection';
 import { VoiceProfileSection } from './settings/VoiceProfileSection';
+import { ScheduleSection } from './settings/ScheduleSection';
 
 class SettingsErrorBoundary extends React.Component<
   { children: React.ReactNode; fallbackLabel: string },
@@ -47,6 +48,7 @@ type SectionId =
     | 'profile' | 'voice'
     | 'api-keys' | 'credentials' | 'correspondent'
     | 'curator' | 'memory'
+    | 'schedules'
     | 'templates' | 'updates';
 
 interface SectionDef {
@@ -78,8 +80,9 @@ const SECTION_GROUPS: { title: string; items: SectionDef[] }[] = [
     {
         title: 'Agents & Memory',
         items: [
-            { id: 'curator', label: 'Curator', icon: '🧭', accent: 'purple' },
-            { id: 'memory',  label: 'Memory',  icon: '🧠', accent: 'blue' },
+            { id: 'curator',   label: 'Curator',   icon: '🧭', accent: 'purple' },
+            { id: 'memory',    label: 'Memory',    icon: '🧠', accent: 'blue' },
+            { id: 'schedules', label: 'Schedules', icon: '⏱️', accent: 'purple' },
         ],
     },
     {
@@ -154,6 +157,7 @@ export const Settings: React.FC = () => {
                     {activeSection === 'credentials' && <CredentialLocker />}
                     {activeSection === 'memory' && <SettingsErrorBoundary fallbackLabel="Memory"><MemorySettings /></SettingsErrorBoundary>}
                     {activeSection === 'curator' && <SettingsErrorBoundary fallbackLabel="Curator"><CuratorSettings /></SettingsErrorBoundary>}
+                    {activeSection === 'schedules' && <SettingsErrorBoundary fallbackLabel="Schedules"><ScheduleSection /></SettingsErrorBoundary>}
                     {activeSection === 'correspondent' && <SettingsErrorBoundary fallbackLabel="Correspondent"><CorrespondentSettings /></SettingsErrorBoundary>}
                     {activeSection === 'templates' && <TemplatesSection setError={setError} setSuccess={setSuccess} />}
                     {activeSection === 'updates' && <UpdatesSection />}
