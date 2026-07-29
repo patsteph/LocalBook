@@ -89,3 +89,34 @@ async def save_viewport(notebook_id: str, req: ViewportRequest):
     if not cl.save_viewport(notebook_id, req.x, req.y, req.zoom):
         raise HTTPException(status_code=500, detail="save_viewport failed")
     return {"status": "saved", "x": req.x, "y": req.y, "zoom": req.zoom}
+
+
+@router.post("/populate/{notebook_id}")
+async def populate(notebook_id: str, limit: int = 50):
+    """Seed nodes from existing capture (Crawl P2): chat turns (exploration_store) + sources
+    (activity_ledger). Idempotent — preserves existing node positions, adds only what's new."""
+    import json as _json
+
+    from services import canvas_populate
+    from storage.exploration_store import exploration_store
+    from services import activity_ledger
+
+    journey = await exploration_store.get_journey(notebook_id, limit)
+    raw_events = activity_ledger.recent_events(
+        notebook_id, limit=limit, kinds=(activity_ledger.KIND_SOURCE_ADDED,)
+    )
+    source_events = []
+    for ev in raw_events:
+        payload = ev.get("payload_json")
+        if isinstance(payload, str):
+            try:
+                payload = _json.loads(payload)
+            except Exception:
+                payload = {}
+        source_events.append({"id": ev.get("id"), "ts": ev.get("ts"), "payload": payload or {}})
+
+    existing = cl.get_layout(notebook_id)
+    merged, added = canvas_populate.populate_layout(journey, source_events, existing)
+    if not cl.save_layout(notebook_id, merged, existing["edges"], existing["viewport"]):
+        raise HTTPException(status_code=500, detail="save_layout failed")
+    return {"status": "populated", "added": added, "total_nodes": len(merged)}
