@@ -14,6 +14,7 @@ import { VisualEditRegenerateButton } from '../shared/VisualEditRegenerateButton
 import { StudioQuizBlock } from '../shared/FeynmanBlocks';
 import { AudioCanvasPlayer } from './AudioCanvasPlayer';
 import { FlashcardsCanvasTile } from './FlashcardsCanvasTile';
+import { InfographicTombstoneActions } from './InfographicTombstoneActions';
 import { API_BASE_URL } from '../../services/api';
 // Q10 (2026-06-30): lazy-load the rich note editor (BlockNote + Mantine) — out of
 // the initial bundle, fetched only when a note tile opens.
@@ -542,15 +543,18 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
             />
           )}
           {item.type === 'infographic' && item.metadata?.infographic && (
-            <ArtifactRender
-              artifact={{
-                id: item.id,
-                type: 'json:infographic',
-                payload: item.metadata.infographic,
-                title: item.title,
-              }}
-              context="canvas-full"
-            />
+            <>
+              <ArtifactRender
+                artifact={{
+                  id: item.id,
+                  type: 'json:infographic',
+                  payload: item.metadata.infographic,
+                  title: item.title,
+                }}
+                context="canvas-full"
+              />
+              <InfographicTombstoneActions item={item} />
+            </>
           )}
           {item.type === 'visual' && (
             item.content ? (
