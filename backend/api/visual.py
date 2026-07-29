@@ -1534,7 +1534,7 @@ async def download_visual(visual_id: str, format: str = "svg"):
 
 
 # =============================================================================
-# Infographic (L1 annotated charts + L2 structured diagrams)
+# Infographic (L1 annotated charts + L2 structured diagrams + L4 Klein art)
 # =============================================================================
 
 class InfographicRequest(BaseModel):
