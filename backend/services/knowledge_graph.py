@@ -528,13 +528,137 @@ Respond ONLY with JSON:"""
             "created_at": link.created_at.isoformat(),
         }
         table.add([record])
-        
+
         return link
-    
+
+    # =========================================================================
+    # User-authored links (Journey Canvas feedback loop, 2.2.0 Walk)
+    # =========================================================================
+
+    def find_concept_id(self, name: str) -> Optional[str]:
+        """Read-only resolve of an EXISTING concept name → its id.
+
+        Uses the same canonicalization as concept creation, so "AI" and
+        "artificial intelligence" map to the same node. Returns None if the
+        concept is not yet in the graph (we never create one here — the caller
+        links *underlying* concepts that already exist). Sync + never raises so
+        it can run inside asyncio.to_thread off the request loop.
+        """
+        try:
+            if not name or len(name.strip()) < 2:
+                return None
+            self._load_concept_cache()
+            canonical = self._canonicalize_concept_name(
+                " ".join(name.lower().strip().split())
+            )
+            return self._concept_name_cache.get(canonical)
+        except Exception as e:
+            logger.debug(f"[knowledge-graph] find_concept_id failed (non-fatal): {e}")
+            return None
+
+    def concept_ids_for_source(self, source_id: str, limit: int = 20) -> List[str]:
+        """Read-only: concept ids whose chunks come from `source_id`, most-frequent
+        first. Sync sibling of get_connections_for_source for the canvas feedback
+        mapping (a `source` node → its underlying concepts). Never raises."""
+        try:
+            if not source_id:
+                return []
+            df = self.db.open_table("concepts").to_pandas()
+            if df.empty:
+                return []
+            def _from_source(chunk_ids_json: str) -> bool:
+                try:
+                    return any(source_id in cid for cid in json.loads(chunk_ids_json or "[]"))
+                except Exception:
+                    return False
+            hit = df[df["source_chunk_ids"].apply(_from_source)]
+            if hit.empty:
+                return []
+            hit = hit.sort_values("frequency", ascending=False)
+            return [str(r) for r in hit["id"].tolist()[:limit]]
+        except Exception as e:
+            logger.debug(f"[knowledge-graph] concept_ids_for_source failed (non-fatal): {e}")
+            return []
+
+    def add_user_link(
+        self,
+        source_concept_id: str,
+        target_concept_id: str,
+        notebook_id: str,
+        *,
+        evidence: str = "",
+        link_type: LinkType = LinkType.SIMILAR_TO,
+    ) -> Optional[ConceptLink]:
+        """Create a USER-AUTHORED link between two EXISTING concepts.
+
+        The strongest learning signal on the Journey Canvas: a human drew this
+        connection. Distinguished from machine-inferred links by
+        `auto_detected=False` + `verified=True` (and max strength). ADDITIVE — it
+        only appends one row to the existing `links` table; it does NOT alter
+        retrieval scoring. Idempotent for the unordered pair. Sync + never raises
+        so callers can offload it via asyncio.to_thread. Returns the link, or None
+        if it was a no-op (same/blank ids, duplicate, or a write error).
+        """
+        try:
+            if not source_concept_id or not target_concept_id:
+                return None
+            if source_concept_id == target_concept_id:
+                return None
+            table = self.db.open_table("links")
+            # Idempotency: skip if a user link already joins this unordered pair.
+            try:
+                existing = table.to_pandas()
+                if not existing.empty and "auto_detected" in existing.columns:
+                    user_rows = existing[existing["auto_detected"] == False]  # noqa: E712
+                    dup = user_rows[
+                        ((user_rows["source_id"] == source_concept_id)
+                         & (user_rows["target_id"] == target_concept_id))
+                        | ((user_rows["source_id"] == target_concept_id)
+                           & (user_rows["target_id"] == source_concept_id))
+                    ]
+                    if not dup.empty:
+                        return None
+            except Exception as _e:
+                logger.debug(f"[knowledge-graph] add_user_link dedup skipped: {_e}")
+            link = ConceptLink(
+                source_id=source_concept_id,
+                target_id=target_concept_id,
+                source_type="concept",
+                target_type="concept",
+                link_type=link_type,
+                strength=1.0,  # a human-drawn connection is maximally trusted
+                evidence=evidence or "user-drawn on Journey Canvas",
+                source_notebook_id=notebook_id,
+                auto_detected=False,  # ← the user-authored marker
+                verified=True,
+            )
+            table.add([{
+                "id": link.id,
+                "source_id": link.source_id,
+                "target_id": link.target_id,
+                "source_type": link.source_type,
+                "target_type": link.target_type,
+                "link_type": link.link_type.value,
+                "strength": link.strength,
+                "evidence": link.evidence or "",
+                "source_notebook_id": link.source_notebook_id or "",
+                "auto_detected": link.auto_detected,
+                "verified": link.verified,
+                "created_at": link.created_at.isoformat(),
+            }])
+            logger.info(
+                f"[knowledge-graph] user link {source_concept_id[:8]}…↔{target_concept_id[:8]}… "
+                f"(notebook={notebook_id})"
+            )
+            return link
+        except Exception as e:
+            logger.warning(f"[knowledge-graph] add_user_link failed (non-fatal): {e}")
+            return None
+
     # =========================================================================
     # Link Detection
     # =========================================================================
-    
+
     async def detect_links_for_chunk(
         self,
         chunk_id: str,
