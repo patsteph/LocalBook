@@ -29,6 +29,7 @@ import { CorrespondentQueueRenderer } from './renderers/CorrespondentQueueRender
 import { CorrespondentSubscriptionsRenderer } from './renderers/CorrespondentSubscriptionsRenderer';
 import { CorrespondentArticlesRenderer } from './renderers/CorrespondentArticlesRenderer';
 import { CorrespondentHotClustersRenderer } from './renderers/CorrespondentHotClustersRenderer';
+import { InfographicArtifactRenderer } from './renderers/InfographicArtifactRenderer';
 
 let registered = false;
 
@@ -61,6 +62,9 @@ export function registerBuiltInRenderers(): void {
   rendererRegistry.register('json:correspondent-articles', CorrespondentArticlesRenderer);
   // Phase 2 Tier 2 (2026-06-09) — hot/cold article clusters with Deep-read + Articles CTAs
   rendererRegistry.register('json:correspondent-hot-clusters', CorrespondentHotClustersRenderer);
+
+  // Infographic (L1 annotated charts + L2 structured diagrams).
+  rendererRegistry.register('json:infographic', InfographicArtifactRenderer);
 }
 
 // Auto-register on import so consumers don't have to remember to call.

@@ -346,3 +346,118 @@ def _record_misroute(detail: str, message: str, *, key: str, severity: str) -> N
                       input_text=message, severity=severity, key=key)
     except Exception:
         pass
+
+
+# ─── Infographic lane classification (routes on CONTENT SHAPE) ───────────────
+# The infographic feature has FOUR output lanes. Users say "make an infographic"
+# for all of them, so the request text does not disambiguate — the SHAPE of the
+# retrieved content does (plan §3.1/§3.2). Lane labels live here rather than in a
+# second router (plan §3.3): Stage A runs on the fast model; a low-confidence pick
+# escalates once to the main model (Stage B). The template-WITHIN-a-lane pick stays
+# deterministic (`services.infographic.builder.pick_archetype` /
+# `visual_router`). Only L1 + L2 build in v1; L3/L4 are recognized but deferred,
+# and L0 means "reject upward to prose".
+INFOGRAPHIC_LANE_INTENTS: List[Dict[str, str]] = [
+    {"id": "L1", "desc": "The content is a NUMERIC series, time series, magnitude comparison, or distribution — something best shown as an annotated CHART.", "params": "none"},
+    {"id": "L2", "desc": "The content is a PROCESS / pipeline / sequence, a hierarchy or taxonomy, an entity comparison, a stat set, or a before/after — a STRUCTURED DIAGRAM. This is the default for most notebook content.", "params": "none"},
+    {"id": "L3", "desc": "The content is a conceptual narrative or metaphor with NO extractable structure — a teaching scene. (Deferred in v1; treated as L2.)", "params": "none"},
+    {"id": "L4", "desc": "An explicit request for a decorative picture with no informational payload. (Deferred in v1; treated as L2.)", "params": "none"},
+    {"id": "L0", "desc": "The content is linear prose with no structure worth extracting — reject upward and return prose/table.", "params": "none"},
+]
+
+# Buildable lanes in v1 (others collapse to the default).
+_INFOGRAPHIC_BUILDABLE = {"L1", "L2", "L0"}
+_INFOGRAPHIC_FALLBACK = "L2"  # the volume lane
+_INFOGRAPHIC_STAGE_B_THRESHOLD = 0.55
+
+_INFOGRAPHIC_SYSTEM = """You are a router that picks the best VISUAL LANE for turning some content into an infographic. Route on the SHAPE of the content, not on how the request is phrased.
+
+Lanes:
+{lane_list}
+
+Respond with ONLY valid JSON: {{"lane": "<L0|L1|L2|L3|L4>", "confidence": <0.0-1.0>}}
+Rules:
+- If the content has clear numbers/trends to plot, pick L1.
+- If the content has steps, parts, groups, or a comparison, pick L2.
+- Only pick L0 when there is genuinely no structure worth drawing.
+- confidence reflects how clearly the content fits the chosen lane."""
+
+
+def _normalize_lane(lane: Optional[str]) -> str:
+    """Map a raw lane label onto a buildable v1 lane (fail-open to L2)."""
+    lane = (lane or "").strip().upper()
+    if lane in _INFOGRAPHIC_BUILDABLE:
+        return lane
+    if lane in ("L3", "L4"):  # recognized but deferred -> volume lane
+        return _INFOGRAPHIC_FALLBACK
+    return _INFOGRAPHIC_FALLBACK
+
+
+async def _run_lane_stage(content_summary: str, request_text: str, model: str,
+                          ollama_service) -> Dict[str, Any]:
+    lane_lines = [f'- {i["id"]}: {i["desc"]}' for i in INFOGRAPHIC_LANE_INTENTS]
+    system = _INFOGRAPHIC_SYSTEM.format(lane_list="\n".join(lane_lines))
+    prompt = (
+        f'Request (may be vague): "{request_text}"\n\n'
+        f"Content to visualize (this is the real signal):\n{content_summary[:2500]}"
+    )
+    result = await ollama_service.generate(
+        prompt=prompt, system=system, model=model,
+        temperature=0.0, format="json", timeout=15.0,
+    )
+    raw = (result or {}).get("response", "").strip()
+    parsed = robust_json_parse(raw, expect="object", fallback=None, label="InfographicLane")
+    if not isinstance(parsed, dict):
+        return {"lane": None, "confidence": 0.0}
+    try:
+        conf = float(parsed.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        conf = 0.5
+    return {"lane": parsed.get("lane"), "confidence": conf}
+
+
+async def classify_infographic_lane(
+    content_summary: str,
+    request_text: str = "",
+    ollama_service=None,
+) -> Dict[str, Any]:
+    """Pick a visual lane for the given content (plan §3.3).
+
+    Stage A on the fast model; on a low-confidence pick, escalate ONCE to the
+    main model (Stage B). Returns {'lane', 'confidence', 'raw_lane', 'stage'}.
+    Never raises — falls open to the volume lane (L2).
+    """
+    if ollama_service is None:
+        from services.ollama_service import ollama_service as _default
+        ollama_service = _default
+
+    try:
+        stage_a = await _run_lane_stage(
+            content_summary, request_text, settings.ollama_fast_model, ollama_service
+        )
+        raw_lane, conf, stage = stage_a["lane"], stage_a["confidence"], "A"
+
+        # Stage B — System 2 escalation only when Stage A is unsure.
+        if raw_lane is None or conf < _INFOGRAPHIC_STAGE_B_THRESHOLD:
+            try:
+                stage_b = await _run_lane_stage(
+                    content_summary, request_text, settings.ollama_model, ollama_service
+                )
+                if stage_b["lane"] is not None:
+                    raw_lane, conf, stage = stage_b["lane"], stage_b["confidence"], "B"
+            except Exception as e:
+                logger.debug(f"[infographic-lane] Stage B skipped: {e}")
+
+        lane = _normalize_lane(raw_lane)
+        if conf < 0.5:
+            _record_misroute(
+                f"low-confidence infographic lane '{raw_lane}' ({conf:.2f})",
+                request_text or content_summary[:120],
+                key=lane, severity="notable",
+            )
+        return {"lane": lane, "confidence": conf, "raw_lane": raw_lane, "stage": stage}
+    except Exception as e:
+        logger.warning(f"Infographic lane classification failed: {e}")
+        _record_misroute(f"lane classifier error ({type(e).__name__}) → {_INFOGRAPHIC_FALLBACK}",
+                          request_text or "", key=_INFOGRAPHIC_FALLBACK, severity="warn")
+        return {"lane": _INFOGRAPHIC_FALLBACK, "confidence": 0.1, "raw_lane": None, "stage": "err"}

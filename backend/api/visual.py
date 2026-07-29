@@ -1531,3 +1531,80 @@ async def download_visual(visual_id: str, format: str = "svg"):
             headers={"Content-Disposition": f'attachment; filename="{safe_title}.md"'},
         )
     raise HTTPException(status_code=404, detail="Visual has no renderable content")
+
+
+# =============================================================================
+# Infographic (L1 annotated charts + L2 structured diagrams)
+# =============================================================================
+
+class InfographicRequest(BaseModel):
+    notebook_id: str
+    topic: str = ""
+    # Lane override — the four buttons in the UI (plan §3.4). "auto" routes via
+    # the content-shape classifier; L1/L2 force a lane (debugging affordance).
+    lane: str = "auto"
+    archetype: Optional[str] = None   # optional within-lane template override
+    include_sources: bool = True
+
+
+@router.post("/infographic")
+async def generate_infographic(request: InfographicRequest):
+    """Generate a next-gen infographic Artifact (`json:infographic`).
+
+    Routes on content shape (§3.2) unless the caller forces a lane. Always
+    returns an artifact — the builder's degradation ladder guarantees a
+    legible result even when slot-fill or chart generation fails (§3.5).
+    """
+    from services.infographic.builder import build_infographic
+    from services.intent_classifier import classify_infographic_lane
+    from services.memory_steward import foreground_guard
+
+    async with foreground_guard("visual"):
+        content = request.topic or ""
+        if request.include_sources:
+            try:
+                built = await context_builder.build_context(
+                    notebook_id=request.notebook_id,
+                    skill_id="visual",
+                    topic=request.topic or "infographic",
+                )
+                if built.sources_used > 0:
+                    content = (
+                        f"{request.topic}\n\nSource content:\n{built.context}"
+                        if request.topic else built.context
+                    )
+            except Exception as e:
+                logger.warning(f"[infographic] context_builder failed: {e}")
+
+        raw_lane = (request.lane or "auto").strip()
+        routing: dict = {"mode": "override", "lane": raw_lane}
+        if raw_lane.lower() in ("", "auto"):
+            routing = await classify_infographic_lane(
+                content_summary=content, request_text=request.topic or ""
+            )
+            routing["mode"] = "auto"
+            lane = routing.get("lane", "L2")
+        else:
+            lane = raw_lane.upper()
+            if lane not in ("L1", "L2"):
+                lane = "L2"
+            routing["lane"] = lane
+
+        artifact = await build_infographic(content, lane, archetype=request.archetype)
+
+    try:
+        log_content_generated(
+            notebook_id=request.notebook_id,
+            content_type="infographic",
+            success=not artifact.get("payload", {}).get("degraded", False),
+            details={
+                "lane": lane,
+                "archetype": artifact.get("payload", {}).get("archetype"),
+                "routing_mode": routing.get("mode"),
+                "confidence": routing.get("confidence"),
+            },
+        )
+    except Exception as e:
+        logger.debug(f"[infographic] telemetry log failed: {e}")
+
+    return {"artifact": artifact, "lane": lane, "routing": routing}
