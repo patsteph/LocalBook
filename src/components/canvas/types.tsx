@@ -1,11 +1,12 @@
 import React from 'react';
 import {
   MessageSquare, Sparkles, CalendarDays, Lightbulb,
-  Settings, Brain, BarChart3, FileText, Target, Palette
+  Settings, Brain, BarChart3, FileText, Target, Palette, Map as MapIcon
 } from 'lucide-react';
 
 export type PanelView =
   | 'chat'
+  | 'journey'
   | 'library'
   | 'constellation'
   | 'timeline'
@@ -35,6 +36,7 @@ export type LayoutNode = SplitNode | LeafNode;
 
 export const VIEW_LABELS: Record<PanelView, string> = {
   'chat': 'Chat',
+  'journey': 'Canvas',
   'library': 'Library',
   'constellation': 'Constellation',
   'timeline': 'Timeline',
@@ -51,6 +53,7 @@ const iconClass = 'w-3.5 h-3.5';
 
 export const VIEW_ICONS: Record<PanelView, React.ReactNode> = {
   'chat': <MessageSquare className={iconClass} />,
+  'journey': <MapIcon className={iconClass} />,
   'library': <FileText className={iconClass} />,
   'constellation': <Sparkles className={iconClass} />,
   'timeline': <CalendarDays className={iconClass} />,

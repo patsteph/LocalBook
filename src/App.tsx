@@ -469,7 +469,7 @@ function App() {
   // Nav order: Chat is the root/home, Library next (user's output),
   // then exploration (Constellation, Timeline), then intelligence (Curator).
   // 2026-06-02: replaced dropdown with horizontal word-button strip; added Library.
-  const MAIN_VIEWS: PanelView[] = ['chat', 'library', 'constellation', 'timeline', 'curator'];
+  const MAIN_VIEWS: PanelView[] = ['chat', 'journey', 'library', 'constellation', 'timeline', 'curator'];
   const primaryPanelId = findFirstLeafId(layout);
   const primaryLeaf = findLeaf(layout, primaryPanelId);
   const currentView = primaryLeaf?.view || 'chat';

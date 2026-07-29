@@ -29,6 +29,7 @@ interface CommandPaletteProps {
 
 const VIEW_SHORTCUT: Record<PanelView, string | null> = {
   'chat': '⌘1',
+  'journey': null,
   'library': '⌘2',
   'constellation': '⌘3',
   'timeline': '⌘4',
