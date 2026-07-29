@@ -321,6 +321,120 @@ async def build_l1(
     return art.model_dump()
 
 
+# ── L4 (decorative / hero — Klein-rendered) ────────────────────────────
+async def build_l4(
+    content: str,
+    *,
+    title: Optional[str] = None,
+    model: Optional[str] = None,
+    max_content_chars: int = 4000,
+    sources: Optional[list] = None,
+    aspect_ratio: str = "16:9",
+    quality_tier: str = "draft",
+) -> Optional[dict]:
+    """L4 decorative lane — a TEXTLESS Klein raster + optional DOM/SVG title
+    overlay, wrapped as a `json:infographic` Artifact.
+
+    Klein is opt-in + heavy, so the engine is imported + probed lazily and
+    the whole path FAILS OPEN to None (the caller degrades down the ladder).
+
+    HARD RULES honored:
+      - §2.2 (textless raster): the Klein brief drops all label text and a
+        text-suppressing negative prompt is sent; the title rides as a
+        DOM/SVG overlay in the payload (`title_overlay`), never baked into
+        the pixels.
+      - §2.5 (fail open): unavailable/errored Klein → None, never throws.
+
+    Returns the Artifact dict on success, or None so the caller can degrade
+    (L4 → L2 → prose)."""
+    # Lazy imports — Klein pulls httpx/mflux; never hard-require at module load.
+    try:
+        from services.visual_diffusion import (
+            klein_diffusion,
+            write_klein_brief,
+            DEFAULT_NEGATIVE_PROMPT,
+        )
+        from services.visual_capability import get_capability
+    except Exception as e:
+        logger.warning(f"[infographic] L4 imports unavailable: {e}")
+        return None
+
+    overlay_title = (title or "").strip()
+    trimmed = (content or "")[:max_content_chars].strip()
+    seed = overlay_title or trimmed
+    if not seed:
+        return None
+
+    # Probe engine availability up front so we degrade cleanly instead of
+    # burning a Gemma brief call we can't use. mflux (MLX) needs no Ollama
+    # klein_model; the Ollama path does.
+    try:
+        cap = await get_capability()
+    except Exception as e:
+        logger.warning(f"[infographic] L4 capability probe failed: {e}")
+        return None
+    engine_mlx = getattr(settings, "image_engine", "ollama") == "mlx"
+    if not engine_mlx and not getattr(cap, "klein_model", None):
+        logger.info("[infographic] L4 skipped — Klein not installed; degrading")
+        return None
+
+    # Gemma compresses the request into a Klein-optimal, TEXTLESS art brief
+    # (drops every label/caption request — §2.2). Fail-open to the raw seed.
+    try:
+        brief = await write_klein_brief(seed, overlay_title or "Illustration", capability=cap)
+    except Exception as e:
+        logger.warning(f"[infographic] L4 brief failed: {e}")
+        brief = None
+    prompt = brief or seed
+
+    # Belt-and-braces text suppression: even with a clean brief, tell Klein
+    # explicitly to render no glyphs. Typography is the SVG/DOM overlay's job.
+    negative = (
+        f"{DEFAULT_NEGATIVE_PROMPT}, no text in image, no labels, no captions, "
+        "no readable words, no typography in image, no signs, no logos, "
+        "no character text, no written language"
+    )
+
+    try:
+        result = await klein_diffusion.generate(
+            prompt=prompt,
+            capability=cap,
+            aspect_ratio=aspect_ratio,
+            quality_tier=quality_tier,
+            negative_prompt=negative,
+            unload_after=True,
+        )
+    except Exception as e:
+        logger.warning(f"[infographic] L4 Klein generate raised: {e}")
+        return None
+    if not result or not result.success or not result.png_bytes:
+        logger.info(
+            f"[infographic] L4 Klein produced no image: {getattr(result, 'error', None)}"
+        )
+        return None
+
+    import base64
+    b64 = base64.b64encode(result.png_bytes).decode("ascii")
+
+    payload = {
+        "lane": "L4",
+        "archetype": "decorative",
+        "image": f"data:image/png;base64,{b64}",
+        "width": result.width,
+        "height": result.height,
+        # Title text is a DOM/SVG overlay layer — NOT baked into the raster.
+        "title_overlay": overlay_title,
+        "prompt_used": result.prompt_used,
+        "sources": _normalize_sources(sources),
+    }
+    art = json_artifact(
+        id=_new_id(), kind="infographic", payload=payload,
+        title=(overlay_title or "Decorative image")[:80],
+        metadata={"lane": "L4", "archetype": "decorative", "model": result.model},
+    )
+    return art.model_dump()
+
+
 # ── top-level with the degradation ladder ──────────────────────────────
 async def build_infographic(
     content: str,
@@ -329,6 +443,7 @@ async def build_infographic(
     archetype: Optional[str] = None,
     model: Optional[str] = None,
     sources: Optional[list] = None,
+    title: Optional[str] = None,
 ) -> dict:
     """Build an infographic Artifact for the given lane, applying the §3.5
     degradation ladder. Always returns a dict (never None, never raises).
@@ -336,9 +451,29 @@ async def build_infographic(
     `sources` is the real provenance behind every citation — the caller
     (visual.py) resolves it from `context_builder` so each superscript maps
     to an actual notebook source (HARD RULE §2.6). It rides through every
-    rung of the degradation ladder unchanged."""
+    rung of the degradation ladder unchanged.
+
+    `title` seeds the L4 decorative overlay (the user's request text); it is
+    ignored by the L1/L2 lanes."""
     content = content or ""
     lane = (lane or "L2").upper()
+
+    if lane == "L4":
+        try:
+            out = await build_l4(content, title=title, model=model, sources=sources)
+            if out:
+                return out
+        except Exception as e:
+            logger.warning(f"[infographic] L4 build error: {e}")
+        # Klein unavailable/failed -> down the ladder to L2 -> prose.
+        try:
+            out = await build_l2(content, archetype, model=model, sources=sources)
+            if out:
+                out.setdefault("metadata", {})["degraded_from"] = "L4"
+                return out
+        except Exception as e:
+            logger.warning(f"[infographic] L4->L2 fallback error: {e}")
+        return _prose_fallback(content, "decorative image unavailable", "L4", sources)
 
     if lane == "L1":
         try:

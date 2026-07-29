@@ -71,6 +71,30 @@ def _build_infographic_page(payload: Dict[str, Any]) -> str:
     # user's on-screen restyle. restyle_css never raises → "" for the default.
     restyle = restyle_css(payload.get("style"))
 
+    if lane == "L4" and payload.get("image"):
+        # Decorative lane — a textless Klein raster (data URI). The title, if
+        # any, rides as a DOM overlay layer (HARD RULE §2.2: never baked into
+        # the pixels). Mirrors the L4 branch of InfographicArtifactRenderer.
+        img = _esc(str(payload.get("image")))
+        title = _esc(str(payload.get("title_overlay") or ""))
+        overlay = (
+            f'<div style="position:absolute;left:22px;bottom:22px;max-width:78%;'
+            f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;'
+            f'font-weight:800;font-size:26px;line-height:1.15;color:#fff;'
+            f'text-shadow:0 2px 12px rgba(0,0,0,.55)">{title}</div>'
+            if title else ""
+        )
+        inner = (
+            '<div class="ib"><div class="ib-card ib-bracketed" '
+            'style="position:relative;padding:0;overflow:hidden">'
+            f'<img src="{img}" alt="{title or "decorative image"}" '
+            'style="display:block;width:100%;height:auto"/>'
+            f'{overlay}</div></div>'
+        )
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>{INFOGRAPHIC_L2_CSS}{restyle}</style></head>
+<body style="margin:0">{inner}{legend}</body></html>"""
+
     if lane == "L1" and isinstance(payload.get("chart"), dict):
         cfg_json = json.dumps(payload.get("chart") or {})
         ann = payload.get("annotations") or {}

@@ -6,8 +6,9 @@
  * one-click correction instead of a bug report. Ship the override BEFORE the
  * classifier."
  *
- * v1 builds L1 (chart) + L2 (diagram); L3/L4 are shown but disabled until they
- * ship, so the taxonomy is visible and the buttons are ready to light up.
+ * v1 builds L1 (chart) + L2 (diagram) + L4 (decorative Klein art); L3 is shown
+ * but disabled until it ships, so the taxonomy is visible and the button is
+ * ready to light up.
  */
 
 export type InfographicLane = 'auto' | 'L1' | 'L2' | 'L3' | 'L4';
@@ -24,7 +25,7 @@ const LANES: LaneDef[] = [
   { id: 'L1', label: 'Chart', hint: 'Annotated chart' },
   { id: 'L2', label: 'Diagram', hint: 'Structured diagram' },
   { id: 'L3', label: 'Scene', hint: 'Hand-drawn scene (coming soon)', disabled: true },
-  { id: 'L4', label: 'Art', hint: 'Decorative image (coming soon)', disabled: true },
+  { id: 'L4', label: 'Art', hint: 'Decorative image (Klein)' },
 ];
 
 interface Props {

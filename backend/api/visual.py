@@ -1534,7 +1534,7 @@ async def download_visual(visual_id: str, format: str = "svg"):
 
 
 # =============================================================================
-# Infographic (L1 annotated charts + L2 structured diagrams)
+# Infographic (L1 annotated charts + L2 structured diagrams + L4 Klein art)
 # =============================================================================
 
 class InfographicRequest(BaseModel):
@@ -1606,12 +1606,13 @@ async def generate_infographic(request: InfographicRequest):
             lane = routing.get("lane", "L2")
         else:
             lane = raw_lane.upper()
-            if lane not in ("L1", "L2"):
+            if lane not in ("L1", "L2", "L4"):
                 lane = "L2"
             routing["lane"] = lane
 
         artifact = await build_infographic(
             content, lane, archetype=request.archetype, sources=sources_prov,
+            title=request.topic or "",
         )
 
     try:

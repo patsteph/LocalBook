@@ -7,7 +7,9 @@ CSS mirror (the byte-identical invariant the export pipeline depends on).
 
 Run:  cd backend && python -m pytest tests/test_infographic.py -q
 """
+import asyncio
 import re
+import types
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,7 @@ from services.infographic.builder import (
     _prose_fallback,
     _finalize_body,
     pick_archetype,
+    build_l4,
 )
 
 BACKEND = Path(__file__).resolve().parent.parent
@@ -151,6 +154,105 @@ def test_prose_fallback_shape_and_sources():
     assert art["payload"]["degraded"] is True
     assert art["payload"]["sources"] == [{"n": 1, "source_id": None, "title": "Src"}]
     assert art["type"] == "json:infographic"
+
+
+# ── L4 lane routing + degradation (Klein decorative lane) ──────────────
+def test_normalize_lane_l4_is_buildable():
+    """L4 now builds (Klein) — it must NOT collapse to L2. L3 still defers."""
+    from services.intent_classifier import _normalize_lane
+    assert _normalize_lane("L4") == "L4"
+    assert _normalize_lane("l4") == "L4"
+    assert _normalize_lane("L3") == "L2"       # still deferred -> volume lane
+    assert _normalize_lane("nonsense") == "L2"  # fail-open
+
+
+def _fake_cap(klein_model):
+    return types.SimpleNamespace(
+        klein_model=klein_model, gemma_model=None,
+        concurrency_mode=types.SimpleNamespace(value="concurrent"),
+    )
+
+
+def test_l4_degrades_when_klein_unavailable(monkeypatch):
+    """No Klein model + Ollama engine -> build_l4 returns None (caller degrades
+    down the ladder). Fails open, never raises, never calls the LLM."""
+    import services.visual_capability as vc
+    from config import settings
+
+    async def _cap():
+        return _fake_cap(None)
+
+    monkeypatch.setattr(vc, "get_capability", _cap)
+    monkeypatch.setattr(settings, "image_engine", "ollama", raising=False)
+
+    out = asyncio.run(build_l4("draw a serene mountain lake", title="Mountain Lake"))
+    assert out is None
+
+
+def test_l4_success_produces_textless_data_uri(monkeypatch):
+    """With Klein available, build_l4 returns a json:infographic L4 artifact
+    whose payload carries a base64 PNG data URI and the title as an OVERLAY
+    (never baked into the raster — HARD RULE §2.2)."""
+    import services.visual_capability as vc
+    import services.visual_diffusion as vd
+    from config import settings
+
+    async def _cap():
+        return _fake_cap("x/flux2-klein")
+
+    async def _brief(seed, title, capability=None):
+        return "A cinematic mountain lake at golden hour"
+
+    captured = {}
+
+    async def _generate(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["negative_prompt"] = kwargs.get("negative_prompt")
+        return vd.DiffusionResult(
+            success=True, png_bytes=b"\x89PNG\r\n\x1a\nfake",
+            width=1280, height=720, model="x/flux2-klein", prompt_used=prompt,
+        )
+
+    monkeypatch.setattr(vc, "get_capability", _cap)
+    monkeypatch.setattr(settings, "image_engine", "ollama", raising=False)
+    monkeypatch.setattr(vd, "write_klein_brief", _brief)
+    monkeypatch.setattr(vd.klein_diffusion, "generate", _generate)
+
+    out = asyncio.run(build_l4("hero image", title="My Title"))
+    assert out is not None
+    assert out["type"] == "json:infographic"
+    p = out["payload"]
+    assert p["lane"] == "L4"
+    assert p["archetype"] == "decorative"
+    assert p["image"].startswith("data:image/png;base64,")
+    # Title is an OVERLAY, not pixels — it rides in the payload, not the prompt.
+    assert p["title_overlay"] == "My Title"
+    assert "My Title" not in captured["prompt"]
+    # Negative prompt explicitly suppresses in-image text.
+    assert "no text in image" in captured["negative_prompt"]
+
+
+def test_l4_returns_none_on_klein_failure(monkeypatch):
+    """A failed Klein generation -> None (caller degrades), never raises."""
+    import services.visual_capability as vc
+    import services.visual_diffusion as vd
+    from config import settings
+
+    async def _cap():
+        return _fake_cap("x/flux2-klein")
+
+    async def _brief(seed, title, capability=None):
+        return "a prompt"
+
+    async def _generate(prompt, **kwargs):
+        return vd.DiffusionResult(success=False, error="klein boom")
+
+    monkeypatch.setattr(vc, "get_capability", _cap)
+    monkeypatch.setattr(settings, "image_engine", "ollama", raising=False)
+    monkeypatch.setattr(vd, "write_klein_brief", _brief)
+    monkeypatch.setattr(vd.klein_diffusion, "generate", _generate)
+
+    assert asyncio.run(build_l4("x", title="T")) is None
 
 
 # ── Archetype heuristic ────────────────────────────────────────────────

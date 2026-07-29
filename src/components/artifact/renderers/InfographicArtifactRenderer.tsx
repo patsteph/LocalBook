@@ -39,7 +39,7 @@ export interface InfographicSource {
 }
 
 export interface InfographicPayload {
-  lane: 'L1' | 'L2';
+  lane: 'L1' | 'L2' | 'L4';
   archetype: string;
   body_html?: string;
   chart?: ChartConfig;
@@ -48,6 +48,12 @@ export interface InfographicPayload {
   sources?: InfographicSource[];
   degraded?: boolean;
   degrade_reason?: string;
+  // L4 (decorative): a TEXTLESS Klein raster as a data URI. Any title rides
+  // as a DOM overlay (`title_overlay`) — never baked into the pixels (§2.2).
+  image?: string;
+  width?: number;
+  height?: number;
+  title_overlay?: string;
   // Restyle overrides (accent / tone / scale / glow). Set by the tombstone;
   // rides in the payload so export mirrors the on-screen restyle.
   style?: InfographicStyle;
@@ -163,6 +169,55 @@ function L1Chart({
   );
 }
 
+// ── L4: decorative Klein raster + DOM title overlay ────────────────────
+// The image is textless by design (§2.2); the title is a DOM layer on top,
+// never baked into the pixels. Corner brackets keep the design-system chrome.
+function L4Art({
+  image,
+  title,
+  accent,
+}: {
+  image: string;
+  title?: string;
+  accent: string;
+}) {
+  return (
+    <div
+      style={{
+        position: 'relative',
+        background: '#f4f2ee',
+        borderRadius: 18,
+        border: '1px solid #d8d5cd',
+        padding: 8,
+        overflow: 'hidden',
+      }}
+    >
+      <div style={{ position: 'relative', borderRadius: 12, overflow: 'hidden', filter: `drop-shadow(0 0 6px ${accent}59)` }}>
+        <img
+          src={image}
+          alt={title || 'decorative image'}
+          style={{ display: 'block', width: '100%', height: 'auto', borderRadius: 12 }}
+        />
+        {title && (
+          <div
+            style={{
+              position: 'absolute', left: 16, bottom: 14, maxWidth: '80%',
+              fontWeight: 800, fontSize: 20, lineHeight: 1.15, color: '#fff',
+              textShadow: '0 2px 12px rgba(0,0,0,.55)',
+            }}
+          >
+            {title}
+          </div>
+        )}
+      </div>
+      <Bracket pos="tl" />
+      <Bracket pos="tr" />
+      <Bracket pos="bl" />
+      <Bracket pos="br" />
+    </div>
+  );
+}
+
 // ── Provenance legend (rendered OUTSIDE the shadow DOM; every citation
 //    number maps to a real notebook source — HARD RULE §2.6) ────────────
 function SourcesLegend({ sources }: { sources?: InfographicSource[] }) {
@@ -188,6 +243,15 @@ function SourcesLegend({ sources }: { sources?: InfographicSource[] }) {
 export const InfographicArtifactRenderer = ({ artifact, context, className = '' }: RendererProps<InfographicPayload>) => {
   const payload = (artifact.payload || {}) as InfographicPayload;
   const accent = accentHex(payload.style);
+
+  if (payload.lane === 'L4' && payload.image) {
+    return (
+      <div className={className}>
+        <L4Art image={payload.image} title={payload.title_overlay} accent={accent} />
+        <SourcesLegend sources={payload.sources} />
+      </div>
+    );
+  }
 
   if (payload.lane === 'L1' && payload.chart) {
     const height = context === 'chat-inline' ? 240 : 380;
