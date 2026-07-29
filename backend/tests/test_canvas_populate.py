@@ -82,3 +82,129 @@ def test_populate_layout_is_idempotent():
     # feeding the result back in adds nothing
     _merged2, added2 = cp.populate_layout(journey, src, {"nodes": merged1})
     assert added2 == 0
+
+
+# ─── Learning-vs-noise filter (2.2.0) — deterministic, no LLM ────────────────
+
+def test_is_learning_query_plain_question_is_learning():
+    assert cp.is_learning_query({"query": "What is a transformer?"}) is True
+    assert cp.is_learning_query({"query": "explain gradient descent to me"}) is True
+
+
+def test_is_learning_query_empty_is_noise():
+    assert cp.is_learning_query({"query": ""}) is False
+    assert cp.is_learning_query({"query": "   "}) is False
+    assert cp.is_learning_query({}) is False
+
+
+def test_is_learning_query_research_always_learning():
+    # @research pulls / deep-dives / site-searches are always learning, even
+    # when the wording coincidentally resembles an admin verb.
+    assert cp.is_learning_query({"query": "@research deep dive on RAG evaluation"}) is True
+    assert cp.is_learning_query({"query": "@research site:arxiv.org status of MoE models"}) is True
+
+
+def test_is_learning_query_rag_answer_with_sources_is_learning():
+    # A plain turn that consulted sources is unambiguously learning.
+    assert cp.is_learning_query(
+        {"query": "summarize the findings", "sources_used": ["s1", "s2"]}
+    ) is True
+
+
+def test_is_learning_query_curator_admin_is_noise():
+    for msg in (
+        "@curator brain status",
+        "@curator show profile",
+        "@curator set name Athena",
+        "@curator set personality be terse",
+        "@curator toggle overwatch on",
+        "@curator exclude notebook Finance",
+        "@curator include notebook Finance",
+        "@curator collection schedule",
+        "@curator note themes",
+        "@curator approve connection 3",
+        "@curator dismiss connection 3",
+    ):
+        assert cp.is_learning_query({"query": msg}) is False, msg
+
+
+def test_is_learning_query_collector_admin_is_noise():
+    for msg in (
+        "@collector show status",
+        "@collector show pending",
+        "@collector show history",
+        "@collector source health",
+        "@collector set mode automatic",
+        "@collector set approval trust_me",
+        "@collector set schedule daily",
+        "@collector set filters max_age_days 30",
+        "@collector status",  # terse whole-message command
+    ):
+        assert cp.is_learning_query({"query": msg}) is False, msg
+
+
+def test_is_learning_query_correspondent_admin_is_noise():
+    for msg in (
+        "@correspondent show status",
+        "@correspondent sync now",
+        "@correspondent show queue",
+        "@correspondent show scorecards",
+        "@correspondent show routing",
+        "@correspondent digest mode Stratechery",
+    ):
+        assert cp.is_learning_query({"query": msg}) is False, msg
+
+
+def test_is_learning_query_collector_source_add_is_learning():
+    # Source-adding collector commands ARE learning (they grow the notebook).
+    for msg in (
+        "@collector add https://example.com/post",
+        "@collector subscribe https://blog.example.com/rss daily",
+        "@collector add a note about what we discussed",
+        "@collector add keyword quantum computing",
+    ):
+        assert cp.is_learning_query({"query": msg}) is True, msg
+
+
+def test_is_learning_query_curator_question_is_learning():
+    # A genuine cross-notebook question addressed to the curator is learning —
+    # only admin/status/config verbs are noise, and "status of X" is not one.
+    assert cp.is_learning_query({"query": "@curator what did I save about GDPR?"}) is True
+    assert cp.is_learning_query({"query": "@curator what is the status of the merger?"}) is True
+
+
+def test_is_learning_query_bare_admin_command_without_prefix_is_noise():
+    assert cp.is_learning_query({"query": "brain status"}) is False
+    assert cp.is_learning_query({"query": "show pending"}) is False
+
+
+def test_intent_field_takes_precedence_when_present():
+    # Future-proofing: if a record ever carries a classified intent, trust it.
+    assert cp.is_learning_query({"query": "anything", "intent": "brain_status"}) is False
+    assert cp.is_learning_query({"query": "anything", "intent": "cross_notebook_search"}) is True
+
+
+def test_build_nodes_filters_noise_keeps_learning_and_sources():
+    journey = _journey([
+        {"id": "q1", "query": "What is X?", "topics": ["alpha"], "timestamp": "t1"},   # learning
+        {"id": "q2", "query": "@curator brain status", "topics": [], "timestamp": "t2"},  # noise
+        {"id": "q3", "query": "@collector show pending", "topics": [], "timestamp": "t3"},  # noise
+        {"id": "q4", "query": "@research deep dive on MoE", "topics": ["moe"], "timestamp": "t4"},  # learning
+    ])
+    # Source nodes must survive regardless of the chat filter.
+    src = [{"id": 1, "ts": "t5", "payload": {"source_id": "s1", "title": "Paper.pdf"}}]
+    nodes = cp.build_nodes(journey, src)
+    chat_ids = {n["ref_id"] for n in nodes if n["kind"] == "chat_turn"}
+    assert chat_ids == {"q1", "q4"}                       # noise q2/q3 dropped
+    assert any(n["kind"] == "source" and n["ref_id"] == "s1" for n in nodes)  # source kept
+
+
+def test_source_nodes_always_kept_even_with_all_noise_chat():
+    journey = _journey([
+        {"id": "n1", "query": "@curator show profile", "topics": [], "timestamp": "t"},
+        {"id": "n2", "query": "@correspondent sync now", "topics": [], "timestamp": "t"},
+    ])
+    src = [{"id": 7, "ts": "t", "payload": {"source_id": "s9", "title": "Doc"}}]
+    nodes = cp.build_nodes(journey, src)
+    assert [n["kind"] for n in nodes if n["kind"] == "chat_turn"] == []  # all chat filtered
+    assert [n["ref_id"] for n in nodes if n["kind"] == "source"] == ["s9"]
