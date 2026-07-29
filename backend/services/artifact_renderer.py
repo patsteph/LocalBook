@@ -400,8 +400,15 @@ async def render_artifact_to_png(
         await page.set_content(_build_artifact_page(artifact), wait_until="networkidle", timeout=timeout_ms)
         # Slight settle delay so charts/mermaid finish painting.
         await page.wait_for_timeout(500)
+        # ElementHandle.screenshot() captures the full element inherently and
+        # rejects the `full_page` kwarg (that is a Page.screenshot option); pass
+        # it only on the page-level fallback. (Pre-existing bug that silently
+        # returned None for every infographic PNG export.)
         body = await page.query_selector("body")
-        png = await body.screenshot(type="png", full_page=True) if body else await page.screenshot(type="png", full_page=True)
+        png = (
+            await body.screenshot(type="png") if body
+            else await page.screenshot(type="png", full_page=True)
+        )
         return png
     except Exception as e:
         logger.error(f"[artifact_renderer] PNG render failed: {e}")

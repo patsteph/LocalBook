@@ -39,9 +39,13 @@ export interface InfographicSource {
 }
 
 export interface InfographicPayload {
-  lane: 'L1' | 'L2' | 'L4';
+  lane: 'L1' | 'L2' | 'L3' | 'L4';
   archetype: string;
   body_html?: string;
+  // L3 (scene): the hand-drawn scene SVG is the artifact SOURCE (never a raster,
+  // HARD RULE §2.4). Rendered inline as an <img> data-uri — no bundle-heavy
+  // Excalidraw dependency, and the export path rasterizes the same SVG.
+  scene_svg?: string;
   chart?: ChartConfig;
   annotations?: InfographicAnnotations;
   citations?: { id: number; label: string; cite?: string }[];
@@ -218,6 +222,37 @@ function L4Art({
   );
 }
 
+// ── L3: hand-drawn scene (SVG source rendered inline via data-uri) ─────
+// The SVG is authored server-side from hand-picked stickers (never LLM raw
+// markup — the model only supplies escaped text labels), so it is trusted. An
+// <img> data-uri keeps it out of the DOM sanitizer path AND preserves the SVG
+// filter (feDisplacementMap) that a DOMPurify svg profile would strip.
+function L3Scene({ svg }: { svg: string }) {
+  const dataUri = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+  return (
+    <div
+      style={{
+        position: 'relative',
+        background: '#fdfdfb',
+        borderRadius: 18,
+        border: '1px solid #d8d5cd',
+        padding: 10,
+        overflow: 'hidden',
+      }}
+    >
+      <img
+        src={dataUri}
+        alt="hand-drawn scene"
+        style={{ display: 'block', width: '100%', height: 'auto' }}
+      />
+      <Bracket pos="tl" />
+      <Bracket pos="tr" />
+      <Bracket pos="bl" />
+      <Bracket pos="br" />
+    </div>
+  );
+}
+
 // ── Provenance legend (rendered OUTSIDE the shadow DOM; every citation
 //    number maps to a real notebook source — HARD RULE §2.6) ────────────
 function SourcesLegend({ sources }: { sources?: InfographicSource[] }) {
@@ -243,6 +278,15 @@ function SourcesLegend({ sources }: { sources?: InfographicSource[] }) {
 export const InfographicArtifactRenderer = ({ artifact, context, className = '' }: RendererProps<InfographicPayload>) => {
   const payload = (artifact.payload || {}) as InfographicPayload;
   const accent = accentHex(payload.style);
+
+  if (payload.lane === 'L3' && payload.scene_svg) {
+    return (
+      <div className={className}>
+        <L3Scene svg={payload.scene_svg} />
+        <SourcesLegend sources={payload.sources} />
+      </div>
+    );
+  }
 
   if (payload.lane === 'L4' && payload.image) {
     return (
