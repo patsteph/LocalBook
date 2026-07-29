@@ -38,12 +38,14 @@ export type ArtifactType =
 //   - source-viewer: source-document panel; emphasis on legibility
 //   - export-image:  Playwright will screenshot — render without interactive chrome
 //   - export-pdf:    print-CSS friendly variant
+//   - canvas-node:   compact body inside a Journey Canvas react-flow node
 export type RenderContext =
   | 'canvas-full'
   | 'chat-inline'
   | 'source-viewer'
   | 'export-image'
-  | 'export-pdf';
+  | 'export-pdf'
+  | 'canvas-node';
 
 // ─── Actions ──────────────────────────────────────────────────────────────
 // Optional action affordances exposed by the renderer's chrome. The handler

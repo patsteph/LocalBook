@@ -30,6 +30,8 @@ const proseClasses = {
   'source-viewer': 'prose dark:prose-invert max-w-none',
   'export-image': 'prose max-w-none',
   'export-pdf': 'prose max-w-none',
+  // Journey Canvas node body — compact, tight vertical rhythm.
+  'canvas-node': 'prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:mt-2 prose-headings:mb-0.5 prose-ul:my-1 prose-li:my-0',
 } as const;
 
 // Extra optional props for callers that need to inject markdown component

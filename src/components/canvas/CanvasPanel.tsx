@@ -8,6 +8,8 @@ import { Timeline } from '../Timeline';
 const Constellation3D = lazy(() => import('../Constellation3D').then(m => ({ default: m.Constellation3D })));
 import { ThemesPanel } from '../ThemesPanel';
 import { ExplorationPanel } from '../ExplorationPanel';
+// Lazy-loaded so the react-flow bundle only downloads when the Journey map opens.
+const JourneyCanvas = lazy(() => import('./JourneyCanvas').then(m => ({ default: m.JourneyCanvas })));
 import { CuratorPanel } from '../CuratorPanel';
 import { Settings } from '../Settings';
 import { LLMSelector } from '../LLMSelector';
@@ -25,6 +27,10 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
   const ctx = useAppShell();
   const [insightTab, setInsightTab] = useState<'themes' | 'journey'>('themes');
   const [highlightedTopicId, setHighlightedTopicId] = useState<number | null>(null);
+  // Journey tab: 'text' = existing ExplorationPanel + constellation; 'map' = the
+  // spatial Journey Canvas (react-flow) in the main area. Additive — defaults to text.
+  const [journeyMode, setJourneyMode] = useState<'text' | 'map'>('text');
+  const showJourneyMap = insightTab === 'journey' && journeyMode === 'map';
 
   const renderContent = () => {
     switch (view) {
@@ -87,32 +93,75 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ panelId, view, panelPr
                     }}
                   />
                 ) : (
-                  <ExplorationPanel
-                    notebookId={ctx.selectedNotebookId}
-                    onQueryClick={(query) => {
-                      ctx.setChatPrefillQuery(query);
-                      ctx.navigateToChat();
-                    }}
-                    onTopicClick={(topic) => {
-                      ctx.setChatPrefillQuery(`Tell me more about ${topic}`);
-                      ctx.navigateToChat();
-                    }}
-                  />
+                  <div className="flex h-full flex-col">
+                    {/* Map / Text toggle — swaps the main area between the 3D
+                        constellation (text mode) and the Journey Canvas (map). */}
+                    <div className="flex gap-1 border-b border-gray-200 p-2 dark:border-gray-700">
+                      <button
+                        onClick={() => setJourneyMode('text')}
+                        className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                          journeyMode === 'text'
+                            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                            : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        📜 Text
+                      </button>
+                      <button
+                        onClick={() => setJourneyMode('map')}
+                        className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                          journeyMode === 'map'
+                            ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300'
+                            : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        🗺️ Map
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-hidden">
+                      {journeyMode === 'map' ? (
+                        <div className="p-3 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+                          The spatial Journey Canvas is open in the main area. Drag
+                          nodes to arrange, draw connections between them, and use
+                          <span className="font-semibold text-violet-500"> Populate </span>
+                          to seed it from this notebook.
+                        </div>
+                      ) : (
+                        <ExplorationPanel
+                          notebookId={ctx.selectedNotebookId}
+                          onQueryClick={(query) => {
+                            ctx.setChatPrefillQuery(query);
+                            ctx.navigateToChat();
+                          }}
+                          onTopicClick={(topic) => {
+                            ctx.setChatPrefillQuery(`Tell me more about ${topic}`);
+                            ctx.navigateToChat();
+                          }}
+                        />
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
             <div className="flex-1 relative">
-              <Suspense fallback={<div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Loading constellation…</div>}>
-                <Constellation3D
-                  notebookId={ctx.selectedNotebookId}
-                  selectedSourceId={ctx.selectedSourceId}
-                  rightSidebarCollapsed={true}
-                  onNodeClick={(topicId) => {
-                    setHighlightedTopicId(topicId);
-                    setInsightTab('themes');  // Auto-switch to themes tab
-                  }}
-                />
-              </Suspense>
+              {showJourneyMap ? (
+                <Suspense fallback={<div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Loading canvas…</div>}>
+                  <JourneyCanvas notebookId={ctx.selectedNotebookId} />
+                </Suspense>
+              ) : (
+                <Suspense fallback={<div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Loading constellation…</div>}>
+                  <Constellation3D
+                    notebookId={ctx.selectedNotebookId}
+                    selectedSourceId={ctx.selectedSourceId}
+                    rightSidebarCollapsed={true}
+                    onNodeClick={(topicId) => {
+                      setHighlightedTopicId(topicId);
+                      setInsightTab('themes');  // Auto-switch to themes tab
+                    }}
+                  />
+                </Suspense>
+              )}
             </div>
           </div>
         );
