@@ -1561,6 +1561,7 @@ async def generate_infographic(request: InfographicRequest):
 
     async with foreground_guard("visual"):
         content = request.topic or ""
+        sources_prov: list[dict] = []
         if request.include_sources:
             try:
                 built = await context_builder.build_context(
@@ -1573,6 +1574,25 @@ async def generate_infographic(request: InfographicRequest):
                         f"{request.topic}\n\nSource content:\n{built.context}"
                         if request.topic else built.context
                     )
+                    # Provenance: bind each citation index to a REAL source ID.
+                    # `sources_map` gives index -> filename; resolve filename ->
+                    # source_id from the notebook's source list (HARD RULE §2.6).
+                    try:
+                        from storage.source_store import source_store
+                        all_srcs = await source_store.list(request.notebook_id)
+                        fn_to_id: dict[str, str] = {}
+                        for s in all_srcs:
+                            fn = s.get("filename") or s.get("title")
+                            if fn and fn not in fn_to_id:
+                                fn_to_id[fn] = s.get("id")
+                        for n, fname in sorted(built.sources_map.items()):
+                            sources_prov.append({
+                                "n": n,
+                                "source_id": fn_to_id.get(fname),
+                                "title": fname,
+                            })
+                    except Exception as e:
+                        logger.debug(f"[infographic] source-id resolution failed: {e}")
             except Exception as e:
                 logger.warning(f"[infographic] context_builder failed: {e}")
 
@@ -1590,7 +1610,9 @@ async def generate_infographic(request: InfographicRequest):
                 lane = "L2"
             routing["lane"] = lane
 
-        artifact = await build_infographic(content, lane, archetype=request.archetype)
+        artifact = await build_infographic(
+            content, lane, archetype=request.archetype, sources=sources_prov,
+        )
 
     try:
         log_content_generated(

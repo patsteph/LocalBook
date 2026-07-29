@@ -166,9 +166,11 @@ export const INFOGRAPHIC_L2_CSS = `
 .ib-stages{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:10px;align-items:stretch;}
 .ib-stage{
   position:relative;display:flex;flex-direction:column;align-items:center;gap:14px;
-  background:linear-gradient(158deg,rgba(255,255,255,.7),rgba(238,236,230,.55));
-  border:1px solid var(--ib-line);border-radius:18px;padding:22px 18px;
-  backdrop-filter:blur(2px);
+  background:linear-gradient(158deg,rgba(255,255,255,.55),rgba(238,236,230,.32));
+  border:1px solid rgba(255,255,255,.65);border-radius:18px;padding:22px 18px;
+  backdrop-filter:blur(9px) saturate(1.12);
+  -webkit-backdrop-filter:blur(9px) saturate(1.12);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.75),0 8px 24px rgba(52,50,46,.10);
 }
 .ib-stage-title{font-size:22px;font-weight:800;color:var(--ib-ink);margin:0;}
 .ib-stage-body{display:flex;flex-direction:column;align-items:center;gap:12px;flex:1;justify-content:center;width:100%;}
@@ -181,6 +183,25 @@ export const INFOGRAPHIC_L2_CSS = `
   align-self:stretch;width:0;border-left:2.5px dashed var(--ib-accent);
   opacity:.75;margin:0 2px;
 }
+
+/* layered graph + heatmap motif (Index stage) — the network glyph sits over
+   this embedding-matrix grid so the stage reads as "vectors indexed" */
+.ib-heatmap{
+  display:grid;grid-template-columns:repeat(6,1fr);gap:3px;
+  width:100%;max-width:154px;margin-top:2px;
+}
+.ib-heatmap i{aspect-ratio:1;border-radius:3px;background:var(--ib-accent-soft);}
+.ib-heatmap i.h2{background:rgba(224,80,58,.34);}
+.ib-heatmap i.h3{background:rgba(224,80,58,.58);}
+.ib-heatmap i.h4{background:rgba(224,80,58,.82);}
+
+/* curved looping + branching coral arrows (pipeline_compare) — replace the
+   flat pill/fan with drawn arrows closer to the reference target */
+.ib-looped{display:flex;flex-direction:column;gap:2px;align-items:stretch;}
+.ib-loop-arrow{display:flex;justify-content:center;color:var(--ib-accent);margin:1px 0;}
+.ib-loop-arrow svg{width:42px;height:26px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}
+.ib-branch{display:flex;justify-content:center;color:var(--ib-accent);margin:4px 0 2px;}
+.ib-branch svg{width:200px;height:38px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}
 
 /* code block */
 .ib-code{

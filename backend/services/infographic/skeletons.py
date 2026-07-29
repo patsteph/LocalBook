@@ -33,6 +33,32 @@ _DOC_CHIP = (
     '<path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>[{n}]</span>'
 )
 
+# Curved coral "repeats-every-query" loop arrow (structural; not model-controlled).
+_LOOP_ARROW = (
+    '<div class="ib-loop-arrow"><svg viewBox="0 0 42 26" aria-hidden="true">'
+    '<path d="M6 5a15 15 0 0 1 30 4c0 6-5 10-11 11"/>'
+    '<path d="m28 17-3 6 7 1"/></svg></div>'
+)
+# One-to-three branching coral arrow (structural) under the compile-once card.
+_BRANCH = (
+    '<div class="ib-branch"><svg viewBox="0 0 200 38" aria-hidden="true">'
+    '<path d="M100 2v9"/>'
+    '<path d="M100 11H26a8 8 0 0 0-8 8v7"/>'
+    '<path d="M100 11h74a8 8 0 0 1 8 8v7"/>'
+    '<path d="M100 11v15"/>'
+    '<path d="m13 26 5 8 5-8"/>'
+    '<path d="m95 26 5 8 5-8"/>'
+    '<path d="m177 26 5 8 5-8"/></svg></div>'
+)
+# Static embedding-matrix heatmap (structural) layered under the Index glyph.
+_HEATMAP = (
+    '<div class="ib-heatmap">'
+    '<i class="h2"></i><i></i><i class="h3"></i><i class="h4"></i><i></i><i class="h2"></i>'
+    '<i></i><i class="h3"></i><i class="h4"></i><i class="h2"></i><i class="h3"></i><i></i>'
+    '<i class="h3"></i><i class="h4"></i><i></i><i class="h2"></i><i class="h4"></i><i class="h3"></i>'
+    '</div>'
+)
+
 
 # ── Archetype 1 — pipeline_compare (07.33.01) ──────────────────────────
 _PIPELINE_COMPARE = """
@@ -41,11 +67,13 @@ _PIPELINE_COMPARE = """
     <!-- LEFT: runtime retrieval, repeated every query -->
     <div class="ib-col">
       <div class="ib-section-label">{{LEFT_TITLE}}</div>
-      __LEFT_PIPE__
-      <div class="ib-loop"><span>{{LEFT_LOOP}}</span></div>
-      __LEFT_PIPE__
-      <div class="ib-loop"><span>{{LEFT_LOOP}}</span></div>
-      __LEFT_PIPE__
+      <div class="ib-looped">
+        __LEFT_PIPE__
+        __LOOP_ARROW__
+        __LEFT_PIPE__
+        __LOOP_ARROW__
+        __LEFT_PIPE__
+      </div>
       <div class="ib-loop"><span>{{LEFT_LOOP}}</span></div>
     </div>
 
@@ -65,6 +93,7 @@ _PIPELINE_COMPARE = """
         </div>
       </div>
       <div class="ib-fan-label"><b>{{FAN_LABEL}}</b></div>
+      __BRANCH__
       <div class="ib-fan">
         <div class="ib-card ib-bracketed ib-center" style="flex-direction:column;gap:8px;padding:16px 10px">{{ICON_SERVE}}<div class="ib-node-label">{{SERVE_LABEL}}</div></div>
         <div class="ib-card ib-bracketed ib-center" style="flex-direction:column;gap:8px;padding:16px 10px">{{ICON_SERVE}}<div class="ib-node-label">{{SERVE_LABEL}}</div></div>
@@ -118,9 +147,9 @@ _FACTS_TABLE = """
         <table class="ib-table">
           <caption>{{TABLE_TITLE}}</caption>
           <tbody>
-            <tr><td>{{ROW_1_LABEL}}</td><td>{{ROW_1_VALUE}}<sup class="ib-cite">1</sup></td></tr>
-            <tr><td>{{ROW_2_LABEL}}</td><td>{{ROW_2_VALUE}}<sup class="ib-cite">2</sup></td></tr>
-            <tr><td>{{ROW_3_LABEL}}</td><td>{{ROW_3_VALUE}}<sup class="ib-cite">3</sup></td></tr>
+            <tr><td>{{ROW_1_LABEL}}</td><td>{{ROW_1_VALUE}}<sup class="ib-cite">{{CITE_1}}</sup></td></tr>
+            <tr><td>{{ROW_2_LABEL}}</td><td>{{ROW_2_VALUE}}<sup class="ib-cite">{{CITE_2}}</sup></td></tr>
+            <tr><td>{{ROW_3_LABEL}}</td><td>{{ROW_3_VALUE}}<sup class="ib-cite">{{CITE_3}}</sup></td></tr>
           </tbody>
         </table>
       </div>
@@ -153,7 +182,8 @@ _THREE_STAGE = """
     <div class="ib-stage ib-bracketed">
       <h3 class="ib-stage-title">{{STAGE_2_TITLE}}</h3>
       <div class="ib-stage-body">
-        <span class="ib-icon" style="width:56px;height:56px">__NETWORK__</span>
+        <span class="ib-icon" style="width:52px;height:52px">__NETWORK__</span>
+        __HEATMAP__
         <div class="ib-stage-note">{{STAGE_2_NOTE}}</div>
       </div>
     </div>
@@ -197,6 +227,9 @@ def _expand_structural(html: str) -> str:
     """Substitute the non-model structural glyph markers."""
     return (
         html.replace("__LEFT_PIPE__", _LEFT_PIPE)
+        .replace("__LOOP_ARROW__", _LOOP_ARROW)
+        .replace("__BRANCH__", _BRANCH)
+        .replace("__HEATMAP__", _HEATMAP)
         .replace("__ARROW_R__", _ARROW_R)
         .replace("__GEM__", _GEM_SVG)
         .replace("__STAGE_ARROW__", _STAGE_ARROW)
