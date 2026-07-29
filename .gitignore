@@ -82,6 +82,9 @@ docs/ARCHITECTURE_LOCAL.md
 # Test files (keep local)
 test_*.py
 tests/
+# ...but the tracked CI unit suite (2.2.0 Wave 1) is an exception — must be committed.
+!backend/tests/
+!backend/tests/**
 verify_pipeline.py
 backend/verify_pipeline.py
 
