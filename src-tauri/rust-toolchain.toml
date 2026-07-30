@@ -1,8 +1,0 @@
-# Pin the Rust toolchain so all machines build LocalBook's Tauri app on the same,
-# known-good compiler. rustc 1.97.1 fails to build the pinned old crate versions
-# (ctor 0.8.0, time 0.3.54 → "E0463: can't find crate for <proc-macro>"); 1.91.1
-# builds them cleanly. rustup auto-installs this channel on first build. Bump only
-# after validating a newer rustc against the full Tauri build across all Macs.
-[toolchain]
-channel = "1.91.1"
-profile = "minimal"
