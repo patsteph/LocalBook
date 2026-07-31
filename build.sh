@@ -119,12 +119,34 @@ BACKEND_EXE="$BACKEND_DIR/localbook-backend"
 # Parse arguments
 DO_REBUILD=false
 DO_CLEAN=false
+DO_SMOKE=false
 for arg in "$@"; do
     case $arg in
         --rebuild) DO_REBUILD=true ;;
         --clean) DO_CLEAN=true ;;
+        --smoke) DO_SMOKE=true ;;   # opt-in post-build bundle smoke (Ring 2)
     esac
 done
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Pre-build typecheck gate (additive — Ring 2 of testing-ci-foundation)
+# ═══════════════════════════════════════════════════════════════════════════
+# Fail fast on TypeScript type errors BEFORE the expensive backend PyInstaller
+# build and Tauri bundle steps. Mirrors release.sh Step 1's pre-flight tsc gate.
+# tsc needs node_modules; ensure the frontend toolchain is present. This is
+# idempotent with Step 2's `npm install` below (a no-op when already satisfied),
+# so it neither reorders nor replaces that step — it just guarantees tsc can run.
+echo -e "\n${YELLOW}Pre-build typecheck (tsc --noEmit)...${NC}"
+if [ ! -d "node_modules" ]; then
+    echo -e "${YELLOW}  Installing frontend deps so the typecheck can run...${NC}"
+    npm install --silent
+fi
+if npx tsc --noEmit; then
+    echo -e "${GREEN}✓ TypeScript typecheck passed${NC}"
+else
+    echo -e "${RED}✗ TypeScript typecheck failed — aborting build. Fix the type errors above.${NC}"
+    exit 1
+fi
 
 # Step 1: Build backend
 echo -e "\n${YELLOW}Step 1/4: Building backend...${NC}"
@@ -429,6 +451,87 @@ fi
 
 echo -e "${GREEN}✓ AI models ready${NC}"
 echo -e ""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Optional post-build bundle smoke gate (additive — Ring 2 of testing-ci-foundation)
+# ═══════════════════════════════════════════════════════════════════════════
+# Runs ONLY with --smoke (or LOCALBOOK_BUILD_SMOKE=1) so it doesn't slow every
+# --rebuild. Launches the freshly-built backend binary DIRECTLY (headless, no
+# `open`/LaunchServices/Gatekeeper) and runs test_bundle.py's 5 HTTP checks
+# (no LLM). This runs at the very END — the signing/bundle work above is already
+# complete and untouched here; the smoke only READS the finished app.
+# Mirrors release.sh Step 6's direct-launch + /health poll + test_bundle.py flow.
+if [ "$DO_SMOKE" = true ] || [ "${LOCALBOOK_BUILD_SMOKE:-}" = "1" ]; then
+    echo -e "${YELLOW}Post-build smoke: launching backend headless + test_bundle.py...${NC}"
+    SMOKE_BACKEND="./LocalBook.app/Contents/Resources/resources/backend/localbook-backend/localbook-backend"
+    if [ ! -x "$SMOKE_BACKEND" ]; then
+        echo -e "${RED}✗ Smoke: backend binary not found or not executable: $SMOKE_BACKEND${NC}"
+        exit 1
+    fi
+
+    # Free port 8000 so the smoke backend gets a clean bind.
+    lsof -ti:8000 | xargs kill -9 2>/dev/null || true
+    sleep 2
+
+    "$SMOKE_BACKEND" > /tmp/localbook-build-smoke.log 2>&1 &
+    SMOKE_PID=$!
+
+    # EXIT trap so the smoke backend dies even if the script aborts mid-test.
+    cleanup_smoke_backend() {
+        if [ -n "${SMOKE_PID:-}" ] && kill -0 "$SMOKE_PID" 2>/dev/null; then
+            kill "$SMOKE_PID" 2>/dev/null || true
+            sleep 1
+            kill -9 "$SMOKE_PID" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_smoke_backend EXIT
+
+    # Poll /health (up to 60s). `-f` → curl exits non-zero on non-2xx so a
+    # 401/503 during boot doesn't fool the loop into declaring readiness.
+    SMOKE_READY=false
+    for i in $(seq 1 30); do
+        if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+            SMOKE_READY=true
+            echo -e "${GREEN}  ✓ Backend ready ($((i*2))s)${NC}"
+            break
+        fi
+        if ! kill -0 "$SMOKE_PID" 2>/dev/null; then
+            echo -e "${RED}  ✗ Backend process exited during startup${NC}"
+            echo -e "${YELLOW}  --- backend smoke log tail ---${NC}"
+            tail -50 /tmp/localbook-build-smoke.log 2>&1 || true
+            exit 1
+        fi
+        echo -e "  Waiting for backend... ($((i*2))/60s)"
+        sleep 2
+    done
+
+    if [ "$SMOKE_READY" = false ]; then
+        echo -e "${RED}  ✗ Backend failed to respond on /health within 60s${NC}"
+        echo -e "${YELLOW}  --- backend smoke log tail ---${NC}"
+        tail -50 /tmp/localbook-build-smoke.log 2>&1 || true
+        exit 1
+    fi
+
+    # test_bundle.py is pure stdlib; run it with the verified interpreter. It
+    # reads the per-launch app token and sends X-LocalBook-Token itself.
+    SMOKE_RC=0
+    if [ -f "backend/scripts/local/test_bundle.py" ]; then
+        "$PYTHON_CMD" backend/scripts/local/test_bundle.py || SMOKE_RC=$?
+    else
+        echo -e "${YELLOW}  ⚠ test_bundle.py not found, skipping HTTP checks${NC}"
+    fi
+
+    cleanup_smoke_backend
+    trap - EXIT
+
+    if [ "$SMOKE_RC" -ne 0 ]; then
+        echo -e "${RED}✗ Post-build smoke failed (exit=$SMOKE_RC) — bundle did not pass /health + endpoint checks${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Post-build smoke passed${NC}"
+    echo -e ""
+fi
+
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}  Ready! Launch LocalBook.app or copy to /Applications       ${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

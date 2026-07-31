@@ -53,3 +53,26 @@ jobs:
         run: pip install -r backend/requirements-test.txt
       - name: Run unit tier (CI-pure pre-existing checks)
         run: cd backend && python -m pytest tests/ -v
+
+  # ---------------------------------------------------------------------------
+  # TODO (Ring 1.5 — testing-ci-foundation, decision locked 2026-07-28): optional
+  # macos-latest job — build the UNSIGNED PyInstaller backend and run
+  # backend/scripts/local/test_bundle.py against it. Catches the PyInstaller
+  # hidden-import / bundle drift that broke CI in 2026-07 (the exact failure class)
+  # WITHOUT needing signing/notarization or Ollama (test_bundle.py is HTTP-only,
+  # no LLM). Intentionally NOT added as an every-PR job: macos runners are ~10x the
+  # ubuntu minute cost. Gate behind `workflow_dispatch` (and/or a `ci:macos` PR
+  # label) so it runs pre-release only, pending the runner-budget decision.
+  #
+  #   macos-bundle-smoke:
+  #     if: github.event_name == 'workflow_dispatch'
+  #     runs-on: macos-latest
+  #     steps:
+  #       - uses: actions/checkout@v4
+  #       - uses: actions/setup-python@v5
+  #         with: { python-version: '3.13' }
+  #       - run: cd backend && python -m venv .venv && . .venv/bin/activate
+  #              && pip install -r requirements.txt && ./build_backend.sh
+  #       - run: launch the unsigned backend headless, then
+  #              python backend/scripts/local/test_bundle.py
+  # ---------------------------------------------------------------------------
