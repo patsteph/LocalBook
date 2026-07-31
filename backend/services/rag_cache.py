@@ -292,9 +292,26 @@ class AnswerCache:
         """Check if cache entry is expired."""
         return time.time() - entry.get("timestamp", 0) > self.ttl_seconds
     
+    @staticmethod
+    def _record_cache_hit(cache_type: str, question: str) -> None:
+        """Emit a quality signal that an answer was served from cache (info-only).
+
+        Best-effort observability — never affects the cache path. Info severity
+        (below the promotion floor), so it surfaces in the Rough-Edges rollup but
+        never escalates to an incident.
+        """
+        try:
+            from services.quality_signals import record_signal
+            record_signal(
+                "fallback", "rag_cache", "answer served from cache",
+                input_text=question, severity="info", key=cache_type,
+            )
+        except Exception:
+            pass
+
     async def get(
-        self, 
-        question: str, 
+        self,
+        question: str,
         notebook_id: str,
         query_embedding: np.ndarray
     ) -> Optional[Dict]:
@@ -308,6 +325,7 @@ class AnswerCache:
                     entry["hits"] = entry.get("hits", 0) + 1
                     self._hits += 1
                     print("[AnswerCache] Exact hit for query")
+                    self._record_cache_hit("exact", question)
                     return {
                         "answer": entry["answer"],
                         "citations": entry["citations"],
@@ -339,6 +357,7 @@ class AnswerCache:
                 entry["hits"] = entry.get("hits", 0) + 1
                 self._hits += 1
                 print(f"[AnswerCache] Semantic hit (similarity={best_similarity:.3f})")
+                self._record_cache_hit("semantic", question)
                 return {
                     "answer": entry["answer"],
                     "citations": entry["citations"],

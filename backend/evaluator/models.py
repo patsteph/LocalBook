@@ -560,8 +560,9 @@ EVAL_PHASES = [
     (19, "Refinement Pass"),
     (20, "Translation"),
     (21, "Confidence Calibration"),
-    (22, "Score & Persist"),
-    (23, "Cleanup"),
+    (22, "Field Edges"),
+    (23, "Score & Persist"),
+    (24, "Cleanup"),
 ]
 
 TOTAL_PHASES = len(EVAL_PHASES)

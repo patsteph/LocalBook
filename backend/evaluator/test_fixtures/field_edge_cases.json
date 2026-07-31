@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "description": "Promoted field-edge Evaluator cases (data, not code). Auto-appended by services/field_edge_promoter.promote_signal_to_eval_case when a recurring quality-signal MISROUTE clears the promotion thresholds (quality_signals.promotion_verdict). Each case is intent_classify-shaped: {query, expected_intent, name}. If a case lands with an empty expected_intent, a human reviewer should set the corrected intent label here; until then the field_edges runner skips it rather than failing.",
+  "cases": []
+}

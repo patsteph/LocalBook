@@ -604,6 +604,14 @@ class MLXEngine:
                 logger.warning(f"[mlx-engine] degenerate output for {model} ({len(text)} chars); "
                                f"clearing cache + retrying once")
                 try:
+                    from services.quality_signals import record_signal
+                    record_signal(
+                        "degraded", "mlx_engine", "degeneration guard tripped",
+                        severity="warn", key="degeneration",
+                    )
+                except Exception:
+                    pass
+                try:
                     import mlx.core as mx
                     (getattr(mx, "clear_cache", None) or getattr(getattr(mx, "metal", None), "clear_cache", lambda: None))()
                 except Exception:

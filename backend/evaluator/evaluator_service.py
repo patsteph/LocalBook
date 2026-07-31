@@ -35,6 +35,7 @@ from evaluator.test_runners import (
     refinement,
     translation,
     confidence,
+    field_edges,
 )
 from evaluator import scoring
 
@@ -371,8 +372,16 @@ async def run_full_evaluation() -> ComboEvalSummary:
         category_results["confidence"] = cat
         _progress.results_so_far["confidence"] = {"score": cat.score, "grade": cat.grade}
 
-        # ── Phase 22: Score & Persist ────────────────────────────────────
-        _update_progress(22, "Scoring & persisting results")
+        # Phase 22: Field Edges (promoted daily-use near-misses → regression cases)
+        _update_progress(22, "Field Edges")
+        field_edge_results = await _run_phase_with_timeout(
+            field_edges.run(notebook_id, config, combo.name, hw.fingerprint), "Field Edges")
+        cat = _build_category("field_edges", "Field Edges", field_edge_results)
+        category_results["field_edges"] = cat
+        _progress.results_so_far["field_edges"] = {"score": cat.score, "grade": cat.grade}
+
+        # ── Phase 23: Score & Persist ────────────────────────────────────
+        _update_progress(23, "Scoring & persisting results")
 
         # Build summary
         summary.categories = {k: v.to_dict() for k, v in category_results.items()}
@@ -484,8 +493,8 @@ async def run_full_evaluation() -> ComboEvalSummary:
         raise
 
     finally:
-        # ── Phase 23: Cleanup ────────────────────────────────────────────
-        _update_progress(23, "Cleaning up test notebook")
+        # ── Phase 24: Cleanup ────────────────────────────────────────────
+        _update_progress(24, "Cleaning up test notebook")
         if notebook_id:
             try:
                 await ingestion.cleanup_test_notebook(notebook_id)
