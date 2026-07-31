@@ -28,6 +28,10 @@ export interface ScheduleRow {
   env_var?: string | null;
   managed_in?: string | null;
   advanced?: boolean;
+  // Step 7 — per-actor enable/disable + run-now:
+  can_disable?: boolean;       // loop gates on is_enabled → on/off toggle offered
+  can_run_now?: boolean;       // has a safe public run-once entrypoint
+  run_now_reason?: string | null;  // why run-now is disabled (when !can_run_now)
   // Collector per-notebook rows:
   notebook_id?: string;
   frequency?: string;
@@ -78,6 +82,30 @@ class ScheduleService {
     );
     if (!response.ok) {
       let detail = 'Failed to update schedule';
+      try {
+        const body = await response.json();
+        detail = body?.detail || detail;
+      } catch {
+        /* keep default */
+      }
+      throw new Error(detail);
+    }
+    return response.json();
+  }
+
+  /** Enable/disable a schedule (Step 7). Registry rows gate their loop on this. */
+  async setEnabled(id: string, enabled: boolean): Promise<any> {
+    return this.updateSchedule(id, { enabled });
+  }
+
+  /** Trigger an actor's work once, right now (Step 7). */
+  async runNow(id: string): Promise<any> {
+    const response = await localFetch(
+      `${API_BASE_URL}/system/schedules/${encodeURIComponent(id)}/run-now`,
+      { method: 'POST' },
+    );
+    if (!response.ok) {
+      let detail = 'Failed to run schedule';
       try {
         const body = await response.json();
         detail = body?.detail || detail;

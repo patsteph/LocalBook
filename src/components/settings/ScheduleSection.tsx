@@ -90,6 +90,9 @@ export function ScheduleSection() {
   const [edits, setEdits] = useState<Record<string, CollectorEdit>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savedId, setSavedId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [runningId, setRunningId] = useState<string | null>(null);
+  const [ranId, setRanId] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -138,6 +141,33 @@ export function ScheduleSection() {
       setError(e instanceof Error ? e.message : 'Update failed');
     } finally {
       setSavingId(null);
+    }
+  };
+
+  const toggleEnabled = async (row: ScheduleRow) => {
+    setTogglingId(row.id);
+    setError(null);
+    try {
+      await scheduleService.setEnabled(row.id, !row.enabled);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Toggle failed');
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  const runNow = async (row: ScheduleRow) => {
+    setRunningId(row.id);
+    setError(null);
+    try {
+      await scheduleService.runNow(row.id);
+      setRanId(row.id);
+      setTimeout(() => setRanId((cur) => (cur === row.id ? null : cur)), 2500);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Run failed');
+    } finally {
+      setRunningId(null);
     }
   };
 
@@ -208,6 +238,46 @@ export function ScheduleSection() {
           </div>
         </div>
 
+        {!isCollector && (row.can_disable || row.can_run_now !== undefined) && (
+          <div className="mt-3 flex items-center gap-2 flex-wrap border-t border-gray-100 dark:border-gray-700 pt-2.5">
+            {row.can_disable && (
+              <button
+                onClick={() => toggleEnabled(row)}
+                disabled={togglingId === row.id}
+                title={row.enabled ? 'Turn this schedule off' : 'Turn this schedule on'}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full border transition-colors disabled:opacity-50 ${
+                  row.enabled
+                    ? 'bg-green-50 text-green-700 border-green-300 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700'
+                    : 'bg-gray-100 text-gray-500 border-gray-300 dark:bg-gray-700 dark:text-gray-400 dark:border-gray-600'
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    row.enabled ? 'bg-green-500' : 'bg-gray-400'
+                  }`}
+                />
+                {togglingId === row.id ? '…' : row.enabled ? 'On' : 'Off'}
+              </button>
+            )}
+            <button
+              onClick={() => runNow(row)}
+              disabled={!row.can_run_now || runningId === row.id}
+              title={
+                row.can_run_now
+                  ? 'Run this actor once, now'
+                  : row.run_now_reason || 'This actor cannot be run on demand'
+              }
+              className="px-2.5 py-1 text-xs font-medium rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {runningId === row.id
+                ? 'Running…'
+                : ranId === row.id
+                ? 'Triggered ✓'
+                : 'Run now'}
+            </button>
+          </div>
+        )}
+
         {isCollector && (
           <div className="mt-3 flex items-end gap-2 flex-wrap border-t border-gray-100 dark:border-gray-700 pt-3">
             <label className="flex flex-col text-[11px] text-gray-500 dark:text-gray-400">
@@ -262,7 +332,7 @@ export function ScheduleSection() {
           <p className="text-sm text-gray-600 dark:text-gray-400">
             Everything the app runs on a timer — across every agent and the
             background engine. Per-notebook Collector cadence is editable here;
-            other schedules are shown for visibility.
+            most background actors can be turned on/off or run once on demand.
           </p>
         </div>
         <button
