@@ -13,20 +13,24 @@ Holds:
 Phase 5 of v2-information-cortex.
 """
 
-# Pinned CDN URLs. Playwright loads these inside the headless renderer.
+# Pinned CDN URLs. Fail-open fallback only — the export pipeline inlines the
+# vendored copies below (offline guarantee). Mermaid is pinned to the 11.x line
+# to match the frontend app (package.json `mermaid: ^11.4.0`, resolved 11.16.0)
+# so `look:'handDrawn'` and other 11.x features render identically on export.
 MARKED_CDN = "https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"
-MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"
+MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.min.js"
 CHARTJS_CDN = "https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"
 
 # ---------------------------------------------------------------------------
 # Offline asset bundling — LocalBook's offline guarantee means the export
-# pipeline must not reach the network. Chart.js is vendored into
-# `backend/static/vendor/` (bundled by PyInstaller via `--add-data static:static`)
-# and inlined into the export page as a `<script>…</script>` instead of a
-# `<script src="{CDN}">`. Mirrors the frozen-aware resolution in
-# `api/health_portal.get_static_dir`. Falls open to the pinned CDN tag only if
-# the vendored file is genuinely missing (dev tree without the asset), logging
-# a warning so the offline violation is visible rather than silent.
+# pipeline must not reach the network. marked / mermaid / Chart.js are vendored
+# into `backend/static/vendor/` (bundled by PyInstaller via
+# `--add-data static:static`) and inlined into the export page as a
+# `<script>…</script>` instead of a `<script src="{CDN}">`. Mirrors the
+# frozen-aware resolution in `api/health_portal.get_static_dir`. Falls open to
+# the pinned CDN tag only if the vendored file is genuinely missing (dev tree
+# without the asset), logging a warning so the offline violation is visible
+# rather than silent.
 # ---------------------------------------------------------------------------
 import logging as _logging
 import sys as _sys
@@ -34,7 +38,11 @@ from pathlib import Path as _Path
 
 _logger = _logging.getLogger(__name__)
 _CHARTJS_VENDOR_REL = ("static", "vendor", "chart.umd.min.js")
+_MARKED_VENDOR_REL = ("static", "vendor", "marked.min.js")
+_MERMAID_VENDOR_REL = ("static", "vendor", "mermaid.min.js")
 _chartjs_src_cache: str | None = None
+_marked_src_cache: str | None = None
+_mermaid_src_cache: str | None = None
 
 
 def _vendor_base() -> _Path:
@@ -63,6 +71,40 @@ def _chartjs_source() -> str | None:
     return _chartjs_src_cache or None
 
 
+def _marked_source() -> str | None:
+    """Return the vendored marked source (cached), or None if missing."""
+    global _marked_src_cache
+    if _marked_src_cache is not None:
+        return _marked_src_cache or None
+    path = _vendor_base().joinpath(*_MARKED_VENDOR_REL)
+    try:
+        _marked_src_cache = path.read_text(encoding="utf-8")
+    except Exception as e:
+        _logger.warning(
+            "[export_assets] vendored marked not found at %s (%s) — export "
+            "will fall back to the CDN, breaking the offline guarantee.", path, e
+        )
+        _marked_src_cache = ""
+    return _marked_src_cache or None
+
+
+def _mermaid_source() -> str | None:
+    """Return the vendored mermaid source (cached), or None if missing."""
+    global _mermaid_src_cache
+    if _mermaid_src_cache is not None:
+        return _mermaid_src_cache or None
+    path = _vendor_base().joinpath(*_MERMAID_VENDOR_REL)
+    try:
+        _mermaid_src_cache = path.read_text(encoding="utf-8")
+    except Exception as e:
+        _logger.warning(
+            "[export_assets] vendored mermaid not found at %s (%s) — export "
+            "will fall back to the CDN, breaking the offline guarantee.", path, e
+        )
+        _mermaid_src_cache = ""
+    return _mermaid_src_cache or None
+
+
 def chartjs_script_tag() -> str:
     """Offline-first Chart.js `<script>` for the export renderer.
 
@@ -73,6 +115,28 @@ def chartjs_script_tag() -> str:
     if src:
         return f"<script>{src}</script>"
     return f'<script src="{CHARTJS_CDN}"></script>'
+
+
+def marked_script_tag() -> str:
+    """Offline-first marked `<script>` for the export renderer.
+
+    Inlines the vendored source so Playwright needs no network. Degrades to the
+    pinned CDN `<script src>` only if the vendored file is absent (fail-open)."""
+    src = _marked_source()
+    if src:
+        return f"<script>{src}</script>"
+    return f'<script src="{MARKED_CDN}"></script>'
+
+
+def mermaid_script_tag() -> str:
+    """Offline-first mermaid `<script>` for the export renderer.
+
+    Inlines the vendored source so Playwright needs no network. Degrades to the
+    pinned CDN `<script src>` only if the vendored file is absent (fail-open)."""
+    src = _mermaid_source()
+    if src:
+        return f"<script>{src}</script>"
+    return f'<script src="{MERMAID_CDN}"></script>'
 
 # ---------------------------------------------------------------------------
 # Tailwind subset — light theme only. Dark-mode is intentional drop for the
