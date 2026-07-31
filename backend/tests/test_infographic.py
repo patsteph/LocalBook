@@ -327,6 +327,32 @@ def test_l3_compose_scene_contains_stickers_and_labels():
     assert svg.count("stroke-dasharray") >= 2           # 2 connector arrows
 
 
+def test_l3_phase_pills_do_not_overlap():
+    """Field bug: 5 long phase labels made the highlighter pills overlap + bleed
+    off-canvas. Each column must now be >= its pill width, so pills never collide."""
+    from services.infographic.scene import _PILL_FONT, _PILL_MAX
+    labels = ["Scattered documents", "Chunk & embed", "Vector store",
+              "Retrieve & rerank", "Grounded answer"]
+    g = l3scene.parse_graph({
+        "groups": [{"id": f"g{i}", "label": lbl} for i, lbl in enumerate(labels)],
+        "nodes": [{"id": f"n{i}", "label": "x", "sticker": "box", "group": f"g{i}"} for i in range(5)],
+    })
+    lay = l3scene.layout_scene(g)
+
+    def pill_w(label):  # mirror scene._pill's width formula (label already truncated)
+        return max(70.0, len(label) * _PILL_FONT * 0.62 + 34)
+
+    pills = sorted(lay["pills"], key=lambda p: p["cx"])
+    for a, b in zip(pills, pills[1:]):
+        assert a["cx"] + pill_w(a["label"]) / 2 <= b["cx"] - pill_w(b["label"]) / 2, \
+            f"pills overlap: {a['label']!r} / {b['label']!r}"
+    # first pill doesn't bleed off the left; last doesn't run past the right
+    assert pills[0]["cx"] - pill_w(pills[0]["label"]) / 2 >= 0
+    assert pills[-1]["cx"] + pill_w(pills[-1]["label"]) / 2 <= lay["width"]
+    # over-long labels truncate
+    assert all(len(p["label"]) <= _PILL_MAX for p in lay["pills"])
+
+
 def test_l3_compose_escapes_untrusted_labels():
     g = l3scene.parse_graph({
         "groups": [{"id": "g1", "label": "<script>x</script>"}],

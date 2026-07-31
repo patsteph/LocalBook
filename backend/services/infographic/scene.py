@@ -51,6 +51,7 @@ _HERO_CELL_H = 216
 _LABEL_FONT = 15
 _HERO_LABEL_FONT = 17
 _PILL_FONT = 20
+_PILL_MAX = 24         # phase-label char cap (longer truncates) so pills stay sane
 
 _FONT_STACK = (
     "'Chalkboard SE','Comic Sans MS','Comic Sans','Segoe Print',"
@@ -162,14 +163,20 @@ def layout_scene(graph: dict) -> dict:
 
         small_rows = math.ceil(len(smalls) / 2) if smalls else 0
         small_cols = min(len(smalls), 2) if smalls else 0
+        # The phase pill sits above the column — make the column AT LEAST as wide as
+        # its pill so pills never overlap their neighbours or bleed off-canvas (field
+        # bug: 5 long phase labels collided). Absurdly long labels truncate.
+        pill_label = g["label"] if len(g["label"]) <= _PILL_MAX else g["label"][:_PILL_MAX - 1].rstrip() + "…"
+        pill_w = max(70.0, len(pill_label) * _PILL_FONT * 0.62 + 34)
         width = max(
             _HERO_CELL_W if heroes else 0,
             small_cols * _SMALL_CELL_W,
+            pill_w,
         ) or _SMALL_CELL_W
         height = len(heroes) * _HERO_CELL_H + small_rows * _SMALL_CELL_H
         columns.append({
             "group": g, "heroes": heroes, "smalls": smalls,
-            "width": width, "height": height,
+            "width": width, "height": height, "pill_label": pill_label,
             "small_rows": small_rows, "small_cols": small_cols,
         })
 
@@ -189,7 +196,7 @@ def layout_scene(graph: dict) -> dict:
         y = _PAD_TOP + (band_h - c["height"]) / 2
 
         pills.append({
-            "cx": cx, "label": c["group"]["label"], "color": c["group"]["color"],
+            "cx": cx, "label": c["pill_label"], "color": c["group"]["color"],
         })
 
         for hero in c["heroes"]:
