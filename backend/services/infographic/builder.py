@@ -76,6 +76,7 @@ _CITE_SPECS: dict[str, tuple[int, str]] = {
     "facts_table": (3, "ROW_{i}_LABEL"),
     "stat_grid": (4, "STAT_{i}_LABEL"),
     "timeline": (4, "EVENT_{i}_TITLE"),
+    "tier_ladder": (4, "CHIP_{i}_LABEL"),
 }
 
 
@@ -220,6 +221,19 @@ def _prose_fallback(content: str, reason: str, lane: str, sources: Optional[list
 # ── archetype heuristic (deterministic; router may override) ───────────
 def pick_archetype(content: str) -> str:
     low = (content or "").lower()
+    # Family-B "deck" archetypes (07-31) — check the specific shapes first.
+    if any(w in low for w in ("api call", "sdk call", "code side by side", "same pattern",
+                              "two implementations")) or (
+        "code" in low and any(w in low for w in ("versus", " vs ", "compare", "before", "after"))
+    ):
+        return "compare_code"
+    if any(w in low for w in ("tier", "ladder", "rung", "what runs", "runs at home", "status badge")):
+        return "tier_ladder"
+    if any(w in low for w in ("layer stack", "stacked layer", "slabs", "strata", "exploded", "layers of")):
+        return "layer_stack"
+    if any(w in low for w in ("stepped card", "step card", "feedback loop", "state badge",
+                              "revises until", "three cards")):
+        return "stepped_cards"
     if any(w in low for w in ("compile", "index", "stage", "pipeline stage", "offline", "request-time")):
         return "three_stage"
     if any(w in low for w in ("timeline", "chronolog", "milestone", "history", "evolution", "roadmap", " era ")):
@@ -249,6 +263,8 @@ _STYLE_PRESETS: list[dict] = [
     {"accent": "violet", "tone": "light"},
     {"accent": "amber"},
     {"accent": "slate", "tone": "light", "scale": "compact"},
+    {"tone": "cream"},                                      # Family-B "deck" look
+    {"accent": "coral", "tone": "cream"},
 ]
 
 
@@ -310,6 +326,8 @@ async def build_l2(
         or slots.get("GRID_TITLE")
         or slots.get("TIMELINE_TITLE")
         or slots.get("TREE_TITLE")
+        or slots.get("HEADLINE")
+        or slots.get("STACK_TITLE")
         or "Infographic"
     )
 

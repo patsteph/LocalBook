@@ -28,6 +28,12 @@ _ARROW_R_ACCENT = (
     '<span class="ib-arrow ib-arrow--accent"><svg viewBox="0 0 24 20" aria-hidden="true">'
     '<path d="M3 10h16"/><path d="m14 4 6 6-6 6"/></svg></span>'
 )
+# Left-pointing feedback arrow (structural; not model-controlled) — closes the
+# stepped_cards loop line ("needs_revision sends feedback back to the agent <-").
+_ARROW_L = (
+    '<svg viewBox="0 0 24 16" aria-hidden="true">'
+    '<path d="M21 8H4"/><path d="m10 2-6 6 6 6"/></svg>'
+)
 _STAGE_ARROW = (
     '<div class="ib-stage-arrow"><svg viewBox="0 0 24 20" aria-hidden="true">'
     '<path d="M3 10h16"/><path d="m14 4 6 6-6 6"/></svg></div>'
@@ -288,6 +294,135 @@ _TREE_HIERARCHY = (
 )
 
 
+# ── Archetype 7 — compare_code (07.55.27) ──────────────────────────────
+# Family-B "deck" look: two code columns, each a year/label pill + title +
+# code block + prose, split by a "vs", closed by a shared takeaway callout.
+# Reuses ib-code / ib-note + the new ib-pill / ib-vs / ib-hairline / ib-takeaway.
+_COMPARE_CODE = """
+<div class="ib">
+  <div class="ib-head" style="text-align:left">
+    <div class="ib-title">{{HEADLINE}}</div>
+    <div class="ib-subtitle">{{SUBHEAD}}</div>
+  </div>
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:20px;align-items:center;max-width:100%">
+    <div class="ib-card ib-bracketed" style="align-self:stretch;display:flex;flex-direction:column;gap:12px;min-width:0">
+      <div class="ib-row" style="gap:10px">
+        <span class="ib-pill ib-pill--muted">{{LEFT_PILL}}</span>
+        <div style="font-weight:800;font-size:16px;color:var(--ib-ink)">{{LEFT_TITLE}}</div>
+      </div>
+      <div class="ib-code"><span class="ib-comment">{{LEFT_CODE_COMMENT}}</span>
+{{LEFT_CODE_BODY}}</div>
+      <div class="ib-hairline"></div>
+      <div class="ib-note">{{LEFT_PROSE}}</div>
+    </div>
+    <div class="ib-vs">vs</div>
+    <div class="ib-card ib-bracketed" style="align-self:stretch;display:flex;flex-direction:column;gap:12px;min-width:0">
+      <div class="ib-row" style="gap:10px">
+        <span class="ib-pill">{{RIGHT_PILL}}</span>
+        <div style="font-weight:800;font-size:16px;color:var(--ib-ink)">{{RIGHT_TITLE}}</div>
+      </div>
+      <div class="ib-code"><span class="ib-comment">{{RIGHT_CODE_COMMENT}}</span>
+{{RIGHT_CODE_BODY}}</div>
+      <div class="ib-hairline"></div>
+      <div class="ib-note">{{RIGHT_PROSE}}</div>
+    </div>
+  </div>
+  <div class="ib-takeaway">{{TAKEAWAY}}</div>
+</div>
+"""
+
+
+# ── Archetype 8 — stepped_cards (07.55.10) ─────────────────────────────
+# Three independent titled step cards (icon-in-rounded-square + STEP n baked),
+# a band of state pills, a feedback-loop note, and a takeaway. three_stage's
+# "deck" sibling. Reuses ib-card + the new ib-icon-square / ib-step-num /
+# ib-badge-band / ib-loopline / ib-takeaway.
+_STEP_CARD = """<div class="ib-card ib-bracketed" style="display:flex;flex-direction:column;gap:10px;min-width:0">
+        <span class="ib-icon-square">{{ICON_STEP#N#}}</span>
+        <div class="ib-step-num">STEP #N#</div>
+        <div style="font-weight:800;font-size:16px;color:var(--ib-ink)">{{STEP_#N#_TITLE}}</div>
+        <div class="ib-note">{{STEP_#N#_BODY}}</div>
+      </div>"""
+
+_STATE_PILL = '<span class="ib-pill ib-pill--muted">{{STATE_#N#}}</span>'
+
+_STEPPED_CARDS = (
+    '\n<div class="ib">\n'
+    '  <div class="ib-head" style="text-align:left">\n'
+    '    <div class="ib-title">{{HEADLINE}}</div>\n'
+    '    <div class="ib-subtitle">{{SUBHEAD}}</div>\n'
+    '  </div>\n'
+    '  <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;max-width:100%">\n'
+    "    " + _repeat(_STEP_CARD, 3) + "\n"
+    '  </div>\n'
+    '  <div class="ib-badge-band">\n'
+    "    " + _repeat(_STATE_PILL, 5) + "\n"
+    '  </div>\n'
+    '  <div class="ib-loopline">{{LOOP_NOTE}}<span class="ib-loopline-rule"></span>__ARROW_L__</div>\n'
+    '  <div class="ib-takeaway">{{TAKEAWAY}}</div>\n'
+    "</div>\n"
+)
+
+
+# ── Archetype 9 — tier_ladder (07.57.39, flat L2) ──────────────────────
+# Intro column (eyebrow pill + headline + subhead + 2x2 stat chips) beside a
+# ladder of four status-badged tiers anchored by a home/base node. Reuses
+# ib-cite + the new ib-pill / ib-chip / ib-tier / ib-tier-meta / ib-anchor.
+_TIER_CHIP = '<div class="ib-chip">{{CHIP_#N#_LABEL}}<sup class="ib-cite">{{CITE_#N#}}</sup></div>'
+
+_TIER_ROW = """<div class="ib-tier">
+        <div style="min-width:0">
+          <div class="ib-tier-meta">{{TIER_#N#_META}}</div>
+          <div style="font-weight:800;font-size:15px;color:var(--ib-ink)">{{TIER_#N#_LABEL}}</div>
+        </div>
+        <span class="ib-pill">{{TIER_#N#_BADGE}}</span>
+      </div>"""
+
+_TIER_LADDER = (
+    '\n<div class="ib">\n'
+    '  <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:26px;align-items:start;max-width:100%">\n'
+    '    <div style="display:flex;flex-direction:column;gap:12px;min-width:0">\n'
+    '      <div><span class="ib-pill">{{EYEBROW}}</span></div>\n'
+    '      <div class="ib-title" style="text-align:left;font-size:26px;margin:0">{{HEADLINE}}</div>\n'
+    '      <div class="ib-subtitle" style="text-align:left">{{SUBHEAD}}</div>\n'
+    '      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:4px">\n'
+    "        " + _repeat(_TIER_CHIP, 4) + "\n"
+    '      </div>\n'
+    '    </div>\n'
+    '    <div class="ib-tier-list">\n'
+    "      " + _repeat(_TIER_ROW, 4) + "\n"
+    '      <div class="ib-anchor ib-center">{{ICON_ANCHOR}}<div class="ib-node-label" style="max-width:none;color:var(--ib-ink)">{{ANCHOR_LABEL}}</div></div>\n'
+    '    </div>\n'
+    '  </div>\n'
+    "</div>\n"
+)
+
+
+# ── Archetype 10 — layer_stack (07.53.29, flat 2D) ─────────────────────
+# Flat 2D vertical stack of five labeled bands, each with a numbered badge and a
+# leader-line callout to a right-hand note (the 3D isometric look is L4-only).
+# Reuses the new ib-layer-stack / ib-layer / ib-layer-num / ib-layer-band /
+# ib-leader / ib-layer-note.
+_LAYER_ROW = """<div class="ib-layer">
+      <span class="ib-layer-num">#N#</span>
+      <div class="ib-layer-band">{{LAYER_#N#_LABEL}}</div>
+      <div class="ib-leader"></div>
+      <div class="ib-layer-note">{{LAYER_#N#_NOTE}}</div>
+    </div>"""
+
+_LAYER_STACK = (
+    '\n<div class="ib">\n'
+    '  <div class="ib-head" style="text-align:left">\n'
+    '    <div class="ib-title">{{STACK_TITLE}}</div>\n'
+    '    <div class="ib-subtitle">{{STACK_SUBHEAD}}</div>\n'
+    '  </div>\n'
+    '  <div class="ib-layer-stack">\n'
+    "    " + _repeat(_LAYER_ROW, 5) + "\n"
+    '  </div>\n'
+    "</div>\n"
+)
+
+
 _CYCLE_SVG = (
     '<svg viewBox="0 0 24 24" aria-hidden="true">'
     '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>'
@@ -317,6 +452,7 @@ def _expand_structural(html: str) -> str:
         .replace("__BRANCH__", _BRANCH)
         .replace("__HEATMAP__", _HEATMAP)
         .replace("__ARROW_R__", _ARROW_R)
+        .replace("__ARROW_L__", _ARROW_L)
         .replace("__GEM__", _GEM_SVG)
         .replace("__STAGE_ARROW__", _STAGE_ARROW)
         .replace("__CYCLE__", _CYCLE_SVG)
@@ -335,6 +471,10 @@ _SKELETONS = {
     "stat_grid": _STAT_GRID,
     "timeline": _TIMELINE,
     "tree_hierarchy": _TREE_HIERARCHY,
+    "compare_code": _COMPARE_CODE,
+    "stepped_cards": _STEPPED_CARDS,
+    "tier_ladder": _TIER_LADDER,
+    "layer_stack": _LAYER_STACK,
 }
 
 ARCHETYPES = tuple(_SKELETONS.keys())
@@ -421,6 +561,103 @@ _L2_SYSTEMS_EXT: dict[str, str] = {
         "}\n\n"
         "The three children must be sibling sub-parts OF the root. Keep labels to short phrases."
     ),
+    "compare_code": (
+        "You are filling text slots in a TWO-COLUMN CODE COMPARISON infographic: the LEFT column "
+        "is the old / do-it-yourself way, the RIGHT column is the new / managed way. Each column "
+        "has a short label pill, a title, a code snippet, and a one-line prose note; a shared "
+        "takeaway closes it. Return JSON:\n\n"
+        "{\n"
+        '  "HEADLINE": "max 6 words, the punchy contrast headline",\n'
+        '  "SUBHEAD": "max 18 words, one sentence of context",\n'
+        '  "LEFT_PILL": "max 2 words, the left label (e.g. a year or \'DIY\')",\n'
+        '  "LEFT_TITLE": "max 4 words naming the left approach",\n'
+        '  "LEFT_CODE_COMMENT": "max 8 words, a code comment for the left snippet",\n'
+        '  "LEFT_CODE_BODY": "max 30 words of short pseudo-code (newlines ok)",\n'
+        '  "LEFT_PROSE": "max 28 words describing the left trade-off",\n'
+        '  "RIGHT_PILL": "max 2 words, the right label (e.g. a year or \'Managed\')",\n'
+        '  "RIGHT_TITLE": "max 4 words naming the right approach",\n'
+        '  "RIGHT_CODE_COMMENT": "max 8 words, a code comment for the right snippet",\n'
+        '  "RIGHT_CODE_BODY": "max 30 words of short pseudo-code (newlines ok)",\n'
+        '  "RIGHT_PROSE": "max 28 words describing the right trade-off",\n'
+        '  "TAKEAWAY": "max 20 words, the one-line punchline shared by both"\n'
+        "}\n\n"
+        "Keep the two code snippets short — they render in small monospace panels."
+    ),
+    "stepped_cards": (
+        "You are filling text slots in a THREE-STEP CARD infographic: three independent titled "
+        "step cards, a band of outcome-state badges, a feedback-loop note, and a takeaway. "
+        "Return JSON:\n\n"
+        "{\n"
+        '  "HEADLINE": "max 7 words naming the process",\n'
+        '  "SUBHEAD": "max 18 words of one-sentence context",\n'
+        '  "STEP_1_TITLE": "max 3 words, first step name",\n'
+        '  "STEP_1_BODY": "max 14 words describing step 1",\n'
+        '  "STEP_2_TITLE": "max 3 words, second step name",\n'
+        '  "STEP_2_BODY": "max 14 words describing step 2",\n'
+        '  "STEP_3_TITLE": "max 3 words, third step name",\n'
+        '  "STEP_3_BODY": "max 14 words describing step 3",\n'
+        '  "STATE_1": "max 3 words, a possible outcome state",\n'
+        '  "STATE_2": "max 3 words, another state",\n'
+        '  "STATE_3": "max 3 words, another state",\n'
+        '  "STATE_4": "max 3 words, another state",\n'
+        '  "STATE_5": "max 3 words, another state",\n'
+        '  "LOOP_NOTE": "max 10 words, what triggers a loop back to a step",\n'
+        '  "TAKEAWAY": "max 20 words, the key insight",\n'
+        f'  "ICON_STEP1": "one of: {_ICON_LIST}",\n'
+        '  "ICON_STEP2": "one icon name from that list",\n'
+        '  "ICON_STEP3": "one icon name from that list"\n'
+        "}\n\n"
+        "Steps are sequential; the states are the discrete outcomes of the loop."
+    ),
+    "tier_ladder": (
+        "You are filling text slots in a CAPABILITY TIER LADDER infographic: an intro column "
+        "(eyebrow pill, headline, subhead, four stat chips) beside a ladder of four tiers, each "
+        "with a small meta label, a name, and a one-word status badge, anchored by a home/base "
+        "node. Return JSON:\n\n"
+        "{\n"
+        '  "EYEBROW": "max 4 words, a small eyebrow label",\n'
+        '  "HEADLINE": "max 5 words, the punchy headline",\n'
+        '  "SUBHEAD": "max 16 words of one-sentence context",\n'
+        '  "CHIP_1_LABEL": "max 4 words, a headline stat / receipt",\n'
+        '  "CHIP_2_LABEL": "max 4 words, another stat",\n'
+        '  "CHIP_3_LABEL": "max 4 words, another stat",\n'
+        '  "CHIP_4_LABEL": "max 4 words, another stat",\n'
+        '  "TIER_1_META": "max 3 words, the top tier qualifier (e.g. a size)",\n'
+        '  "TIER_1_LABEL": "max 4 words, the top tier name",\n'
+        '  "TIER_1_BADGE": "one word status (e.g. RENT / RUNS / TRAINS)",\n'
+        '  "TIER_2_META": "max 3 words qualifier",\n'
+        '  "TIER_2_LABEL": "max 4 words tier name",\n'
+        '  "TIER_2_BADGE": "one word status",\n'
+        '  "TIER_3_META": "max 3 words qualifier",\n'
+        '  "TIER_3_LABEL": "max 4 words tier name",\n'
+        '  "TIER_3_BADGE": "one word status",\n'
+        '  "TIER_4_META": "max 3 words qualifier",\n'
+        '  "TIER_4_LABEL": "max 4 words tier name",\n'
+        '  "TIER_4_BADGE": "one word status",\n'
+        '  "ANCHOR_LABEL": "max 3 words naming the base / home node",\n'
+        f'  "ICON_ANCHOR": "one of: {_ICON_LIST}"\n'
+        "}\n\n"
+        "Order tiers most-demanding at the top down to the anchor. Badges are single words."
+    ),
+    "layer_stack": (
+        "You are filling text slots in a LAYER STACK infographic: a vertical stack of five "
+        "labeled layers, each with a short right-hand note. Return JSON:\n\n"
+        "{\n"
+        '  "STACK_TITLE": "max 5 words naming the stack",\n'
+        '  "STACK_SUBHEAD": "max 16 words of one-sentence context",\n'
+        '  "LAYER_1_LABEL": "max 3 words, the top layer",\n'
+        '  "LAYER_1_NOTE": "max 8 words describing it",\n'
+        '  "LAYER_2_LABEL": "max 3 words, second layer",\n'
+        '  "LAYER_2_NOTE": "max 8 words describing it",\n'
+        '  "LAYER_3_LABEL": "max 3 words, third layer",\n'
+        '  "LAYER_3_NOTE": "max 8 words describing it",\n'
+        '  "LAYER_4_LABEL": "max 3 words, fourth layer",\n'
+        '  "LAYER_4_NOTE": "max 8 words describing it",\n'
+        '  "LAYER_5_LABEL": "max 3 words, the bottom layer",\n'
+        '  "LAYER_5_NOTE": "max 8 words describing it"\n'
+        "}\n\n"
+        "Order layers top-to-bottom as they stack. Keep labels to short noun phrases."
+    ),
 }
 
 # archetype -> (must-have text slots, minimum filled) — see builder._check_slots
@@ -439,6 +676,26 @@ _L2_KEY_SLOTS_EXT: dict[str, tuple[list[str], int]] = {
         ["TREE_TITLE", "ROOT_LABEL", "CHILD_1_LABEL", "CHILD_2_LABEL", "CHILD_3_LABEL"],
         4,
     ),
+    "compare_code": (
+        ["HEADLINE", "LEFT_TITLE", "RIGHT_TITLE", "LEFT_CODE_BODY", "RIGHT_CODE_BODY",
+         "LEFT_PROSE", "RIGHT_PROSE", "TAKEAWAY"],
+        5,
+    ),
+    "stepped_cards": (
+        ["HEADLINE", "STEP_1_TITLE", "STEP_2_TITLE", "STEP_3_TITLE",
+         "STEP_1_BODY", "STEP_2_BODY", "STEP_3_BODY"],
+        4,
+    ),
+    "tier_ladder": (
+        ["HEADLINE", "TIER_1_LABEL", "TIER_2_LABEL", "TIER_3_LABEL", "TIER_4_LABEL",
+         "CHIP_1_LABEL"],
+        4,
+    ),
+    "layer_stack": (
+        ["STACK_TITLE", "LAYER_1_LABEL", "LAYER_2_LABEL", "LAYER_3_LABEL",
+         "LAYER_4_LABEL", "LAYER_5_LABEL"],
+        4,
+    ),
 }
 
 # archetype -> list of (icon_slot_key, label_slot_key_for_fallback)
@@ -454,6 +711,13 @@ _ICON_SLOTS_EXT: dict[str, list[tuple[str, str]]] = {
     "tree_hierarchy": [
         ("ICON_ROOT", "ROOT_LABEL"), ("ICON_C1", "CHILD_1_LABEL"),
         ("ICON_C2", "CHILD_2_LABEL"), ("ICON_C3", "CHILD_3_LABEL"),
+    ],
+    "stepped_cards": [
+        ("ICON_STEP1", "STEP_1_TITLE"), ("ICON_STEP2", "STEP_2_TITLE"),
+        ("ICON_STEP3", "STEP_3_TITLE"),
+    ],
+    "tier_ladder": [
+        ("ICON_ANCHOR", "ANCHOR_LABEL"),
     ],
 }
 

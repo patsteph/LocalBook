@@ -44,6 +44,10 @@ const ARCHETYPE_OPTIONS: { id: string; label: string }[] = [
   { id: 'stat_grid', label: 'Stats' },
   { id: 'timeline', label: 'Timeline' },
   { id: 'tree_hierarchy', label: 'Tree' },
+  { id: 'compare_code', label: 'Code' },
+  { id: 'stepped_cards', label: 'Steps' },
+  { id: 'tier_ladder', label: 'Ladder' },
+  { id: 'layer_stack', label: 'Layers' },
 ];
 
 const REGEN_LANES: { id: InfographicLane; label: string }[] = [

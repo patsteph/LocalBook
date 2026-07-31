@@ -256,4 +256,63 @@ INFOGRAPHIC_L2_CSS = r"""
 .ib-center{display:flex;align-items:center;justify-content:center;}
 .ib-mt{margin-top:14px;}
 .ib-fallback{font-family:var(--ib-mono);font-size:13px;color:var(--ib-ink-soft);white-space:pre-wrap;}
+
+/* -- Family B "deck" chrome (07-31 targets) — pills, badges, step cards,
+      takeaway, tier ladder, layer stack. Var-driven so accent restyle + the
+      cream tone recolor them for free. ------------------------------- */
+.ib-pill{
+  display:inline-flex;align-items:center;gap:6px;white-space:nowrap;
+  font-family:var(--ib-mono);font-size:11px;font-weight:700;letter-spacing:.04em;
+  color:var(--ib-accent);background:var(--ib-accent-soft);
+  border:1px solid var(--ib-accent);border-radius:999px;padding:3px 11px;
+}
+.ib-pill--muted{color:var(--ib-ink-soft);background:var(--ib-card-b);border-color:var(--ib-line);}
+.ib-vs{font-family:var(--ib-mono);font-size:13px;font-weight:700;letter-spacing:.08em;color:var(--ib-muted);text-align:center;}
+.ib-hairline{border-top:1px dashed var(--ib-line);margin:2px 0;}
+.ib-takeaway{
+  margin-top:18px;padding:16px 20px;border-radius:12px;text-align:center;line-height:1.5;
+  background:var(--ib-accent-soft);border:1px solid var(--ib-accent);
+  font-family:var(--ib-mono);font-size:13px;font-weight:600;color:var(--ib-accent);
+}
+.ib-icon-square{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:44px;height:44px;border-radius:12px;
+  color:var(--ib-accent);background:var(--ib-accent-soft);border:1px solid var(--ib-line);
+}
+.ib-icon-square svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+.ib-step-num{font-family:var(--ib-mono);font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--ib-muted);text-transform:uppercase;}
+.ib-badge-band{
+  display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px;
+  margin-top:16px;padding:18px 16px;border-radius:14px;
+  background:var(--ib-card-b);border:1px solid var(--ib-line);
+}
+.ib-loopline{display:flex;align-items:center;gap:10px;margin-top:14px;font-family:var(--ib-mono);font-size:12px;font-weight:600;color:var(--ib-accent);}
+.ib-loopline-rule{flex:1;height:0;border-top:1.5px solid var(--ib-accent);opacity:.6;}
+.ib-loopline svg{width:22px;height:16px;stroke:var(--ib-accent);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto;}
+.ib-chip{
+  display:flex;align-items:center;min-width:0;padding:10px 12px;border-radius:10px;
+  background:var(--ib-card-a);border:1px solid var(--ib-line);
+  font-size:12.5px;font-weight:700;color:var(--ib-ink);
+}
+.ib-tier-list{display:flex;flex-direction:column;gap:10px;min-width:0;}
+.ib-tier{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;
+  background:linear-gradient(158deg,var(--ib-card-a),var(--ib-card-b));
+  border:1px solid var(--ib-line);border-radius:14px;padding:14px 16px;
+}
+.ib-tier-meta{font-family:var(--ib-mono);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--ib-muted);text-transform:uppercase;margin-bottom:3px;}
+.ib-anchor{gap:10px;background:var(--ib-accent-soft);border:1px solid var(--ib-accent);border-radius:14px;padding:14px 16px;color:var(--ib-ink);font-weight:800;}
+.ib-layer-stack{display:flex;flex-direction:column;gap:12px;}
+.ib-layer{display:flex;align-items:center;gap:12px;min-width:0;}
+.ib-layer-num{
+  flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  width:26px;height:26px;border-radius:999px;font-size:12px;font-weight:800;color:#ffffff;background:var(--ib-accent);
+}
+.ib-layer-band{
+  flex:0 0 46%;padding:16px 18px;border-radius:10px;font-weight:800;color:var(--ib-ink);min-width:0;
+  background:linear-gradient(158deg,var(--ib-accent-soft),var(--ib-card-b));
+  border:1px solid var(--ib-accent);box-shadow:0 3px 0 -1px var(--ib-line),0 8px 16px rgba(0,0,0,.06);
+}
+.ib-leader{flex:0 0 34px;height:0;border-top:1.5px dashed var(--ib-line);}
+.ib-layer-note{flex:1;min-width:0;font-size:12.5px;font-weight:600;color:var(--ib-ink-soft);}
 """

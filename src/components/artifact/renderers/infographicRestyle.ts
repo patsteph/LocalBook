@@ -71,6 +71,7 @@ const ACCENTS: Record<string, Record<string, string>> = {
 export const TONE_OPTIONS: { id: string; label: string }[] = [
   { id: 'paper', label: 'Paper' },
   { id: 'light', label: 'Light' },
+  { id: 'cream', label: 'Cream' },
   { id: 'dark', label: 'Dark' },
 ];
 
@@ -80,6 +81,16 @@ const TONES: Record<string, Record<string, string>> = {
     '--ib-bg': '#ffffff',
     '--ib-card-b': '#f5f3ef',
     '--ib-line': '#e6e4df',
+  },
+  // Family B "deck" tone: warm cream surface, no dots.
+  cream: {
+    '--ib-ink': '#2c2822',
+    '--ib-ink-soft': '#5a544a',
+    '--ib-muted': '#9a9186',
+    '--ib-bg': '#faf6ee',
+    '--ib-card-a': '#fffdf8',
+    '--ib-card-b': '#f4efe4',
+    '--ib-line': '#e6dfd1',
   },
   dark: {
     '--ib-ink': '#f2f0ec',
@@ -137,6 +148,10 @@ export function buildRestyleCss(style?: InfographicStyle): string {
 
   if (toneId === 'dark') {
     blocks.push('.ib{background-image:radial-gradient(rgba(220,215,205,.10) 1px, transparent 1.5px);}');
+  }
+
+  if (toneId === 'cream') {
+    blocks.push('.ib{background-image:none;}');
   }
 
   if (style.glow === false) {

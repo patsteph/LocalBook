@@ -589,3 +589,115 @@ def test_new_archetypes_finalize_fails_open():
         body = _finalize_body(sk, partial)
         assert "{{" not in body and "}}" not in body, f"{arch} left an unfilled slot"
         assert "<div" in body
+
+
+# ── Family-B "deck" archetypes (compare_code / stepped_cards / tier_ladder /
+#    layer_stack) — the 07-31 corpus. Model-free: expand, slot-check pass+fail,
+#    fail-open, cite-binding, and route. ─────────────────────────────────────
+_DECK_ARCHETYPE_SLOTS = {
+    "compare_code": {
+        "HEADLINE": "Same pattern. Different decade.",
+        "SUBHEAD": "They shipped it as a managed feature two years later.",
+        "LEFT_PILL": "2024", "LEFT_TITLE": "You build it",
+        "LEFT_CODE_COMMENT": "your loop", "LEFT_CODE_BODY": "while not done:\n  step()",
+        "LEFT_PROSE": "You own the rubric, the retry, the observability.",
+        "RIGHT_PILL": "2026", "RIGHT_TITLE": "They ship it",
+        "RIGHT_CODE_COMMENT": "the api call", "RIGHT_CODE_BODY": "client.run(task)",
+        "RIGHT_PROSE": "They own the loop, billed per runtime hour.",
+        "TAKEAWAY": "The maintenance was the hard part. That is what they sold.",
+    },
+    "stepped_cards": {
+        "HEADLINE": "Outcomes is a loop, not a feature",
+        "SUBHEAD": "A rubric defines done; a separate grader decides done.",
+        "STEP_1_TITLE": "Rubric", "STEP_1_BODY": "Markdown describing success.",
+        "STEP_2_TITLE": "Agent", "STEP_2_BODY": "Works the task, produces output.",
+        "STEP_3_TITLE": "Grader", "STEP_3_BODY": "Reads rubric and output only.",
+        "STATE_1": "satisfied", "STATE_2": "needs_revision",
+        "STATE_3": "max_iterations", "STATE_4": "failed", "STATE_5": "interrupted",
+        "LOOP_NOTE": "needs_revision sends feedback back to the agent",
+        "TAKEAWAY": "The grader runs in its own context window.",
+    },
+    "tier_ladder": {
+        "EYEBROW": "Tested and costed", "HEADLINE": "Local AI, actually cheap",
+        "SUBHEAD": "What you can really run and train at home.",
+        "CHIP_1_LABEL": "8-12B on 16GB", "CHIP_2_LABEL": "70B on 64GB",
+        "CHIP_3_LABEL": "QLoRA at home", "CHIP_4_LABEL": "3c/day power",
+        "TIER_1_META": "Frontier scale", "TIER_1_LABEL": "Not at home", "TIER_1_BADGE": "RENT",
+        "TIER_2_META": "8-12 GB GPU", "TIER_2_LABEL": "QLoRA 7-8B", "TIER_2_BADGE": "TRAINS",
+        "TIER_3_META": "32-64 GB", "TIER_3_LABEL": "30B-70B 4-bit", "TIER_3_BADGE": "RUNS",
+        "TIER_4_META": "16 GB", "TIER_4_LABEL": "8-12B models", "TIER_4_BADGE": "RUNS",
+        "ANCHOR_LABEL": "Your home box",
+    },
+    "layer_stack": {
+        "STACK_TITLE": "DESIGN.md structure", "STACK_SUBHEAD": "Two-part AI-readable design systems.",
+        "LAYER_1_LABEL": "YAML frontmatter", "LAYER_1_NOTE": "Machine-readable metadata.",
+        "LAYER_2_LABEL": "Design tokens", "LAYER_2_NOTE": "Names and values.",
+        "LAYER_3_LABEL": "Body", "LAYER_3_NOTE": "Human-readable guidance.",
+        "LAYER_4_LABEL": "Brand and style", "LAYER_4_NOTE": "The visual system.",
+        "LAYER_5_LABEL": "Components", "LAYER_5_NOTE": "Reusable UI pieces.",
+    },
+}
+
+
+def test_deck_archetypes_registered():
+    for arch in ("compare_code", "stepped_cards", "tier_ladder", "layer_stack"):
+        assert arch in ARCHETYPES
+        sk = get_skeleton(arch)
+        assert sk, f"{arch} produced no skeleton"
+        assert "__" not in sk, f"{arch} left an unexpanded structural marker"
+        assert "{{" in sk
+
+
+def test_deck_archetypes_slot_check_pass_and_fail():
+    for arch, good in _DECK_ARCHETYPE_SLOTS.items():
+        ok, reason = _check_slots(arch, dict(good))
+        assert ok, f"{arch} full-slot check should pass ({reason})"
+        blank = {k: "" for k in good}
+        blank[next(iter(good))] = good[next(iter(good))]  # keep one filled
+        ok2, _ = _check_slots(arch, blank)
+        assert not ok2, f"{arch} should reject a mostly-blank slot set"
+
+
+def test_deck_archetypes_finalize_fails_open():
+    for arch, good in _DECK_ARCHETYPE_SLOTS.items():
+        sk = get_skeleton(arch)
+        partial = dict(list(good.items())[:2])
+        body = _finalize_body(sk, partial)
+        assert "{{" not in body and "}}" not in body, f"{arch} left an unfilled slot"
+        assert "<div" in body
+
+
+def test_tier_ladder_chips_bind_to_real_sources():
+    """tier_ladder's 2x2 stat chips carry cite superscripts bound to REAL source
+    numbers (HARD RULE §2.6) — or empty, never dangling, when no provenance."""
+    sk = get_skeleton("tier_ladder")
+    prov = _normalize_sources([{"title": "bench"}, {"title": "receipts"}])
+    slots = dict(_DECK_ARCHETYPE_SLOTS["tier_ladder"])
+    slots.update(_cite_slots_for_rows(prov, n_rows=4))
+    body = _finalize_body(sk, slots)
+    assert '<sup class="ib-cite">1</sup>' in body
+    assert '<sup class="ib-cite">2</sup>' in body
+
+    slots2 = dict(_DECK_ARCHETYPE_SLOTS["tier_ladder"])
+    slots2.update(_cite_slots_for_rows([], n_rows=4))
+    body2 = _finalize_body(sk, slots2)
+    assert '<sup class="ib-cite">1</sup>' not in body2
+    assert '<sup class="ib-cite"></sup>' in body2   # empty, not dangling
+
+
+def test_pick_archetype_deck_lanes():
+    assert pick_archetype("two implementations of the same api call") == "compare_code"
+    assert pick_archetype("a capability tier ladder: what runs at home") == "tier_ladder"
+    assert pick_archetype("an exploded view of the stacked layers of a file") == "layer_stack"
+    assert pick_archetype("three step cards joined by a feedback loop") == "stepped_cards"
+    # the original heuristics still route as before (no deck-keyword bleed)
+    assert pick_archetype("the compile stage then index then serve") == "three_stage"
+    assert pick_archetype("quarterly revenue figures from the filing") == "facts_table"
+
+
+def test_cream_tone_is_valid_and_drops_dots():
+    from services.infographic import restyle
+    assert "cream" in restyle.TONE_IDS
+    css = restyle.restyle_css({"tone": "cream"})
+    assert "--ib-bg:#faf6ee;" in css
+    assert "background-image:none;" in css       # the deck look = no dots

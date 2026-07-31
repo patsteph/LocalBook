@@ -62,6 +62,16 @@ _TONES: Dict[str, Dict[str, str]] = {
         "--ib-card-b": "#f5f3ef",
         "--ib-line": "#e6e4df",
     },
+    # Family B "deck" tone (07-31 55.10 / 55.27): warm cream surface, no dots.
+    "cream": {
+        "--ib-ink": "#2c2822",
+        "--ib-ink-soft": "#5a544a",
+        "--ib-muted": "#9a9186",
+        "--ib-bg": "#faf6ee",
+        "--ib-card-a": "#fffdf8",
+        "--ib-card-b": "#f4efe4",
+        "--ib-line": "#e6dfd1",
+    },
     "dark": {
         "--ib-ink": "#f2f0ec",
         "--ib-ink-soft": "#cbc8c2",
@@ -121,6 +131,10 @@ def restyle_css(style: Optional[Dict[str, Any]]) -> str:
             ".ib{background-image:radial-gradient("
             "rgba(220,215,205,.10) 1px, transparent 1.5px);}"
         )
+
+    # Cream ("deck") tone: drop the dot texture for the clean, flat deck look.
+    if tone_id == "cream":
+        blocks.append(".ib{background-image:none;}")
 
     # Glow off — flatten the hero glow to the neutral card border.
     if style.get("glow") is False:
