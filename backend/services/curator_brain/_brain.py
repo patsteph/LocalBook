@@ -10,6 +10,7 @@ from ._mental_model import MentalModelMixin
 from ._stance import StanceMixin
 from ._governance import GovernanceMixin
 from ._reputation import ReputationMixin
+from ._provenance import ProvenanceMixin
 from ._base import CuratorBrainBase
 
 
@@ -25,6 +26,7 @@ class CuratorBrain(
     StanceMixin,
     GovernanceMixin,
     ReputationMixin,
+    ProvenanceMixin,
     CuratorBrainBase,
 ):
     """

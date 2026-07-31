@@ -1676,6 +1676,18 @@ async def generate_infographic(request: InfographicRequest):
     except Exception as e:
         logger.debug(f"[infographic] persist failed (non-fatal): {e}")
 
+    # Walk-phase provenance: record the made-from edges (infographic <- sources)
+    # so the Canvas can draw provenance + answer "what was this built from?" and
+    # "what did this source produce?". Non-fatal — never blocks generation.
+    if infographic_id and sources_prov:
+        try:
+            from services.curator_brain import curator_brain
+            curator_brain.record_provenance(
+                "infographic", infographic_id, sources_prov, notebook_id=request.notebook_id,
+            )
+        except Exception as e:
+            logger.debug(f"[infographic] provenance record failed (non-fatal): {e}")
+
     return {"artifact": artifact, "lane": lane, "routing": routing, "infographic_id": infographic_id}
 
 

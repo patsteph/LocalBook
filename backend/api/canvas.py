@@ -154,6 +154,29 @@ async def get_timeline(notebook_id: str, limit: int = 200):
         return []
 
 
+@router.get("/provenance/{artifact_id}")
+async def get_provenance(artifact_id: str):
+    """Walk provenance: the made-from edges for a generated artifact — what it was
+    built from (the Canvas draws these as provenance edges). Never 500s."""
+    try:
+        from services.curator_brain import curator_brain
+        return {"artifact_id": artifact_id, "sources": curator_brain.get_provenance(artifact_id)}
+    except Exception:
+        return {"artifact_id": artifact_id, "sources": []}
+
+
+@router.get("/source-derivations/{source_id}")
+async def get_source_derivations(source_id: str, notebook_id: str = ""):
+    """Reverse provenance: the artifacts derived FROM a given source ('what did
+    this source produce?'). Never 500s."""
+    try:
+        from services.curator_brain import curator_brain
+        arts = curator_brain.get_derived_from_source(source_id, notebook_id or None)
+        return {"source_id": source_id, "artifacts": arts}
+    except Exception:
+        return {"source_id": source_id, "artifacts": []}
+
+
 @router.post("/populate/{notebook_id}")
 async def populate(notebook_id: str, limit: int = 50):
     """Seed nodes from existing capture (Crawl P2): chat turns (exploration_store) + sources
