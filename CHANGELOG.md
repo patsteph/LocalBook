@@ -2,6 +2,71 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## v2.2.0 — Journey Canvas, next-gen Infographics, Quality Signals Phase 2 *(in progress — unreleased)*
+
+> **Unreleased — assembled as the cycle lands; promoted to the tagged release at ship time.** Since
+> v2.2.0 the installer pins to the latest **release tag** (see *Changed*), so this reaches users only
+> when v2.2.0 is tagged. Ollama-default behavior is unchanged where untouched.
+
+The big-surface release: a living per-notebook **Journey Canvas**, a **next-generation infographic**
+system (four lanes + a content-shape router + a Library home), **Quality Signals Phase 2** (the full
+near-miss → incident → triage → regression-case pipe), a **Unified Schedule Viewer**, a Testing/CI
+foundation, and a decoupled tag-pinned install model.
+
+### Added — Journey Canvas (the living learning map)
+- **Crawl (spatial foundation):** a per-notebook react-flow canvas surfaced as a top-level **Canvas**
+  view (Map/Text toggle). New `canvas_layout` SQLite store + `/canvas` API (layout/node/edge/viewport).
+  Nodes auto-**populate** from existing capture (chat journey + activity ledger) via a deterministic
+  learning-vs-noise filter; node bodies render through the existing `<ArtifactRender>`. A
+  **candidate-dot engine** (KG shared-entities + embedding similarity + shared-source, bounded) surfaces
+  latent connections as invitations. **Time-as-tint** recency + a time-window filter; per-node
+  **"supporting / differing view."**
+- **Walk (the living loop):** a **unified timeline read-layer** (`GET /canvas/timeline`) merging the
+  three capture stores into one newest-first, de-duped journey feed (the replay-scrubber backbone).
+  **Provenance / made-from edges** — the long-dead `curator_brain.provenance` table now records what
+  every generated artifact was built from (`GET /canvas/provenance/{id}` + reverse
+  `/source-derivations/{source_id}`), wired into infographic / document / quiz generation. The
+  **user-drawn-edge feedback loop:** a hand-drawn edge → curator event bus + a user-authored
+  knowledge-graph link + a Quality Signal.
+
+### Added — Next-gen Infographic system
+- **Four lanes** behind one `json:infographic` artifact + a **content-shape router** with an explicit
+  phrasing **boost** (poster→L4, chart→L1, diagram→L2, scene→L3): **L1** annotated charts, **L2**
+  structured diagrams (**10 archetypes** incl. compare_code / stepped_cards / tier_ladder / layer_stack),
+  **L3** hand-drawn scenes (33-sticker library + feTurbulence roughen), **L4** Klein decorative art
+  (textless + short generated title overlay).
+- **One hand-authored design system** per lane (backend↔frontend byte-mirrored) with a free **restyle**
+  (accent / tone incl. a Family-B **cream** deck theme / density / glow) + **anti-rut** per-generation
+  on-brand style seeding. **Persistence + Library:** infographics save to a new `infographic_store` and
+  appear in a Library **Infographics** section; unified `/export/artifact` → PNG/PDF.
+
+### Added — Quality Signals Phase 2 (near-miss → regression case)
+- The full pipe: an allowlist **incident scrubber** + `build_incident_context` + `escalate_to_incident`
+  (queues locally) + `GET /system/version`; an opt-in, **default-OFF, preview-first** client→GitHub
+  **incident emitter** (`gh`→Keychain-PAT auth, idempotent); a **daily incident-triage** GitHub Actions
+  workflow (comment-only); and **field-edge → Evaluator promotion** (a recurring misroute ≥5×/≥2 days
+  becomes a regression case). New emitters: cache-hit quality, quiz heavy-drop, MLX degeneration guard.
+
+### Added — Unified Schedule Viewer + Testing/CI
+- **Schedule Viewer** (Settings): see + edit everything scheduled by every agent/infra; background loops
+  honor overrides via `schedule_store`; per-actor enable/disable + run-now.
+- **Testing/CI foundation:** the backend `tests/` suite wired into CI + a headless **Evaluator**
+  entrypoint with a regression gate.
+
+### Fixed — Infographic (field-tested)
+- Router **L1 miss** (a numeric quantity growing across a sequence now routes to a chart, not L2);
+  **archetype mis-select** (an explicit "stacked layers" request no longer grabs compare_code off
+  incidental content words); card/badge/tier/layer requests route to L2, not L3. **L4** overlay is a
+  short generated poster title (not the raw prompt) + a 2-line clamp. **tier_ladder** redesigned (stat
+  values + numbered rungs). **L3 scene** broken-image fixed (a duplicate `fill` attribute made the SVG
+  invalid XML in WKWebView). The card **⋮ export** enabled for infographics/comparisons.
+
+### Changed — install / release model
+- **Installs + upgrades now pin to the latest release TAG**, not `master` HEAD (`install.sh`, Path A):
+  a GitHub-API → git-tag → branch fail-safe resolution, plus a `--dev` / `--branch <name>` escape hatch
+  for developers. This decouples users from the integration branch — **v2.2.0 reaches users only when it
+  is tagged.**
+
 ## v2.1.1 — MLX memory-pressure fix (Ollama twin warmup)
 
 A contained fix for a memory-pressure bug in the v2.1.0 MLX path. With all engine roles set to MLX,
