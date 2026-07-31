@@ -10,10 +10,12 @@ Public API:
 
 Design notes:
 - We do NOT run React server-side. The skeleton HTML built here uses
-  small inline JS (`marked`, `mermaid`, `chart.js` from pinned CDNs) plus
-  the Tailwind subset to render payloads in a way that matches the
-  frontend renderers closely enough for export. Pixel-match is not the
-  goal; "this looks like the same artifact" is.
+  small inline JS (`marked`, `mermaid`, `chart.js` inlined from the
+  vendored copies in `backend/static/vendor/` via the `*_script_tag()`
+  helpers — offline-first, fail-open to pinned CDNs only if a vendor file
+  is missing) plus the Tailwind subset to render payloads in a way that
+  matches the frontend renderers closely enough for export. Pixel-match is
+  not the goal; "this looks like the same artifact" is.
 - For `json:comparison`, payload is rendered server-side in Python
   (mirrors `ComparisonArtifactRenderer.tsx` layout) because it's all
   structured data — no JS needed.
@@ -34,11 +36,10 @@ import logging
 from typing import Any, Dict, Optional
 
 from services.export_assets import (
-    CHARTJS_CDN,
-    MARKED_CDN,
-    MERMAID_CDN,
     TAILWIND_SUBSET_CSS,
     chartjs_script_tag,
+    marked_script_tag,
+    mermaid_script_tag,
 )
 
 logger = logging.getLogger(__name__)
@@ -264,8 +265,8 @@ def _build_artifact_page(artifact: Dict[str, Any]) -> str:
 
     if a_type == "markdown":
         text = payload if isinstance(payload, str) else ""
-        extra_head.append(f'<script src="{MARKED_CDN}"></script>')
-        extra_head.append(f'<script src="{MERMAID_CDN}"></script>')
+        extra_head.append(marked_script_tag())
+        extra_head.append(mermaid_script_tag())
         # marked supplies the prose; we also handle the inline fence
         # languages the frontend handles: mermaid, svg, klein, json-chart.
         inner_html = '<div id="md-root"></div>'
@@ -297,7 +298,7 @@ def _build_artifact_page(artifact: Dict[str, Any]) -> str:
   if (window.mermaid) mermaid.initialize({{ startOnLoad: true, securityLevel: 'loose' }});
 }})();
 </script>
-<script src="{CHARTJS_CDN}"></script>
+{chartjs_script_tag()}
 <script>
 (function() {{
   if (!window.Chart || !window.__lb_pending_charts) return;
@@ -324,12 +325,12 @@ def _build_artifact_page(artifact: Dict[str, Any]) -> str:
     elif a_type in ("svg", "klein"):
         inner_html = payload if isinstance(payload, str) else ""
     elif a_type == "mermaid":
-        extra_head.append(f'<script src="{MERMAID_CDN}"></script>')
+        extra_head.append(mermaid_script_tag())
         code = payload if isinstance(payload, str) else ""
         inner_html = f'<div class="mermaid">{_esc(code)}</div>'
         extra_scripts.append("<script>mermaid.initialize({startOnLoad: true, securityLevel: 'loose'});</script>")
     elif a_type == "json:chart":
-        extra_head.append(f'<script src="{CHARTJS_CDN}"></script>')
+        extra_head.append(chartjs_script_tag())
         cfg_json = json.dumps(payload or {})
         inner_html = '<div style="height: 360px"><canvas id="chart"></canvas></div>'
         extra_scripts.append(f"""
