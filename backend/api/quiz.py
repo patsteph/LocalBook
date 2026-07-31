@@ -311,6 +311,29 @@ async def generate_quiz(request: GenerateQuizRequest):
             # Non-fatal — the user still gets the quiz inline, it just won't be in Library.
             logger.warning(f"[STUDIO] quiz_store.create failed (non-fatal): {_persist_err}")
 
+        # Walk-phase provenance: record the made-from edges (quiz <- sources) so the
+        # Canvas can draw provenance + answer "what was this built from?". Resolve the
+        # filenames actually used in context to REAL source_ids (mirror of the
+        # infographic wiring). Non-fatal — never blocks generation.
+        try:
+            if quiz_id and built.sources_map:
+                from services.curator_brain import curator_brain
+                all_srcs = await source_store.list(request.notebook_id)
+                fn_to_id: dict = {}
+                for s in all_srcs:
+                    fn = s.get("filename") or s.get("title")
+                    if fn and fn not in fn_to_id:
+                        fn_to_id[fn] = s.get("id")
+                prov = [
+                    {"source_id": fn_to_id.get(fname), "title": fname}
+                    for fname in built.sources_map.values()
+                ]
+                curator_brain.record_provenance(
+                    "quiz", quiz_id, prov, notebook_id=request.notebook_id,
+                )
+        except Exception as _prov_err:
+            logger.debug(f"[STUDIO] provenance record failed (non-fatal): {_prov_err}")
+
         logger.info(f"[STUDIO] Quiz generated successfully: {len(questions)} questions")
         return QuizResponse(
             quiz_id=quiz_id,
