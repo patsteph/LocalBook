@@ -15,7 +15,7 @@
  * Scope note: only `src/components/canvas/` + `src/services/canvas.ts` +
  * the one-line RenderContext add + the CanvasPanel toggle are touched.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -37,7 +37,7 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Trash2, Sparkles, RefreshCw } from 'lucide-react';
+import { Trash2, Sparkles, RefreshCw, Scale, X } from 'lucide-react';
 import { ArtifactRender } from '../artifact/RendererRegistry';
 import {
   canvasService,
@@ -48,6 +48,7 @@ import {
   type CandidateNodeRef,
   type EdgeState,
 } from '../../services/canvas';
+import { synthesisService } from '../../services/synthesis';
 
 // Unordered pair key so a candidate/edge is de-duped regardless of direction.
 function pairKey(a: string, b: string): string {
@@ -94,12 +95,24 @@ function recencyOpacity(createdAt: string | undefined): number {
   return Math.max(0.4, Math.min(1, o));
 }
 
+// ─── Time-as-a-lens window filter (P6) ───────────────────────────────────────
+// Position still encodes meaning; this only hides (never removes) nodes outside
+// the chosen recency window, so it's fully reversible ("All" restores everything).
+const DAY_MS = 86_400_000;
+const TIME_WINDOWS: { label: string; ms: number | null }[] = [
+  { label: 'All', ms: null },
+  { label: '24h', ms: DAY_MS },
+  { label: '7d', ms: 7 * DAY_MS },
+  { label: '30d', ms: 30 * DAY_MS },
+];
+
 // ─── Custom node ─────────────────────────────────────────────────────────────
 type ArtifactNodeData = {
   node: CanvasNode;
   tint: number;
   candidates?: NodeCandidate[];
   onPromote?: (peerId: string) => void;
+  onPerspectives?: (node: CanvasNode) => void;
 };
 type ArtifactFlowNode = Node<ArtifactNodeData, 'artifact'>;
 
@@ -111,7 +124,7 @@ const SIGNAL_LABEL: Record<string, string> = {
 
 function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   const rf = useReactFlow();
-  const { node, tint, candidates, onPromote } = data;
+  const { node, tint, candidates, onPromote, onPerspectives } = data;
 
   return (
     <div
@@ -154,17 +167,33 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
         <span className="truncate text-[11px] font-semibold text-gray-700 dark:text-gray-200" title={node.title}>
           {node.title || 'Untitled'}
         </span>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            rf.deleteElements({ nodes: [{ id }] });
-          }}
-          className="flex-shrink-0 rounded p-0.5 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/30"
-          title="Remove node"
-        >
-          <Trash2 className="h-3 w-3" />
-        </button>
+        <div className="nodrag flex flex-shrink-0 items-center gap-0.5">
+          {/* Supporting / differing views on demand (P6) — reuses the existing
+              /synthesis/perspectives engine (consensus + contested claims). */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPerspectives?.(node);
+            }}
+            className="rounded p-0.5 text-gray-400 hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-900/30 dark:hover:text-violet-300"
+            title="Supporting / differing views on this topic"
+            aria-label="Show supporting and differing views"
+          >
+            <Scale className="h-3 w-3" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              rf.deleteElements({ nodes: [{ id }] });
+            }}
+            className="rounded p-0.5 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/30"
+            title="Remove node"
+          >
+            <Trash2 className="h-3 w-3" />
+          </button>
+        </div>
       </div>
 
       {/* Body — the Artifact snapshot rendered through the canonical registry.
@@ -252,6 +281,19 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
   const [error, setError] = useState<string | null>(null);
   const [savedViewport, setSavedViewport] = useState<Viewport | null>(null);
   const [candidates, setCandidates] = useState<CanvasCandidate[]>([]);
+
+  // ── Time-as-a-lens (P6): recency window filter. `null` = show all. ──
+  const [timeWindowMs, setTimeWindowMs] = useState<number | null>(null);
+
+  // ── Per-node supporting/differing view (P6): a right-side drawer that reuses
+  //    the existing /synthesis/perspectives engine. Read-only; never persisted. ──
+  const [perspective, setPerspective] = useState<{
+    open: boolean;
+    topic: string;
+    loading: boolean;
+    html: string | null;
+    error: string | null;
+  }>({ open: false, topic: '', loading: false, html: null, error: null });
 
   // Refs mirror the latest state for the full-layout persistence path.
   const nodesRef = useRef<ArtifactFlowNode[]>([]);
@@ -368,8 +410,28 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
     }
   }, [notebookId, setEdges]);
 
+  // ── Supporting/differing view: fetch perspectives for a node's topic. ──
+  // Read-only reuse of the existing /synthesis/perspectives engine — its
+  // consensus/contested claim clusters ARE the "supporting vs differing" split.
+  const openPerspectives = useCallback(async (node: CanvasNode) => {
+    const topic = (node.title || '').trim();
+    if (!topic) return;
+    setPerspective({ open: true, topic, loading: true, html: null, error: null });
+    try {
+      const { html } = await synthesisService.findPerspectives(topic, notebookId, false, 8);
+      setPerspective({ open: true, topic, loading: false, html, error: null });
+    } catch (e) {
+      console.warn('[JourneyCanvas] perspectives', e);
+      setPerspective({
+        open: true, topic, loading: false, html: null,
+        error: e instanceof Error ? e.message : 'Could not load perspectives for this topic.',
+      });
+    }
+  }, [notebookId]);
+
   // Project candidates onto their two endpoint nodes (skipping pairs already edged) and
-  // hand each node a stable promote callback — the custom node renders the amber dots.
+  // hand each node stable promote + perspectives callbacks — the custom node renders the
+  // amber dots and the per-node "supporting/differing view" action.
   useEffect(() => {
     const connected = new Set(edges.map((e) => pairKey(e.source, e.target)));
     const byNode = new Map<string, NodeCandidate[]>();
@@ -389,9 +451,10 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
         ...n.data,
         candidates: byNode.get(n.id) ?? [],
         onPromote: (peerId: string) => promoteCandidate(n.id, peerId),
+        onPerspectives: openPerspectives,
       },
     })));
-  }, [candidates, edges, promoteCandidate, setNodes]);
+  }, [candidates, edges, promoteCandidate, openPerspectives, setNodes]);
 
   // ── Delete: edges hit the DELETE endpoint; nodes persist via full-layout PUT. ──
   const onEdgesDelete = useCallback((deleted: Edge[]) => {
@@ -439,11 +502,36 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
 
   const isEmpty = !loading && nodes.length === 0;
 
+  // ── Time-window filter: hide (never remove) nodes/edges outside the window. ──
+  // Purely a view concern — the stored layout is untouched, so switching back to
+  // "All" fully restores the map. Position still encodes meaning throughout.
+  const displayNodes = useMemo(() => {
+    if (timeWindowMs == null) return nodes;
+    const cutoff = Date.now() - timeWindowMs;
+    return nodes.map((n) => {
+      const t = Date.parse(n.data.node.created_at);
+      const hidden = !Number.isNaN(t) && t < cutoff;
+      return !!n.hidden === hidden ? n : { ...n, hidden };
+    });
+  }, [nodes, timeWindowMs]);
+
+  const displayEdges = useMemo(() => {
+    if (timeWindowMs == null) return edges;
+    const hiddenNodeIds = new Set(displayNodes.filter((n) => n.hidden).map((n) => n.id));
+    if (hiddenNodeIds.size === 0) return edges;
+    return edges.map((e) => {
+      const hidden = hiddenNodeIds.has(e.source) || hiddenNodeIds.has(e.target);
+      return !!e.hidden === hidden ? e : { ...e, hidden };
+    });
+  }, [edges, displayNodes, timeWindowMs]);
+
+  const hiddenCount = timeWindowMs == null ? 0 : displayNodes.filter((n) => n.hidden).length;
+
   return (
     <div className="relative h-full w-full">
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
+        nodes={displayNodes}
+        edges={displayEdges}
         nodeTypes={nodeTypes}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
@@ -489,6 +577,34 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
           </button>
         </div>
 
+        {/* Time-as-a-lens window filter (P6) — a reversible recency lens; older
+            nodes already read fainter (recency tint), this narrows to a window. */}
+        <div className="pointer-events-auto flex items-center gap-1 rounded-lg border border-gray-200 bg-white/90 p-1 shadow-sm backdrop-blur dark:border-gray-700 dark:bg-gray-800/90">
+          {TIME_WINDOWS.map(({ label, ms }) => {
+            const active = timeWindowMs === ms;
+            return (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setTimeWindowMs(ms)}
+                className={`rounded-md px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                  active
+                    ? 'bg-violet-600 text-white'
+                    : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
+                }`}
+                title={ms == null ? 'Show all nodes' : `Show nodes from the last ${label}`}
+              >
+                {label}
+              </button>
+            );
+          })}
+          {hiddenCount > 0 && (
+            <span className="pl-1 pr-0.5 text-[10px] text-gray-400" title={`${hiddenCount} node(s) outside this window`}>
+              −{hiddenCount}
+            </span>
+          )}
+        </div>
+
         {/* Edge legend */}
         <div className="pointer-events-auto flex flex-col gap-1 rounded-lg border border-gray-200 bg-white/90 px-2.5 py-2 shadow-sm backdrop-blur dark:border-gray-700 dark:bg-gray-800/90">
           {EDGE_LEGEND.map(({ state, label }) => (
@@ -522,6 +638,57 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 text-center text-gray-400">
           <p className="text-sm font-medium">This canvas is empty</p>
           <p className="text-[11px]">Use <span className="font-semibold text-violet-500">Populate</span> to seed it from your notebook.</p>
+        </div>
+      )}
+
+      {/* Supporting / differing views drawer (P6) — server-composed perspectives
+          HTML rendered through the canonical Artifact registry. Read-only. */}
+      {perspective.open && (
+        <div className="absolute inset-y-0 right-0 z-20 flex w-[min(440px,90%)] flex-col border-l border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
+          <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-2 dark:border-gray-700">
+            <div className="flex min-w-0 items-center gap-2">
+              <Scale className="h-4 w-4 flex-shrink-0 text-violet-500" />
+              <div className="min-w-0">
+                <p className="text-[10px] font-medium uppercase tracking-wide text-gray-400">Supporting / differing views</p>
+                <p className="truncate text-[12px] font-semibold text-gray-700 dark:text-gray-200" title={perspective.topic}>
+                  {perspective.topic}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPerspective((p) => ({ ...p, open: false }))}
+              className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"
+              title="Close"
+              aria-label="Close perspectives"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-auto p-3">
+            {perspective.loading && (
+              <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-400">
+                <RefreshCw className="h-5 w-5 animate-spin" />
+                <p className="text-[11px]">Gathering perspectives across your sources…</p>
+              </div>
+            )}
+            {perspective.error && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-600 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300">
+                {perspective.error}
+              </div>
+            )}
+            {!perspective.loading && !perspective.error && perspective.html && (
+              <ArtifactRender
+                artifact={{
+                  id: `perspectives-${perspective.topic}`,
+                  type: 'html',
+                  payload: perspective.html,
+                  title: perspective.topic,
+                }}
+                context="canvas-full"
+              />
+            )}
+          </div>
         </div>
       )}
     </div>
