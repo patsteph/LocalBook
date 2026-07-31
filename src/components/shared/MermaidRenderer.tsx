@@ -23,6 +23,13 @@ const initializeMermaid = (isDark: boolean) => {
     startOnLoad: false,
     theme: 'base',
     securityLevel: 'loose',
+    // On an invalid diagram (common with LLM-generated mermaid), mermaid v11
+    // otherwise injects its red "Syntax error in text" graphic straight into
+    // <body> — outside the React tree, so it parks in the lower-left corner and
+    // never goes away until the app is quit. Suppressing it makes render() just
+    // throw, which our catch handles cleanly. (belt-and-braces: we also sweep any
+    // orphaned #<id> node in the render catch below.)
+    suppressErrorRendering: true,
     fontFamily: 'ui-sans-serif, system-ui, sans-serif',
     themeVariables: isDark ? {
       // Dark mode - vibrant colors on dark background
@@ -126,15 +133,15 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, classNam
         }
       }, 10000);
 
+      // Hoisted above the try so the catch's orphan-sweep can reference it.
+      const id = `mermaid-${Math.random().toString(36).substring(2, 11)}`;
+
       try {
         // Detect dark mode
         const isDark = document.documentElement.classList.contains('dark');
-        
+
         // Re-initialize if theme changed or not initialized
         initializeMermaid(isDark);
-
-        // Generate unique ID for this diagram
-        const id = `mermaid-${Math.random().toString(36).substring(2, 11)}`;
 
         // Clean the code - remove any leading/trailing whitespace and fix common issues
         let cleanCode = code.trim();
@@ -199,6 +206,12 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, classNam
           setIsRendering(false);
         }
       } catch (err: any) {
+        // Belt-and-braces: remove any node mermaid may have appended to <body>
+        // for this render (temp container / error graphic) so nothing lingers.
+        try {
+          document.getElementById(id)?.remove();
+          document.getElementById('d' + id)?.remove();
+        } catch { /* noop */ }
         if (!isCancelled) {
           clearTimeout(timeoutId);
           console.error('Mermaid render error:', err);
