@@ -387,7 +387,12 @@ _LANE_KEYWORDS: List[tuple] = [
             "sketch", "sketched", "doodle", "storyboard", "comic strip",
             "assembly line", "illustrated story"]),
     ("L1", ["chart", "line chart", "bar chart", "bar graph", "graph", "plot",
-            "scatter", "histogram", "time series", "trend line", "over time"]),
+            "scatter", "histogram", "time series", "trend line", "over time",
+            # quantity-over-a-sequence: a growing/changing/diverging number is a
+            # CHART even when the request frames it as a comparison of two series
+            # (the "cumulative token usage grows over 10 steps" field miss).
+            "grows", "growth", "cumulative", "trajectory", "divergence",
+            "diverges", "per iteration", "each iteration", "across iterations"]),
     ("L2", ["diagram", "pipeline", "flowchart", "flow chart", "comparison",
             "compare", "versus", "timeline", "hierarchy", "taxonomy",
             "before and after", "before/after", "side by side", "facts table",
@@ -422,7 +427,8 @@ Lanes:
 Respond with ONLY valid JSON: {{"lane": "<L0|L1|L2|L3|L4>", "confidence": <0.0-1.0>}}
 Rules:
 - If the content has clear numbers/trends to plot, pick L1.
-- If the content has steps, parts, groups, or a comparison, pick L2 (the default).
+- A quantity that GROWS or CHANGES across steps / iterations / time (a growth curve, trajectory, or two numeric series diverging) is L1 — plot it — EVEN when the request compares two such series. Reserve L2 "comparison" for CATEGORICAL or non-numeric side-by-side (feature A vs feature B), not for two numbers changing over a sequence.
+- If the content has steps, parts, groups, or a (categorical) comparison, pick L2 (the default).
 - If the content is a conceptual STORY or METAPHOR told as a few illustrated phases (a teaching scene, e.g. scattered pieces coming together into a finished thing), pick L3 rather than L2.
 - If the request is purely for a decorative picture / hero image with nothing to label or measure, pick L4.
 - Only pick L0 when there is genuinely no structure worth drawing.

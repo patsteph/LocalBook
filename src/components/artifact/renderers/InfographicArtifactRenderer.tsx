@@ -205,9 +205,12 @@ function L4Art({
         {title && (
           <div
             style={{
-              position: 'absolute', left: 16, bottom: 14, maxWidth: '80%',
+              position: 'absolute', left: 16, bottom: 14, maxWidth: '70%',
               fontWeight: 800, fontSize: 20, lineHeight: 1.15, color: '#fff',
               textShadow: '0 2px 12px rgba(0,0,0,.55)',
+              // Defensive clamp: never let a long title dominate the art.
+              display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
             }}
           >
             {title}

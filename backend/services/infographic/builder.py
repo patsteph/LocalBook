@@ -16,6 +16,7 @@ Returns a plain dict (Artifact.model_dump) ready to hand to the frontend
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -232,6 +233,33 @@ def pick_archetype(content: str) -> str:
     return "pipeline_compare"
 
 
+# On-brand restyle presets seeded per generation to break the "every L2 looks
+# the same" rut (field feedback 2026-07-31). The restyle machinery already
+# exists (restyle.py); nothing seeded it, so every L2 shipped coral/paper/cozy.
+# Coral (the brand) is weighted highest; the rest are the design-system's OWN
+# restyle palette, so variety stays on-brand. Deterministic by content → the
+# same source reproduces, different sources diverge. Fully user-overrideable via
+# the tombstone restyle controls (this only sets the STARTING look).
+_STYLE_PRESETS: list[dict] = [
+    {},                                                     # coral / paper / cozy
+    {},                                                     # (coral weighted ~2×)
+    {"accent": "coral", "tone": "light", "scale": "roomy"},
+    {"accent": "blue"},
+    {"accent": "emerald"},
+    {"accent": "violet", "tone": "light"},
+    {"accent": "amber"},
+    {"accent": "slate", "tone": "light", "scale": "compact"},
+]
+
+
+def _seed_style(content: str, topic: str = "") -> dict:
+    """Pick an on-brand restyle preset deterministically from the content, so a
+    notebook's infographics don't all look identical. Never raises."""
+    key = f"{topic}\n{(content or '')[:400]}".encode("utf-8", "ignore")
+    idx = int(hashlib.sha1(key).hexdigest(), 16) % len(_STYLE_PRESETS)
+    return dict(_STYLE_PRESETS[idx])
+
+
 # ── L2 ─────────────────────────────────────────────────────────────────
 async def build_l2(
     content: str,
@@ -291,6 +319,8 @@ async def build_l2(
         "body_html": body,
         "citations": citations,
         "sources": prov,
+        # Seed an on-brand starting style so a notebook's L2s vary (anti-rut).
+        "style": _seed_style(content, title),
     }
     art = json_artifact(
         id=_new_id(), kind="infographic", payload=payload,
@@ -415,6 +445,37 @@ async def build_l1(
     return art.model_dump()
 
 
+async def _poster_title(content: str, model: str) -> str:
+    """A short, poster-style title (2–4 words) for the L4 overlay.
+
+    The raw L4 request is usually a long instruction ("make an evocative cover
+    poster for the current state of agentic AI — atmospheric …"). Baking that
+    whole string over the art reads as noise and drags the image down (field
+    feedback 2026-07-31). Compress it to a clean title. Fails open to "" — a
+    missing overlay is better than a noisy one; the evocative image stands alone.
+    """
+    text = (content or "").strip()
+    if not text:
+        return ""
+    try:
+        r = await ollama_service.generate(
+            prompt=(f"Source request: {text[:500]}\n\n"
+                    "Write a punchy 2-4 word cover title in Title Case. "
+                    "Title only — no quotes, no trailing punctuation, no explanation."),
+            system="You write short, evocative poster/cover titles.",
+            model=model, temperature=0.4, num_predict=16, timeout=20.0,
+        )
+        line = ((r or {}).get("response") or "").strip().splitlines()[0] if (r or {}).get("response") else ""
+    except Exception as e:
+        logger.debug(f"[infographic] L4 poster-title failed: {e}")
+        return ""
+    line = line.strip().strip('"\'' + "“”").rstrip(".!?—-:; ")
+    # Reject a non-title (too long / the model echoed the instruction).
+    if not line or len(line.split()) > 6 or len(line) > 48:
+        return ""
+    return line
+
+
 # ── L4 (decorative / hero — Klein-rendered) ────────────────────────────
 async def build_l4(
     content: str,
@@ -510,6 +571,12 @@ async def build_l4(
     import base64
     b64 = base64.b64encode(result.png_bytes).decode("ascii")
 
+    # Overlay title = a SHORT poster title, NOT the raw request (which is a long
+    # instruction). Generated on the fast model; fails open to no overlay so a
+    # noisy label never drags the image down. The raw request still seeded the
+    # (better) art brief above.
+    short_title = await _poster_title(overlay_title or trimmed, settings.ollama_fast_model)
+
     payload = {
         "lane": "L4",
         "archetype": "decorative",
@@ -517,13 +584,13 @@ async def build_l4(
         "width": result.width,
         "height": result.height,
         # Title text is a DOM/SVG overlay layer — NOT baked into the raster.
-        "title_overlay": overlay_title,
+        "title_overlay": short_title,
         "prompt_used": result.prompt_used,
         "sources": _normalize_sources(sources),
     }
     art = json_artifact(
         id=_new_id(), kind="infographic", payload=payload,
-        title=(overlay_title or "Decorative image")[:80],
+        title=(short_title or "Decorative image")[:80],
         metadata={"lane": "L4", "archetype": "decorative", "model": result.model},
     )
     return art.model_dump()

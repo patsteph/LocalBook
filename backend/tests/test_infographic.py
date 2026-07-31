@@ -216,10 +216,18 @@ def test_l4_success_produces_textless_data_uri(monkeypatch):
             width=1280, height=720, model="x/flux2-klein", prompt_used=prompt,
         )
 
+    # The overlay is a SHORT generated poster title (fast model) — stub it
+    # model-free so the test stays LLM-free.
+    import services.infographic.builder as _bld
+
+    async def _short(content, model):
+        return "Golden Hour"
+
     monkeypatch.setattr(vc, "get_capability", _cap)
     monkeypatch.setattr(settings, "image_engine", "ollama", raising=False)
     monkeypatch.setattr(vd, "write_klein_brief", _brief)
     monkeypatch.setattr(vd.klein_diffusion, "generate", _generate)
+    monkeypatch.setattr(_bld, "_poster_title", _short)
 
     out = asyncio.run(build_l4("hero image", title="My Title"))
     assert out is not None
@@ -228,8 +236,9 @@ def test_l4_success_produces_textless_data_uri(monkeypatch):
     assert p["lane"] == "L4"
     assert p["archetype"] == "decorative"
     assert p["image"].startswith("data:image/png;base64,")
-    # Title is an OVERLAY, not pixels — it rides in the payload, not the prompt.
-    assert p["title_overlay"] == "My Title"
+    # Title is a SHORT OVERLAY, not pixels — it rides in the payload, not the
+    # prompt (the raw request is never baked into the raster).
+    assert p["title_overlay"] == "Golden Hour"
     assert "My Title" not in captured["prompt"]
     # Negative prompt explicitly suppresses in-image text.
     assert "no text in image" in captured["negative_prompt"]
@@ -383,6 +392,7 @@ def test_detect_lane_keywords():
     assert ic._detect_lane_keywords("make an infographic") is None       # vague → content-shape
     assert ic._detect_lane_keywords("we started early today") is None    # no false \bart\b
     assert ic._detect_lane_keywords("the state of AI art")[0] == "L4"     # bounded 'art'
+    assert ic._detect_lane_keywords("cumulative token usage grows over 10 steps")[0] == "L1"
 
 
 def test_router_phrasing_boost_overrides_weak_content(monkeypatch):
@@ -425,6 +435,47 @@ def test_router_vague_request_uses_content_shape(monkeypatch):
         ollama_service=_FakeOllama("L1", 0.8),
     ))
     assert out["lane"] == "L1" and "+kw" not in out["stage"]
+
+
+def test_router_growth_over_sequence_routes_L1(monkeypatch):
+    # The field miss: content-shape read "X grows vs Y" as a comparison → L2;
+    # the growth phrasing must pull it back to L1 (plot the trajectory).
+    monkeypatch.setattr(ic, "_record_misroute", lambda *a, **k: None)
+    out = asyncio.run(ic.classify_infographic_lane(
+        content_summary="agent loop token usage vs a single-shot chatbot answer",
+        request_text="show how cumulative token usage grows over a 10-step loop vs single-shot",
+        ollama_service=_FakeOllama("L2", 0.7),
+    ))
+    assert out["lane"] == "L1" and out["stage"].endswith("+kw")
+
+
+def test_router_before_after_facts_stays_L2(monkeypatch):
+    # Numbers present, but a discrete before/after facts table is NOT a growth
+    # trajectory — it must stay L2 (the growth keywords must not over-trigger L1).
+    monkeypatch.setattr(ic, "_record_misroute", lambda *a, **k: None)
+    out = asyncio.run(ic.classify_infographic_lane(
+        content_summary="messy raw chunks vs a clean facts table: Revenue $10.2B, Net Income $4.5B",
+        request_text="before and after: raw chunks vs a clean structured facts table",
+        ollama_service=_FakeOllama("L2", 0.7),
+    ))
+    assert out["lane"] == "L2"
+
+
+# ── anti-rut: per-generation L2 style seeding (2026-07-31) ──────────────
+def test_l2_style_seed_is_deterministic_onbrand_and_varies():
+    from services.infographic.builder import _seed_style, _STYLE_PRESETS
+    from services.infographic import restyle
+    # deterministic — same source reproduces
+    assert _seed_style("compile-time RAG", "RAG") == _seed_style("compile-time RAG", "RAG")
+    # every preset uses ONLY valid design-system tokens (the on-brand guardrail)
+    for p in _STYLE_PRESETS:
+        assert p.get("accent", "coral") in restyle.ACCENT_IDS
+        assert p.get("tone", "paper") in restyle.TONE_IDS
+        assert p.get("scale", "cozy") in restyle.SCALE_IDS
+    # distinct topics should not collapse to a single look
+    styles = {str(_seed_style(t, t)) for t in
+              ["tokens", "pipeline", "compare", "facts", "timeline", "vectors", "agents", "chunks"]}
+    assert len(styles) >= 3
 
 
 # ── L3 build + degradation ladder (model-free via monkeypatch) ─────────
