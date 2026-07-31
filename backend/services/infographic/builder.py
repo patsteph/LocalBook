@@ -219,21 +219,23 @@ def _prose_fallback(content: str, reason: str, lane: str, sources: Optional[list
 
 
 # ── archetype heuristic (deterministic; router may override) ───────────
-def pick_archetype(content: str) -> str:
-    low = (content or "").lower()
-    # Family-B "deck" archetypes (07-31) — check the specific shapes first.
-    if any(w in low for w in ("api call", "sdk call", "code side by side", "same pattern",
-                              "two implementations")) or (
-        "code" in low and any(w in low for w in ("versus", " vs ", "compare", "before", "after"))
-    ):
-        return "compare_code"
-    if any(w in low for w in ("tier", "ladder", "rung", "what runs", "runs at home", "status badge")):
-        return "tier_ladder"
+def pick_archetype(content: str, topic: str = "") -> str:
+    # The user's REQUEST (topic) is the strongest layout signal — include it so an
+    # explicit "stacked layers" / "tier ladder" isn't hijacked by incidental
+    # 'code'/'compare' words in the noisy retrieved content (field miss 2026-07-31:
+    # a layer_stack request picked compare_code). Specific "deck" shapes first;
+    # compare_code now needs an EXPLICIT code-comparison signal, not just 'code'.
+    low = f"{topic or ''} {content or ''}".lower()
     if any(w in low for w in ("layer stack", "stacked layer", "slabs", "strata", "exploded", "layers of")):
         return "layer_stack"
-    if any(w in low for w in ("stepped card", "step card", "feedback loop", "state badge",
-                              "revises until", "three cards")):
+    if any(w in low for w in ("tier", "ladder", "rung", "maturity", "what runs", "runs at home", "status badge")):
+        return "tier_ladder"
+    if any(w in low for w in ("stepped card", "step card", "three cards", "state badge", "badge band",
+                              "feedback loop", "revises until")):
         return "stepped_cards"
+    if any(w in low for w in ("code side by side", "two implementations", "api call", "sdk call",
+                              "same pattern", "compare the code", "code snippet")):
+        return "compare_code"
     if any(w in low for w in ("compile", "index", "stage", "pipeline stage", "offline", "request-time")):
         return "three_stage"
     if any(w in low for w in ("timeline", "chronolog", "milestone", "history", "evolution", "roadmap", " era ")):
@@ -284,8 +286,9 @@ async def build_l2(
     model: Optional[str] = None,
     max_content_chars: int = 8000,
     sources: Optional[list] = None,
+    topic: str = "",
 ) -> Optional[dict]:
-    archetype = archetype if archetype in ARCHETYPES else pick_archetype(content)
+    archetype = archetype if archetype in ARCHETYPES else pick_archetype(content, topic)
     skeleton = get_skeleton(archetype)
     if not skeleton:
         return None
@@ -646,7 +649,7 @@ async def build_infographic(
             logger.warning(f"[infographic] L4 build error: {e}")
         # Klein unavailable/failed -> down the ladder to L2 -> prose.
         try:
-            out = await build_l2(content, archetype, model=model, sources=sources)
+            out = await build_l2(content, archetype, model=model, sources=sources, topic=title or "")
             if out:
                 out.setdefault("metadata", {})["degraded_from"] = "L4"
                 return out
@@ -663,7 +666,7 @@ async def build_infographic(
             logger.warning(f"[infographic] L3 build error: {e}")
         # Scene unavailable/failed -> down the ladder to L2 -> prose (§3.5).
         try:
-            out = await build_l2(content, archetype, model=model, sources=sources)
+            out = await build_l2(content, archetype, model=model, sources=sources, topic=title or "")
             if out:
                 out.setdefault("metadata", {})["degraded_from"] = "L3"
                 return out
@@ -690,15 +693,15 @@ async def build_infographic(
 
     # Default lane = L2 (the volume lane).
     try:
-        out = await build_l2(content, archetype, model=model, sources=sources)
+        out = await build_l2(content, archetype, model=model, sources=sources, topic=title or "")
         if out:
             return out
     except Exception as e:
         logger.warning(f"[infographic] L2 build error: {e}")
     # L2 failed -> try one alternate archetype before prose.
-    alt = "pipeline_compare" if (archetype or pick_archetype(content)) != "pipeline_compare" else "facts_table"
+    alt = "pipeline_compare" if (archetype or pick_archetype(content, title or "")) != "pipeline_compare" else "facts_table"
     try:
-        out = await build_l2(content, alt, model=model, sources=sources)
+        out = await build_l2(content, alt, model=model, sources=sources, topic=title or "")
         if out:
             out.setdefault("metadata", {})["degraded_from"] = "L2"
             return out

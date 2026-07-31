@@ -396,7 +396,12 @@ _LANE_KEYWORDS: List[tuple] = [
     ("L2", ["diagram", "pipeline", "flowchart", "flow chart", "comparison",
             "compare", "versus", "timeline", "hierarchy", "taxonomy",
             "before and after", "before/after", "side by side", "facts table",
-            "stat grid", "step by step", "process diagram"]),
+            "stat grid", "step by step", "process diagram",
+            # card / step / badge / tier / layer LAYOUTS are structured (L2), not
+            # hand-drawn scenes (L3) — a "three cards + state badges" request kept
+            # landing on L3 (field miss 2026-07-31).
+            "three cards", "stepped", "step card", "state badge", "badge band",
+            "tier", "ladder", "stacked layers", "layer stack"]),
 ]
 # Precompile to word-boundary regexes (multi-word phrases keep their spaces).
 _LANE_KEYWORD_RES: List[tuple] = [

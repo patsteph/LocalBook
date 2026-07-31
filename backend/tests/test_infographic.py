@@ -478,6 +478,33 @@ def test_l2_style_seed_is_deterministic_onbrand_and_varies():
     assert len(styles) >= 3
 
 
+# ── archetype selection + router fixes (round-2 field misses, 2026-07-31) ──
+def test_pick_archetype_topic_beats_noisy_content():
+    from services.infographic.builder import pick_archetype
+    # a "stacked layers" REQUEST must win over incidental 'code'/'compare' in content
+    noisy = "the code compares vectors and reranks retrieval before and after"
+    assert pick_archetype(noisy, topic="Diagram the RAG stack as five stacked layers") == "layer_stack"
+    # explicit code-comparison still routes to compare_code
+    assert pick_archetype("", topic="compare the code side by side, two implementations") == "compare_code"
+    # incidental 'code' + 'compare' (no explicit code-compare phrase) no longer forces it
+    assert pick_archetype("chunks mention code and we compare latency numbers") != "compare_code"
+    # tier-ladder + stepped-cards requests pick their shapes
+    assert pick_archetype("", topic="four tiers of RAG maturity as a ladder") == "tier_ladder"
+    assert pick_archetype("", topic="three cards with state badges and a feedback loop") == "stepped_cards"
+
+
+def test_router_card_badge_layout_routes_L2(monkeypatch):
+    # A "three cards + state badges" request kept landing on L3; the card/badge
+    # L2 keywords must pull it back to the structured lane.
+    monkeypatch.setattr(ic, "_record_misroute", lambda *a, **k: None)
+    out = asyncio.run(ic.classify_infographic_lane(
+        content_summary="an agent loop that plans, retrieves, then synthesizes",
+        request_text="show it as three cards with state badges and a feedback loop",
+        ollama_service=_FakeOllama("L3", 0.9),
+    ))
+    assert out["lane"] == "L2" and out["stage"].endswith("+kw")
+
+
 # ── L3 build + degradation ladder (model-free via monkeypatch) ─────────
 def test_build_l3_composes_from_graph(monkeypatch):
     """With the LLM returning a valid graph, build_l3 yields an L3 artifact
