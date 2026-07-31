@@ -15,7 +15,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { onEvent } from '../../lib/events';
 import {
   FileText, Mic, Video, Palette, Target, StickyNote, Search,
-  ChevronDown, ChevronRight, Trash2, Download,
+  ChevronDown, ChevronRight, Trash2, Download, BarChart3, X,
 } from 'lucide-react';
 import { contentService, ContentGeneration } from '../../services/content';
 import { audioService } from '../../services/audio';
@@ -23,11 +23,30 @@ import { videoService, VideoGeneration } from '../../services/video';
 import { sourceService } from '../../services/sources';
 import { quizService } from '../../services/quiz';
 import { visualService } from '../../services/visual';
+import { infographicService, InfographicRecord } from '../../services/infographic';
+import { ArtifactRender } from '../artifact/RendererRegistry';
+import type { Artifact } from '../../types/artifact';
 import { API_BASE_URL } from '../../services/api';
 import { AudioGeneration, Source } from '../../types';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-type LibraryItemKind = 'document' | 'audio' | 'video' | 'visual' | 'quiz' | 'note';
+type LibraryItemKind = 'document' | 'audio' | 'video' | 'visual' | 'infographic' | 'quiz' | 'note';
+
+// Rebuild the `json:infographic` Artifact envelope from a persisted row so it
+// can be handed to <ArtifactRender> (preview) or /export/artifact (download).
+// The list endpoint returns SELECT * → `payload_json` rides along, so no
+// second fetch is needed on open.
+function infographicArtifactFromRaw(raw: InfographicRecord): Artifact {
+  let payload: any = {};
+  try { payload = JSON.parse(raw.payload_json || '{}'); } catch { payload = {}; }
+  return {
+    id: raw.infographic_id,
+    type: 'json:infographic',
+    payload,
+    title: raw.title || raw.topic || 'Infographic',
+    metadata: { lane: raw.lane, archetype: raw.archetype },
+  } as Artifact;
+}
 
 interface LibraryItem {
   id: string;
@@ -64,6 +83,9 @@ async function deleteByKind(notebookId: string, item: LibraryItem): Promise<bool
         return true;
       case 'visual':
         await visualService.deleteItem(item.id);
+        return true;
+      case 'infographic':
+        await infographicService.deleteItem(item.id);
         return true;
       case 'quiz':
         await quizService.delete(item.id);
@@ -124,6 +146,14 @@ async function downloadByKind(item: LibraryItem): Promise<void> {
     case 'visual':
       await visualService.download(item.id, 'svg');
       return;
+    case 'infographic': {
+      // Render the `json:infographic` Artifact to PNG via the unified
+      // /export/artifact pipeline, then save through the native dialog.
+      const artifact = infographicArtifactFromRaw(item.raw as InfographicRecord);
+      const blob = await exportService.exportArtifactBlob(artifact as any, 'png', item.title);
+      await exportService.downloadBlob(blob, `${safe(item.title || 'infographic')}.png`);
+      return;
+    }
     case 'quiz':
       await quizService.download(item.id);
       return;
@@ -136,11 +166,12 @@ const KIND_META: Record<LibraryItemKind, { label: string; icon: React.ReactNode;
   audio:    { label: 'Audio',      icon: <Mic className="w-3.5 h-3.5" />,      accent: 'text-purple-600 dark:text-purple-400' },
   video:    { label: 'Video',      icon: <Video className="w-3.5 h-3.5" />,    accent: 'text-red-600 dark:text-red-400' },
   visual:   { label: 'Visuals',    icon: <Palette className="w-3.5 h-3.5" />,  accent: 'text-amber-600 dark:text-amber-400' },
+  infographic: { label: 'Infographics', icon: <BarChart3 className="w-3.5 h-3.5" />, accent: 'text-[#e0503a]' },
   quiz:     { label: 'Quizzes',    icon: <Target className="w-3.5 h-3.5" />,   accent: 'text-emerald-600 dark:text-emerald-400' },
   note:     { label: 'Notes',      icon: <StickyNote className="w-3.5 h-3.5" />, accent: 'text-orange-600 dark:text-orange-400' },
 };
 
-const ALL_KINDS: LibraryItemKind[] = ['document', 'audio', 'video', 'visual', 'quiz', 'note'];
+const ALL_KINDS: LibraryItemKind[] = ['document', 'audio', 'video', 'visual', 'infographic', 'quiz', 'note'];
 
 // ─── Component ──────────────────────────────────────────────────────────────
 export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem }) => {
@@ -149,6 +180,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeKind, setActiveKind] = useState<LibraryItemKind | 'all'>('all');
+  // Infographic preview overlay. Infographics open in-place via <ArtifactRender>
+  // (the `json:infographic` renderer) rather than the canvas-rehydration path
+  // the other kinds use — the payload rides along on the list row.
+  const [preview, setPreview] = useState<{ title: string; artifact: Artifact } | null>(null);
   // Expansion state per-filter. In 'all' mode, sections start collapsed (just
   // type name + count) so the view feels light at-a-glance — user expands
   // the type they care about. In a specific-kind filter, that kind is auto-
@@ -203,6 +238,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
       sourceService.list(notebookId),
       quizService.list(notebookId),
       visualService.list(notebookId),
+      infographicService.list(notebookId),
     ]);
 
     const collected: LibraryItem[] = [];
@@ -290,6 +326,22 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
         });
       });
     }
+    // Infographics (2.2.0). The whole `json:infographic` payload rides along
+    // in payload_json so the open handler can rehydrate without a refetch.
+    if (results[6].status === 'fulfilled') {
+      (results[6].value as InfographicRecord[]).forEach(g => {
+        const lane = (g.lane || '').toUpperCase();
+        const parts = [lane, g.archetype].filter(Boolean);
+        collected.push({
+          id: g.infographic_id,
+          kind: 'infographic',
+          title: g.title || g.topic || 'Infographic',
+          preview: g.degraded ? `${parts.join(' · ')}  ·  degraded` : parts.join(' · '),
+          createdAt: g.created_at || '',
+          raw: g,
+        });
+      });
+    }
 
     collected.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
     setItems(collected);
@@ -302,7 +354,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
 
   // Listen for completion events from other surfaces so Library auto-refreshes.
   useEffect(() => {
-    const names = ['sourcesUpdated', 'notesUpdated', 'contentUpdated', 'audioUpdated', 'videoUpdated', 'visualsUpdated', 'quizzesUpdated'] as const;
+    const names = ['sourcesUpdated', 'notesUpdated', 'contentUpdated', 'audioUpdated', 'videoUpdated', 'visualsUpdated', 'infographicsUpdated', 'quizzesUpdated'] as const;
     const offs = names.map(n => onEvent(n, () => loadLibrary()));
     return () => offs.forEach(off => off());
   }, [loadLibrary]);
@@ -316,7 +368,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
       return true;
     });
     const byKind: Record<LibraryItemKind, LibraryItem[]> = {
-      document: [], audio: [], video: [], visual: [], quiz: [], note: [],
+      document: [], audio: [], video: [], visual: [], infographic: [], quiz: [], note: [],
     };
     filtered.forEach(it => { byKind[it.kind].push(it); });
     return byKind;
@@ -329,11 +381,24 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
   // even when the section itself is collapsed so the user always sees totals.
   const totalByKind = useMemo(() => {
     const counts: Record<LibraryItemKind, number> = {
-      document: 0, audio: 0, video: 0, visual: 0, quiz: 0, note: 0,
+      document: 0, audio: 0, video: 0, visual: 0, infographic: 0, quiz: 0, note: 0,
     };
     items.forEach(it => { counts[it.kind] += 1; });
     return counts;
   }, [items]);
+
+  // Open dispatcher. Infographics render in-place via <ArtifactRender>; every
+  // other kind rehydrates onto the canvas through the parent's onOpenItem.
+  const handleOpen = useCallback((item: LibraryItem) => {
+    if (item.kind === 'infographic') {
+      setPreview({
+        title: item.title,
+        artifact: infographicArtifactFromRaw(item.raw as InfographicRecord),
+      });
+      return;
+    }
+    onOpenItem(item);
+  }, [onOpenItem]);
 
   const handleDelete = useCallback(async (item: LibraryItem) => {
     if (!notebookId) return;
@@ -360,7 +425,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
   }
 
   return (
-    <div className="flex flex-col h-full bg-white dark:bg-gray-900">
+    <div className="relative flex flex-col h-full bg-white dark:bg-gray-900">
       {/* Header: search + filter chips */}
       <div className="flex-shrink-0 px-4 py-3 border-b border-gray-200 dark:border-gray-700 space-y-2">
         <div className="relative">
@@ -472,11 +537,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
                             key={`${it.kind}:${it.id}`}
                             role="button"
                             tabIndex={0}
-                            onClick={() => onOpenItem(it)}
+                            onClick={() => handleOpen(it)}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault();
-                                onOpenItem(it);
+                                handleOpen(it);
                               }
                             }}
                             className="group flex items-start gap-2 px-3 py-2 border-t border-gray-100 dark:border-gray-800 hover:bg-blue-50/30 dark:hover:bg-blue-900/10 transition-colors cursor-pointer focus:outline-none focus:bg-blue-50/40 dark:focus:bg-blue-900/15"
@@ -526,6 +591,37 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ notebookId, onOpenItem
           </div>
         )}
       </div>
+
+      {/* Infographic preview overlay — renders the saved `json:infographic`
+          Artifact via <ArtifactRender> (same renderer the canvas uses). */}
+      {preview && (
+        <div
+          className="absolute inset-0 z-30 flex flex-col bg-black/40 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setPreview(null)}
+        >
+          <div
+            className="m-auto flex max-h-[92%] w-[min(1000px,94%)] flex-col rounded-lg bg-white dark:bg-gray-900 shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2.5 border-b border-gray-200 dark:border-gray-700">
+              <BarChart3 className="w-4 h-4 text-[#e0503a]" />
+              <span className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">{preview.title}</span>
+              <button
+                onClick={() => setPreview(null)}
+                className="ml-auto p-1 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+                title="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              <ArtifactRender artifact={preview.artifact} context="canvas-full" />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

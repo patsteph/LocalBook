@@ -29,6 +29,7 @@ export interface LBEventMap {
   'audioUpdated': void;
   'videoUpdated': void;
   'visualsUpdated': void;
+  'infographicsUpdated': void;
   'quizzesUpdated': void;
 
   // Visual regenerate / swap

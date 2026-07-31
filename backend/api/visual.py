@@ -1654,4 +1654,75 @@ async def generate_infographic(request: InfographicRequest):
     except Exception as e:
         logger.debug(f"[infographic] telemetry log failed: {e}")
 
-    return {"artifact": artifact, "lane": lane, "routing": routing}
+    # 2.2.0: persist the infographic so it survives app restart + appears in
+    # the Library. Non-fatal — a store failure must not break generation.
+    # Stores the WHOLE artifact.payload; the item endpoint rebuilds the
+    # envelope for <ArtifactRender> + /export/artifact.
+    infographic_id = None
+    try:
+        from storage.infographic_store import infographic_store
+        payload = artifact.get("payload", {}) if isinstance(artifact, dict) else {}
+        meta = artifact.get("metadata", {}) if isinstance(artifact, dict) else {}
+        saved = await infographic_store.create(
+            notebook_id=request.notebook_id,
+            topic=request.topic or "",
+            title=(artifact.get("title") or request.topic or "Infographic"),
+            lane=lane,
+            archetype=payload.get("archetype") or (meta or {}).get("archetype"),
+            payload=payload,
+            degraded=bool(payload.get("degraded", False)),
+        )
+        infographic_id = saved.get("infographic_id")
+    except Exception as e:
+        logger.debug(f"[infographic] persist failed (non-fatal): {e}")
+
+    return {"artifact": artifact, "lane": lane, "routing": routing, "infographic_id": infographic_id}
+
+
+# ─── Infographic Library endpoints (2.2.0) ───────────────────────────────────
+
+@router.get("/infographic/list/{notebook_id}")
+async def list_infographics(notebook_id: str):
+    """List persisted infographics for a notebook (newest first). Used by Library."""
+    from storage.infographic_store import infographic_store
+    return await infographic_store.list(notebook_id)
+
+
+@router.get("/infographic/item/{infographic_id}")
+async def get_infographic(infographic_id: str):
+    """Fetch one persisted infographic as an Artifact envelope (json:infographic)
+    so <ArtifactRender> + POST /export/artifact can consume it directly."""
+    import json as _json
+    from storage.infographic_store import infographic_store
+    row = await infographic_store.get(infographic_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Infographic not found")
+    try:
+        payload = _json.loads(row.get("payload_json") or "{}")
+    except Exception:
+        payload = {}
+    return {
+        # Artifact envelope (what <ArtifactRender> / /export/artifact expect)
+        "id": infographic_id,
+        "type": "json:infographic",
+        "payload": payload,
+        "title": row.get("title") or row.get("topic") or "Infographic",
+        "metadata": {"lane": row.get("lane"), "archetype": row.get("archetype")},
+        # Row fields retained for the Library list/rehydrate path
+        "infographic_id": infographic_id,
+        "notebook_id": row.get("notebook_id"),
+        "topic": row.get("topic"),
+        "lane": row.get("lane"),
+        "archetype": row.get("archetype"),
+        "created_at": row.get("created_at"),
+    }
+
+
+@router.delete("/infographic/item/{infographic_id}")
+async def delete_infographic(infographic_id: str):
+    """Delete a persisted infographic row (Library trash action)."""
+    from storage.infographic_store import infographic_store
+    ok = await infographic_store.delete(infographic_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Infographic not found")
+    return {"deleted": True, "infographic_id": infographic_id}
