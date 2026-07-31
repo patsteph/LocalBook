@@ -4,9 +4,10 @@ Read-only view of the background enrichment worker + presence state, so the
 frontend living-view can show "synthesizing N/M", current tier, and memory
 pressure. Wires existing primitives — no new state machinery.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -126,6 +127,80 @@ _COLLECTOR_FREQUENCIES = [
 ]
 
 
+# --------------------------------------------------------------------------
+# Step 7 — Run-now dispatch.
+#
+# Each entry maps a registry schedule id → a zero-arg factory returning the
+# actor's EXISTING public run-once coroutine. We only ever call already-public
+# methods (poll_all / run_compact / … / check_and_recover / warmup_cycle) — no
+# actor refactors, no private `_tick` calls. Actors NOT in this map don't get a
+# live Run-now button; `_run_now_meta` explains why (see below).
+#
+# Gated actors (weekly-journal, digest-composer) are deliberately absent: their
+# only run-once entrypoint is a private `_tick` that self-gates to a day/7-day
+# cadence, so a forced run would either no-op or require refactoring the actor
+# (out of this file lane). Reactive/infra actors have no timer to trigger.
+# --------------------------------------------------------------------------
+def _rn_correspondent_poll() -> Awaitable[Any]:
+    from agents.correspondent import correspondent_agent
+    return correspondent_agent.poll_all()
+
+
+def _rn_memory_compact() -> Awaitable[Any]:
+    from services.memory_manager import memory_manager
+    return memory_manager.run_compact()
+
+
+def _rn_memory_pattern() -> Awaitable[Any]:
+    from services.memory_manager import memory_manager
+    return memory_manager.run_pattern_analysis()
+
+
+def _rn_memory_consolidation() -> Awaitable[Any]:
+    from services.memory_manager import memory_manager
+    return memory_manager.run_consolidation()
+
+
+def _rn_memory_daily_summary() -> Awaitable[Any]:
+    from services.memory_manager import memory_manager
+    return memory_manager.run_daily_summary()
+
+
+def _rn_stuck_source_recovery() -> Awaitable[Any]:
+    from services.stuck_source_recovery import stuck_source_recovery
+    return stuck_source_recovery.check_and_recover()
+
+
+def _rn_model_warmup() -> Awaitable[Any]:
+    from services import model_warmup
+    return model_warmup.warmup_cycle(force_all=True)
+
+
+_RUN_NOW: Dict[str, Callable[[], Awaitable[Any]]] = {
+    "correspondent-poll": _rn_correspondent_poll,
+    "memory-compact": _rn_memory_compact,
+    "memory-pattern": _rn_memory_pattern,
+    "memory-consolidation": _rn_memory_consolidation,
+    "memory-daily-summary": _rn_memory_daily_summary,
+    "stuck-source-recovery": _rn_stuck_source_recovery,
+    "model-warmup": _rn_model_warmup,
+}
+
+
+def _run_now_meta(d) -> tuple:
+    """(can_run_now, reason_if_disabled) for a registry definition."""
+    if d.id in _RUN_NOW:
+        return True, None
+    if d.cadence_kind == "reactive":
+        return False, "Event-driven — runs when its trigger fires, not on a timer."
+    if d.cadence_kind == "gated":
+        return False, ("Day/interval-gated — only acts when due; no safe "
+                       "on-demand trigger.")
+    if d.cadence_kind == "env":
+        return False, "Configured via environment; not runnable on demand."
+    return False, "No safe on-demand trigger for this actor."
+
+
 def _registry_row(d, ov: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Registry definition ⊕ stored override → one API row."""
     from services.schedule_store import definition_as_dict
@@ -138,12 +213,18 @@ def _registry_row(d, ov: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if ov.get("enabled") is False:
             enabled = False
     effective = override_interval if override_interval is not None else default_seconds
+    can_run_now, run_now_reason = _run_now_meta(d)
     row.update({
         "interval_seconds": effective,
         "overridden": bool(override_interval is not None),
         "enabled": enabled,
-        # Read-only in Rung A/B: only Collector per-notebook rows are live-editable.
+        # Interval editing for code-defined rows is not exposed in the UI yet;
+        # only the on/off toggle (Step 7) is live for `can_disable` rows.
         "editable": False,
+        # Step 7 metadata.
+        "can_disable": bool(getattr(d, "can_disable", False)),
+        "can_run_now": can_run_now,
+        "run_now_reason": run_now_reason,
     })
     return row
 
@@ -211,6 +292,11 @@ async def _collector_rows() -> List[Dict[str, Any]]:
                 "tier": "DEEP",
                 "env_var": None,
                 "rung_c_candidate": False,
+                # Collector rows manage on/off via the frequency dropdown
+                # ("Manual Only") + collect from the notebook's Collector panel.
+                "can_disable": False,
+                "can_run_now": False,
+                "run_now_reason": "Collect from the notebook's Collector panel.",
             })
     except Exception as e:
         logger.debug(f"[system.schedules] collector rows failed: {e}")
@@ -311,20 +397,90 @@ async def update_schedule(schedule_id: str, request: ScheduleUpdate):
         }
 
     # Registry (code-defined) schedule.
-    from services.schedule_store import get_definition
+    from services.schedule_store import get_definition, schedule_store
     d = get_definition(schedule_id)
     if d is None:
         raise HTTPException(status_code=404, detail=f"unknown schedule: {schedule_id}")
 
-    # Honest guard: these loops don't read the override store yet (Rung C).
+    # Step 7: per-actor enable/disable is live for actors whose loop gates on
+    # `schedule_store.is_enabled(id)` — the store write is picked up on the next
+    # loop iteration (no restart, no second cadence source).
+    if request.enabled is not None:
+        if not getattr(d, "can_disable", False):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"'{d.name}' can't be turned off — its background loop "
+                    "always runs (it doesn't gate on the enabled flag)."
+                ),
+            )
+        try:
+            schedule_store.set_enabled(schedule_id, bool(request.enabled))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {
+            "success": True,
+            "id": schedule_id,
+            "enabled": schedule_store.is_enabled(schedule_id),
+        }
+
+    # Interval editing for code-defined rows is not exposed yet (their loops read
+    # get_interval, but the UI only ships the on/off toggle in this build).
     raise HTTPException(
         status_code=409,
         detail=(
-            f"'{d.name}' is read-only in this build. Code-defined schedules "
-            "become editable once their background loop reads the override "
-            "store (Rung C — deferred)."
+            f"'{d.name}' interval editing isn't available in this build — only "
+            "its on/off toggle is."
         ),
     )
+
+
+@router.post("/schedules/{schedule_id:path}/run-now")
+async def run_schedule_now(schedule_id: str):
+    """Trigger a schedule's work ONCE, right now (Step 7).
+
+    Only actors with a safe, existing public run-once entrypoint are dispatchable
+    (see `_RUN_NOW`). Reactive/env/gated actors return 400 with a reason. The work
+    is launched as a background task so a slow actor (memory consolidation, IMAP
+    poll) can't hold the HTTP request open — the endpoint returns as soon as the
+    run is scheduled. Never triggers the presence-gated worker path; this is a
+    deliberate user-initiated immediate run.
+    """
+    from services.schedule_store import get_definition
+
+    if schedule_id.startswith("collector:"):
+        raise HTTPException(
+            status_code=400,
+            detail="Run a notebook's Collector from its Collector panel.",
+        )
+
+    d = get_definition(schedule_id)
+    if d is None:
+        raise HTTPException(status_code=404, detail=f"unknown schedule: {schedule_id}")
+
+    factory = _RUN_NOW.get(schedule_id)
+    if factory is None:
+        _, reason = _run_now_meta(d)
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{d.name}' can't be run on demand — "
+                   f"{reason or 'no safe trigger.'}",
+        )
+
+    async def _runner():
+        try:
+            await factory()
+            logger.info(f"[system.run-now] '{schedule_id}' completed")
+        except Exception as e:
+            logger.warning(f"[system.run-now] '{schedule_id}' failed: {e}")
+
+    try:
+        asyncio.create_task(_runner())
+    except Exception as e:
+        logger.warning(f"[system.run-now] '{schedule_id}' dispatch failed: {e}")
+        raise HTTPException(status_code=500, detail=f"could not start run: {e}")
+
+    return {"success": True, "id": schedule_id, "triggered": True}
 
 
 @router.get("/schedule/{notebook_id}")

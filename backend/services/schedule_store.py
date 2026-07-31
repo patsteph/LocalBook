@@ -79,6 +79,12 @@ class ScheduleDef:
     env_var: Optional[str] = None   # env override, if any (read-only "via env")
     managed_in: Optional[str] = None  # where it's actually edited today (UI pointer)
     advanced: bool = False          # hide behind the "advanced" disclosure in the UI
+    # Step 7 (per-actor enable/disable): True only when this actor's background
+    # loop actually gates its work on `schedule_store.is_enabled(id)`. Toggling a
+    # row where this is False would be a lie (the loop never checks), so the
+    # Schedule Viewer only offers the on/off switch for these — one cadence
+    # source, honestly surfaced.
+    can_disable: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -150,6 +156,7 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
         module_const="correspondent.DEFAULT_POLL_INTERVAL_MINUTES",
         note="Fetch + classify + route new mail across all enabled IMAP accounts.",
         tier="DEEP",
+        can_disable=True,
     ),
     ScheduleDef(
         id="weekly-journal",
@@ -167,6 +174,7 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
              "Correspondent settings.",
         tier="NIGHT",
         managed_in="Correspondent settings",
+        can_disable=True,
     ),
     ScheduleDef(
         id="digest-composer",
@@ -184,6 +192,7 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
              "Correspondent settings.",
         tier="NIGHT",
         managed_in="Correspondent settings",
+        can_disable=True,
     ),
 
     # ── Memory ──────────────────────────────────────────────────────────
@@ -200,6 +209,7 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
         module_const="memory_manager.COMPACT_INTERVAL_HOURS",
         note="Event dedup / merge (non-LLM).",
         tier="DEEP",
+        can_disable=True,
     ),
     ScheduleDef(
         id="memory-pattern",
@@ -214,6 +224,7 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
         module_const="memory_manager.PATTERN_INTERVAL_HOURS",
         note="phi4 pattern analysis — emerging preferences.",
         tier="DEEP",
+        can_disable=True,
     ),
     ScheduleDef(
         id="memory-consolidation",
@@ -228,6 +239,7 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
         module_const="memory_manager.DEEP_CONSOLIDATION_HOURS",
         note="Tier-3 consolidation — updates memory embeddings. NIGHT-only.",
         tier="NIGHT",
+        can_disable=True,
     ),
     ScheduleDef(
         id="memory-daily-summary",
@@ -242,6 +254,7 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
         module_const="memory_manager.DAILY_SUMMARY_HOURS",
         note="Tier-4 daily summary + brief pre-compute. NIGHT-only.",
         tier="NIGHT",
+        can_disable=True,
     ),
 
     # ── Infrastructure (read-only, advanced disclosure) ─────────────────
@@ -269,6 +282,7 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
         note="Resets sources stuck in 'processing'.",
         tier="DEEP",
         advanced=True,
+        can_disable=True,
     ),
     ScheduleDef(
         id="model-warmup",
@@ -479,6 +493,15 @@ class ScheduleStore:
         self._overrides[schedule_id] = ov
         self._save()
         return dict(ov)
+
+    def set_enabled(self, schedule_id: str, enabled: bool) -> Dict[str, Any]:
+        """Enable/disable a schedule (Step 7). Thin wrapper over `set_override`
+        so the on/off toggle has a first-class name. Raises ValueError on an
+        unknown id (the API maps that to 404); persistence itself never raises.
+        The loops that gate on `is_enabled(id)` pick this up on their next
+        iteration — no restart, no second cadence source.
+        """
+        return self.set_override(schedule_id, enabled=bool(enabled))
 
     def clear_override(self, schedule_id: str) -> None:
         if schedule_id in self._overrides:
