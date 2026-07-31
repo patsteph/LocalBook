@@ -138,6 +138,22 @@ async def candidates(notebook_id: str, req: CandidatesRequest):
     return {"candidates": pairs}
 
 
+@router.get("/timeline/{notebook_id}")
+async def get_timeline(notebook_id: str, limit: int = 200):
+    """Unified journey feed (Walk read-layer): merges the three capture stores —
+    exploration chat journey + activity ledger + curator brain — into one
+    newest-first, de-duplicated, typed timeline for the replay scrubber.
+
+    Read-only; never 500s. Returns [] on any failure (build_timeline itself is
+    fail-open per store, this wrapper is the last-resort guard)."""
+    from services import canvas_timeline
+
+    try:
+        return await canvas_timeline.build_timeline(notebook_id, limit)
+    except Exception:
+        return []
+
+
 @router.post("/populate/{notebook_id}")
 async def populate(notebook_id: str, limit: int = 50):
     """Seed nodes from existing capture (Crawl P2): chat turns (exploration_store) + sources
