@@ -368,10 +368,14 @@ _STEPPED_CARDS = (
 # Intro column (eyebrow pill + headline + subhead + 2x2 stat chips) beside a
 # ladder of four status-badged tiers anchored by a home/base node. Reuses
 # ib-cite + the new ib-pill / ib-chip / ib-tier / ib-tier-meta / ib-anchor.
-_TIER_CHIP = '<div class="ib-chip">{{CHIP_#N#_LABEL}}<sup class="ib-cite">{{CITE_#N#}}</sup></div>'
+_TIER_CHIP = ('<div class="ib-chip">'
+              '<div class="ib-chip-val">{{CHIP_#N#_VALUE}}</div>'
+              '<div class="ib-chip-lab">{{CHIP_#N#_LABEL}}<sup class="ib-cite">{{CITE_#N#}}</sup></div>'
+              '</div>')
 
 _TIER_ROW = """<div class="ib-tier">
-        <div style="min-width:0">
+        <div class="ib-tier-rung">#N#</div>
+        <div style="min-width:0;flex:1">
           <div class="ib-tier-meta">{{TIER_#N#_META}}</div>
           <div style="font-weight:800;font-size:15px;color:var(--ib-ink)">{{TIER_#N#_LABEL}}</div>
         </div>
@@ -618,10 +622,14 @@ _L2_SYSTEMS_EXT: dict[str, str] = {
         '  "EYEBROW": "max 4 words, a small eyebrow label",\n'
         '  "HEADLINE": "max 5 words, the punchy headline",\n'
         '  "SUBHEAD": "max 16 words of one-sentence context",\n'
-        '  "CHIP_1_LABEL": "max 4 words, a headline stat / receipt",\n'
-        '  "CHIP_2_LABEL": "max 4 words, another stat",\n'
-        '  "CHIP_3_LABEL": "max 4 words, another stat",\n'
-        '  "CHIP_4_LABEL": "max 4 words, another stat",\n'
+        '  "CHIP_1_VALUE": "a short stat/number (e.g. 5-30x, 42%, 1.2M, 4 steps)",\n'
+        '  "CHIP_1_LABEL": "max 3 words naming what the stat measures",\n'
+        '  "CHIP_2_VALUE": "a short stat/number",\n'
+        '  "CHIP_2_LABEL": "max 3 words",\n'
+        '  "CHIP_3_VALUE": "a short stat/number",\n'
+        '  "CHIP_3_LABEL": "max 3 words",\n'
+        '  "CHIP_4_VALUE": "a short stat/number",\n'
+        '  "CHIP_4_LABEL": "max 3 words",\n'
         '  "TIER_1_META": "max 3 words, the top tier qualifier (e.g. a size)",\n'
         '  "TIER_1_LABEL": "max 4 words, the top tier name",\n'
         '  "TIER_1_BADGE": "one word status (e.g. RENT / RUNS / TRAINS)",\n'

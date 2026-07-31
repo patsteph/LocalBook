@@ -290,15 +290,20 @@ INFOGRAPHIC_L2_CSS = r"""
 .ib-loopline-rule{flex:1;height:0;border-top:1.5px solid var(--ib-accent);opacity:.6;}
 .ib-loopline svg{width:22px;height:16px;stroke:var(--ib-accent);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto;}
 .ib-chip{
-  display:flex;align-items:center;min-width:0;padding:10px 12px;border-radius:10px;
+  display:flex;flex-direction:column;justify-content:center;min-width:0;padding:12px 14px;border-radius:12px;
   background:var(--ib-card-a);border:1px solid var(--ib-line);
-  font-size:12.5px;font-weight:700;color:var(--ib-ink);
 }
+.ib-chip-val{font-size:23px;font-weight:800;color:var(--ib-accent);line-height:1.05;}
+.ib-chip-lab{font-size:11px;font-weight:600;color:var(--ib-muted);margin-top:4px;}
 .ib-tier-list{display:flex;flex-direction:column;gap:10px;min-width:0;}
 .ib-tier{
-  display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;
+  display:flex;align-items:center;gap:12px;min-width:0;
   background:linear-gradient(158deg,var(--ib-card-a),var(--ib-card-b));
   border:1px solid var(--ib-line);border-radius:14px;padding:14px 16px;
+}
+.ib-tier-rung{
+  flex-shrink:0;width:28px;height:28px;border-radius:50%;background:var(--ib-accent);
+  color:#fff;font-weight:800;font-size:13px;display:flex;align-items:center;justify-content:center;
 }
 .ib-tier-meta{font-family:var(--ib-mono);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--ib-muted);text-transform:uppercase;margin-bottom:3px;}
 .ib-anchor{gap:10px;background:var(--ib-accent-soft);border:1px solid var(--ib-accent);border-radius:14px;padding:14px 16px;color:var(--ib-ink);font-weight:800;}
