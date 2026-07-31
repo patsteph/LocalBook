@@ -79,6 +79,29 @@ STICKER_TINT: dict[str, str] = {
     "warning": AMBER,
     "star": AMBER,
     "globe": BLUE,
+    # general-explainer expansion (2.2.0)
+    "shield": STEEL,
+    "rocket": CORAL,
+    "magnet": CORAL,
+    "scale": INK_SOFT,
+    "target": CORAL,
+    "flag": GREEN,
+    "mappin": CORAL,
+    "calendar": BLUE,
+    "clock": STEEL,
+    "mail": BLUE,
+    "bell": AMBER,
+    "tag": GREEN,
+    "bookmark": CORAL,
+    "graph_line": GREEN,
+    "pie": BLUE,
+    "table": STEEL,
+    "code": INK_SOFT,
+    "git_branch": VIOLET,
+    "eye": BLUE,
+    "compass": TEAL,
+    "flask": TEAL,
+    "atom": VIOLET,
 }
 
 
@@ -416,6 +439,209 @@ def _globe() -> str:
     )
 
 
+# ── general-explainer expansion (2.2.0) ────────────────────────────────
+def _shield() -> str:
+    return (
+        f'<path d="M50 18 l26 9 v20 q0 26 -26 35 q-26 -9 -26 -35 v-20 z" '
+        f'fill-opacity="0.24" {_sw(fill=STEEL)}/>'
+        f'<path d="M40 50 l7 8 l14 -16" {_cw(GREEN, 3)}/>'
+    )
+
+
+def _rocket() -> str:
+    return (
+        f'<path d="M50 16 q15 11 15 34 l-4 16 h-22 l-4 -16 q0 -23 15 -34 z" '
+        f'fill-opacity="0.26" {_sw(fill=CORAL)}/>'
+        f'<circle cx="50" cy="40" r="6" {_sw(2.2, fill=PAPER)}/>'
+        f'<path d="M35 60 l-9 12 l13 -4 M65 60 l9 12 l-13 -4" {_sw(2.4)}/>'
+        f'<path d="M46 78 q4 8 8 0" {_cw(AMBER, 3)}/>'
+    )
+
+
+def _magnet() -> str:
+    return (
+        f'<path d="M34 26 v22 a16 16 0 0 0 32 0 v-22" {_sw(6)}/>'
+        f'<path d="M28 26 h12" {_cw(CORAL, 6)}/>'
+        f'<path d="M60 26 h12" {_cw(BLUE, 6)}/>'
+    )
+
+
+def _scale() -> str:
+    return (
+        f'<path d="M50 22 v46 M38 72 h24" {_sw(3)}/>'
+        f'<path d="M26 32 h48" {_sw(3)}/>'
+        f'<circle cx="50" cy="22" r="3.4" fill="{INK}"/>'
+        # hangers
+        f'<path d="M26 32 l-6 16 M26 32 l6 16 M74 32 l-6 16 M74 32 l6 16" {_sw(2)}/>'
+        # pans
+        f'<path d="M14 48 a12 6 0 0 0 24 0 z" fill-opacity="0.24" {_sw(2.2, fill=AMBER)}/>'
+        f'<path d="M62 48 a12 6 0 0 0 24 0 z" fill-opacity="0.24" {_sw(2.2, fill=AMBER)}/>'
+    )
+
+
+def _target() -> str:
+    return (
+        f'<circle cx="50" cy="50" r="26" fill-opacity="0.18" {_sw(fill=CORAL)}/>'
+        f'<circle cx="50" cy="50" r="16" {_sw(2.4)}/>'
+        f'<circle cx="50" cy="50" r="6" {_sw(2.2)}/>'
+        f'<circle cx="50" cy="50" r="2.4" fill="{CORAL}"/>'
+    )
+
+
+def _flag() -> str:
+    return (
+        f'<path d="M32 18 v64" {_sw(3.2)}/>'
+        f'<path d="M32 22 h36 q-9 9 0 18 h-36 z" '
+        f'fill-opacity="0.30" {_sw(fill=GREEN)}/>'
+    )
+
+
+def _mappin() -> str:
+    return (
+        f'<path d="M50 20 a18 18 0 0 1 18 18 q0 16 -18 38 q-18 -22 -18 -38 '
+        f'a18 18 0 0 1 18 -18 z" fill-opacity="0.26" {_sw(fill=CORAL)}/>'
+        f'<circle cx="50" cy="38" r="7" {_sw(2.2, fill=PAPER)}/>'
+    )
+
+
+def _calendar() -> str:
+    return (
+        f'<rect x="24" y="26" width="52" height="48" rx="6" {_sw(fill=PAPER)}/>'
+        f'<path d="M24 40 h52" {_sw(2.4)}/>'
+        f'<path d="M36 20 v10 M64 20 v10" {_sw(3)}/>'
+        f'<rect x="34" y="48" width="8" height="8" rx="1.5" fill="{BLUE}" fill-opacity="0.55"/>'
+        f'<rect x="58" y="48" width="8" height="8" rx="1.5" fill="{BLUE}" fill-opacity="0.30"/>'
+        f'<rect x="34" y="60" width="8" height="8" rx="1.5" fill="{BLUE}" fill-opacity="0.30"/>'
+        f'<rect x="58" y="60" width="8" height="8" rx="1.5" fill="{BLUE}" fill-opacity="0.55"/>'
+    )
+
+
+def _clock() -> str:
+    return (
+        f'<circle cx="50" cy="50" r="26" {_sw(fill=PAPER)}/>'
+        f'<path d="M50 50 v-15 M50 50 l12 7" {_sw(3)}/>'
+        f'<circle cx="50" cy="50" r="2.6" fill="{INK}"/>'
+        f'<path d="M50 26 v4 M50 70 v4 M26 50 h4 M70 50 h4" {_sw(2.2)}/>'
+    )
+
+
+def _mail() -> str:
+    return (
+        f'<rect x="22" y="30" width="56" height="40" rx="6" {_sw(fill=PAPER)}/>'
+        f'<path d="M24 34 l26 20 l26 -20" {_sw(2.6)}/>'
+    )
+
+
+def _bell() -> str:
+    return (
+        f'<path d="M34 64 q2 -7 4 -13 a12 14 0 0 1 24 0 q2 6 4 13 z" '
+        f'fill-opacity="0.28" {_sw(fill=AMBER)}/>'
+        f'<path d="M50 22 v6" {_sw(2.6)}/>'
+        f'<circle cx="50" cy="20" r="3.2" fill="{INK}"/>'
+        f'<path d="M44 68 a6 6 0 0 0 12 0" {_sw(2.4)}/>'
+    )
+
+
+def _tag() -> str:
+    return (
+        f'<path d="M24 46 l22 -22 a4 4 0 0 1 3 -1 h20 a4 4 0 0 1 4 4 v20 '
+        f'a4 4 0 0 1 -1 3 l-22 22 a4 4 0 0 0 -3 1 l-24 -24 a4 4 0 0 1 1 -3 z" '
+        f'fill-opacity="0.28" {_sw(fill=GREEN)}/>'
+        f'<circle cx="62" cy="38" r="4.4" {_sw(2.2, fill=PAPER)}/>'
+    )
+
+
+def _bookmark() -> str:
+    return (
+        f'<path d="M34 20 h32 v60 l-16 -13 l-16 13 z" '
+        f'fill-opacity="0.28" {_sw(fill=CORAL)}/>'
+    )
+
+
+def _graph_line() -> str:
+    return (
+        f'<path d="M26 22 v56 h52" {_sw(3)}/>'
+        f'<path d="M32 68 l14 -16 l10 8 l20 -26" {_cw(GREEN, 3.2)}/>'
+        f'<circle cx="46" cy="52" r="3" fill="{GREEN}"/>'
+        f'<circle cx="56" cy="60" r="3" fill="{GREEN}"/>'
+        f'<circle cx="76" cy="34" r="3" fill="{GREEN}"/>'
+    )
+
+
+def _pie() -> str:
+    return (
+        f'<circle cx="50" cy="50" r="26" fill-opacity="0.20" {_sw(fill=BLUE)}/>'
+        f'<path d="M50 50 v-26 a26 26 0 0 1 22 13 z" '
+        f'fill-opacity="0.45" {_sw(2.2, fill=AMBER)}/>'
+        f'<path d="M50 50 l22 -13 M50 50 v-26" {_sw(2.2)}/>'
+    )
+
+
+def _table() -> str:
+    return (
+        f'<rect x="22" y="28" width="56" height="44" rx="5" {_sw(fill=PAPER)}/>'
+        f'<path d="M22 42 h56" {_sw(2.4)}/>'
+        f'<path d="M22 57 h56 M40 42 v30 M60 42 v30" {_sw(2)}/>'
+        f'<path d="M22 42 h56 v-9 a5 5 0 0 0 -5 -5 h-46 a5 5 0 0 0 -5 5 z" '
+        f'fill-opacity="0.30" {_sw(2, fill=STEEL)}/>'
+    )
+
+
+def _code() -> str:
+    return (
+        f'<path d="M40 34 l-16 16 l16 16" {_sw(4)}/>'
+        f'<path d="M60 34 l16 16 l-16 16" {_sw(4)}/>'
+        f'<path d="M55 28 l-10 44" {_cw(CORAL, 3)}/>'
+    )
+
+
+def _git_branch() -> str:
+    return (
+        f'<path d="M34 36 v28" {_sw(3)}/>'
+        f'<path d="M66 36 v4 a16 16 0 0 1 -16 16 h-16" {_sw(3)}/>'
+        f'<circle cx="34" cy="30" r="6" fill-opacity="0.35" {_sw(2.2, fill=VIOLET)}/>'
+        f'<circle cx="34" cy="70" r="6" fill-opacity="0.35" {_sw(2.2, fill=VIOLET)}/>'
+        f'<circle cx="66" cy="30" r="6" fill-opacity="0.35" {_sw(2.2, fill=VIOLET)}/>'
+    )
+
+
+def _eye() -> str:
+    return (
+        f'<path d="M22 50 q28 -26 56 0 q-28 26 -56 0 z" {_sw(fill=PAPER)}/>'
+        f'<circle cx="50" cy="50" r="9" fill-opacity="0.40" {_sw(2.2, fill=BLUE)}/>'
+        f'<circle cx="50" cy="50" r="3" fill="{INK}"/>'
+    )
+
+
+def _compass() -> str:
+    return (
+        f'<circle cx="50" cy="50" r="26" fill-opacity="0.18" {_sw(fill=TEAL)}/>'
+        f'<path d="M50 30 l7 20 l-7 20 l-7 -20 z" '
+        f'fill-opacity="0.45" {_sw(2.2, fill=CORAL)}/>'
+        f'<circle cx="50" cy="50" r="2.6" fill="{INK}"/>'
+    )
+
+
+def _flask() -> str:
+    return (
+        f'<path d="M42 22 h16 v16 l14 32 a6 6 0 0 1 -6 8 h-32 a6 6 0 0 1 -6 -8 '
+        f'l14 -32 v-16 z" fill-opacity="0.22" {_sw(fill=TEAL)}/>'
+        f'<path d="M40 22 h20" {_sw(2.6)}/>'
+        f'<path d="M35 58 h30" {_sw(2.2)}/>'
+        f'<circle cx="46" cy="66" r="2.4" fill="{TEAL}"/>'
+        f'<circle cx="56" cy="70" r="2" fill="{TEAL}"/>'
+    )
+
+
+def _atom() -> str:
+    return (
+        f'<circle cx="50" cy="50" r="4" fill="{VIOLET}"/>'
+        f'<ellipse cx="50" cy="50" rx="28" ry="11" {_sw(2.2)}/>'
+        f'<ellipse cx="50" cy="50" rx="28" ry="11" transform="rotate(60 50 50)" {_sw(2.2)}/>'
+        f'<ellipse cx="50" cy="50" rx="28" ry="11" transform="rotate(-60 50 50)" {_sw(2.2)}/>'
+    )
+
+
 _STICKERS = {
     # original set
     "document": _document, "puzzle": _puzzle, "hook": _hook, "robot": _robot,
@@ -428,6 +654,13 @@ _STICKERS = {
     "search": _search, "funnel": _funnel, "layers": _layers, "vector": _vector,
     "arrow": _arrow, "lightbulb": _lightbulb, "chat": _chat, "terminal": _terminal,
     "sync": _sync, "warning": _warning, "star": _star, "globe": _globe,
+    # general-explainer expansion (2.2.0)
+    "shield": _shield, "rocket": _rocket, "magnet": _magnet, "scale": _scale,
+    "target": _target, "flag": _flag, "mappin": _mappin, "calendar": _calendar,
+    "clock": _clock, "mail": _mail, "bell": _bell, "tag": _tag,
+    "bookmark": _bookmark, "graph_line": _graph_line, "pie": _pie, "table": _table,
+    "code": _code, "git_branch": _git_branch, "eye": _eye, "compass": _compass,
+    "flask": _flask, "atom": _atom,
 }
 
 # Fail-open glyph — a plain sketched box.
