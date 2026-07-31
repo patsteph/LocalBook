@@ -14,6 +14,11 @@ arrows are baked in below.
 """
 from __future__ import annotations
 
+from services.infographic.icons import allowed_icon_names
+
+# The allowlist offered to the model for `{{ICON_*}}` slots (mirrors slotfill).
+_ICON_LIST = ", ".join(allowed_icon_names())
+
 # Baked-in structural glyphs (not model-controlled).
 _ARROW_R = (
     '<span class="ib-arrow"><svg viewBox="0 0 24 20" aria-hidden="true">'
@@ -202,6 +207,87 @@ _THREE_STAGE = """
 </div>
 """
 
+# ── Archetype 4 — stat_grid (KPI tiles) ────────────────────────────────
+# A 2x2 grid of stat tiles: big number + label + a real citation superscript.
+# Reuses ONLY design-system classes (ib-card / ib-bracketed / ib-center /
+# ib-icon / ib-cite / ib-node-label) + inline layout; the CSS custom properties
+# (--ib-ink / --ib-accent …) cascade from the `.ib` root, so inline styles that
+# reference them stay on-palette without any new class.
+def _repeat(tmpl: str, count: int) -> str:
+    """Expand a `#N#`-tokened block for indices 1..count. Uses `.replace()` (not
+    %-formatting) so literal CSS percents like `max-width:100%` pass through."""
+    return "\n    ".join(tmpl.replace("#N#", str(i)) for i in range(1, count + 1))
+
+
+_STAT_TILE = """<div class="ib-card ib-bracketed ib-center" style="flex-direction:column;gap:6px;padding:20px 14px">
+        <span class="ib-icon ib-icon--accent">{{ICON_S#N#}}</span>
+        <div style="font-size:32px;font-weight:800;color:var(--ib-ink);line-height:1.05;text-align:center">{{STAT_#N#_VALUE}}<sup class="ib-cite">{{CITE_#N#}}</sup></div>
+        <div class="ib-node-label" style="max-width:150px">{{STAT_#N#_LABEL}}</div>
+      </div>"""
+
+_STAT_GRID = (
+    '\n<div class="ib">\n'
+    '  <div class="ib-section-label">{{GRID_TITLE}}</div>\n'
+    '  <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;max-width:100%">\n'
+    "    " + _repeat(_STAT_TILE, 4) + "\n"
+    '  </div>\n'
+    '  <div class="ib-subtitle" style="margin-top:16px">{{FOOTER}}</div>\n'
+    "</div>\n"
+)
+
+
+# ── Archetype 5 — timeline (vertical chronology) ───────────────────────
+# Each event is [date + dashed coral spine] | [bracketed card]. The spine is the
+# existing `ib-phase-divider` (a dashed coral rule) so the column of events reads
+# as one continuous timeline. Citation superscripts bind to real sources.
+_TIMELINE_EVENT = """<div class="ib-row" style="align-items:stretch;gap:14px;margin-bottom:12px">
+      <div class="ib-center" style="flex:0 0 76px;flex-direction:column;gap:8px">
+        <span class="ib-icon ib-icon--accent ib-icon--sm">{{ICON_E#N#}}</span>
+        <div style="font-weight:800;color:var(--ib-accent);font-size:13px;text-align:center;line-height:1.2">{{EVENT_#N#_DATE}}</div>
+        <div class="ib-phase-divider" style="flex:1"></div>
+      </div>
+      <div class="ib-card ib-bracketed" style="flex:1;min-width:0">
+        <div style="font-weight:700;color:var(--ib-ink)">{{EVENT_#N#_TITLE}}<sup class="ib-cite">{{CITE_#N#}}</sup></div>
+        <div class="ib-note" style="margin-top:6px">{{EVENT_#N#_NOTE}}</div>
+      </div>
+    </div>"""
+
+_TIMELINE = (
+    '\n<div class="ib">\n'
+    '  <div class="ib-section-label">{{TIMELINE_TITLE}}</div>\n'
+    '  <div style="display:flex;flex-direction:column">\n'
+    "    " + _repeat(_TIMELINE_EVENT, 4) + "\n"
+    '  </div>\n'
+    "</div>\n"
+)
+
+
+# ── Archetype 6 — tree_hierarchy (root -> 3 children) ──────────────────
+# A glowing root card branches (via the baked-in coral `_BRANCH` glyph) into a
+# 3-up `ib-fan` of child cards. Reuses ib-card / ib-glow / ib-fan / ib-icon.
+_TREE_CHILD = """<div class="ib-card ib-bracketed ib-center" style="flex-direction:column;gap:8px;padding:16px 10px">
+        <span class="ib-icon">{{ICON_C#N#}}</span>
+        <div class="ib-node-label" style="font-weight:700;color:var(--ib-ink)">{{CHILD_#N#_LABEL}}</div>
+        <div class="ib-node-label">{{CHILD_#N#_NOTE}}</div>
+      </div>"""
+
+_TREE_HIERARCHY = (
+    '\n<div class="ib">\n'
+    '  <div class="ib-section-label">{{TREE_TITLE}}</div>\n'
+    '  <div class="ib-center" style="flex-direction:column;gap:0">\n'
+    '    <div class="ib-card ib-glow ib-bracketed ib-center" style="flex-direction:column;gap:8px;padding:16px 24px;min-width:200px">\n'
+    '      <span class="ib-icon ib-icon--accent">{{ICON_ROOT}}</span>\n'
+    '      <div style="font-weight:800;font-size:17px;color:var(--ib-ink)">{{ROOT_LABEL}}</div>\n'
+    '    </div>\n'
+    "    __BRANCH__\n"
+    '    <div class="ib-fan">\n'
+    "      " + _repeat(_TREE_CHILD, 3) + "\n"
+    '    </div>\n'
+    '  </div>\n'
+    "</div>\n"
+)
+
+
 _CYCLE_SVG = (
     '<svg viewBox="0 0 24 24" aria-hidden="true">'
     '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>'
@@ -246,6 +332,9 @@ _SKELETONS = {
     "pipeline_compare": _PIPELINE_COMPARE,
     "facts_table": _FACTS_TABLE,
     "three_stage": _THREE_STAGE,
+    "stat_grid": _STAT_GRID,
+    "timeline": _TIMELINE,
+    "tree_hierarchy": _TREE_HIERARCHY,
 }
 
 ARCHETYPES = tuple(_SKELETONS.keys())
@@ -257,3 +346,126 @@ def get_skeleton(archetype: str) -> str | None:
     if raw is None:
         return None
     return _expand_structural(raw)
+
+
+# ── Slot contract for the archetypes authored in THIS file ─────────────
+# The original three archetypes' slot prompts/validation live in
+# `services/infographic/slotfill.py`. The archetypes added here co-locate their
+# slot contract with their skeleton (structure + contract in one place). The
+# builder resolves an archetype's contract from HERE first, falling back to
+# slotfill for the originals (`builder._sys/_key_slots/_icon_slots`).
+
+# archetype -> LLM system prompt enumerating the EXACT text/icon slots to fill.
+_L2_SYSTEMS_EXT: dict[str, str] = {
+    "stat_grid": (
+        "You are filling text slots in a KPI 'stat grid' infographic: four tiles, each a big "
+        "headline NUMBER with a short label. Return JSON with these exact keys:\n\n"
+        "{\n"
+        '  "GRID_TITLE": "max 5 words naming the metric set (e.g. \'Key figures\')",\n'
+        '  "STAT_1_VALUE": "max 3 words, a headline number (e.g. \'$1.2B\', \'98%\', \'3.4M\')",\n'
+        '  "STAT_1_LABEL": "max 4 words, what the number measures",\n'
+        '  "STAT_2_VALUE": "max 3 words, second headline number",\n'
+        '  "STAT_2_LABEL": "max 4 words label",\n'
+        '  "STAT_3_VALUE": "max 3 words, third headline number",\n'
+        '  "STAT_3_LABEL": "max 4 words label",\n'
+        '  "STAT_4_VALUE": "max 3 words, fourth headline number",\n'
+        '  "STAT_4_LABEL": "max 4 words label",\n'
+        '  "FOOTER": "max 14 words, a one-line takeaway or as-of note",\n'
+        f'  "ICON_S1": "one of: {_ICON_LIST}",\n'
+        '  "ICON_S2": "one icon name from that list",\n'
+        '  "ICON_S3": "one icon name from that list",\n'
+        '  "ICON_S4": "one icon name from that list"\n'
+        "}\n\n"
+        "Each VALUE must be a concise figure, not a sentence. Pick an icon that fits each stat."
+    ),
+    "timeline": (
+        "You are filling text slots in a vertical TIMELINE infographic: four events in "
+        "chronological order, each with a date, a short title, and a one-line note. Return JSON:\n\n"
+        "{\n"
+        '  "TIMELINE_TITLE": "max 5 words naming the timeline",\n'
+        '  "EVENT_1_DATE": "max 2 words, the earliest date (e.g. a year)",\n'
+        '  "EVENT_1_TITLE": "max 4 words, what happened first",\n'
+        '  "EVENT_1_NOTE": "max 10 words of detail",\n'
+        '  "EVENT_2_DATE": "max 2 words date",\n'
+        '  "EVENT_2_TITLE": "max 4 words title",\n'
+        '  "EVENT_2_NOTE": "max 10 words of detail",\n'
+        '  "EVENT_3_DATE": "max 2 words date",\n'
+        '  "EVENT_3_TITLE": "max 4 words title",\n'
+        '  "EVENT_3_NOTE": "max 10 words of detail",\n'
+        '  "EVENT_4_DATE": "max 2 words, the latest date",\n'
+        '  "EVENT_4_TITLE": "max 4 words title",\n'
+        '  "EVENT_4_NOTE": "max 10 words of detail",\n'
+        f'  "ICON_E1": "one of: {_ICON_LIST}",\n'
+        '  "ICON_E2": "one icon name from that list",\n'
+        '  "ICON_E3": "one icon name from that list",\n'
+        '  "ICON_E4": "one icon name from that list"\n'
+        "}\n\n"
+        "Order events oldest -> newest. Keep titles short noun phrases."
+    ),
+    "tree_hierarchy": (
+        "You are filling text slots in a HIERARCHY infographic: one root concept that branches "
+        "into three children. Return JSON:\n\n"
+        "{\n"
+        '  "TREE_TITLE": "max 5 words naming the hierarchy",\n'
+        '  "ROOT_LABEL": "max 4 words, the parent / root concept",\n'
+        '  "CHILD_1_LABEL": "max 3 words, first child",\n'
+        '  "CHILD_1_NOTE": "max 6 words describing it",\n'
+        '  "CHILD_2_LABEL": "max 3 words, second child",\n'
+        '  "CHILD_2_NOTE": "max 6 words describing it",\n'
+        '  "CHILD_3_LABEL": "max 3 words, third child",\n'
+        '  "CHILD_3_NOTE": "max 6 words describing it",\n'
+        f'  "ICON_ROOT": "one of: {_ICON_LIST}",\n'
+        '  "ICON_C1": "one icon name from that list",\n'
+        '  "ICON_C2": "one icon name from that list",\n'
+        '  "ICON_C3": "one icon name from that list"\n'
+        "}\n\n"
+        "The three children must be sibling sub-parts OF the root. Keep labels to short phrases."
+    ),
+}
+
+# archetype -> (must-have text slots, minimum filled) — see builder._check_slots
+_L2_KEY_SLOTS_EXT: dict[str, tuple[list[str], int]] = {
+    "stat_grid": (
+        ["GRID_TITLE", "STAT_1_VALUE", "STAT_1_LABEL", "STAT_2_VALUE", "STAT_2_LABEL",
+         "STAT_3_VALUE", "STAT_3_LABEL", "STAT_4_VALUE", "STAT_4_LABEL"],
+        6,
+    ),
+    "timeline": (
+        ["TIMELINE_TITLE", "EVENT_1_DATE", "EVENT_1_TITLE", "EVENT_2_DATE", "EVENT_2_TITLE",
+         "EVENT_3_DATE", "EVENT_3_TITLE", "EVENT_4_DATE", "EVENT_4_TITLE"],
+        6,
+    ),
+    "tree_hierarchy": (
+        ["TREE_TITLE", "ROOT_LABEL", "CHILD_1_LABEL", "CHILD_2_LABEL", "CHILD_3_LABEL"],
+        4,
+    ),
+}
+
+# archetype -> list of (icon_slot_key, label_slot_key_for_fallback)
+_ICON_SLOTS_EXT: dict[str, list[tuple[str, str]]] = {
+    "stat_grid": [
+        ("ICON_S1", "STAT_1_LABEL"), ("ICON_S2", "STAT_2_LABEL"),
+        ("ICON_S3", "STAT_3_LABEL"), ("ICON_S4", "STAT_4_LABEL"),
+    ],
+    "timeline": [
+        ("ICON_E1", "EVENT_1_TITLE"), ("ICON_E2", "EVENT_2_TITLE"),
+        ("ICON_E3", "EVENT_3_TITLE"), ("ICON_E4", "EVENT_4_TITLE"),
+    ],
+    "tree_hierarchy": [
+        ("ICON_ROOT", "ROOT_LABEL"), ("ICON_C1", "CHILD_1_LABEL"),
+        ("ICON_C2", "CHILD_2_LABEL"), ("ICON_C3", "CHILD_3_LABEL"),
+    ],
+}
+
+
+def l2_system_ext(archetype: str) -> str | None:
+    """Slot-fill system prompt for an archetype authored here (else None)."""
+    return _L2_SYSTEMS_EXT.get(archetype)
+
+
+def l2_key_slots_ext(archetype: str):
+    return _L2_KEY_SLOTS_EXT.get(archetype)
+
+
+def l2_icon_slots_ext(archetype: str):
+    return _ICON_SLOTS_EXT.get(archetype)

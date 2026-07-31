@@ -10,6 +10,7 @@ Run:  cd backend && python -m pytest tests/test_infographic.py -q
 import asyncio
 import re
 import types
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from services.infographic.builder import (
     _cite_slots_for_rows,
     _prose_fallback,
     _finalize_body,
+    _check_slots,
     pick_archetype,
     build_l4,
 )
@@ -354,7 +356,7 @@ def test_l3_scene_and_every_sticker_are_valid_xml():
 def test_sticker_render_fail_open():
     assert "<" in l3stickers.render_sticker("does-not-exist")  # neutral box, never empty
     assert "<path" in l3stickers.render_sticker("robot")
-    assert len(l3stickers.sticker_names()) >= 12
+    assert len(l3stickers.sticker_names()) >= 30   # grown library (2.2.0)
 
 
 # ── Build A: router honors explicit medium words (the "poster → L2" field bug) ──
@@ -475,3 +477,64 @@ def test_pick_archetype():
     assert pick_archetype("the compile stage then index then serve") == "three_stage"
     assert pick_archetype("quarterly revenue figures from the filing") == "facts_table"
     assert pick_archetype("some generic prose about a process") == "pipeline_compare"
+
+
+def test_pick_archetype_new_lanes():
+    assert pick_archetype("a timeline of the company milestones") == "timeline"
+    assert pick_archetype("the taxonomy breaks down into these categories") == "tree_hierarchy"
+    assert pick_archetype("the key metrics dashboard at a glance") == "stat_grid"
+
+
+# ── New L2 archetypes (stat_grid / timeline / tree_hierarchy) ──────────
+# Full slot payloads exercised model-free: each expands, slot-checks (pass +
+# fail), and fails open (leftover slots stripped).
+_NEW_ARCHETYPE_SLOTS = {
+    "stat_grid": {
+        "GRID_TITLE": "Key figures", "FOOTER": "as of 2026",
+        "STAT_1_VALUE": "$1.2B", "STAT_1_LABEL": "Revenue",
+        "STAT_2_VALUE": "98%", "STAT_2_LABEL": "Uptime",
+        "STAT_3_VALUE": "3.4M", "STAT_3_LABEL": "Users",
+        "STAT_4_VALUE": "5x", "STAT_4_LABEL": "Growth",
+    },
+    "timeline": {
+        "TIMELINE_TITLE": "Company history",
+        "EVENT_1_DATE": "2019", "EVENT_1_TITLE": "Founded", "EVENT_1_NOTE": "in a garage",
+        "EVENT_2_DATE": "2021", "EVENT_2_TITLE": "Series A", "EVENT_2_NOTE": "raised funds",
+        "EVENT_3_DATE": "2023", "EVENT_3_TITLE": "Launch", "EVENT_3_NOTE": "shipped v1",
+        "EVENT_4_DATE": "2026", "EVENT_4_TITLE": "IPO", "EVENT_4_NOTE": "went public",
+    },
+    "tree_hierarchy": {
+        "TREE_TITLE": "System taxonomy", "ROOT_LABEL": "Platform",
+        "CHILD_1_LABEL": "Ingest", "CHILD_1_NOTE": "pulls sources",
+        "CHILD_2_LABEL": "Index", "CHILD_2_NOTE": "builds vectors",
+        "CHILD_3_LABEL": "Serve", "CHILD_3_NOTE": "answers queries",
+    },
+}
+
+
+def test_new_archetypes_registered():
+    for arch in ("stat_grid", "timeline", "tree_hierarchy"):
+        assert arch in ARCHETYPES
+        assert get_skeleton(arch), f"{arch} produced no skeleton"
+
+
+def test_new_archetypes_slot_check_pass_and_fail():
+    for arch, good in _NEW_ARCHETYPE_SLOTS.items():
+        ok, reason = _check_slots(arch, dict(good))
+        assert ok, f"{arch} full-slot check should pass ({reason})"
+        # blank almost everything -> the empty-ratio + key-slot gate rejects it
+        blank = {k: "" for k in good}
+        blank[next(iter(good))] = good[next(iter(good))]  # keep one filled
+        ok2, _ = _check_slots(arch, blank)
+        assert not ok2, f"{arch} should reject a mostly-blank slot set"
+
+
+def test_new_archetypes_finalize_fails_open():
+    """A partial slot-fill still yields legible HTML with NO leftover {{SLOT}}
+    markers (the degradation-ladder invariant)."""
+    for arch, good in _NEW_ARCHETYPE_SLOTS.items():
+        sk = get_skeleton(arch)
+        partial = dict(list(good.items())[:2])   # only the first couple slots
+        body = _finalize_body(sk, partial)
+        assert "{{" not in body and "}}" not in body, f"{arch} left an unfilled slot"
+        assert "<div" in body

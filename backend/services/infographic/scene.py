@@ -351,10 +351,13 @@ def compose_scene(graph: dict, *, seed: int = 7) -> str:
 
     defs = (
         '<defs>'
-        f'<filter id="rough" x="-5%" y="-5%" width="110%" height="110%">'
-        f'<feTurbulence type="fractalNoise" baseFrequency="0.016" numOctaves="2" '
+        f'<filter id="rough" x="-6%" y="-6%" width="112%" height="112%">'
+        # Lower baseFrequency = longer, more organic wave; larger displacement
+        # scale pushes the hand-drawn wobble (drawn objects only — the text_layer
+        # is composed separately + unfiltered, so labels stay crisp).
+        f'<feTurbulence type="fractalNoise" baseFrequency="0.013" numOctaves="2" '
         f'seed="{seed}" result="n"/>'
-        f'<feDisplacementMap in="SourceGraphic" in2="n" scale="3.4" '
+        f'<feDisplacementMap in="SourceGraphic" in2="n" scale="5.0" '
         f'xChannelSelector="R" yChannelSelector="G"/>'
         '</filter></defs>'
     )
