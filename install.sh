@@ -9,6 +9,11 @@
 # Upgrade existing install:
 #   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/patsteph/LocalBook/master/install.sh)" -- --upgrade
 #
+# By default, install/upgrade PIN to the latest published RELEASE TAG (never a
+# dev branch HEAD). Developers can track a branch HEAD instead:
+#   ... install.sh)" -- --dev              # track the default branch (master) HEAD
+#   ... install.sh)" -- --branch dev       # track the 'dev' branch HEAD
+#
 # Requirements: macOS 12.0+, Apple Silicon or Intel Mac, ~20GB free disk space
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -18,6 +23,9 @@ main() {
     # ── Constants ────────────────────────────────────────────────────────────
     readonly REPO_URL="https://github.com/patsteph/LocalBook.git"
     readonly REPO_BRANCH="master"
+    # GitHub API endpoint for the latest published release (used to resolve the
+    # release tag we pin installs/upgrades to — see resolve_target_ref).
+    readonly RELEASES_API_URL="https://api.github.com/repos/patsteph/LocalBook/releases/latest"
     readonly INSTALL_CONFIG="$HOME/.localbook"
     readonly DEFAULT_INSTALL_DIR="$HOME/LocalBook"
     readonly APP_BUNDLE="LocalBook.app"
@@ -42,14 +50,31 @@ main() {
     CURRENT_STEP=0
     START_TIME=$(date +%s)
 
+    # ── Release-pinning state (Path A) ───────────────────────────────────────
+    # By default we install/upgrade to the latest RELEASE TAG so a dev
+    # integration branch on master can never reach end users. The --dev /
+    # --branch escape hatch flips DEV_MODE on to track a branch HEAD instead.
+    DEV_MODE=false                 # true → track a branch HEAD (dev escape hatch)
+    TRACK_BRANCH="$REPO_BRANCH"    # branch to track when DEV_MODE=true (default: master)
+    TARGET_REF=""                  # resolved ref to install/upgrade to (tag or branch)
+    TRACK_MODE=""                  # "tag" | "branch" — set by resolve_target_ref
+
     # ── Parse Arguments ──────────────────────────────────────────────────────
     UPGRADE_MODE=false
     AUTO_YES=false
-    for arg in "$@"; do
-        case "$arg" in
+    while [ $# -gt 0 ]; do
+        case "$1" in
             --upgrade|-u) UPGRADE_MODE=true ;;
             --yes|-y) AUTO_YES=true ;;
+            # Dev escape hatch: track the default branch (master) HEAD, not a tag.
+            --dev) DEV_MODE=true ;;
+            # Dev escape hatch: track a specific branch HEAD (e.g. --branch=dev).
+            --branch=*) DEV_MODE=true; TRACK_BRANCH="${1#*=}" ;;
+            # Dev escape hatch: track a specific branch HEAD (space form: --branch dev).
+            --branch)
+                if [ -n "${2:-}" ]; then DEV_MODE=true; TRACK_BRANCH="$2"; shift; fi ;;
         esac
+        shift
     done
 
     # ── Lock File (prevent simultaneous runs) ────────────────────────────────
@@ -396,27 +421,95 @@ main() {
     # BUILD FUNCTIONS
     # ═══════════════════════════════════════════════════════════════════════
 
+    # ── Release-tag resolution (Path A) ──────────────────────────────────────
+    # Resolve the ref we should install/upgrade to. Sets globals TARGET_REF and
+    # TRACK_MODE ("tag" | "branch"). Call from INSIDE the repo AFTER a
+    # `git fetch --tags` so the git fallback (step 2) can see the tags.
+    #
+    #   Default: pin to the latest RELEASE TAG so a dev integration branch on
+    #            master can never reach end users.
+    #   --dev / --branch: track a branch HEAD instead (developer escape hatch).
+    #   FAIL-SAFE: if no release tag resolves, fall back to tracking the branch
+    #            (current behavior) with a warning — never hard-fail the install.
+    resolve_target_ref() {
+        # Dev escape hatch — skip tag pinning entirely, track a branch HEAD.
+        if [ "$DEV_MODE" = true ]; then
+            TRACK_MODE="branch"
+            TARGET_REF="$TRACK_BRANCH"
+            warn "Dev mode: tracking branch HEAD ${BOLD}${TARGET_REF}${NC} (not a release tag)"
+            return
+        fi
+
+        local tag=""
+        # 1) Prefer the GitHub API — authoritative for "latest release", and works
+        #    even before/independent of the local tag fetch.
+        tag=$(curl -fsSL "$RELEASES_API_URL" 2>/dev/null \
+            | grep -m1 '"tag_name"' \
+            | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+
+        # 2) Fall back to the newest local git tag (requires a prior fetch --tags).
+        if [ -z "$tag" ]; then
+            tag=$(git tag -l 'v*' --sort=-v:refname 2>/dev/null | head -1)
+        fi
+
+        if [ -n "$tag" ]; then
+            TRACK_MODE="tag"
+            TARGET_REF="$tag"
+        else
+            # 3) FAIL-SAFE — no release tag anywhere: keep the CURRENT behavior
+            #    (track the branch HEAD) rather than blocking the whole install.
+            TRACK_MODE="branch"
+            TARGET_REF="$REPO_BRANCH"
+            warn "Could not resolve a release tag (GitHub API + git tags both empty)."
+            warn "Falling back to tracking the ${BOLD}${REPO_BRANCH}${NC} branch HEAD."
+        fi
+    }
+
     clone_repo() {
         step 2 "Downloading LocalBook source"
 
         if [ -d "$INSTALL_DIR/.git" ]; then
-            info "Source directory exists, pulling latest..."
+            info "Source directory exists, fetching latest..."
             cd "$INSTALL_DIR"
-            # Stash local changes (e.g. package-lock.json from npm install) to prevent merge conflicts
+            # Stash local changes (e.g. package-lock.json from npm install) to prevent conflicts
             local stash_result
             stash_result=$(git stash --include-untracked 2>&1 || true)
-            git pull "$REPO_URL" "$REPO_BRANCH" || { fail "Failed to pull latest source"; exit 1; }
+            # Fetch the branch AND all tags so we can resolve/pin the latest release.
+            git fetch origin "$REPO_BRANCH" --tags 2>/dev/null \
+                || git fetch "$REPO_URL" "$REPO_BRANCH" --tags 2>/dev/null \
+                || { fail "Failed to fetch latest source"; exit 1; }
             # Restore stashed changes (best-effort — build will regenerate these files anyway)
             if [[ "$stash_result" != *"No local changes"* ]]; then
                 git stash pop 2>/dev/null || git stash drop 2>/dev/null || true
             fi
         else
             info "Cloning repository..."
-            git clone --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR" || { fail "Failed to clone repository"; exit 1; }
+            # Clone the default branch; we pin to the resolved ref (tag/branch) below.
+            git clone "$REPO_URL" "$INSTALL_DIR" || { fail "Failed to clone repository"; exit 1; }
             cd "$INSTALL_DIR"
+            # Pull down all tags so tag pinning + the git fallback can resolve them.
+            git fetch --tags 2>/dev/null || true
         fi
 
-        # Read version from source
+        # ── Pin to the resolved ref (latest release tag by default) ──────────
+        resolve_target_ref
+        if [ "$TRACK_MODE" = "tag" ]; then
+            info "Pinning to release ${BOLD}${TARGET_REF}${NC}"
+            # Detached checkout at the release tag. Fall back to the branch HEAD on failure.
+            if ! git checkout --force "$TARGET_REF" 2>/dev/null; then
+                warn "Could not checkout tag ${TARGET_REF} — falling back to ${REPO_BRANCH} HEAD."
+                TRACK_MODE="branch"; TARGET_REF="$REPO_BRANCH"
+                git checkout --force "$REPO_BRANCH" 2>/dev/null || true
+                git reset --hard "origin/$REPO_BRANCH" 2>/dev/null || true
+            fi
+        else
+            # Branch-tracking mode (dev escape hatch OR fail-safe fallback).
+            info "Tracking branch ${BOLD}${TARGET_REF}${NC} HEAD"
+            git checkout --force "$TARGET_REF" 2>/dev/null || true
+            git reset --hard "origin/$TARGET_REF" 2>/dev/null || true
+        fi
+
+        # Read version from source (now checked out at the resolved ref)
         local version
         version=$(grep '"version"' package.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')
         success "Source downloaded (v${version})"
@@ -917,34 +1010,47 @@ print(f'Whisper model cached at: {local_dir}')
         info "Install location: ${BOLD}${INSTALL_DIR}${NC}"
         info "Current version:  ${BOLD}v${current_ver}${NC}"
 
-        # Fetch latest from remote
+        # Fetch latest branch + all tags so we can resolve the target release tag.
         info "Checking for updates..."
-        git fetch origin "$REPO_BRANCH" 2>/dev/null
+        git fetch origin "$REPO_BRANCH" --tags 2>/dev/null || git fetch --tags 2>/dev/null
 
-        local local_rev remote_rev
-        local_rev=$(git rev-parse HEAD)
-        remote_rev=$(git rev-parse "origin/$REPO_BRANCH")
+        # Resolve the ref we should upgrade to (latest release tag by default;
+        # a branch HEAD under --dev/--branch; branch fallback if no tag resolves).
+        resolve_target_ref
 
-        if [ "$local_rev" = "$remote_rev" ]; then
+        local local_rev target_rev
+        local_rev=$(git rev-parse HEAD 2>/dev/null)
+        # Resolve the target ref to a commit: tags resolve directly, branches via origin/<branch>.
+        if [ "$TRACK_MODE" = "tag" ]; then
+            target_rev=$(git rev-parse "$TARGET_REF" 2>/dev/null)
+        else
+            target_rev=$(git rev-parse "origin/$TARGET_REF" 2>/dev/null || git rev-parse "$TARGET_REF" 2>/dev/null)
+        fi
+
+        if [ -n "$target_rev" ] && [ "$local_rev" = "$target_rev" ]; then
             echo ""
             success "Already up to date (v${current_ver})"
             echo ""
             return
         fi
 
-        # Show changes
+        # Show changes — read the target version from the RESOLVED ref, not origin/master.
         local remote_ver
-        remote_ver=$(git show "origin/$REPO_BRANCH:package.json" 2>/dev/null | grep '"version"' | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')
+        remote_ver=$(git show "$TARGET_REF:package.json" 2>/dev/null | grep '"version"' | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')
 
         echo ""
-        info "New version available: ${BOLD}v${remote_ver:-unknown}${NC}"
+        if [ "$TRACK_MODE" = "tag" ]; then
+            info "New release available: ${BOLD}${TARGET_REF}${NC} (v${remote_ver:-unknown})"
+        else
+            info "New version available: ${BOLD}v${remote_ver:-unknown}${NC} (tracking branch ${TARGET_REF})"
+        fi
         echo ""
         echo -e "  ${DIM}Changes:${NC}"
-        git --no-pager diff --stat HEAD "origin/$REPO_BRANCH" 2>/dev/null | sed 's/^/    /'
+        git --no-pager diff --stat HEAD "${target_rev:-$TARGET_REF}" 2>/dev/null | sed 's/^/    /'
         echo ""
 
         if [ "$AUTO_YES" = false ]; then
-            if ! ask_yn "Upgrade to v${remote_ver:-latest}? (y/n)"; then
+            if ! ask_yn "Upgrade to ${TARGET_REF} (v${remote_ver:-latest})? (y/n)"; then
                 info "Upgrade cancelled."
                 return
             fi
@@ -957,20 +1063,29 @@ print(f'Whisper model cached at: {local_dir}')
 
         echo ""
 
-        # Step 1: Pull changes
-        step 1 "Pulling latest changes"
+        # Step 1: Move to the resolved ref
+        step 1 "Updating to ${TARGET_REF}"
 
-        # Stash any local modifications to prevent merge conflicts
+        # Stash any local modifications to prevent conflicts
         local stash_result
         stash_result=$(git stash 2>&1 || true)
         if [[ "$stash_result" != *"No local changes"* ]]; then
             info "Stashed local modifications (will be discarded — upgrade rebuilds everything)"
         fi
 
-        if ! git pull origin "$REPO_BRANCH"; then
-            warn "git pull failed — attempting hard reset to remote..."
-            git fetch origin "$REPO_BRANCH"
-            git reset --hard "origin/$REPO_BRANCH"
+        # Checkout the release tag (detached) or reset to the tracked branch HEAD.
+        # NOT `git pull origin master` — that would let a dev branch HEAD reach users.
+        if [ "$TRACK_MODE" = "tag" ]; then
+            if ! git checkout --force "$TARGET_REF" 2>/dev/null; then
+                warn "git checkout ${TARGET_REF} failed — attempting hard reset..."
+                git reset --hard "$TARGET_REF" 2>/dev/null \
+                    || git reset --hard "origin/$REPO_BRANCH" 2>/dev/null || true
+            fi
+        else
+            git checkout --force "$TARGET_REF" 2>/dev/null \
+                || git checkout -B "$TARGET_REF" "origin/$TARGET_REF" 2>/dev/null || true
+            git reset --hard "origin/$TARGET_REF" 2>/dev/null \
+                || git reset --hard "origin/$REPO_BRANCH" 2>/dev/null || true
         fi
         success "Source updated"
 
