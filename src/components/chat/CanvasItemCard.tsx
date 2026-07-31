@@ -265,7 +265,9 @@ const ExportMenu: React.FC<{ item: CanvasItem }> = ({ item }) => {
         onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
         className="p-1 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
         title="Export"
-        disabled={busy || !item.content}
+        // Infographic + comparison carry their payload in metadata, not
+        // `content` — enable the menu whenever a real export artifact exists.
+        disabled={busy || (!item.content && !artifact)}
       >
         <MoreHorizontal className="w-3.5 h-3.5" />
       </button>

@@ -326,10 +326,103 @@ def test_l3_compose_escapes_untrusted_labels():
     assert "&amp;" in svg and "&lt;" in svg
 
 
+def test_l3_scene_and_every_sticker_are_valid_xml():
+    """Regression guard: the frontend renders the scene as an <img> data-URI, and
+    WKWebView rejects invalid SVG XML (broken-image box). A duplicate `fill`
+    attribute — the exact bug this asserts against — is invalid XML. Validate
+    every sticker standalone AND a full scene that uses all of them + an escaped
+    untrusted label."""
+    from xml.dom.minidom import parseString
+
+    for name in l3stickers.sticker_names():
+        parseString(f'<svg xmlns="http://www.w3.org/2000/svg">{l3stickers.render_sticker(name)}</svg>')
+    parseString(f'<svg xmlns="http://www.w3.org/2000/svg">{l3stickers.render_sticker("does-not-exist")}</svg>')
+
+    every = l3scene.parse_graph({
+        "groups": [
+            {"id": "g1", "label": "Alpha", "color": "blue"},
+            {"id": "g2", "label": "Beta & <Co>", "color": "green"},
+        ],
+        "nodes": [
+            {"id": f"n{i}", "label": nm, "sticker": nm, "group": "g%d" % (i % 2 + 1)}
+            for i, nm in enumerate(l3stickers.sticker_names())
+        ],
+    })
+    parseString(l3scene.compose_scene(every))  # raises on any malformed XML
+
+
 def test_sticker_render_fail_open():
     assert "<" in l3stickers.render_sticker("does-not-exist")  # neutral box, never empty
     assert "<path" in l3stickers.render_sticker("robot")
     assert len(l3stickers.sticker_names()) >= 12
+
+
+# ── Build A: router honors explicit medium words (the "poster → L2" field bug) ──
+from services import intent_classifier as ic  # noqa: E402
+
+
+class _FakeOllama:
+    """Deterministic stand-in: returns the same lane/confidence for any model, so
+    Stage A and any Stage-B escalation agree (no LLM, no data_dir writes)."""
+    def __init__(self, lane, conf):
+        self._lane, self._conf = lane, conf
+
+    async def generate(self, **_kw):
+        import json as _json
+        return {"response": _json.dumps({"lane": self._lane, "confidence": self._conf})}
+
+
+def test_detect_lane_keywords():
+    assert ic._detect_lane_keywords("make a poster on RAG")[0] == "L4"
+    assert ic._detect_lane_keywords("an evocative cover image")[0] == "L4"
+    assert ic._detect_lane_keywords("a bar chart of tokens over 10 turns")[0] == "L1"
+    assert ic._detect_lane_keywords("a pipeline diagram: compile → serve")[0] == "L2"
+    assert ic._detect_lane_keywords("a whiteboard sketch of the flow")[0] == "L3"
+    assert ic._detect_lane_keywords("make an infographic") is None       # vague → content-shape
+    assert ic._detect_lane_keywords("we started early today") is None    # no false \bart\b
+    assert ic._detect_lane_keywords("the state of AI art")[0] == "L4"     # bounded 'art'
+
+
+def test_router_phrasing_boost_overrides_weak_content(monkeypatch):
+    monkeypatch.setattr(ic, "_record_misroute", lambda *a, **k: None)
+    out = asyncio.run(ic.classify_infographic_lane(
+        content_summary="A comparison of runtime retrieval vs compile-time RAG.",
+        request_text="make a poster on RAG architecture",
+        ollama_service=_FakeOllama("L2", 0.7),   # content-shape wants L2 but not certain
+    ))
+    assert out["lane"] == "L4"          # 'poster' wins
+    assert out["stage"].endswith("+kw")
+    assert out["confidence"] >= 0.8
+
+
+def test_router_confident_content_beats_phrasing(monkeypatch):
+    monkeypatch.setattr(ic, "_record_misroute", lambda *a, **k: None)
+    out = asyncio.run(ic.classify_infographic_lane(
+        content_summary="Runtime vs compile-time RAG comparison.",
+        request_text="make a poster on RAG architecture",
+        ollama_service=_FakeOllama("L2", 0.95),  # >0.9 → Boost loses
+    ))
+    assert out["lane"] == "L2"
+    assert "+kw" not in out["stage"]
+
+
+def test_router_phrasing_reinforces_agreement(monkeypatch):
+    monkeypatch.setattr(ic, "_record_misroute", lambda *a, **k: None)
+    out = asyncio.run(ic.classify_infographic_lane(
+        content_summary="whatever", request_text="a decorative poster",
+        ollama_service=_FakeOllama("L4", 0.6),
+    ))
+    assert out["lane"] == "L4" and out["confidence"] >= 0.9
+
+
+def test_router_vague_request_uses_content_shape(monkeypatch):
+    monkeypatch.setattr(ic, "_record_misroute", lambda *a, **k: None)
+    out = asyncio.run(ic.classify_infographic_lane(
+        content_summary="token usage growing across 10 iterations",
+        request_text="make an infographic",
+        ollama_service=_FakeOllama("L1", 0.8),
+    ))
+    assert out["lane"] == "L1" and "+kw" not in out["stage"]
 
 
 # ── L3 build + degradation ladder (model-free via monkeypatch) ─────────

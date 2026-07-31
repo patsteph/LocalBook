@@ -6,6 +6,7 @@ Uses the local LLM for fast, accurate intent classification with parameter extra
 """
 import json
 import logging
+import re
 from typing import Dict, Any, Optional, List
 
 from config import settings
@@ -369,6 +370,50 @@ _INFOGRAPHIC_BUILDABLE = {"L1", "L2", "L3", "L4", "L0"}
 _INFOGRAPHIC_FALLBACK = "L2"  # the volume lane
 _INFOGRAPHIC_STAGE_B_THRESHOLD = 0.55
 
+# Build A (plan §3.1 refinement) — explicit medium words BIAS the lane. The
+# content-shape router pulls most notebook content to L2, so a request that
+# literally says "poster" / "chart" / "scene" would otherwise be misrouted (the
+# field bug: "make a poster on RAG" → L2 at 90% confidence). This is a BOOST, not
+# a force: a very confident content-shape pick for ANOTHER lane still wins.
+_INFOGRAPHIC_PHRASING_OVERRIDE_CONF = 0.9  # content-shape must exceed this to keep its lane
+# Ordered L4/L3 before L1/L2 so an explicit "poster"/"scene" is not shadowed by an
+# incidental "compare" elsewhere in the request. High-precision phrases only.
+_LANE_KEYWORDS: List[tuple] = [
+    ("L4", ["poster", "cover image", "cover art", "book cover", "album cover",
+            "hero image", "hero banner", "wallpaper", "artwork", "art piece",
+            "spot art", "mural", "decorative", "evocative", "aesthetic",
+            "painting", "watercolor", "oil painting", r"\bart\b"]),
+    ("L3", ["scene", "whiteboard", "hand-drawn", "hand drawn", "handdrawn",
+            "sketch", "sketched", "doodle", "storyboard", "comic strip",
+            "assembly line", "illustrated story"]),
+    ("L1", ["chart", "line chart", "bar chart", "bar graph", "graph", "plot",
+            "scatter", "histogram", "time series", "trend line", "over time"]),
+    ("L2", ["diagram", "pipeline", "flowchart", "flow chart", "comparison",
+            "compare", "versus", "timeline", "hierarchy", "taxonomy",
+            "before and after", "before/after", "side by side", "facts table",
+            "stat grid", "step by step", "process diagram"]),
+]
+# Precompile to word-boundary regexes (multi-word phrases keep their spaces).
+_LANE_KEYWORD_RES: List[tuple] = [
+    (lane, [re.compile(p if p.startswith("\\b") else r"\b" + re.escape(p) + r"\b", re.I)
+            for p in phrases])
+    for lane, phrases in _LANE_KEYWORDS
+]
+
+
+def _detect_lane_keywords(request_text: str) -> Optional[tuple]:
+    """Return (lane, matched_word) when the request explicitly names a visual
+    medium, else None. First lane in _LANE_KEYWORD_RES order wins."""
+    text = request_text or ""
+    if not text.strip():
+        return None
+    for lane, regexes in _LANE_KEYWORD_RES:
+        for rgx in regexes:
+            m = rgx.search(text)
+            if m:
+                return (lane, m.group(0))
+    return None
+
 _INFOGRAPHIC_SYSTEM = """You are a router that picks the best VISUAL LANE for turning some content into an infographic. Route on the SHAPE of the content, not on how the request is phrased.
 
 Lanes:
@@ -448,6 +493,24 @@ async def classify_infographic_lane(
                 logger.debug(f"[infographic-lane] Stage B skipped: {e}")
 
         lane = _normalize_lane(raw_lane)
+
+        # Build A — explicit-phrasing BOOST (plan §3.1 refinement). A request that
+        # literally names the medium biases the lane; a content-shape pick only
+        # keeps its lane if it is very confident (> override threshold).
+        kw = _detect_lane_keywords(request_text)
+        if kw:
+            kw_lane, kw_word = kw
+            if kw_lane == lane:
+                conf = max(conf, 0.9)                       # phrasing reinforces content-shape
+            elif conf <= _INFOGRAPHIC_PHRASING_OVERRIDE_CONF:
+                _record_misroute(
+                    f"phrasing '{kw_word}'→{kw_lane} overrode content-shape {lane} ({conf:.2f})",
+                    request_text or content_summary[:120],
+                    key=kw_lane, severity="info",
+                )
+                lane, conf, stage = kw_lane, 0.85, f"{stage}+kw"
+            # else: content-shape is >0.9 for another lane → Boost loses, keep it.
+
         if conf < 0.5:
             _record_misroute(
                 f"low-confidence infographic lane '{raw_lane}' ({conf:.2f})",

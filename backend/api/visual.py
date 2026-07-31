@@ -1545,6 +1545,12 @@ class InfographicRequest(BaseModel):
     lane: str = "auto"
     archetype: Optional[str] = None   # optional within-lane template override
     include_sources: bool = True
+    # Build B (Quality Signals) — when the user regenerates with an explicit lane
+    # to correct a prior AUTO route, the frontend passes the auto lane it is
+    # overriding. `auto {corrected_from} → user {lane}` is ground-truth that the
+    # router was wrong and is recorded as a misroute signal (was discarded before).
+    corrected_from: Optional[str] = None
+    corrected_from_confidence: Optional[float] = None
 
 
 @router.post("/infographic")
@@ -1609,6 +1615,24 @@ async def generate_infographic(request: InfographicRequest):
             if lane not in ("L1", "L2", "L3", "L4"):
                 lane = "L2"
             routing["lane"] = lane
+            # Build B — a user forcing a lane to correct a prior AUTO route is the
+            # strongest signal the router was wrong. Record it (regardless of the
+            # auto confidence — this catches the confidently-wrong misroutes the
+            # <0.5 gate misses).
+            corrected = (request.corrected_from or "").strip().upper()
+            if corrected and corrected in ("L1", "L2", "L3", "L4") and corrected != lane:
+                try:
+                    from services.quality_signals import record_signal
+                    conf = request.corrected_from_confidence
+                    detail = f"auto picked {corrected} but user chose {lane}"
+                    if isinstance(conf, (int, float)):
+                        detail += f" (auto conf {conf:.2f})"
+                    record_signal(
+                        "misroute", "infographic_router", detail,
+                        key=f"{corrected}->{lane}", severity="warn",
+                    )
+                except Exception as e:
+                    logger.debug(f"[infographic] override-signal log failed: {e}")
 
         artifact = await build_infographic(
             content, lane, archetype=request.archetype, sources=sources_prov,

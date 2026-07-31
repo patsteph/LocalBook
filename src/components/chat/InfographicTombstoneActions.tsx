@@ -84,10 +84,19 @@ export function InfographicTombstoneActions({ item }: { item: CanvasItem }) {
 
   const handleRegenerate = async () => {
     if (busy || !notebookId) return;
+    // Build B — if the current artifact was AUTO-routed and the user is now
+    // forcing a different explicit lane, that's a ground-truth router correction.
+    const currentLane = String(routing.lane || lane).toUpperCase();
+    const correcting =
+      routing.mode === 'auto' &&
+      regenLane !== 'auto' &&
+      String(regenLane).toUpperCase() !== currentLane;
     updateCanvasItem(item.id, { status: 'generating' });
     try {
       const result = await infographicService.generate(
         notebookId, topic, regenLane, regenArchetype || undefined,
+        correcting ? currentLane : undefined,
+        correcting ? routing.confidence : undefined,
       );
       const newPayload = (result.artifact as any)?.payload || {};
       // Preserve the user's restyle across a regenerate.
