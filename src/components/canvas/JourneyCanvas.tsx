@@ -500,6 +500,21 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
     }
   }, [notebookId, applyLayout]);
 
+  // ── Auto-arrange ("tidy up"): re-cluster + re-position all current nodes. ──
+  const onRelayout = useCallback(async () => {
+    if (!notebookId) return;
+    setPopulating(true);
+    setError(null);
+    try {
+      applyLayout(await canvasService.relayout(notebookId));
+    } catch (e) {
+      console.error('[JourneyCanvas] relayout failed', e);
+      setError('Auto-arrange failed.');
+    } finally {
+      setPopulating(false);
+    }
+  }, [notebookId, applyLayout]);
+
   const isEmpty = !loading && nodes.length === 0;
 
   // ── Time-window filter: hide (never remove) nodes/edges outside the window. ──
@@ -565,6 +580,15 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
           >
             <Sparkles className="h-3 w-3" />
             {populating ? 'Populating…' : 'Populate'}
+          </button>
+          <button
+            type="button"
+            onClick={onRelayout}
+            disabled={populating || isEmpty}
+            className="flex items-center gap-1.5 rounded-md border border-violet-200 px-2.5 py-1 text-[11px] font-semibold text-violet-700 hover:bg-violet-50 disabled:opacity-60 dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-900/30"
+            title="Auto-arrange: re-cluster the map into readable groups by similarity"
+          >
+            Tidy up
           </button>
           <button
             type="button"

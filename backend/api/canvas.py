@@ -202,7 +202,38 @@ async def populate(notebook_id: str, limit: int = 50):
         source_events.append({"id": ev.get("id"), "ts": ev.get("ts"), "payload": payload or {}})
 
     existing = cl.get_layout(notebook_id)
-    merged, added = canvas_populate.populate_layout(journey, source_events, existing)
+
+    # Walk W1/W2: build nodes, gather the similarity signals, then cluster + spatially lay
+    # out (a readable map) instead of the topics[0] grid. Fails open to the grid.
+    from services import canvas_candidates
+    nodes = canvas_populate.build_nodes(journey, source_events)
+    cand = [{
+        "id": f"{n.get('ref_type')}:{n.get('ref_id')}",
+        "ref_type": n.get("ref_type"), "ref_id": n.get("ref_id"),
+        "title": n.get("title", ""), "text": n.get("snapshot", ""),
+    } for n in nodes]
+    raw_pairs = await canvas_candidates.compute_raw_pairs(notebook_id, cand)
+    seeded = canvas_populate.cluster_seed_layout(nodes, raw_pairs)
+    merged, added = canvas_populate.merge_populate(seeded, existing.get("nodes", []))
+
     if not cl.save_layout(notebook_id, merged, existing["edges"], existing["viewport"]):
         raise HTTPException(status_code=500, detail="save_layout failed")
-    return {"status": "populated", "added": added, "total_nodes": len(merged)}
+    # Return the full saved layout so the frontend applies it directly (it expects CanvasLayout).
+    return cl.get_layout(notebook_id)
+
+
+@router.post("/relayout/{notebook_id}")
+async def relayout(notebook_id: str):
+    """Auto-arrange ('tidy up'): re-cluster + re-position ALL current nodes into a readable
+    map by similarity. Keeps every node; only rewrites positions. Never 500s destructively."""
+    from services import canvas_populate, canvas_candidates
+    existing = cl.get_layout(notebook_id)
+    nodes = existing.get("nodes", [])
+    cand = [{
+        "id": n.get("id"), "ref_type": n.get("ref_type"), "ref_id": n.get("ref_id"),
+        "title": n.get("title", ""), "text": (n.get("snapshot") or n.get("title") or ""),
+    } for n in nodes if n.get("id")]
+    raw_pairs = await canvas_candidates.compute_raw_pairs(notebook_id, cand)
+    relaid = canvas_populate.relayout_existing(nodes, raw_pairs)
+    cl.save_layout(notebook_id, relaid, existing["edges"], existing["viewport"])
+    return cl.get_layout(notebook_id)

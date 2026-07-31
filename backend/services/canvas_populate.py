@@ -261,6 +261,60 @@ def seed_layout(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def cluster_seed_layout(
+    nodes: List[Dict[str, Any]], raw_pairs: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Similarity-driven layout (Walk W1/W2): consolidate to the SIGNIFICANT nodes, cluster
+    by the candidate engine's pairwise signal, and place each cluster as its own spatial
+    REGION — a readable MAP instead of the topics[0] grid. Falls back to `seed_layout` when
+    there are no pairs (fresh/degenerate notebook). Never raises."""
+    try:
+        from services import canvas_cluster as cc
+        if not raw_pairs:
+            return seed_layout(nodes)
+        # local stable id per node (ref_type:ref_id) for clustering — NOT persisted.
+        ided = [{**n, "id": f"{n.get('ref_type')}:{n.get('ref_id')}"} for n in nodes]
+        degrees = cc.degrees_from_pairs(ided, raw_pairs)
+        sig = cc.significant_nodes(ided, degrees)
+        pos = cc.layout_clusters(cc.cluster_nodes(sig, raw_pairs))
+        out: List[Dict[str, Any]] = []
+        for n in sig:
+            m = {k: v for k, v in n.items() if k not in ("_group", "id")}
+            p = pos.get(n["id"], {"x": 0.0, "y": 0.0})
+            m["x"], m["y"], m["z"] = round(p["x"]), round(p["y"]), 0
+            if m.get("created_at") is None:
+                m.pop("created_at", None)
+            out.append(m)
+        return out
+    except Exception:
+        return seed_layout(nodes)
+
+
+def relayout_existing(
+    existing_nodes: List[Dict[str, Any]], raw_pairs: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """The 'auto-arrange / tidy up' action: re-cluster + re-position ALL current nodes into
+    a readable map by similarity. Unlike populate this KEEPS every node (they're already on
+    the canvas) and only rewrites x/y. Grid fallback on empty pairs. Never raises."""
+    try:
+        from services import canvas_cluster as cc
+        nodes = [n for n in existing_nodes if n.get("id")]
+        if not nodes:
+            return existing_nodes
+        if not raw_pairs:
+            for i, n in enumerate(nodes):
+                n["x"], n["y"] = (i % 4) * cc.NODE_W, (i // 4) * cc.NODE_H
+            return nodes
+        pos = cc.layout_clusters(cc.cluster_nodes(nodes, raw_pairs))
+        for n in nodes:
+            p = pos.get(n["id"])
+            if p:
+                n["x"], n["y"] = round(p["x"]), round(p["y"])
+        return nodes
+    except Exception:
+        return existing_nodes
+
+
 def merge_populate(
     new_nodes: List[Dict[str, Any]], existing_nodes: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], int]:

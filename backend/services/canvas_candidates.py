@@ -216,6 +216,24 @@ async def compute_candidates(notebook_id: str, nodes: List[Dict[str, Any]]) -> L
         return []
 
 
+async def compute_raw_pairs(notebook_id: str, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The raw per-pair similarity signals (BEFORE dot-bounding), reused by the clustering
+    layout — so the map's spatial grouping and its candidate dots share one signal.
+    Each pair: ``{a, b, concept, embed, shared}``. Never raises → [] on any failure."""
+    try:
+        nodes = [n for n in (nodes or []) if n.get("id")][:MAX_NODES]
+        if len(nodes) < 2:
+            return []
+        from services.knowledge_graph import knowledge_graph_service as kg
+        embeddings = await _gather_embeddings(kg, nodes)
+        concept_counts = await _gather_concept_counts(kg, notebook_id, nodes)
+        source_sets = await _gather_source_sets(notebook_id, nodes)
+        return build_raw_pairs(nodes, embeddings, concept_counts, source_sets)
+    except Exception as e:
+        logger.warning(f"[canvas_candidates] raw pairs failed ({notebook_id}): {e}")
+        return []
+
+
 async def _gather_embeddings(kg, nodes: List[Dict[str, Any]]) -> Dict[str, Sequence[float]]:
     async def _one(node: Dict[str, Any]) -> Tuple[str, Sequence[float]]:
         try:

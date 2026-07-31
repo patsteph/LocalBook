@@ -198,6 +198,15 @@ export const canvasService = {
     return asJson<CanvasLayout>(resp, 'populate');
   },
 
+  /** Auto-arrange ("tidy up"): re-cluster + re-position ALL current nodes into a readable
+   *  map by similarity, then return the new layout. */
+  async relayout(notebookId: string): Promise<CanvasLayout> {
+    const resp = await localFetch(`${API_BASE_URL}/canvas/relayout/${notebookId}`, {
+      method: 'POST',
+    });
+    return asJson<CanvasLayout>(resp, 'relayout');
+  },
+
   /**
    * P5 candidate-dot engine — latent connections among the currently-visible nodes.
    * Transient (recomputed, never persisted). POST (not GET): the visible-node payload

@@ -48,6 +48,45 @@ def test_significant_nodes_keeps_sources_and_caps_queries():
     assert out[3]["id"] == "q1"            # most-connected query ranks first
 
 
+def test_cluster_seed_layout_positions_and_strips_temp_keys():
+    from services.canvas_populate import cluster_seed_layout
+    nodes = [
+        {"kind": "source", "ref_type": "source", "ref_id": "s1", "title": "A", "snapshot": "", "_group": "src"},
+        {"kind": "chat", "ref_type": "exploration_query", "ref_id": "q1", "title": "Q1", "snapshot": "", "created_at": "2026-07-31", "_group": "t"},
+        {"kind": "chat", "ref_type": "exploration_query", "ref_id": "q2", "title": "Q2", "snapshot": "", "created_at": "2026-07-30", "_group": "t"},
+    ]
+    pairs = [{"a": "exploration_query:q1", "b": "exploration_query:q2", "embed": 0.9}]
+    out = cluster_seed_layout(nodes, pairs)
+    assert len(out) == 3
+    for m in out:
+        assert {"x", "y", "z"} <= set(m)
+        assert "_group" not in m and "id" not in m   # temp keys stripped, not persisted
+        assert m.get("ref_id")                        # real fields preserved
+
+
+def test_cluster_seed_layout_falls_back_on_empty_pairs():
+    from services.canvas_populate import cluster_seed_layout
+    nodes = [{"kind": "source", "ref_type": "source", "ref_id": "s1", "title": "A", "snapshot": "", "_group": "src"}]
+    out = cluster_seed_layout(nodes, [])   # no signal → grid fallback, still positioned
+    assert len(out) == 1 and {"x", "y"} <= set(out[0]) and "_group" not in out[0]
+
+
+def test_relayout_existing_repositions_and_keeps_all_nodes():
+    from services.canvas_populate import relayout_existing
+    nodes = [{"id": "a", "ref_type": "source", "ref_id": "s1", "x": 0, "y": 0},
+             {"id": "b", "ref_type": "source", "ref_id": "s2", "x": 0, "y": 0},
+             {"id": "c", "ref_type": "exploration_query", "ref_id": "q1", "x": 0, "y": 0}]
+    out = relayout_existing(nodes, [{"a": "a", "b": "b", "embed": 0.9}])
+    assert len(out) == 3                                   # keeps every node
+    assert len({(n["x"], n["y"]) for n in out}) >= 2       # actually re-positioned
+
+
+def test_relayout_grid_fallback_on_empty_pairs():
+    from services.canvas_populate import relayout_existing
+    out = relayout_existing([{"id": str(i), "x": 0, "y": 0} for i in range(6)], [])
+    assert len({(n["x"], n["y"]) for n in out}) == 6       # grid → all distinct
+
+
 def test_degrees_from_pairs():
     nodes = [_n(x) for x in ["a", "b", "c"]]
     pairs = [{"a": "a", "b": "b", "embed": 0.9}, {"a": "b", "b": "c", "embed": 0.9},
