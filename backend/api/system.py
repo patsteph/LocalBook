@@ -17,6 +17,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/version")
+async def get_version():
+    """App/build version + platform facts. Feeds Quality-Signals Phase 2 incident
+    context (`build_incident_context`); read-only, never raises."""
+    try:
+        from services.app_version import get_app_version_info
+        return get_app_version_info()
+    except Exception as e:
+        logger.debug(f"[system] version info failed: {e}")
+        return {"app_version": "unknown"}
+
+
 @router.get("/tray-status")
 async def get_tray_status():
     """Compact one-shot status for the macOS menu-bar tray poller (build: tray v1).
