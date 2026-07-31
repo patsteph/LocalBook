@@ -33,7 +33,13 @@ from services.infographic.icons import (
     icon_for_label,
     render_icon,
 )
-from services.infographic.skeletons import ARCHETYPES, get_skeleton
+from services.infographic.skeletons import (
+    ARCHETYPES,
+    get_skeleton,
+    l2_system_ext,
+    l2_key_slots_ext,
+    l2_icon_slots_ext,
+)
 from services.infographic import slotfill as sf
 from services.infographic.scene import parse_graph, compose_scene
 
@@ -47,6 +53,29 @@ _ALLOWED_ICONS = set(allowed_icon_names())
 # ── helpers ────────────────────────────────────────────────────────────
 def _new_id() -> str:
     return f"ig_{uuid.uuid4().hex[:10]}"
+
+
+# Slot-contract resolution: the archetypes authored in `skeletons.py` carry their
+# own contract there; the original three live in `slotfill.py`. Prefer the
+# co-located (skeletons) contract, fall back to slotfill.
+def _sys(archetype: str) -> str:
+    return l2_system_ext(archetype) or sf.l2_system(archetype)
+
+
+def _key_slots(archetype: str):
+    return l2_key_slots_ext(archetype) or sf.l2_key_slots(archetype)
+
+
+def _icon_slots(archetype: str) -> list[tuple[str, str]]:
+    return l2_icon_slots_ext(archetype) or sf.l2_icon_slots(archetype)
+
+
+# Archetypes whose rows carry citation superscripts -> (row count, label-key fmt).
+_CITE_SPECS: dict[str, tuple[int, str]] = {
+    "facts_table": (3, "ROW_{i}_LABEL"),
+    "stat_grid": (4, "STAT_{i}_LABEL"),
+    "timeline": (4, "EVENT_{i}_TITLE"),
+}
 
 
 def _escape(text: str) -> str:
@@ -96,7 +125,7 @@ def _check_slots(archetype: str, slots: dict) -> tuple[bool, str]:
     empty = sum(1 for v in text_slots.values() if not v.strip())
     if empty / len(text_slots) > 0.4:
         return False, f"{empty}/{len(text_slots)} slots blank — input too vague"
-    spec = sf.l2_key_slots(archetype)
+    spec = _key_slots(archetype)
     if spec:
         keys, need = spec
         filled = sum(1 for k in keys if isinstance(slots.get(k), str) and slots[k].strip())
@@ -109,7 +138,7 @@ def _apply_icons(skeleton: str, archetype: str, slots: dict) -> str:
     """Replace {{ICON_*}} with inline SVG chosen from the allowlist (fail-open
     to a keyword-derived icon). Pops icon keys out of `slots` so the text
     slot-fill pass doesn't stringify them."""
-    for icon_key, label_key in sf.l2_icon_slots(archetype):
+    for icon_key, label_key in _icon_slots(archetype):
         name = str(slots.pop(icon_key, "") or "").strip().lower()
         if name not in _ALLOWED_ICONS:
             name = icon_for_label(str(slots.get(label_key, "")))
@@ -192,6 +221,12 @@ def pick_archetype(content: str) -> str:
     low = (content or "").lower()
     if any(w in low for w in ("compile", "index", "stage", "pipeline stage", "offline", "request-time")):
         return "three_stage"
+    if any(w in low for w in ("timeline", "chronolog", "milestone", "history", "evolution", "roadmap", " era ")):
+        return "timeline"
+    if any(w in low for w in ("hierarchy", "taxonomy", "tree", "breakdown", "category", "categories", "org chart", "sub-component")):
+        return "tree_hierarchy"
+    if any(w in low for w in ("kpi", "at a glance", "key metrics", "dashboard", "headline number", "by the numbers")):
+        return "stat_grid"
     if any(w in low for w in ("table", "facts", "figures", "revenue", "metric", "$", "filing", "quarter")):
         return "facts_table"
     return "pipeline_compare"
@@ -214,7 +249,7 @@ async def build_l2(
     trimmed = (content or "")[:max_content_chars]
     prov = _normalize_sources(sources)
 
-    slots = await _run_slotfill(sf.l2_system(archetype), trimmed, model)
+    slots = await _run_slotfill(_sys(archetype), trimmed, model)
     if not slots:
         return None
     ok, reason = _check_slots(archetype, slots)
@@ -225,15 +260,17 @@ async def build_l2(
     skeleton = _apply_icons(skeleton, archetype, slots)
 
     citations = []
-    if archetype == "facts_table":
+    cite_spec = _CITE_SPECS.get(archetype)
+    if cite_spec:
         # Bind each row's citation superscript to a REAL source number so
         # every number carries a source ID (HARD RULE §2.6). No provenance ->
         # empty superscripts rather than dangling [1][2][3].
-        slots.update(_cite_slots_for_rows(prov, n_rows=3))
+        n_rows, label_fmt = cite_spec
+        slots.update(_cite_slots_for_rows(prov, n_rows=n_rows))
         citations = [
-            {"id": i, "label": slots.get(f"ROW_{i}_LABEL", f"Fact {i}"),
+            {"id": i, "label": slots.get(label_fmt.format(i=i), f"Fact {i}"),
              "cite": slots.get(f"CITE_{i}", "")}
-            for i in range(1, 4)
+            for i in range(1, n_rows + 1)
         ]
 
     body = _finalize_body(skeleton, slots)
@@ -242,6 +279,9 @@ async def build_l2(
         slots.get("TABLE_TITLE")
         or slots.get("SECTION_LABEL")
         or slots.get("STAGE_1_TITLE")
+        or slots.get("GRID_TITLE")
+        or slots.get("TIMELINE_TITLE")
+        or slots.get("TREE_TITLE")
         or "Infographic"
     )
 
