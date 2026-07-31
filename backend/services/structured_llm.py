@@ -24,6 +24,29 @@ logger = logging.getLogger(__name__)
 from services.output_templates import VISUAL_TEMPLATES
 from services.svg_templates import build_svg_visual, COLOR_THEMES as SVG_COLOR_THEMES
 
+# A quiz that loses ≥40% of its questions to a quality gate is a degraded run
+# worth surfacing (the model produced a lot of unusable questions).
+_QUIZ_HEAVY_DROP_RATIO = 0.4
+
+
+def _record_quiz_heavy_drop(stage: str, kept: int, total: int) -> None:
+    """Emit a degraded quality signal when a quiz drops ≥40% of its questions.
+
+    Best-effort observability alongside the existing log — never changes the
+    sanitize/verify behavior. Only fires on a HEAVY drop so a normal 1-2 question
+    trim stays quiet.
+    """
+    try:
+        if total <= 0 or (total - kept) / total < _QUIZ_HEAVY_DROP_RATIO:
+            return
+        from services.quality_signals import record_signal
+        record_signal(
+            "degraded", "structured_llm", f"quiz {stage} kept {kept}/{total}",
+            severity="warn", key="quiz",
+        )
+    except Exception:
+        pass
+
 
 # =============================================================================
 # Output Models for Structured Generation
@@ -998,6 +1021,7 @@ Return ONLY a JSON object like this:
         dropped = len(questions) - len(kept)
         if dropped:
             logger.info(f"[Quiz Sanitize] Kept {len(kept)}/{len(questions)} ({dropped} dropped)")
+            _record_quiz_heavy_drop("sanitize", len(kept), len(questions))
         return kept
 
     async def _verify_quiz_answers(self, questions: List[QuizQuestion], source_content: str) -> List[QuizQuestion]:
@@ -1077,6 +1101,7 @@ QUESTIONS TO VERIFY:
             dropped = len(questions) - len(verified)
             if dropped > 0:
                 logger.info(f"[Quiz Verify] Kept {len(verified)}/{len(questions)} questions ({dropped} dropped as unsupported)")
+                _record_quiz_heavy_drop("verify", len(verified), len(questions))
             else:
                 logger.info(f"[Quiz Verify] All {len(verified)} questions verified as source-grounded")
             
