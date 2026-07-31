@@ -365,7 +365,7 @@ def test_l3_scene_and_every_sticker_are_valid_xml():
 def test_sticker_render_fail_open():
     assert "<" in l3stickers.render_sticker("does-not-exist")  # neutral box, never empty
     assert "<path" in l3stickers.render_sticker("robot")
-    assert len(l3stickers.sticker_names()) >= 30   # grown library (2.2.0)
+    assert len(l3stickers.sticker_names()) >= 50   # grown library (2.2.0)
 
 
 # ── Build A: router honors explicit medium words (the "poster → L2" field bug) ──
