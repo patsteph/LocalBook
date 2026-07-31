@@ -216,7 +216,12 @@ function toFlowNode(n: CanvasNode): ArtifactFlowNode {
     position: { x: n.x, y: n.y },
     data: { node: n, tint: recencyOpacity(n.created_at) },
     zIndex: n.z ?? 0,
-    ...(n.width && n.height ? { width: n.width, height: n.height, style: { width: n.width, height: n.height } } : {}),
+    // Fixed compact tile so the map reads as uniform "readable tiles" — without this,
+    // react-flow sizes each node to its content and the wide chat tiles overlap. A
+    // user resize (NodeResizer) still wins via n.width/height.
+    width: n.width ?? 300,
+    height: n.height ?? 180,
+    style: { width: n.width ?? 300, height: n.height ?? 180 },
   };
 }
 

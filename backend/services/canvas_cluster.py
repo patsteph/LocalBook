@@ -35,12 +35,12 @@ def _cluster_score(p: Dict[str, Any]) -> float:
         float(p.get("embed", 0.0) or 0.0),
         blended_score(p.get("concept", 0.0), p.get("embed", 0.0), p.get("shared", 0.0)),
     )
-# Spatial constants (px, react-flow coordinate space).
-NODE_W = 300
-NODE_H = 190
-COLS_PER_CLUSTER = 3
-REGION_GAP = 170            # gap between cluster regions
-MAX_ROW_W = 2400           # wrap cluster regions after this width
+# Spatial constants (px, react-flow coordinate space). NODE_W/H are the cell PITCH —
+# the fixed 300x180 tile (set in the frontend) plus a gap, so tiles never overlap.
+NODE_W = 336
+NODE_H = 212
+REGION_GAP = 190           # gap between cluster regions
+MAX_ROW_W = 3400           # wrap cluster regions after this width
 
 
 class _UF:
@@ -96,8 +96,11 @@ def layout_clusters(clusters: List[List[Dict[str, Any]]]) -> Dict[str, Dict[str,
     y_cursor = 0.0
     row_h = 0.0
     for cluster in clusters:
-        cols = min(COLS_PER_CLUSTER, max(1, len(cluster)))
-        rows = math.ceil(len(cluster) / COLS_PER_CLUSTER)
+        n = len(cluster)
+        # roughly-square region: ~sqrt(n) columns (capped) so a big cluster (e.g. 44
+        # sources) is a compact block, not a tall single strip.
+        cols = max(1, min(8, math.ceil(math.sqrt(n))))
+        rows = math.ceil(n / cols)
         cw = cols * NODE_W
         ch = rows * NODE_H
         if x_cursor > 0 and x_cursor + cw > MAX_ROW_W:
@@ -105,9 +108,8 @@ def layout_clusters(clusters: List[List[Dict[str, Any]]]) -> Dict[str, Dict[str,
             y_cursor += row_h + REGION_GAP
             row_h = 0.0
         for ni, node in enumerate(cluster):
-            c = ni % COLS_PER_CLUSTER
-            r = ni // COLS_PER_CLUSTER
-            pos[node["id"]] = {"x": x_cursor + c * NODE_W, "y": y_cursor + r * NODE_H}
+            pos[node["id"]] = {"x": x_cursor + (ni % cols) * NODE_W,
+                               "y": y_cursor + (ni // cols) * NODE_H}
         x_cursor += cw + REGION_GAP
         row_h = max(row_h, ch)
     return pos
