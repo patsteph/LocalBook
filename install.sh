@@ -474,9 +474,15 @@ main() {
             # Stash local changes (e.g. package-lock.json from npm install) to prevent conflicts
             local stash_result
             stash_result=$(git stash --include-untracked 2>&1 || true)
-            # Fetch the branch AND all tags so we can resolve/pin the latest release.
-            git fetch origin "$REPO_BRANCH" --tags 2>/dev/null \
-                || git fetch "$REPO_URL" "$REPO_BRANCH" --tags 2>/dev/null \
+            # Fetch the branch we'll TRACK (dev escape hatch → e.g. 'dev') AND master + all
+            # tags so we can resolve/pin the latest release. On an EXISTING clone we must fetch
+            # the target branch, not just master — otherwise `--branch dev` would `git reset
+            # --hard origin/dev` against a STALE origin/dev (or fail silently via `|| true`),
+            # building old code (the "Cursor Style picker missing after --branch dev" bug).
+            local fetch_refs="$REPO_BRANCH"
+            [ "$TRACK_BRANCH" != "$REPO_BRANCH" ] && fetch_refs="$TRACK_BRANCH $REPO_BRANCH"
+            git fetch origin $fetch_refs --tags 2>/dev/null \
+                || git fetch "$REPO_URL" $fetch_refs --tags 2>/dev/null \
                 || { fail "Failed to fetch latest source"; exit 1; }
             # Restore stashed changes (best-effort — build will regenerate these files anyway)
             if [[ "$stash_result" != *"No local changes"* ]]; then
