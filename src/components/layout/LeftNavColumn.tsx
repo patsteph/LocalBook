@@ -6,6 +6,7 @@ import { useCanvas } from '../canvas/CanvasContext';
 import { NotebookManager } from '../NotebookManager';
 import { SourceUpload } from '../SourceUpload';
 import { SourcesList } from '../SourcesList';
+import { CursorDataPanel } from '../notebook/CursorDataPanel';
 import { CollectorPanel } from '../CollectorPanel';
 import { Modal } from '../shared/Modal';
 import { WebSearchResults } from '../WebSearchResults';
@@ -26,6 +27,10 @@ interface LeftNavColumnProps {
   drawers: DrawerState;
   toggleDrawer: (drawer: keyof DrawerState) => void;
   selectedNotebookName: string;
+  /** Type of the selected notebook. When 'cursor', the Sources drawer shows
+   *  the CursorDataPanel (connected DB folder status + Refresh) in place of
+   *  the normal upload + sources list. */
+  selectedNotebookType?: 'standard' | 'cursor';
   /** Reserved for future direct-launch from this surface (currently the
    *  StudioLauncher component reaches openStudio via context). */
   onOpenStudio?: (type?: 'docs' | 'audio' | 'video' | 'visual' | 'quiz' | 'cards') => void;
@@ -119,6 +124,7 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
   drawers,
   toggleDrawer,
   selectedNotebookName,
+  selectedNotebookType,
 }) => {
   const ctx = useCanvas();
   const [webResearchModal, setWebResearchModal] = useState<'web' | 'site' | null>(null);
@@ -180,29 +186,40 @@ export const LeftNavColumn: React.FC<LeftNavColumnProps> = ({
         <WebResearchDrawerContent notebookId={selectedNotebookId} onOpenModal={(tab) => setWebResearchModal(tab)} />
       </DrawerSection>
 
-      {/* Sources drawer */}
+      {/* Sources drawer — for Cursor Style notebooks this shows the connected
+          data-folder status + Refresh (there are no uploaded sources); for
+          standard notebooks it's the usual upload + sources list. */}
       <DrawerSection
-        title="Sources"
+        title={selectedNotebookType === 'cursor' ? 'Data' : 'Sources'}
         icon={<FileBox className="w-3.5 h-3.5" />}
         isOpen={drawers.sources}
         onToggle={() => toggleDrawer('sources')}
         flexible
       >
-        <SourceUpload
-          notebookId={selectedNotebookId || ''}
-          onUploadComplete={onUploadComplete}
-        />
-        <div>
-          <SourcesList
-            key={`${selectedNotebookId}-${refreshSources}`}
+        {selectedNotebookType === 'cursor' ? (
+          <CursorDataPanel
+            key={`cursor-${selectedNotebookId}`}
             notebookId={selectedNotebookId}
-            onSourcesChange={onSourcesChange}
-            selectedSourceId={selectedSourceId}
-            onSourceSelect={(sourceId) => {
-              onSourceSelect(selectedSourceId === sourceId ? null : sourceId);
-            }}
           />
-        </div>
+        ) : (
+          <>
+            <SourceUpload
+              notebookId={selectedNotebookId || ''}
+              onUploadComplete={onUploadComplete}
+            />
+            <div>
+              <SourcesList
+                key={`${selectedNotebookId}-${refreshSources}`}
+                notebookId={selectedNotebookId}
+                onSourcesChange={onSourcesChange}
+                selectedSourceId={selectedSourceId}
+                onSourceSelect={(sourceId) => {
+                  onSourceSelect(selectedSourceId === sourceId ? null : sourceId);
+                }}
+              />
+            </div>
+          </>
+        )}
       </DrawerSection>
 
       {/* Note editor now lives in the universal canvas */}

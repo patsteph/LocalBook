@@ -6,7 +6,12 @@ import { Modal } from '../shared/Modal';
 interface CreateNotebookModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (title: string, color: string, files: File[]) => Promise<void>;
+  onSubmit: (
+    title: string,
+    color: string,
+    files: File[],
+    opts: { type: 'standard' | 'cursor'; folderPath?: string },
+  ) => Promise<void>;
   creating: boolean;
 }
 
@@ -20,6 +25,8 @@ export const CreateNotebookModal: React.FC<CreateNotebookModalProps> = ({
   const [color, setColor] = useState(NOTEBOOK_COLORS[0]);
   const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [nbType, setNbType] = useState<'standard' | 'cursor'>('standard');
+  const [folderPath, setFolderPath] = useState('');
   const dropRef = useRef<HTMLDivElement>(null);
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -51,14 +58,22 @@ export const CreateNotebookModal: React.FC<CreateNotebookModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
-    await onSubmit(title.trim(), color, droppedFiles);
+    if (nbType === 'cursor' && !folderPath.trim()) return;
+    await onSubmit(title.trim(), color, droppedFiles, {
+      type: nbType,
+      folderPath: nbType === 'cursor' ? folderPath.trim() : undefined,
+    });
     setTitle('');
     setColor(NOTEBOOK_COLORS[0]);
     setDroppedFiles([]);
+    setNbType('standard');
+    setFolderPath('');
   };
 
   const handleClose = () => {
     setDroppedFiles([]);
+    setNbType('standard');
+    setFolderPath('');
     onClose();
   };
 
@@ -81,6 +96,34 @@ export const CreateNotebookModal: React.FC<CreateNotebookModalProps> = ({
               disabled={creating}
             />
           </div>
+          {/* Notebook type */}
+          <div className="mb-3">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Type
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                { key: 'standard', label: 'Standard', desc: 'Upload docs, web pages, email' },
+                { key: 'cursor', label: 'Cursor Style', desc: 'Query a SQLite .db folder, governed by AGENTS.md' },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setNbType(opt.key)}
+                  disabled={creating}
+                  className={`rounded-lg border p-2.5 text-left transition-colors ${
+                    nbType === opt.key
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30'
+                      : 'border-gray-300 dark:border-gray-600 hover:border-gray-400'
+                  }`}
+                >
+                  <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">{opt.label}</div>
+                  <div className="text-[11px] text-gray-500 dark:text-gray-400">{opt.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="mb-3">
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Color
@@ -99,7 +142,31 @@ export const CreateNotebookModal: React.FC<CreateNotebookModalProps> = ({
               ))}
             </div>
           </div>
-          {/* File drop zone */}
+          {/* Cursor Style: folder path to the .db + AGENTS.md docs */}
+          {nbType === 'cursor' && (
+            <div className="mb-3">
+              <label htmlFor="cursor-folder" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Data folder path
+              </label>
+              <input
+                id="cursor-folder"
+                type="text"
+                value={folderPath}
+                onChange={(e) => setFolderPath(e.target.value)}
+                placeholder="/Users/you/monthly-drop"
+                className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
+                disabled={creating}
+              />
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+                The folder holding your <span className="font-mono">.db</span> file and its
+                {' '}<span className="font-mono">AGENTS.md</span> / <span className="font-mono">DATA_OVERVIEW.md</span> docs.
+                Read-only — the database is never modified. Refresh it monthly from the notebook.
+              </p>
+            </div>
+          )}
+
+          {/* File drop zone (standard notebooks only) */}
+          {nbType === 'standard' && (
           <div className="mb-3">
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Starting Files <span className="text-gray-400 font-normal">(optional)</span>
@@ -144,6 +211,7 @@ export const CreateNotebookModal: React.FC<CreateNotebookModalProps> = ({
               </p>
             )}
           </div>
+          )}
 
           <div className="flex justify-end gap-2">
             <Button
@@ -156,9 +224,9 @@ export const CreateNotebookModal: React.FC<CreateNotebookModalProps> = ({
             </Button>
             <Button
               type="submit"
-              disabled={creating || !title.trim()}
+              disabled={creating || !title.trim() || (nbType === 'cursor' && !folderPath.trim())}
             >
-              {creating ? 'Creating...' : 'Create'}
+              {creating ? (nbType === 'cursor' ? 'Connecting…' : 'Creating...') : 'Create'}
             </Button>
           </div>
         </form>

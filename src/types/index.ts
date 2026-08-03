@@ -9,6 +9,16 @@ export interface Notebook {
   source_count: number;
   section_id?: string | null;
   sort_order?: number;
+  type?: 'standard' | 'cursor';
+  config?: {
+    folder_path?: string;
+    db_filename?: string;
+    tables?: { table_name: string; row_count: number; columns: string[] }[];
+    governance_files?: Record<string, string>;
+    refreshed_at?: string;
+    [k: string]: unknown;
+  };
+  connect_error?: string;
 }
 
 export interface NotebookSection {

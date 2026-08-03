@@ -14,6 +14,8 @@ class NotebookCreate(BaseModel):
     title: str
     description: Optional[str] = None
     color: Optional[str] = None
+    type: Optional[str] = "standard"          # 'standard' | 'cursor'
+    folder_path: Optional[str] = None          # Cursor Style: connect this folder on create
 
 class Notebook(BaseModel):
     id: str
@@ -24,6 +26,12 @@ class Notebook(BaseModel):
     updated_at: str
     source_count: int = 0
     is_primary: bool = False
+    type: str = "standard"
+    config: Optional[dict] = None
+    connect_error: Optional[str] = None        # set when a Cursor Style folder connect failed
+
+class ConnectFolderRequest(BaseModel):
+    folder_path: str
 
 class NotebookColorUpdate(BaseModel):
     color: str
@@ -67,9 +75,60 @@ async def list_notebooks():
 
 @router.post("/", response_model=Notebook)
 async def create_notebook(notebook: NotebookCreate):
-    """Create a new notebook"""
-    result = await notebook_store.create(notebook.title, notebook.description, notebook.color)
+    """Create a new notebook. For a Cursor Style notebook (`type=="cursor"`) with a
+    `folder_path`, immediately connect the folder (introspect the .db + read the docs); a
+    connect failure is reported in `connect_error` without failing the create."""
+    nb_type = notebook.type or "standard"
+    result = await notebook_store.create(
+        notebook.title, notebook.description, notebook.color, type=nb_type
+    )
+    if nb_type == "cursor" and notebook.folder_path:
+        from services import data_notebook
+        conn = await data_notebook.connect_folder(result["id"], notebook.folder_path)
+        # Re-read so `config` reflects the connection, then surface any connect error.
+        result = await notebook_store.get(result["id"]) or result
+        if not conn.get("ok"):
+            result["connect_error"] = conn.get("error", "could not connect the folder")
     return result
+
+
+@router.post("/{notebook_id}/connect")
+async def connect_folder(notebook_id: str, req: ConnectFolderRequest):
+    """Connect (or re-point) a Cursor Style notebook to a folder holding the .db + .md docs."""
+    nb = await notebook_store.get(notebook_id)
+    if not nb:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+    from services import data_notebook
+    if nb.get("type") != "cursor":
+        await notebook_store.update(notebook_id, {"type": "cursor"})
+    return await data_notebook.connect_folder(notebook_id, req.folder_path)
+
+
+@router.post("/{notebook_id}/refresh")
+async def refresh_folder(notebook_id: str):
+    """Re-introspect the connected folder's .db + re-read governance (monthly refresh)."""
+    from services import data_notebook
+    return await data_notebook.refresh(notebook_id)
+
+
+@router.get("/{notebook_id}/data-status")
+async def data_status(notebook_id: str):
+    """Cursor Style connection summary: folder, db, tables/row counts, governance files, last refresh."""
+    nb = await notebook_store.get(notebook_id)
+    if not nb:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+    if nb.get("type") != "cursor":
+        return {"connected": False, "type": nb.get("type", "standard")}
+    cfg = nb.get("config") or {}
+    return {
+        "connected": bool(cfg.get("db_path")),
+        "type": "cursor",
+        "folder_path": cfg.get("folder_path"),
+        "db_filename": cfg.get("db_filename"),
+        "tables": cfg.get("tables", []),
+        "governance_files": list((cfg.get("governance_files") or {}).values()),
+        "refreshed_at": cfg.get("refreshed_at"),
+    }
 
 @router.get("/{notebook_id}", response_model=Notebook)
 async def get_notebook(notebook_id: str):
@@ -88,7 +147,14 @@ async def delete_notebook(notebook_id: str):
     
     # Clean up all associated data
     cleanup_errors = []
-    
+
+    # 0. Cursor Style: drop external tabular catalog rows (never touches the external .db/folder).
+    try:
+        from services import data_notebook
+        data_notebook.cleanup(notebook_id)
+    except Exception as e:
+        cleanup_errors.append(f"data_notebook cleanup: {e}")
+
     # 1. Remove collector config + data directory
     try:
         notebook_data_dir = Path(settings.data_dir) / "notebooks" / notebook_id

@@ -331,6 +331,18 @@ class Database:
         except Exception as _e:
             if "duplicate column" not in str(_e).lower():
                 logger.warning(f"[database] {type(_e).__name__}: {_e}")
+        # Notebook type + config (2.2.0 Cursor Style notebook). type='standard'|'cursor';
+        # config_json carries the folder/db connection for cursor notebooks.
+        try:
+            cursor.execute("ALTER TABLE notebooks ADD COLUMN type TEXT DEFAULT 'standard'")
+        except Exception as _e:
+            if "duplicate column" not in str(_e).lower():
+                logger.warning(f"[database] {type(_e).__name__}: {_e}")
+        try:
+            cursor.execute("ALTER TABLE notebooks ADD COLUMN config_json TEXT DEFAULT '{}'")
+        except Exception as _e:
+            if "duplicate column" not in str(_e).lower():
+                logger.warning(f"[database] {type(_e).__name__}: {_e}")
         
         # -- canvas_notes --
         cursor.execute("""

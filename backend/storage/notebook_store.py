@@ -58,7 +58,7 @@ class NotebookStore:
         if self._use_sqlite:
             conn = self._get_db()
             rows = conn.execute("SELECT * FROM notebooks ORDER BY created_at DESC").fetchall()
-            notebooks = [dict(row) for row in rows]
+            notebooks = [self._hydrate(dict(row)) for row in rows]
         else:
             data = self._load_data()
             notebooks = list(data["notebooks"].values())
@@ -95,11 +95,15 @@ class NotebookStore:
         # If all colors used, start over
         return self.DEFAULT_COLORS[len(data["notebooks"]) % len(self.DEFAULT_COLORS)]
 
-    async def create(self, title: str, description: Optional[str] = None, color: Optional[str] = None) -> Dict:
-        """Create a new notebook"""
+    async def create(self, title: str, description: Optional[str] = None, color: Optional[str] = None,
+                     type: str = "standard", config: Optional[dict] = None) -> Dict:
+        """Create a new notebook. `type` = 'standard' | 'cursor'; `config` is a JSON blob
+        (the Cursor Style folder/db connection, or {} for standard notebooks)."""
         notebook_id = str(uuid.uuid4())
         now = datetime.utcnow().isoformat()
-        
+        type = type or "standard"
+        config = config or {}
+
         if self._use_sqlite:
             if not color:
                 conn = self._get_db()
@@ -107,19 +111,20 @@ class NotebookStore:
                 color = next((c for c in self.DEFAULT_COLORS if c not in used), self.DEFAULT_COLORS[0])
             notebook = {
                 "id": notebook_id, "title": title, "description": description,
-                "color": color, "created_at": now, "updated_at": now, "source_count": 0
+                "color": color, "created_at": now, "updated_at": now, "source_count": 0,
+                "type": type, "config": config,
             }
             conn = self._get_db()
             conn.execute(
-                """INSERT INTO notebooks (id, title, description, color, source_count, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, 0, ?, ?)""",
-                (notebook_id, title, description, color, now, now)
+                """INSERT INTO notebooks (id, title, description, color, source_count, created_at, updated_at, type, config_json)
+                   VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)""",
+                (notebook_id, title, description, color, now, now, type, json.dumps(config))
             )
             conn.commit()
             return notebook
-        
+
         data = self._load_data()
-        
+
         # Auto-assign color if not provided
         if not color:
             color = self._get_next_color(data)
@@ -131,7 +136,9 @@ class NotebookStore:
             "color": color,
             "created_at": now,
             "updated_at": now,
-            "source_count": 0
+            "source_count": 0,
+            "type": type,
+            "config": config,
         }
 
         data["notebooks"][notebook_id] = notebook
@@ -139,13 +146,31 @@ class NotebookStore:
 
         return notebook
 
+    @staticmethod
+    def _hydrate(nb: Optional[Dict]) -> Optional[Dict]:
+        """Normalize a notebook row: default `type`, parse `config_json` → `config` dict."""
+        if not nb:
+            return nb
+        nb.setdefault("type", "standard")
+        # config_json (the persisted column) is authoritative when present; else keep any
+        # in-memory `config` dict (JSON-store create path). Always end with a `config` dict.
+        raw = nb.get("config_json")
+        if isinstance(raw, str) and raw:
+            try:
+                nb["config"] = json.loads(raw)
+            except Exception:
+                nb.setdefault("config", {})
+        else:
+            nb.setdefault("config", {})
+        return nb
+
     async def get(self, notebook_id: str) -> Optional[Dict]:
         """Get a notebook by ID"""
         if self._use_sqlite:
             row = self._get_db().execute("SELECT * FROM notebooks WHERE id = ?", (notebook_id,)).fetchone()
-            return dict(row) if row else None
+            return self._hydrate(dict(row)) if row else None
         data = self._load_data()
-        return data["notebooks"].get(notebook_id)
+        return self._hydrate(data["notebooks"].get(notebook_id))
 
     async def delete(self, notebook_id: str) -> bool:
         """Delete a notebook"""
@@ -163,9 +188,15 @@ class NotebookStore:
 
     async def update(self, notebook_id: str, updates: dict) -> Optional[Dict]:
         """Update a notebook with the given updates"""
+        updates = dict(updates)
+        # Accept a `config` dict → persist as config_json (the on-disk column).
+        if "config" in updates and "config_json" not in updates:
+            cfg = updates.pop("config")
+            updates["config_json"] = json.dumps(cfg) if not isinstance(cfg, str) else cfg
         if self._use_sqlite:
             now = datetime.utcnow().isoformat()
-            allowed = {'title', 'description', 'color', 'source_count', 'section_id', 'sort_order'}
+            allowed = {'title', 'description', 'color', 'source_count', 'section_id',
+                       'sort_order', 'type', 'config_json'}
             sets = []
             params = []
             for k, v in updates.items():

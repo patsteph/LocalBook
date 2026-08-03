@@ -31,6 +31,7 @@ import { noteService } from './services/noteService';
 function App() {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
   const [selectedNotebookName, setSelectedNotebookName] = useState<string>('Notebook');
+  const [selectedNotebookType, setSelectedNotebookType] = useState<'standard' | 'cursor' | undefined>(undefined);
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
   const [backendStatusMessage, setBackendStatusMessage] = useState<string>('Initializing backend services...');
@@ -374,12 +375,14 @@ function App() {
   useEffect(() => {
     if (!selectedNotebookId) {
       setSelectedNotebookName('Notebook');
+      setSelectedNotebookType(undefined);
       return;
     }
     localFetch(`${API_BASE_URL}/notebooks/${selectedNotebookId}`)
       .then(res => res.ok ? res.json() : null)
       .then(data => {
         if (data?.title) setSelectedNotebookName(data.title);
+        setSelectedNotebookType(data?.type);
       })
       .catch(() => {});
   }, [selectedNotebookId]);
@@ -1134,6 +1137,7 @@ function App() {
                 drawers={drawers}
                 toggleDrawer={toggleDrawer}
                 selectedNotebookName={selectedNotebookName}
+                selectedNotebookType={selectedNotebookType}
                 onOpenStudio={openStudio}
               />
               </ErrorBoundary>

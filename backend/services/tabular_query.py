@@ -12,6 +12,7 @@ rag_engine hook); any failure returns ok=False so the caller falls back to vecto
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Optional
 
@@ -216,7 +217,18 @@ def safe_sql(raw: str) -> Dict[str, Any]:
     return {"ok": True, "sql": sql}
 
 
-def _build_prompt(question: str, schema: List[Dict[str, Any]], directives: List[Dict[str, str]]) -> str:
+def _build_prompt(question: str, schema: List[Dict[str, Any]],
+                  directives: List[Dict[str, str]], governance: str = "") -> str:
+    # Authoritative operating rules (Cursor Style notebooks): the AGENTS.md / DATA_OVERVIEW.md /
+    # domain_guide.md content the data owner ships. Placed FIRST so the model treats it as
+    # hard constraints — canonical joins, required filters, metric definitions, example questions.
+    governance_block = ""
+    if governance and governance.strip():
+        governance_block = (
+            "OPERATING RULES (AUTHORITATIVE — follow exactly; they define canonical joins, "
+            "required filters, and metric definitions for THIS database):\n"
+            f"{governance.strip()}\n\n"
+        )
     lines: List[str] = []
     for t in schema:
         cols = t["columns"]
@@ -245,13 +257,21 @@ def _build_prompt(question: str, schema: List[Dict[str, Any]], directives: List[
                         for d in directives) + "\n"
         )
 
+    obey_governance = (
+        "- Obey the OPERATING RULES above: apply their required filters and canonical joins "
+        "even when the question does not restate them, and use their metric definitions.\n"
+        if governance_block else ""
+    )
     return (
         "Translate the user's question into ONE read-only SQLite SELECT over the tables below.\n\n"
+        f"{governance_block}"
         f"{schema_text}\n"
         f"{directive_block}"
         "Rules:\n"
+        f"{obey_governance}"
         "- Output ONLY the SQL. No explanation, no markdown fences.\n"
-        "- Use exactly the table and column names shown (snake_case).\n"
+        "- Use exactly the table and column names shown; quote any name with spaces or capitals "
+        'with double quotes (e.g. "Sales Amount").\n'
         "- CRITICAL: filter using ONLY the EXACT values listed for a column. Do not abbreviate, "
         "expand, reword, or guess a value — copy the listed spelling verbatim "
         "(e.g. if the column lists 'Texas', write state = 'Texas', never 'TX'). Obey any value "
@@ -261,6 +281,11 @@ def _build_prompt(question: str, schema: List[Dict[str, Any]], directives: List[
         "account = '...', person IN (...), etc. unless the question asks for them.\n"
         "- For case-insensitive matching on OTHER text columns, compare LOWER(col) = LOWER('value').\n"
         "- \"how many\" / \"number of\" -> SELECT COUNT(*). Totals -> SUM(...). Averages -> AVG(...).\n"
+        "- Column ALIASES must be a single word (snake_case) or double-quoted — never a bare "
+        'multi-word alias (write SUM(amount) AS total_amount or AS "Total Amount", never AS Total Amount).\n'
+        "- When the question asks for a metric \"by\" / \"per\" / \"for each\" <dimension> (e.g. "
+        "\"total sales by region\", \"count per month\"), SELECT that <dimension> column alongside the "
+        "metric and GROUP BY it, ordering sensibly (by the dimension for time, by the metric otherwise).\n"
         "- A single read-only SELECT only. Never modify data.\n\n"
         f"Question: {question}\nSQL:"
     )
@@ -273,6 +298,115 @@ def _pretty(name: str) -> str:
 
 def _cell(v: Any) -> str:
     return "" if v is None else str(v)
+
+
+# --- Chart rendering (Phase 2) -------------------------------------------------
+# A chartable result gets a `json-chart` fence appended to the markdown answer;
+# the chat's MarkdownArtifactRenderer dispatches that fence to ChartArtifactRenderer.
+_MAX_CHART_CATEGORIES = 30  # don't chart a big dump — a 500-row table is not a chart
+
+# Category columns whose name/values read as a time sequence render as a line chart.
+_TIME_HINT = re.compile(r"\b(month|date|year|day|week|quarter|period|qtr|fy|time)\b", re.IGNORECASE)
+_MONTH_NAMES = {
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    "january", "february", "march", "april", "june", "july", "august", "september",
+    "october", "november", "december",
+}
+
+
+def _as_number(v: Any) -> Optional[float]:
+    """Return v as a number (bool excluded), parsing numeric strings; else None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        s = v.strip().replace(",", "")
+        if not s:
+            return None
+        try:
+            f = float(s)
+        except ValueError:
+            return None
+        # Preserve integers as ints so labels/JSON stay clean.
+        if f.is_integer() and not any(ch in s.lower() for ch in (".", "e")):
+            return int(f)
+        return f
+    return None
+
+
+def _is_time_label_column(name: str, values: List[Any]) -> bool:
+    """True when a category column looks like a time/month/date/year sequence."""
+    if _TIME_HINT.search(str(name or "")):
+        return True
+    hits = 0
+    total = 0
+    for v in values:
+        if v is None:
+            continue
+        total += 1
+        s = str(v).strip().lower()
+        if (s in _MONTH_NAMES
+                or re.fullmatch(r"(19|20)\d{2}", s)          # a bare year
+                or re.fullmatch(r"\d{4}-\d{2}(-\d{2})?", s)  # ISO year-month(-day)
+                or re.fullmatch(r"q[1-4]([\s\-/]?\d{2,4})?", s)):  # Q1, Q1-2024
+            hits += 1
+    return total > 0 and hits >= max(2, int(0.6 * total))
+
+
+def _maybe_chart(question: str, columns: List[Any], rows: List[Any]) -> str:
+    """Return a `\\n\\n```json-chart\\n{...}\\n```\\n` block when the result set is
+    chartable, else "". Chartable = ≥2 rows, exactly one non-numeric label column +
+    ≥1 numeric column, and ≤_MAX_CHART_CATEGORIES categories. Never raises."""
+    try:
+        if not columns or not rows or len(rows) < 2 or len(rows) > _MAX_CHART_CATEGORIES:
+            return ""
+        ncols = len(columns)
+        if ncols < 2:
+            return ""
+
+        # Classify each column: numeric (every non-null cell parses as a number) vs label.
+        numeric_idx: List[int] = []
+        label_idx: List[int] = []
+        for j in range(ncols):
+            cells = [r[j] for r in rows if j < len(r)]
+            non_null = [c for c in cells if c is not None]
+            if non_null and all(_as_number(c) is not None for c in non_null):
+                numeric_idx.append(j)
+            else:
+                label_idx.append(j)
+
+        # Need exactly one label/category column and at least one numeric column.
+        if len(label_idx) != 1 or not numeric_idx:
+            return ""
+
+        cat_j = label_idx[0]
+        cat_name = str(columns[cat_j])
+        cat_values = [_cell(r[cat_j]) if cat_j < len(r) else "" for r in rows]
+        # Distinct-ish guard: charting only makes sense with distinct categories.
+        if len(set(cat_values)) < 2:
+            return ""
+
+        # One series per numeric column; build data rows keyed by the real column names.
+        data: List[Dict[str, Any]] = []
+        for r in rows:
+            row: Dict[str, Any] = {cat_name: _cell(r[cat_j]) if cat_j < len(r) else ""}
+            for j in numeric_idx:
+                row[str(columns[j])] = _as_number(r[j]) if j < len(r) else None
+            data.append(row)
+
+        is_time = _is_time_label_column(cat_name, [r[cat_j] if cat_j < len(r) else None for r in rows])
+        config = {
+            "chart_type": "line" if is_time else "bar",
+            "title": question.strip()[:120] or None,
+            "x_axis": {"key": cat_name, "label": _pretty(cat_name)},
+            "series": [{"key": str(columns[j]), "label": _pretty(columns[j])} for j in numeric_idx],
+            "data": data,
+            "show_legend": len(numeric_idx) > 1,
+        }
+        return "\n\n```json-chart\n" + json.dumps(config) + "\n```\n"
+    except Exception:
+        return ""
 
 
 def _render_answer(question: str, sql: str, filename: str, result: Dict[str, Any]) -> str:
@@ -299,7 +433,9 @@ def _render_answer(question: str, sql: str, filename: str, result: Dict[str, Any
     sep = "| " + " | ".join("---" for _ in cols) + " |"
     body = "\n".join("| " + " | ".join(_cell(v) for v in r) + " |" for r in shown)
     more = "" if len(rows) <= _MAX_ANSWER_ROWS else f"\n\n_…and {len(rows) - _MAX_ANSWER_ROWS} more rows._"
-    return f"{header}\n{sep}\n{body}{more}"
+    table = f"{header}\n{sep}\n{body}{more}"
+    # Append an inline chart when the result set is chartable (keep the table too).
+    return table + _maybe_chart(question, cols, rows)
 
 
 async def _gen_sql(prompt: str, model: str, timeout: float) -> Optional[str]:
@@ -325,18 +461,28 @@ async def answer_tabular(
     notebook_id: str,
     question: str,
     source_ids: Optional[List[str]] = None,
+    db_path: Optional[str] = None,
+    governance: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Answer a question via text-to-SQL over the structured store.
 
     Returns {ok, answer, sql, source_id, filename, columns, rows} on success,
     or {ok: False, reason} so the caller can fall back to vector RAG.
+
+    For a Cursor Style notebook, `db_path` targets the external .db (read-only, in place;
+    auto-derived from the schema catalog if not passed) and `governance` is the authoritative
+    AGENTS.md/DATA_OVERVIEW.md/domain_guide.md text injected as hard SQL constraints.
     """
     schema = tabular_store.get_schema(notebook_id, source_ids)
     if not schema:
         return {"ok": False, "reason": "no structured tables for this notebook"}
 
+    # External .db (Cursor Style): the catalog rows carry the real file path.
+    if db_path is None:
+        db_path = next((t["db_path"] for t in schema if t.get("db_path")), None)
+
     directives = _resolve_directives(question, schema)
-    prompt = _build_prompt(question, schema, directives)
+    prompt = _build_prompt(question, schema, directives, governance or "")
 
     # Primary = the main model (gemma): far more reliable at text-to-SQL. The fast model (phi4)
     # hallucinated spurious WHERE clauses (2026-07-09: invented account=/person IN filters), so
@@ -360,7 +506,7 @@ async def answer_tabular(
             print(f"[tabular-sql] directive-corrected: {corrected}")
             sql = corrected
 
-    exec_res = tabular_store.execute_readonly(sql)
+    exec_res = tabular_store.execute_readonly(sql, db_path=db_path)
     if not exec_res.get("ok"):
         print(f"[tabular-sql] execution error: {exec_res.get('error')}")
         return {"ok": False, "reason": exec_res.get("error", "execution error")}

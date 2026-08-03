@@ -248,9 +248,29 @@ class ContextBuilder:
                     f"budget={budget_chars} chars (base={base_total}×{ram_mult:.2f}, "
                     f"sources≤{profile.max_sources}, chunks≤{profile.chunk_top_k}, window-capped)")
         
+        # Cursor Style notebook: the "context" is the LIVE database (schema + authoritative
+        # governance + freshly-computed query results), not vector chunks over uploaded docs.
+        # This makes ALL Studio outputs (briefings, docs, podcasts, video) data-grounded. Any
+        # failure falls through to the normal source-based path below.
+        try:
+            from services import data_notebook
+            _cur = await data_notebook.get_cursor_context(notebook_id)
+            if _cur:
+                data_ctx = await data_notebook.build_data_context(notebook_id, topic)
+                if data_ctx:
+                    db_name = (_cur.get("config") or {}).get("db_filename", "database")
+                    return BuiltContext(
+                        context=data_ctx, sources_used=1, source_names=[db_name],
+                        total_chars=len(data_ctx), strategy_used="cursor_data",
+                        profile_used=skill_id, sources_map={1: db_name},
+                        build_time_ms=int((time.time() - start_time) * 1000),
+                    )
+        except Exception as e:
+            logger.warning(f"[ContextBuilder] cursor data-context failed, using sources: {e}")
+
         # Import here to avoid circular imports
         from storage.source_store import source_store
-        
+
         # Step 1: Get all sources for notebook
         all_sources = await source_store.list(notebook_id)
         if not all_sources:

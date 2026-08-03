@@ -2,6 +2,31 @@
 import api from './api';
 import { Notebook, NotebookSection } from '../types';
 
+export interface CursorTableInfo {
+  table_name: string;
+  row_count: number;
+  columns: string[];
+}
+export interface CursorConnectResult {
+  ok: boolean;
+  error?: string;
+  db_filename?: string;
+  tables?: CursorTableInfo[];
+  table_count?: number;
+  row_total?: number;
+  governance_files?: string[];
+  schema_changed?: boolean;
+}
+export interface CursorDataStatus {
+  connected: boolean;
+  type: string;
+  folder_path?: string;
+  db_filename?: string;
+  tables?: CursorTableInfo[];
+  governance_files?: string[];
+  refreshed_at?: string;
+}
+
 // Default color palette for notebooks
 export const NOTEBOOK_COLORS = [
   '#3B82F6', // Blue
@@ -22,8 +47,31 @@ export const notebookService = {
     return response.data.notebooks;
   },
 
-  async create(title: string, description?: string, color?: string): Promise<Notebook> {
-    const response = await api.post('/notebooks/', { title, description, color });
+  async create(
+    title: string,
+    description?: string,
+    color?: string,
+    opts?: { type?: 'standard' | 'cursor'; folder_path?: string },
+  ): Promise<Notebook> {
+    const response = await api.post('/notebooks/', {
+      title, description, color, type: opts?.type, folder_path: opts?.folder_path,
+    });
+    return response.data;
+  },
+
+  // Cursor Style: connect / refresh a folder (the .db + AGENTS.md docs), read connection status.
+  async connectFolder(id: string, folderPath: string): Promise<CursorConnectResult> {
+    const response = await api.post(`/notebooks/${id}/connect`, { folder_path: folderPath });
+    return response.data;
+  },
+
+  async refreshData(id: string): Promise<CursorConnectResult> {
+    const response = await api.post(`/notebooks/${id}/refresh`);
+    return response.data;
+  },
+
+  async dataStatus(id: string): Promise<CursorDataStatus> {
+    const response = await api.get(`/notebooks/${id}/data-status`);
     return response.data;
   },
 

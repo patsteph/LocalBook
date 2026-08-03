@@ -824,42 +824,64 @@ JSON:"""
         try:
             from config import settings as _st
             if _st.tabular_structured_enabled:
-                from storage import tabular_store as _tab
-                if _tab.has_tables(notebook_id, source_ids):
-                    from services.source_router import source_router as _sr
-                    _wants, _intent = _sr.structured_intent(question)
-                    if _wants:
-                        print(f"[tabular-route] q={question[:60]!r} intent={_intent} -> STRUCTURED")
-                        from services import tabular_query as _tq
-                        _tres = await _tq.answer_tabular(notebook_id, question, source_ids)
-                        if _tres.get("ok"):
-                            _cit = [{
-                                "number": 1,
-                                "source_id": _tres["source_id"],
-                                "filename": _tres["filename"],
-                                "chunk_index": 0,
-                                "text": f"Structured query result — SQL: {_tres['sql']}",
-                                "parent_text": "",
-                                "snippet": f"Structured query over {_tres['filename']}",
-                                "page": None,
-                                "confidence": 1.0,
-                                "confidence_level": "high",
-                            }]
-                            yield {"type": "status", "message": "📊 Structured answer (from spreadsheet)"}
-                            yield {"type": "citations", "citations": _cit,
-                                   "sources": [_tres["source_id"]], "low_confidence": False}
-                            yield {"type": "token", "content": _tres["answer"]}
-                            try:
-                                await rag_metrics.end_query((time.time() - total_start) * 1000)
-                            except Exception:
-                                pass
-                            yield {"type": "done", "follow_up_questions": [], "structured": True}
-                            return
-                        print(f"[tabular] structured path empty/failed ({_tres.get('reason')}) "
-                              f"-> falling back to vector RAG")
-                    else:
-                        print(f"[tabular-route] q={question[:60]!r} intent={_intent} "
-                              f"-> vector RAG (non-aggregate intent)")
+                _tres = None
+                _label = "spreadsheet"
+                # Cursor Style notebook: text-to-SQL is the PRIMARY path (every data question),
+                # governed authoritatively by AGENTS.md/DATA_OVERVIEW.md/domain_guide.md, run
+                # read-only against the external .db. A miss/doc-question falls through to vector
+                # RAG over the ingested .md ("what does the README say").
+                from services import data_notebook as _dn
+                _cur = await _dn.get_cursor_context(notebook_id)
+                if _cur and _cur.get("db_path"):
+                    _label = "database"
+                    from services import tabular_query as _tq
+                    _tres = await _tq.answer_tabular(
+                        notebook_id, question, source_ids,
+                        db_path=_cur["db_path"], governance=_cur.get("governance"))
+                    if not (_tres and _tres.get("ok")):
+                        print(f"[cursor] SQL path empty/failed "
+                              f"({(_tres or {}).get('reason')}) -> vector RAG over docs")
+                        _tres = None
+                else:
+                    # Ordinary spreadsheet-backed notebook: only divert aggregate-ish intents.
+                    from storage import tabular_store as _tab
+                    if _tab.has_tables(notebook_id, source_ids):
+                        from services.source_router import source_router as _sr
+                        _wants, _intent = _sr.structured_intent(question)
+                        if _wants:
+                            print(f"[tabular-route] q={question[:60]!r} intent={_intent} -> STRUCTURED")
+                            from services import tabular_query as _tq
+                            _tres = await _tq.answer_tabular(notebook_id, question, source_ids)
+                            if not (_tres and _tres.get("ok")):
+                                print(f"[tabular] structured path empty/failed "
+                                      f"({(_tres or {}).get('reason')}) -> vector RAG")
+                                _tres = None
+                        else:
+                            print(f"[tabular-route] q={question[:60]!r} intent={_intent} -> vector RAG")
+
+                if _tres and _tres.get("ok"):
+                    _cit = [{
+                        "number": 1,
+                        "source_id": _tres["source_id"],
+                        "filename": _tres["filename"],
+                        "chunk_index": 0,
+                        "text": f"Structured query result — SQL: {_tres['sql']}",
+                        "parent_text": "",
+                        "snippet": f"Structured query over {_tres['filename']}",
+                        "page": None,
+                        "confidence": 1.0,
+                        "confidence_level": "high",
+                    }]
+                    yield {"type": "status", "message": f"📊 Structured answer (from {_label})"}
+                    yield {"type": "citations", "citations": _cit,
+                           "sources": [_tres["source_id"]], "low_confidence": False}
+                    yield {"type": "token", "content": _tres["answer"]}
+                    try:
+                        await rag_metrics.end_query((time.time() - total_start) * 1000)
+                    except Exception:
+                        pass
+                    yield {"type": "done", "follow_up_questions": [], "structured": True}
+                    return
         except Exception as _te:
             print(f"[tabular] query hook error (non-fatal): {type(_te).__name__}: {_te}")
 
