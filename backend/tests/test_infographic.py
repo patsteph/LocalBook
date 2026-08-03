@@ -329,8 +329,9 @@ def test_l3_compose_scene_contains_stickers_and_labels():
 
 def test_l3_phase_pills_do_not_overlap():
     """Field bug: 5 long phase labels made the highlighter pills overlap + bleed
-    off-canvas. Each column must now be >= its pill width, so pills never collide."""
-    from services.infographic.scene import _PILL_FONT, _PILL_MAX
+    off-canvas. Each column must now be >= its pill width, so pills never collide.
+    Pills carry a WRAPPED `lines` list now (headers wrap to 2 lines vs. clipping)."""
+    from services.infographic.scene import _PILL_MAX, _pill_width
     labels = ["Scattered documents", "Chunk & embed", "Vector store",
               "Retrieve & rerank", "Grounded answer"]
     g = l3scene.parse_graph({
@@ -339,18 +340,37 @@ def test_l3_phase_pills_do_not_overlap():
     })
     lay = l3scene.layout_scene(g)
 
-    def pill_w(label):  # mirror scene._pill's width formula (label already truncated)
-        return max(70.0, len(label) * _PILL_FONT * 0.62 + 34)
-
     pills = sorted(lay["pills"], key=lambda p: p["cx"])
     for a, b in zip(pills, pills[1:]):
-        assert a["cx"] + pill_w(a["label"]) / 2 <= b["cx"] - pill_w(b["label"]) / 2, \
-            f"pills overlap: {a['label']!r} / {b['label']!r}"
+        assert a["cx"] + _pill_width(a["lines"]) / 2 <= b["cx"] - _pill_width(b["lines"]) / 2, \
+            f"pills overlap: {a['lines']!r} / {b['lines']!r}"
     # first pill doesn't bleed off the left; last doesn't run past the right
-    assert pills[0]["cx"] - pill_w(pills[0]["label"]) / 2 >= 0
-    assert pills[-1]["cx"] + pill_w(pills[-1]["label"]) / 2 <= lay["width"]
-    # over-long labels truncate
-    assert all(len(p["label"]) <= _PILL_MAX for p in lay["pills"])
+    assert pills[0]["cx"] - _pill_width(pills[0]["lines"]) / 2 >= 0
+    assert pills[-1]["cx"] + _pill_width(pills[-1]["lines"]) / 2 <= lay["width"]
+    # every pill wraps to at most 2 lines, each line within the per-line budget
+    for p in lay["pills"]:
+        assert 1 <= len(p["lines"]) <= 2
+        assert all(len(ln) <= _PILL_MAX for ln in p["lines"])
+
+
+def test_l3_wrap_pill_wraps_long_headers_without_clipping():
+    """A long header wraps to 2 full lines instead of ellipsis-clipping; only a
+    header too long for 2 lines gets an ellipsis on the (crammed) 2nd line."""
+    from services.infographic.scene import _wrap_pill, _PILL_MAX
+    # short -> single line, verbatim
+    assert _wrap_pill("Vector store") == ["Vector store"]
+    # medium -> 2 lines, no ellipsis, every word preserved
+    lines = _wrap_pill("Core Components Identified")
+    assert len(lines) == 2
+    assert "…" not in " ".join(lines)
+    assert " ".join(lines).split() == "Core Components Identified".split()
+    assert all(len(ln) <= _PILL_MAX for ln in lines)
+    # far-too-long -> 2 lines, 2nd line ellipsised
+    long = _wrap_pill("Ingestion preprocessing normalization embedding indexing stage")
+    assert len(long) == 2
+    assert long[-1].endswith("…")
+    # empty stays empty (fail-open)
+    assert _wrap_pill("") == []
 
 
 def test_l3_compose_escapes_untrusted_labels():
@@ -391,7 +411,94 @@ def test_l3_scene_and_every_sticker_are_valid_xml():
 def test_sticker_render_fail_open():
     assert "<" in l3stickers.render_sticker("does-not-exist")  # neutral box, never empty
     assert "<path" in l3stickers.render_sticker("robot")
-    assert len(l3stickers.sticker_names()) >= 50   # grown library (2.2.0)
+    assert len(l3stickers.sticker_names()) >= 100   # substantially grown library (2.2.0)
+
+
+def test_sticker_no_duplicate_fill_attribute():
+    """The historic WKWebView bug: two `fill=` on one element is invalid XML.
+    Guard every element of every sticker (superset of the XML-parse check)."""
+    for name in l3stickers.sticker_names():
+        for el in re.findall(r"<[^>]+>", l3stickers.render_sticker(name)):
+            assert el.count(" fill=") <= 1, f"{name}: duplicate fill in {el}"
+
+
+# ── L4-accent (decorative glow-crystal spot) ───────────────────────────
+from services.infographic import accents as l4accents  # noqa: E402
+
+
+def test_accent_markup_every_variant_valid_xml():
+    from xml.dom.minidom import parseString
+    for v in l4accents.ACCENT_VARIANTS:
+        inner = l4accents.accent_markup(v)
+        assert inner and "currentColor" in inner
+        parseString(f'<svg xmlns="http://www.w3.org/2000/svg">{inner}</svg>')
+        for el in re.findall(r"<[^>]+>", inner):
+            assert el.count(" fill=") <= 1
+
+
+def test_accent_markup_and_spot_fail_open():
+    assert l4accents.accent_markup("nope") == ""
+    assert l4accents.accent_spot_html("nope") == ""
+    assert l4accents.pick_accent("seed") in l4accents.ACCENT_VARIANTS
+
+
+def test_accent_spot_html_has_corner_class():
+    html = l4accents.accent_spot_html("crystal", "tr")
+    assert "ib-accent-spot" in html and "ib-accent-spot--tr" in html and "<svg" in html
+
+
+def test_l2_accent_injection_slots_into_ib_root():
+    from services.infographic.builder import _inject_accent_l2
+    body = '<div class="ib"><div class="ib-card">x</div></div>'
+    out = _inject_accent_l2(body, "orb")
+    assert out.startswith('<div class="ib"><div class="ib-accent-spot')
+    assert _inject_accent_l2(body, "nope") == body  # unknown variant -> no-op
+
+
+def test_scene_accent_grows_canvas_and_embeds_spot():
+    graph = l3scene.parse_graph({
+        "groups": [{"id": "g1", "label": "A", "color": "blue"}],
+        "nodes": [{"id": "n1", "label": "doc", "sticker": "document", "group": "g1"}],
+    })
+    plain = l3scene.compose_scene(graph)
+    accented = l3scene.compose_scene(graph, accent="crystal")
+
+    def _h(svg: str) -> int:
+        return int(re.search(r'viewBox="0 0 \d+ (\d+)"', svg).group(1))
+
+    assert _h(accented) > _h(plain)        # fresh bottom strip added
+    assert len(accented) > len(plain)      # accent markup present
+    from xml.dom.minidom import parseString
+    parseString(accented)                  # still valid XML
+    # the accent never overlaps content: it lives in the added strip
+    assert 'max-width:100%' in accented    # wide-scene export no longer clips
+
+
+# ── L1 data-anchors (numeric/data anchoring; §2.1 + §2.6) ──────────────
+from services.infographic.builder import _l1_anchors  # noqa: E402
+
+
+def test_l1_anchors_from_data():
+    chart = {
+        "data": [{"x": "i1", "g": 10, "f": 50}, {"x": "i2", "g": 40, "f": 52},
+                 {"x": "i3", "g": 120, "f": 51}, {"x": "i4", "g": 300, "f": 50}],
+        "series": [{"key": "g", "label": "Agent loop"}, {"key": "f", "label": "Chatbot"}],
+    }
+    info = _l1_anchors(chart)
+    a = info["anchors"]
+    # growing series peaks at the endpoint -> callout anchors top-right
+    assert a["callout"]["x"] == 1.0 and a["callout"]["y"] == 0.0
+    # flat series sits low -> baseline anchor near the bottom
+    assert a["baseline"]["y"] > 0.8
+    # every fraction is within the plot rect
+    for anc in a.values():
+        assert 0.0 <= anc["x"] <= 1.0 and 0.0 <= anc["y"] <= 1.0
+    assert info["ratio"] == 6.0            # 300 / 50, data-derived
+
+
+def test_l1_anchors_fail_open_on_empty():
+    assert _l1_anchors({}) == {}
+    assert _l1_anchors({"data": [], "series": []}) == {}
 
 
 # ── Build A: router honors explicit medium words (the "poster → L2" field bug) ──
@@ -537,7 +644,7 @@ def test_build_l3_composes_from_graph(monkeypatch):
     whose payload carries the composed scene SVG (the source, HARD RULE §2.4)."""
     import services.infographic.builder as b
 
-    async def _fake_slotfill(system, content, model):
+    async def _fake_slotfill(system, content, model, topic=""):
         return _PLUGIN_GRAPH
 
     monkeypatch.setattr(b, "_run_slotfill", _fake_slotfill)
@@ -556,7 +663,7 @@ def test_build_l3_degrades_to_prose_when_graph_unusable(monkeypatch):
     so the final rung is the prose fallback, tagged with the L3 lane."""
     import services.infographic.builder as b
 
-    async def _none_slotfill(system, content, model):
+    async def _none_slotfill(system, content, model, topic=""):
         return None
 
     monkeypatch.setattr(b, "_run_slotfill", _none_slotfill)
@@ -569,7 +676,7 @@ def test_build_l3_degrades_to_prose_when_graph_unusable(monkeypatch):
 def test_build_l3_returns_none_on_bad_graph_directly(monkeypatch):
     import services.infographic.builder as b
 
-    async def _bad_slotfill(system, content, model):
+    async def _bad_slotfill(system, content, model, topic=""):
         return {"nodes": []}   # parses to None
 
     monkeypatch.setattr(b, "_run_slotfill", _bad_slotfill)
@@ -578,15 +685,27 @@ def test_build_l3_returns_none_on_bad_graph_directly(monkeypatch):
 
 # ── Archetype heuristic ────────────────────────────────────────────────
 def test_pick_archetype():
-    assert pick_archetype("the compile stage then index then serve") == "three_stage"
-    assert pick_archetype("quarterly revenue figures from the filing") == "facts_table"
-    assert pick_archetype("some generic prose about a process") == "pipeline_compare"
+    # Request-first (topic) routing — the production path. Single-word cues match the
+    # request but are ignored in noisy retrieved content (see topic_beats_noisy_content).
+    assert pick_archetype("", "quarterly revenue figures from the filing") == "facts_table"
+    # A generic sequence + generic prose fall to the neutral default (stepped_cards),
+    # not the retrieval-specific pipeline_compare (which now needs an explicit signal).
+    assert pick_archetype("", "the compile stage then index then serve") == "stepped_cards"
+    assert pick_archetype("", "some generic prose about a process") == "stepped_cards"
 
 
 def test_pick_archetype_new_lanes():
-    assert pick_archetype("a timeline of the company milestones") == "timeline"
-    assert pick_archetype("the taxonomy breaks down into these categories") == "tree_hierarchy"
-    assert pick_archetype("the key metrics dashboard at a glance") == "stat_grid"
+    assert pick_archetype("", "a timeline of the company milestones") == "timeline"
+    assert pick_archetype("", "the taxonomy breaks down into these categories") == "tree_hierarchy"
+    assert pick_archetype("", "the key metrics dashboard at a glance") == "stat_grid"
+
+
+def test_pick_archetype_comparison_routes_to_compare_columns():
+    # The generic vs/pros-cons comparison archetype (added 2026-08-03; the library had none).
+    assert pick_archetype("", "compare fine-tuning versus RAG, pros and cons of each") == "compare_columns"
+    assert pick_archetype("", "X vs Y: which is better?") == "compare_columns"
+    # An explicit CODE comparison still wins its dedicated archetype.
+    assert pick_archetype("", "compare the code: two implementations of the same api call") == "compare_code"
 
 
 # ── New L2 archetypes (stat_grid / timeline / tree_hierarchy) ──────────
@@ -743,9 +862,10 @@ def test_pick_archetype_deck_lanes():
     assert pick_archetype("a capability tier ladder: what runs at home") == "tier_ladder"
     assert pick_archetype("an exploded view of the stacked layers of a file") == "layer_stack"
     assert pick_archetype("three step cards joined by a feedback loop") == "stepped_cards"
-    # the original heuristics still route as before (no deck-keyword bleed)
-    assert pick_archetype("the compile stage then index then serve") == "three_stage"
-    assert pick_archetype("quarterly revenue figures from the filing") == "facts_table"
+    # Single-word cues route on the REQUEST (topic), not on noisy retrieved content.
+    assert pick_archetype("", "quarterly revenue figures from the filing") == "facts_table"
+    # A generic compile->index->serve sequence falls to the neutral sequence default.
+    assert pick_archetype("", "the compile stage then index then serve") == "stepped_cards"
 
 
 def test_cream_tone_is_valid_and_drops_dots():

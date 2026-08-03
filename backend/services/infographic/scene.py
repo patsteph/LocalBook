@@ -25,8 +25,9 @@ import math
 from typing import Any, Optional
 
 from services.infographic.stickers import (
-    render_sticker, sticker_tint, INK, INK_SOFT, AMBER,
+    render_sticker, sticker_tint, INK, INK_SOFT, AMBER, CORAL,
 )
+from services.infographic.accents import accent_markup
 
 # ── highlighter pill palette (marker tints, semi-transparent fill) ─────
 _PILL_COLORS: dict[str, str] = {
@@ -44,14 +45,30 @@ _COL_GAP = 96          # room for the connector arrow between columns
 _HEADER_Y = 34         # pill baseline band
 _SMALL = 84            # small sticker edge
 _SMALL_CELL_W = 116
-_SMALL_CELL_H = 126
+# Cell heights leave room for a TWO-line wrapped label under the sticker PLUS the
+# ±5px the roughen displacement (scale 5.0) can shove a row — otherwise a 2-line
+# label collides with the next row's sticker (field "label overlap" complaint).
+# small: 84 + 4 + 2×18 + descender ≈ 129 → 140 gives ~11px clearance.
+_SMALL_CELL_H = 140
 _HERO = 172            # hero sticker edge
 _HERO_CELL_W = 208
-_HERO_CELL_H = 216
+# hero: 172 + 4 + 2×20 + descender ≈ 221 → 234 clears it under displacement.
+_HERO_CELL_H = 234
 _LABEL_FONT = 15
 _HERO_LABEL_FONT = 17
 _PILL_FONT = 20
-_PILL_MAX = 24         # phase-label char cap (longer truncates) so pills stay sane
+# Phase labels used to hard-truncate at 24 chars (field bug: headers like
+# "Core Components Identif…" got clipped). Now `_PILL_MAX` is a PER-LINE budget and
+# the pill wraps to at most two lines (only ellipsising when even two lines can't
+# hold it), so full headers stay readable. `_PILL_2LINE_PAD` is the extra top
+# padding a 2-line pill needs so it never crowds the sticker band below it.
+_PILL_MAX = 22         # per-line char budget for a wrapped header pill
+_PILL_LINE_H = 22      # line advance inside a multi-line pill
+_PILL_2LINE_PAD = 26   # extra _PAD_TOP when any pill wraps to 2 lines
+# Horizontal breathing room the phase-flow connector leaves between its
+# arrow endpoint and the sticker it attaches to (so the arrowhead never buries
+# into a sticker) — plus the ±5px roughen displacement.
+_CONNECTOR_MARGIN = 14
 
 _FONT_STACK = (
     "'Chalkboard SE','Comic Sans MS','Comic Sans','Segoe Print',"
@@ -65,6 +82,42 @@ def _esc(t: str) -> str:
         .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def _wrap_pill(label: str) -> list[str]:
+    """Wrap a phase-header label to at most TWO lines for its highlighter pill.
+
+    Never breaks mid-word. Only when even two lines cannot hold the label does
+    the second line get cramped + ellipsised — so real headers (which fit in two
+    ~22-char lines) render in full instead of the old hard 24-char clip."""
+    label = (label or "").strip()
+    if not label:
+        return []
+    words = label.split()
+    lines, cur = [], ""
+    for w in words:
+        cand = f"{cur} {w}".strip()
+        if cur and len(cand) > _PILL_MAX:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = cand
+    if cur:
+        lines.append(cur)
+    if len(lines) <= 2:
+        return lines
+    # Overflow: keep line 1, cram the remainder into line 2 with an ellipsis.
+    second = " ".join(lines[1:])
+    if len(second) > _PILL_MAX:
+        second = second[: _PILL_MAX - 1].rstrip(" ,;")
+    return [lines[0], second + "…"]
+
+
+def _pill_width(lines: list[str]) -> float:
+    """Pill width sized to the longest wrapped line (so wrapping shrinks the
+    pill's footprint, keeping columns tight)."""
+    longest = max((len(ln) for ln in lines), default=0)
+    return max(70.0, longest * _PILL_FONT * 0.62 + 34)
 
 
 # ── 1. graph parsing / validation (fail-open) ──────────────────────────
@@ -165,9 +218,10 @@ def layout_scene(graph: dict) -> dict:
         small_cols = min(len(smalls), 2) if smalls else 0
         # The phase pill sits above the column — make the column AT LEAST as wide as
         # its pill so pills never overlap their neighbours or bleed off-canvas (field
-        # bug: 5 long phase labels collided). Absurdly long labels truncate.
-        pill_label = g["label"] if len(g["label"]) <= _PILL_MAX else g["label"][:_PILL_MAX - 1].rstrip() + "…"
-        pill_w = max(70.0, len(pill_label) * _PILL_FONT * 0.62 + 34)
+        # bug: 5 long phase labels collided). The pill wraps to 2 lines rather than
+        # clipping, so its width is driven by the longest wrapped line (narrower).
+        pill_lines = _wrap_pill(g["label"])
+        pill_w = _pill_width(pill_lines) if pill_lines else 70.0
         width = max(
             _HERO_CELL_W if heroes else 0,
             small_cols * _SMALL_CELL_W,
@@ -176,27 +230,41 @@ def layout_scene(graph: dict) -> dict:
         height = len(heroes) * _HERO_CELL_H + small_rows * _SMALL_CELL_H
         columns.append({
             "group": g, "heroes": heroes, "smalls": smalls,
-            "width": width, "height": height, "pill_label": pill_label,
+            "width": width, "height": height, "pill_lines": pill_lines,
             "small_rows": small_rows, "small_cols": small_cols,
         })
 
+    # A 2-line pill needs extra headroom so it never crowds the sticker band.
+    max_pill_lines = max((len(c["pill_lines"]) for c in columns), default=1)
+    pad_top = _PAD_TOP + (_PILL_2LINE_PAD if max_pill_lines >= 2 else 0)
+
     total_w = _PAD_X * 2 + sum(c["width"] for c in columns) + _COL_GAP * (len(columns) - 1)
     band_h = max((c["height"] for c in columns), default=_SMALL_CELL_H)
-    total_h = _PAD_TOP + band_h + _PAD_BOTTOM
+    total_h = pad_top + band_h + _PAD_BOTTOM
 
     placements: list[dict] = []
     pills: list[dict] = []
     col_centers: list[float] = []
+    # Per-column vertical anchor for the phase-flow connector: the vertical centre
+    # of the column's TOP sticker row (never the band centre). Labels always sit
+    # BELOW their sticker, so anchoring here guarantees the connector clears every
+    # label (field bug: the dotted arrow ran through a centred hero's label).
+    col_link_ys: list[float] = []
+    col_link_halfs: list[float] = []
 
     x = _PAD_X
     for c in columns:
         cx = x + c["width"] / 2
         col_centers.append(cx)
         # vertically center this column's content within the band
-        y = _PAD_TOP + (band_h - c["height"]) / 2
+        content_top = pad_top + (band_h - c["height"]) / 2
+        y = content_top
+        top_size = _HERO if c["heroes"] else _SMALL
+        col_link_ys.append(content_top + top_size / 2)
+        col_link_halfs.append(top_size / 2)
 
         pills.append({
-            "cx": cx, "label": c["pill_label"], "color": c["group"]["color"],
+            "cx": cx, "lines": c["pill_lines"], "color": c["group"]["color"],
         })
 
         for hero in c["heroes"]:
@@ -227,8 +295,9 @@ def layout_scene(graph: dict) -> dict:
 
     return {
         "width": round(total_w), "height": round(total_h),
-        "band_top": _PAD_TOP, "band_h": band_h,
+        "band_top": pad_top, "band_h": band_h,
         "placements": placements, "pills": pills, "col_centers": col_centers,
+        "col_link_ys": col_link_ys, "col_link_halfs": col_link_halfs,
     }
 
 
@@ -252,25 +321,36 @@ def _wrap_label(text: str, max_chars: int) -> list[str]:
     return lines
 
 
-def _pill(cx: float, y: float, label: str, color: str) -> tuple[str, str]:
-    """Return (roughened rect markup, crisp text markup) for a highlighter pill."""
-    if not label:
+def _pill(cx: float, y: float, lines: list[str], color: str) -> tuple[str, str]:
+    """Return (roughened rect markup, crisp text markup) for a highlighter pill.
+
+    `lines` is the 1- or 2-line wrapped header (see `_wrap_pill`). A 2-line pill
+    grows taller and stacks two centred tspans instead of clipping the label."""
+    if not lines:
         return "", ""
     hexc = _PILL_COLORS.get(color, _PILL_COLORS["slate"])
-    w = max(70.0, len(label) * _PILL_FONT * 0.62 + 34)
-    h = 38
+    n = len(lines)
+    w = _pill_width(lines)
+    h = 38 if n == 1 else 20 + n * _PILL_LINE_H
     x = cx - w / 2
     rect = (
-        f'<rect x="{x:.0f}" y="{y:.0f}" width="{w:.0f}" height="{h}" rx="15" '
+        f'<rect x="{x:.0f}" y="{y:.0f}" width="{w:.0f}" height="{h:.0f}" rx="15" '
         f'fill="{hexc}" fill-opacity="0.28" stroke="{hexc}" stroke-width="2.4" '
         f'stroke-opacity="0.85"/>'
     )
-    text = (
-        f'<text x="{cx:.0f}" y="{y + h/2 + 1:.0f}" text-anchor="middle" '
-        f'dominant-baseline="middle" font-family="{_FONT_STACK}" '
-        f'font-size="{_PILL_FONT}" font-weight="700" fill="{INK}">{_esc(label)}</text>'
-    )
-    return rect, text
+    cy_mid = y + h / 2
+    if n == 1:
+        y0 = cy_mid + 1
+    else:
+        y0 = cy_mid - (n - 1) * _PILL_LINE_H / 2
+    parts = []
+    for i, ln in enumerate(lines):
+        parts.append(
+            f'<text x="{cx:.0f}" y="{y0 + i * _PILL_LINE_H:.0f}" text-anchor="middle" '
+            f'dominant-baseline="middle" font-family="{_FONT_STACK}" '
+            f'font-size="{_PILL_FONT}" font-weight="700" fill="{INK}">{_esc(ln)}</text>'
+        )
+    return rect, "".join(parts)
 
 
 def _dashed_arrow(x1: float, y1: float, x2: float, y2: float) -> str:
@@ -305,11 +385,13 @@ def _sparkles(cx: float, cy: float, r: float) -> str:
     return "".join(rays)
 
 
-def compose_scene(graph: dict, *, seed: int = 7) -> str:
+def compose_scene(graph: dict, *, seed: int = 7, accent: Optional[str] = None) -> str:
     """Render a parsed+laid-out graph to one self-contained SVG string.
 
     `seed` varies the roughen turbulence so re-composing yields a slightly
-    different (but stable-per-seed) wobble. Never raises."""
+    different (but stable-per-seed) wobble. `accent` (an accents.py variant name)
+    adds ONE decorative L4-accent "glow crystal" in a fresh bottom-right strip
+    (the canvas grows so it can NEVER overlap a sticker/label). Never raises."""
     lay = layout_scene(graph)
     W, H = lay["width"], lay["height"]
 
@@ -318,18 +400,22 @@ def compose_scene(graph: dict, *, seed: int = 7) -> str:
 
     # phase pills
     for p in lay["pills"]:
-        rect, text = _pill(p["cx"], _HEADER_Y, p["label"], p["color"])
+        rect, text = _pill(p["cx"], _HEADER_Y, p["lines"], p["color"])
         if rect:
             rough_layer.append(rect)
             text_layer.append(text)
 
-    # connector arrows between consecutive columns (default phase flow)
-    cy = lay["band_top"] + lay["band_h"] / 2
+    # connector arrows between consecutive columns (default phase flow). Each end
+    # attaches at the target column's TOP-sticker-row centre (`col_link_ys`) — well
+    # above that column's label — and stops a sticker-half + margin short of the
+    # sticker so the arrowhead never buries into it or runs through a label.
     centers = lay["col_centers"]
+    link_ys = lay["col_link_ys"]
+    link_halfs = lay["col_link_halfs"]
     for i in range(len(centers) - 1):
-        x1 = centers[i] + 40
-        x2 = centers[i + 1] - 40
-        rough_layer.append(_dashed_arrow(x1, cy, x2, cy))
+        x1 = centers[i] + link_halfs[i] + _CONNECTOR_MARGIN
+        x2 = centers[i + 1] - link_halfs[i + 1] - _CONNECTOR_MARGIN
+        rough_layer.append(_dashed_arrow(x1, link_ys[i], x2, link_ys[i + 1]))
 
     # stickers + their labels
     for pl in lay["placements"]:
@@ -356,6 +442,22 @@ def compose_scene(graph: dict, *, seed: int = 7) -> str:
                 f'{_esc(line)}</text>'
             )
 
+    # Optional L4-accent glow crystal: place it in a FRESH bottom-right strip so
+    # the canvas grows to fit — it can never collide with content (the field
+    # overlap complaint). Drawn crisp (unfiltered) in the brand coral.
+    accent_layer: list[str] = []
+    inner = accent_markup(accent, CORAL) if accent else ""
+    if inner:
+        box, extra = 92, 104
+        ax = W - _PAD_X - box
+        ay = H + (extra - box) / 2
+        sc = box / 100.0
+        accent_layer.append(
+            f'<g transform="translate({ax:.0f} {ay:.0f}) scale({sc:.3f})" '
+            f'opacity="0.9">{inner}</g>'
+        )
+        H = H + extra
+
     defs = (
         '<defs>'
         f'<filter id="rough" x="-6%" y="-6%" width="112%" height="112%">'
@@ -370,10 +472,15 @@ def compose_scene(graph: dict, *, seed: int = 7) -> str:
     )
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" '
-        f'width="{W}" height="{H}" font-family="{_FONT_STACK}">'
+        f'width="{W}" height="{H}" font-family="{_FONT_STACK}" '
+        # max-width lets a wide many-column scene scale down to its container in
+        # the export page instead of clipping off the right edge (fixed W would
+        # overflow a narrower viewport). The in-app <img> sizes it responsively.
+        f'style="max-width:100%;height:auto;display:block">'
         f'{defs}'
         f'<rect x="0" y="0" width="{W}" height="{H}" fill="#fdfdfb"/>'
         f'<g filter="url(#rough)">{"".join(rough_layer)}</g>'
         f'<g>{"".join(text_layer)}</g>'
+        f'{"".join(accent_layer)}'
         f'</svg>'
     )

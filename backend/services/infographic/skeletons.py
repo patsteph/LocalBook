@@ -468,6 +468,41 @@ def _expand_structural(html: str) -> str:
     )
 
 
+# ── Archetype 11 — compare_columns (generic two-option comparison) ─────
+# The library had NO generic comparison (pipeline_compare is hardcoded to the
+# retrieval-loop-vs-compile-once narrative; compare_code needs code). This is the
+# missing "X vs Y, pros & cons of each" layout: two symmetric cards + a verdict.
+# Reuses ib-compare/ib-col/ib-vrule/ib-card/ib-section-label (all in the design system).
+_COMPARE_COL = (
+    '    <div class="ib-col">\n'
+    '      <div class="ib-card" style="height:100%">\n'
+    '        <div class="ib-section-label" style="display:flex;align-items:center;gap:8px">'
+    '<span class="ib-icon">{{ICON_#S#}}</span>{{#S#_TITLE}}</div>\n'
+    '        <div style="font-size:14px;line-height:1.55;color:var(--ib-ink);margin-top:12px">\n'
+    '          <div style="margin-bottom:7px"><b style="color:var(--ib-accent)">+</b> {{#S#_PRO_1}}</div>\n'
+    '          <div style="margin-bottom:7px"><b style="color:var(--ib-accent)">+</b> {{#S#_PRO_2}}</div>\n'
+    '          <div style="margin-bottom:7px;color:var(--ib-muted)"><b>−</b> {{#S#_CON_1}}</div>\n'
+    '          <div style="color:var(--ib-muted)"><b>−</b> {{#S#_CON_2}}</div>\n'
+    '        </div>\n'
+    '      </div>\n'
+    '    </div>\n'
+)
+_COMPARE_COLUMNS = (
+    '\n<div class="ib">\n'
+    '  <div class="ib-head" style="text-align:left">\n'
+    '    <div class="ib-title">{{COMPARE_TITLE}}</div>\n'
+    '    <div class="ib-subtitle">{{COMPARE_SUBHEAD}}</div>\n'
+    '  </div>\n'
+    '  <div class="ib-compare">\n'
+    + _COMPARE_COL.replace("#S#", "LEFT")
+    + '    <div class="ib-vrule"></div>\n'
+    + _COMPARE_COL.replace("#S#", "RIGHT")
+    + '  </div>\n'
+    '  <div class="ib-takeaway">{{VERDICT}}</div>\n'
+    '</div>\n'
+)
+
+
 _SKELETONS = {
     "pipeline_compare": _PIPELINE_COMPARE,
     "facts_table": _FACTS_TABLE,
@@ -479,6 +514,7 @@ _SKELETONS = {
     "stepped_cards": _STEPPED_CARDS,
     "tier_ladder": _TIER_LADDER,
     "layer_stack": _LAYER_STACK,
+    "compare_columns": _COMPARE_COLUMNS,
 }
 
 ARCHETYPES = tuple(_SKELETONS.keys())
@@ -501,6 +537,31 @@ def get_skeleton(archetype: str) -> str | None:
 
 # archetype -> LLM system prompt enumerating the EXACT text/icon slots to fill.
 _L2_SYSTEMS_EXT: dict[str, str] = {
+    "compare_columns": (
+        "You are filling text slots in a TWO-COLUMN COMPARISON infographic. Each column is ONE "
+        "of the two options being compared, with two pros (+) and two cons (−). The comparison "
+        "must DIRECTLY answer the user's request — the two options are whatever the request asks "
+        "to compare. Return JSON with these exact keys:\n\n"
+        "{\n"
+        '  "COMPARE_TITLE": "max 6 words, names what is being compared",\n'
+        '  "COMPARE_SUBHEAD": "max 10 words, the question this comparison answers",\n'
+        '  "LEFT_TITLE": "max 4 words, the FIRST option being compared",\n'
+        '  "LEFT_PRO_1": "max 8 words, a real strength of the first option",\n'
+        '  "LEFT_PRO_2": "max 8 words, another strength of the first option",\n'
+        '  "LEFT_CON_1": "max 8 words, a real weakness of the first option",\n'
+        '  "LEFT_CON_2": "max 8 words, another weakness of the first option",\n'
+        '  "RIGHT_TITLE": "max 4 words, the SECOND option being compared",\n'
+        '  "RIGHT_PRO_1": "max 8 words, a real strength of the second option",\n'
+        '  "RIGHT_PRO_2": "max 8 words, another strength of the second option",\n'
+        '  "RIGHT_CON_1": "max 8 words, a real weakness of the second option",\n'
+        '  "RIGHT_CON_2": "max 8 words, another weakness of the second option",\n'
+        '  "VERDICT": "max 14 words, when to choose which option",\n'
+        f'  "ICON_LEFT": "one of: {_ICON_LIST}",\n'
+        '  "ICON_RIGHT": "one icon name from that list"\n'
+        "}\n\n"
+        "Short noun/verb phrases, not sentences. The two options must be genuinely different, "
+        "and each side's pros/cons must be specific to THAT option."
+    ),
     "stat_grid": (
         "You are filling text slots in a KPI 'stat grid' infographic: four tiles, each a big "
         "headline NUMBER with a short label. Return JSON with these exact keys:\n\n"
@@ -704,6 +765,11 @@ _L2_KEY_SLOTS_EXT: dict[str, tuple[list[str], int]] = {
          "LAYER_4_LABEL", "LAYER_5_LABEL"],
         4,
     ),
+    "compare_columns": (
+        ["LEFT_TITLE", "RIGHT_TITLE", "LEFT_PRO_1", "RIGHT_PRO_1",
+         "LEFT_CON_1", "RIGHT_CON_1", "COMPARE_TITLE"],
+        5,
+    ),
 }
 
 # archetype -> list of (icon_slot_key, label_slot_key_for_fallback)
@@ -726,6 +792,9 @@ _ICON_SLOTS_EXT: dict[str, list[tuple[str, str]]] = {
     ],
     "tier_ladder": [
         ("ICON_ANCHOR", "ANCHOR_LABEL"),
+    ],
+    "compare_columns": [
+        ("ICON_LEFT", "LEFT_TITLE"), ("ICON_RIGHT", "RIGHT_TITLE"),
     ],
 }
 

@@ -102,6 +102,62 @@ STICKER_TINT: dict[str, str] = {
     "compass": TEAL,
     "flask": TEAL,
     "atom": VIOLET,
+    # artistic / high-variety quality pass (2.2.0)
+    "person": STEEL,
+    "people": STEEL,
+    "handshake": AMBER,
+    "thumbsup": GREEN,
+    "heart": CORAL,
+    "question": BLUE,
+    "thought": VIOLET,
+    "tree": GREEN,
+    "leaf": GREEN,
+    "mountain": STEEL,
+    "sun": AMBER,
+    "wave": BLUE,
+    "sprout": GREEN,
+    "flame": CORAL,
+    "snowflake": TEAL,
+    "moon": VIOLET,
+    "book": BLUE,
+    "books": VIOLET,
+    "pencil": AMBER,
+    "paintbrush": VIOLET,
+    "camera": INK_SOFT,
+    "microphone": CORAL,
+    "headphones": STEEL,
+    "trophy": AMBER,
+    "medal": AMBER,
+    "gift": CORAL,
+    "coffee": AMBER,
+    "battery": GREEN,
+    "wifi": BLUE,
+    "folder": AMBER,
+    "clipboard": STEEL,
+    "wrench": INK_SOFT,
+    "hammer": INK_SOFT,
+    "umbrella": BLUE,
+    "anchor": STEEL,
+    "ship": BLUE,
+    "bridge": STEEL,
+    "ladder": AMBER,
+    "telescope": VIOLET,
+    "coin": AMBER,
+    "moneybag": GREEN,
+    "creditcard": BLUE,
+    "briefcase": INK_SOFT,
+    "chart_bar": BLUE,
+    "donut": VIOLET,
+    "gauge": TEAL,
+    "graduation": INK_SOFT,
+    "dna": TEAL,
+    "satellite": STEEL,
+    "sparkle": VIOLET,
+    "token": CORAL,
+    "circuit": BLUE,
+    "check_circle": GREEN,
+    "x_circle": CORAL,
+    "info": BLUE,
 }
 
 
@@ -642,6 +698,478 @@ def _atom() -> str:
     )
 
 
+# ── artistic / high-variety quality pass (2.2.0) ───────────────────────
+# More subjects, more organic shapes, a few deliberately COMPLEX multi-element
+# scenes (person, people, tree, mountain, ship, trophy, graduation) so the L3
+# lane stops leaning on the same dozen tech glyphs. Same fill discipline as
+# above: a stroked path passes its fill THROUGH `_sw(fill=…)` exactly once;
+# solid marks carry a single `fill="…"`; `fill-opacity` is always safe.
+def _person() -> str:
+    return (
+        f'<circle cx="50" cy="30" r="13" {_sw(fill=PAPER)}/>'
+        f'<path d="M26 82 v-8 a24 22 0 0 1 48 0 v8" fill-opacity="0.26" {_sw(fill=STEEL)}/>'
+    )
+
+
+def _people() -> str:
+    return (
+        f'<circle cx="37" cy="34" r="11" {_sw(fill=PAPER)}/>'
+        f'<path d="M20 80 v-6 a17 16 0 0 1 34 0 v6" fill-opacity="0.24" {_sw(fill=STEEL)}/>'
+        f'<circle cx="66" cy="30" r="10" {_sw(fill=PAPER)}/>'
+        f'<path d="M52 76 v-4 a16 15 0 0 1 30 0 v4" fill-opacity="0.24" {_sw(fill=TEAL)}/>'
+    )
+
+
+def _handshake() -> str:
+    return (
+        # two forearms rising from the bottom corners to a clasp at centre
+        f'<path d="M14 80 l28 -24 l10 8" fill-opacity="0.22" {_sw(5, fill=AMBER)}/>'
+        f'<path d="M86 80 l-28 -24 l-10 8" fill-opacity="0.22" {_sw(5, fill=AMBER)}/>'
+        # clasped grip + finger lines
+        f'<path d="M42 56 l8 6 l8 -6" {_sw(2.6)}/>'
+        f'<path d="M46 48 l4 5 M50 47 l4 5 M54 48 l4 5" {_sw(2)}/>'
+    )
+
+
+def _thumbsup() -> str:
+    return (
+        f'<rect x="24" y="46" width="12" height="30" rx="3" fill-opacity="0.24" {_sw(fill=STEEL)}/>'
+        f'<path d="M36 52 l9 -22 a5 5 0 0 1 9 3 l-3 15 h15 a6 6 0 0 1 6 8 l-4 15 a7 7 0 0 1 -7 5 h-25 z" '
+        f'fill-opacity="0.28" {_sw(fill=AMBER)}/>'
+    )
+
+
+def _heart() -> str:
+    return (
+        f'<path d="M50 78 C28 62 20 44 32 34 a13 13 0 0 1 18 3 a13 13 0 0 1 18 -3 '
+        f'c12 10 4 28 -18 44 z" fill-opacity="0.30" {_sw(fill=CORAL)}/>'
+    )
+
+
+def _question() -> str:
+    return (
+        f'<circle cx="50" cy="50" r="28" fill-opacity="0.16" {_sw(fill=BLUE)}/>'
+        f'<path d="M40 42 a10 10 0 1 1 14 9 q-4 3 -4 8" {_sw(3.2)}/>'
+        f'<circle cx="50" cy="66" r="2.8" fill="{INK}"/>'
+    )
+
+
+def _thought() -> str:
+    return (
+        f'<path d="M28 42 a15 13 0 0 1 44 2 a12 12 0 0 1 -8 20 h-26 a13 12 0 0 1 -10 -22 z" '
+        f'fill-opacity="0.22" {_sw(fill=VIOLET)}/>'
+        f'<circle cx="34" cy="72" r="4" fill-opacity="0.30" {_sw(2, fill=VIOLET)}/>'
+        f'<circle cx="26" cy="82" r="2.6" fill-opacity="0.30" {_sw(1.8, fill=VIOLET)}/>'
+    )
+
+
+def _tree() -> str:
+    return (
+        f'<path d="M45 60 h10 v22 h-10 z" fill-opacity="0.45" {_sw(fill=AMBER)}/>'
+        f'<circle cx="38" cy="42" r="13" fill-opacity="0.26" {_sw(fill=GREEN)}/>'
+        f'<circle cx="62" cy="42" r="13" fill-opacity="0.26" {_sw(fill=GREEN)}/>'
+        f'<path d="M50 18 a19 19 0 0 1 15 25 a17 17 0 0 1 -30 0 a19 19 0 0 1 15 -25 z" '
+        f'fill-opacity="0.28" {_sw(fill=GREEN)}/>'
+    )
+
+
+def _leaf() -> str:
+    return (
+        f'<path d="M26 74 C26 40 50 24 76 26 C74 52 52 76 26 74 z" '
+        f'fill-opacity="0.26" {_sw(fill=GREEN)}/>'
+        f'<path d="M32 68 Q52 50 70 32" {_sw(2.2)}/>'
+    )
+
+
+def _mountain() -> str:
+    return (
+        f'<circle cx="72" cy="28" r="9" fill-opacity="0.55" {_sw(2.2, fill=AMBER)}/>'
+        f'<path d="M12 80 l22 -38 l16 22 l10 -16 l28 32 z" fill-opacity="0.26" {_sw(fill=STEEL)}/>'
+        f'<path d="M27 55 l7 -13 l7 10" {_sw(2)}/>'
+    )
+
+
+def _sun() -> str:
+    return (
+        f'<circle cx="50" cy="50" r="16" fill-opacity="0.5" {_sw(fill=AMBER)}/>'
+        f'<path d="M50 18 v10 M50 72 v10 M18 50 h10 M72 50 h10 '
+        f'M28 28 l7 7 M65 65 l7 7 M72 28 l-7 7 M35 65 l-7 7" {_sw(2.6)}/>'
+    )
+
+
+def _wave() -> str:
+    return (
+        f'<path d="M16 40 q9 -9 18 0 t18 0 t18 0" {_sw(3)}/>'
+        f'<path d="M16 54 q9 -9 18 0 t18 0 t18 0" {_sw(3)}/>'
+        f'<path d="M16 68 q9 -9 18 0 t18 0 t18 0" {_sw(3)}/>'
+    )
+
+
+def _sprout() -> str:
+    return (
+        f'<path d="M32 82 h36" {_sw(2.6)}/>'
+        f'<path d="M50 82 v-26" {_sw(3.2)}/>'
+        f'<path d="M50 58 C40 58 30 50 28 39 C40 39 50 47 50 58 z" '
+        f'fill-opacity="0.28" {_sw(fill=GREEN)}/>'
+        f'<path d="M50 52 C60 52 70 44 72 33 C60 33 50 41 50 52 z" '
+        f'fill-opacity="0.28" {_sw(fill=GREEN)}/>'
+    )
+
+
+def _flame() -> str:
+    return (
+        f'<path d="M52 18 C64 36 70 44 62 60 C70 56 70 48 68 44 '
+        f'C76 60 66 82 50 82 C33 82 24 62 38 48 C38 56 42 58 45 58 '
+        f'C40 44 46 30 52 18 z" fill-opacity="0.26" {_sw(fill=CORAL)}/>'
+    )
+
+
+def _snowflake() -> str:
+    return (
+        f'<path d="M50 16 v68 M21 33 l58 34 M79 33 l-58 34" {_sw(3)}/>'
+        f'<path d="M50 26 l-7 6 M50 26 l7 6 M50 74 l-7 -6 M50 74 l7 -6" {_sw(2.2)}/>'
+        f'<path d="M28 40 l-2 9 M72 40 l2 9 M28 60 l-2 -9 M72 60 l2 -9" {_sw(2)}/>'
+    )
+
+
+def _moon() -> str:
+    return (
+        f'<path d="M66 22 A28 28 0 1 0 66 78 A30 30 0 0 1 66 22 z" '
+        f'fill-opacity="0.26" {_sw(fill=VIOLET)}/>'
+    )
+
+
+def _book() -> str:
+    return (
+        f'<path d="M50 30 C40 24 26 24 18 28 v42 c8 -4 22 -4 32 3 z" '
+        f'fill-opacity="0.24" {_sw(fill=BLUE)}/>'
+        f'<path d="M50 30 C60 24 74 24 82 28 v42 c-8 -4 -22 -4 -32 3 z" '
+        f'fill-opacity="0.24" {_sw(fill=BLUE)}/>'
+        f'<path d="M50 30 v43" {_sw(2.4)}/>'
+    )
+
+
+def _books() -> str:
+    return (
+        f'<rect x="24" y="60" width="52" height="15" rx="3" fill-opacity="0.24" {_sw(fill=BLUE)}/>'
+        f'<rect x="28" y="45" width="52" height="15" rx="3" fill-opacity="0.24" {_sw(fill=CORAL)}/>'
+        f'<rect x="21" y="30" width="52" height="15" rx="3" fill-opacity="0.24" {_sw(fill=GREEN)}/>'
+    )
+
+
+def _pencil() -> str:
+    return (
+        f'<path d="M27 73 l6 -21 l30 -30 l15 15 l-30 30 z" fill-opacity="0.22" {_sw(fill=AMBER)}/>'
+        f'<path d="M58 22 l15 15 M33 52 l15 15" {_sw(2.2)}/>'
+        f'<path d="M27 73 l14 -6 l-9 -9 z" fill-opacity="0.5" {_sw(2, fill=INK_SOFT)}/>'
+    )
+
+
+def _paintbrush() -> str:
+    return (
+        f'<path d="M64 22 l14 14 l-24 24 l-14 -14 z" fill-opacity="0.22" {_sw(fill=VIOLET)}/>'
+        f'<path d="M40 46 l14 14 l-5 8 a15 15 0 0 1 -23 -6 c7 -1 6 -9 14 -16 z" '
+        f'fill-opacity="0.30" {_sw(fill=CORAL)}/>'
+    )
+
+
+def _camera() -> str:
+    return (
+        f'<rect x="20" y="34" width="60" height="40" rx="8" fill-opacity="0.20" {_sw(fill=INK_SOFT)}/>'
+        f'<path d="M38 34 l6 -8 h12 l6 8" {_sw(2.4)}/>'
+        f'<circle cx="50" cy="54" r="12" {_sw(2.4, fill=PAPER)}/>'
+        f'<circle cx="50" cy="54" r="5" fill="{INK}" fill-opacity="0.5"/>'
+    )
+
+
+def _microphone() -> str:
+    return (
+        f'<rect x="40" y="18" width="20" height="36" rx="10" fill-opacity="0.26" {_sw(fill=CORAL)}/>'
+        f'<path d="M30 46 a20 20 0 0 0 40 0" {_sw(2.6)}/>'
+        f'<path d="M50 66 v12 M40 80 h20" {_sw(2.6)}/>'
+    )
+
+
+def _headphones() -> str:
+    return (
+        f'<path d="M26 58 v-6 a24 24 0 0 1 48 0 v6" {_sw(3)}/>'
+        f'<rect x="19" y="54" width="13" height="24" rx="5" fill-opacity="0.26" {_sw(fill=STEEL)}/>'
+        f'<rect x="68" y="54" width="13" height="24" rx="5" fill-opacity="0.26" {_sw(fill=STEEL)}/>'
+    )
+
+
+def _trophy() -> str:
+    return (
+        f'<path d="M34 24 h32 v13 a16 16 0 0 1 -32 0 z" fill-opacity="0.30" {_sw(fill=AMBER)}/>'
+        f'<path d="M34 28 h-9 a9 9 0 0 0 9 13 M66 28 h9 a9 9 0 0 1 -9 13" {_sw(2.4)}/>'
+        f'<path d="M50 53 v9 M40 80 h20" {_sw(2.6)}/>'
+        f'<rect x="44" y="62" width="12" height="14" rx="2" fill-opacity="0.24" {_sw(fill=AMBER)}/>'
+    )
+
+
+def _medal() -> str:
+    return (
+        f'<path d="M38 20 l-9 24 M62 20 l9 24" {_sw(3)}/>'
+        f'<circle cx="50" cy="60" r="20" fill-opacity="0.26" {_sw(fill=AMBER)}/>'
+        f'<path d="M50 50 l3 7 h8 l-6 5 l2 8 l-7 -4 l-7 4 l2 -8 l-6 -5 h8 z" '
+        f'fill-opacity="0.5" {_sw(2, fill=AMBER)}/>'
+    )
+
+
+def _gift() -> str:
+    return (
+        f'<rect x="26" y="42" width="48" height="38" rx="4" fill-opacity="0.24" {_sw(fill=CORAL)}/>'
+        f'<rect x="22" y="30" width="56" height="14" rx="3" fill-opacity="0.30" {_sw(fill=CORAL)}/>'
+        f'<path d="M50 30 v50" {_sw(2.4)}/>'
+        f'<path d="M50 30 q-13 -14 -19 -3 q-2 8 19 3 q21 5 19 -3 q-6 -11 -19 3 z" '
+        f'fill-opacity="0.35" {_sw(2, fill=AMBER)}/>'
+    )
+
+
+def _coffee() -> str:
+    return (
+        f'<path d="M26 42 h44 v16 a18 18 0 0 1 -18 18 h-8 a18 18 0 0 1 -18 -18 z" '
+        f'fill-opacity="0.24" {_sw(fill=AMBER)}/>'
+        f'<path d="M70 46 h6 a8 8 0 0 1 0 16 h-6" {_sw(2.4)}/>'
+        f'<path d="M38 32 q5 -6 0 -13 M50 32 q5 -6 0 -13 M62 32 q5 -6 0 -13" {_sw(2.2)}/>'
+    )
+
+
+def _battery() -> str:
+    return (
+        f'<rect x="22" y="36" width="50" height="28" rx="6" {_sw(fill=PAPER)}/>'
+        f'<rect x="72" y="44" width="6" height="12" rx="2" fill-opacity="0.5" {_sw(2, fill=INK_SOFT)}/>'
+        f'<rect x="28" y="42" width="12" height="16" rx="2" fill="{GREEN}" fill-opacity="0.55"/>'
+        f'<rect x="43" y="42" width="12" height="16" rx="2" fill="{GREEN}" fill-opacity="0.40"/>'
+    )
+
+
+def _wifi() -> str:
+    return (
+        f'<path d="M22 42 a40 40 0 0 1 56 0" {_sw(3.2)}/>'
+        f'<path d="M32 54 a26 26 0 0 1 36 0" {_sw(3.2)}/>'
+        f'<path d="M40 66 a14 14 0 0 1 20 0" {_sw(3.2)}/>'
+        f'<circle cx="50" cy="76" r="3.4" fill="{BLUE}"/>'
+    )
+
+
+def _folder() -> str:
+    return (
+        f'<path d="M20 34 h20 l6 8 h34 a4 4 0 0 1 4 4 v30 a4 4 0 0 1 -4 4 '
+        f'h-60 a4 4 0 0 1 -4 -4 v-38 a4 4 0 0 1 4 -4 z" '
+        f'fill-opacity="0.26" {_sw(fill=AMBER)}/>'
+    )
+
+
+def _clipboard() -> str:
+    return (
+        f'<rect x="26" y="24" width="48" height="56" rx="6" fill-opacity="0.18" {_sw(fill=STEEL)}/>'
+        f'<rect x="40" y="20" width="20" height="12" rx="3" {_sw(2.2, fill=PAPER)}/>'
+        f'<path d="M36 46 h28 M36 56 h28 M36 66 h18" {_sw(2.2)}/>'
+    )
+
+
+def _wrench() -> str:
+    return (
+        f'<path d="M66 22 a14 14 0 0 0 -16 20 l-26 26 a6 6 0 0 0 8 8 l26 -26 '
+        f'a14 14 0 0 0 20 -16 l-10 10 l-10 -2 l-2 -10 z" '
+        f'fill-opacity="0.22" {_sw(fill=INK_SOFT)}/>'
+    )
+
+
+def _hammer() -> str:
+    return (
+        # steel head with a claw curve on the left
+        f'<path d="M26 30 h34 v13 h-20 q-4 -8 -14 -4 z" fill-opacity="0.28" {_sw(fill=INK_SOFT)}/>'
+        # wooden handle down from under the head
+        f'<path d="M44 43 l-3 34 a5 5 0 0 0 10 1 l-1 -35 z" fill-opacity="0.38" {_sw(fill=AMBER)}/>'
+    )
+
+
+def _umbrella() -> str:
+    return (
+        f'<path d="M20 50 a30 30 0 0 1 60 0 z" fill-opacity="0.24" {_sw(fill=BLUE)}/>'
+        f'<path d="M50 50 v22 a8 8 0 0 1 -14 5" {_sw(2.6)}/>'
+        f'<path d="M35 50 q7 -11 15 0 q8 -11 15 0" {_sw(2)}/>'
+    )
+
+
+def _anchor() -> str:
+    return (
+        f'<circle cx="50" cy="24" r="6" {_sw(2.4)}/>'
+        f'<path d="M50 30 v42 M36 46 h28" {_sw(3)}/>'
+        f'<path d="M26 54 a24 24 0 0 0 48 0" {_sw(3)}/>'
+        f'<path d="M26 54 l-6 4 M26 54 l6 6 M74 54 l6 4 M74 54 l-6 6" {_sw(2.4)}/>'
+    )
+
+
+def _ship() -> str:
+    return (
+        f'<path d="M22 60 h56 l-8 16 a6 6 0 0 1 -5 3 h-30 a6 6 0 0 1 -5 -3 z" '
+        f'fill-opacity="0.26" {_sw(fill=BLUE)}/>'
+        f'<path d="M50 24 v34" {_sw(2.6)}/>'
+        f'<path d="M53 28 l18 24 h-18 z" fill-opacity="0.30" {_sw(2.2, fill=CORAL)}/>'
+        f'<path d="M47 30 l-15 22 h15 z" fill-opacity="0.22" {_sw(2.2, fill=PAPER)}/>'
+    )
+
+
+def _bridge() -> str:
+    return (
+        f'<path d="M14 44 a40 40 0 0 1 72 0" {_sw(3)}/>'
+        f'<path d="M12 72 h76" {_sw(3)}/>'
+        f'<path d="M14 44 v28 M86 44 v28 M32 50 v22 M50 47 v25 M68 50 v22" {_sw(2.4)}/>'
+    )
+
+
+def _ladder() -> str:
+    return (
+        f'<path d="M34 18 v64 M66 18 v64" {_sw(3.2)}/>'
+        f'<path d="M34 30 h32 M34 44 h32 M34 58 h32 M34 72 h32" {_sw(2.6)}/>'
+    )
+
+
+def _telescope() -> str:
+    return (
+        f'<path d="M22 62 l40 -26 l8 12 l-40 26 z" fill-opacity="0.20" {_sw(fill=VIOLET)}/>'
+        f'<path d="M60 34 l11 -7 l7 11 l-11 7 z" fill-opacity="0.30" {_sw(2.2, fill=VIOLET)}/>'
+        f'<path d="M35 61 l-6 19 M46 55 l5 21" {_sw(2.6)}/>'
+    )
+
+
+def _coin() -> str:
+    return (
+        f'<ellipse cx="50" cy="50" rx="23" ry="25" fill-opacity="0.28" {_sw(fill=AMBER)}/>'
+        f'<ellipse cx="50" cy="50" rx="15" ry="17" {_sw(2.2)}/>'
+        f'<path d="M50 40 v20 M44 45 h9 a4 4 0 0 1 0 8 h-9 M44 53 h11 a4 4 0 0 1 0 7 h-11" {_sw(2)}/>'
+    )
+
+
+def _moneybag() -> str:
+    return (
+        f'<path d="M36 32 h28 l-6 -9 h-16 z" fill-opacity="0.30" {_sw(fill=GREEN)}/>'
+        f'<path d="M40 32 C24 44 24 78 50 80 C76 78 76 44 60 32 z" '
+        f'fill-opacity="0.24" {_sw(fill=GREEN)}/>'
+        f'<path d="M50 48 v18 M44 53 h9 a4 4 0 0 1 0 8 h-9" {_sw(2.4)}/>'
+    )
+
+
+def _creditcard() -> str:
+    return (
+        f'<rect x="18" y="34" width="64" height="40" rx="6" fill-opacity="0.20" {_sw(fill=BLUE)}/>'
+        f'<path d="M18 46 h64" {_sw(2.6)}/>'
+        f'<rect x="26" y="58" width="20" height="8" rx="2" fill-opacity="0.5" {_sw(2, fill=BLUE)}/>'
+    )
+
+
+def _briefcase() -> str:
+    return (
+        f'<rect x="22" y="38" width="56" height="38" rx="6" fill-opacity="0.22" {_sw(fill=INK_SOFT)}/>'
+        f'<path d="M40 38 v-6 a4 4 0 0 1 4 -4 h12 a4 4 0 0 1 4 4 v6" {_sw(2.6)}/>'
+        f'<path d="M22 54 h56" {_sw(2.4)}/>'
+    )
+
+
+def _chart_bar() -> str:
+    return (
+        f'<path d="M22 22 v56 h56" {_sw(3)}/>'
+        f'<rect x="32" y="54" width="10" height="20" fill-opacity="0.40" {_sw(2, fill=BLUE)}/>'
+        f'<rect x="46" y="42" width="10" height="32" fill-opacity="0.40" {_sw(2, fill=BLUE)}/>'
+        f'<rect x="60" y="30" width="10" height="44" fill-opacity="0.40" {_sw(2, fill=BLUE)}/>'
+    )
+
+
+def _donut() -> str:
+    return (
+        f'<circle cx="50" cy="50" r="26" fill-opacity="0.18" {_sw(fill=VIOLET)}/>'
+        f'<path d="M50 24 a26 26 0 0 1 22 40 l-14 -9 a9 9 0 0 0 -8 -14 z" '
+        f'fill-opacity="0.45" {_sw(2, fill=VIOLET)}/>'
+        f'<circle cx="50" cy="50" r="11" {_sw(2.2, fill=PAPER)}/>'
+    )
+
+
+def _gauge() -> str:
+    return (
+        f'<path d="M22 62 a28 28 0 0 1 56 0" {_sw(3)}/>'
+        f'<path d="M50 62 l16 -16" {_sw(3.2)}/>'
+        f'<circle cx="50" cy="62" r="4" fill="{INK}"/>'
+        f'<path d="M27 61 l-4 -1 M50 34 v-4 M73 61 l4 -1" {_sw(2.2)}/>'
+    )
+
+
+def _graduation() -> str:
+    return (
+        f'<path d="M50 30 l34 14 l-34 14 l-34 -14 z" fill-opacity="0.26" {_sw(fill=INK_SOFT)}/>'
+        f'<path d="M30 51 v13 a20 8 0 0 0 40 0 v-13" {_sw(2.4)}/>'
+        f'<path d="M84 44 v17" {_sw(2.4)}/>'
+        f'<circle cx="84" cy="63" r="3" fill="{CORAL}"/>'
+    )
+
+
+def _dna() -> str:
+    return (
+        f'<path d="M36 18 C64 36 36 64 64 82" {_sw(3)}/>'
+        f'<path d="M64 18 C36 36 64 64 36 82" {_sw(3)}/>'
+        f'<path d="M41 28 h18 M38 42 h24 M38 58 h24 M41 72 h18" {_sw(2)}/>'
+    )
+
+
+def _satellite() -> str:
+    return (
+        f'<rect x="42" y="42" width="16" height="16" rx="3" fill-opacity="0.26" {_sw(fill=STEEL)}/>'
+        f'<path d="M42 42 l-14 -14 l8 -8 l14 14 z" fill-opacity="0.22" {_sw(fill=STEEL)}/>'
+        f'<path d="M58 58 l14 14 l-8 8 l-14 -14 z" fill-opacity="0.22" {_sw(fill=STEEL)}/>'
+        f'<path d="M60 40 a18 18 0 0 1 0 20 M66 34 a26 26 0 0 1 0 32" {_sw(2.4)}/>'
+    )
+
+
+def _sparkle() -> str:
+    return (
+        f'<path d="M46 20 l6 20 l20 6 l-20 6 l-6 20 l-6 -20 l-20 -6 l20 -6 z" '
+        f'fill-opacity="0.30" {_sw(fill=VIOLET)}/>'
+        f'<path d="M76 22 l3 9 l9 3 l-9 3 l-3 9 l-3 -9 l-9 -3 l9 -3 z" '
+        f'fill-opacity="0.40" {_sw(2, fill=AMBER)}/>'
+    )
+
+
+def _token() -> str:
+    return (
+        f'<rect x="24" y="36" width="52" height="28" rx="14" fill-opacity="0.24" {_sw(fill=CORAL)}/>'
+        f'<circle cx="38" cy="50" r="6" {_sw(2.2)}/>'
+        f'<path d="M52 46 h16 M52 54 h10" {_sw(2.2)}/>'
+    )
+
+
+def _circuit() -> str:
+    return (
+        f'<rect x="34" y="34" width="32" height="32" rx="4" fill-opacity="0.18" {_sw(fill=BLUE)}/>'
+        f'<path d="M20 50 h14 M66 50 h14 M50 20 v14 M50 66 v14" {_sw(2.6)}/>'
+        f'<circle cx="20" cy="50" r="3.4" fill="{BLUE}"/><circle cx="80" cy="50" r="3.4" fill="{BLUE}"/>'
+        f'<circle cx="50" cy="20" r="3.4" fill="{BLUE}"/><circle cx="50" cy="80" r="3.4" fill="{BLUE}"/>'
+    )
+
+
+def _check_circle() -> str:
+    return (
+        f'<circle cx="50" cy="50" r="28" fill-opacity="0.20" {_sw(fill=GREEN)}/>'
+        f'<path d="M38 50 l8 9 l16 -18" {_cw(GREEN, 3.4)}/>'
+    )
+
+
+def _x_circle() -> str:
+    return (
+        f'<circle cx="50" cy="50" r="28" fill-opacity="0.20" {_sw(fill=CORAL)}/>'
+        f'<path d="M40 40 l20 20 M60 40 l-20 20" {_cw(CORAL, 3.4)}/>'
+    )
+
+
+def _info() -> str:
+    return (
+        f'<circle cx="50" cy="50" r="28" fill-opacity="0.18" {_sw(fill=BLUE)}/>'
+        f'<circle cx="50" cy="38" r="3" fill="{INK}"/>'
+        f'<path d="M50 48 v18" {_sw(3.4)}/>'
+    )
+
+
 _STICKERS = {
     # original set
     "document": _document, "puzzle": _puzzle, "hook": _hook, "robot": _robot,
@@ -661,6 +1189,23 @@ _STICKERS = {
     "bookmark": _bookmark, "graph_line": _graph_line, "pie": _pie, "table": _table,
     "code": _code, "git_branch": _git_branch, "eye": _eye, "compass": _compass,
     "flask": _flask, "atom": _atom,
+    # artistic / high-variety quality pass (2.2.0)
+    "person": _person, "people": _people, "handshake": _handshake,
+    "thumbsup": _thumbsup, "heart": _heart, "question": _question,
+    "thought": _thought, "tree": _tree, "leaf": _leaf, "mountain": _mountain,
+    "sun": _sun, "wave": _wave, "sprout": _sprout, "flame": _flame,
+    "snowflake": _snowflake, "moon": _moon, "book": _book, "books": _books,
+    "pencil": _pencil, "paintbrush": _paintbrush, "camera": _camera,
+    "microphone": _microphone, "headphones": _headphones, "trophy": _trophy,
+    "medal": _medal, "gift": _gift, "coffee": _coffee, "battery": _battery,
+    "wifi": _wifi, "folder": _folder, "clipboard": _clipboard, "wrench": _wrench,
+    "hammer": _hammer, "umbrella": _umbrella, "anchor": _anchor, "ship": _ship,
+    "bridge": _bridge, "ladder": _ladder, "telescope": _telescope, "coin": _coin,
+    "moneybag": _moneybag, "creditcard": _creditcard, "briefcase": _briefcase,
+    "chart_bar": _chart_bar, "donut": _donut, "gauge": _gauge,
+    "graduation": _graduation, "dna": _dna, "satellite": _satellite,
+    "sparkle": _sparkle, "token": _token, "circuit": _circuit,
+    "check_circle": _check_circle, "x_circle": _x_circle, "info": _info,
 }
 
 # Fail-open glyph — a plain sketched box.

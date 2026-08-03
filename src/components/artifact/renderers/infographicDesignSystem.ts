@@ -26,6 +26,8 @@ export const INFOGRAPHIC_L2_CSS = `
   --ib-font:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
   --ib-mono:"SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 
+  position:relative;
+  isolation:isolate;
   box-sizing:border-box;
   font-family:var(--ib-font);
   color:var(--ib-ink);
@@ -306,4 +308,14 @@ export const INFOGRAPHIC_L2_CSS = `
 }
 .ib-leader{flex:0 0 34px;height:0;border-top:1.5px dashed var(--ib-line);}
 .ib-layer-note{flex:1;min-width:0;font-size:12.5px;font-weight:600;color:var(--ib-ink-soft);}
+
+/* -- L4-accent: tasteful decorative "glow crystal" spot (gated, off by default).
+      Drawn in SVG with currentColor so accent restyle recolors it; sits in an
+      empty corner at z-index:-1 (behind ALL content) so it never collides with a
+      label; pointer-events:none. See services/infographic/accents.py. --------- */
+.ib-accent-spot{position:absolute;width:114px;height:114px;pointer-events:none;color:var(--ib-accent);opacity:.9;z-index:-1;}
+.ib-accent-spot svg{width:100%;height:100%;display:block;overflow:visible;}
+.ib-accent-spot--tr{top:4px;right:8px;}
+.ib-accent-spot--br{right:12px;bottom:12px;}
+.ib-accent-spot--bl{left:12px;bottom:12px;}
 `;

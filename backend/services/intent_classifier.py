@@ -401,7 +401,12 @@ _LANE_KEYWORDS: List[tuple] = [
             # hand-drawn scenes (L3) — a "three cards + state badges" request kept
             # landing on L3 (field miss 2026-07-31).
             "three cards", "stepped", "step card", "state badge", "badge band",
-            "tier", "ladder", "stacked layers", "layer stack"]),
+            "tier", "ladder", "stacked layers", "layer stack",
+            # a labeled STRUCTURE / architecture breakdown is a diagram (L2), not a
+            # loose hand-drawn scene (L3) — "the layered architecture of a transformer"
+            # confidently misrouted to L3 (field diag 2026-08-03). Explicit L3 medium
+            # words ("whiteboard", "sketch") are checked FIRST, so they still win.
+            "architecture", "layered", "layers", "components", "building blocks"]),
 ]
 # Precompile to word-boundary regexes (multi-word phrases keep their spaces).
 _LANE_KEYWORD_RES: List[tuple] = [

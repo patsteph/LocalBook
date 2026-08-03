@@ -43,6 +43,7 @@ from services.infographic.skeletons import (
 )
 from services.infographic import slotfill as sf
 from services.infographic.scene import parse_graph, compose_scene
+from services.infographic.accents import pick_accent, accent_spot_html, accent_markup
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +90,31 @@ def _escape(text: str) -> str:
     )
 
 
-async def _run_slotfill(system: str, content: str, model: str) -> Optional[dict]:
-    """One JSON slot-fill call. Fails open to None (caller degrades)."""
+async def _run_slotfill(system: str, content: str, model: str, topic: str = "") -> Optional[dict]:
+    """One JSON slot-fill call. Fails open to None (caller degrades).
+
+    `topic` is the user's REQUEST. When present it leads the prompt as the authoritative
+    subject so the infographic is ABOUT what was asked — the retrieved `content` is
+    supporting material for specifics, not the subject. Without this, slot-fill answered
+    "something about this notebook" and drifted off the request (field diag 2026-08-03)."""
+    req = (topic or "").strip()
+    if req:
+        prompt = (
+            f"USER REQUEST: {req}\n\n"
+            "SUPPORTING MATERIAL (from the user's notebook — use it for concrete facts, names, "
+            "and numbers, but the infographic must be ABOUT the request above, not a summary of "
+            f"this material):\n{content}\n\n"
+            "Fill every slot to directly answer the USER REQUEST, using its own subject and "
+            "terms. Return JSON only."
+        )
+    else:
+        prompt = (
+            f"SOURCE CONTENT:\n{content}\n\n"
+            "Fill in every slot from the schema based on the source content. Return JSON only."
+        )
     try:
         result = await ollama_service.generate(
-            prompt=(
-                f"SOURCE CONTENT:\n{content}\n\n"
-                "Fill in every slot from the schema based on the source content. "
-                "Return JSON only."
-            ),
+            prompt=prompt,
             system=system,
             model=model,
             temperature=0.2,
@@ -219,34 +236,58 @@ def _prose_fallback(content: str, reason: str, lane: str, sources: Optional[list
 
 
 # ── archetype heuristic (deterministic; router may override) ───────────
+# Archetype intent vocabulary, ordered most-specific first. Matched against the user's
+# REQUEST first (authoritative); only if the request is silent do we fall back to
+# HIGH-PRECISION multi-word phrases in the retrieved content. Single common words
+# ("tier", "stage", "metric") are request-only — an incidental one in 8k chars of noisy
+# retrieval used to collapse every infographic to tier_ladder (field diag 2026-08-03).
+_ARCHETYPE_INTENTS: list[tuple[str, tuple[str, ...]]] = [
+    ("compare_code", ("compare the code", "code side by side", "two implementations",
+                      "sdk call", "api call", "code snippet")),
+    ("compare_columns", ("versus", " vs ", " vs.", "compare ", "comparison", "pros and cons",
+                         "pros & cons", "pros/cons", "difference between", "differences between",
+                         "trade-off", "tradeoff", "advantages and disadvantages",
+                         "which is better", "head to head", "head-to-head")),
+    ("layer_stack", ("layer stack", "stacked layer", "layered", "layers of", "the layers",
+                     "from the bottom up", "bottom-up", "slabs", "strata", "exploded")),
+    ("stepped_cards", ("step by step", "step-by-step", "steps to", "sequential", "walkthrough",
+                       "the workflow", "the pipeline", "the process", "stages of", " steps",
+                       "stepped card", "step card", "feedback loop", "revises until")),
+    ("tier_ladder", ("tier", "ladder", "rung", "maturity", "levels of", "skill level",
+                     "what runs", "runs at home", "status badge")),
+    ("timeline", ("timeline", "chronolog", "milestone", "history of", "evolution", "roadmap",
+                  "over time", " era ")),
+    ("tree_hierarchy", ("hierarchy", "taxonomy", "tree", "breakdown", "categories", "category",
+                        "org chart", "sub-component")),
+    ("three_stage", ("three stage", "three-stage", "3 stage", "offline", "request-time",
+                     "compile once", "serve many")),
+    ("stat_grid", ("kpi", "at a glance", "key metrics", "dashboard", "headline number",
+                   "by the numbers")),
+    ("facts_table", ("facts table", "figures", "revenue", "filing", "quarter", "financials")),
+    # pipeline_compare is the SPECIFIC retrieval-loop-vs-compile-once shape — no longer the
+    # generic default; it needs an explicit signal now that compare_columns exists.
+    ("pipeline_compare", ("retrieval vs", "cache vs recompute", "runtime vs precompute",
+                          "recomputed every")),
+]
+
+
+def _match_intent(text: str, multiword_only: bool = False) -> Optional[str]:
+    low = f" {(text or '').lower()} "
+    for arche, phrases in _ARCHETYPE_INTENTS:
+        for p in phrases:
+            if multiword_only and " " not in p.strip():
+                continue
+            if p in low:
+                return arche
+    return None
+
+
 def pick_archetype(content: str, topic: str = "") -> str:
-    # The user's REQUEST (topic) is the strongest layout signal — include it so an
-    # explicit "stacked layers" / "tier ladder" isn't hijacked by incidental
-    # 'code'/'compare' words in the noisy retrieved content (field miss 2026-07-31:
-    # a layer_stack request picked compare_code). Specific "deck" shapes first;
-    # compare_code now needs an EXPLICIT code-comparison signal, not just 'code'.
-    low = f"{topic or ''} {content or ''}".lower()
-    if any(w in low for w in ("layer stack", "stacked layer", "slabs", "strata", "exploded", "layers of")):
-        return "layer_stack"
-    if any(w in low for w in ("tier", "ladder", "rung", "maturity", "what runs", "runs at home", "status badge")):
-        return "tier_ladder"
-    if any(w in low for w in ("stepped card", "step card", "three cards", "state badge", "badge band",
-                              "feedback loop", "revises until")):
-        return "stepped_cards"
-    if any(w in low for w in ("code side by side", "two implementations", "api call", "sdk call",
-                              "same pattern", "compare the code", "code snippet")):
-        return "compare_code"
-    if any(w in low for w in ("compile", "index", "stage", "pipeline stage", "offline", "request-time")):
-        return "three_stage"
-    if any(w in low for w in ("timeline", "chronolog", "milestone", "history", "evolution", "roadmap", " era ")):
-        return "timeline"
-    if any(w in low for w in ("hierarchy", "taxonomy", "tree", "breakdown", "category", "categories", "org chart", "sub-component")):
-        return "tree_hierarchy"
-    if any(w in low for w in ("kpi", "at a glance", "key metrics", "dashboard", "headline number", "by the numbers")):
-        return "stat_grid"
-    if any(w in low for w in ("table", "facts", "figures", "revenue", "metric", "$", "filing", "quarter")):
-        return "facts_table"
-    return "pipeline_compare"
+    """Choose an L2 archetype from the user's REQUEST first (authoritative), then—only if the
+    request names no shape—from HIGH-PRECISION multi-word phrases in the retrieved content,
+    else a neutral default. Request-first so a noisy 8k-char retrieval can't hijack the layout
+    (field diag 2026-08-03: incidental 'tier'/'stage' collapsed everything to tier_ladder)."""
+    return _match_intent(topic) or _match_intent(content, multiword_only=True) or "stepped_cards"
 
 
 # On-brand restyle presets seeded per generation to break the "every L2 looks
@@ -278,6 +319,98 @@ def _seed_style(content: str, topic: str = "") -> dict:
     return dict(_STYLE_PRESETS[idx])
 
 
+# ── L4-accent (decorative glow-crystal spot; gated + off by default) ───
+def _accent_enabled(accent_art: bool) -> bool:
+    """The L4-accent is OPT-IN (design-corpus lever 6: "gated + off by default").
+    A caller can request it per-generation, or a global `settings.infographic_
+    accent_art` flag can turn it on everywhere — default OFF, so the shipping
+    path is byte-identical until someone opts in."""
+    return bool(accent_art) or bool(getattr(settings, "infographic_accent_art", False))
+
+
+def _inject_accent_l2(body: str, variant: str) -> str:
+    """Slot the accent spot into the FIRST child of the `.ib` root so it lands in
+    the (empty) corner behind all content. No-op for an unknown variant."""
+    spot = accent_spot_html(variant, "tr")
+    if not spot:
+        return body
+    return body.replace('<div class="ib">', '<div class="ib">' + spot, 1)
+
+
+# ── L1 data-anchors (numeric/data anchoring; Hard Rule §2.1 + §2.6) ────
+def _l1_anchors(chart: dict) -> dict:
+    """Compute coordinate-free DATA anchors (0..1 fractions of the plot area)
+    for the L1 annotation chrome from the REAL chart data — so the callout points
+    at the primary series' endpoint and the labels sit on their series, instead
+    of floating at hardcoded percentages. The model never emits these (§2.1); the
+    renderer maps the fractions onto the plot rect. Never raises.
+
+    Also returns a data-derived `ratio` (primary endpoint ÷ baseline endpoint) so
+    the callout can be numerically grounded even when the LLM annotation is thin.
+    """
+    try:
+        data = chart.get("data") or []
+        series = chart.get("series") or []
+        keys = [s.get("key") for s in series if isinstance(s, dict) and s.get("key")]
+        if not data or not keys:
+            return {}
+        vals: list[float] = []
+        for row in data:
+            for k in keys:
+                v = row.get(k)
+                if isinstance(v, (int, float)):
+                    vals.append(float(v))
+        if not vals:
+            return {}
+        ymin, ymax = min(vals), max(vals)
+        span = (ymax - ymin) or 1.0
+        n = len(data)
+
+        def yfrac(v: float) -> float:
+            return round(max(0.0, min(1.0, 1.0 - (v - ymin) / span)), 4)
+
+        def xfrac(i: int) -> float:
+            return round(i / (n - 1), 4) if n > 1 else 1.0
+
+        def last_val(key: str):
+            for row in reversed(data):
+                v = row.get(key)
+                if isinstance(v, (int, float)):
+                    return float(v)
+            return None
+
+        prim_key = keys[0]
+        base_key = keys[1] if len(keys) > 1 else None
+        prim_last = last_val(prim_key)
+        base_last = last_val(base_key) if base_key else None
+
+        anchors: dict = {}
+        if prim_last is not None:
+            # callout points at the primary series endpoint
+            anchors["callout"] = {"x": xfrac(n - 1), "y": yfrac(prim_last)}
+            # primary label rides ~two-thirds along the growing series
+            midi = max(0, min(n - 1, int(round((n - 1) * 0.66))))
+            mid_prim = None
+            row = data[midi]
+            if isinstance(row.get(prim_key), (int, float)):
+                mid_prim = float(row[prim_key])
+            anchors["primary"] = {"x": xfrac(midi),
+                                  "y": yfrac(mid_prim if mid_prim is not None else prim_last)}
+        if base_key and base_last is not None:
+            anchors["baseline"] = {"x": xfrac(n - 1), "y": yfrac(base_last)}
+        # midpoint note sits under the early part of the primary curve
+        anchors["midpoint"] = {"x": xfrac(max(0, min(n - 1, int(round((n - 1) * 0.30))))),
+                               "y": 0.72}
+
+        ratio = None
+        if prim_last and base_last and base_last != 0:
+            ratio = round(prim_last / base_last, 1)
+        return {"anchors": anchors, "ratio": ratio}
+    except Exception as e:  # never take down the L1 build for an anchor calc
+        logger.debug(f"[infographic] L1 anchor calc failed: {e}")
+        return {}
+
+
 # ── L2 ─────────────────────────────────────────────────────────────────
 async def build_l2(
     content: str,
@@ -287,6 +420,7 @@ async def build_l2(
     max_content_chars: int = 8000,
     sources: Optional[list] = None,
     topic: str = "",
+    accent_art: bool = False,
 ) -> Optional[dict]:
     archetype = archetype if archetype in ARCHETYPES else pick_archetype(content, topic)
     skeleton = get_skeleton(archetype)
@@ -296,7 +430,7 @@ async def build_l2(
     trimmed = (content or "")[:max_content_chars]
     prov = _normalize_sources(sources)
 
-    slots = await _run_slotfill(_sys(archetype), trimmed, model)
+    slots = await _run_slotfill(_sys(archetype), trimmed, model, topic=topic)
     if not slots:
         return None
     ok, reason = _check_slots(archetype, slots)
@@ -322,6 +456,14 @@ async def build_l2(
 
     body = _finalize_body(skeleton, slots)
 
+    # Optional decorative L4-accent (off by default). Baked into the stored body
+    # so it renders identically in-app + on export; `currentColor` + the
+    # `.ib-accent-spot` class recolor it with the seeded/user restyle.
+    accent_variant = ""
+    if _accent_enabled(accent_art):
+        accent_variant = pick_accent(f"{archetype}\n{content[:200]}")
+        body = _inject_accent_l2(body, accent_variant)
+
     title = (
         slots.get("TABLE_TITLE")
         or slots.get("SECTION_LABEL")
@@ -342,6 +484,7 @@ async def build_l2(
         "sources": prov,
         # Seed an on-brand starting style so a notebook's L2s vary (anti-rut).
         "style": _seed_style(content, title),
+        "accent": accent_variant,
     }
     art = json_artifact(
         id=_new_id(), kind="infographic", payload=payload,
@@ -359,6 +502,8 @@ async def build_l3(
     max_content_chars: int = 8000,
     sources: Optional[list] = None,
     title: Optional[str] = None,
+    topic: str = "",
+    accent_art: bool = False,
 ) -> Optional[dict]:
     """L3 SCENE lane (plan §4 proof): the LLM emits a coordinate-free node/edge
     GRAPH; `scene.py` computes the layout and composes a hand-drawn SVG from the
@@ -371,14 +516,17 @@ async def build_l3(
     model = model or settings.ollama_model
     trimmed = (content or "")[:max_content_chars]
 
-    graph_raw = await _run_slotfill(sf.l3_scene_system(), trimmed, model)
+    graph_raw = await _run_slotfill(sf.l3_scene_system(), trimmed, model, topic=topic or title or "")
     graph = parse_graph(graph_raw)
     if not graph:
         logger.info("[infographic] L3 graph unusable — degrading to L2")
         return None
 
+    accent_variant = ""
+    if _accent_enabled(accent_art):
+        accent_variant = pick_accent(f"scene\n{content[:200]}")
     try:
-        svg = compose_scene(graph)
+        svg = compose_scene(graph, accent=accent_variant or None)
     except Exception as e:  # composition must never take down the request
         logger.warning(f"[infographic] L3 scene composition failed: {e}")
         return None
@@ -394,6 +542,7 @@ async def build_l3(
         "scene_svg": svg,
         "scene_graph": graph,   # kept for provenance / future re-layout
         "sources": _normalize_sources(sources),
+        "accent": accent_variant,
     }
     art = json_artifact(
         id=_new_id(), kind="infographic", payload=payload,
@@ -415,10 +564,13 @@ async def build_l1(
     model: Optional[str] = None,
     max_content_chars: int = 8000,
     sources: Optional[list] = None,
+    topic: str = "",
+    accent_art: bool = False,
 ) -> Optional[dict]:
     from services.structured_llm import structured_llm
 
     trimmed = (content or "")[:max_content_chars]
+    prov = _normalize_sources(sources)
     try:
         chart = await structured_llm.generate_chart(
             content_summary=trimmed,
@@ -440,23 +592,49 @@ async def build_l1(
     chart["show_legend"] = False
     chart["series"] = series
 
-    # Annotation text (coordinate-free; anchors computed by the renderer).
-    ann = await _run_slotfill(sf.L1_ANNOTATION_SYSTEM, trimmed, model or settings.ollama_model)
+    # Annotation text (coordinate-free; anchors computed from data, not the model).
+    ann = await _run_slotfill(sf.L1_ANNOTATION_SYSTEM, trimmed, model or settings.ollama_model, topic=topic)
     ann = ann or {}
+
+    # DATA ANCHORS: compute the annotation positions (+ a numeric ratio) from the
+    # REAL chart data so the callout points at the primary series' endpoint and
+    # every label sits on its series (§2.1 — the model never emits coordinates).
+    anchor_info = _l1_anchors(chart)
+    anchors = anchor_info.get("anchors") or {}
+    ratio = anchor_info.get("ratio")
+
+    callout_text = (ann.get("CALLOUT_TEXT") or "").strip()
+    if not callout_text and ratio and ratio >= 1.5:
+        # Ground the callout in the data even when the LLM annotation is thin.
+        callout_text = f"{ratio:g}× higher"
+
     annotations = {
-        "callout_text": (ann.get("CALLOUT_TEXT") or "").strip(),
+        "callout_text": callout_text,
         "callout_subtext": (ann.get("CALLOUT_SUBTEXT") or "").strip(),
         "primary_label": (ann.get("PRIMARY_LABEL") or (series[0].get("label") if series else "")).strip(),
         "baseline_label": (ann.get("BASELINE_LABEL") or (series[1].get("label") if len(series) > 1 else "")).strip(),
         "midpoint_note": (ann.get("MIDPOINT_NOTE") or "").strip(),
+        # Data-driven anchor fractions (0..1 of the plot rect) — renderer maps them.
+        "anchors": anchors,
+        # Bind the callout NUMBER to a real source id (Hard Rule §2.6 — every
+        # number carries a source; empty rather than dangling when no provenance).
+        "callout_cite": str(prov[0]["n"]) if prov else "",
     }
+
+    accent_variant = pick_accent(f"L1\n{content[:200]}") if _accent_enabled(accent_art) else ""
+    # L1 has no body_html/scene_svg to bake the accent into, so ship the accent's
+    # inner SVG (currentColor) in the payload for the renderer to overlay — reuses
+    # the SAME accents.py art as L2/L3 (no separate frontend copy).
+    accent_svg = accent_markup(accent_variant, "currentColor") if accent_variant else ""
 
     payload = {
         "lane": "L1",
         "archetype": "annotated_chart",
         "chart": chart,
         "annotations": annotations,
-        "sources": _normalize_sources(sources),
+        "sources": prov,
+        "accent": accent_variant,
+        "accent_svg": accent_svg,
     }
     art = json_artifact(
         id=_new_id(), kind="infographic", payload=payload,
@@ -626,6 +804,7 @@ async def build_infographic(
     model: Optional[str] = None,
     sources: Optional[list] = None,
     title: Optional[str] = None,
+    accent_art: bool = False,
 ) -> dict:
     """Build an infographic Artifact for the given lane, applying the §3.5
     degradation ladder. Always returns a dict (never None, never raises).
@@ -642,14 +821,14 @@ async def build_infographic(
 
     if lane == "L4":
         try:
-            out = await build_l4(content, title=title, model=model, sources=sources)
+            out = await build_l4(content, title=title, model=model, sources=sources)  # L4 IS the decorative lane; accent n/a
             if out:
                 return out
         except Exception as e:
             logger.warning(f"[infographic] L4 build error: {e}")
         # Klein unavailable/failed -> down the ladder to L2 -> prose.
         try:
-            out = await build_l2(content, archetype, model=model, sources=sources, topic=title or "")
+            out = await build_l2(content, archetype, model=model, sources=sources, topic=title or "", accent_art=accent_art)
             if out:
                 out.setdefault("metadata", {})["degraded_from"] = "L4"
                 return out
@@ -659,14 +838,14 @@ async def build_infographic(
 
     if lane == "L3":
         try:
-            out = await build_l3(content, model=model, sources=sources, title=title)
+            out = await build_l3(content, model=model, sources=sources, title=title, topic=title or "", accent_art=accent_art)
             if out:
                 return out
         except Exception as e:
             logger.warning(f"[infographic] L3 build error: {e}")
         # Scene unavailable/failed -> down the ladder to L2 -> prose (§3.5).
         try:
-            out = await build_l2(content, archetype, model=model, sources=sources, topic=title or "")
+            out = await build_l2(content, archetype, model=model, sources=sources, topic=title or "", accent_art=accent_art)
             if out:
                 out.setdefault("metadata", {})["degraded_from"] = "L3"
                 return out
@@ -676,14 +855,14 @@ async def build_infographic(
 
     if lane == "L1":
         try:
-            out = await build_l1(content, model=model, sources=sources)
+            out = await build_l1(content, model=model, sources=sources, topic=title or "", accent_art=accent_art)
             if out:
                 return out
         except Exception as e:
             logger.warning(f"[infographic] L1 build error: {e}")
         # L1 chart invalid -> try an L2 facts table -> prose
         try:
-            out = await build_l2(content, "facts_table", model=model, sources=sources)
+            out = await build_l2(content, "facts_table", model=model, sources=sources, topic=title or "", accent_art=accent_art)
             if out:
                 out.setdefault("metadata", {})["degraded_from"] = "L1"
                 return out
@@ -693,7 +872,7 @@ async def build_infographic(
 
     # Default lane = L2 (the volume lane).
     try:
-        out = await build_l2(content, archetype, model=model, sources=sources, topic=title or "")
+        out = await build_l2(content, archetype, model=model, sources=sources, topic=title or "", accent_art=accent_art)
         if out:
             return out
     except Exception as e:
@@ -701,7 +880,7 @@ async def build_infographic(
     # L2 failed -> try one alternate archetype before prose.
     alt = "pipeline_compare" if (archetype or pick_archetype(content, title or "")) != "pipeline_compare" else "facts_table"
     try:
-        out = await build_l2(content, alt, model=model, sources=sources, topic=title or "")
+        out = await build_l2(content, alt, model=model, sources=sources, topic=title or "", accent_art=accent_art)
         if out:
             out.setdefault("metadata", {})["degraded_from"] = "L2"
             return out
