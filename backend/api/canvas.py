@@ -189,6 +189,19 @@ async def get_timeline(notebook_id: str, limit: int = 200):
         return []
 
 
+@router.get("/gaps/{notebook_id}")
+async def get_gaps(notebook_id: str, limit: int = 200):
+    """Run R3 — gap-detection: questions the notebook answered weakly (missing sources /
+    low confidence) surfaced as 'what to explore next'. Read-only; never 500s → [] on failure."""
+    try:
+        from services import canvas_gaps
+        from storage.exploration_store import exploration_store
+        journey = await exploration_store.get_journey(notebook_id, limit)
+        return {"gaps": canvas_gaps.find_gaps(journey)}
+    except Exception:
+        return {"gaps": []}
+
+
 @router.get("/provenance/{artifact_id}")
 async def get_provenance(artifact_id: str):
     """Walk provenance: the made-from edges for a generated artifact — what it was
