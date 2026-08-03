@@ -479,10 +479,10 @@ main() {
             # the target branch, not just master — otherwise `--branch dev` would `git reset
             # --hard origin/dev` against a STALE origin/dev (or fail silently via `|| true`),
             # building old code (the "Cursor Style picker missing after --branch dev" bug).
-            local fetch_refs="$REPO_BRANCH"
-            [ "$TRACK_BRANCH" != "$REPO_BRANCH" ] && fetch_refs="$TRACK_BRANCH $REPO_BRANCH"
-            git fetch origin $fetch_refs --tags 2>/dev/null \
-                || git fetch "$REPO_URL" $fetch_refs --tags 2>/dev/null \
+            local fetch_refs=("$REPO_BRANCH")
+            [ "$TRACK_BRANCH" != "$REPO_BRANCH" ] && fetch_refs=("$TRACK_BRANCH" "$REPO_BRANCH")
+            git fetch origin "${fetch_refs[@]}" --tags 2>/dev/null \
+                || git fetch "$REPO_URL" "${fetch_refs[@]}" --tags 2>/dev/null \
                 || { fail "Failed to fetch latest source"; exit 1; }
             # Restore stashed changes (best-effort — build will regenerate these files anyway)
             if [[ "$stash_result" != *"No local changes"* ]]; then
@@ -511,8 +511,24 @@ main() {
         else
             # Branch-tracking mode (dev escape hatch OR fail-safe fallback).
             info "Tracking branch ${BOLD}${TARGET_REF}${NC} HEAD"
-            git checkout --force "$TARGET_REF" 2>/dev/null || true
-            git reset --hard "origin/$TARGET_REF" 2>/dev/null || true
+            # The branch MUST have been fetched (see fetch_refs above). If origin/<branch>
+            # is missing, fail loudly — never silently fall through and build another ref.
+            if ! git rev-parse --verify --quiet "origin/$TARGET_REF" >/dev/null; then
+                fail "Branch '${TARGET_REF}' was not found on the remote after fetch."
+                fail "Check the branch name (e.g. --branch dev), or your network/GitHub cache."
+                exit 1
+            fi
+            # Force local branch = remote branch in one atomic step (create-or-reset + checkout).
+            git checkout --force -B "$TARGET_REF" "origin/$TARGET_REF" 2>/dev/null || true
+            # VERIFY we actually landed on the target HEAD — the old code swallowed failures with
+            # `|| true`, so a bad checkout silently built master (the --branch dev regression).
+            local _head _target
+            _head=$(git rev-parse HEAD 2>/dev/null)
+            _target=$(git rev-parse "origin/$TARGET_REF" 2>/dev/null)
+            if [ -z "$_head" ] || [ "$_head" != "$_target" ]; then
+                fail "Failed to check out ${TARGET_REF} HEAD (at ${_head:0:7}, expected ${_target:0:7})."
+                exit 1
+            fi
         fi
 
         # Read version from source (now checked out at the resolved ref)
