@@ -19,8 +19,6 @@ from itertools import combinations
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-import lancedb
-
 from config import settings
 from services.ollama_service import ollama_service
 from utils.singleflight import KeyedSingleflight
