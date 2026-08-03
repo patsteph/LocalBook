@@ -91,6 +91,38 @@ export interface CanvasCandidate {
   signal: 'concept' | 'embed' | 'shared_source';
 }
 
+// Run R3 — a weakly-answered question surfaced as "what to explore next."
+export interface CanvasGap {
+  query: string;
+  reason: string;
+  topics: string[];
+  ref_id: string;
+}
+
+// Run R2 — answer from chatting with a selection (RAG scoped to the selection's sources).
+export interface CanvasChatResult {
+  answer: string;
+  sources: string[];
+  source_ids: string[];
+  scoped: boolean;
+}
+
+// Run R1 — a learning node due for spaced-repetition review.
+export interface RecallItem {
+  id: string;
+  title: string;
+  snapshot: Artifact;
+  ref_type: string;
+  reps: number;
+  overdue: number;
+}
+export interface RecallResult {
+  due: RecallItem[];
+  due_count: number;
+  total: number;
+}
+export type RecallGrade = 'again' | 'good' | 'easy';
+
 // ─── Debounce helper (per-key trailing-edge) ─────────────────────────────────
 // Keeps drag (per-node) and viewport (single) write-backs off the hot path.
 const _timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -233,5 +265,40 @@ export const canvasService = {
       body: JSON.stringify({ nodes }),
     });
     return asJson<CanvasLayout>(resp, 'autoConnect');
+  },
+
+  // Run R3 — gap detection: questions the notebook answered weakly ("what to explore next").
+  async getGaps(notebookId: string): Promise<CanvasGap[]> {
+    const resp = await localFetch(`${API_BASE_URL}/canvas/gaps/${notebookId}`);
+    const data = await asJson<{ gaps: CanvasGap[] }>(resp, 'getGaps');
+    return data.gaps ?? [];
+  },
+
+  // Run R2 — chat with a selection: RAG scoped to the sources behind the selected nodes.
+  async chat(
+    notebookId: string,
+    query: string,
+    nodes: { ref_type?: string | null; ref_id?: string | null }[],
+  ): Promise<CanvasChatResult> {
+    const resp = await localFetch(`${API_BASE_URL}/canvas/chat/${notebookId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, nodes }),
+    });
+    return asJson<CanvasChatResult>(resp, 'chat');
+  },
+
+  // Run R1 — recall: learning nodes due for spaced-repetition review.
+  async getRecall(notebookId: string): Promise<RecallResult> {
+    const resp = await localFetch(`${API_BASE_URL}/canvas/recall/${notebookId}`);
+    return asJson<RecallResult>(resp, 'getRecall');
+  },
+
+  async reviewRecall(notebookId: string, nodeId: string, grade: RecallGrade): Promise<void> {
+    await localFetch(`${API_BASE_URL}/canvas/recall/${notebookId}/${nodeId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grade }),
+    });
   },
 };

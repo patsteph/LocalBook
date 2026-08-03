@@ -22,6 +22,47 @@ def test_cluster_connected_components_embedding_drives_it():
     assert sizes == [2, 3]
 
 
+def test_shared_source_alone_binds_question_to_its_source():
+    # Topic-clustering fix: a question and the SOURCE it drew on share nothing textually
+    # (embed 0, concept 0) but shared-source overlap = 1.0 must still cluster them —
+    # otherwise the map segregates by node TYPE. Two questions sharing a source join too.
+    nodes = [_n(x) for x in ["q1", "q2", "s1", "far"]]
+    pairs = [
+        {"a": "q1", "b": "s1", "embed": 0.0, "concept": 0.0, "shared": 1.0},
+        {"a": "q2", "b": "s1", "embed": 0.0, "concept": 0.0, "shared": 1.0},
+        {"a": "q1", "b": "far", "embed": 0.1, "concept": 0.0, "shared": 0.0},
+    ]
+    sizes = sorted(len(c) for c in cluster_nodes(nodes, pairs))
+    assert sizes == [1, 3]   # {q1,q2,s1} one topic cluster; far is a singleton
+
+
+def test_journey_clustering_no_source_hub_megamerge():
+    # Two UNRELATED topics (q1,q2 embed-similar; q3,q4 embed-similar; not across) both cite a
+    # common base source S. Old union-find on shared merged all 5 via S. Two-phase must keep
+    # the topics separate and attach S to whichever topic cites it more.
+    from services.canvas_cluster import cluster_journey_nodes
+    nodes = [
+        {"id": "q1", "ref_type": "exploration_query"},
+        {"id": "q2", "ref_type": "exploration_query"},
+        {"id": "q3", "ref_type": "exploration_query"},
+        {"id": "q4", "ref_type": "exploration_query"},
+        {"id": "S", "ref_type": "source"},
+    ]
+    pairs = [
+        {"a": "q1", "b": "q2", "embed": 0.9, "shared": 0.0},   # topic A
+        {"a": "q3", "b": "q4", "embed": 0.9, "shared": 0.0},   # topic B
+        {"a": "q1", "b": "q3", "embed": 0.2, "shared": 0.0},   # A/B not similar
+        {"a": "S", "b": "q1", "embed": 0.0, "shared": 1.0},    # S cited by A (x2) and B (x1)
+        {"a": "S", "b": "q2", "embed": 0.0, "shared": 1.0},
+        {"a": "S", "b": "q3", "embed": 0.0, "shared": 1.0},
+    ]
+    clusters = cluster_journey_nodes(nodes, pairs, threshold=0.7)
+    sizes = sorted(len(c) for c in clusters)
+    assert sizes == [2, 3]                      # {q3,q4} topic B ; {q1,q2,S} topic A (+attached S)
+    big = max(clusters, key=len)
+    assert {n["id"] for n in big} == {"q1", "q2", "S"}   # S attached to the topic that cites it most
+
+
 def test_singletons_when_no_links():
     nodes = [_n(x) for x in ["a", "b", "c"]]
     assert sorted(len(c) for c in cluster_nodes(nodes, [])) == [1, 1, 1]

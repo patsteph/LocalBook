@@ -10,8 +10,10 @@ def _journey(queries):
 
 
 def test_build_nodes_maps_queries_and_sources():
+    # Source s1 is REFERENCED by q1 (sources_used) → surfaced as a base-layer node.
     journey = _journey([
-        {"id": "q1", "query": "What is X?", "answer_preview": "X is...", "topics": ["alpha"], "timestamp": "t1"},
+        {"id": "q1", "query": "What is X?", "answer_preview": "X is...", "topics": ["alpha"],
+         "timestamp": "t1", "sources_used": ["s1"]},
     ])
     src = [{"id": 5, "ts": "t2", "payload": {"source_id": "s1", "title": "Paper.pdf"}}]
     nodes = cp.build_nodes(journey, src)
@@ -24,10 +26,20 @@ def test_build_nodes_maps_queries_and_sources():
     assert source["_group"] == "__sources__"
 
 
-def test_build_nodes_source_falls_back_to_event_id():
-    src = [{"id": 9, "ts": "t", "payload": {}}]
-    node = cp.build_nodes(_journey([]), src)[0]
-    assert node["ref_id"] == "9" and node["title"] == "Source"
+def test_build_nodes_source_title_from_source_titles_map():
+    # Real title comes from the source_store lookup (payload lacks one → would be bare "Source").
+    journey = _journey([{"id": "q1", "query": "Q", "sources_used": ["9"]}])
+    src = [{"id": 9, "ts": "t", "payload": {"source_id": "9"}}]
+    node = next(n for n in cp.build_nodes(journey, src, {"9": "Real Name.pdf"}) if n["kind"] == "source")
+    assert node["ref_id"] == "9" and node["title"] == "Real Name.pdf"
+
+
+def test_build_nodes_drops_unreferenced_sources():
+    # A source no learning query referenced is an orphan → stays off the map.
+    journey = _journey([{"id": "q1", "query": "What is X?", "sources_used": []}])
+    src = [{"id": 9, "ts": "t", "payload": {"source_id": "s9", "title": "Doc"}}]
+    nodes = cp.build_nodes(journey, src)
+    assert [n for n in nodes if n["kind"] == "source"] == []
 
 
 def test_title_truncation():
@@ -38,7 +50,7 @@ def test_title_truncation():
 
 def test_seed_layout_columns_by_group_sources_last():
     journey = _journey([
-        {"id": "q1", "query": "a", "topics": ["alpha"]},
+        {"id": "q1", "query": "a", "topics": ["alpha"], "sources_used": ["s1"]},
         {"id": "q2", "query": "b", "topics": ["alpha"]},
         {"id": "q3", "query": "c", "topics": ["beta"]},
     ])
@@ -74,8 +86,8 @@ def test_merge_preserves_existing_and_adds_new():
 
 
 def test_populate_layout_is_idempotent():
-    journey = _journey([{"id": "q1", "query": "a", "topics": ["t"]}])
-    src = [{"id": 1, "ts": "x", "payload": {"source_id": "s1"}}]
+    journey = _journey([{"id": "q1", "query": "a", "topics": ["t"], "sources_used": ["s1"]}])
+    src = [{"id": 1, "ts": "x", "payload": {"source_id": "s1", "title": "S.pdf"}}]
     empty = {"nodes": [], "edges": [], "viewport": {}}
     merged1, added1 = cp.populate_layout(journey, src, empty)
     assert added1 == 2
@@ -184,22 +196,34 @@ def test_intent_field_takes_precedence_when_present():
     assert cp.is_learning_query({"query": "anything", "intent": "cross_notebook_search"}) is True
 
 
-def test_build_nodes_filters_noise_keeps_learning_and_sources():
+def test_build_nodes_filters_noise_keeps_learning_and_referenced_sources():
     journey = _journey([
-        {"id": "q1", "query": "What is X?", "topics": ["alpha"], "timestamp": "t1"},   # learning
+        {"id": "q1", "query": "What is X?", "topics": ["alpha"], "timestamp": "t1",
+         "sources_used": ["s1"]},                                                    # learning, refs s1
         {"id": "q2", "query": "@curator brain status", "topics": [], "timestamp": "t2"},  # noise
         {"id": "q3", "query": "@collector show pending", "topics": [], "timestamp": "t3"},  # noise
         {"id": "q4", "query": "@research deep dive on MoE", "topics": ["moe"], "timestamp": "t4"},  # learning
     ])
-    # Source nodes must survive regardless of the chat filter.
     src = [{"id": 1, "ts": "t5", "payload": {"source_id": "s1", "title": "Paper.pdf"}}]
     nodes = cp.build_nodes(journey, src)
     chat_ids = {n["ref_id"] for n in nodes if n["kind"] == "chat_turn"}
     assert chat_ids == {"q1", "q4"}                       # noise q2/q3 dropped
-    assert any(n["kind"] == "source" and n["ref_id"] == "s1" for n in nodes)  # source kept
+    assert any(n["kind"] == "source" and n["ref_id"] == "s1" for n in nodes)  # referenced source kept
 
 
-def test_source_nodes_always_kept_even_with_all_noise_chat():
+def test_status_readout_with_sources_is_still_noise():
+    # Regression: an admin status readout whose answer LISTED sources must not leak in as
+    # "learning" — the admin check runs before the sources_used check.
+    journey = _journey([
+        {"id": "n1", "query": "collection status", "sources_used": ["s1"], "topics": []},
+        {"id": "n2", "query": "morning brief", "sources_used": ["s2"], "topics": []},
+        {"id": "n3", "query": "note themes", "sources_used": ["s3"], "topics": []},
+    ])
+    nodes = cp.build_nodes(journey, [])
+    assert [n for n in nodes if n["kind"] == "chat_turn"] == []  # all status readouts filtered
+
+
+def test_orphan_sources_dropped_when_all_chat_is_noise():
     journey = _journey([
         {"id": "n1", "query": "@curator show profile", "topics": [], "timestamp": "t"},
         {"id": "n2", "query": "@correspondent sync now", "topics": [], "timestamp": "t"},
@@ -207,4 +231,4 @@ def test_source_nodes_always_kept_even_with_all_noise_chat():
     src = [{"id": 7, "ts": "t", "payload": {"source_id": "s9", "title": "Doc"}}]
     nodes = cp.build_nodes(journey, src)
     assert [n["kind"] for n in nodes if n["kind"] == "chat_turn"] == []  # all chat filtered
-    assert [n["ref_id"] for n in nodes if n["kind"] == "source"] == ["s9"]
+    assert [n["ref_id"] for n in nodes if n["kind"] == "source"] == []  # no query referenced s9 → dropped

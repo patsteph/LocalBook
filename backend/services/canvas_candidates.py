@@ -78,6 +78,26 @@ def overlap_coefficient(a: set, b: set) -> float:
     return inter / float(min(len(a), len(b)))
 
 
+def jaccard(a: set, b: set) -> float:
+    """|A∩B| / |A∪B|. 0.0 if both empty. Stricter than overlap: a single source shared
+    between two multi-source questions scores LOW (not 1.0), so one common "base" source
+    can't collapse otherwise-unrelated questions into one giant cluster."""
+    if not a or not b:
+        return 0.0
+    union = len(a | b)
+    return (len(a & b) / float(union)) if union else 0.0
+
+
+def shared_source_signal(a: set, b: set, a_type: Optional[str], b_type: Optional[str]) -> float:
+    """Shared-source similarity, type-aware. A source↔chat pair uses OVERLAP (a source is
+    fully 'used by' the question that cited it → 1.0, so it attaches to that question's
+    cluster). A chat↔chat (or source↔source) pair uses JACCARD, so two questions co-cluster
+    only when their source sets SUBSTANTIALLY overlap — not merely share one common doc."""
+    if {a_type, b_type} == {"source", "exploration_query"}:
+        return overlap_coefficient(a, b)
+    return jaccard(a, b)
+
+
 def blended_score(concept: float, embed: float, shared: float) -> float:
     """Weighted blend of the three normalized (0–1) signals."""
     return W_CONCEPT * concept + W_EMBED * embed + W_SHARED * shared
@@ -120,7 +140,11 @@ def score_and_bound(
         concept = _clamp01(p.get("concept", 0.0))
         embed = _clamp01(p.get("embed", 0.0))
         shared = _clamp01(p.get("shared", 0.0))
-        score = blended_score(concept, embed, shared)
+        # A strong SINGLE signal is enough to suggest a link — the blend alone caps a
+        # chat↔chat pair (concept always 0) at 0.5·0 + 0.35·embed + 0.15·shared, so on a
+        # question-heavy canvas nothing ever cleared min_score and the dots/auto-connect
+        # were always empty. max() lets high embedding topic-similarity qualify on its own.
+        score = max(blended_score(concept, embed, shared), embed, concept)
         if score < min_score:
             continue
         scored.append((score, a, b, dominant_signal(concept, embed, shared)))
@@ -180,7 +204,10 @@ def build_raw_pairs(
                 concept = min(1.0, count / CONCEPT_SATURATION)
 
         embed = cosine(embeddings.get(a_id, []), embeddings.get(b_id, []))
-        shared = overlap_coefficient(source_sets.get(a_id, set()), source_sets.get(b_id, set()))
+        shared = shared_source_signal(
+            source_sets.get(a_id, set()), source_sets.get(b_id, set()),
+            na.get("ref_type"), nb.get("ref_type"),
+        )
 
         if concept or embed or shared:
             raw.append({"a": a_id, "b": b_id, "concept": concept, "embed": embed, "shared": shared})

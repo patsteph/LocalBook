@@ -56,6 +56,17 @@ class CandidatesRequest(BaseModel):
     nodes: List[CandidateNodeRef] = []
 
 
+class CanvasChatRef(BaseModel):
+    """A selected node the canvas-chat should scope its RAG to."""
+    ref_type: Optional[str] = None
+    ref_id: Optional[str] = None
+
+
+class CanvasChatRequest(BaseModel):
+    query: str
+    nodes: List[CanvasChatRef] = []
+
+
 @router.get("/layout/{notebook_id}")
 async def get_layout(notebook_id: str):
     """Full layout for a notebook: {nodes, edges, viewport}."""
@@ -138,16 +149,23 @@ async def candidates(notebook_id: str, req: CandidatesRequest):
     return {"candidates": pairs}
 
 
-# Auto-connect: promote a HIGH-confidence candidate to a real (dashed, suggested) edge.
-AUTO_CONNECT_THRESHOLD = 0.72
+# Auto-connect: promote confident candidates to 'curator' (dashed, suggested) edges.
+# Candidates already floor at 0.5 (MIN_SCORE) + top-K + global cap, so they're a curated
+# set. 0.6 = "confident enough to draw"; the old 0.72 needed near-full concept overlap AND
+# high embedding sim → it essentially never fired ("nothing happened"). If nothing clears
+# 0.6 but latent links exist, we still draw the strongest few so the feature always acts.
+AUTO_CONNECT_THRESHOLD = 0.6
+AUTO_CONNECT_FALLBACK_N = 3
 
 
 @router.post("/auto-connect/{notebook_id}")
 async def auto_connect(notebook_id: str, req: CandidatesRequest):
-    """Auto-connect (W3/W4): promote HIGH-confidence candidate pairs into 'curator'
-    (dashed, suggested) edges the user can keep or delete — the map forms its own
-    connections. Reuses the candidate engine; skips a pair already edged. Returns the
-    updated CanvasLayout so the frontend renders the new edges. Never 500s."""
+    """Auto-connect (W3/W4): promote confident candidate pairs into 'curator' (dashed,
+    suggested) edges the user can keep or delete — the map forms its own connections.
+    Reuses the candidate engine; skips a pair already edged. When no pair clears the
+    confidence bar but candidates exist, draws the strongest few (they're deletable
+    suggestions, not assertions) so the button never silently no-ops. Returns the updated
+    CanvasLayout. Never 500s."""
     import logging
     try:
         from services import canvas_candidates
@@ -156,9 +174,14 @@ async def auto_connect(notebook_id: str, req: CandidatesRequest):
         )
         existing = cl.get_layout(notebook_id)
         edged = {frozenset((e.get("source"), e.get("target"))) for e in existing.get("edges", [])}
-        for c in cands:
-            if c.get("score", 0.0) < AUTO_CONNECT_THRESHOLD:
-                continue
+
+        # cands are sorted score-desc by the engine. Take everything ≥ threshold; if that's
+        # empty, fall back to the strongest few candidates (all already ≥ MIN_SCORE=0.5).
+        confident = [c for c in cands if c.get("score", 0.0) >= AUTO_CONNECT_THRESHOLD]
+        to_draw = confident or cands[:AUTO_CONNECT_FALLBACK_N]
+
+        drawn = 0
+        for c in to_draw:
             pair = frozenset((c["a_node"], c["b_node"]))
             if pair in edged:
                 continue
@@ -167,6 +190,9 @@ async def auto_connect(notebook_id: str, req: CandidatesRequest):
                 "state": "curator", "label": c.get("signal", ""),
             }):
                 edged.add(pair)
+                drawn += 1
+        logging.getLogger(__name__).info(
+            f"[canvas] auto-connect {notebook_id}: {len(cands)} candidates, drew {drawn} edges")
         return cl.get_layout(notebook_id)
     except Exception as e:
         logging.getLogger(__name__).warning(f"[canvas] auto-connect failed ({notebook_id}): {e}")
@@ -202,6 +228,101 @@ async def get_gaps(notebook_id: str, limit: int = 200):
         return {"gaps": []}
 
 
+# Run R1 — recall. A learning node is a chat turn or a canvas-generated answer.
+_RECALL_KINDS = {"chat_turn"}
+_RECALL_REF_TYPES = {"exploration_query", "canvas_answer"}
+
+
+class RecallGradeRequest(BaseModel):
+    grade: str = "good"  # again | good | easy
+
+
+@router.get("/recall/{notebook_id}")
+async def get_recall(notebook_id: str, limit: int = 20):
+    """Run R1 — spaced-repetition recall: the learning nodes DUE for review right now
+    ('what to revisit'). Never-reviewed learning nodes are due; reviewed ones are due when
+    their SM-2 next_due has passed. Most-overdue first. Read-only; never 500s → [] on error."""
+    import time as _time
+    try:
+        from storage import canvas_recall_store as recall
+        layout = cl.get_layout(notebook_id)
+        states = recall.get_states(notebook_id)
+        now = _time.time()
+        due: List[Dict[str, Any]] = []
+        for n in layout.get("nodes", []):
+            if n.get("kind") not in _RECALL_KINDS and n.get("ref_type") not in _RECALL_REF_TYPES:
+                continue
+            st = states.get(n.get("id"))
+            next_due = st.get("next_due") if st else 0.0  # never reviewed → due now
+            if next_due <= now:
+                due.append({
+                    "id": n.get("id"), "title": n.get("title", ""),
+                    "snapshot": n.get("snapshot"), "ref_type": n.get("ref_type"),
+                    "reps": (st or {}).get("reps", 0), "overdue": now - next_due,
+                })
+        due.sort(key=lambda d: d["overdue"], reverse=True)
+        total_learning = sum(
+            1 for n in layout.get("nodes", [])
+            if n.get("kind") in _RECALL_KINDS or n.get("ref_type") in _RECALL_REF_TYPES
+        )
+        return {"due": due[:limit], "due_count": len(due), "total": total_learning}
+    except Exception:
+        return {"due": [], "due_count": 0, "total": 0}
+
+
+@router.post("/recall/{notebook_id}/{node_id}")
+async def post_recall(notebook_id: str, node_id: str, req: RecallGradeRequest):
+    """Grade a recall review (again/good/easy) → advance the spaced-repetition schedule."""
+    grade = req.grade if req.grade in ("again", "good", "easy") else "good"
+    from storage import canvas_recall_store as recall
+    return recall.review(notebook_id, node_id, grade)
+
+
+@router.post("/chat/{notebook_id}")
+async def canvas_chat(notebook_id: str, req: CanvasChatRequest):
+    """Run R2 — chat with a selection: ask a question scoped to the SOURCES behind the
+    selected nodes (source nodes contribute themselves; question nodes contribute the
+    sources they were answered from). Falls back to the whole notebook when the selection
+    resolves to no sources. Returns {answer, sources, source_ids} — the frontend can drop
+    the answer back onto the canvas as a new node ('the map generates the map'). Never 500s."""
+    import logging
+    try:
+        query = (req.query or "").strip()
+        if not query:
+            raise HTTPException(status_code=422, detail="empty query")
+
+        source_ids: set = set()
+        chat_qids: set = set()
+        for r in req.nodes:
+            if r.ref_type == "source" and r.ref_id:
+                source_ids.add(str(r.ref_id))
+            elif r.ref_type == "exploration_query" and r.ref_id:
+                chat_qids.add(str(r.ref_id))
+        if chat_qids:
+            from storage.exploration_store import exploration_store
+            journey = await exploration_store.get_journey(notebook_id, limit=500)
+            for q in journey.get("queries", []) or []:
+                if str(q.get("id", "")) in chat_qids:
+                    source_ids.update(str(s) for s in (q.get("sources_used") or []))
+
+        from services.rag_engine import rag_engine
+        result = await rag_engine.query(
+            notebook_id, query, source_ids=list(source_ids) or None, top_k=5,
+        )
+        return {
+            "answer": result.get("answer", ""),
+            "sources": result.get("sources", []),
+            "source_ids": sorted(source_ids),
+            "scoped": bool(source_ids),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"[canvas] chat failed ({notebook_id}): {e}")
+        return {"answer": "I couldn't answer that over the selected nodes.", "sources": [],
+                "source_ids": [], "scoped": False}
+
+
 @router.get("/provenance/{artifact_id}")
 async def get_provenance(artifact_id: str):
     """Walk provenance: the made-from edges for a generated artifact — what it was
@@ -225,14 +346,25 @@ async def get_source_derivations(source_id: str, notebook_id: str = ""):
         return {"source_id": source_id, "artifacts": []}
 
 
+# Derived node kinds — auto-generated from capture. A rebuild replaces these fresh
+# each Populate; genuinely user-placed nodes (any other ref_type) are preserved.
+_DERIVED_REFS = {"exploration_query", "source"}
+
+
 @router.post("/populate/{notebook_id}")
 async def populate(notebook_id: str, limit: int = 50):
-    """Seed nodes from existing capture (Crawl P2): chat turns (exploration_store) + sources
-    (activity_ledger). Idempotent — preserves existing node positions, adds only what's new."""
+    """Rebuild the journey map from capture (Crawl P2 + Walk W1/W2): learning chat turns
+    (exploration_store, noise-filtered) + the sources those discussions REFERENCED
+    (orphan sources stay off the map), clustered by topic into a readable layout.
+
+    A fresh REBUILD of the derived nodes — the journey is auto-derived, so re-deriving
+    it cleans out stale noise/renamed sources and reflects the current filters. Genuine
+    user-placed nodes (notes) and their edges are preserved; stale derived edges drop."""
     import json as _json
 
-    from services import canvas_populate
+    from services import canvas_populate, canvas_candidates
     from storage.exploration_store import exploration_store
+    from storage.source_store import source_store
     from services import activity_ledger
 
     journey = await exploration_store.get_journey(notebook_id, limit)
@@ -249,22 +381,34 @@ async def populate(notebook_id: str, limit: int = 50):
                 payload = {}
         source_events.append({"id": ev.get("id"), "ts": ev.get("ts"), "payload": payload or {}})
 
-    existing = cl.get_layout(notebook_id)
+    # Real source names (the source_added payload lacks a title → bare "Source" tiles).
+    try:
+        srcs = await source_store.list(notebook_id)
+        source_titles = {s.get("id"): (s.get("filename") or s.get("title") or "") for s in (srcs or [])}
+    except Exception:
+        source_titles = {}
 
-    # Walk W1/W2: build nodes, gather the similarity signals, then cluster + spatially lay
-    # out (a readable map) instead of the topics[0] grid. Fails open to the grid.
-    from services import canvas_candidates
-    nodes = canvas_populate.build_nodes(journey, source_events)
+    # Build nodes (noise-filtered turns + referenced sources), gather similarity signals,
+    # then cluster + spatially lay out (a readable topic map). Fails open to the grid.
+    nodes = canvas_populate.build_nodes(journey, source_events, source_titles)
     cand = [{
         "id": f"{n.get('ref_type')}:{n.get('ref_id')}",
         "ref_type": n.get("ref_type"), "ref_id": n.get("ref_id"),
-        "title": n.get("title", ""), "text": n.get("snapshot", ""),
+        "title": n.get("title", ""), "text": canvas_populate.snapshot_text(n),
     } for n in nodes]
     raw_pairs = await canvas_candidates.compute_raw_pairs(notebook_id, cand)
     seeded = canvas_populate.cluster_seed_layout(nodes, raw_pairs)
-    merged, added = canvas_populate.merge_populate(seeded, existing.get("nodes", []))
 
-    if not cl.save_layout(notebook_id, merged, existing["edges"], existing["viewport"]):
+    # Rebuild: preserve user-placed (non-derived) nodes + edges between them; replace
+    # derived nodes with the fresh clustered set; drop stale derived edges.
+    existing = cl.get_layout(notebook_id)
+    preserved = [n for n in existing.get("nodes", []) if n.get("ref_type") not in _DERIVED_REFS]
+    kept_ids = {n.get("id") for n in preserved}
+    kept_edges = [e for e in existing.get("edges", [])
+                  if e.get("source") in kept_ids and e.get("target") in kept_ids]
+    final_nodes = preserved + seeded
+
+    if not cl.save_layout(notebook_id, final_nodes, kept_edges, existing["viewport"]):
         raise HTTPException(status_code=500, detail="save_layout failed")
     # Return the full saved layout so the frontend applies it directly (it expects CanvasLayout).
     return cl.get_layout(notebook_id)
@@ -279,7 +423,7 @@ async def relayout(notebook_id: str):
     nodes = existing.get("nodes", [])
     cand = [{
         "id": n.get("id"), "ref_type": n.get("ref_type"), "ref_id": n.get("ref_id"),
-        "title": n.get("title", ""), "text": (n.get("snapshot") or n.get("title") or ""),
+        "title": n.get("title", ""), "text": canvas_populate.snapshot_text(n),
     } for n in nodes if n.get("id")]
     raw_pairs = await canvas_candidates.compute_raw_pairs(notebook_id, cand)
     relaid = canvas_populate.relayout_existing(nodes, raw_pairs)

@@ -44,27 +44,35 @@ def test_dominant_signal_and_ties():
 
 # ── Threshold ────────────────────────────────────────────────────────────────────────
 def test_threshold_filters_below_half():
-    # embed-only maxes at 0.35 < 0.5 → nothing surfaces (spec: needs graph/shared backing).
-    assert cc.score_and_bound([{"a": "1", "b": "2", "concept": 0, "embed": 1.0, "shared": 0}]) == []
-    # concept 1.0 → 0.5 exactly, meets the threshold.
+    # A WEAK single signal (embed 0.3, no concept/shared) stays below min_score → filtered.
+    assert cc.score_and_bound([{"a": "1", "b": "2", "concept": 0, "embed": 0.3, "shared": 0}]) == []
+    # A STRONG embedding alone now qualifies — topic similarity is a valid latent link on a
+    # chat-heavy canvas where concept is always 0 (else nothing ever surfaces). score = embed.
+    out = cc.score_and_bound([{"a": "1", "b": "2", "concept": 0, "embed": 0.8, "shared": 0}])
+    assert len(out) == 1 and out[0]["score"] == 0.8 and out[0]["signal"] == "embed"
+    # concept 1.0 alone also qualifies (a densely graph-linked source pair).
     out = cc.score_and_bound([{"a": "1", "b": "2", "concept": 1.0, "embed": 0, "shared": 0}])
-    assert len(out) == 1 and out[0]["score"] == 0.5 and out[0]["signal"] == "concept"
+    assert len(out) == 1 and out[0]["score"] == 1.0 and out[0]["signal"] == "concept"
 
 
 def test_pair_shape_and_rounding():
+    # score = max(blend, embed, concept). Here concept=1.0 dominates → 1.0.
     out = cc.score_and_bound([{"a": "x", "b": "y", "concept": 1.0, "embed": 0.5, "shared": 1.0}])
-    assert out == [{"a_node": "x", "b_node": "y", "score": round(0.5 + 0.175 + 0.15, 4),
-                    "signal": "concept"}]
+    assert out == [{"a_node": "x", "b_node": "y", "score": 1.0, "signal": "concept"}]
+    # A pure-blend win (no single signal ≥ blend): concept 0.6, embed 0.5, shared 1.0.
+    out = cc.score_and_bound([{"a": "x", "b": "y", "concept": 0.6, "embed": 0.5, "shared": 1.0}])
+    assert out[0]["score"] == round(0.3 + 0.175 + 0.15, 4)  # blend 0.625 > embed 0.5 > concept 0.6? -> 0.625
 
 
 # ── Bounding: per-node top-K, global cap, ordering ───────────────────────────────────
 def test_top_k_per_node():
-    # Node "hub" wants 4 strong links but top_k=2 → it keeps only its 2 best.
+    # Node "hub" wants 4 links but top_k=2 → keeps its 2 strongest. Distinct embeds so the
+    # score = embed ordering is unambiguous under the max-of-signals rule.
     raw = [
-        {"a": "hub", "b": "p1", "concept": 1.0, "embed": 0, "shared": 0},   # 0.50
-        {"a": "hub", "b": "p2", "concept": 0.9, "embed": 1.0, "shared": 0}, # 0.45+0.35=0.80
-        {"a": "hub", "b": "p3", "concept": 0, "embed": 1.0, "shared": 1.0}, # 0.35+0.15=0.50
-        {"a": "hub", "b": "p4", "concept": 0.8, "embed": 1.0, "shared": 1.0},  # 0.40+0.35+0.15=0.90
+        {"a": "hub", "b": "p1", "concept": 0, "embed": 0.55, "shared": 0},
+        {"a": "hub", "b": "p2", "concept": 0, "embed": 0.80, "shared": 0},
+        {"a": "hub", "b": "p3", "concept": 0, "embed": 0.60, "shared": 0},
+        {"a": "hub", "b": "p4", "concept": 0, "embed": 0.90, "shared": 0},
     ]
     out = cc.score_and_bound(raw, top_k=2)
     hub_pairs = [p for p in out if "hub" in (p["a_node"], p["b_node"])]
@@ -110,7 +118,7 @@ def test_build_raw_pairs_blends_all_three_signals():
     p = raw[0]
     assert p["concept"] == 1.0 and p["embed"] == 1.0 and p["shared"] == 0.0
     out = cc.score_and_bound(raw)
-    assert out[0]["score"] == round(0.5 + 0.35, 4)  # 0.85
+    assert out[0]["score"] == 1.0  # concept 1.0 (or embed 1.0) wins under max-of-signals
 
 
 def test_build_raw_pairs_concept_key_is_orderless():

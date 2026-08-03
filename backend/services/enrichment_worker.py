@@ -58,6 +58,19 @@ _DOSE = {
 # jobs (journals, digests, curator inference) drain silently.
 _GRAPH_LABELS = frozenset({"entities-daydream", "graph-deep", "community-summaries"})
 
+# ── Journey Canvas idle-research (Walk W5) ───────────────────────────────────────────
+# When the worker has NO real work queued AND the user is idle, quietly enrich each
+# notebook's canvas (auto-suggested connections + rate-limited gap research). This runs
+# INSIDE the worker's idle branch so it inherits every safety gate (presence, system-quiet,
+# memory pressure) and preempts the instant real work arrives. Cadence is read live via
+# schedule_store (centralization rule); research has its own long cooldown on top.
+_IDLE_RESEARCH_MIN_TIER = _Tier.LONG_IDLE      # "clearly idle" before we touch the canvas
+from services.canvas_idle_research import (  # noqa: E402
+    SCHEDULE_ID as _IDLE_RESEARCH_ID,
+    DEFAULT_INTERVAL_S as _IDLE_RESEARCH_DEFAULT_S,
+    RESEARCH_COOLDOWN_S as _IDLE_RESEARCH_COOLDOWN_S,
+)
+
 
 def _split_key(key: str):
     """Parse a coalescing key 'label:nb:source' → (label, notebook_id, source_id).
@@ -87,6 +100,8 @@ class EnrichmentWorker:
         self._in_pressure = False  # low-noise edge-logging for the memory gate
         self._last_run: Optional[float] = None       # epoch secs of last completed job (NS-B1 observability)
         self._last_run_label: Optional[str] = None
+        self._last_idle_research: float = 0.0         # epoch secs of last canvas idle-research pass (W5)
+        self._last_idle_web_research: float = 0.0     # epoch secs of last gap web lookup (own cooldown)
 
     # ── public API ──────────────────────────────────────────────────────
     def enqueue(self, job: EnrichmentJob) -> None:
@@ -232,6 +247,9 @@ class EnrichmentWorker:
             key = self._peek_runnable_key(tier_now)
             if key is None:
                 # Nothing runnable now (queue empty, or presence too "active").
+                # Idle hook (W5): if there's genuinely no queued work and the user is
+                # idle, quietly grow the canvas. Cheap + cadenced + fully preemptible.
+                await self._maybe_idle_research(tier_now)
                 # Wait for new work or re-evaluate presence on a timer.
                 self._wake.clear()
                 try:
@@ -274,6 +292,59 @@ class EnrichmentWorker:
                 await asyncio.sleep(cooldown)
             else:
                 await asyncio.sleep(_POLL)  # brief yield, keep draining the burst
+
+    async def _maybe_idle_research(self, tier_now) -> None:
+        """Journey Canvas idle-research (Walk W5). Fires ONLY when the worker has no
+        queued work and the user is clearly idle — enriches each notebook's canvas with
+        auto-suggested connections (+ rate-limited gap research). Every failure is
+        swallowed: a canvas-enrichment hiccup must never disturb the worker loop.
+
+        Gates (in cheap→expensive order):
+          • queue empty         — never compete with real background work
+          • presence idle       — LONG_IDLE+ only; nothing while the user is around
+          • schedule enabled    — honor a Schedule Viewer on/off override
+          • cadence elapsed     — read live via schedule_store.get_interval (never-raise)
+          • not memory-pressured / not mid-ingest-flood — same gates the job path uses
+        """
+        try:
+            if self._jobs:
+                return  # real work pending → not idle
+            if tier_now < _IDLE_RESEARCH_MIN_TIER:
+                return
+
+            # Cadence + enable via the central schedule store (unknown-id tolerant).
+            # Checked BEFORE the psutil memory probe so the common "not due yet" path
+            # stays cheap on the ~5s idle re-check.
+            try:
+                from services.schedule_store import schedule_store
+                if not schedule_store.is_enabled(_IDLE_RESEARCH_ID):
+                    return
+                interval = schedule_store.get_interval(
+                    _IDLE_RESEARCH_ID, _IDLE_RESEARCH_DEFAULT_S
+                )
+            except Exception:
+                interval = _IDLE_RESEARCH_DEFAULT_S
+
+            now = time.time()
+            if now - self._last_idle_research < interval:
+                return
+
+            # Due — now honor the same box-health gates the job path uses.
+            if presence.memory_pressure() or presence.system_busy(_OLLAMA_QUIET):
+                return
+            self._last_idle_research = now
+
+            # Gap web research has its own long cooldown on top of the pass cadence.
+            research_ok = (now - self._last_idle_web_research) >= _IDLE_RESEARCH_COOLDOWN_S
+
+            from services import canvas_idle_research
+            summary = await canvas_idle_research.run_idle_pass(
+                worker=self, allow_research=research_ok
+            )
+            if summary.get("researched"):
+                self._last_idle_web_research = now
+        except Exception as e:
+            logger.debug(f"[enrichment-worker] idle-research skipped: {e}")
 
     async def _run_one(self, job: EnrichmentJob) -> None:
         self._current_key = job.key

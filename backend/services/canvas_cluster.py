@@ -28,11 +28,16 @@ CLUSTER_THRESHOLD = 0.6
 
 
 def _cluster_score(p: Dict[str, Any]) -> float:
-    """Clustering similarity for a pair: embedding on its own scale OR the candidate
-    blend, whichever is stronger — so topically-similar nodes group even without shared
-    KG concepts."""
+    """Clustering similarity for a pair: the STRONGEST of three signals — embedding cosine,
+    raw shared-source overlap, or the candidate blend. The shared-source term stands on its
+    OWN (not just its 0.15 weight inside the blend) so a question clusters with the SOURCES
+    it was answered from — the strongest structural signal on a journey map ('this discussion
+    drew on these sources'). Without this the blend caps a pure question↔source pair at 0.15,
+    far below threshold, and the map segregates by node TYPE (all sources, all questions)
+    instead of by TOPIC. Two questions sharing a source transitively join one topic cluster."""
     return max(
         float(p.get("embed", 0.0) or 0.0),
+        float(p.get("shared", 0.0) or 0.0),
         blended_score(p.get("concept", 0.0), p.get("embed", 0.0), p.get("shared", 0.0)),
     )
 # Spatial constants (px, react-flow coordinate space). NODE_W/H are the cell PITCH —
@@ -86,6 +91,76 @@ def cluster_nodes(nodes: List[Dict[str, Any]], raw_pairs: List[Dict[str, Any]],
     for i in ids:
         groups.setdefault(uf.find(i), []).append(by_id[i])
     return sorted(groups.values(), key=len, reverse=True)
+
+
+# Embedding-only topic threshold for the two-phase journey clustering. Higher than
+# CLUSTER_THRESHOLD (0.6) because it scores a single signal (embedding cosine) rather than
+# the max-of-signals blend — 0.7 gives clean topic groups on real data (a shared "base"
+# source no longer chains unrelated questions into one blob; see field diag 2026-08-03 r2).
+EMBED_CLUSTER_THRESHOLD = 0.7
+
+
+def cluster_journey_nodes(nodes: List[Dict[str, Any]], raw_pairs: List[Dict[str, Any]],
+                          threshold: float = EMBED_CLUSTER_THRESHOLD) -> List[List[Dict[str, Any]]]:
+    """Two-phase journey clustering that avoids source-hub mega-merges (field bug 2026-08-03 r2):
+
+      1. **Topics** = connected components of CHAT nodes by EMBEDDING similarity only
+         (>= threshold). Sources are excluded from this graph so one shared "base" source
+         can't transitively chain 50 unrelated questions into a single blob.
+      2. **Attach** each SOURCE to the ONE topic where most of the questions that cited it
+         landed (majority vote, deterministic tie-break). A source JOINS a topic; it never
+         bridges two. Sources cited only by unclustered questions become their own singletons.
+
+    Returns clusters (largest first), same shape as `cluster_nodes`. Never raises."""
+    by_id = {n["id"]: n for n in nodes if n.get("id")}
+
+    def _is_source(n: Dict[str, Any]) -> bool:
+        return n.get("ref_type") == "source" or n.get("kind") == "source"
+
+    def _is_chat(n: Dict[str, Any]) -> bool:
+        return n.get("ref_type") == "exploration_query" or n.get("kind") == "chat_turn"
+
+    chat_ids = {nid for nid, n in by_id.items() if _is_chat(n)}
+    src_ids = {nid for nid, n in by_id.items() if _is_source(n)}
+    other_ids = [nid for nid, n in by_id.items() if nid not in chat_ids and nid not in src_ids]
+
+    # Phase 1 — union-find over chat↔chat EMBEDDING links only.
+    uf = _UF(list(chat_ids))
+    for p in raw_pairs or []:
+        a, b = p.get("a"), p.get("b")
+        if a in chat_ids and b in chat_ids and float(p.get("embed", 0.0) or 0.0) >= threshold:
+            uf.union(a, b)
+    roots: Dict[str, List[Dict[str, Any]]] = {}
+    for nid in chat_ids:
+        roots.setdefault(uf.find(nid), []).append(by_id[nid])
+    root_order = list(roots.keys())
+    cluster_of_root = {r: i for i, r in enumerate(root_order)}
+    clusters: List[List[Dict[str, Any]]] = [list(roots[r]) for r in root_order]
+
+    # Phase 2 — attach sources by majority vote of their citing questions' topics.
+    # A source↔chat pair with shared>0 marks a citation (overlap via shared_source_signal).
+    cited_by: Dict[str, List[str]] = {}
+    for p in raw_pairs or []:
+        if float(p.get("shared", 0.0) or 0.0) <= 0.0:
+            continue
+        a, b = p.get("a"), p.get("b")
+        if a in src_ids and b in chat_ids:
+            cited_by.setdefault(a, []).append(b)
+        elif b in src_ids and a in chat_ids:
+            cited_by.setdefault(b, []).append(a)
+    for sid in src_ids:
+        counts: Dict[str, int] = {}
+        for cid in cited_by.get(sid, []):
+            r = uf.find(cid)
+            counts[r] = counts.get(r, 0) + 1
+        if counts:
+            best = max(sorted(counts), key=lambda r: counts[r])  # deterministic tie-break
+            clusters[cluster_of_root[best]].append(by_id[sid])
+        else:
+            clusters.append([by_id[sid]])  # cited only by unclustered/dropped questions
+    for nid in other_ids:
+        clusters.append([by_id[nid]])
+    return sorted(clusters, key=len, reverse=True)
 
 
 def layout_clusters(clusters: List[List[Dict[str, Any]]]) -> Dict[str, Dict[str, float]]:

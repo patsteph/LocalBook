@@ -37,7 +37,7 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Trash2, Sparkles, RefreshCw, Scale, X } from 'lucide-react';
+import { Trash2, Sparkles, RefreshCw, Scale, X, Compass, MessagesSquare, Plus, Brain } from 'lucide-react';
 import { ArtifactRender } from '../artifact/RendererRegistry';
 import {
   canvasService,
@@ -46,6 +46,9 @@ import {
   type CanvasEdge,
   type CanvasCandidate,
   type CandidateNodeRef,
+  type CanvasGap,
+  type RecallItem,
+  type RecallGrade,
   type EdgeState,
 } from '../../services/canvas';
 import { synthesisService } from '../../services/synthesis';
@@ -287,8 +290,32 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
   const [savedViewport, setSavedViewport] = useState<Viewport | null>(null);
   const [candidates, setCandidates] = useState<CanvasCandidate[]>([]);
 
+  const rf = useReactFlow();
+
   // ── Time-as-a-lens (P6): recency window filter. `null` = show all. ──
   const [timeWindowMs, setTimeWindowMs] = useState<number | null>(null);
+
+  // ── Run R3 gap panel: weakly-answered questions as "what to explore next". ──
+  const [gaps, setGaps] = useState<CanvasGap[]>([]);
+  const [showGaps, setShowGaps] = useState(false);
+  const [gapsLoading, setGapsLoading] = useState(false);
+
+  // ── Run R2 chat-with-selection: ask a question scoped to the selected nodes' sources. ──
+  const [selectedNodes, setSelectedNodes] = useState<CanvasNode[]>([]);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatQuery, setChatQuery] = useState('');
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatAnswer, setChatAnswer] = useState<string | null>(null);
+  const [chatScoped, setChatScoped] = useState(true);
+  const chatAnchorRef = useRef<{ x: number; y: number } | null>(null);
+
+  // ── Run R1 recall: spaced-repetition review of learning nodes ("what to revisit"). ──
+  const [recallOpen, setRecallOpen] = useState(false);
+  const [recallQueue, setRecallQueue] = useState<RecallItem[]>([]);
+  const [recallIdx, setRecallIdx] = useState(0);
+  const [recallRevealed, setRecallRevealed] = useState(false);
+  const [recallTotal, setRecallTotal] = useState(0);
+  const [recallLoading, setRecallLoading] = useState(false);
 
   // ── Per-node supporting/differing view (P6): a right-side drawer that reuses
   //    the existing /synthesis/perspectives engine. Read-only; never persisted. ──
@@ -536,6 +563,128 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
     }
   }, [notebookId, applyLayout]);
 
+  // ── Run R3 gaps: load "what to explore next" + toggle the panel. ──
+  const onToggleGaps = useCallback(async () => {
+    if (showGaps) { setShowGaps(false); return; }
+    setShowGaps(true);
+    setGapsLoading(true);
+    try {
+      setGaps(await canvasService.getGaps(notebookId));
+    } catch (e) {
+      console.warn('[JourneyCanvas] getGaps failed', e);
+      setGaps([]);
+    } finally {
+      setGapsLoading(false);
+    }
+  }, [notebookId, showGaps]);
+
+  // Center the canvas on the weakly-answered question node behind a gap.
+  const onFocusGap = useCallback((gap: CanvasGap) => {
+    const match = nodesRef.current.find(
+      (fn) => fn.data.node.ref_type === 'exploration_query' && fn.data.node.ref_id === gap.ref_id,
+    );
+    if (match) {
+      rf.setCenter(match.position.x + 150, match.position.y + 90, { zoom: 1.1, duration: 500 });
+    }
+  }, [rf]);
+
+  // ── Run R2 chat-with-selection ──
+  const onSelectionChange = useCallback(({ nodes: sel }: { nodes: Node[] }) => {
+    setSelectedNodes(sel.map((n) => (n.data as { node: CanvasNode }).node).filter(Boolean));
+  }, []);
+
+  const onAskSelection = useCallback(() => {
+    // Anchor the answer-node near the centroid of the current selection.
+    if (selectedNodes.length) {
+      const cx = selectedNodes.reduce((s, n) => s + n.x, 0) / selectedNodes.length;
+      const cy = selectedNodes.reduce((s, n) => s + n.y, 0) / selectedNodes.length;
+      chatAnchorRef.current = { x: cx, y: cy };
+    } else {
+      chatAnchorRef.current = null;
+    }
+    setChatAnswer(null);
+    setChatOpen(true);
+  }, [selectedNodes]);
+
+  const onSubmitChat = useCallback(async () => {
+    const q = chatQuery.trim();
+    if (!q || !notebookId) return;
+    setChatBusy(true);
+    setChatAnswer(null);
+    try {
+      const refs = selectedNodes.map((n) => ({ ref_type: n.ref_type, ref_id: n.ref_id }));
+      const res = await canvasService.chat(notebookId, q, refs);
+      setChatAnswer(res.answer || '_No answer._');
+      setChatScoped(res.scoped);
+    } catch (e) {
+      console.error('[JourneyCanvas] canvas chat failed', e);
+      setChatAnswer('_Something went wrong answering that._');
+    } finally {
+      setChatBusy(false);
+    }
+  }, [chatQuery, notebookId, selectedNodes]);
+
+  // Drop the answer back onto the canvas as a new node ("the map generates the map"),
+  // linked to each selected node with a provenance edge, then persist.
+  const onAddAnswerNode = useCallback(async () => {
+    if (!chatAnswer || !notebookId) return;
+    const anchor = chatAnchorRef.current ?? { x: 0, y: 0 };
+    const id = (crypto?.randomUUID?.() ?? `ans-${Date.now()}`);
+    const q = chatQuery.trim();
+    const newNode: CanvasNode = {
+      id,
+      x: anchor.x + 360,
+      y: anchor.y,
+      kind: 'chat_turn',
+      ref_type: 'canvas_answer',
+      ref_id: id,
+      title: q.length > 60 ? `${q.slice(0, 59)}…` : q,
+      snapshot: { id, type: 'markdown', payload: `**Q:** ${q}\n\n${chatAnswer}` },
+      z: 0,
+      created_at: new Date().toISOString(),
+    };
+    setNodes((ns) => [...ns, toFlowNode(newNode)]);
+    // Provenance edges from each selected node into the answer.
+    for (const sn of selectedNodes) {
+      canvasService
+        .createEdge(notebookId, { source: sn.id, target: id, state: 'provenance', label: 'answered' })
+        .then((e) => setEdges((es) => [...es, toFlowEdge(e)]))
+        .catch(() => {});
+    }
+    saveLayoutDebounced();
+    setChatOpen(false);
+    setChatQuery('');
+    setChatAnswer(null);
+  }, [chatAnswer, chatQuery, notebookId, selectedNodes, setNodes, setEdges, saveLayoutDebounced]);
+
+  // ── Run R1 recall ──
+  const onToggleRecall = useCallback(async () => {
+    if (recallOpen) { setRecallOpen(false); return; }
+    setRecallOpen(true);
+    setRecallLoading(true);
+    setRecallIdx(0);
+    setRecallRevealed(false);
+    try {
+      const res = await canvasService.getRecall(notebookId);
+      setRecallQueue(res.due);
+      setRecallTotal(res.due_count);
+    } catch (e) {
+      console.warn('[JourneyCanvas] getRecall failed', e);
+      setRecallQueue([]);
+      setRecallTotal(0);
+    } finally {
+      setRecallLoading(false);
+    }
+  }, [notebookId, recallOpen]);
+
+  const onGradeRecall = useCallback(async (grade: RecallGrade) => {
+    const item = recallQueue[recallIdx];
+    if (!item) return;
+    canvasService.reviewRecall(notebookId, item.id, grade).catch(() => {});
+    setRecallRevealed(false);
+    setRecallIdx((i) => i + 1);  // advance; the panel shows "all caught up" past the end
+  }, [recallQueue, recallIdx, notebookId]);
+
   const isEmpty = !loading && nodes.length === 0;
 
   // ── Time-window filter: hide (never remove) nodes/edges outside the window. ──
@@ -575,6 +724,7 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
         onConnect={onConnect}
         onEdgesDelete={onEdgesDelete}
         onNodesDelete={onNodesDelete}
+        onSelectionChange={onSelectionChange}
         onMoveEnd={onMoveEnd}
         defaultViewport={savedViewport ?? undefined}
         fitView={!savedViewport}
@@ -619,6 +769,43 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
             title="Auto-connect: draw suggested (dashed) edges between strongly-related nodes"
           >
             Auto-connect
+          </button>
+          <button
+            type="button"
+            onClick={onToggleGaps}
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-semibold disabled:opacity-60 ${
+              showGaps
+                ? 'border-amber-400 bg-amber-100 text-amber-800 dark:border-amber-500 dark:bg-amber-900/40 dark:text-amber-200'
+                : 'border-amber-200 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-900/30'
+            }`}
+            title="Gaps: questions your sources answered weakly — what to explore next"
+          >
+            <Compass className="h-3 w-3" />
+            Gaps
+          </button>
+          <button
+            type="button"
+            onClick={onAskSelection}
+            disabled={selectedNodes.length === 0}
+            className="flex items-center gap-1.5 rounded-md border border-emerald-200 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-40 dark:border-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+            title={selectedNodes.length ? `Ask a question across the ${selectedNodes.length} selected node(s)` : 'Select nodes first, then ask across them'}
+          >
+            <MessagesSquare className="h-3 w-3" />
+            Ask{selectedNodes.length ? ` (${selectedNodes.length})` : ''}
+          </button>
+          <button
+            type="button"
+            onClick={onToggleRecall}
+            disabled={isEmpty}
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40 ${
+              recallOpen
+                ? 'border-indigo-400 bg-indigo-100 text-indigo-800 dark:border-indigo-500 dark:bg-indigo-900/40 dark:text-indigo-200'
+                : 'border-indigo-200 text-indigo-700 hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-900/30'
+            }`}
+            title="Recall: review what you've learned (spaced repetition)"
+          >
+            <Brain className="h-3 w-3" />
+            Recall
           </button>
           <button
             type="button"
@@ -741,6 +928,219 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
                 }}
                 context="canvas-full"
               />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Run R3 — "what to explore next" panel: questions your sources answered
+          weakly. Click one to fly the canvas to that question node. Read-only. */}
+      {showGaps && (
+        <div className="pointer-events-auto absolute bottom-3 right-3 z-20 flex max-h-[60%] w-[min(340px,85%)] flex-col rounded-lg border border-amber-200 bg-white/95 shadow-xl backdrop-blur dark:border-amber-800 dark:bg-gray-800/95">
+          <div className="flex items-center justify-between gap-2 border-b border-amber-100 px-3 py-2 dark:border-amber-900/50">
+            <div className="flex items-center gap-2">
+              <Compass className="h-4 w-4 text-amber-500" />
+              <p className="text-[12px] font-semibold text-gray-700 dark:text-gray-200">What to explore next</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowGaps(false)}
+              className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"
+              title="Close"
+              aria-label="Close gaps"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-auto p-2">
+            {gapsLoading && (
+              <div className="flex items-center justify-center gap-2 py-6 text-gray-400">
+                <RefreshCw className="h-4 w-4 animate-spin" />
+                <span className="text-[11px]">Finding gaps…</span>
+              </div>
+            )}
+            {!gapsLoading && gaps.length === 0 && (
+              <p className="px-2 py-6 text-center text-[11px] text-gray-400">
+                No weak spots found — your sources answered your questions well.
+              </p>
+            )}
+            {!gapsLoading && gaps.map((gap) => (
+              <button
+                key={gap.ref_id || gap.query}
+                type="button"
+                onClick={() => onFocusGap(gap)}
+                className="mb-1 w-full rounded-md border border-transparent px-2 py-1.5 text-left hover:border-amber-200 hover:bg-amber-50 dark:hover:border-amber-800 dark:hover:bg-amber-900/20"
+                title="Center the canvas on this question"
+              >
+                <p className="truncate text-[12px] font-medium text-gray-700 dark:text-gray-200">{gap.query}</p>
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">{gap.reason}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Run R2 — chat with the selection: ask a question scoped to the SOURCES behind the
+          selected nodes; drop the answer back onto the canvas as a new node. */}
+      {chatOpen && (
+        <div className="pointer-events-auto absolute bottom-3 left-1/2 z-30 flex max-h-[70%] w-[min(560px,92%)] -translate-x-1/2 flex-col rounded-xl border border-emerald-200 bg-white/97 shadow-2xl backdrop-blur dark:border-emerald-800 dark:bg-gray-800/97">
+          <div className="flex items-center justify-between gap-2 border-b border-emerald-100 px-3 py-2 dark:border-emerald-900/50">
+            <div className="flex items-center gap-2">
+              <MessagesSquare className="h-4 w-4 text-emerald-500" />
+              <p className="text-[12px] font-semibold text-gray-700 dark:text-gray-200">
+                Ask across {selectedNodes.length} selected node{selectedNodes.length === 1 ? '' : 's'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setChatOpen(false)}
+              className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"
+              title="Close"
+              aria-label="Close chat"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-2">
+            <input
+              type="text"
+              autoFocus
+              value={chatQuery}
+              onChange={(e) => setChatQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !chatBusy) onSubmitChat(); }}
+              placeholder="Ask a question about the selected nodes…"
+              className="flex-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-emerald-400 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200"
+            />
+            <button
+              type="button"
+              onClick={onSubmitChat}
+              disabled={chatBusy || !chatQuery.trim()}
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {chatBusy ? 'Asking…' : 'Ask'}
+            </button>
+          </div>
+          {chatAnswer !== null && (
+            <div className="flex-1 overflow-auto border-t border-gray-100 px-3 py-2 dark:border-gray-700">
+              {!chatScoped && (
+                <p className="mb-1 text-[10px] italic text-gray-400">
+                  The selection had no linked sources — answered across the whole notebook.
+                </p>
+              )}
+              <ArtifactRender
+                artifact={{ id: 'canvas-chat-answer', type: 'markdown', payload: chatAnswer }}
+                context="canvas-full"
+              />
+              <div className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={onAddAnswerNode}
+                  className="flex items-center gap-1.5 rounded-md border border-emerald-300 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+                  title="Add this answer to the canvas as a new node"
+                >
+                  <Plus className="h-3 w-3" />
+                  Add to canvas
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Run R1 — recall: spaced-repetition review of learning nodes. Flashcard flow:
+          show the question → reveal the answer → grade (advances the SM-2 schedule). */}
+      {recallOpen && (
+        <div className="pointer-events-auto absolute bottom-3 left-1/2 z-30 flex max-h-[72%] w-[min(560px,92%)] -translate-x-1/2 flex-col rounded-xl border border-indigo-200 bg-white/97 shadow-2xl backdrop-blur dark:border-indigo-800 dark:bg-gray-800/97">
+          <div className="flex items-center justify-between gap-2 border-b border-indigo-100 px-3 py-2 dark:border-indigo-900/50">
+            <div className="flex items-center gap-2">
+              <Brain className="h-4 w-4 text-indigo-500" />
+              <p className="text-[12px] font-semibold text-gray-700 dark:text-gray-200">
+                Recall
+                {!recallLoading && recallQueue.length > 0 && recallIdx < recallQueue.length && (
+                  <span className="ml-1 font-normal text-gray-400">
+                    · {recallIdx + 1} of {recallQueue.length}
+                  </span>
+                )}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRecallOpen(false)}
+              className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"
+              title="Close"
+              aria-label="Close recall"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-auto p-3">
+            {recallLoading && (
+              <div className="flex items-center justify-center gap-2 py-8 text-gray-400">
+                <RefreshCw className="h-4 w-4 animate-spin" />
+                <span className="text-[11px]">Finding what to review…</span>
+              </div>
+            )}
+            {!recallLoading && (recallQueue.length === 0 || recallIdx >= recallQueue.length) && (
+              <div className="flex flex-col items-center gap-1 py-8 text-center">
+                <Brain className="h-6 w-6 text-indigo-300" />
+                <p className="text-[13px] font-medium text-gray-600 dark:text-gray-300">All caught up</p>
+                <p className="text-[11px] text-gray-400">
+                  {recallTotal === 0
+                    ? 'Nothing to review yet — explore some questions first.'
+                    : "You've reviewed everything due. Come back later."}
+                </p>
+              </div>
+            )}
+            {!recallLoading && recallIdx < recallQueue.length && (
+              <div>
+                <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-indigo-400">
+                  Do you remember?
+                </p>
+                <p className="text-[15px] font-semibold text-gray-800 dark:text-gray-100">
+                  {recallQueue[recallIdx].title}
+                </p>
+                {!recallRevealed ? (
+                  <button
+                    type="button"
+                    onClick={() => setRecallRevealed(true)}
+                    className="mt-4 w-full rounded-md bg-indigo-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-indigo-700"
+                  >
+                    Show answer
+                  </button>
+                ) : (
+                  <>
+                    <div className="mt-3 border-t border-gray-100 pt-3 dark:border-gray-700">
+                      <ArtifactRender
+                        artifact={recallQueue[recallIdx].snapshot}
+                        context="canvas-full"
+                      />
+                    </div>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onGradeRecall('again')}
+                        className="flex-1 rounded-md border border-rose-300 px-2 py-1.5 text-[11px] font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-900/30"
+                      >
+                        Again
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onGradeRecall('good')}
+                        className="flex-1 rounded-md border border-indigo-300 px-2 py-1.5 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-900/30"
+                      >
+                        Good
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onGradeRecall('easy')}
+                        className="flex-1 rounded-md border border-emerald-300 px-2 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+                      >
+                        Easy
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </div>
         </div>
