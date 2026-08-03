@@ -520,6 +520,22 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
     }
   }, [notebookId, applyLayout]);
 
+  // ── Auto-connect: promote high-confidence candidates to suggested (dashed) edges. ──
+  const onAutoConnect = useCallback(async () => {
+    if (!notebookId) return;
+    setPopulating(true);
+    setError(null);
+    try {
+      const refs = nodesRef.current.map((fn) => toCandidateRef(fn.data.node));
+      applyLayout(await canvasService.autoConnect(notebookId, refs));
+    } catch (e) {
+      console.error('[JourneyCanvas] auto-connect failed', e);
+      setError('Auto-connect failed.');
+    } finally {
+      setPopulating(false);
+    }
+  }, [notebookId, applyLayout]);
+
   const isEmpty = !loading && nodes.length === 0;
 
   // ── Time-window filter: hide (never remove) nodes/edges outside the window. ──
@@ -594,6 +610,15 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
             title="Auto-arrange: re-cluster the map into readable groups by similarity"
           >
             Tidy up
+          </button>
+          <button
+            type="button"
+            onClick={onAutoConnect}
+            disabled={populating || isEmpty}
+            className="flex items-center gap-1.5 rounded-md border border-cyan-200 px-2.5 py-1 text-[11px] font-semibold text-cyan-700 hover:bg-cyan-50 disabled:opacity-60 dark:border-cyan-700 dark:text-cyan-300 dark:hover:bg-cyan-900/30"
+            title="Auto-connect: draw suggested (dashed) edges between strongly-related nodes"
+          >
+            Auto-connect
           </button>
           <button
             type="button"

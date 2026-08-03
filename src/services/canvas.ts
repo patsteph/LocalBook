@@ -223,4 +223,15 @@ export const canvasService = {
     const data = await asJson<{ candidates: CanvasCandidate[] }>(resp, 'getCandidates');
     return data?.candidates ?? [];
   },
+
+  /** Auto-connect: promote high-confidence candidate pairs into 'curator' (dashed,
+   *  suggested) edges, then return the updated layout. */
+  async autoConnect(notebookId: string, nodes: CandidateNodeRef[]): Promise<CanvasLayout> {
+    const resp = await localFetch(`${API_BASE_URL}/canvas/auto-connect/${notebookId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodes }),
+    });
+    return asJson<CanvasLayout>(resp, 'autoConnect');
+  },
 };

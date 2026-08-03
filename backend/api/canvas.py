@@ -138,6 +138,41 @@ async def candidates(notebook_id: str, req: CandidatesRequest):
     return {"candidates": pairs}
 
 
+# Auto-connect: promote a HIGH-confidence candidate to a real (dashed, suggested) edge.
+AUTO_CONNECT_THRESHOLD = 0.72
+
+
+@router.post("/auto-connect/{notebook_id}")
+async def auto_connect(notebook_id: str, req: CandidatesRequest):
+    """Auto-connect (W3/W4): promote HIGH-confidence candidate pairs into 'curator'
+    (dashed, suggested) edges the user can keep or delete — the map forms its own
+    connections. Reuses the candidate engine; skips a pair already edged. Returns the
+    updated CanvasLayout so the frontend renders the new edges. Never 500s."""
+    import logging
+    try:
+        from services import canvas_candidates
+        cands = await canvas_candidates.compute_candidates(
+            notebook_id, [n.model_dump() for n in req.nodes]
+        )
+        existing = cl.get_layout(notebook_id)
+        edged = {frozenset((e.get("source"), e.get("target"))) for e in existing.get("edges", [])}
+        for c in cands:
+            if c.get("score", 0.0) < AUTO_CONNECT_THRESHOLD:
+                continue
+            pair = frozenset((c["a_node"], c["b_node"]))
+            if pair in edged:
+                continue
+            if cl.upsert_edge(notebook_id, {
+                "source": c["a_node"], "target": c["b_node"],
+                "state": "curator", "label": c.get("signal", ""),
+            }):
+                edged.add(pair)
+        return cl.get_layout(notebook_id)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"[canvas] auto-connect failed ({notebook_id}): {e}")
+        return cl.get_layout(notebook_id)
+
+
 @router.get("/timeline/{notebook_id}")
 async def get_timeline(notebook_id: str, limit: int = 200):
     """Unified journey feed (Walk read-layer): merges the three capture stores —
