@@ -225,8 +225,8 @@ def _repeat(tmpl: str, count: int) -> str:
     return "\n    ".join(tmpl.replace("#N#", str(i)) for i in range(1, count + 1))
 
 
-_STAT_TILE = """<div class="ib-card ib-bracketed ib-center" style="flex-direction:column;gap:6px;padding:20px 14px">
-        <span class="ib-icon ib-icon--accent">{{ICON_S#N#}}</span>
+_STAT_TILE = """<div class="ib-card ib-bracketed ib-center" style="flex-direction:column;gap:5px;padding:15px 14px">
+        <span class="ib-icon ib-icon--sm ib-icon--accent">{{ICON_S#N#}}</span>
         <div style="font-size:32px;font-weight:800;color:var(--ib-ink);line-height:1.05;text-align:center">{{STAT_#N#_VALUE}}<sup class="ib-cite">{{CITE_#N#}}</sup></div>
         <div class="ib-node-label" style="max-width:150px">{{STAT_#N#_LABEL}}</div>
       </div>"""
