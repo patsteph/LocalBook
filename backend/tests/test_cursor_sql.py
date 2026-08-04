@@ -146,6 +146,39 @@ def test_validate_sql_never_false_rejects_when_sqlglot_probe_fails(monkeypatch):
     assert cs._validate_sql("SELECT COUNT(id) FROM record_roster", _schema()) is None
 
 
+def test_validate_rejects_undeclared_alias_prefix():
+    # Regression (log queries 5 & 6): `T1.col` with no `AS T1` → "no such column" at runtime.
+    from services import cursor_sql as cs
+    err = cs._validate_sql("SELECT T1.account_id FROM record_roster WHERE T1.account_id = 1", _schema())
+    assert err and "t1" in err.lower()
+    assert cs._validate_sql("SELECT a.account_id FROM record_roster AS a", _schema()) is None
+    assert cs._validate_sql("SELECT account_id FROM record_roster", _schema()) is None
+
+
+def test_lookup_rejects_placeholder_values():
+    from services import cursor_sql as cs
+    assert cs._PLACEHOLDER_VALUE.match("TBH - Region West")
+    assert cs._PLACEHOLDER_VALUE.match("Unassigned AE")
+    assert cs._PLACEHOLDER_VALUE.match("N/A")
+    assert not cs._PLACEHOLDER_VALUE.match("Jordan Lee")
+
+
+def test_entities_skip_low_cardinality_dimension_values(sample_db, monkeypatch):
+    # Regression (log query 6): "Region WEST" is an AREA value, not a person — must not be grounded to
+    # a name column (it matched a placeholder "TBH - Region West"). A term equal to a low-card value is
+    # dropped before any lookup.
+    from services import cursor_sql as cs
+    _, ext = sample_db
+    schema = [
+        {"table_name": "record_roster", "columns": [
+            {"sanitized": "area", "low_cardinality": True, "values": ["Region WEST", "Region EAST"]},
+            {"sanitized": "record_key", "low_cardinality": False, "dtype": "text"}]},
+    ]
+    # If any lookup were attempted it would raise (no such table); the low-value skip prevents it.
+    monkeypatch.setattr(cs, "_lookup_value", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not lookup")))
+    assert cs._resolve_entities("pipeline for Region WEST", schema, str(ext)) == []
+
+
 def test_entity_lookup_resolves_high_cardinality(sample_db):
     _, ext = sample_db
     from services import cursor_sql as cs

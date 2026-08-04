@@ -129,8 +129,22 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
         cands = _candidate_entities(question)
         if not cands:
             return hints
+        # A phrase that is itself a known LOW-cardinality value (e.g. an area/region like "Region WEST")
+        # is a dimension filter, NOT an entity — grounding it against a name column mismatches it to a
+        # placeholder ("TBH - Region West"). Skip those; _resolve_directives handles them.
+        low_values: set = set()
+        for t in schema:
+            for c in t.get("columns", []):
+                if c.get("low_cardinality"):
+                    for v in (c.get("values") or []):
+                        low_values.add(str(v).strip().lower())
+        cands = [c for c in cands if c.strip().lower() not in low_values]
+        if not cands:
+            return hints
         # Candidate (table, column) targets: HIGH-cardinality text columns, entity-named first.
-        targets: List[Tuple[str, str]] = []
+        # Search the FULL schema (not just schema-linked tables) — the name column often lives in a
+        # roster/employee table the linker didn't pick, which is why "Jordan Lee" was being guessed.
+        targets: List[Tuple[int, str, str]] = []
         for t in schema:
             tname = str(t.get("table_name", ""))
             for c in t.get("columns", []):
@@ -147,7 +161,7 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
         targets.sort(key=lambda x: x[0])
         ordered = [(tname, col) for _p, tname, col in targets]
 
-        budget = 12  # hard cap on lookups → bounds latency on a 138k-row DB
+        budget = 24  # hard cap on lookups → bounds latency (indexed LIKE over a name column is ms)
         resolved_terms: set = set()
         for term in cands:
             if budget <= 0:
@@ -168,9 +182,17 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
     return hints
 
 
+# Placeholder / non-entity stored values a fuzzy LIKE can latch onto ("TBH - Region West",
+# "Unassigned AE"). Grounding to one of these is worse than not grounding at all.
+_PLACEHOLDER_VALUE = re.compile(
+    r"^\s*(tbh\b|tbd\b|n/?a\b|none\b|null\b|unknown\b|unassigned\b|-+\s*$|to be hired)",
+    re.IGNORECASE)
+
+
 def _lookup_value(db_path: Optional[str], table: str, col: str, term: str) -> Optional[str]:
     """Read-only DISTINCT lookup: does `term` uniquely match a stored value in table.col?
-    Returns the single exact stored value (case/spacing as stored), or None if 0 or >1 matches."""
+    Returns the single exact stored value (case/spacing as stored), or None if 0 or >1 matches,
+    or if the only match is a placeholder (TBH/Unassigned/…)."""
     try:
         qtable = '"' + str(table).replace('"', '""') + '"'
         qcol = '"' + str(col).replace('"', '""') + '"'
@@ -181,13 +203,14 @@ def _lookup_value(db_path: Optional[str], table: str, col: str, term: str) -> Op
         if not res.get("ok"):
             return None
         rows = res.get("rows", [])
-        vals = [r[0] for r in rows if r and r[0] is not None]
+        vals = [str(r[0]) for r in rows if r and r[0] is not None
+                and not _PLACEHOLDER_VALUE.match(str(r[0]))]
         if len(vals) == 1:
-            return str(vals[0])
+            return vals[0]
         # Multiple partial matches — accept only an exact (case-insensitive) hit if present.
-        exact = [v for v in vals if str(v).strip().lower() == term.strip().lower()]
+        exact = [v for v in vals if v.strip().lower() == term.strip().lower()]
         if len(exact) == 1:
-            return str(exact[0])
+            return exact[0]
         return None
     except Exception:
         return None
@@ -312,6 +335,9 @@ def _build_cursor_prompt(question: str, linked: List[Dict[str, Any]],
         "invent an id/code from a name.\n"
         "- Filter using ONLY the EXACT listed/grounded values; copy the spelling verbatim. Add a "
         "WHERE clause ONLY for a constraint the question explicitly states.\n"
+        "- Do NOT prefix a column with a table alias (e.g. T1./a.) unless you actually declared that "
+        "alias with AS in a FROM/JOIN. For a single-table query, use BARE column names (write "
+        "`fiscal_year`, not `T1.fiscal_year`).\n"
         "- Column ALIASES must be a single snake_case word or double-quoted — never a bare "
         "multi-word alias.\n"
         "- For a metric \"by\"/\"per\"/\"for each\" <dimension>, SELECT that dimension alongside the "
@@ -408,6 +434,13 @@ def _validate_sql(sql: str, linked: List[Dict[str, Any]],
         if not col or col == "*":
             continue
         if tbl_ref:
+            # An UNDECLARED qualifier — the model wrote `T1.col` but never `... AS T1` (a frequent
+            # gemma slip) — resolves to no table/alias/CTE. Reject with a directed fix.
+            if (tbl_ref not in alias_to_table and tbl_ref not in valid_tables
+                    and tbl_ref not in cte_names):
+                return (f"'{tbl_ref}' is not a declared table or alias — you used '{tbl_ref}.{col}' "
+                        f"without writing 'AS {tbl_ref}'. Either declare the alias in FROM/JOIN or "
+                        f"use bare column names.")
             base = alias_to_table.get(tbl_ref, tbl_ref)  # resolve an alias to its base table
             if base in valid_cols and col not in valid_cols[base]:
                 allowed = ", ".join(sorted(valid_cols[base])) or "(none listed)"
@@ -464,7 +497,7 @@ async def answer(
                     f"{[t.get('table_name') for t in linked]}")
 
     directives = _resolve_directives(question, linked)          # low-cardinality (shared resolver)
-    entity_hints = _resolve_entities(question, linked, db_path)  # high-cardinality (Phase 1b)
+    entity_hints = _resolve_entities(question, schema, db_path)  # high-cardinality, FULL schema
     if entity_hints:
         logger.info(f"[cursor] nb={notebook_id} grounded entities: "
                     f"{[(h['term'], h['table'] + '.' + h['col'], h['value']) for h in entity_hints]}")
