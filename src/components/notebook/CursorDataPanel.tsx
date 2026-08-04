@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Database, FolderOpen, FileText, RefreshCw, AlertTriangle, Loader2, ShieldCheck, Table2, ChevronDown } from 'lucide-react';
+import { Database, FolderOpen, FileText, RefreshCw, AlertTriangle, Loader2, ShieldCheck, Table2, ChevronDown, CheckCircle2 } from 'lucide-react';
 import { notebookService, CursorDataStatus, CursorTableInfo } from '../../services/notebooks';
+import { isTauri } from '../../services/sources';
 
 interface CursorDataPanelProps {
   notebookId: string | null;
@@ -38,6 +39,22 @@ export const CursorDataPanel: React.FC<CursorDataPanelProps> = ({ notebookId }) 
   const [showReconnect, setShowReconnect] = useState(false);
   const [folderInput, setFolderInput] = useState('');
   const [reconnecting, setReconnecting] = useState(false);
+  const inTauri = isTauri();
+
+  // Native folder picker — Tauri dialog when available; text input is the fallback.
+  const handleBrowseFolder = async () => {
+    if (reconnecting) return;
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === 'string') {
+        setFolderInput(selected);
+      }
+    } catch (err) {
+      console.error('Folder picker failed:', err);
+      setNote({ kind: 'error', text: 'Folder picker failed.' });
+    }
+  };
 
   const loadStatus = useCallback(async () => {
     if (!notebookId) return;
@@ -156,6 +173,26 @@ export const CursorDataPanel: React.FC<CursorDataPanelProps> = ({ notebookId }) 
               <span>No folder connected yet. Use “Change folder” below to point at a data folder.</span>
             </div>
           )}
+
+          {/* Ready-to-query badge */}
+          {(refreshing || reconnecting) ? (
+            <div className="flex items-center gap-1.5 text-xs text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-lg px-2 py-1.5">
+              <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
+              <span className="font-medium">Indexing data…</span>
+            </div>
+          ) : (status?.ready || (connected && status?.data_status === 'ready')) ? (
+            <div className="text-xs text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-2 py-1.5">
+              <div className="flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                <span className="font-semibold">Ready to query</span>
+              </div>
+              <p className="text-[11px] text-green-600 dark:text-green-400 mt-0.5 pl-5">
+                {status?.table_count ?? tables.length} table{(status?.table_count ?? tables.length) === 1 ? '' : 's'}
+                {' · '}{(status?.row_total ?? 0).toLocaleString()} rows
+                {status?.views ? ` · ${status.views} views` : ''}
+              </p>
+            </div>
+          ) : null}
 
           {/* Folder + db file */}
           <div className="space-y-1.5">
@@ -278,13 +315,26 @@ export const CursorDataPanel: React.FC<CursorDataPanelProps> = ({ notebookId }) 
             </button>
             {showReconnect && (
               <div className="mt-2 space-y-1.5">
-                <input
-                  value={folderInput}
-                  onChange={(e) => setFolderInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleReconnect(); }}
-                  placeholder="/path/to/data/folder"
-                  className="w-full text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none focus:border-indigo-400"
-                />
+                <div className="flex gap-1.5">
+                  <input
+                    value={folderInput}
+                    onChange={(e) => setFolderInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleReconnect(); }}
+                    placeholder="/path/to/data/folder"
+                    className="flex-1 min-w-0 text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white outline-none focus:border-indigo-400"
+                  />
+                  {inTauri && (
+                    <button
+                      onClick={handleBrowseFolder}
+                      disabled={reconnecting}
+                      className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 border border-gray-300 dark:border-gray-600 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                      title="Choose a folder"
+                    >
+                      <FolderOpen className="w-3.5 h-3.5" />
+                      Browse…
+                    </button>
+                  )}
+                </div>
                 <button
                   onClick={handleReconnect}
                   disabled={reconnecting || !folderInput.trim()}

@@ -1,5 +1,7 @@
 import React, { useState, useRef } from 'react';
+import { FolderOpen } from 'lucide-react';
 import { NOTEBOOK_COLORS } from '../../services/notebooks';
+import { isTauri } from '../../services/sources';
 import { Button } from '../shared/Button';
 import { Modal } from '../shared/Modal';
 
@@ -28,6 +30,21 @@ export const CreateNotebookModal: React.FC<CreateNotebookModalProps> = ({
   const [nbType, setNbType] = useState<'standard' | 'cursor'>('standard');
   const [folderPath, setFolderPath] = useState('');
   const dropRef = useRef<HTMLDivElement>(null);
+  const inTauri = isTauri();
+
+  // Native folder picker — Tauri dialog when available; text input is the fallback.
+  const handleBrowseFolder = async () => {
+    if (creating) return;
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === 'string') {
+        setFolderPath(selected);
+      }
+    } catch (err) {
+      console.error('Folder picker failed:', err);
+    }
+  };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -148,19 +165,32 @@ export const CreateNotebookModal: React.FC<CreateNotebookModalProps> = ({
               <label htmlFor="cursor-folder" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Data folder path
               </label>
-              <input
-                id="cursor-folder"
-                type="text"
-                value={folderPath}
-                onChange={(e) => setFolderPath(e.target.value)}
-                placeholder="/Users/you/monthly-drop"
-                className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
-                disabled={creating}
-              />
+              <div className="flex gap-2">
+                <input
+                  id="cursor-folder"
+                  type="text"
+                  value={folderPath}
+                  onChange={(e) => setFolderPath(e.target.value)}
+                  placeholder="/Users/you/monthly-drop"
+                  className="flex-1 min-w-0 px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400"
+                  disabled={creating}
+                />
+                {inTauri && (
+                  <button
+                    type="button"
+                    onClick={handleBrowseFolder}
+                    disabled={creating}
+                    className="flex items-center gap-1 px-2.5 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 border border-gray-300 dark:border-gray-600 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    Browse…
+                  </button>
+                )}
+              </div>
               <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
                 The folder holding your <span className="font-mono">.db</span> file and its
                 {' '}<span className="font-mono">AGENTS.md</span> / <span className="font-mono">DATA_OVERVIEW.md</span> docs.
-                Read-only — the database is never modified. Refresh it monthly from the notebook.
+                Read-only — the database is never modified. It will be <span className="font-medium">ready to query once connected</span>.
               </p>
             </div>
           )}

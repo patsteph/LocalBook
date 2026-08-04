@@ -120,12 +120,22 @@ async def data_status(notebook_id: str):
     if nb.get("type") != "cursor":
         return {"connected": False, "type": nb.get("type", "standard")}
     cfg = nb.get("config") or {}
+    tables = cfg.get("tables", [])
+    connected = bool(cfg.get("db_path"))
+    # data_status: "ready" once the .db schema is introspected (SQL-queryable). Older notebooks
+    # connected before this field existed are treated as ready when they have a db_path.
+    data_status = cfg.get("data_status") or ("ready" if connected else "not_connected")
     return {
-        "connected": bool(cfg.get("db_path")),
+        "connected": connected,
         "type": "cursor",
+        "data_status": data_status,
+        "ready": connected and data_status == "ready",
         "folder_path": cfg.get("folder_path"),
         "db_filename": cfg.get("db_filename"),
-        "tables": cfg.get("tables", []),
+        "tables": tables,
+        "table_count": len(tables),
+        "row_total": sum(int(t.get("row_count", 0) or 0) for t in tables),
+        "views": int(cfg.get("views", 0) or 0),
         "governance_files": list((cfg.get("governance_files") or {}).values()),
         "refreshed_at": cfg.get("refreshed_at"),
     }

@@ -317,23 +317,36 @@ def _external_column_metadata(conn: sqlite3.Connection, table: str) -> List[Dict
 # an enterprise .db that ships without declared FKs. Inference is deliberately cautious — a wrong
 # join path is worse than a missing one, so we only link on id-like key columns.
 
-_KEY_SUFFIX = re.compile(r"(_id|_key|_code|_no|_num|_ref|_fk)$", re.IGNORECASE)
+# Join-key column suffixes — id-like AND name-like. Enterprise exports commonly ship WITHOUT
+# declared FKs and join on a shared natural key like `record_key` / `account_name`, so we treat a
+# trailing `_name` as a candidate key too (person/attribute *_name columns are denied below).
+_KEY_SUFFIX = re.compile(r"(_id|_key|_code|_no|_num|_ref|_fk|_name)$", re.IGNORECASE)
+# id-like only (used by the '<base>_id → <base> table' heuristic, which shouldn't fire on names).
+_ID_SUFFIX = re.compile(r"(_id|_key|_code|_ref|_fk)$", re.IGNORECASE)
 # Columns that look plausible but must never seed a join (too generic / not identity keys).
 _KEY_DENY = {
     "id", "name", "date", "status", "type", "month", "year", "region", "state", "city",
     "amount", "value", "count", "total", "description", "notes", "note", "created_at",
     "updated_at", "quarter", "period", "email", "phone", "address", "title", "category",
 }
+# `*_name` columns that are ATTRIBUTES / person names, not join keys — denied even though they
+# match the _name suffix (a shared rep_name is a coincidence, not a relationship).
+_NAME_KEY_DENY = {
+    "first_name", "last_name", "full_name", "middle_name", "display_name", "file_name",
+    "user_name", "rep_name", "manager_name", "agent_name", "seller_name", "contact_name",
+    "owner_name", "employee_name", "person_name", "sales_rep_name", "field_name", "column_name",
+}
 
 
 def _is_key_col(col: str) -> bool:
-    """True if `col` looks like a join key (id-like suffix) and isn't a generic/denied name.
-    Bare 'id' is excluded from the SHARED-key heuristic (it links everything) but is still a
-    valid TARGET for the <name>_id heuristic."""
+    """True if `col` looks like a join key (id-like OR name-like suffix, with a real base) and
+    isn't a generic/attribute/person name. Bare 'id'/'name' are denied (they'd link everything)."""
     cl = str(col).strip().lower()
-    if cl in _KEY_DENY:
+    if cl in _KEY_DENY or cl in _NAME_KEY_DENY:
         return False
-    return bool(_KEY_SUFFIX.search(cl))
+    if not _KEY_SUFFIX.search(cl):
+        return False
+    return bool(_KEY_SUFFIX.sub("", cl))  # must have a base before the suffix (not just "_id")
 
 
 def _match_table(base: str, tables: List[str]) -> Optional[str]:
@@ -346,6 +359,24 @@ def _match_table(base: str, tables: List[str]) -> Optional[str]:
         if t.lower() in cands:
             return t
     return None
+
+
+def _home_table(col: str, holders: List[str], table_cols: Dict[str, List[str]],
+                table_pks: Dict[str, List[str]]) -> str:
+    """Pick the 'home' table a shared key belongs to, so a hub key present in MANY tables becomes a
+    star (home ← every other holder) instead of a clique or being dropped. Priority: (1) a holder
+    where the column is a PK; (2) a holder named after the key's base (record_key → node/nodes);
+    (3) the smallest holder (a dimension/lookup table usually owns the key)."""
+    cl = col.lower()
+    for t in holders:
+        if cl in {p.lower() for p in table_pks.get(t, [])}:
+            return t
+    base = _KEY_SUFFIX.sub("", cl)
+    if base:
+        m = _match_table(base, holders)
+        if m:
+            return m
+    return min(holders, key=lambda t: len(table_cols.get(t, [])))
 
 
 def _infer_relationships(table_cols: Dict[str, List[str]], table_pks: Dict[str, List[str]],
@@ -366,8 +397,10 @@ def _infer_relationships(table_cols: Dict[str, List[str]], table_pks: Dict[str, 
         have.add(key)
         rels.append({"from_table": ft, "from_col": fc, "to_table": tt, "to_col": tc, "kind": kind})
 
-    # Heuristic A — the SAME id-like key column present in ≥2 tables (e.g. record_roster.owner_id ↔
-    # person_roster.owner_id). Skip columns that appear in too many tables (likely generic).
+    # Heuristic A — the SAME join-key column (id-like OR name-like) present in ≥2 tables, e.g.
+    # record_roster.owner_id ↔ person_roster.owner_id, or the record_assignments.record_key ↔
+    # record_roster.record_key hub key. A hub key in many tables → STAR to its home table (scales;
+    # no arbitrary table-count cap that would drop the real hub key).
     keycols: Dict[str, List[str]] = {}
     for t, cols in table_cols.items():
         for c in cols:
@@ -375,16 +408,18 @@ def _infer_relationships(table_cols: Dict[str, List[str]], table_pks: Dict[str, 
                 keycols.setdefault(c.lower(), []).append(t)
     for col, holders in keycols.items():
         holders = sorted(set(holders))
-        if not (2 <= len(holders) <= 4):
+        if len(holders) < 2:
             continue
-        for i in range(len(holders)):
-            for j in range(i + 1, len(holders)):
-                # use the real (case-preserving) column name from the first holder
-                real = next((c for c in table_cols[holders[i]] if c.lower() == col), col)
-                real_j = next((c for c in table_cols[holders[j]] if c.lower() == col), col)
-                _add(holders[i], real, holders[j], real_j, "inferred")
+        home = _home_table(col, holders, table_cols, table_pks)
+        real_home = next((c for c in table_cols[home] if c.lower() == col), col)
+        for t in holders:
+            if t == home:
+                continue
+            real_t = next((c for c in table_cols[t] if c.lower() == col), col)
+            _add(t, real_t, home, real_home, "inferred")
 
-    # Heuristic B — a '<base>_id' column pointing at a table named <base> (singular/plural).
+    # Heuristic B — a '<base>_id' column pointing at a table named <base> (singular/plural). id-like
+    # only — a '<base>_name' should link via the shared-key heuristic, not to a like-named table.
     for t, cols in table_cols.items():
         for c in cols:
             m = re.match(r"^(.*?)(_id|_key|_code|_ref|_fk)$", c, re.IGNORECASE)

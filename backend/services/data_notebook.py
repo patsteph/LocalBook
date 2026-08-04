@@ -286,6 +286,11 @@ async def connect_folder(notebook_id: str, folder_path: str) -> Dict[str, Any]:
         "governance_cache": _read_governance(str(folder), governance_files),
         "md_source_ids": {},   # filled by the background post-connect ingest
         "schema_fingerprint": _schema_fingerprint(tables),
+        # The .db schema is introspected synchronously above, so the notebook is queryable the moment
+        # this returns — surfaced to the UI as a "ready to query" indicator. (Background md ingest for
+        # doc-questions continues in _post_connect; SQL answers don't wait on it.)
+        "data_status": "ready",
+        "views": view_count,
         "connected_at": now,
         "refreshed_at": now,
     }
@@ -372,6 +377,7 @@ async def refresh(notebook_id: str) -> Dict[str, Any]:
         "governance_files": {k: v for k, v in refreshed_md.items() if v},
         "governance_cache": _read_governance(str(folder), refreshed_md),  # re-cache the fresh rules
         "schema_fingerprint": new_fp,
+        "data_status": "ready",
         "refreshed_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
     })
     await notebook_store.update(notebook_id, {"config": config})

@@ -46,14 +46,38 @@ def test_fk_inference_shared_key_and_name_id():
     pks = {"record_roster": ["account_id"], "person_roster": ["owner_id"],
            "deals": ["deal_id"], "managers": ["manager_id"]}
     rels = ts._infer_relationships(table_cols, pks, declared=[])
-    pairs = {(r["from_table"], r["from_col"], r["to_table"], r["to_col"]) for r in rels}
-    # The Jordan Lee join must be inferred.
-    assert ("record_roster", "owner_id", "person_roster", "owner_id") in pairs
-    assert ("record_roster", "account_id", "deals", "account_id") in pairs
-    # No self-joins, no generic columns (region/name/amount) linked.
+    # Direction-agnostic (edges are stars to a home table): compare unordered endpoint pairs.
+    edges = {frozenset([f"{r['from_table']}.{r['from_col']}", f"{r['to_table']}.{r['to_col']}"])
+             for r in rels}
+    assert frozenset(["record_roster.owner_id", "person_roster.owner_id"]) in edges       # Jordan Lee
+    assert frozenset(["record_roster.account_id", "deals.account_id"]) in edges
+    # No self-joins, no generic/attribute columns (region/name/amount/rep_name) linked.
     for r in rels:
         assert r["from_table"] != r["to_table"]
         assert r["from_col"].lower() not in {"region", "account_name", "amount", "rep_name"}
+
+
+def test_fk_inference_name_based_hub_key():
+    # record_key is a natural HUB key (no _id suffix) shared across many tables → star to its home
+    # (the PK/dimension table), and attribute *_name columns must NOT be linked.
+    from storage import tabular_store as ts
+    table_cols = {
+        "accounts": ["record_key", "account_name", "seller_name"],
+        "record_assignments": ["record_key", "employee_id"],
+        "bookings": ["record_key", "amount"],
+        "person_roster": ["employee_id", "rep_name"],
+    }
+    pks = {"accounts": ["record_key"], "person_roster": ["employee_id"]}
+    rels = ts._infer_relationships(table_cols, pks, declared=[])
+    edges = {frozenset([f"{r['from_table']}.{r['from_col']}", f"{r['to_table']}.{r['to_col']}"])
+             for r in rels}
+    assert frozenset(["record_assignments.record_key", "accounts.record_key"]) in edges
+    assert frozenset(["bookings.record_key", "accounts.record_key"]) in edges
+    assert frozenset(["record_assignments.employee_id", "person_roster.employee_id"]) in edges
+    # Attribute/person names never seed a join.
+    for r in rels:
+        assert r["from_col"].lower() not in {"rep_name", "seller_name", "account_name"}
+        assert r["to_col"].lower() not in {"rep_name", "seller_name", "account_name"}
 
 
 def test_fk_inference_persisted_on_index(sample_db):

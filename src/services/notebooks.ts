@@ -25,6 +25,11 @@ export interface CursorDataStatus {
   tables?: CursorTableInfo[];
   governance_files?: string[];
   refreshed_at?: string;
+  data_status?: string;
+  ready?: boolean;
+  table_count?: number;
+  row_total?: number;
+  views?: number;
 }
 
 // Default color palette for notebooks
