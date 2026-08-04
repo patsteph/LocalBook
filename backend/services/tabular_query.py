@@ -27,8 +27,10 @@ _FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 _SQL_FENCE = re.compile(r"```(?:sql)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
-# How many low-cardinality values to show per column in the prompt (accuracy lever).
-_MAX_PROMPT_VALUES = 60
+# How many low-cardinality values to show per column in the prompt. Lower = smaller prompt =
+# faster SQL gen (the deterministic directive resolver still maps any value the user names,
+# so this list is a secondary aid). 24 keeps enough context without bloating a wide schema.
+_MAX_PROMPT_VALUES = 24
 # Rows rendered in a list/table answer.
 _MAX_ANSWER_ROWS = 50
 
@@ -445,6 +447,9 @@ async def _gen_sql(prompt: str, model: str, timeout: float) -> Optional[str]:
         result = await ollama_service.generate(
             prompt=prompt, model=model, temperature=0.1, num_predict=400,
             think=False, timeout=timeout,
+            # Keep the model resident 30m so back-to-back data questions don't each pay the
+            # ~10s cold reload (the tabular path also marks the model used — see rag_engine hook).
+            keep_alive="30m",
         )
         raw = (result or {}).get("response", "")
     except Exception as e:

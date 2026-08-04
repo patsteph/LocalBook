@@ -32,8 +32,11 @@ _SQLITE_MAGIC = b"SQLite format 3\x00"
 _DB_EXTS = (".db", ".sqlite", ".sqlite3")
 # Governance budgets (chars) so a huge doc can't blow the SQL prompt window. Full text stays
 # RAG-searchable via the ingested md sources.
-_PER_FILE_BUDGET = 4000
-_TOTAL_GOVERNANCE_BUDGET = 9000
+# Governance goes into EVERY SQL prompt, so keep it tight for speed — AGENTS.md (read first,
+# the canonical joins/filters/metric defs) gets priority; the rest is trimmed. Smaller prompt
+# = faster gemma. The full docs stay RAG-searchable via the ingested md sources.
+_PER_FILE_BUDGET = 2500
+_TOTAL_GOVERNANCE_BUDGET = 4500
 # Authoritative governance docs, in priority order (README is intentionally excluded — it's
 # for the RAG fallback, not hard SQL rules).
 _GOVERNANCE_ROLES = ("agents", "data_overview", "domain_guide")
@@ -169,8 +172,6 @@ async def connect_folder(notebook_id: str, folder_path: str) -> Dict[str, Any]:
     if not idx.get("ok"):
         return {"ok": False, "error": idx.get("error", "could not read the database")}
 
-    md_source_ids = await _ingest_md_sources(notebook_id, folder, governance_files)
-
     tables = idx.get("tables", [])
     now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
     config = {
@@ -179,12 +180,20 @@ async def connect_folder(notebook_id: str, folder_path: str) -> Dict[str, Any]:
         "db_filename": db_file.name,
         "tables": tables,
         "governance_files": {k: v for k, v in governance_files.items() if v},
-        "md_source_ids": md_source_ids,
+        "md_source_ids": {},   # filled by the background post-connect ingest
         "schema_fingerprint": _schema_fingerprint(tables),
         "connected_at": now,
         "refreshed_at": now,
     }
     await notebook_store.update(notebook_id, {"type": "cursor", "config": config})
+
+    # Don't block the connect on the slow bits: ingest the .md for RAG + warm the SQL model
+    # (so the first query isn't a ~10s cold reload). Fire-and-forget.
+    import asyncio
+    try:
+        asyncio.create_task(_post_connect(notebook_id, str(folder), governance_files))
+    except RuntimeError:
+        pass  # no running loop (e.g. a sync caller) — skip the async warmup/ingest
 
     return {
         "ok": True, "db_filename": db_file.name, "tables": tables,
@@ -192,6 +201,29 @@ async def connect_folder(notebook_id: str, folder_path: str) -> Dict[str, Any]:
         "table_count": len(tables),
         "row_total": sum(t.get("row_count", 0) for t in tables),
     }
+
+
+async def _post_connect(notebook_id: str, folder_path: str,
+                        governance_files: Dict[str, Optional[str]]) -> None:
+    """Background work after a connect returns: ingest the .md as RAG sources (for doc
+    questions) and warm the SQL model so the first query is fast. Never raises."""
+    try:
+        md_ids = await _ingest_md_sources(notebook_id, Path(folder_path), governance_files)
+        if md_ids:
+            from storage.notebook_store import notebook_store
+            nb = await notebook_store.get(notebook_id)
+            if nb and nb.get("type") == "cursor":
+                cfg = dict(nb.get("config") or {})
+                cfg["md_source_ids"] = md_ids
+                await notebook_store.update(notebook_id, {"config": cfg})
+    except Exception as e:
+        logger.warning(f"[data_notebook] post-connect md ingest failed ({notebook_id}): {e}")
+    try:
+        from services import model_warmup
+        from config import settings
+        await model_warmup.warm_ollama_model(settings.ollama_model, keep_alive="30m")
+    except Exception as e:
+        logger.debug(f"[data_notebook] SQL-model warmup skipped: {e}")
 
 
 async def refresh(notebook_id: str) -> Dict[str, Any]:

@@ -860,6 +860,14 @@ JSON:"""
                             print(f"[tabular-route] q={question[:60]!r} intent={_intent} -> vector RAG")
 
                 if _tres and _tres.get("ok"):
+                    # Mark the SQL model used so the warmup loop keeps it resident — otherwise
+                    # the tabular path never touches the timestamp and gemma unloads, making
+                    # every data question a ~10s cold reload.
+                    try:
+                        from services.model_warmup import mark_main_model_used
+                        mark_main_model_used()
+                    except Exception:
+                        pass
                     _cit = [{
                         "number": 1,
                         "source_id": _tres["source_id"],
