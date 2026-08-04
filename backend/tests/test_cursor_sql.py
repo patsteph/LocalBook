@@ -163,6 +163,37 @@ def test_lookup_rejects_placeholder_values():
     assert not cs._PLACEHOLDER_VALUE.match("Jordan Lee")
 
 
+def test_recipe_parse_and_match():
+    from services import cursor_sql as cs
+    gov = (
+        "# Rules\nConfirm snapshot date.\n\n"
+        "## Typical user requests (how to respond)\n\n"
+        "| Request | Approach |\n"
+        "|---------|----------|\n"
+        "| \"My area's pipeline\" | Filter by `v_records.area` (FY27) or rollup `v_pipe_team` |\n"
+        "| \"Pipeline for unassigned accounts\" | `v_pipe_account`; `owner_id = 'unassigned'` |\n"
+        "| \"FY27 account changes\" | `v_records` FY26 vs FY27 diff on `record_key` |\n\n"
+        "## Other\nnotes\n"
+    )
+    recipes = cs._parse_recipes(gov)
+    assert len(recipes) == 3
+    assert recipes[0]["request"] == "My area's pipeline"
+    assert "v_records.area" in recipes[0]["approach"]
+    # Relevant recipe is retrieved for a paraphrased question…
+    m = cs._match_recipes("what is the pipeline for my area?", recipes)
+    assert m and m[0]["request"] == "My area's pipeline"
+    m2 = cs._match_recipes("show unassigned account pipeline", recipes)
+    assert any(r["request"] == "Pipeline for unassigned accounts" for r in m2)
+    # …and an unrelated question matches nothing (no noise injected).
+    assert cs._match_recipes("how many bookings total", recipes) == []
+
+
+def test_recipe_parse_handles_no_table():
+    from services import cursor_sql as cs
+    assert cs._parse_recipes("just prose, no recipe table here") == []
+    assert cs._parse_recipes("") == []
+
+
 def test_entities_skip_low_cardinality_dimension_values(sample_db, monkeypatch):
     # Regression (log query 6): "Region WEST" is an AREA value, not a person — must not be grounded to
     # a name column (it matched a placeholder "TBH - Region West"). A term equal to a low-card value is

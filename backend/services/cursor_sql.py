@@ -270,12 +270,95 @@ def _fk_block(linked: List[Dict[str, Any]], relationships: List[Dict[str, Any]])
     return "[Foreign Keys]\n" + "\n".join(lines) + "\n\n"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Recipe layer — canonical request→approach patterns the data owner documents
+# ─────────────────────────────────────────────────────────────────────────────
+# AGENTS.md commonly ships a "Typical user requests" table mapping a kind of request to the
+# canonical approach (which views/filters/joins to use). Those 20-ish recipes are already in the
+# governance blob, but buried — a small model doesn't reliably connect a question to the right row.
+# We parse them out and, per question, surface only the MOST RELEVANT recipe(s) prominently, right
+# before the question. Relevance is token overlap (robust for short request phrases; zero latency).
+
+_RECIPE_STOPWORDS = {
+    "the", "a", "an", "of", "for", "in", "on", "by", "and", "or", "to", "with", "my", "our",
+    "me", "show", "list", "find", "get", "what", "which", "who", "how", "is", "are", "all",
+    "request", "approach", "use", "filter", "confirm", "via", "per", "each", "from", "that",
+}
+
+
+def _tokens(text: str) -> set:
+    return {t for t in re.split(r"[^a-z0-9]+", str(text).lower())
+            if len(t) >= 3 and t not in _RECIPE_STOPWORDS}
+
+
+def _parse_recipes(governance: str) -> List[Dict[str, str]]:
+    """Extract recipes from a markdown table whose header names Request + Approach (case-insensitive).
+    Returns [{request, approach}]. Robust to extra columns / surrounding prose. Never raises."""
+    recipes: List[Dict[str, str]] = []
+    try:
+        lines = (governance or "").splitlines()
+        i = 0
+        while i < len(lines):
+            row = lines[i]
+            cells = [c.strip() for c in row.split("|")]
+            low = [c.lower() for c in cells]
+            # A header row containing both 'request' and 'approach' starts a recipe table.
+            if "|" in row and any("request" in c for c in low) and any("approach" in c for c in low):
+                req_idx = next(k for k, c in enumerate(low) if "request" in c)
+                app_idx = next(k for k, c in enumerate(low) if "approach" in c)
+                j = i + 1
+                if j < len(lines) and set(lines[j].replace("|", "").strip()) <= set("-: "):
+                    j += 1  # skip the |---|---| separator
+                while j < len(lines) and "|" in lines[j]:
+                    rc = [c.strip() for c in lines[j].split("|")]
+                    if len(rc) > max(req_idx, app_idx):
+                        request = rc[req_idx].strip().strip('"\'` ').strip()
+                        approach = rc[app_idx].strip()
+                        if request and approach:
+                            recipes.append({"request": request, "approach": approach})
+                    j += 1
+                i = j
+                continue
+            i += 1
+    except Exception as e:
+        logger.debug(f"[cursor] recipe parse skipped: {type(e).__name__}: {e}")
+    return recipes
+
+
+def _match_recipes(question: str, recipes: List[Dict[str, str]], k: int = 3) -> List[Dict[str, str]]:
+    """Rank recipes by token overlap of the question against each recipe's request (+ its approach,
+    weighted lower). Returns up to k with a positive score, best first."""
+    if not recipes:
+        return []
+    qtok = _tokens(question)
+    if not qtok:
+        return []
+    scored = []
+    for r in recipes:
+        rtok = _tokens(r["request"])
+        atok = _tokens(r["approach"])
+        score = 2 * len(qtok & rtok) + len(qtok & atok)
+        if score > 0:
+            scored.append((score, r))
+    scored.sort(key=lambda x: -x[0])
+    return [r for _s, r in scored[:k]]
+
+
 def _build_cursor_prompt(question: str, linked: List[Dict[str, Any]],
                          directives: List[Dict[str, str]], entity_hints: List[Dict[str, str]],
                          relationships: List[Dict[str, Any]], governance: str,
-                         views: Optional[List[Dict[str, Any]]] = None) -> str:
-    """The Cursor Style SQL prompt: authoritative governance + M-Schema + FK graph + grounded
-    value/entity directives + read-only SELECT rules tuned for a wide enterprise schema."""
+                         views: Optional[List[Dict[str, Any]]] = None,
+                         recipes: Optional[List[Dict[str, str]]] = None) -> str:
+    """The Cursor Style SQL prompt: matched recipes + authoritative governance + M-Schema + FK graph
+    + grounded value/entity directives + read-only SELECT rules tuned for a wide enterprise schema."""
+    recipe_block = ""
+    if recipes:
+        recipe_block = (
+            "MATCHED RECIPE(S) for this kind of request — follow the approach (tables/views/filters) "
+            "it prescribes:\n"
+            + "\n".join(f'- Request like "{r["request"]}" → {r["approach"]}' for r in recipes)
+            + "\n\n"
+        )
     governance_block = ""
     if governance and governance.strip():
         governance_block = (
@@ -316,6 +399,7 @@ def _build_cursor_prompt(question: str, linked: List[Dict[str, Any]],
     )
     return (
         "Translate the user's question into ONE read-only SQLite SELECT over the schema below.\n\n"
+        f"{recipe_block}"
         f"{governance_block}"
         f"{schema_text}\n\n"
         f"{fk_text}"
@@ -502,11 +586,18 @@ async def answer(
         logger.info(f"[cursor] nb={notebook_id} grounded entities: "
                     f"{[(h['term'], h['table'] + '.' + h['col'], h['value']) for h in entity_hints]}")
 
+    # Surface the most relevant owner-documented recipe(s) prominently for this question.
+    matched_recipes = _match_recipes(question, _parse_recipes(governance))
+    if matched_recipes:
+        logger.info(f"[cursor] nb={notebook_id} matched recipes: "
+                    f"{[r['request'] for r in matched_recipes]}")
+
     prompt = _build_cursor_prompt(question, linked, directives, entity_hints,
-                                  relationships, governance, views)
+                                  relationships, governance, views, matched_recipes)
     logger.info(f"[cursor] nb={notebook_id} route=text-to-SQL db={db_path} "
                 f"tables={len(linked)}/{len(schema)} fks={len(relationships)} views={len(views)} "
-                f"governance={len(governance)} chars prompt={len(prompt)} chars — generating SQL")
+                f"recipes={len(matched_recipes)} governance={len(governance)} chars "
+                f"prompt={len(prompt)} chars — generating SQL")
 
     primary = settings.tabular_sql_model or settings.ollama_model
     fast = settings.ollama_fast_model
