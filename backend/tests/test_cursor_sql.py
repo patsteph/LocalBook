@@ -105,6 +105,23 @@ def test_entity_candidates_extracts_proper_nouns():
     assert "Jordan Lee" in cands
 
 
+def test_entity_candidates_rejects_acronyms_and_single_tokens():
+    # Regression: "AE" must NOT be grounded (it substring-matched employee_id='rlee' in the field).
+    from services import cursor_sql as cs
+    assert cs._candidate_entities("Who is the AE for the West region?") == []
+    assert cs._candidate_entities("total bookings by region") == []
+    # Multi-word names + quoted phrases still resolve.
+    assert "Sam Rivera" in cs._candidate_entities("bookings for Sam Rivera in Q1")
+    assert "Acme Corp" in cs._candidate_entities('accounts for "Acme Corp"')
+
+
+def test_validate_sql_never_false_rejects_when_sqlglot_probe_fails(monkeypatch):
+    # If sqlglot can't fully load (e.g. a packaging gap), validation must SKIP, never reject valid SQL.
+    from services import cursor_sql as cs
+    monkeypatch.setattr(cs, "_sqlglot_ready", lambda: False)
+    assert cs._validate_sql("SELECT COUNT(id) FROM record_roster", _schema()) is None
+
+
 def test_entity_lookup_resolves_high_cardinality(sample_db):
     _, ext = sample_db
     from services import cursor_sql as cs

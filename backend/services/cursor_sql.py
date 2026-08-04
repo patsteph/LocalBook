@@ -77,32 +77,41 @@ _ENTITY_STOPWORDS = {
     "in", "on", "by", "and", "or", "all", "each", "per", "top", "me", "is", "are", "was", "were",
     "do", "does", "did", "get", "number", "have", "has",
 }
+# Business/role abbreviations + short generics that must NEVER be grounded — the "AE" → id='rlee'
+# class of substring false-positive. Matched case-insensitively; an all-acronym phrase is dropped.
+_ENTITY_ACRONYMS = {
+    "ae", "vp", "svp", "evp", "rvp", "cx", "geo", "kpi", "ytd", "qtd", "mtd", "fy", "eoy",
+    "q1", "q2", "q3", "q4", "h1", "h2", "arr", "mrr", "acv", "tcv", "poc", "sku", "roi", "sla",
+    "crm", "us", "na", "emea", "apac", "amer", "gtm", "se", "csm", "sdr", "bdr", "mgr", "id",
+    "west", "east", "north", "south", "central", "region", "team", "total", "new", "open", "won",
+}
 
 
 def _candidate_entities(question: str) -> List[str]:
-    """Pull proper-noun-ish phrases from the raw (case-preserving) question — runs of
-    Capitalized words (e.g. "Jordan Lee", "Red River") and quoted phrases. These are the
-    literals a user is most likely naming that won't appear in a low-cardinality value list."""
+    """Pull proper-noun-ish MULTI-WORD phrases (and quoted phrases) from the raw question —
+    e.g. "Jordan Lee", "Sam Rivera", "Red River", '"Acme Corp"'. Deliberately CONSERVATIVE:
+    single bare tokens (AE, West, Q1, a lone surname) are NOT grounded — they substring-match random
+    ids/values and do more harm than good. A grounded value must be a confident, specific entity."""
     cands: List[str] = []
-    # Quoted phrases first (explicit).
+    # Quoted phrases (explicit user intent) — kept even if single-word.
     for m in re.finditer(r"[\"'“”‘’]([^\"'“”‘’]{2,60})[\"'“”‘’]", question):
         cands.append(m.group(1).strip())
-    # Runs of Capitalized tokens (allow internal &/-/.), length ≥1.
-    for m in re.finditer(r"\b([A-Z][A-Za-z0-9.&/-]*(?:\s+[A-Z][A-Za-z0-9.&/-]*)*)\b", question):
+    # Runs of ≥2 Capitalized tokens (allow internal &/-/.). Single tokens are intentionally skipped.
+    for m in re.finditer(r"\b([A-Z][A-Za-z0-9.&/-]*(?:\s+[A-Z][A-Za-z0-9.&/-]*)+)\b", question):
         phrase = m.group(1).strip()
         toks = [t for t in re.split(r"\s+", phrase) if t]
-        # Drop single-token candidates that are just a capitalized stopword (sentence start).
-        if len(toks) == 1 and toks[0].lower() in _ENTITY_STOPWORDS:
-            continue
-        # Strip a leading stopword ("Show Jordan Lee" -> "Jordan Lee").
-        while toks and toks[0].lower() in _ENTITY_STOPWORDS:
+        while toks and toks[0].lower() in _ENTITY_STOPWORDS:  # strip leading "Show"/"List"/…
             toks = toks[1:]
-        if toks:
+        if len(toks) >= 2 and len(" ".join(toks)) >= 5:
             cands.append(" ".join(toks))
-    # Dedup, keep order, cap.
+    # Dedup, keep order, drop all-acronym / too-short phrases, cap.
     seen: set = set()
     out: List[str] = []
     for c in cands:
+        toks_l = [t for t in re.split(r"\s+", c.lower().strip()) if t]
+        # Skip if every token is a known acronym/generic or ≤2 chars (nothing specific to ground).
+        if not toks_l or all(t in _ENTITY_ACRONYMS or len(t) <= 2 for t in toks_l):
+            continue
         k = c.lower()
         if k not in seen and len(c) >= 2:
             seen.add(k)
@@ -331,20 +340,43 @@ def _schema_maps(linked: List[Dict[str, Any]],
     return tables, cols
 
 
+_SQLGLOT_OK: Optional[bool] = None
+
+
+def _sqlglot_ready() -> bool:
+    """One-time probe that sqlglot is FULLY importable (incl. the sqlite dialect submodule, which is
+    lazily imported — and which a PyInstaller build can miss). If it isn't, validation is skipped
+    entirely so a packaging gap NEVER turns valid SQL into a false 'rewrite it' repair loop."""
+    global _SQLGLOT_OK
+    if _SQLGLOT_OK is None:
+        try:
+            import sqlglot
+            sqlglot.parse_one("SELECT 1 FROM t", read="sqlite")  # forces the dialect import
+            _SQLGLOT_OK = True
+        except Exception as e:
+            _SQLGLOT_OK = False
+            logger.warning(f"[cursor] sqlglot unavailable ({type(e).__name__}) — SQL validation "
+                           f"disabled (execution-guided repair still active)")
+    return _SQLGLOT_OK
+
+
 def _validate_sql(sql: str, linked: List[Dict[str, Any]],
                   views: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
-    """Parse `sql` with sqlglot and check every referenced table + qualified column exists in the
-    linked schema. Returns a DIRECTED error string naming the first hallucinated identifier (for a
-    repair retry), or None if the SQL is structurally valid / sqlglot is unavailable. Never raises."""
-    try:
-        import sqlglot
-        from sqlglot import exp
-    except Exception:
-        return None  # dep missing → skip validation (execution-guided repair still catches errors)
+    """Parse `sql` with sqlglot and check every referenced table + column exists in the linked
+    schema. Returns a DIRECTED error string naming the first hallucinated identifier (for a repair
+    retry), or None if the SQL is valid OR sqlglot is unavailable. Never raises, never false-rejects
+    on a packaging/import problem."""
+    if not _sqlglot_ready():
+        return None
+    import sqlglot
+    from sqlglot import exp
+    from sqlglot.errors import ParseError
     try:
         tree = sqlglot.parse_one(sql, read="sqlite")
-    except Exception as e:
-        return f"the SQL does not parse ({type(e).__name__}); rewrite it as one valid SQLite SELECT"
+    except ParseError:
+        return "the SQL is not valid SQLite; rewrite it as ONE valid read-only SELECT"
+    except Exception:
+        return None  # any non-parse failure (import/runtime) → skip, never a false rejection
     if tree is None:
         return None
     valid_tables, valid_cols = _schema_maps(linked, views)

@@ -12,6 +12,18 @@ def main() -> int:
 
     text = build_script.read_text()
     hidden_imports = re.findall(r"--hidden-import=([A-Za-z0-9_\.]+)", text)
+    collect_all = set(re.findall(r"--collect-all=([A-Za-z0-9_\.]+)", text))
+
+    # Third-party packages with LAZY/dynamic submodule imports that PyInstaller's static analysis
+    # misses unless --collect-all pulls the whole package. sqlglot lazily imports its sqlite dialect
+    # inside parse_one(), so `import sqlglot` bundles but parse_one() ModuleNotFound's without this.
+    required_collect_all = {"sqlglot"}
+    missing_collect = sorted(required_collect_all - collect_all)
+    if missing_collect:
+        print("Missing --collect-all for dynamic-import packages in backend/build_backend.sh:")
+        for m in missing_collect:
+            print(f"- {m}  (add: --collect-all={m})")
+        return 1
 
     local_prefixes = (
         "api",
