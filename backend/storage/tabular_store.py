@@ -39,6 +39,9 @@ MAX_RESULT_ROWS = 2000
 _MAX_VALUE_LEN = 80
 
 _CATALOG = "_tabular_catalog"
+# Per-notebook FK/join graph for Cursor Style external DBs (declared + inferred). Cursor-only —
+# the spreadsheet path never reads or writes this table.
+_RELATIONSHIPS = "_tabular_relationships"
 
 
 def _db_path() -> Path:
@@ -75,14 +78,18 @@ def _unique_columns(df) -> Dict[str, str]:
     return mapping
 
 
-def _connect_path(path: Path, read_only: bool = False) -> sqlite3.Connection:
+def _connect_path(path: Path, read_only: bool = False,
+                  query_only: bool = True) -> sqlite3.Connection:
     """Open a connection to a SPECIFIC SQLite file. `read_only=True` opens it `mode=ro`
     + `PRAGMA query_only` so writes are impossible even if a SELECT is crafted oddly — the
     only safe way to touch an EXTERNAL, user-owned .db (a Cursor Style notebook's monthly
-    drop). We never write an external db."""
+    drop). We never write an external db. `query_only=False` (still `mode=ro`) is used ONLY to
+    create TEMP views (which write the connection's temp schema, not the file) before the caller
+    re-locks with `PRAGMA query_only = ON` for the actual query."""
     if read_only:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
-        conn.execute("PRAGMA query_only = ON;")
+        if query_only:
+            conn.execute("PRAGMA query_only = ON;")
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(path), timeout=30)
@@ -303,10 +310,131 @@ def _external_column_metadata(conn: sqlite3.Connection, table: str) -> List[Dict
     return cols
 
 
+# ── FK / join-graph inference (Cursor Style, Phase 2) ──────────────────────────
+# Small models omit the FK columns needed to JOIN; handing them the exact join paths is the
+# single biggest lever for join accuracy. We derive the graph ONCE at connect time from (a) the
+# DB's declared foreign keys and (b) a conservative name-based heuristic for the (common) case of
+# an enterprise .db that ships without declared FKs. Inference is deliberately cautious — a wrong
+# join path is worse than a missing one, so we only link on id-like key columns.
+
+_KEY_SUFFIX = re.compile(r"(_id|_key|_code|_no|_num|_ref|_fk)$", re.IGNORECASE)
+# Columns that look plausible but must never seed a join (too generic / not identity keys).
+_KEY_DENY = {
+    "id", "name", "date", "status", "type", "month", "year", "region", "state", "city",
+    "amount", "value", "count", "total", "description", "notes", "note", "created_at",
+    "updated_at", "quarter", "period", "email", "phone", "address", "title", "category",
+}
+
+
+def _is_key_col(col: str) -> bool:
+    """True if `col` looks like a join key (id-like suffix) and isn't a generic/denied name.
+    Bare 'id' is excluded from the SHARED-key heuristic (it links everything) but is still a
+    valid TARGET for the <name>_id heuristic."""
+    cl = str(col).strip().lower()
+    if cl in _KEY_DENY:
+        return False
+    return bool(_KEY_SUFFIX.search(cl))
+
+
+def _match_table(base: str, tables: List[str]) -> Optional[str]:
+    """Resolve a singular/plural base name (from '<base>_id') to an actual table name."""
+    bl = base.strip().lower()
+    if not bl:
+        return None
+    cands = {bl, bl + "s", bl + "es", bl.rstrip("s"), bl[:-1] if bl.endswith("y") else bl}
+    for t in tables:
+        if t.lower() in cands:
+            return t
+    return None
+
+
+def _infer_relationships(table_cols: Dict[str, List[str]], table_pks: Dict[str, List[str]],
+                         declared: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Combine declared FKs with conservative name-based inference. Returns a de-duplicated list
+    of {from_table, from_col, to_table, to_col, kind: 'declared'|'inferred'}."""
+    rels: List[Dict[str, str]] = list(declared)
+    have = {tuple(sorted([f'{r["from_table"]}.{r["from_col"]}', f'{r["to_table"]}.{r["to_col"]}']))
+            for r in rels}
+    tables = list(table_cols.keys())
+
+    def _add(ft, fc, tt, tc, kind):
+        if not (ft and fc and tt and tc) or ft == tt:
+            return
+        key = tuple(sorted([f"{ft}.{fc}", f"{tt}.{tc}"]))
+        if key in have:
+            return
+        have.add(key)
+        rels.append({"from_table": ft, "from_col": fc, "to_table": tt, "to_col": tc, "kind": kind})
+
+    # Heuristic A — the SAME id-like key column present in ≥2 tables (e.g. record_roster.owner_id ↔
+    # person_roster.owner_id). Skip columns that appear in too many tables (likely generic).
+    keycols: Dict[str, List[str]] = {}
+    for t, cols in table_cols.items():
+        for c in cols:
+            if _is_key_col(c):
+                keycols.setdefault(c.lower(), []).append(t)
+    for col, holders in keycols.items():
+        holders = sorted(set(holders))
+        if not (2 <= len(holders) <= 4):
+            continue
+        for i in range(len(holders)):
+            for j in range(i + 1, len(holders)):
+                # use the real (case-preserving) column name from the first holder
+                real = next((c for c in table_cols[holders[i]] if c.lower() == col), col)
+                real_j = next((c for c in table_cols[holders[j]] if c.lower() == col), col)
+                _add(holders[i], real, holders[j], real_j, "inferred")
+
+    # Heuristic B — a '<base>_id' column pointing at a table named <base> (singular/plural).
+    for t, cols in table_cols.items():
+        for c in cols:
+            m = re.match(r"^(.*?)(_id|_key|_code|_ref|_fk)$", c, re.IGNORECASE)
+            if not m or not m.group(1):
+                continue
+            target = _match_table(m.group(1), tables)
+            if not target or target == t:
+                continue
+            # Target column: same name if present, else the target's PK, else its own '<base>_id'.
+            tcols_lower = {x.lower(): x for x in table_cols[target]}
+            to_col = (tcols_lower.get(c.lower())
+                      or (table_pks.get(target) or [None])[0]
+                      or tcols_lower.get("id"))
+            if to_col:
+                _add(t, c, target, to_col, "inferred")
+    return rels
+
+
+def _ensure_relationships(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS {_RELATIONSHIPS} (
+            notebook_id TEXT PRIMARY KEY,
+            relationships_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )"""
+    )
+
+
+def get_relationships(notebook_id: str) -> List[Dict[str, str]]:
+    """Return the stored FK/join graph for a Cursor notebook (declared + inferred), or []."""
+    try:
+        if not _db_path().exists():
+            return []
+        conn = _connect(read_only=True)
+        try:
+            row = conn.execute(
+                f"SELECT relationships_json FROM {_RELATIONSHIPS} WHERE notebook_id = ?",
+                (notebook_id,)).fetchone()
+            return json.loads(row[0]) if row and row[0] else []
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+
 def index_external_db(notebook_id: str, source_id: str, db_path: str) -> Dict[str, Any]:
     """Introspect an EXTERNAL read-only .db and register its tables in the catalog with
     `db_path` provenance (queries then hit the real file read-only). Replaces prior catalog
     rows for `source_id` (monthly-refresh safe). The external db is NEVER copied or written.
+    Also derives the FK/join graph (declared + inferred) for the SQL prompt.
     Returns {ok, tables:[{table_name,row_count,columns}], db_path, filename} or {ok:False,error}."""
     p = Path(db_path)
     if not p.exists() or not p.is_file():
@@ -323,6 +451,9 @@ def index_external_db(notebook_id: str, source_id: str, db_path: str) -> Dict[st
             "AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()]
         if not tables:
             return {"ok": False, "error": "database has no tables"}
+        table_cols: Dict[str, List[str]] = {}
+        table_pks: Dict[str, List[str]] = {}
+        declared: List[Dict[str, str]] = []
         for t in tables:
             cols = _external_column_metadata(ext, t)
             try:
@@ -332,6 +463,22 @@ def index_external_db(notebook_id: str, source_id: str, db_path: str) -> Dict[st
             catalog_rows.append((t, cols, rc))
             summaries.append({"table_name": t, "row_count": rc,
                               "columns": [c["sanitized"] for c in cols]})
+            # Capture the real column names + PKs + declared FKs for join-graph inference.
+            try:
+                info = ext.execute(f'PRAGMA table_info("{t}")').fetchall()
+                table_cols[t] = [r[1] for r in info]
+                table_pks[t] = [r[1] for r in info if r[5]]
+                for fk in ext.execute(f'PRAGMA foreign_key_list("{t}")').fetchall():
+                    # PRAGMA foreign_key_list: (id, seq, table, from, to, on_update, on_delete, match)
+                    to_tbl, from_col, to_col = fk[2], fk[3], fk[4]
+                    if not to_col:  # FK to the target's PK when 'to' is unspecified
+                        to_col = (table_pks.get(to_tbl) or ["rowid"])[0]
+                    declared.append({"from_table": t, "from_col": from_col,
+                                     "to_table": to_tbl, "to_col": to_col, "kind": "declared"})
+            except Exception:
+                table_cols.setdefault(t, [c["sanitized"] for c in cols])
+                table_pks.setdefault(t, [])
+        relationships = _infer_relationships(table_cols, table_pks, declared)
     except Exception as e:
         return {"ok": False, "error": f"introspection failed: {type(e).__name__}: {e}"}
     finally:
@@ -341,6 +488,7 @@ def index_external_db(notebook_id: str, source_id: str, db_path: str) -> Dict[st
     conn = _connect()
     try:
         _ensure_catalog(conn)
+        _ensure_relationships(conn)
         # External tables live in the .db, NOT in tabular.db — only clear catalog rows.
         conn.execute(f"DELETE FROM {_CATALOG} WHERE source_id = ?", (source_id,))
         for t, cols, rc in catalog_rows:
@@ -349,10 +497,15 @@ def index_external_db(notebook_id: str, source_id: str, db_path: str) -> Dict[st
                 f"table_name, columns_json, row_count, created_at, db_path) "
                 f"VALUES (?,?,?,?,?,?,?,?,?)",
                 (notebook_id, source_id, p.name, t, t, json.dumps(cols), rc, now, str(p)))
+        # Persist the FK/join graph (monthly-refresh safe: replace the notebook's row).
+        conn.execute(
+            f"INSERT OR REPLACE INTO {_RELATIONSHIPS} (notebook_id, relationships_json, created_at) "
+            f"VALUES (?,?,?)", (notebook_id, json.dumps(relationships), now))
         conn.commit()
     finally:
         conn.close()
-    return {"ok": True, "tables": summaries, "db_path": str(p), "filename": p.name}
+    return {"ok": True, "tables": summaries, "db_path": str(p), "filename": p.name,
+            "relationships": len(relationships)}
 
 
 def get_external_db_path(notebook_id: str, source_ids: Optional[List[str]] = None) -> Optional[str]:
@@ -362,6 +515,141 @@ def get_external_db_path(notebook_id: str, source_ids: Optional[List[str]] = Non
         if t.get("db_path"):
             return t["db_path"]
     return None
+
+
+# ── Canonical view-layer (Cursor Style, Phase 3) ──────────────────────────────
+# The strongest structural accuracy lever is pre-built VIEWs that hide joins — but auto-guessing
+# views is curation-dependent (per the research), so we do NOT invent them. The data owner authors
+# canonical views (a `views.sql`, or ```sql fences under a "## Canonical Views" heading in
+# AGENTS.md). We store each as a `CREATE TEMP VIEW` and materialize them in the read-only external
+# connection AT QUERY TIME — TEMP views live in the connection's temp schema, so they can reference
+# the read-only main db's real tables directly (the external file is NEVER written). Inert when no
+# views are authored (no temp views created → the normal FK-injected path runs, zero added latency).
+
+_CURSOR_VIEWS = "_cursor_views"
+
+
+def _ensure_cursor_views(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS {_CURSOR_VIEWS} (
+            notebook_id TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            ddl         TEXT NOT NULL,
+            description TEXT,
+            columns_json TEXT,
+            created_at  TEXT NOT NULL,
+            PRIMARY KEY (notebook_id, name)
+        )"""
+    )
+
+
+def _as_temp_view_ddl(ddl: str) -> str:
+    """Rewrite `CREATE VIEW …` → `CREATE TEMP VIEW …` (idempotent)."""
+    return re.sub(r"^\s*CREATE\s+(TEMP\s+|TEMPORARY\s+)?VIEW",
+                  "CREATE TEMP VIEW", ddl, count=1, flags=re.IGNORECASE)
+
+
+def get_views(notebook_id: str) -> List[Dict[str, Any]]:
+    """Authored canonical views for a Cursor notebook: [{name, description, columns}], or []."""
+    try:
+        if not _db_path().exists():
+            return []
+        conn = _connect(read_only=True)
+        try:
+            rows = conn.execute(
+                f"SELECT name, description, columns_json FROM {_CURSOR_VIEWS} "
+                f"WHERE notebook_id = ?", (notebook_id,)).fetchall()
+            return [{"name": r[0], "description": r[1] or "",
+                     "columns": json.loads(r[2]) if r[2] else []} for r in rows]
+        except sqlite3.OperationalError:
+            return []  # table not created yet
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+
+def get_view_ddls(notebook_id: str) -> List[str]:
+    """The `CREATE TEMP VIEW …` statements to materialize before a query, or []."""
+    try:
+        if not _db_path().exists():
+            return []
+        conn = _connect(read_only=True)
+        try:
+            rows = conn.execute(
+                f"SELECT ddl FROM {_CURSOR_VIEWS} WHERE notebook_id = ?", (notebook_id,)).fetchall()
+            return [r[0] for r in rows if r[0]]
+        except sqlite3.OperationalError:
+            return []
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+
+def drop_views(notebook_id: str) -> None:
+    """Remove a notebook's stored canonical views (refresh/delete or none authored)."""
+    try:
+        if not _db_path().exists():
+            return
+        conn = _connect()
+        try:
+            _ensure_cursor_views(conn)
+            conn.execute(f"DELETE FROM {_CURSOR_VIEWS} WHERE notebook_id = ?", (notebook_id,))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def store_views(notebook_id: str, db_path: str,
+                view_specs: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Validate + store owner-authored canonical views (`view_specs` = [{name, ddl, description}]).
+    Each is validated by materializing it as a TEMP VIEW in the read-only external connection and
+    reading its columns. No valid views → clears + returns {ok, views: 0}. Never raises."""
+    drop_views(notebook_id)
+    if not view_specs:
+        return {"ok": True, "views": 0}
+    validated: List[tuple] = []
+    try:
+        # query_only=False so TEMP views can be created (temp schema only); mode=ro still guards
+        # the external file — this connection can never write it.
+        ext = _connect_path(Path(db_path), read_only=True, query_only=False)
+    except Exception as e:
+        return {"ok": False, "error": f"cannot open database: {e}", "views": 0}
+    try:
+        for spec in view_specs:
+            name, ddl = spec.get("name"), spec.get("ddl")
+            if not name or not ddl:
+                continue
+            temp_ddl = _as_temp_view_ddl(ddl)
+            try:
+                ext.execute(f'DROP VIEW IF EXISTS "{name}"')
+                ext.execute(temp_ddl)
+                cur = ext.execute(f'SELECT * FROM "{name}" LIMIT 0')
+                cols = [d[0] for d in cur.description] if cur.description else []
+                validated.append((name, temp_ddl, spec.get("description", ""), json.dumps(cols)))
+            except Exception as e:
+                print(f"[cursor] canonical view '{name}' skipped ({type(e).__name__}: {e})")
+    finally:
+        ext.close()
+    if not validated:
+        return {"ok": True, "views": 0}
+    now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+    conn = _connect()
+    try:
+        _ensure_cursor_views(conn)
+        conn.execute(f"DELETE FROM {_CURSOR_VIEWS} WHERE notebook_id = ?", (notebook_id,))
+        for name, temp_ddl, desc, cols_json in validated:
+            conn.execute(
+                f"INSERT OR REPLACE INTO {_CURSOR_VIEWS} "
+                f"(notebook_id, name, ddl, description, columns_json, created_at) VALUES (?,?,?,?,?,?)",
+                (notebook_id, name, temp_ddl, desc, cols_json, now))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "views": len(validated)}
 
 
 def _drop_source_tables(conn: sqlite3.Connection, source_id: str) -> None:
@@ -443,17 +731,35 @@ def get_schema(notebook_id: str, source_ids: Optional[List[str]] = None) -> List
         return []
 
 
-def execute_readonly(sql: str, db_path: Optional[str] = None) -> Dict[str, Any]:
+def execute_readonly(sql: str, db_path: Optional[str] = None,
+                     params: Optional[List[Any]] = None,
+                     temp_views: Optional[List[str]] = None) -> Dict[str, Any]:
     """Execute a single validated SELECT read-only. Returns {ok, columns, rows, truncated}.
 
     SQL is validated by the caller (tabular_query.safe_sql); this is the last-line
     enforcement via a read-only connection + query_only pragma + row cap. When `db_path`
     is given (a Cursor Style notebook), runs against that EXTERNAL .db in place, read-only.
-    """
+    `params` binds placeholders for internally-built parameterized lookups (never user SQL).
+    `temp_views` = owner-authored `CREATE TEMP VIEW …` statements materialized in this connection's
+    temp schema before the query (canonical views over the read-only db; the file is never written)."""
     try:
-        conn = _connect_path(Path(db_path), read_only=True) if db_path else _connect(read_only=True)
+        # TEMP views must be created BEFORE query_only is locked (they write the temp schema, never
+        # the mode=ro file). So for the cursor+views case, defer query_only, create views, re-lock.
+        need_temp = bool(temp_views) and bool(db_path)
+        if db_path:
+            conn = _connect_path(Path(db_path), read_only=True, query_only=not need_temp)
+        else:
+            conn = _connect(read_only=True)
         try:
-            cur = conn.execute(sql)
+            if temp_views:
+                for ddl in temp_views:
+                    try:
+                        conn.execute(ddl)
+                    except Exception as e:
+                        print(f"[cursor] temp view create skipped ({type(e).__name__}: {e})")
+            if need_temp:
+                conn.execute("PRAGMA query_only = ON;")  # re-lock for the actual (model) query
+            cur = conn.execute(sql, params) if params is not None else conn.execute(sql)
             columns = [d[0] for d in cur.description] if cur.description else []
             rows = cur.fetchmany(MAX_RESULT_ROWS + 1)
             truncated = len(rows) > MAX_RESULT_ROWS

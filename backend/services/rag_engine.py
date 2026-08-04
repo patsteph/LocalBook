@@ -834,8 +834,10 @@ JSON:"""
                 _cur = await _dn.get_cursor_context(notebook_id)
                 if _cur and _cur.get("db_path"):
                     _label = "database"
-                    from services import tabular_query as _tq
-                    _tres = await _tq.answer_tabular(
+                    # Cursor Style has its OWN dedicated, fully-isolated SQL engine (cursor_sql) —
+                    # the daily-driver spreadsheet path (answer_tabular) is untouched by any of it.
+                    from services import cursor_sql as _cs
+                    _tres = await _cs.answer(
                         notebook_id, question, source_ids,
                         db_path=_cur["db_path"], governance=_cur.get("governance"))
                     if not (_tres and _tres.get("ok")):
@@ -860,14 +862,15 @@ JSON:"""
                             print(f"[tabular-route] q={question[:60]!r} intent={_intent} -> vector RAG")
 
                 if _tres and _tres.get("ok"):
-                    # Mark the SQL model used so the warmup loop keeps it resident — otherwise
-                    # the tabular path never touches the timestamp and gemma unloads, making
-                    # every data question a ~10s cold reload.
-                    try:
-                        from services.model_warmup import mark_main_model_used
-                        mark_main_model_used()
-                    except Exception:
-                        pass
+                    # Cursor Style ONLY: mark the SQL model used so the warmup loop keeps it
+                    # resident (back-to-back data questions otherwise pay a ~10s cold reload each).
+                    # The spreadsheet path deliberately does NOT do this — behavior stays as master.
+                    if _label == "database":
+                        try:
+                            from services.model_warmup import mark_main_model_used
+                            mark_main_model_used()
+                        except Exception:
+                            pass
                     _cit = [{
                         "number": 1,
                         "source_id": _tres["source_id"],

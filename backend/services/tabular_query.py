@@ -66,10 +66,10 @@ _FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 _SQL_FENCE = re.compile(r"```(?:sql)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
-# How many low-cardinality values to show per column in the prompt. Lower = smaller prompt =
-# faster SQL gen (the deterministic directive resolver still maps any value the user names,
-# so this list is a secondary aid). 24 keeps enough context without bloating a wide schema.
-_MAX_PROMPT_VALUES = 24
+# How many low-cardinality values to show per column in the prompt (spreadsheet/CSV path).
+# The Cursor Style path uses its own tighter cap in cursor_sql — this constant governs ONLY
+# the shared tabular (xlsx/csv) engine and is kept at its original value for that path.
+_MAX_PROMPT_VALUES = 60
 # Rows rendered in a list/table answer.
 _MAX_ANSWER_ROWS = 50
 
@@ -258,18 +258,7 @@ def safe_sql(raw: str) -> Dict[str, Any]:
     return {"ok": True, "sql": sql}
 
 
-def _build_prompt(question: str, schema: List[Dict[str, Any]],
-                  directives: List[Dict[str, str]], governance: str = "") -> str:
-    # Authoritative operating rules (Cursor Style notebooks): the AGENTS.md / DATA_OVERVIEW.md /
-    # domain_guide.md content the data owner ships. Placed FIRST so the model treats it as
-    # hard constraints — canonical joins, required filters, metric definitions, example questions.
-    governance_block = ""
-    if governance and governance.strip():
-        governance_block = (
-            "OPERATING RULES (AUTHORITATIVE — follow exactly; they define canonical joins, "
-            "required filters, and metric definitions for THIS database):\n"
-            f"{governance.strip()}\n\n"
-        )
+def _build_prompt(question: str, schema: List[Dict[str, Any]], directives: List[Dict[str, str]]) -> str:
     lines: List[str] = []
     for t in schema:
         cols = t["columns"]
@@ -298,21 +287,13 @@ def _build_prompt(question: str, schema: List[Dict[str, Any]],
                         for d in directives) + "\n"
         )
 
-    obey_governance = (
-        "- Obey the OPERATING RULES above: apply their required filters and canonical joins "
-        "even when the question does not restate them, and use their metric definitions.\n"
-        if governance_block else ""
-    )
     return (
         "Translate the user's question into ONE read-only SQLite SELECT over the tables below.\n\n"
-        f"{governance_block}"
         f"{schema_text}\n"
         f"{directive_block}"
         "Rules:\n"
-        f"{obey_governance}"
         "- Output ONLY the SQL. No explanation, no markdown fences.\n"
-        "- Use exactly the table and column names shown; quote any name with spaces or capitals "
-        'with double quotes (e.g. "Sales Amount").\n'
+        "- Use exactly the table and column names shown (snake_case).\n"
         "- CRITICAL: filter using ONLY the EXACT values listed for a column. Do not abbreviate, "
         "expand, reword, or guess a value — copy the listed spelling verbatim "
         "(e.g. if the column lists 'Texas', write state = 'Texas', never 'TX'). Obey any value "
@@ -322,16 +303,6 @@ def _build_prompt(question: str, schema: List[Dict[str, Any]],
         "account = '...', person IN (...), etc. unless the question asks for them.\n"
         "- For case-insensitive matching on OTHER text columns, compare LOWER(col) = LOWER('value').\n"
         "- \"how many\" / \"number of\" -> SELECT COUNT(*). Totals -> SUM(...). Averages -> AVG(...).\n"
-        "- CRITICAL: use ONLY the exact column names listed above. NEVER write COUNT(id) or reference "
-        "an 'id' column unless 'id' is explicitly listed — to count rows always use COUNT(*).\n"
-        "- To filter by a PERSON'S NAME (an owner/rep/AE name) that is not itself a listed value, do "
-        "NOT invent an id/code from the name — JOIN to the table that stores names and match the name "
-        "column there (e.g. an employee/roster table), then filter the other table by the joined key.\n"
-        "- Column ALIASES must be a single word (snake_case) or double-quoted — never a bare "
-        'multi-word alias (write SUM(amount) AS total_amount or AS "Total Amount", never AS Total Amount).\n'
-        "- When the question asks for a metric \"by\" / \"per\" / \"for each\" <dimension> (e.g. "
-        "\"total sales by region\", \"count per month\"), SELECT that <dimension> column alongside the "
-        "metric and GROUP BY it, ordering sensibly (by the dimension for time, by the metric otherwise).\n"
         "- A single read-only SELECT only. Never modify data.\n\n"
         f"Question: {question}\nSQL:"
     )
@@ -479,29 +450,29 @@ def _render_answer(question: str, sql: str, filename: str, result: Dict[str, Any
     sep = "| " + " | ".join("---" for _ in cols) + " |"
     body = "\n".join("| " + " | ".join(_cell(v) for v in r) + " |" for r in shown)
     more = "" if len(rows) <= _MAX_ANSWER_ROWS else f"\n\n_…and {len(rows) - _MAX_ANSWER_ROWS} more rows._"
-    table = f"{header}\n{sep}\n{body}{more}"
-    # Append an inline chart when the result set is chartable (keep the table too).
-    return table + _maybe_chart(question, cols, rows)
+    return f"{header}\n{sep}\n{body}{more}"
 
 
-async def _gen_sql(prompt: str, model: str, timeout: float) -> Optional[str]:
+async def _gen_sql(prompt: str, model: str, timeout: float,
+                   keep_alive: Optional[str] = None) -> Optional[str]:
     """One generate+validate attempt. Returns a safe SELECT string, or None on error/timeout/
-    invalid output (so the caller can fall back to another model)."""
+    invalid output (so the caller can fall back to another model).
+
+    `keep_alive` is opt-in: the shared spreadsheet path passes nothing (identical to the original
+    call); the Cursor Style path passes "30m" to keep the SQL model resident between questions."""
+    extra = {"keep_alive": keep_alive} if keep_alive else {}
     try:
         result = await ollama_service.generate(
             prompt=prompt, model=model, temperature=0.1, num_predict=400,
-            think=False, timeout=timeout,
-            # Keep the model resident 30m so back-to-back data questions don't each pay the
-            # ~10s cold reload (the tabular path also marks the model used — see rag_engine hook).
-            keep_alive="30m",
+            think=False, timeout=timeout, **extra,
         )
         raw = (result or {}).get("response", "")
     except Exception as e:
-        logger.warning(f"[tabular] LLM error ({model}): {type(e).__name__}: {e}")
+        print(f"[tabular-sql] LLM error ({model}): {type(e).__name__}: {e}")
         return None
     check = safe_sql(raw)
     if not check["ok"]:
-        logger.warning(f"[tabular] {model} produced no valid SQL ({check['reason']}): {raw[:150]!r}")
+        print(f"[tabular-sql] {model}: no valid SQL ({check['reason']}): {raw[:150]!r}")
         return None
     return check["sql"]
 
@@ -510,38 +481,24 @@ async def answer_tabular(
     notebook_id: str,
     question: str,
     source_ids: Optional[List[str]] = None,
-    db_path: Optional[str] = None,
-    governance: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Answer a question via text-to-SQL over the structured store.
+    """Answer a question via text-to-SQL over the structured store (spreadsheet/CSV path).
 
     Returns {ok, answer, sql, source_id, filename, columns, rows} on success,
     or {ok: False, reason} so the caller can fall back to vector RAG.
 
-    For a Cursor Style notebook, `db_path` targets the external .db (read-only, in place;
-    auto-derived from the schema catalog if not passed) and `governance` is the authoritative
-    AGENTS.md/DATA_OVERVIEW.md/domain_guide.md text injected as hard SQL constraints.
+    NOTE: This is the ORIGINAL shared engine for xlsx/csv tabular sources and is intentionally
+    byte-for-byte identical to master. Cursor Style notebooks (external .db + AGENTS.md governance)
+    have their OWN dedicated path in `services/cursor_sql.py`, so every accuracy enhancement built
+    for them (schema-linking, value/entity linking, sqlglot validation, M-Schema, FK injection,
+    self-repair) is fully isolated from this daily-driver path. Do NOT add cursor logic here.
     """
     schema = tabular_store.get_schema(notebook_id, source_ids)
     if not schema:
-        logger.info(f"[tabular] nb={notebook_id}: no structured tables — vector RAG fallback")
         return {"ok": False, "reason": "no structured tables for this notebook"}
 
-    # External .db (Cursor Style): the catalog rows carry the real file path.
-    if db_path is None:
-        db_path = next((t["db_path"] for t in schema if t.get("db_path")), None)
-
-    # Schema linking: on a large DB (e.g. 27 tables) put ONLY the tables relevant to the question
-    # in the prompt, so a small model can still pick the right tables + joins.
-    linked = select_relevant_tables(question, schema, governance or "")
-    if len(linked) < len(schema):
-        logger.info(f"[tabular] nb={notebook_id} schema-linked {len(schema)}→{len(linked)} tables "
-                    f"for {question[:60]!r}: {[t.get('table_name') for t in linked]}")
-
-    directives = _resolve_directives(question, linked)
-    prompt = _build_prompt(question, linked, directives, governance or "")
-    logger.info(f"[tabular] nb={notebook_id} route={'external-db' if db_path else 'shared'} "
-                f"tables={len(linked)}/{len(schema)} prompt_chars={len(prompt)} — generating SQL")
+    directives = _resolve_directives(question, schema)
+    prompt = _build_prompt(question, schema, directives)
 
     # Primary = the main model (gemma): far more reliable at text-to-SQL. The fast model (phi4)
     # hallucinated spurious WHERE clauses (2026-07-09: invented account=/person IN filters), so
@@ -552,12 +509,11 @@ async def answer_tabular(
     fast = settings.ollama_fast_model
     sql = await _gen_sql(prompt, primary, 25.0)
     if sql is None and primary != fast:
-        logger.info(f"[tabular] nb={notebook_id} primary ({primary}) failed/timed out -> retry {fast}")
+        print(f"[tabular-sql] primary ({primary}) failed/timed out -> retry with {fast}")
         sql = await _gen_sql(prompt, fast, 20.0)
     if sql is None:
-        logger.warning(f"[tabular] nb={notebook_id} SQL generation FAILED (both models) — vector RAG fallback")
         return {"ok": False, "reason": "sql generation failed"}
-    logger.info(f"[tabular] nb={notebook_id} SQL: {sql}")
+    print(f"[tabular-sql] generated: {sql}")
 
     # Enforce the deterministically-resolved state values over whatever literal the model chose.
     if directives:
@@ -566,38 +522,14 @@ async def answer_tabular(
             print(f"[tabular-sql] directive-corrected: {corrected}")
             sql = corrected
 
-    exec_res = tabular_store.execute_readonly(sql, db_path=db_path)
-    # Self-repair: on a DB error (a hallucinated column like COUNT(id), a bad join, a typo),
-    # feed the exact error back and retry ONCE. This is the standard text-to-SQL fix — it turns
-    # "no such column" errors into a correct second attempt instead of a wrong vector-RAG answer.
+    exec_res = tabular_store.execute_readonly(sql)
     if not exec_res.get("ok"):
-        err = exec_res.get("error", "")
-        logger.warning(f"[tabular] nb={notebook_id} SQL execution FAILED: {err} — retrying with error feedback")
-        repair_prompt = (
-            prompt
-            + f"\n\nATTEMPT 1 SQL (it FAILED):\n{sql}\n"
-            + f"SQLite error: {err}\n"
-            + "Rewrite the SQL to fix that error. Use ONLY the exact table + column names listed in "
-            "the schema above (do not invent columns like 'id'). To count rows use COUNT(*). "
-            "Output ONLY the corrected SQL."
-        )
-        sql2 = await _gen_sql(repair_prompt, primary, 25.0)
-        if sql2 is None and primary != fast:
-            sql2 = await _gen_sql(repair_prompt, fast, 20.0)
-        if sql2:
-            if directives:
-                sql2 = _apply_directives_to_sql(sql2, directives)
-            logger.info(f"[tabular] nb={notebook_id} repair SQL: {sql2}")
-            retry = tabular_store.execute_readonly(sql2, db_path=db_path)
-            if retry.get("ok"):
-                sql, exec_res = sql2, retry
-        if not exec_res.get("ok"):
-            logger.warning(f"[tabular] nb={notebook_id} repair also failed "
-                           f"({exec_res.get('error')}) — vector RAG fallback")
-            return {"ok": False, "reason": exec_res.get("error", "execution error")}
+        print(f"[tabular-sql] execution error: {exec_res.get('error')}")
+        return {"ok": False, "reason": exec_res.get("error", "execution error")}
 
     rows = exec_res.get("rows", [])
-    logger.info(f"[tabular] nb={notebook_id} executed OK rows={len(rows)}")
+    print(f"[tabular-sql] executed OK rows={len(rows)}"
+          + (f" scalar={rows[0][0]!r}" if len(rows) == 1 and len(exec_res.get('columns', [])) == 1 else ""))
 
     # Provenance → first matching table's source/file.
     filename = schema[0]["filename"]

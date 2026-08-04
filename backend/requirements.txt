@@ -726,3 +726,6 @@ zstandard==0.25.0
 
 # The following packages are considered to be unsafe in a requirements file:
 # setuptools
+
+# Cursor Style text-to-SQL: pre-execution SQL validation (parse + column check). Pure-Python.
+sqlglot==30.14.0

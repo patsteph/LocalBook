@@ -95,12 +95,21 @@ def test_two_label_columns_is_not_charted():
     assert tq._maybe_chart("q", cols, rows) == ""
 
 
-def test_render_answer_appends_chart_for_multirow():
+def test_shared_render_answer_has_NO_chart():
+    # ISOLATION: the shared spreadsheet renderer is byte-identical to master — NO chart appended.
+    # (Charts are appended only on the Cursor path, in cursor_sql.answer via _maybe_chart.)
     result = {"columns": ["region", "total"],
               "rows": [["West", 1600], ["East", 800], ["North", 400]]}
     out = tq._render_answer("total by region", "SELECT ...", "sales.db", result)
-    assert "| Region | Total |" in out          # table still present
-    assert "```json-chart" in out               # chart appended
+    assert "| Region | Total |" in out          # table present
+    assert "```json-chart" not in out           # NO chart on the shared path
+
+
+def test_maybe_chart_helper_still_charts_multirow():
+    # The pure chart helper (reused by cursor_sql) still produces a chart for chartable data.
+    cols, rows = ["region", "total"], [["West", 1600], ["East", 800], ["North", 400]]
+    chart = tq._maybe_chart("total by region", cols, rows)
+    assert "```json-chart" in chart
 
 
 def test_render_answer_scalar_has_no_chart():
@@ -109,10 +118,14 @@ def test_render_answer_scalar_has_no_chart():
     assert out == "**42**" and "json-chart" not in out
 
 
-def test_build_prompt_has_by_dimension_rule():
+def test_cursor_prompt_has_by_dimension_rule():
+    # The GROUP-BY / by-dimension rule lives on the Cursor prompt builder now (isolation).
+    from services import cursor_sql as cs
     schema = [{"table_name": "sales", "filename": "sales.db", "sheet_name": "sales",
                "row_count": 3, "columns": [
                    {"sanitized": "region", "dtype": "text"},
                    {"sanitized": "amount", "dtype": "number"}]}]
-    p = tq._build_prompt("total by region", schema, [])
-    assert "GROUP BY" in p and ("by" in p.lower())
+    p = cs._build_cursor_prompt("total by region", schema, [], [], [], governance="")
+    assert "GROUP BY" in p
+    # And the shared spreadsheet prompt stays minimal (no GROUP-BY rule — master behavior).
+    assert "GROUP BY" not in tq._build_prompt("total by region", schema, [])

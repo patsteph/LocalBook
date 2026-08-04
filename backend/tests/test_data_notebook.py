@@ -47,18 +47,26 @@ def test_index_external_db_and_readonly(tmp_path, monkeypatch):
 
 
 def test_build_prompt_governance_injection():
+    # Governance lives ONLY in the isolated Cursor path (cursor_sql), NEVER in the shared
+    # spreadsheet engine (tabular_query._build_prompt has no governance param — daily-driver
+    # path is byte-identical to master).
+    from services import cursor_sql as cs
     from services import tabular_query as tq
+    import inspect
     schema = [{"table_name": "sales", "filename": "sales.db", "sheet_name": "sales",
                "row_count": 3, "columns": [
                    {"sanitized": "region", "dtype": "text", "low_cardinality": True,
                     "values": ["East", "West"]},
                    {"sanitized": "amount", "dtype": "number", "samples": ["1200.0"]}]}]
-    p = tq._build_prompt("total by region", schema, [], governance="ALWAYS filter status='active'.")
+    p = cs._build_cursor_prompt("total by region", schema, [], [], [],
+                                governance="ALWAYS filter status='active'.")
     assert "OPERATING RULES" in p and "ALWAYS filter status='active'." in p
     assert "Obey the OPERATING RULES" in p
-    # No governance → no operating-rules block (byte-identical shipping path).
-    p2 = tq._build_prompt("total by region", schema, [])
+    # No governance → no operating-rules block.
+    p2 = cs._build_cursor_prompt("total by region", schema, [], [], [], governance="")
     assert "OPERATING RULES" not in p2
+    # ISOLATION GUARANTEE: the shared spreadsheet prompt builder must NOT accept governance.
+    assert "governance" not in inspect.signature(tq._build_prompt).parameters
 
 
 def test_locate_md_and_governance_excludes_readme(tmp_path):
