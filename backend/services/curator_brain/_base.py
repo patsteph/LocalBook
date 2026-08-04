@@ -16,6 +16,8 @@ class CuratorBrainBase:
         self._lancedb_path = brain_dir / "lancedb"
         self._lancedb_path.mkdir(parents=True, exist_ok=True)
         try:
+            import lancedb  # heavy dep — lazy import at the call site (never top-level, so the
+            # slim CI test tier + the provenance tests import curator_brain without needing it).
             self.vectors = lancedb.connect(str(self._lancedb_path))
         except Exception as e:
             logger.warning(f"[CuratorBrain] LanceDB init failed (non-fatal): {e}")

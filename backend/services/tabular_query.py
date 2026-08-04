@@ -13,12 +13,51 @@ rag_engine hook); any failure returns ok=False so the caller falls back to vecto
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Dict, List, Optional
 
 from config import settings
 from services.ollama_service import ollama_service
 from storage import tabular_store
+
+logger = logging.getLogger(__name__)
+
+# A DB with more tables than this gets schema-linked — only the tables relevant to the question
+# go into the SQL prompt. A 27-table schema in one prompt overwhelms a small model → wrong SQL.
+_SCHEMA_LINK_THRESHOLD = 8
+_MAX_LINKED_TABLES = 8
+
+
+def select_relevant_tables(question: str, schema: List[Dict[str, Any]],
+                           governance: str = "", max_tables: int = _MAX_LINKED_TABLES) -> List[Dict[str, Any]]:
+    """Schema linking: for a large DB, keep only the tables most relevant to the question so the
+    SQL prompt stays small and focused. Scores each table by question-token overlap with its
+    table/column names + low-cardinality values; ALWAYS keeps tables named in the governance
+    (canonical joins). Returns the full schema unchanged when it's already small. Never raises."""
+    try:
+        if len(schema) <= max_tables:
+            return schema
+        qtokens = {t for t in re.split(r"[^a-z0-9]+", question.lower()) if len(t) >= 3}
+        gov_low = (governance or "").lower()
+        scored = []
+        for t in schema:
+            name = str(t.get("table_name", ""))
+            hay = name.lower() + " " + " ".join(
+                str(c.get("sanitized", "")).lower() for c in t.get("columns", []))
+            for c in t.get("columns", []):
+                if c.get("low_cardinality"):
+                    hay += " " + " ".join(str(v).lower() for v in (c.get("values") or [])[:20])
+            htokens = set(re.split(r"[^a-z0-9]+", hay))
+            gov_bonus = 100 if name and name.lower() in gov_low else 0
+            scored.append((len(qtokens & htokens) + gov_bonus, t))
+        scored.sort(key=lambda x: -x[0])
+        # Keep only tables that actually matched (score > 0) — don't pad the prompt with
+        # irrelevant tables. If nothing matched (a generic question), fall back to top-K.
+        signal = [t for s, t in scored if s > 0]
+        return (signal or [t for _, t in scored])[:max_tables]
+    except Exception:
+        return schema
 
 # Words that must never appear in generated SQL (single read-only SELECT only).
 _FORBIDDEN = re.compile(
@@ -453,11 +492,11 @@ async def _gen_sql(prompt: str, model: str, timeout: float) -> Optional[str]:
         )
         raw = (result or {}).get("response", "")
     except Exception as e:
-        print(f"[tabular-sql] LLM error ({model}): {type(e).__name__}: {e}")
+        logger.warning(f"[tabular] LLM error ({model}): {type(e).__name__}: {e}")
         return None
     check = safe_sql(raw)
     if not check["ok"]:
-        print(f"[tabular-sql] {model}: no valid SQL ({check['reason']}): {raw[:150]!r}")
+        logger.warning(f"[tabular] {model} produced no valid SQL ({check['reason']}): {raw[:150]!r}")
         return None
     return check["sql"]
 
@@ -480,14 +519,24 @@ async def answer_tabular(
     """
     schema = tabular_store.get_schema(notebook_id, source_ids)
     if not schema:
+        logger.info(f"[tabular] nb={notebook_id}: no structured tables — vector RAG fallback")
         return {"ok": False, "reason": "no structured tables for this notebook"}
 
     # External .db (Cursor Style): the catalog rows carry the real file path.
     if db_path is None:
         db_path = next((t["db_path"] for t in schema if t.get("db_path")), None)
 
-    directives = _resolve_directives(question, schema)
-    prompt = _build_prompt(question, schema, directives, governance or "")
+    # Schema linking: on a large DB (e.g. 27 tables) put ONLY the tables relevant to the question
+    # in the prompt, so a small model can still pick the right tables + joins.
+    linked = select_relevant_tables(question, schema, governance or "")
+    if len(linked) < len(schema):
+        logger.info(f"[tabular] nb={notebook_id} schema-linked {len(schema)}→{len(linked)} tables "
+                    f"for {question[:60]!r}: {[t.get('table_name') for t in linked]}")
+
+    directives = _resolve_directives(question, linked)
+    prompt = _build_prompt(question, linked, directives, governance or "")
+    logger.info(f"[tabular] nb={notebook_id} route={'external-db' if db_path else 'shared'} "
+                f"tables={len(linked)}/{len(schema)} prompt_chars={len(prompt)} — generating SQL")
 
     # Primary = the main model (gemma): far more reliable at text-to-SQL. The fast model (phi4)
     # hallucinated spurious WHERE clauses (2026-07-09: invented account=/person IN filters), so
@@ -498,11 +547,12 @@ async def answer_tabular(
     fast = settings.ollama_fast_model
     sql = await _gen_sql(prompt, primary, 25.0)
     if sql is None and primary != fast:
-        print(f"[tabular-sql] primary ({primary}) failed/timed out -> retry with {fast}")
+        logger.info(f"[tabular] nb={notebook_id} primary ({primary}) failed/timed out -> retry {fast}")
         sql = await _gen_sql(prompt, fast, 20.0)
     if sql is None:
+        logger.warning(f"[tabular] nb={notebook_id} SQL generation FAILED (both models) — vector RAG fallback")
         return {"ok": False, "reason": "sql generation failed"}
-    print(f"[tabular-sql] generated: {sql}")
+    logger.info(f"[tabular] nb={notebook_id} SQL: {sql}")
 
     # Enforce the deterministically-resolved state values over whatever literal the model chose.
     if directives:
@@ -513,12 +563,12 @@ async def answer_tabular(
 
     exec_res = tabular_store.execute_readonly(sql, db_path=db_path)
     if not exec_res.get("ok"):
-        print(f"[tabular-sql] execution error: {exec_res.get('error')}")
+        logger.warning(f"[tabular] nb={notebook_id} SQL execution FAILED: {exec_res.get('error')} "
+                       f"— vector RAG fallback. SQL was: {sql}")
         return {"ok": False, "reason": exec_res.get("error", "execution error")}
 
     rows = exec_res.get("rows", [])
-    print(f"[tabular-sql] executed OK rows={len(rows)}"
-          + (f" scalar={rows[0][0]!r}" if len(rows) == 1 and len(exec_res.get('columns', [])) == 1 else ""))
+    logger.info(f"[tabular] nb={notebook_id} executed OK rows={len(rows)}")
 
     # Provenance → first matching table's source/file.
     filename = schema[0]["filename"]

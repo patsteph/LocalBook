@@ -286,6 +286,8 @@ async def get_cursor_context(notebook_id: str) -> Optional[Dict[str, Any]]:
         governance = _read_governance(config.get("folder_path", ""),
                                       config.get("governance_files", {}))
         schema = tabular_store.get_schema(notebook_id)
+        logger.info(f"[cursor] nb={notebook_id} → text-to-SQL route: db={Path(db_path).name}, "
+                    f"{len(schema)} tables, governance={len(governance)} chars")
         return {"db_path": db_path, "schema": schema, "governance": governance, "config": config}
     except Exception as e:
         logger.warning(f"[data_notebook] get_cursor_context failed ({notebook_id}): {e}")
