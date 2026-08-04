@@ -322,6 +322,11 @@ def _build_prompt(question: str, schema: List[Dict[str, Any]],
         "account = '...', person IN (...), etc. unless the question asks for them.\n"
         "- For case-insensitive matching on OTHER text columns, compare LOWER(col) = LOWER('value').\n"
         "- \"how many\" / \"number of\" -> SELECT COUNT(*). Totals -> SUM(...). Averages -> AVG(...).\n"
+        "- CRITICAL: use ONLY the exact column names listed above. NEVER write COUNT(id) or reference "
+        "an 'id' column unless 'id' is explicitly listed — to count rows always use COUNT(*).\n"
+        "- To filter by a PERSON'S NAME (an owner/rep/AE name) that is not itself a listed value, do "
+        "NOT invent an id/code from the name — JOIN to the table that stores names and match the name "
+        "column there (e.g. an employee/roster table), then filter the other table by the joined key.\n"
         "- Column ALIASES must be a single word (snake_case) or double-quoted — never a bare "
         'multi-word alias (write SUM(amount) AS total_amount or AS "Total Amount", never AS Total Amount).\n'
         "- When the question asks for a metric \"by\" / \"per\" / \"for each\" <dimension> (e.g. "
@@ -562,10 +567,34 @@ async def answer_tabular(
             sql = corrected
 
     exec_res = tabular_store.execute_readonly(sql, db_path=db_path)
+    # Self-repair: on a DB error (a hallucinated column like COUNT(id), a bad join, a typo),
+    # feed the exact error back and retry ONCE. This is the standard text-to-SQL fix — it turns
+    # "no such column" errors into a correct second attempt instead of a wrong vector-RAG answer.
     if not exec_res.get("ok"):
-        logger.warning(f"[tabular] nb={notebook_id} SQL execution FAILED: {exec_res.get('error')} "
-                       f"— vector RAG fallback. SQL was: {sql}")
-        return {"ok": False, "reason": exec_res.get("error", "execution error")}
+        err = exec_res.get("error", "")
+        logger.warning(f"[tabular] nb={notebook_id} SQL execution FAILED: {err} — retrying with error feedback")
+        repair_prompt = (
+            prompt
+            + f"\n\nATTEMPT 1 SQL (it FAILED):\n{sql}\n"
+            + f"SQLite error: {err}\n"
+            + "Rewrite the SQL to fix that error. Use ONLY the exact table + column names listed in "
+            "the schema above (do not invent columns like 'id'). To count rows use COUNT(*). "
+            "Output ONLY the corrected SQL."
+        )
+        sql2 = await _gen_sql(repair_prompt, primary, 25.0)
+        if sql2 is None and primary != fast:
+            sql2 = await _gen_sql(repair_prompt, fast, 20.0)
+        if sql2:
+            if directives:
+                sql2 = _apply_directives_to_sql(sql2, directives)
+            logger.info(f"[tabular] nb={notebook_id} repair SQL: {sql2}")
+            retry = tabular_store.execute_readonly(sql2, db_path=db_path)
+            if retry.get("ok"):
+                sql, exec_res = sql2, retry
+        if not exec_res.get("ok"):
+            logger.warning(f"[tabular] nb={notebook_id} repair also failed "
+                           f"({exec_res.get('error')}) — vector RAG fallback")
+            return {"ok": False, "reason": exec_res.get("error", "execution error")}
 
     rows = exec_res.get("rows", [])
     logger.info(f"[tabular] nb={notebook_id} executed OK rows={len(rows)}")
