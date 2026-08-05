@@ -35,18 +35,39 @@ _DB_EXTS = (".db", ".sqlite", ".sqlite3")
 # Governance goes into EVERY SQL prompt, so keep it tight for speed — AGENTS.md (read first,
 # the canonical joins/filters/metric defs) gets priority; the rest is trimmed. Smaller prompt
 # = faster gemma. The full docs stay RAG-searchable via the ingested md sources.
-_PER_FILE_BUDGET = 2500
-_TOTAL_GOVERNANCE_BUDGET = 4500
-# Authoritative governance docs, in priority order (README is intentionally excluded — it's
-# for the RAG fallback, not hard SQL rules).
-_GOVERNANCE_ROLES = ("agents", "data_overview", "domain_guide")
-# role -> the canonical filename we match case-insensitively.
+_PER_FILE_BUDGET = 2200
+_TOTAL_GOVERNANCE_BUDGET = 7000
+# role -> the candidate filenames we match case-insensitively (first present wins).
 _MD_ROLES = {
-    "agents": "agents.md",
-    "data_overview": "data_overview.md",
-    "domain_guide": "domain_guide.md",
-    "readme": "readme.md",
+    "readme": ["readme.md"],
+    "agents": ["agents.md"],
+    "data_overview": ["data_overview.md"],
+    "domain_guide": ["domain_guide.md", "domain_guide.md"],
 }
+# The canonical READING ORDER the model is told to follow (README orients → AGENTS rules → data
+# meaning → area rules → schema.html structural key). Budget PRIORITY differs (rules first) so the
+# most decision-critical text survives trimming, but the model is instructed to read in this order.
+_GUIDE_ORDER = ("readme", "agents", "data_overview", "domain_guide")
+_BUDGET_PRIORITY = ("agents", "domain_guide", "data_overview", "readme")
+
+# The enforcement RULESET — a short, authoritative preamble prepended to EVERY SQL prompt so the
+# model always starts from the same map instead of guessing. Generic scaffold; the specific business
+# rules (default fiscal year, unassigned filters, fiscal calendar, rollups) live in the owner's docs.
+_RULESET = (
+    "HOW TO READ THIS DATABASE (follow this source order as your guide — do NOT freelance):\n"
+    "  1) README — orientation.\n"
+    "  2) AGENTS.md — AUTHORITATIVE operating rules (canonical joins, required filters, metric defs).\n"
+    "  3) DATA_OVERVIEW — what the data means.\n"
+    "  4) domain_guide — business rules + worked example questions.\n"
+    "  5) The SCHEMA (schema.html / the objects below) — the structural master key: which TABLES and "
+    "VIEWS exist and how they join. Every v_ VIEW is a pre-built 'recipe'.\n"
+    "HARD RULES:\n"
+    "  - PREFER a purpose-built v_ VIEW over base tables whenever one fits the question (views ARE the "
+    "recipes — they pre-join the data correctly).\n"
+    "  - Obey the AGENTS.md / domain_guide rules even when the question does not restate them (default "
+    "fiscal year, unassigned handling, fiscal calendar, area rollups, excluded data).\n"
+    "  - Query the RIGHT object; never treat a missing value as zero unless a rule says so.\n\n"
+)
 
 
 # ── Discovery helpers ──────────────────────────────────────────────────────────
@@ -86,19 +107,37 @@ def _locate_db(folder: Path) -> Path:
 
 
 def _locate_md(folder: Path) -> Dict[str, Optional[str]]:
-    """Map each governance role → the actual filename present (case-insensitive), or None."""
+    """Map each governance role → the actual filename present (case-insensitive), or None.
+    A role may have several candidate filenames (e.g. domain_guide.md or domain_guide.md)."""
     by_lower = {c.name.lower(): c.name for c in folder.iterdir()
                 if c.is_file() and c.suffix.lower() == ".md"}
-    return {role: by_lower.get(canonical) for role, canonical in _MD_ROLES.items()}
+    out: Dict[str, Optional[str]] = {}
+    for role, candidates in _MD_ROLES.items():
+        out[role] = next((by_lower[c] for c in candidates if c in by_lower), None)
+    return out
+
+
+def _locate_schema_html(folder: Path) -> Optional[str]:
+    """The schema catalog HTML (schema.html) if present — the structural master key."""
+    try:
+        for c in folder.iterdir():
+            if c.is_file() and c.name.lower() in ("schema.html", "schema.htm"):
+                return c.name
+    except Exception:
+        return None
+    return None
 
 
 def _read_governance(folder_path: str, governance_files: Dict[str, Optional[str]]) -> str:
-    """Assemble the AUTHORITATIVE governance text from disk (always fresh), budgeted so it
-    can't overflow the SQL prompt. AGENTS.md → DATA_OVERVIEW.md → domain_guide.md."""
+    """Assemble the AUTHORITATIVE governance text from disk (always fresh): the enforcement RULESET,
+    then each guide doc in READING order (README → AGENTS → DATA_OVERVIEW → domain_guide),
+    then a distilled schema.html structural summary. Budgeted (rules-first priority) so the most
+    decision-critical text survives trimming even if a doc is huge."""
     folder = Path(folder_path)
-    blocks: List[str] = []
+    texts: Dict[str, str] = {}
     total = 0
-    for role in _GOVERNANCE_ROLES:
+    # Read in BUDGET priority (rules first) so trimming sacrifices orientation, not rules…
+    for role in _BUDGET_PRIORITY:
         fname = governance_files.get(role)
         if not fname:
             continue
@@ -113,13 +152,67 @@ def _read_governance(folder_path: str, governance_files: Dict[str, Optional[str]
             text = text[:_PER_FILE_BUDGET] + "\n…(truncated)"
         if total + len(text) > _TOTAL_GOVERNANCE_BUDGET:
             text = text[: max(0, _TOTAL_GOVERNANCE_BUDGET - total)]
-        if not text:
-            break
-        blocks.append(f"### {fname}\n{text}")
-        total += len(text)
-        if total >= _TOTAL_GOVERNANCE_BUDGET:
-            break
-    return "\n\n".join(blocks)
+        if text:
+            texts[role] = text
+            total += len(text)
+
+    # …but PRESENT them in reading order so the model follows the intended chain.
+    blocks: List[str] = []
+    for role in _GUIDE_ORDER:
+        if role in texts:
+            blocks.append(f"### {governance_files.get(role)}\n{texts[role]}")
+    schema_summary = _read_schema_summary(folder, governance_files.get("schema_html"))
+    if schema_summary:
+        blocks.append(schema_summary)
+    body = "\n\n".join(blocks)
+    return (_RULESET + body) if body else _RULESET
+
+
+def _read_schema_summary(folder: Path, schema_html_name: Optional[str]) -> str:
+    """Distill schema.html into a compact structural block for the prompt. Best-effort: parses the
+    embedded `SCHEMA_CATALOG` JSON when present (categories + per-object logical associations), else
+    returns a short pointer. Never raises. The actual object/column list already comes from the .db;
+    this adds the human-curated ROUTING (categories) + informal JOIN hints SQLite can't express."""
+    if not schema_html_name:
+        return ""
+    try:
+        raw = (folder / schema_html_name).read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+    lines = ["### schema.html — structural master key (prefer a v_ VIEW that matches the question)"]
+    try:
+        import re as _re
+        from utils.json_repair import robust_json_parse
+        m = _re.search(r"SCHEMA_CATALOG\s*=\s*(\{.*?\})\s*;", raw, _re.DOTALL)
+        catalog = robust_json_parse(m.group(1)) if m else None
+        if isinstance(catalog, dict):
+            cats = catalog.get("categories")
+            if isinstance(cats, dict):
+                for cat, names in list(cats.items())[:12]:
+                    if isinstance(names, list) and names:
+                        lines.append(f"- {cat}: {', '.join(str(n) for n in names[:12])}")
+            # Logical associations / join hints, if the catalog exposes them per object.
+            objs = catalog.get("objects")
+            assoc_lines: List[str] = []
+            if isinstance(objs, list):
+                for o in objs:
+                    if not isinstance(o, dict):
+                        continue
+                    name = o.get("name")
+                    for key in ("logical_associations", "associations", "join_hints", "relationships"):
+                        for a in (o.get(key) or []):
+                            txt = a if isinstance(a, str) else (
+                                a.get("hint") or a.get("note") or a.get("description") if isinstance(a, dict) else None)
+                            if txt and name:
+                                assoc_lines.append(f"- {name}: {txt}")
+            if assoc_lines:
+                lines.append("Join hints (use when NO view fits and you must join base tables):")
+                lines.extend(assoc_lines[:20])
+    except Exception as e:
+        logger.debug(f"[data_notebook] schema.html parse skipped: {type(e).__name__}: {e}")
+    if len(lines) == 1:
+        lines.append("(present — browse it in the Data panel; every v_ VIEW is a pre-built recipe.)")
+    return "\n".join(lines)
 
 
 # ── Canonical view collection (Phase 3 — owner-authored, optional) ─────────────
@@ -254,6 +347,7 @@ async def connect_folder(notebook_id: str, folder_path: str) -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
     governance_files = _locate_md(folder)
+    governance_files["schema_html"] = _locate_schema_html(folder)  # the structural master key
     source_id = f"cursor:{notebook_id}"
     idx = tabular_store.index_external_db(notebook_id, source_id, str(db_file))
     if not idx.get("ok"):
@@ -371,6 +465,7 @@ async def refresh(notebook_id: str) -> Dict[str, Any]:
         logger.warning(f"[data_notebook] companion view rebuild skipped ({notebook_id}): {e}")
 
     refreshed_md = _locate_md(folder)
+    refreshed_md["schema_html"] = _locate_schema_html(folder)
     config = dict(config)
     config.update({
         "db_path": str(db_file), "db_filename": db_file.name, "tables": tables,

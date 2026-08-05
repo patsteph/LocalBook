@@ -69,7 +69,9 @@ def test_build_prompt_governance_injection():
     assert "governance" not in inspect.signature(tq._build_prompt).parameters
 
 
-def test_locate_md_and_governance_excludes_readme(tmp_path):
+def test_locate_md_and_governance_includes_all_guides(tmp_path):
+    # Requirement change (2026-08-05): README is now part of the guide chain (orientation), not
+    # excluded — the logic must follow ALL files in order.
     from services import data_notebook as dn
     (tmp_path / "AGENTS.md").write_text("always join sales to reps on rep_id")
     (tmp_path / "DATA_OVERVIEW.md").write_text("amount is in USD")
@@ -80,14 +82,51 @@ def test_locate_md_and_governance_excludes_readme(tmp_path):
 
     gov = dn._read_governance(str(tmp_path), {k: v for k, v in md.items() if v})
     assert "always join sales to reps" in gov and "amount is in USD" in gov
-    assert "refresh monthly" not in gov   # README is RAG-only, not authoritative governance
+    assert "refresh monthly" in gov   # README IS now followed as orientation
+
+
+def test_governance_ruleset_and_full_file_chain(tmp_path):
+    from services import data_notebook as dn
+    (tmp_path / "README.md").write_text("# Orientation\nMonthly bundle.")
+    (tmp_path / "AGENTS.md").write_text("Default FY2027. Prefer v_ views.")
+    (tmp_path / "DATA_OVERVIEW.md").write_text("What the data means.")
+    (tmp_path / "domain_guide.md").write_text("My area pipeline -> v_pipe_team.")
+    (tmp_path / "schema.html").write_text(
+        '<script>const SCHEMA_CATALOG = {"categories":{"Bookings":["bookings","v_pipe_team"]},'
+        '"objects":[{"name":"record_assignments","associations":["join record_roster on record_key, scoped by fiscal_year"]}]};</script>')
+    gf = dn._locate_md(tmp_path)
+    gf["schema_html"] = dn._locate_schema_html(tmp_path)
+    # domain_guide.md matches the domain_guide role.
+    assert gf["domain_guide"] == "domain_guide.md"
+    assert gf["schema_html"] == "schema.html"
+    gov = dn._read_governance(str(tmp_path), gf)
+    # Ruleset preamble present + files in reading order + schema.html distilled.
+    assert "HOW TO READ THIS DATABASE" in gov
+    # Section headers appear in reading order (check the "### <file>" markers, not the ruleset text).
+    assert gov.index("### README.md") < gov.index("### AGENTS.md") < gov.index("### domain_guide.md")
+    assert "structural master key" in gov
+    assert "scoped by fiscal_year" in gov            # join hint parsed from SCHEMA_CATALOG
+    assert "Bookings: bookings, v_pipe_team" in gov  # category routing parsed
+
+
+def test_domain_guide_falls_back_to_domain_guide(tmp_path):
+    from services import data_notebook as dn
+    (tmp_path / "domain_guide.md").write_text("legacy name")
+    assert dn._locate_md(tmp_path)["domain_guide"] == "domain_guide.md"
+
+
+def test_schema_summary_missing_is_empty(tmp_path):
+    from services import data_notebook as dn
+    assert dn._read_schema_summary(tmp_path, None) == ""
 
 
 def test_read_governance_budgets(tmp_path):
     from services import data_notebook as dn
     (tmp_path / "AGENTS.md").write_text("X" * 10000)
     gov = dn._read_governance(str(tmp_path), {"agents": "AGENTS.md"})
-    assert len(gov) <= dn._PER_FILE_BUDGET + 200 and "truncated" in gov
+    # A single huge doc is per-file trimmed; total stays within the ruleset + total budget.
+    assert "truncated" in gov
+    assert len(gov) <= len(dn._RULESET) + dn._PER_FILE_BUDGET + 200
 
 
 def test_locate_db_requires_exactly_one(tmp_path):

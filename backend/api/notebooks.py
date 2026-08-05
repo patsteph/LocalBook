@@ -144,6 +144,33 @@ async def data_status(notebook_id: str):
         "refreshed_at": cfg.get("refreshed_at"),
     }
 
+@router.get("/{notebook_id}/guide-file")
+async def guide_file(notebook_id: str, name: str):
+    """Return the text of a Cursor Style guide file (README/AGENTS/DATA_OVERVIEW/
+    domain_guide/schema.html) so the user can READ it in-app. Read-only; `name` is
+    whitelisted to the notebook's discovered guide files, so no arbitrary path can be read."""
+    nb = await notebook_store.get(notebook_id)
+    if not nb or nb.get("type") != "cursor":
+        raise HTTPException(status_code=404, detail="Not a Cursor Style notebook")
+    cfg = nb.get("config") or {}
+    folder = cfg.get("folder_path")
+    allowed = {v for v in (cfg.get("governance_files") or {}).values() if v}
+    if not folder or name not in allowed:
+        raise HTTPException(status_code=404, detail="File not available for this notebook")
+    path = Path(folder) / name
+    try:
+        # Contain to the folder (defense-in-depth against a crafted name).
+        if Path(folder).resolve() not in path.resolve().parents:
+            raise HTTPException(status_code=400, detail="invalid file path")
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"could not read file: {e}")
+    kind = "html" if name.lower().endswith((".html", ".htm")) else "markdown"
+    return {"name": name, "kind": kind, "content": text}
+
+
 @router.get("/{notebook_id}", response_model=Notebook)
 async def get_notebook(notebook_id: str):
     """Get a specific notebook"""
