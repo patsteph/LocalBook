@@ -37,7 +37,11 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Trash2, Sparkles, RefreshCw, Scale, X, Compass, MessagesSquare, Plus, Brain, ChevronDown, ChevronRight } from 'lucide-react';
+import {
+  Trash2, Sparkles, RefreshCw, Scale, X, Compass, MessagesSquare, Plus, Brain, ChevronDown, ChevronRight,
+  Mic, Video, HelpCircle, BarChart3, Image, FileText, Files, Circle,
+  type LucideIcon,
+} from 'lucide-react';
 import { ArtifactRender } from '../artifact/RendererRegistry';
 import {
   canvasService,
@@ -141,9 +145,38 @@ const SIGNAL_LABEL: Record<string, string> = {
   shared_source: 'shared source',
 };
 
+// A thread's `ref_type` → compact chip presentation (medium icon + muted type
+// label). Threads render as clean, legible chips — NOT the full artifact body
+// squished into a ~200×120 tile (which read as blurry/undefined). Multiple
+// ref_types collapse onto the shared 💬 chat icon.
+const THREAD_CHIP: Record<string, { Icon: LucideIcon; label: string }> = {
+  audio: { Icon: Mic, label: 'Podcast' },
+  video: { Icon: Video, label: 'Video' },
+  quiz: { Icon: HelpCircle, label: 'Quiz' },
+  visual: { Icon: BarChart3, label: 'Visual' },
+  infographic: { Icon: Image, label: 'Infographic' },
+  document: { Icon: FileText, label: 'Document' },
+  source: { Icon: Files, label: 'Source' },
+  exploration_query: { Icon: MessagesSquare, label: 'Question' },
+  chat_turn: { Icon: MessagesSquare, label: 'Chat' },
+  canvas_answer: { Icon: MessagesSquare, label: 'Answer' },
+};
+
+function threadChip(refType: string): { Icon: LucideIcon; label: string } {
+  const hit = THREAD_CHIP[refType];
+  if (hit) return hit;
+  const label = refType ? refType.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'Item';
+  return { Icon: Circle, label };
+}
+
 function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   const rf = useReactFlow();
   const { node, tint, candidates, onPromote, onPerspectives, isOrphan } = data;
+
+  // Recency tint stays subtle for chips — clamp so threads never read as
+  // "blurred/undefined"; orphans keep a slightly lower floor but stay legible.
+  const chipOpacity = isOrphan ? Math.max(0.8, tint) : Math.max(0.85, tint);
+  const { Icon: ChipIcon, label: chipLabel } = threadChip(node.ref_type);
 
   return (
     <div
@@ -152,7 +185,7 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
           ? 'border-dashed border-gray-300 dark:border-gray-600'
           : 'border-gray-200 dark:border-gray-700'
       }`}
-      style={{ opacity: isOrphan ? tint * 0.7 : tint }}
+      style={{ opacity: chipOpacity }}
     >
       <NodeResizer
         minWidth={200}
@@ -219,11 +252,19 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
         </div>
       </div>
 
-      {/* Body — the Artifact snapshot rendered through the canonical registry.
-          NOT `nodrag`: the node must drag from its body (the bulk of the card);
-          the delete button + candidate dots keep `nodrag`/`nopan` for interaction. */}
-      <div className="flex-1 overflow-hidden p-2 text-[12px]">
-        <ArtifactRender artifact={node.snapshot} context="canvas-node" />
+      {/* Body — a compact, legible CHIP (icon + type label + clamped title).
+          We deliberately DON'T render the full <ArtifactRender> here: squished
+          into a ~200×120 tile it read as blurry/undefined. Full-content viewing
+          is a later "focus" action (out of scope). NOT `nodrag`: the node must
+          drag from its body (the bulk of the card). */}
+      <div className="flex h-full w-full flex-1 flex-col gap-1.5 overflow-hidden bg-white p-2.5 dark:bg-gray-800">
+        <div className="flex items-center gap-1.5 text-gray-400 dark:text-gray-500">
+          <ChipIcon className="h-4 w-4 flex-shrink-0" />
+          <span className="truncate text-[10px] font-semibold uppercase tracking-wide">{chipLabel}</span>
+        </div>
+        <p className="line-clamp-3 text-[12px] font-medium leading-snug text-gray-800 dark:text-gray-100">
+          {node.title || 'Untitled'}
+        </p>
       </div>
 
       {/* Orphan affordance (P3) — a thread that hasn't landed in a topic card yet.
