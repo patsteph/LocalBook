@@ -348,7 +348,10 @@ async def get_source_derivations(source_id: str, notebook_id: str = ""):
 
 # Derived node kinds — auto-generated from capture. A rebuild replaces these fresh
 # each Populate; genuinely user-placed nodes (any other ref_type) are preserved.
-_DERIVED_REFS = {"exploration_query", "source"}
+from services.canvas_artifacts import ARTIFACT_REF_TYPES as _ARTIFACT_REF_TYPES
+# Derived (auto-populated) node ref_types — refreshed on every Populate; user-placed nodes are NOT
+# in this set and are always preserved. Artifacts (podcasts/quizzes/visuals/…) are derived threads.
+_DERIVED_REFS = {"exploration_query", "source", *_ARTIFACT_REF_TYPES}
 
 
 @router.post("/populate/{notebook_id}")
@@ -362,12 +365,14 @@ async def populate(notebook_id: str, limit: int = 50):
     user-placed nodes (notes) and their edges are preserved; stale derived edges drop."""
     import json as _json
 
-    from services import canvas_populate, canvas_candidates
+    from services import canvas_populate, canvas_candidates, canvas_artifacts
     from storage.exploration_store import exploration_store
     from storage.source_store import source_store
     from services import activity_ledger
 
     journey = await exploration_store.get_journey(notebook_id, limit)
+    # Generated artifacts (podcasts/quizzes/visuals/infographics/docs) → thread nodes. Never raises.
+    artifact_nodes = await canvas_artifacts.list_notebook_artifacts(notebook_id)
     raw_events = activity_ledger.recent_events(
         notebook_id, limit=limit, kinds=(activity_ledger.KIND_SOURCE_ADDED,)
     )
@@ -390,7 +395,7 @@ async def populate(notebook_id: str, limit: int = 50):
 
     # Build nodes (noise-filtered turns + referenced sources), gather similarity signals,
     # then cluster + spatially lay out (a readable topic map). Fails open to the grid.
-    nodes = canvas_populate.build_nodes(journey, source_events, source_titles)
+    nodes = canvas_populate.build_nodes(journey, source_events, source_titles, artifact_nodes)
     cand = [{
         "id": f"{n.get('ref_type')}:{n.get('ref_id')}",
         "ref_type": n.get("ref_type"), "ref_id": n.get("ref_id"),

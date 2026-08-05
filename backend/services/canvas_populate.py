@@ -220,14 +220,18 @@ def snapshot_text(node: Dict[str, Any]) -> str:
 
 
 def build_nodes(journey: Dict[str, Any], source_events: List[Dict[str, Any]],
-                source_titles: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+                source_titles: Optional[Dict[str, str]] = None,
+                artifact_nodes: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """Map raw capture → un-positioned nodes. `journey` = exploration_store.get_journey(...);
     `source_events` = activity_ledger.recent_events(kinds=(source_added,)) with `payload` dicts;
-    `source_titles` = source_id → real name (from source_store) so sources aren't bare 'Source'.
+    `source_titles` = source_id → real name (from source_store) so sources aren't bare 'Source';
+    `artifact_nodes` = pre-built thread nodes for generated artifacts (from
+    `canvas_artifacts.list_notebook_artifacts`) — podcasts/quizzes/visuals/infographics/docs.
 
     Sources are the BASE LAYER: only sources a learning discussion actually REFERENCED
     (via `sources_used`) are surfaced — orphan sources stay off the map so it isn't
-    dirtied by every uploaded file (field feedback 2026-08-03)."""
+    dirtied by every uploaded file (field feedback 2026-08-03). Generated artifacts are ALWAYS
+    learning — they're the threads of the journey — so they're appended without a noise gate."""
     source_titles = source_titles or {}
     nodes: List[Dict[str, Any]] = []
     referenced: set = set()
@@ -279,6 +283,11 @@ def build_nodes(journey: Dict[str, Any], source_events: List[Dict[str, Any]],
             "_group": _SOURCES_GROUP,
             "created_at": event_ts.get(sid),
         })
+
+    # Generated artifacts are threads of the journey — always included (already node-shaped).
+    for a in (artifact_nodes or []):
+        if a and a.get("ref_id"):
+            nodes.append(a)
 
     return nodes
 
