@@ -351,7 +351,7 @@ async def get_source_derivations(source_id: str, notebook_id: str = ""):
 from services.canvas_artifacts import ARTIFACT_REF_TYPES as _ARTIFACT_REF_TYPES
 # Derived (auto-populated) node ref_types — refreshed on every Populate; user-placed nodes are NOT
 # in this set and are always preserved. Artifacts (podcasts/quizzes/visuals/…) are derived threads.
-_DERIVED_REFS = {"exploration_query", "source", *_ARTIFACT_REF_TYPES}
+_DERIVED_REFS = {"exploration_query", "source", "topic", *_ARTIFACT_REF_TYPES}
 
 
 @router.post("/populate/{notebook_id}")
@@ -396,19 +396,23 @@ async def populate(notebook_id: str, limit: int = 50):
     # Build nodes (noise-filtered turns + referenced sources), gather similarity signals,
     # then cluster + spatially lay out (a readable topic map). Fails open to the grid.
     nodes = canvas_populate.build_nodes(journey, source_events, source_titles, artifact_nodes)
-    cand = [{
-        "id": f"{n.get('ref_type')}:{n.get('ref_id')}",
-        "ref_type": n.get("ref_type"), "ref_id": n.get("ref_id"),
-        "title": n.get("title", ""), "text": canvas_populate.snapshot_text(n),
-    } for n in nodes]
-    raw_pairs = await canvas_candidates.compute_raw_pairs(notebook_id, cand)
-    seeded = canvas_populate.cluster_seed_layout(nodes, raw_pairs)
 
-    # Phase 2 — STABLE/accretive sub-topics: stamp each thread's topic_id (None = orphan) and persist
-    # the sub-topic cards (identity + centroid + auto title/synthesis). Never raises; on failure the
-    # threads simply carry no topic_id (the map still renders, ungrouped). Card LAYOUT is Phase 3.
-    from services import canvas_subtopics
-    await canvas_subtopics.assign_and_persist(notebook_id, seeded)
+    # Phase 2 — STABLE/accretive sub-topics: stamp each thread's topic_id (None = orphan) + persist
+    # the sub-topic cards (identity + centroid + auto title/synthesis). Never raises.
+    # Phase 3 — parent→card→thread LAYOUT: one group node per sub-topic, threads inside ordered by
+    # time, orphans in a lane (replaces the old √n cluster grid). On failure falls back to the grid.
+    from services import canvas_subtopics, canvas_layout_topics
+    surviving = await canvas_subtopics.assign_and_persist(notebook_id, nodes)
+    if surviving:
+        seeded = canvas_layout_topics.layout_topics_and_threads(surviving, nodes)
+    else:
+        cand = [{
+            "id": f"{n.get('ref_type')}:{n.get('ref_id')}",
+            "ref_type": n.get("ref_type"), "ref_id": n.get("ref_id"),
+            "title": n.get("title", ""), "text": canvas_populate.snapshot_text(n),
+        } for n in nodes]
+        raw_pairs = await canvas_candidates.compute_raw_pairs(notebook_id, cand)
+        seeded = canvas_populate.cluster_seed_layout(nodes, raw_pairs)
 
     # Rebuild: preserve user-placed (non-derived) nodes + edges between them; replace
     # derived nodes with the fresh clustered set; drop stale derived edges.

@@ -61,6 +61,27 @@ def test_topics_store_roundtrip_and_delete_missing():
     assert [t["id"] for t in ts._list_topics(c, "nb")] == ["t1"]
 
 
+def test_layout_topics_and_threads():
+    from services import canvas_layout_topics as lt
+    topics = [{"id": "t1", "title": "Pipeline", "synthesis": "s", "member_count": 3},
+              {"id": "t2", "title": "Calendar", "synthesis": "s2", "member_count": 1}]
+    nodes = [
+        {"id": "n1", "kind": "chat_turn", "title": "Q", "topic_id": "t1", "created_at": "2026-08-01"},
+        {"id": "n2", "kind": "artifact", "title": "Pod", "topic_id": "t1", "created_at": "2026-08-03"},
+        {"id": "n3", "kind": "artifact", "title": "Quiz", "topic_id": "t1", "created_at": "2026-08-02"},
+        {"id": "n4", "kind": "chat_turn", "title": "C", "topic_id": "t2", "created_at": "2026-08-01"},
+        {"id": "n5", "kind": "chat_turn", "title": "orphan", "topic_id": None, "created_at": "2026-08-04"},
+    ]
+    out = lt.layout_topics_and_threads(topics, nodes)
+    groups = {n["id"]: n for n in out if n["kind"] == "topic"}
+    assert "topic:t1" in groups and groups["topic:t1"]["snapshot"]["type"] == "json:topic-card"
+    assert groups["topic:t1"]["width"] > groups["topic:t2"]["width"]   # sized to member count
+    t1 = sorted([n for n in out if n.get("parent_id") == "topic:t1"], key=lambda x: (x["y"], x["x"]))
+    assert [n["id"] for n in t1] == ["n1", "n3", "n2"]                 # time-ordered inside the card
+    orphan = [n for n in out if n["id"] == "n5"][0]
+    assert not orphan.get("parent_id")                                # orphan stands alone
+
+
 def test_assign_and_persist_stamps_topic_ids(monkeypatch):
     from storage import canvas_topics_store as ts
     from services.ollama_service import ollama_service
