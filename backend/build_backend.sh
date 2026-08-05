@@ -365,6 +365,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=dateparser \
     --hidden-import=fitz \
     --hidden-import=docx \
+    --collect-all=docx \
     --hidden-import=pptx \
     --collect-all=pptx \
     --collect-all=playwright \
