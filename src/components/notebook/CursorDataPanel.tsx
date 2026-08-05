@@ -461,8 +461,12 @@ export const CursorDataPanel: React.FC<CursorDataPanelProps> = ({ notebookId }) 
                   <span>{readerError}</span>
                 </div>
               ) : readerDoc?.kind === 'html' ? (
+                // schema.html builds its tables with JS from the embedded SCHEMA_CATALOG, so it needs
+                // scripts to render. allow-scripts (WITHOUT allow-same-origin) runs the page's own JS
+                // in an isolated opaque origin — it can't reach the parent app, cookies, or storage.
+                // The file is the user's own local, self-contained data catalog.
                 <iframe
-                  sandbox=""
+                  sandbox="allow-scripts"
                   srcDoc={readerDoc.content}
                   className="w-full h-[70vh] border-0 bg-white"
                   title={readerDoc.name}

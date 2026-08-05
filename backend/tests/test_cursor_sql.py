@@ -105,6 +105,27 @@ def test_views_are_introspected_and_preferred(sample_db):
     assert "# View:" in cs._mschema_table(view)
 
 
+def test_schema_linking_reserves_slots_for_views():
+    # Regression: base tables out-scored views on raw token overlap and crowded them out entirely
+    # (0 views linked → the model never saw v_records). Views must be RESERVED into the set.
+    from services import tabular_query as tq
+    schema = []
+    for n in ["accounts", "record_roster", "record_assignments", "record_roster_geo",
+              "plan_elements", "bookings"]:
+        schema.append({"table_name": n, "kind": "table",
+                       "columns": [{"sanitized": "record_key"}, {"sanitized": "account_name"},
+                                   {"sanitized": "area"}, {"sanitized": "owner_id"}]})
+    for v in ["v_records", "v_pipe_account"]:
+        schema.append({"table_name": v, "kind": "view",
+                       "columns": [{"sanitized": "record_key"}, {"sanitized": "account_name"},
+                                   {"sanitized": "area"}, {"sanitized": "owner_id"}]})
+    for i in range(50):
+        schema.append({"table_name": f"misc_{i}", "kind": "table", "columns": [{"sanitized": "x"}]})
+    linked = tq.select_relevant_tables("who owns accounts in the west area", schema, "", max_tables=8)
+    assert any(o["kind"] == "view" for o in linked)
+    assert any(o["table_name"] == "v_records" for o in linked)
+
+
 def test_fk_inference_persisted_on_index(sample_db):
     _, ext = sample_db
     from storage import tabular_store as ts

@@ -51,16 +51,27 @@ def select_relevant_tables(question: str, schema: List[Dict[str, Any]],
             htokens = set(re.split(r"[^a-z0-9]+", hay))
             overlap = len(qtokens & htokens)
             gov_bonus = 100 if name and name.lower() in gov_low else 0
-            # Prefer a purpose-built VIEW (v_…) over an equally-relevant base table — a view usually
-            # pre-joins exactly what the question needs (only when it already has token overlap, so
-            # irrelevant views aren't pulled in).
             view_bonus = 2 if (t.get("kind") == "view" and overlap > 0) else 0
             scored.append((overlap + gov_bonus + view_bonus, t))
         scored.sort(key=lambda x: -x[0])
-        # Keep only tables that actually matched (score > 0) — don't pad the prompt with
-        # irrelevant tables. If nothing matched (a generic question), fall back to top-K.
         signal = [t for s, t in scored if s > 0]
-        return (signal or [t for _, t in scored])[:max_tables]
+        if not signal:
+            return [t for _, t in scored][:max_tables]
+        # RESERVE slots for relevant VIEWS. A purpose-built v_ view pre-joins exactly what a question
+        # needs, but base tables have more columns so they out-score views on raw token overlap and
+        # crowded them out entirely (views=0 in the linked set → the model never sees v_records
+        # and hand-writes base-table joins). Guarantee up to 3 relevant views, then fill with tables.
+        views = [t for t in signal if t.get("kind") == "view"]
+        tables = [t for t in signal if t.get("kind") != "view"]
+        n_views = min(3, len(views), max_tables)
+        picked = views[:n_views] + tables[: max_tables - n_views]
+        if len(picked) < max_tables:  # backfill from remaining signal (e.g. more views)
+            seen = {id(x) for x in picked}
+            for t in signal:
+                if id(t) not in seen and len(picked) < max_tables:
+                    picked.append(t)
+                    seen.add(id(t))
+        return picked[:max_tables]
     except Exception:
         return schema
 

@@ -35,8 +35,12 @@ _DB_EXTS = (".db", ".sqlite", ".sqlite3")
 # Governance goes into EVERY SQL prompt, so keep it tight for speed — AGENTS.md (read first,
 # the canonical joins/filters/metric defs) gets priority; the rest is trimmed. Smaller prompt
 # = faster gemma. The full docs stay RAG-searchable via the ingested md sources.
-_PER_FILE_BUDGET = 2200
-_TOTAL_GOVERNANCE_BUDGET = 7000
+# Governance budget. The old 2200/7000 was far too tight — it truncated AGENTS.md before its
+# "Typical user requests" recipe table (recipes=0 in the logs) and dropped rules. The real cursor
+# prompt is ~17k chars ≈ 4.4k tokens against gemma's 16k-TOKEN window, so there is ample headroom;
+# keep the guides whole so the recipes + business rules actually reach the model.
+_PER_FILE_BUDGET = 9000
+_TOTAL_GOVERNANCE_BUDGET = 24000
 # role -> the candidate filenames we match case-insensitively (first present wins).
 _MD_ROLES = {
     "readme": ["readme.md"],
