@@ -172,6 +172,18 @@ def _read_governance(folder_path: str, governance_files: Dict[str, Optional[str]
     return (_RULESET + body) if body else _RULESET
 
 
+def _read_recipes_sql(folder_path: str) -> str:
+    """Read the owner-authored `recipes.sql` (deterministic SQL templates) if present, else ''."""
+    try:
+        folder = Path(folder_path)
+        for c in folder.iterdir():
+            if c.is_file() and c.name.lower() == "recipes.sql":
+                return c.read_text(encoding="utf-8", errors="ignore")
+    except Exception as e:
+        logger.debug(f"[data_notebook] recipes.sql read skipped: {e}")
+    return ""
+
+
 def _parse_recipes_from_files(folder_path: str,
                               governance_files: Dict[str, Optional[str]]) -> List[Dict[str, str]]:
     """Parse the intent→object recipe table from the FULL guide .md files (un-budgeted), so the
@@ -411,6 +423,8 @@ async def connect_folder(notebook_id: str, folder_path: str) -> Dict[str, Any]:
         "governance_cache": _read_governance(str(folder), governance_files),
         # Recipes parsed from the FULL guide files (never budget-truncated) — the routing table.
         "recipes": _parse_recipes_from_files(str(folder), governance_files),
+        # Owner-authored deterministic SQL templates (recipes.sql) — the primary answer path.
+        "recipe_templates_sql": _read_recipes_sql(str(folder)),
         "md_source_ids": {},   # filled by the background post-connect ingest
         "schema_fingerprint": _schema_fingerprint(tables),
         # The .db schema is introspected synchronously above, so the notebook is queryable the moment
@@ -505,6 +519,7 @@ async def refresh(notebook_id: str) -> Dict[str, Any]:
         "governance_files": {k: v for k, v in refreshed_md.items() if v},
         "governance_cache": _read_governance(str(folder), refreshed_md),  # re-cache the fresh rules
         "recipes": _parse_recipes_from_files(str(folder), refreshed_md),
+        "recipe_templates_sql": _read_recipes_sql(str(folder)),
         "schema_fingerprint": new_fp,
         "data_status": "ready",
         "refreshed_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
@@ -549,7 +564,8 @@ async def get_cursor_context(notebook_id: str) -> Optional[Dict[str, Any]]:
                     f"{len(schema)} tables, governance={len(governance)} chars, "
                     f"{len(recipes)} recipes")
         return {"db_path": db_path, "schema": schema, "governance": governance,
-                "recipes": recipes, "config": config}
+                "recipes": recipes, "templates_sql": config.get("recipe_templates_sql") or "",
+                "config": config}
     except Exception as e:
         logger.warning(f"[data_notebook] get_cursor_context failed ({notebook_id}): {e}")
         return None

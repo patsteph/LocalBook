@@ -649,6 +649,7 @@ async def answer(
     db_path: Optional[str] = None,
     governance: Optional[str] = None,
     recipes: Optional[List[Dict[str, str]]] = None,
+    templates_sql: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Cursor Style text-to-SQL: governed, schema-linked, value/entity-grounded, sqlglot-validated,
     self-repairing read-only SQL over an external .db. Returns the same envelope as
@@ -663,6 +664,30 @@ async def answer(
     # External .db path (read-only, in place) — carried on the catalog rows.
     if db_path is None:
         db_path = next((t["db_path"] for t in schema if t.get("db_path")), None)
+
+    # ── DETERMINISTIC RECIPE TEMPLATES (primary path) ─────────────────────────────────────────────
+    # Owner-authored, pre-validated SQL for known questions (recipes.sql). Match → fill params →
+    # execute DIRECTLY — no LLM generation, so it's correct-by-construction and sub-second (no gemma
+    # load or ~20s generation). The whole LLM pipeline below is the FALLBACK for unmatched questions.
+    if templates_sql:
+        try:
+            from services import cursor_recipes
+            hit = cursor_recipes.match(question, cursor_recipes.parse_recipe_templates(templates_sql))
+            if hit:
+                tsql, tparams, tname = hit
+                logger.info(f"[cursor] nb={notebook_id} RECIPE TEMPLATE '{tname}' params={tparams} "
+                            f"— deterministic (no LLM)")
+                res = tabular_store.execute_readonly(tsql, db_path=db_path, params=(tparams or None))
+                if res.get("ok"):
+                    rows, cols = res.get("rows", []), res.get("columns", [])
+                    ans = _render_answer(question, tsql, schema[0]["filename"], res) \
+                        + _maybe_chart(question, cols, rows)
+                    return {"ok": True, "answer": ans, "sql": tsql, "source_id": schema[0]["source_id"],
+                            "filename": schema[0]["filename"], "columns": cols, "rows": rows}
+                logger.warning(f"[cursor] recipe template '{tname}' failed "
+                               f"({res.get('error')}) — falling back to LLM")
+        except Exception as e:
+            logger.warning(f"[cursor] recipe template path error: {type(e).__name__}: {e}")
 
     # Owner-authored canonical VIEWs (if any) are materialized as TEMP views in the read-only
     # external connection at query time — they pre-join the canonical relationships so the model

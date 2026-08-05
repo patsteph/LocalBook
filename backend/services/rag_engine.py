@@ -840,7 +840,7 @@ JSON:"""
                     _tres = await _cs.answer(
                         notebook_id, question, source_ids,
                         db_path=_cur["db_path"], governance=_cur.get("governance"),
-                        recipes=_cur.get("recipes"))
+                        recipes=_cur.get("recipes"), templates_sql=_cur.get("templates_sql"))
                     if not (_tres and _tres.get("ok")):
                         print(f"[cursor] SQL path empty/failed "
                               f"({(_tres or {}).get('reason')}) -> vector RAG over docs")
