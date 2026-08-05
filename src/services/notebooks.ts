@@ -6,6 +6,7 @@ export interface CursorTableInfo {
   table_name: string;
   row_count: number;
   columns: string[];
+  kind?: 'table' | 'view';
 }
 export interface CursorConnectResult {
   ok: boolean;
@@ -30,6 +31,7 @@ export interface CursorDataStatus {
   table_count?: number;
   row_total?: number;
   views?: number;
+  view_count?: number;
 }
 
 // Default color palette for notebooks
@@ -77,6 +79,12 @@ export const notebookService = {
 
   async dataStatus(id: string): Promise<CursorDataStatus> {
     const response = await api.get(`/notebooks/${id}/data-status`);
+    return response.data;
+  },
+
+  // Read one governance / guide file (markdown or html) from the connected folder.
+  async guideFile(id: string, name: string): Promise<{ name: string; kind: 'markdown' | 'html'; content: string }> {
+    const response = await api.get(`/notebooks/${id}/guide-file?name=${encodeURIComponent(name)}`);
     return response.data;
   },
 

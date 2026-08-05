@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Database, FolderOpen, FileText, RefreshCw, AlertTriangle, Loader2, ShieldCheck, Table2, ChevronDown, CheckCircle2 } from 'lucide-react';
+import { Database, FolderOpen, FileText, RefreshCw, AlertTriangle, Loader2, ShieldCheck, Table2, ChevronDown, CheckCircle2, X, Eye } from 'lucide-react';
 import { notebookService, CursorDataStatus, CursorTableInfo } from '../../services/notebooks';
 import { isTauri } from '../../services/sources';
+import { MarkdownArtifactRenderer } from '../artifact/renderers/MarkdownArtifactRenderer';
 
 interface CursorDataPanelProps {
   notebookId: string | null;
@@ -34,6 +35,12 @@ export const CursorDataPanel: React.FC<CursorDataPanelProps> = ({ notebookId }) 
   const [refreshing, setRefreshing] = useState(false);
   const [schemaChanged, setSchemaChanged] = useState(false);
   const [note, setNote] = useState<InlineNote>(null);
+
+  // In-app guide-file reader (modal overlay).
+  const [readerName, setReaderName] = useState<string | null>(null);
+  const [readerLoading, setReaderLoading] = useState(false);
+  const [readerError, setReaderError] = useState<string | null>(null);
+  const [readerDoc, setReaderDoc] = useState<{ name: string; kind: 'markdown' | 'html'; content: string } | null>(null);
 
   // Reconnect / change-folder affordance — collapsed by default.
   const [showReconnect, setShowReconnect] = useState(false);
@@ -133,9 +140,35 @@ export const CursorDataPanel: React.FC<CursorDataPanelProps> = ({ notebookId }) 
     }
   };
 
+  const openGuideFile = useCallback(async (name: string) => {
+    if (!notebookId) return;
+    setReaderName(name);
+    setReaderDoc(null);
+    setReaderError(null);
+    setReaderLoading(true);
+    try {
+      const doc = await notebookService.guideFile(notebookId, name);
+      setReaderDoc(doc);
+    } catch (err) {
+      console.error('Failed to load guide file:', err);
+      setReaderError('Could not open this file.');
+    } finally {
+      setReaderLoading(false);
+    }
+  }, [notebookId]);
+
+  const closeReader = useCallback(() => {
+    setReaderName(null);
+    setReaderDoc(null);
+    setReaderError(null);
+    setReaderLoading(false);
+  }, []);
+
   if (!notebookId) return null;
 
-  const tables: CursorTableInfo[] = status?.tables || [];
+  const objects: CursorTableInfo[] = status?.tables || [];
+  const tables = objects.filter((o) => o.kind !== 'view');
+  const views = objects.filter((o) => o.kind === 'view');
   const governance: string[] = status?.governance_files || [];
   const connected = status?.connected ?? false;
 
@@ -268,26 +301,68 @@ export const CursorDataPanel: React.FC<CursorDataPanelProps> = ({ notebookId }) 
             )}
           </div>
 
-          {/* Governance files */}
+          {/* Views */}
+          {views.length > 0 && (
+            <div>
+              <div className="flex items-center gap-1.5 mb-1">
+                <Eye className="w-3.5 h-3.5 text-gray-400" />
+                <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">
+                  Views ({views.length})
+                </p>
+              </div>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 pl-5 mb-1">
+                Purpose-built pre-joined views — the assistant prefers these.
+              </p>
+              <div className="space-y-1">
+                {views.map((v) => (
+                  <div
+                    key={v.table_name}
+                    className="flex items-center justify-between gap-2 px-2 py-1 rounded-md bg-indigo-50/60 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800"
+                  >
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <span className="px-1 py-0.5 text-[9px] font-semibold rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-800/60 dark:text-indigo-200 shrink-0">
+                        VIEW
+                      </span>
+                      <span className="text-xs font-medium text-gray-800 dark:text-gray-200 truncate" title={v.table_name}>
+                        {v.table_name}
+                      </span>
+                    </span>
+                    <span className="text-[11px] text-gray-500 dark:text-gray-400 shrink-0 whitespace-nowrap">
+                      {v.columns.length} col{v.columns.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Guide files */}
           <div>
             <div className="flex items-center gap-1.5 mb-1">
               <FileText className="w-3.5 h-3.5 text-gray-400" />
               <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide">
-                Governance files ({governance.length})
+                Guide files ({governance.length})
               </p>
             </div>
             {governance.length === 0 ? (
               <p className="text-xs text-gray-400 dark:text-gray-500 italic pl-5">None found (e.g. AGENTS.md)</p>
             ) : (
-              <div className="flex flex-wrap gap-1 pl-5">
+              <div className="space-y-1">
                 {governance.map((g) => (
-                  <span
+                  <button
                     key={g}
-                    className="px-1.5 py-0.5 text-[11px] rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300"
-                    title={g}
+                    onClick={() => openGuideFile(g)}
+                    className="w-full flex items-center gap-1.5 px-2 py-1 rounded-md bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left"
+                    title={`Open ${g}`}
                   >
-                    {g}
-                  </span>
+                    <FileText className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                    <span className="text-xs font-medium text-gray-800 dark:text-gray-200 truncate">{g}</span>
+                    {/\.html$/i.test(g) && (
+                      <span className="ml-auto px-1 py-0.5 text-[9px] font-semibold rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-800/60 dark:text-indigo-200 shrink-0">
+                        schema
+                      </span>
+                    )}
+                  </button>
                 ))}
               </div>
             )}
@@ -347,6 +422,62 @@ export const CursorDataPanel: React.FC<CursorDataPanelProps> = ({ notebookId }) 
             )}
           </div>
         </>
+      )}
+
+      {/* Guide-file reader (modal overlay) */}
+      {readerName && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={closeReader}
+        >
+          <div
+            className="flex flex-col w-full max-w-3xl max-h-[85vh] bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Reader header */}
+            <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-200 dark:border-gray-700 shrink-0">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <FileText className="w-4 h-4 text-indigo-500 dark:text-indigo-400 shrink-0" />
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-white truncate">{readerName}</h3>
+              </div>
+              <button
+                onClick={closeReader}
+                className="p-1 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 rounded transition-colors shrink-0"
+                title="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Reader body */}
+            <div className="flex-1 min-h-0 overflow-auto">
+              {readerLoading ? (
+                <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 p-6">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Loading {readerName}…
+                </div>
+              ) : readerError ? (
+                <div className="m-4 flex items-start gap-1.5 text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{readerError}</span>
+                </div>
+              ) : readerDoc?.kind === 'html' ? (
+                <iframe
+                  sandbox=""
+                  srcDoc={readerDoc.content}
+                  className="w-full h-[70vh] border-0 bg-white"
+                  title={readerDoc.name}
+                />
+              ) : readerDoc ? (
+                <div className="p-4 text-gray-800 dark:text-gray-200">
+                  <MarkdownArtifactRenderer
+                    artifact={{ id: `guide-${readerDoc.name}`, type: 'markdown', payload: readerDoc.content }}
+                    context="canvas-full"
+                  />
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
