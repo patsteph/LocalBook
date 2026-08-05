@@ -230,10 +230,14 @@ def _schema_html_static(raw: str) -> str:
         cols = _cols(o)
         if cols:
             h.append(f'<div style="color:#555;font-size:12px;margin-top:4px">{_esc(", ".join(cols))}</div>')
-        for key in ("logical_associations", "associations", "join_hints", "relationships"):
-            for a in (o.get(key) or []):
+        for key, aval in o.items():
+            kl = str(key).lower()
+            if not ("association" in kl or "foreign_key" in kl):
+                continue
+            for a in (aval or []) if isinstance(aval, list) else []:
                 txt = a if isinstance(a, str) else (
-                    a.get("hint") or a.get("note") or a.get("description") if isinstance(a, dict) else None)
+                    a.get("hint") or a.get("note") or a.get("description")
+                    or a.get("association") if isinstance(a, dict) else None)
                 if txt:
                     h.append(f'<div style="color:#6d28d9;font-size:11px;margin-top:2px">↳ {_esc(txt)}</div>')
         h.append("</div>")

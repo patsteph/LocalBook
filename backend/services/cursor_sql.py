@@ -147,6 +147,9 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
         # Candidate (table, column) targets: HIGH-cardinality text columns, entity-named first.
         # Search the FULL schema (not just schema-linked tables) — the name column often lives in a
         # roster/employee table the linker didn't pick, which is why "Jordan Lee" was being guessed.
+        cols_by_table: Dict[str, List[str]] = {
+            str(t.get("table_name", "")): [str(c.get("sanitized", "")) for c in t.get("columns", [])]
+            for t in schema}
         targets: List[Tuple[int, str, str]] = []
         for t in schema:
             tname = str(t.get("table_name", ""))
@@ -177,7 +180,13 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
                 budget -= 1
                 val = _lookup_value(db_path, tname, col, term)
                 if val is not None:
-                    hints.append({"term": term, "table": tname, "col": col, "value": val})
+                    # Phase 3 (integration guide): a person's DISPLAY NAME is not a join key — resolve
+                    # it to the STABLE KEY (email_id / owner_id / …) in the same table, so joins use the
+                    # key and never embed the display name. Falls back to the name value if no key.
+                    key_col = _stable_key_col(cols_by_table.get(tname, []), col)
+                    key_val = _lookup_stable_key(db_path, tname, col, val, key_col) if key_col else None
+                    hints.append({"term": term, "table": tname, "col": col, "value": val,
+                                  "key_col": key_col or "", "key_value": key_val or ""})
                     resolved_terms.add(term.lower())
                     break  # first (highest-priority) column that matches wins for this term
     except Exception as e:
@@ -215,6 +224,43 @@ def _lookup_value(db_path: Optional[str], table: str, col: str, term: str) -> Op
         if len(exact) == 1:
             return exact[0]
         return None
+    except Exception:
+        return None
+
+
+# Stable-key columns a display name should resolve TO (integration guide Phase 3), preferred order.
+_KEY_COL_PREF = ("email_id", "employee_id", "owner_id", "eng_id", "mgr_id", "record_key")
+_KEY_COL_SUFFIX = re.compile(r"(_id|_key)$", re.IGNORECASE)
+
+
+def _stable_key_col(columns: List[str], name_col: str) -> Optional[str]:
+    """The stable-key column in a table that a display name should resolve to (email_id / owner_id / …),
+    so joins use the key instead of the name. Never returns the name column itself."""
+    others = [c for c in columns if c and c != name_col]
+    lower = {c.lower(): c for c in others}
+    for pref in _KEY_COL_PREF:
+        if pref in lower:
+            return lower[pref]
+    for c in others:                       # else any *_id / *_key that isn't a name-ish column
+        if _KEY_COL_SUFFIX.search(c) and "name" not in c.lower():
+            return c
+    return None
+
+
+def _lookup_stable_key(db_path: Optional[str], table: str, name_col: str, name_val: str,
+                       key_col: str) -> Optional[str]:
+    """Resolve a matched display name → its stable key value (e.g. employees.full_name → email_id)."""
+    try:
+        qt = '"' + str(table).replace('"', '""') + '"'
+        qn = '"' + str(name_col).replace('"', '""') + '"'
+        qk = '"' + str(key_col).replace('"', '""') + '"'
+        sql = f"SELECT DISTINCT {qk} FROM {qt} WHERE {qn} = ? AND {qk} IS NOT NULL LIMIT 2"
+        res = tabular_store.execute_readonly(sql, db_path=db_path, params=[name_val])
+        if not res.get("ok"):
+            return None
+        vals = [str(r[0]) for r in res.get("rows", []) if r and r[0] is not None
+                and not _PLACEHOLDER_VALUE.match(str(r[0]))]
+        return vals[0] if len(vals) == 1 else None
     except Exception:
         return None
 
@@ -297,8 +343,16 @@ def _tokens(text: str) -> set:
             if len(t) >= 3 and t not in _RECIPE_STOPWORDS}
 
 
+# A recipe table maps an intent → the canonical object/approach. Two documented shapes:
+#   | Request | Approach |          (AGENTS.md "Typical user requests")
+#   | Intent  | Primary object(s) | Notes |   (domain_guide integration guide "Phase 1 — Classify")
+_RECIPE_REQ_HDR = ("request", "intent", "question", "need")
+_RECIPE_APP_HDR = ("approach", "primary object", "object", "use this", "primary")
+
+
 def _parse_recipes(governance: str) -> List[Dict[str, str]]:
-    """Extract recipes from a markdown table whose header names Request + Approach (case-insensitive).
+    """Extract recipes from a markdown table that maps an intent to the canonical object/approach.
+    Matches both `Request|Approach` and `Intent|Primary object(s)` headers (case-insensitive).
     Returns [{request, approach}]. Robust to extra columns / surrounding prose. Never raises."""
     recipes: List[Dict[str, str]] = []
     try:
@@ -308,10 +362,10 @@ def _parse_recipes(governance: str) -> List[Dict[str, str]]:
             row = lines[i]
             cells = [c.strip() for c in row.split("|")]
             low = [c.lower() for c in cells]
-            # A header row containing both 'request' and 'approach' starts a recipe table.
-            if "|" in row and any("request" in c for c in low) and any("approach" in c for c in low):
-                req_idx = next(k for k, c in enumerate(low) if "request" in c)
-                app_idx = next(k for k, c in enumerate(low) if "approach" in c)
+            req_idx = next((k for k, c in enumerate(low) if any(h in c for h in _RECIPE_REQ_HDR)), None)
+            app_idx = next((k for k, c in enumerate(low) if any(h in c for h in _RECIPE_APP_HDR)), None)
+            # A header row naming both an intent column AND an object/approach column starts a table.
+            if "|" in row and req_idx is not None and app_idx is not None and req_idx != app_idx:
                 j = i + 1
                 if j < len(lines) and set(lines[j].replace("|", "").strip()) <= set("-: "):
                     j += 1  # skip the |---|---| separator
@@ -386,16 +440,20 @@ def _build_cursor_prompt(question: str, linked: List[Dict[str, Any]],
         )
 
     directive_block = ""
-    all_dirs = list(directives) + [
-        {"term": h["term"], "col": f'{h["table"]}.{h["col"]}', "value": h["value"]}
-        for h in entity_hints
-    ]
-    if all_dirs:
+    lines: List[str] = [f"- \"{d['term']}\" → {d['col']} = '{d['value']}'" for d in directives]
+    for h in entity_hints:
+        if h.get("key_value") and h.get("key_col"):
+            # A display name resolved to a STABLE KEY — instruct joining on the key (guide Phase 3).
+            lines.append(
+                f"- \"{h['term']}\" → {h['table']}.{h['key_col']} = '{h['key_value']}' "
+                f"(STABLE KEY — filter/JOIN on this; NEVER put the display name '{h['value']}' in a "
+                f"WHERE/JOIN)")
+        else:
+            lines.append(f"- \"{h['term']}\" → {h['table']}.{h['col']} = '{h['value']}'")
+    if lines:
         directive_block = (
             "\nGROUNDED VALUES — the question's phrases map to these EXACT stored values (use them "
-            "verbatim; do NOT invent or abbreviate a literal):\n"
-            + "\n".join(f"- \"{d['term']}\" → {d['col']} = '{d['value']}'" for d in all_dirs)
-            + "\n"
+            "verbatim; do NOT invent or abbreviate a literal):\n" + "\n".join(lines) + "\n"
         )
 
     obey_governance = (

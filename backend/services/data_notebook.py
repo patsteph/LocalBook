@@ -195,7 +195,9 @@ def _read_schema_summary(folder: Path, schema_html_name: Optional[str]) -> str:
                 for cat, names in list(cats.items())[:12]:
                     if isinstance(names, list) and names:
                         lines.append(f"- {cat}: {', '.join(str(n) for n in names[:12])}")
-            # Logical associations / join hints, if the catalog exposes them per object.
+            # Logical associations / join hints. The integration guide's SCHEMA_CATALOG names these
+            # `logical_associations_*` / `foreign_keys_*` (suffixed), so match any key CONTAINING
+            # 'association' or 'foreign_key' rather than a fixed name.
             objs = catalog.get("objects")
             assoc_lines: List[str] = []
             if isinstance(objs, list):
@@ -203,10 +205,14 @@ def _read_schema_summary(folder: Path, schema_html_name: Optional[str]) -> str:
                     if not isinstance(o, dict):
                         continue
                     name = o.get("name")
-                    for key in ("logical_associations", "associations", "join_hints", "relationships"):
-                        for a in (o.get(key) or []):
+                    for key, aval in o.items():
+                        kl = str(key).lower()
+                        if not ("association" in kl or "foreign_key" in kl):
+                            continue
+                        for a in (aval or []) if isinstance(aval, list) else []:
                             txt = a if isinstance(a, str) else (
-                                a.get("hint") or a.get("note") or a.get("description") if isinstance(a, dict) else None)
+                                a.get("hint") or a.get("note") or a.get("description")
+                                or a.get("association") if isinstance(a, dict) else None)
                             if txt and name:
                                 assoc_lines.append(f"- {name}: {txt}")
             if assoc_lines:

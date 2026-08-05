@@ -240,6 +240,30 @@ def test_recipe_parse_handles_no_table():
     assert cs._parse_recipes("") == []
 
 
+def test_recipe_parse_intent_object_format():
+    # Integration-guide "Phase 1 — Classify" uses | Intent | Primary object(s) | Notes |.
+    from services import cursor_sql as cs
+    gov = ("| Intent | Primary object(s) | Notes |\n|---|---|---|\n"
+           "| Account ownership / roster | v_records | Default for FY planning |\n"
+           "| Pipeline rollups | v_pipe_team | Always filter snapshot |\n")
+    recipes = cs._parse_recipes(gov)
+    assert any("ownership" in r["request"].lower() and "v_records" in r["approach"] for r in recipes)
+
+
+def test_stable_key_resolution_prefers_key_over_display_name():
+    # Integration-guide Phase 3: a display name resolves to a STABLE KEY (email_id), and the prompt
+    # instructs joining on the key, never the display name.
+    from services import cursor_sql as cs
+    assert cs._stable_key_col(["email_id", "full_name", "area"], "full_name") == "email_id"
+    assert cs._stable_key_col(["owner_id", "rep_name"], "rep_name") == "owner_id"
+    assert cs._stable_key_col(["full_name", "area"], "full_name") is None  # no key → fall back to name
+    schema = [{"table_name": "employees", "columns": [{"sanitized": "email_id"}, {"sanitized": "full_name"}]}]
+    hint = {"term": "Sam Rivera", "table": "employees", "col": "full_name", "value": "Sam Rivera",
+            "key_col": "email_id", "key_value": "jrivera@x.com"}
+    p = cs._build_cursor_prompt("q", schema, [], [hint], [], governance="")
+    assert "employees.email_id = 'jrivera@x.com'" in p and "STABLE KEY" in p and "NEVER" in p
+
+
 def test_entities_skip_low_cardinality_dimension_values(sample_db, monkeypatch):
     # Regression (log query 6): "Region WEST" is an AREA value, not a person — must not be grounded to
     # a name column (it matched a placeholder "TBH - Region West"). A term equal to a low-card value is
