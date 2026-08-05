@@ -404,6 +404,12 @@ async def populate(notebook_id: str, limit: int = 50):
     raw_pairs = await canvas_candidates.compute_raw_pairs(notebook_id, cand)
     seeded = canvas_populate.cluster_seed_layout(nodes, raw_pairs)
 
+    # Phase 2 — STABLE/accretive sub-topics: stamp each thread's topic_id (None = orphan) and persist
+    # the sub-topic cards (identity + centroid + auto title/synthesis). Never raises; on failure the
+    # threads simply carry no topic_id (the map still renders, ungrouped). Card LAYOUT is Phase 3.
+    from services import canvas_subtopics
+    await canvas_subtopics.assign_and_persist(notebook_id, seeded)
+
     # Rebuild: preserve user-placed (non-derived) nodes + edges between them; replace
     # derived nodes with the fresh clustered set; drop stale derived edges.
     existing = cl.get_layout(notebook_id)

@@ -66,6 +66,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         cur.execute("ALTER TABLE canvas_nodes ADD COLUMN width REAL")
     if "height" not in existing_cols:
         cur.execute("ALTER TABLE canvas_nodes ADD COLUMN height REAL")
+    # Canvas evolution (2.2.0): a thread node belongs to a sub-topic card (topic_id, NULL = orphan)
+    # and, when rendered as a react-flow child, to a parent group node (parent_id).
+    if "topic_id" not in existing_cols:
+        cur.execute("ALTER TABLE canvas_nodes ADD COLUMN topic_id TEXT")
+    if "parent_id" not in existing_cols:
+        cur.execute("ALTER TABLE canvas_nodes ADD COLUMN parent_id TEXT")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_canvas_nodes_nb ON canvas_nodes(notebook_id)")
     cur.execute(
         """
@@ -126,6 +132,8 @@ def _node_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "z": row["z"] or 0,
         "width": row["width"],
         "height": row["height"],
+        "topic_id": (row["topic_id"] if "topic_id" in row.keys() else None),
+        "parent_id": (row["parent_id"] if "parent_id" in row.keys() else None),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -186,8 +194,8 @@ def _save_layout(
     for n in nodes or []:
         conn.execute(
             "INSERT INTO canvas_nodes (id, notebook_id, x, y, kind, ref_type, ref_id, "
-            "snapshot_json, title, z, width, height, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "snapshot_json, title, z, width, height, topic_id, parent_id, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 n.get("id") or str(uuid.uuid4()),
                 notebook_id,
@@ -201,6 +209,8 @@ def _save_layout(
                 int(n.get("z", 0)),
                 _as_float_or_none(n.get("width")),
                 _as_float_or_none(n.get("height")),
+                n.get("topic_id"),
+                n.get("parent_id"),
                 n.get("created_at") or now,
                 now,
             ),
