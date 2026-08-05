@@ -402,7 +402,7 @@ async def connect_folder(notebook_id: str, folder_path: str) -> Dict[str, Any]:
         "ok": True, "db_filename": db_file.name, "tables": tables,
         "governance_files": [v for v in governance_files.values() if v],
         "table_count": len(tables),
-        "row_total": sum(t.get("row_count", 0) for t in tables),
+        "row_total": sum(int(t.get("row_count") or 0) for t in tables),
     }
 
 
@@ -479,7 +479,7 @@ async def refresh(notebook_id: str) -> Dict[str, Any]:
     return {
         "ok": True, "schema_changed": old_fp != new_fp, "db_filename": db_file.name,
         "tables": tables, "table_count": len(tables),
-        "row_total": sum(t.get("row_count", 0) for t in tables),
+        "row_total": sum(int(t.get("row_count") or 0) for t in tables),
     }
 
 

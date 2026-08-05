@@ -120,6 +120,28 @@ def test_schema_summary_missing_is_empty(tmp_path):
     assert dn._read_schema_summary(tmp_path, None) == ""
 
 
+def test_connect_summary_handles_view_none_rowcount(tmp_path, monkeypatch):
+    # Regression (2026-08-05): introspected VIEWS carry row_count=None (COUNT is skipped for them).
+    # The connect/refresh summary did `sum(t.get("row_count", 0) …)`, and .get(k,0) returns None when
+    # the key IS present as None → `sum([2, None])` raised TypeError and 500'd cursor notebook create.
+    import sqlite3
+    from config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    db = tmp_path / "d.db"
+    c = sqlite3.connect(str(db))
+    c.execute("CREATE TABLE t(a)")
+    c.execute("CREATE VIEW v AS SELECT * FROM t")
+    c.execute("INSERT INTO t VALUES (1)")
+    c.commit(); c.close()
+    from storage import tabular_store as ts
+    idx = ts.index_external_db("nb", "cursor:nb", str(db))
+    assert any(t.get("kind") == "view" for t in idx["tables"])       # a view is present
+    assert any(t.get("row_count") is None for t in idx["tables"])    # its row_count is None
+    # The summary coercion must not crash on the None.
+    total = sum(int(t.get("row_count") or 0) for t in idx["tables"])
+    assert isinstance(total, int)
+
+
 def test_read_governance_budgets(tmp_path):
     from services import data_notebook as dn
     (tmp_path / "AGENTS.md").write_text("X" * 10000)

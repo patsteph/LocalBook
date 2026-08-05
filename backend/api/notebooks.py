@@ -83,12 +83,19 @@ async def create_notebook(notebook: NotebookCreate):
         notebook.title, notebook.description, notebook.color, type=nb_type
     )
     if nb_type == "cursor" and notebook.folder_path:
-        from services import data_notebook
-        conn = await data_notebook.connect_folder(result["id"], notebook.folder_path)
-        # Re-read so `config` reflects the connection, then surface any connect error.
-        result = await notebook_store.get(result["id"]) or result
-        if not conn.get("ok"):
-            result["connect_error"] = conn.get("error", "could not connect the folder")
+        # A folder-connect failure must NEVER fail the create (the notebook still exists; the user can
+        # reconnect from the Data panel). Report it in `connect_error` instead of 500-ing.
+        try:
+            from services import data_notebook
+            conn = await data_notebook.connect_folder(result["id"], notebook.folder_path)
+            result = await notebook_store.get(result["id"]) or result   # reflect the connection
+            if not conn.get("ok"):
+                result["connect_error"] = conn.get("error", "could not connect the folder")
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"[notebooks] cursor connect failed for {result['id']}: {type(e).__name__}: {e}")
+            result["connect_error"] = f"could not connect the folder: {e}"
     return result
 
 
