@@ -172,6 +172,27 @@ def _read_governance(folder_path: str, governance_files: Dict[str, Optional[str]
     return (_RULESET + body) if body else _RULESET
 
 
+def _parse_recipes_from_files(folder_path: str,
+                              governance_files: Dict[str, Optional[str]]) -> List[Dict[str, str]]:
+    """Parse the intent→object recipe table from the FULL guide .md files (un-budgeted), so the
+    critical routing recipes are never lost to the prompt's governance budget (recipes=0 in the
+    field was caused by AGENTS.md being truncated before its recipe table). Never raises."""
+    try:
+        from services.cursor_sql import _parse_recipes
+        folder = Path(folder_path)
+        chunks = []
+        for fname in governance_files.values():
+            if fname and str(fname).lower().endswith(".md"):
+                try:
+                    chunks.append((folder / fname).read_text(encoding="utf-8", errors="ignore"))
+                except Exception:
+                    continue
+        return _parse_recipes("\n\n".join(chunks))
+    except Exception as e:
+        logger.debug(f"[data_notebook] recipe parse skipped: {type(e).__name__}: {e}")
+        return []
+
+
 def _read_schema_summary(folder: Path, schema_html_name: Optional[str]) -> str:
     """Distill schema.html into a compact structural block for the prompt. Best-effort: parses the
     embedded `SCHEMA_CATALOG` JSON when present (categories + per-object logical associations), else
@@ -388,6 +409,8 @@ async def connect_folder(notebook_id: str, folder_path: str) -> Dict[str, Any]:
         # and a momentarily-unreadable folder can't blank the operating rules mid-session). Refreshed
         # on Refresh — the same cadence the monthly .md updates arrive.
         "governance_cache": _read_governance(str(folder), governance_files),
+        # Recipes parsed from the FULL guide files (never budget-truncated) — the routing table.
+        "recipes": _parse_recipes_from_files(str(folder), governance_files),
         "md_source_ids": {},   # filled by the background post-connect ingest
         "schema_fingerprint": _schema_fingerprint(tables),
         # The .db schema is introspected synchronously above, so the notebook is queryable the moment
@@ -481,6 +504,7 @@ async def refresh(notebook_id: str) -> Dict[str, Any]:
         "db_path": str(db_file), "db_filename": db_file.name, "tables": tables,
         "governance_files": {k: v for k, v in refreshed_md.items() if v},
         "governance_cache": _read_governance(str(folder), refreshed_md),  # re-cache the fresh rules
+        "recipes": _parse_recipes_from_files(str(folder), refreshed_md),
         "schema_fingerprint": new_fp,
         "data_status": "ready",
         "refreshed_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
@@ -515,9 +539,17 @@ async def get_cursor_context(notebook_id: str) -> Optional[Dict[str, Any]]:
             governance = _read_governance(config.get("folder_path", ""),
                                           config.get("governance_files", {}))
         schema = tabular_store.get_schema(notebook_id)
+        # Recipes parsed from the FULL guide files (not the budget-truncated governance). Re-parse from
+        # disk for notebooks connected before recipe-caching existed.
+        recipes = config.get("recipes")
+        if recipes is None:
+            recipes = _parse_recipes_from_files(config.get("folder_path", ""),
+                                                config.get("governance_files", {}))
         logger.info(f"[cursor] nb={notebook_id} → text-to-SQL route: db={Path(db_path).name}, "
-                    f"{len(schema)} tables, governance={len(governance)} chars")
-        return {"db_path": db_path, "schema": schema, "governance": governance, "config": config}
+                    f"{len(schema)} tables, governance={len(governance)} chars, "
+                    f"{len(recipes)} recipes")
+        return {"db_path": db_path, "schema": schema, "governance": governance,
+                "recipes": recipes, "config": config}
     except Exception as e:
         logger.warning(f"[data_notebook] get_cursor_context failed ({notebook_id}): {e}")
         return None

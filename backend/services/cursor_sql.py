@@ -150,6 +150,7 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
         cands = [c for c in cands if c.strip().lower() not in low_values]
         if not cands:
             return hints
+        logger.info(f"[cursor] entity candidates to resolve: {cands}")
         # Candidate (table, column) targets: HIGH-cardinality text columns, entity-named first.
         # Search the FULL schema (not just schema-linked tables) — the name column often lives in a
         # roster/employee table the linker didn't pick, which is why "Jordan Lee" was being guessed.
@@ -207,7 +208,9 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
             # is left to guess a literal — the display-name-in-key failure). Helps diagnose in the field.
             logger.info(f"[cursor] entities NOT grounded (no name-column match): {unresolved}")
     except Exception as e:
-        logger.debug(f"[cursor] entity resolution skipped: {type(e).__name__}: {e}")
+        # WARNING (not DEBUG) so a resolution bug is VISIBLE in the field log instead of silently
+        # leaving the model to guess a literal.
+        logger.warning(f"[cursor] entity resolution ERROR: {type(e).__name__}: {e}")
     return hints
 
 
@@ -643,6 +646,7 @@ async def answer(
     source_ids: Optional[List[str]] = None,
     db_path: Optional[str] = None,
     governance: Optional[str] = None,
+    recipes: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Cursor Style text-to-SQL: governed, schema-linked, value/entity-grounded, sqlglot-validated,
     self-repairing read-only SQL over an external .db. Returns the same envelope as
@@ -681,7 +685,10 @@ async def answer(
                     f"{[(h['term'], h['table'] + '.' + h['col'], h['value']) for h in entity_hints]}")
 
     # Surface the most relevant owner-documented recipe(s) prominently for this question.
-    matched_recipes = _match_recipes(question, _parse_recipes(governance))
+    # Recipes come pre-parsed from the FULL guide files (never budget-truncated); fall back to parsing
+    # the governance text for older callers / notebooks.
+    all_recipes = recipes if recipes is not None else _parse_recipes(governance or "")
+    matched_recipes = _match_recipes(question, all_recipes)
     if matched_recipes:
         logger.info(f"[cursor] nb={notebook_id} matched recipes: "
                     f"{[r['request'] for r in matched_recipes]}")

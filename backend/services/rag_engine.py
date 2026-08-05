@@ -839,7 +839,8 @@ JSON:"""
                     from services import cursor_sql as _cs
                     _tres = await _cs.answer(
                         notebook_id, question, source_ids,
-                        db_path=_cur["db_path"], governance=_cur.get("governance"))
+                        db_path=_cur["db_path"], governance=_cur.get("governance"),
+                        recipes=_cur.get("recipes"))
                     if not (_tres and _tres.get("ok")):
                         print(f"[cursor] SQL path empty/failed "
                               f"({(_tres or {}).get('reason')}) -> vector RAG over docs")
