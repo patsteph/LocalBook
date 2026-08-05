@@ -49,9 +49,10 @@ logger = logging.getLogger(__name__)
 # schema-linked prompt inside a small context window (the deterministic resolvers below still
 # map any value/entity the user names, so this list is only a secondary aid).
 _MAX_PROMPT_VALUES = 12
-# 8 (not 6) so schema-linking can carry the relevant v_ VIEWS alongside a few base tables — the
-# prompt still fits easily (gemma 16k-token window; a linked-8 prompt is ~5-6k tokens).
-_MAX_LINKED_TABLES = 8
+# 12 so schema-linking can carry the many relevant v_ VIEWS a question may span (schema.html shows
+# 5–10 view linkings) alongside 2 base tables. Still well within gemma's 16k-token window (only
+# score>0 objects are linked, so it's usually far fewer than 12).
+_MAX_LINKED_TABLES = 12
 
 _SQL_MODEL_KEEP_ALIVE = "30m"
 

@@ -63,7 +63,11 @@ def select_relevant_tables(question: str, schema: List[Dict[str, Any]],
         # and hand-writes base-table joins). Guarantee up to 3 relevant views, then fill with tables.
         views = [t for t in signal if t.get("kind") == "view"]
         tables = [t for t in signal if t.get("kind") != "view"]
-        n_views = min(3, len(views), max_tables)
+        # Views ARE the recipes — a single question can reference 5–10 of them (per schema.html). Let
+        # the RELEVANT views take most of the slots, reserving ≥2 for base tables (for detail a view
+        # doesn't cover). No hard 3-view cap. Only views with score>0 are here, so irrelevant ones
+        # never fill slots.
+        n_views = min(len(views), max(1, max_tables - 2))
         picked = views[:n_views] + tables[: max_tables - n_views]
         if len(picked) < max_tables:  # backfill from remaining signal (e.g. more views)
             seen = {id(x) for x in picked}

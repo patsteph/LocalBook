@@ -175,7 +175,87 @@ async def guide_file(notebook_id: str, name: str):
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"could not read file: {e}")
     kind = "html" if name.lower().endswith((".html", ".htm")) else "markdown"
-    return {"name": name, "kind": kind, "content": text}
+    if kind == "html":
+        # schema.html renders its tables with JavaScript, but the app's CSP (script-src 'self')
+        # blocks inline scripts in the viewer iframe. Return a SCRIPT-FREE static render of the
+        # embedded SCHEMA_CATALOG (or a script-stripped copy) so it displays in-app under the CSP.
+        text = _schema_html_static(text)
+    return {"name": name, "kind": kind, "content": text, "path": str(path)}
+
+
+def _esc(s) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
+def _schema_html_static(raw: str) -> str:
+    """Build a script-free static HTML view of schema.html's embedded SCHEMA_CATALOG (renders under
+    the app CSP, which blocks the file's own JS). Falls back to a script-stripped copy of the file
+    when the catalog can't be parsed. Never raises."""
+    import re as _re
+    try:
+        from utils.json_repair import robust_json_parse
+        m = _re.search(r"SCHEMA_CATALOG\s*=\s*(\{.*?\})\s*;", raw, _re.DOTALL)
+        catalog = robust_json_parse(m.group(1)) if m else None
+    except Exception:
+        catalog = None
+    if not isinstance(catalog, dict) or not catalog.get("objects"):
+        # No parseable catalog → at least strip scripts so any static markup shows under CSP.
+        stripped = _re.sub(r"<script\b[^>]*>.*?</script>", "", raw, flags=_re.DOTALL | _re.IGNORECASE)
+        return stripped or "<p>Empty schema.html</p>"
+
+    objects = [o for o in catalog.get("objects", []) if isinstance(o, dict)]
+    by_name = {str(o.get("name")): o for o in objects}
+
+    def _cols(o):
+        out = []
+        for c in (o.get("columns") or []):
+            if isinstance(c, str):
+                out.append(c)
+            elif isinstance(c, dict):
+                out.append(str(c.get("name") or c.get("column") or ""))
+        return [x for x in out if x]
+
+    def _render(o):
+        name = _esc(o.get("name", ""))
+        is_view = str(o.get("kind", "table")).lower() == "view"
+        badge, bg = ("VIEW", "#6d28d9") if is_view else ("TABLE", "#374151")
+        rc = o.get("row_count")
+        h = ['<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin:8px 0">']
+        h.append(f'<div><span style="background:{bg};color:#fff;font-size:10px;padding:2px 6px;'
+                 f'border-radius:4px">{badge}</span> <b>{name}</b>')
+        if rc is not None:
+            h.append(f' <span style="color:#888;font-size:12px">· {_esc(rc)} rows</span>')
+        h.append("</div>")
+        cols = _cols(o)
+        if cols:
+            h.append(f'<div style="color:#555;font-size:12px;margin-top:4px">{_esc(", ".join(cols))}</div>')
+        for key in ("logical_associations", "associations", "join_hints", "relationships"):
+            for a in (o.get(key) or []):
+                txt = a if isinstance(a, str) else (
+                    a.get("hint") or a.get("note") or a.get("description") if isinstance(a, dict) else None)
+                if txt:
+                    h.append(f'<div style="color:#6d28d9;font-size:11px;margin-top:2px">↳ {_esc(txt)}</div>')
+        h.append("</div>")
+        return "".join(h)
+
+    parts = ['<div style="font-family:-apple-system,system-ui,sans-serif;padding:16px;color:#111;background:#fff">',
+             '<h2 style="margin:0 0 4px">Schema catalog</h2>']
+    gen = catalog.get("generated_at")
+    if gen:
+        parts.append(f'<p style="color:#666;font-size:12px;margin:0 0 12px">generated {_esc(gen)}</p>')
+    cats = catalog.get("categories")
+    if isinstance(cats, dict) and cats:
+        for cat, names in cats.items():
+            parts.append(f'<h3 style="margin:16px 0 4px;font-size:14px;color:#374151">{_esc(cat)}</h3>')
+            for n in (names or []):
+                o = by_name.get(str(n))
+                parts.append(_render(o) if o else f'<div style="margin:4px 0">{_esc(n)}</div>')
+    else:
+        for o in objects:
+            parts.append(_render(o))
+    parts.append("</div>")
+    return "".join(parts)
 
 
 @router.get("/{notebook_id}", response_model=Notebook)
