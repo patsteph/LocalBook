@@ -37,7 +37,7 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Trash2, Sparkles, RefreshCw, Scale, X, Compass, MessagesSquare, Plus, Brain } from 'lucide-react';
+import { Trash2, Sparkles, RefreshCw, Scale, X, Compass, MessagesSquare, Plus, Brain, ChevronDown, ChevronRight } from 'lucide-react';
 import { ArtifactRender } from '../artifact/RendererRegistry';
 import {
   canvasService,
@@ -109,6 +109,9 @@ const TIME_WINDOWS: { label: string; ms: number | null }[] = [
   { label: '30d', ms: 30 * DAY_MS },
 ];
 
+// Collapsed topic cards shrink to a header-only strip (view-state; never persisted).
+const TOPIC_HEADER_H = 56;
+
 // ─── Custom node ─────────────────────────────────────────────────────────────
 type ArtifactNodeData = {
   node: CanvasNode;
@@ -116,8 +119,21 @@ type ArtifactNodeData = {
   candidates?: NodeCandidate[];
   onPromote?: (peerId: string) => void;
   onPerspectives?: (node: CanvasNode) => void;
+  /** A thread outside any topic card — dashed, muted, invites exploration (P4 wires the click). */
+  isOrphan?: boolean;
 };
 type ArtifactFlowNode = Node<ArtifactNodeData, 'artifact'>;
+
+// A topic GROUP card — the react-flow container its child threads position inside.
+type TopicCardNodeData = {
+  node: CanvasNode;
+  collapsed: boolean;
+  onToggle: (id: string) => void;
+};
+type TopicFlowNode = Node<TopicCardNodeData, 'topicCard'>;
+
+// Every node the canvas renders is one of these two.
+type CanvasFlowNode = ArtifactFlowNode | TopicFlowNode;
 
 const SIGNAL_LABEL: Record<string, string> = {
   concept: 'shared concepts',
@@ -127,12 +143,16 @@ const SIGNAL_LABEL: Record<string, string> = {
 
 function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   const rf = useReactFlow();
-  const { node, tint, candidates, onPromote, onPerspectives } = data;
+  const { node, tint, candidates, onPromote, onPerspectives, isOrphan } = data;
 
   return (
     <div
-      className="flex h-full w-full cursor-grab flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm active:cursor-grabbing dark:border-gray-700 dark:bg-gray-800"
-      style={{ opacity: tint }}
+      className={`relative flex h-full w-full cursor-grab flex-col overflow-hidden rounded-xl border bg-white shadow-sm active:cursor-grabbing dark:bg-gray-800 ${
+        isOrphan
+          ? 'border-dashed border-gray-300 dark:border-gray-600'
+          : 'border-gray-200 dark:border-gray-700'
+      }`}
+      style={{ opacity: isOrphan ? tint * 0.7 : tint }}
     >
       <NodeResizer
         minWidth={200}
@@ -205,19 +225,104 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
       <div className="flex-1 overflow-hidden p-2 text-[12px]">
         <ArtifactRender artifact={node.snapshot} context="canvas-node" />
       </div>
+
+      {/* Orphan affordance (P3) — a thread that hasn't landed in a topic card yet.
+          Non-functional placeholder; P4 wires the click into the exploration loop. */}
+      {isOrphan && (
+        <div
+          className="pointer-events-none absolute bottom-1 right-1 z-10 flex items-center gap-0.5 rounded-full bg-gray-100/90 px-1.5 py-0.5 text-[9px] font-medium text-gray-400 dark:bg-gray-700/80 dark:text-gray-400"
+          title="Not yet part of a topic — explore to connect it"
+        >
+          <Plus className="h-2.5 w-2.5" />
+          explore
+        </div>
+      )}
     </div>
   );
 }
 
-const nodeTypes: NodeTypes = { artifact: ArtifactNode };
+// ─── Topic GROUP card (P3) ────────────────────────────────────────────────────
+// The container react-flow node: child threads position INSIDE it. Renders a
+// header (title + one-line synthesis + thread-count chip + collapse chevron);
+// the body area below is intentionally transparent so children sit "inside".
+function TopicCardNode({ id, data }: NodeProps<TopicFlowNode>) {
+  const { node, collapsed, onToggle } = data;
+  const payload = (node.snapshot?.payload ?? {}) as {
+    title?: string;
+    synthesis?: string;
+    count?: number;
+  };
+  const title = payload.title || node.title || 'Topic';
+  const synthesis = payload.synthesis || '';
+  const count = payload.count ?? 0;
+
+  return (
+    <div className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-violet-200/70 bg-violet-50/40 shadow-sm backdrop-blur-[2px] dark:border-violet-800/50 dark:bg-violet-950/20">
+      <div className="flex items-start gap-2 rounded-t-2xl border-b border-violet-100/70 bg-white/70 px-3 py-2 dark:border-violet-900/40 dark:bg-gray-900/60">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle(id);
+          }}
+          className="nodrag mt-[1px] flex-shrink-0 rounded p-0.5 text-violet-500 hover:bg-violet-100 dark:text-violet-300 dark:hover:bg-violet-900/40"
+          title={collapsed ? 'Expand topic' : 'Collapse topic'}
+          aria-label={collapsed ? 'Expand topic' : 'Collapse topic'}
+        >
+          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span
+              className="truncate text-[12px] font-bold text-gray-800 dark:text-gray-100"
+              title={title}
+            >
+              {title}
+            </span>
+            <span className="flex-shrink-0 rounded-full bg-violet-100 px-1.5 py-0.5 text-[9px] font-semibold text-violet-700 dark:bg-violet-900/50 dark:text-violet-200">
+              {count} thread{count === 1 ? '' : 's'}
+            </span>
+          </div>
+          {synthesis && (
+            <p
+              className="mt-0.5 truncate text-[10px] text-gray-500 dark:text-gray-400"
+              title={synthesis}
+            >
+              {synthesis}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const nodeTypes: NodeTypes = { artifact: ArtifactNode, topicCard: TopicCardNode };
 
 // ─── Layout ⇆ react-flow conversion ──────────────────────────────────────────
-function toFlowNode(n: CanvasNode): ArtifactFlowNode {
-  return {
+function toFlowNode(n: CanvasNode): CanvasFlowNode {
+  // Topic GROUP card — the absolute-positioned container. Its children arrive
+  // AFTER it in the layout array (react-flow's parent-before-child requirement).
+  if (n.kind === 'topic') {
+    return {
+      id: n.id,
+      type: 'topicCard',
+      position: { x: n.x, y: n.y },
+      data: { node: n, collapsed: true, onToggle: () => {} },
+      zIndex: 0,
+      width: n.width,
+      height: n.height,
+      style: { width: n.width, height: n.height },
+    };
+  }
+
+  // A thread node. Inside a card ⇒ parentId + relative position; else an orphan.
+  const isOrphan = !n.parent_id && n.topic_id == null && n.kind !== 'topic';
+  const fn: ArtifactFlowNode = {
     id: n.id,
     type: 'artifact',
     position: { x: n.x, y: n.y },
-    data: { node: n, tint: recencyOpacity(n.created_at) },
+    data: { node: n, tint: recencyOpacity(n.created_at), isOrphan },
     zIndex: n.z ?? 0,
     // Fixed compact tile so the map reads as uniform "readable tiles" — without this,
     // react-flow sizes each node to its content and the wide chat tiles overlap. A
@@ -226,6 +331,12 @@ function toFlowNode(n: CanvasNode): ArtifactFlowNode {
     height: n.height ?? 180,
     style: { width: n.width ?? 300, height: n.height ?? 180 },
   };
+  if (n.parent_id) {
+    // v12: children reference their container via `parentId` + are clamped to it.
+    fn.parentId = n.parent_id;
+    fn.extent = 'parent';
+  }
+  return fn;
 }
 
 function toFlowEdge(e: CanvasEdge): Edge {
@@ -257,15 +368,18 @@ function toFlowEdge(e: CanvasEdge): Edge {
 
 // Rebuild a CanvasNode from its current react-flow representation (position +
 // possibly-resized dimensions), preserving all the backend metadata.
-function fromFlowNode(fn: ArtifactFlowNode): CanvasNode {
+function fromFlowNode(fn: CanvasFlowNode): CanvasNode {
   const base = fn.data.node;
+  // Topic cards keep their BACKEND dimensions — the collapse height-swap is a
+  // view-only concern and must never round-trip back into the stored layout.
+  const isTopic = fn.type === 'topicCard';
   return {
     ...base,
     x: fn.position.x,
     y: fn.position.y,
     z: fn.zIndex ?? base.z,
-    width: fn.width ?? base.width,
-    height: fn.height ?? base.height,
+    width: isTopic ? base.width : (fn.width ?? base.width),
+    height: isTopic ? base.height : (fn.height ?? base.height),
   };
 }
 
@@ -282,8 +396,10 @@ interface InnerProps {
 }
 
 function JourneyCanvasInner({ notebookId }: InnerProps) {
-  const [nodes, setNodes, onNodesChange] = useNodesState<ArtifactFlowNode>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<CanvasFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  // Topic cards that are currently collapsed (view-state; default = ALL on load).
+  const [collapsedTopics, setCollapsedTopics] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [populating, setPopulating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -328,7 +444,7 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
   }>({ open: false, topic: '', loading: false, html: null, error: null });
 
   // Refs mirror the latest state for the full-layout persistence path.
-  const nodesRef = useRef<ArtifactFlowNode[]>([]);
+  const nodesRef = useRef<CanvasFlowNode[]>([]);
   const edgesRef = useRef<Edge[]>([]);
   const viewportRef = useRef<Viewport | null>(null);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
@@ -349,9 +465,23 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
     }
   }, [notebookId]);
 
+  // Collapse/expand a topic card (view-only — never persisted to the backend).
+  const toggleTopic = useCallback((id: string) => {
+    setCollapsedTopics((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   const applyLayout = useCallback((layout: CanvasLayout) => {
     setNodes((layout.nodes || []).map(toFlowNode));
     setEdges((layout.edges || []).map(toFlowEdge));
+    // Collapse ALL topic cards by default whenever a fresh layout loads.
+    setCollapsedTopics(
+      new Set((layout.nodes || []).filter((n) => n.kind === 'topic').map((n) => n.id)),
+    );
     if (layout.viewport) {
       setSavedViewport({ x: layout.viewport.x, y: layout.viewport.y, zoom: layout.viewport.zoom });
       viewportRef.current = { x: layout.viewport.x, y: layout.viewport.y, zoom: layout.viewport.zoom };
@@ -477,15 +607,18 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
       add(c.a_node, c.b_node, c.score, c.signal);
       add(c.b_node, c.a_node, c.score, c.signal);
     }
-    setNodes((nds) => nds.map((n) => ({
-      ...n,
-      data: {
-        ...n.data,
-        candidates: byNode.get(n.id) ?? [],
-        onPromote: (peerId: string) => promoteCandidate(n.id, peerId),
-        onPerspectives: openPerspectives,
-      },
-    })));
+    setNodes((nds) => nds.map((n) => {
+      if (n.type !== 'artifact') return n; // topic cards carry no candidate dots
+      return {
+        ...n,
+        data: {
+          ...n.data,
+          candidates: byNode.get(n.id) ?? [],
+          onPromote: (peerId: string) => promoteCandidate(n.id, peerId),
+          onPerspectives: openPerspectives,
+        },
+      };
+    }));
   }, [candidates, edges, promoteCandidate, openPerspectives, setNodes]);
 
   // ── Delete: edges hit the DELETE endpoint; nodes persist via full-layout PUT. ──
@@ -687,30 +820,55 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
 
   const isEmpty = !loading && nodes.length === 0;
 
-  // ── Time-window filter: hide (never remove) nodes/edges outside the window. ──
-  // Purely a view concern — the stored layout is untouched, so switching back to
-  // "All" fully restores the map. Position still encodes meaning throughout.
+  // ── Derived view (P3 + P6): fold TWO reversible view-concerns onto `nodes`
+  //    without ever mutating the stored layout —
+  //      (1) collapse: a topic card shrinks to header-only + its children hide;
+  //      (2) time-window: nodes/edges outside the recency window hide.
+  //    Switching a topic open / picking "All" fully restores the map. ──
   const displayNodes = useMemo(() => {
-    if (timeWindowMs == null) return nodes;
-    const cutoff = Date.now() - timeWindowMs;
-    return nodes.map((n) => {
-      const t = Date.parse(n.data.node.created_at);
-      const hidden = !Number.isNaN(t) && t < cutoff;
+    const cutoff = timeWindowMs == null ? null : Date.now() - timeWindowMs;
+    return nodes.map((n): CanvasFlowNode => {
+      let hidden = false;
+      if (cutoff != null) {
+        const t = Date.parse(n.data.node.created_at);
+        hidden = !Number.isNaN(t) && t < cutoff;
+      }
+      if (n.type === 'topicCard') {
+        const collapsed = collapsedTopics.has(n.id);
+        const h = collapsed ? TOPIC_HEADER_H : (n.data.node.height ?? 220);
+        return {
+          ...n,
+          hidden,
+          height: h,
+          style: { ...(n.style || {}), width: n.data.node.width, height: h },
+          data: { ...n.data, collapsed, onToggle: toggleTopic },
+        };
+      }
+      // A thread also hides when its containing topic card is collapsed.
+      if (n.parentId && collapsedTopics.has(n.parentId)) hidden = true;
       return !!n.hidden === hidden ? n : { ...n, hidden };
     });
-  }, [nodes, timeWindowMs]);
+  }, [nodes, timeWindowMs, collapsedTopics, toggleTopic]);
 
   const displayEdges = useMemo(() => {
-    if (timeWindowMs == null) return edges;
     const hiddenNodeIds = new Set(displayNodes.filter((n) => n.hidden).map((n) => n.id));
     if (hiddenNodeIds.size === 0) return edges;
     return edges.map((e) => {
       const hidden = hiddenNodeIds.has(e.source) || hiddenNodeIds.has(e.target);
       return !!e.hidden === hidden ? e : { ...e, hidden };
     });
-  }, [edges, displayNodes, timeWindowMs]);
+  }, [edges, displayNodes]);
 
-  const hiddenCount = timeWindowMs == null ? 0 : displayNodes.filter((n) => n.hidden).length;
+  // Only the time-window lens contributes to the "−N outside this window" chip
+  // (collapsed children are a separate, self-evident affordance).
+  const hiddenCount = useMemo(() => {
+    if (timeWindowMs == null) return 0;
+    const cutoff = Date.now() - timeWindowMs;
+    return nodes.filter((n) => {
+      const t = Date.parse(n.data.node.created_at);
+      return !Number.isNaN(t) && t < cutoff;
+    }).length;
+  }, [nodes, timeWindowMs]);
 
   return (
     <div className="relative h-full w-full">

@@ -30,10 +30,13 @@ export interface CanvasNode {
   id: string;
   x: number;
   y: number;
+  /** Node role. Thread nodes are `chat`/`source`/`artifact`/…; a `'topic'`
+   *  node is a GROUP CARD container whose children position RELATIVE to it. */
   kind: string;
   ref_type: string;
   ref_id: string;
-  /** The renderable body — an Artifact envelope. */
+  /** The renderable body — an Artifact envelope. Topic cards carry a
+   *  `json:topic-card` snapshot `{ payload: { title, synthesis, count } }`. */
   snapshot: Artifact;
   title: string;
   z: number;
@@ -41,6 +44,12 @@ export interface CanvasNode {
   /** Optional persisted dimensions (round-tripped via the full-layout PUT). */
   width?: number;
   height?: number;
+  /** The topic this thread belongs to (null when it's an orphan). */
+  topic_id?: string | null;
+  /** The react-flow parent (a `topic:<tid>` card id) when this thread sits
+   *  INSIDE a card — its x,y are then RELATIVE to the card. null = orphan
+   *  (absolute position in a lane). */
+  parent_id?: string | null;
 }
 
 export interface CanvasEdge {
