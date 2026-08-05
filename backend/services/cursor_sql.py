@@ -73,6 +73,12 @@ _ENTITY_COL_HINT = re.compile(
     r"person|agent|seller|title|team|company|vendor|email)",
     re.IGNORECASE,
 )
+# PERSON-name columns get TOP priority — the guide resolves people via employees.full_name → email_id,
+# and on a 58-object schema there are 50+ name-ish columns, so a person-name column must be searched
+# before generic ones (account_name/record_key) or the budget runs out first.
+_PERSON_NAME_HINT = re.compile(
+    r"(full_name|rep_name|employee_name|person_name|contact_name|manager_name|agent_name|"
+    r"display_name|owner_name|ae_name|se_name|rsm_name)", re.IGNORECASE)
 # Words that look capitalized but aren't entities (sentence starts / question words).
 _ENTITY_STOPWORDS = {
     "how", "what", "which", "who", "when", "where", "why", "show", "list", "give", "tell",
@@ -162,12 +168,18 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
                 col = str(c.get("sanitized", ""))
                 if not col:
                     continue
-                priority = 0 if _ENTITY_COL_HINT.search(col) else 1
+                # Person-name columns first (0), then generic entity-name columns (1), then rest (2).
+                if _PERSON_NAME_HINT.search(col):
+                    priority = 0
+                elif _ENTITY_COL_HINT.search(col):
+                    priority = 1
+                else:
+                    priority = 2
                 targets.append((priority, tname, col))
         targets.sort(key=lambda x: x[0])
         ordered = [(tname, col) for _p, tname, col in targets]
 
-        budget = 24  # hard cap on lookups → bounds latency (indexed LIKE over a name column is ms)
+        budget = 48  # hard cap on lookups → bounds latency (indexed LIKE over a name column is ms)
         resolved_terms: set = set()
         for term in cands:
             if budget <= 0:
@@ -189,6 +201,11 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
                                   "key_col": key_col or "", "key_value": key_val or ""})
                     resolved_terms.add(term.lower())
                     break  # first (highest-priority) column that matches wins for this term
+        unresolved = [c for c in cands if c.lower() not in resolved_terms]
+        if unresolved:
+            # Visible in the log: a named entity we could NOT match to any name column (so the model
+            # is left to guess a literal — the display-name-in-key failure). Helps diagnose in the field.
+            logger.info(f"[cursor] entities NOT grounded (no name-column match): {unresolved}")
     except Exception as e:
         logger.debug(f"[cursor] entity resolution skipped: {type(e).__name__}: {e}")
     return hints
@@ -387,17 +404,27 @@ def _parse_recipes(governance: str) -> List[Dict[str, str]]:
 
 def _match_recipes(question: str, recipes: List[Dict[str, str]], k: int = 3) -> List[Dict[str, str]]:
     """Rank recipes by token overlap of the question against each recipe's request (+ its approach,
-    weighted lower). Returns up to k with a positive score, best first."""
+    weighted lower). Uses PREFIX/stem matching so 'accounts'~'account' and 'own'~'ownership' count —
+    exact-token overlap missed the guide's intents entirely (recipes=0 in the field). Best first."""
     if not recipes:
         return []
     qtok = _tokens(question)
     if not qtok:
         return []
+
+    def _overlap(a: set, b: set) -> int:
+        n = 0
+        for x in a:
+            for y in b:
+                if x == y or (min(len(x), len(y)) >= 3 and
+                              (x.startswith(y) or y.startswith(x))):  # prefix/stem match
+                    n += 1
+                    break
+        return n
+
     scored = []
     for r in recipes:
-        rtok = _tokens(r["request"])
-        atok = _tokens(r["approach"])
-        score = 2 * len(qtok & rtok) + len(qtok & atok)
+        score = 2 * _overlap(qtok, _tokens(r["request"])) + _overlap(qtok, _tokens(r["approach"]))
         if score > 0:
             scored.append((score, r))
     scored.sort(key=lambda x: -x[0])
