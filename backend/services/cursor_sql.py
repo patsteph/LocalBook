@@ -223,7 +223,10 @@ def _mschema_table(t: Dict[str, Any]) -> str:
     """One table in a compact M-Schema-style block: (col:dtype, examples) per column.
     M-Schema beats verbose DDL for small models (measured +2pp on BIRD) and is shorter."""
     name = t.get("table_name", "")
-    header = f'# Table: {name}  ({t.get("row_count", "?")} rows)'
+    if t.get("kind") == "view":
+        header = f'# View: {name}  (PRE-JOINED — prefer this over base tables)'
+    else:
+        header = f'# Table: {name}  ({t.get("row_count", "?")} rows)'
     lines = [header, "["]
     cols = t.get("columns", [])
     for i, c in enumerate(cols):
@@ -412,7 +415,10 @@ def _build_cursor_prompt(question: str, linked: List[Dict[str, Any]],
         'double quotes (e.g. "Sales Amount").\n'
         "- NEVER reference a column that is not listed. To count rows use COUNT(*), never COUNT(id) "
         "unless an 'id' column is explicitly listed.\n"
-        "- Use the [Foreign Keys] join paths above when a question spans tables — JOIN on those "
+        "- PREFER a purpose-built VIEW (an object named v_…, marked '# View') when one matches the "
+        "question — it already pre-joins the base tables, so query it DIRECTLY instead of writing the "
+        "joins yourself. Only join base tables when no view fits.\n"
+        "- Use the [Foreign Keys] join paths above when a question spans base tables — JOIN on those "
         "exact key pairs; do not guess join columns.\n"
         "- To filter by a PERSON'S NAME or other entity, use the GROUNDED VALUES above if provided; "
         "otherwise JOIN to the table that stores that name and match the name column there — NEVER "

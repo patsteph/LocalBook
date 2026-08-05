@@ -49,8 +49,13 @@ def select_relevant_tables(question: str, schema: List[Dict[str, Any]],
                 if c.get("low_cardinality"):
                     hay += " " + " ".join(str(v).lower() for v in (c.get("values") or [])[:20])
             htokens = set(re.split(r"[^a-z0-9]+", hay))
+            overlap = len(qtokens & htokens)
             gov_bonus = 100 if name and name.lower() in gov_low else 0
-            scored.append((len(qtokens & htokens) + gov_bonus, t))
+            # Prefer a purpose-built VIEW (v_…) over an equally-relevant base table — a view usually
+            # pre-joins exactly what the question needs (only when it already has token overlap, so
+            # irrelevant views aren't pulled in).
+            view_bonus = 2 if (t.get("kind") == "view" and overlap > 0) else 0
+            scored.append((overlap + gov_bonus + view_bonus, t))
         scored.sort(key=lambda x: -x[0])
         # Keep only tables that actually matched (score > 0) — don't pad the prompt with
         # irrelevant tables. If nothing matched (a generic question), fall back to top-K.

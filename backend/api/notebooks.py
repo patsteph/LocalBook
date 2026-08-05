@@ -120,11 +120,12 @@ async def data_status(notebook_id: str):
     if nb.get("type") != "cursor":
         return {"connected": False, "type": nb.get("type", "standard")}
     cfg = nb.get("config") or {}
-    tables = cfg.get("tables", [])
+    objects = cfg.get("tables", [])   # tables + views (each carries a "kind")
     connected = bool(cfg.get("db_path"))
     # data_status: "ready" once the .db schema is introspected (SQL-queryable). Older notebooks
     # connected before this field existed are treated as ready when they have a db_path.
     data_status = cfg.get("data_status") or ("ready" if connected else "not_connected")
+    n_views = sum(1 for t in objects if t.get("kind") == "view")
     return {
         "connected": connected,
         "type": "cursor",
@@ -132,10 +133,13 @@ async def data_status(notebook_id: str):
         "ready": connected and data_status == "ready",
         "folder_path": cfg.get("folder_path"),
         "db_filename": cfg.get("db_filename"),
-        "tables": tables,
-        "table_count": len(tables),
-        "row_total": sum(int(t.get("row_count", 0) or 0) for t in tables),
-        "views": int(cfg.get("views", 0) or 0),
+        "tables": objects,
+        "table_count": len(objects) - n_views,
+        "view_count": n_views,
+        # Rows counted from base tables only (views skip COUNT — can be an 8-table join).
+        "row_total": sum(int(t.get("row_count", 0) or 0)
+                         for t in objects if t.get("kind") != "view"),
+        "views": n_views,
         "governance_files": list((cfg.get("governance_files") or {}).values()),
         "refreshed_at": cfg.get("refreshed_at"),
     }

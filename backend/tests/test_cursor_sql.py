@@ -80,6 +80,31 @@ def test_fk_inference_name_based_hub_key():
         assert r["to_col"].lower() not in {"rep_name", "seller_name", "account_name"}
 
 
+def test_views_are_introspected_and_preferred(sample_db):
+    # The 21 v_ views in the real .db were invisible (introspection was tables-only). They must now
+    # appear with kind='view' and be PREFERRED by schema-linking over equally-relevant base tables.
+    tmp, ext = sample_db
+    from storage import tabular_store as ts
+    from services import tabular_query as tq, cursor_sql as cs
+    conn = __import__("sqlite3").connect(str(ext))
+    conn.execute("CREATE VIEW v_records AS "
+                 "SELECT a.account_id, a.region, e.rep_name FROM record_roster a "
+                 "JOIN person_roster e ON a.owner_id = e.owner_id")
+    conn.commit(); conn.close()
+    idx = ts.index_external_db("nbview", "cursor:nbview", str(ext))
+    assert idx["ok"] and idx["view_count"] == 1
+    schema = ts.get_schema("nbview")
+    view = next((o for o in schema if o["kind"] == "view"), None)
+    assert view and view["table_name"] == "v_records"
+    # FK inference must NOT treat the view as a base-graph node.
+    for r in ts.get_relationships("nbview"):
+        assert r["from_table"] != "v_records" and r["to_table"] != "v_records"
+    # Schema-linking prefers the view when it's relevant.
+    linked = tq.select_relevant_tables("region and rep_name by account", schema, "", max_tables=2)
+    assert any(o["kind"] == "view" for o in linked)
+    assert "# View:" in cs._mschema_table(view)
+
+
 def test_fk_inference_persisted_on_index(sample_db):
     _, ext = sample_db
     from storage import tabular_store as ts

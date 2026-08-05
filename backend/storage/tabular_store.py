@@ -147,6 +147,10 @@ def _ensure_catalog(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute(f"PRAGMA table_info({_CATALOG})").fetchall()}
     if "db_path" not in cols:
         conn.execute(f"ALTER TABLE {_CATALOG} ADD COLUMN db_path TEXT")
+    # `kind` = 'table' | 'view'. Cursor Style external DBs ship purpose-built v_ VIEWS that pre-join
+    # the base tables — surfacing them (and preferring them) is the biggest routing-accuracy lever.
+    if "kind" not in cols:
+        conn.execute(f"ALTER TABLE {_CATALOG} ADD COLUMN kind TEXT DEFAULT 'table'")
 
 
 def _column_metadata(df, colmap: Dict[str, str]) -> List[Dict[str, Any]]:
@@ -275,16 +279,25 @@ def _sqlite_affinity(decl_type: str) -> str:
     return "text"  # BLOB / unknown → treat as text for prompting
 
 
-def _external_column_metadata(conn: sqlite3.Connection, table: str) -> List[Dict[str, Any]]:
-    """Per-column metadata for a real table — SAME shape as `_column_metadata` (sanitized,
+def _external_column_metadata(conn: sqlite3.Connection, table: str,
+                              is_view: bool = False) -> List[Dict[str, Any]]:
+    """Per-column metadata for a real table/view — SAME shape as `_column_metadata` (sanitized,
     dtype, low_cardinality, values/samples) but built from PRAGMA + SELECT DISTINCT instead
-    of pandas. Column identifiers keep their REAL names (the external db is authoritative)."""
+    of pandas. Column identifiers keep their REAL names (the external db is authoritative).
+
+    For a VIEW we take ONLY the column names + types (no DISTINCT/COUNT scans) — a v_ view can be an
+    8-table join, so per-column value profiling would make connect crawl. Views are for routing, not
+    value grounding (that happens on the base tables)."""
     cols: List[Dict[str, Any]] = []
     for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall():
         name = row[1]
         is_numeric = _sqlite_affinity(row[2]) == "number"
         entry: Dict[str, Any] = {"original": name, "sanitized": name,
                                  "dtype": "number" if is_numeric else "text"}
+        if is_view:
+            entry["low_cardinality"] = False
+            cols.append(entry)
+            continue
         try:
             if not is_numeric:
                 distinct = conn.execute(
@@ -481,38 +494,44 @@ def index_external_db(notebook_id: str, source_id: str, db_path: str) -> Dict[st
     catalog_rows: List[tuple] = []
     summaries: List[Dict[str, Any]] = []
     try:
-        tables = [r[0] for r in ext.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
+        objects = [(r[0], r[1]) for r in ext.execute(
+            "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') "
             "AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()]
-        if not tables:
-            return {"ok": False, "error": "database has no tables"}
+        if not objects:
+            return {"ok": False, "error": "database has no tables or views"}
         table_cols: Dict[str, List[str]] = {}
         table_pks: Dict[str, List[str]] = {}
         declared: List[Dict[str, str]] = []
-        for t in tables:
-            cols = _external_column_metadata(ext, t)
-            try:
-                rc = ext.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
-            except Exception:
-                rc = 0
-            catalog_rows.append((t, cols, rc))
-            summaries.append({"table_name": t, "row_count": rc,
+        for name, otype in objects:
+            is_view = (otype == "view")
+            kind = "view" if is_view else "table"
+            cols = _external_column_metadata(ext, name, is_view=is_view)
+            rc = None  # views: skip COUNT (can be an 8-table join) — routing doesn't need it
+            if not is_view:
+                try:
+                    rc = ext.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+                except Exception:
+                    rc = 0
+            catalog_rows.append((name, cols, rc, kind))
+            summaries.append({"table_name": name, "kind": kind, "row_count": rc,
                               "columns": [c["sanitized"] for c in cols]})
-            # Capture the real column names + PKs + declared FKs for join-graph inference.
-            try:
-                info = ext.execute(f'PRAGMA table_info("{t}")').fetchall()
-                table_cols[t] = [r[1] for r in info]
-                table_pks[t] = [r[1] for r in info if r[5]]
-                for fk in ext.execute(f'PRAGMA foreign_key_list("{t}")').fetchall():
-                    # PRAGMA foreign_key_list: (id, seq, table, from, to, on_update, on_delete, match)
-                    to_tbl, from_col, to_col = fk[2], fk[3], fk[4]
-                    if not to_col:  # FK to the target's PK when 'to' is unspecified
-                        to_col = (table_pks.get(to_tbl) or ["rowid"])[0]
-                    declared.append({"from_table": t, "from_col": from_col,
-                                     "to_table": to_tbl, "to_col": to_col, "kind": "declared"})
-            except Exception:
-                table_cols.setdefault(t, [c["sanitized"] for c in cols])
-                table_pks.setdefault(t, [])
+            # FK/join inference is derived from BASE TABLES only (views are query targets that
+            # already encapsulate joins — they aren't nodes in the base join graph).
+            if not is_view:
+                try:
+                    info = ext.execute(f'PRAGMA table_info("{name}")').fetchall()
+                    table_cols[name] = [r[1] for r in info]
+                    table_pks[name] = [r[1] for r in info if r[5]]
+                    for fk in ext.execute(f'PRAGMA foreign_key_list("{name}")').fetchall():
+                        # PRAGMA foreign_key_list: (id, seq, table, from, to, on_update, on_delete, match)
+                        to_tbl, from_col, to_col = fk[2], fk[3], fk[4]
+                        if not to_col:  # FK to the target's PK when 'to' is unspecified
+                            to_col = (table_pks.get(to_tbl) or ["rowid"])[0]
+                        declared.append({"from_table": name, "from_col": from_col,
+                                         "to_table": to_tbl, "to_col": to_col, "kind": "declared"})
+                except Exception:
+                    table_cols.setdefault(name, [c["sanitized"] for c in cols])
+                    table_pks.setdefault(name, [])
         relationships = _infer_relationships(table_cols, table_pks, declared)
     except Exception as e:
         return {"ok": False, "error": f"introspection failed: {type(e).__name__}: {e}"}
@@ -526,12 +545,13 @@ def index_external_db(notebook_id: str, source_id: str, db_path: str) -> Dict[st
         _ensure_relationships(conn)
         # External tables live in the .db, NOT in tabular.db — only clear catalog rows.
         conn.execute(f"DELETE FROM {_CATALOG} WHERE source_id = ?", (source_id,))
-        for t, cols, rc in catalog_rows:
+        for name, cols, rc, kind in catalog_rows:
             conn.execute(
                 f"INSERT INTO {_CATALOG} (notebook_id, source_id, filename, sheet_name, "
-                f"table_name, columns_json, row_count, created_at, db_path) "
-                f"VALUES (?,?,?,?,?,?,?,?,?)",
-                (notebook_id, source_id, p.name, t, t, json.dumps(cols), rc, now, str(p)))
+                f"table_name, columns_json, row_count, created_at, db_path, kind) "
+                f"VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (notebook_id, source_id, p.name, name, name, json.dumps(cols),
+                 (rc if rc is not None else 0), now, str(p), kind))
         # Persist the FK/join graph (monthly-refresh safe: replace the notebook's row).
         conn.execute(
             f"INSERT OR REPLACE INTO {_RELATIONSHIPS} (notebook_id, relationships_json, created_at) "
@@ -539,8 +559,10 @@ def index_external_db(notebook_id: str, source_id: str, db_path: str) -> Dict[st
         conn.commit()
     finally:
         conn.close()
+    n_views = sum(1 for s in summaries if s.get("kind") == "view")
     return {"ok": True, "tables": summaries, "db_path": str(p), "filename": p.name,
-            "relationships": len(relationships)}
+            "relationships": len(relationships),
+            "table_count": len(summaries) - n_views, "view_count": n_views}
 
 
 def get_external_db_path(notebook_id: str, source_ids: Optional[List[str]] = None) -> Optional[str]:
@@ -742,7 +764,8 @@ def get_schema(notebook_id: str, source_ids: Optional[List[str]] = None) -> List
         _ensure_migrated()   # guarantee the db_path column exists before we SELECT it
         conn = _connect(read_only=True)
         try:
-            _cols = "source_id, filename, sheet_name, table_name, columns_json, row_count, db_path"
+            _cols = ("source_id, filename, sheet_name, table_name, columns_json, row_count, "
+                     "db_path, kind")
             if source_ids:
                 q = (f"SELECT {_cols} FROM {_CATALOG} WHERE notebook_id=? "
                      f"AND source_id IN ({','.join('?'*len(source_ids))})")
@@ -752,11 +775,11 @@ def get_schema(notebook_id: str, source_ids: Optional[List[str]] = None) -> List
                     f"SELECT {_cols} FROM {_CATALOG} WHERE notebook_id=?", (notebook_id,)
                 ).fetchall()
             out = []
-            for sid, filename, sheet, table, cols_json, rc, db_path in rows:
+            for sid, filename, sheet, table, cols_json, rc, db_path, kind in rows:
                 out.append({
                     "source_id": sid, "filename": filename, "sheet_name": sheet,
                     "table_name": table, "columns": json.loads(cols_json), "row_count": rc,
-                    "db_path": db_path,
+                    "db_path": db_path, "kind": kind or "table",
                 })
             return out
         finally:
