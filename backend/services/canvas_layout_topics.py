@@ -25,9 +25,9 @@ _CHIP_H = 120.0
 _CHIP_GAP = 12.0
 _CARD_PAD = 16.0
 _HEADER_H = 64.0          # room for title + synthesis + count
-_CARD_GAP = 56.0          # gap between cards
-_MAX_ROW_W = 3400.0
-_ORPHAN_GAP_Y = 120.0
+# Golden-angle spiral step. Phyllotaxis gives ~uniform neighbor spacing ≈ _SPIRAL_SPACING, so this
+# must exceed a large card's diagonal (~560px for a 3-4 col card) to avoid overlap.
+_SPIRAL_SPACING = 720.0
 
 
 def _topic_node_id(topic_id: str) -> str:
@@ -61,19 +61,20 @@ def layout_topics_and_threads(topics: List[Dict[str, Any]],
             orphans.append(n)
 
     out: List[Dict[str, Any]] = []
-    cursor_x = cursor_y = 0.0
-    row_h = 0.0
-    # Order cards by size (biggest first) for a stable, readable pack.
+    # Biggest topics first → they land near the center of the constellation.
     ordered = sorted(by_topic.values(), key=lambda t: -len(threads.get(t["id"], [])))
 
-    for t in ordered:
-        members = sorted(threads.get(t["id"], []),
-                         key=lambda n: (n.get("created_at") or ""))
+    # ORGANIC scatter (not a grid of rows): a phyllotaxis / golden-angle spiral. Card i sits at
+    # angle i·137.5° and radius ∝ √i, which spreads cards out evenly like a constellation / the
+    # dots on a sunflower — no rows, roughly-uniform spacing, deterministic (no randomness).
+    golden = math.pi * (3.0 - math.sqrt(5.0))
+    for i, t in enumerate(ordered):
+        members = sorted(threads.get(t["id"], []), key=lambda n: (n.get("created_at") or ""))
         cols, cw, ch = _card_dims(len(members))
-        if cursor_x > 0 and cursor_x + cw > _MAX_ROW_W:   # wrap to next row
-            cursor_x = 0.0
-            cursor_y += row_h + _CARD_GAP
-            row_h = 0.0
+        r = _SPIRAL_SPACING * math.sqrt(i + 0.5)
+        theta = i * golden
+        gx = r * math.cos(theta) - cw / 2.0     # center the card on the spiral point
+        gy = r * math.sin(theta) - ch / 2.0
 
         group_id = _topic_node_id(t["id"])
         out.append({
@@ -82,18 +83,13 @@ def layout_topics_and_threads(topics: List[Dict[str, Any]],
             "ref_type": TOPIC_KIND,
             "ref_id": t["id"],
             "title": t.get("title", "") or "Topic",
-            # payload carries what the frontend topic-card node renders (title/synthesis/count).
             "snapshot": {"id": str(uuid.uuid4()), "type": "json:topic-card",
                          "payload": {"title": t.get("title", ""), "synthesis": t.get("synthesis", ""),
                                      "count": len(members)}},
-            "x": cursor_x,
-            "y": cursor_y,
-            "width": cw,
-            "height": ch,
-            "topic_id": None,
-            "parent_id": None,
+            "x": gx, "y": gy, "width": cw, "height": ch,
+            "topic_id": None, "parent_id": None,
         })
-        # Threads inside the card — positions RELATIVE to the group node.
+        # Threads inside the card — positions RELATIVE to the group node, time-ordered.
         for k, n in enumerate(members):
             n["parent_id"] = group_id
             n["x"] = _CARD_PAD + (k % cols) * (_CHIP_W + _CHIP_GAP)
@@ -102,21 +98,15 @@ def layout_topics_and_threads(topics: List[Dict[str, Any]],
             n["height"] = _CHIP_H
             out.append(n)
 
-        cursor_x += cw + _CARD_GAP
-        row_h = max(row_h, ch)
-
-    # Orphan lane below all cards.
-    oy = cursor_y + row_h + _ORPHAN_GAP_Y
-    ox = 0.0
-    for n in orphans:
-        n["x"] = ox
-        n["y"] = oy
+    # Orphans scatter on an OUTER ring of the same spiral — visible as loose "stars" to be connected.
+    base = len(ordered)
+    for k, n in enumerate(orphans):
+        r = _SPIRAL_SPACING * math.sqrt(base + k + 2.0)
+        theta = (base + k) * golden
+        n["x"] = r * math.cos(theta)
+        n["y"] = r * math.sin(theta)
         n["width"] = _CHIP_W
         n["height"] = _CHIP_H
         out.append(n)
-        ox += _CHIP_W + _CHIP_GAP
-        if ox > _MAX_ROW_W:
-            ox = 0.0
-            oy += _CHIP_H + _CHIP_GAP
 
     return out

@@ -431,16 +431,33 @@ async def populate(notebook_id: str, limit: int = 50):
 
 @router.post("/relayout/{notebook_id}")
 async def relayout(notebook_id: str):
-    """Auto-arrange ('tidy up'): re-cluster + re-position ALL current nodes into a readable
-    map by similarity. Keeps every node; only rewrites positions. Never 500s destructively."""
-    from services import canvas_populate, canvas_candidates
+    """Auto-arrange ('tidy up'): re-run the SAME parent→card→thread constellation layout over the
+    current threads (using their persisted topic_id + the stored sub-topic cards). Keeps every node;
+    only rewrites positions. Falls back to the legacy similarity grid if there are no sub-topics
+    (e.g. a spreadsheet notebook's map). Never 500s destructively."""
+    from services import canvas_populate, canvas_candidates, canvas_layout_topics
+    from storage import canvas_topics_store
     existing = cl.get_layout(notebook_id)
     nodes = existing.get("nodes", [])
-    cand = [{
-        "id": n.get("id"), "ref_type": n.get("ref_type"), "ref_id": n.get("ref_id"),
-        "title": n.get("title", ""), "text": canvas_populate.snapshot_text(n),
-    } for n in nodes if n.get("id")]
-    raw_pairs = await canvas_candidates.compute_raw_pairs(notebook_id, cand)
-    relaid = canvas_populate.relayout_existing(nodes, raw_pairs)
-    cl.save_layout(notebook_id, relaid, existing["edges"], existing["viewport"])
+
+    topics = canvas_topics_store.list_topics(notebook_id)
+    # THREAD nodes (chat/source/artifact) carry topic_id; the old topic group nodes are regenerated,
+    # so drop them here. User-placed (non-derived) nodes are preserved as-is.
+    threads = [n for n in nodes if n.get("ref_type") in _DERIVED_REFS and n.get("kind") != "topic"]
+    preserved = [n for n in nodes if n.get("ref_type") not in _DERIVED_REFS]
+
+    if topics and threads:
+        surviving = [{"id": t["id"], "title": t.get("title", ""), "synthesis": t.get("synthesis", "")}
+                     for t in topics]
+        laid = canvas_layout_topics.layout_topics_and_threads(surviving, threads)
+        final = preserved + laid
+    else:
+        cand = [{
+            "id": n.get("id"), "ref_type": n.get("ref_type"), "ref_id": n.get("ref_id"),
+            "title": n.get("title", ""), "text": canvas_populate.snapshot_text(n),
+        } for n in nodes if n.get("id")]
+        raw_pairs = await canvas_candidates.compute_raw_pairs(notebook_id, cand)
+        final = canvas_populate.relayout_existing(nodes, raw_pairs)
+
+    cl.save_layout(notebook_id, final, existing["edges"], existing["viewport"])
     return cl.get_layout(notebook_id)
