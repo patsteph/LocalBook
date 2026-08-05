@@ -2,9 +2,9 @@
 instruction files) and query it via governed, read-only text-to-SQL.
 
 Model (matches how people use Cursor for this): a folder holds ONE `.db`/`.sqlite` file plus
-`AGENTS.md` / `DATA_OVERVIEW.md` / `domain_guide.md` / `README.md`. The `.db` is read
-IN PLACE, read-only (never copied, never written). The `AGENTS.md` + `DATA_OVERVIEW.md` +
-`domain_guide.md` are AUTHORITATIVE operating rules injected into every SQL prompt
+`AGENTS.md` / `DATA_OVERVIEW.md` / a domain guide (e.g. `DATABASE_GUIDE.md`) / `README.md`. The
+`.db` is read IN PLACE, read-only (never copied, never written). The `AGENTS.md` +
+`DATA_OVERVIEW.md` + the domain guide are AUTHORITATIVE operating rules injected into every SQL prompt
 (canonical joins, required filters, metric definitions, example questions). `README.md` and
 all the docs are also ingested as normal sources so "what does the README say" falls to RAG.
 
@@ -41,15 +41,19 @@ _DB_EXTS = (".db", ".sqlite", ".sqlite3")
 # keep the guides whole so the recipes + business rules actually reach the model.
 _PER_FILE_BUDGET = 9000
 _TOTAL_GOVERNANCE_BUDGET = 24000
-# role -> the candidate filenames we match case-insensitively (first present wins).
+# role -> the candidate filenames we match case-insensitively (first present wins). The domain
+# guide is matched generically: known names first, else any *_guide.md / *_database.md file (see
+# _locate_md's suffix fallback), so an owner can name it whatever fits their domain.
 _MD_ROLES = {
     "readme": ["readme.md"],
     "agents": ["agents.md"],
     "data_overview": ["data_overview.md"],
-    "domain_guide": ["domain_guide.md", "domain_guide.md"],
+    "domain_guide": ["domain_guide.md", "database_guide.md", "guide.md"],
 }
+# Suffixes that mark an owner's domain-guide markdown when it isn't one of the known names.
+_DOMAIN_GUIDE_SUFFIXES = ("_guide.md", "_database.md")
 # The canonical READING ORDER the model is told to follow (README orients → AGENTS rules → data
-# meaning → area rules → schema.html structural key). Budget PRIORITY differs (rules first) so the
+# meaning → domain rules → schema.html structural key). Budget PRIORITY differs (rules first) so the
 # most decision-critical text survives trimming, but the model is instructed to read in this order.
 _GUIDE_ORDER = ("readme", "agents", "data_overview", "domain_guide")
 _BUDGET_PRIORITY = ("agents", "domain_guide", "data_overview", "readme")
@@ -62,13 +66,13 @@ _RULESET = (
     "  1) README — orientation.\n"
     "  2) AGENTS.md — AUTHORITATIVE operating rules (canonical joins, required filters, metric defs).\n"
     "  3) DATA_OVERVIEW — what the data means.\n"
-    "  4) domain_guide — business rules + worked example questions.\n"
+    "  4) DOMAIN GUIDE — business rules + worked example questions.\n"
     "  5) The SCHEMA (schema.html / the objects below) — the structural master key: which TABLES and "
     "VIEWS exist and how they join. Every v_ VIEW is a pre-built 'recipe'.\n"
     "HARD RULES:\n"
     "  - PREFER a purpose-built v_ VIEW over base tables whenever one fits the question (views ARE the "
     "recipes — they pre-join the data correctly).\n"
-    "  - Obey the AGENTS.md / domain_guide rules even when the question does not restate them (default "
+    "  - Obey the AGENTS.md / domain-guide rules even when the question does not restate them (default "
     "fiscal year, unassigned handling, fiscal calendar, area rollups, excluded data).\n"
     "  - Query the RIGHT object; never treat a missing value as zero unless a rule says so.\n\n"
 )
@@ -111,13 +115,23 @@ def _locate_db(folder: Path) -> Path:
 
 
 def _locate_md(folder: Path) -> Dict[str, Optional[str]]:
-    """Map each governance role → the actual filename present (case-insensitive), or None.
-    A role may have several candidate filenames (e.g. domain_guide.md or domain_guide.md)."""
+    """Map each governance role → the actual filename present (case-insensitive), or None. The
+    domain guide is matched by known names first, else any *_guide.md / *_database.md file the owner
+    dropped in (so it can be named for their domain, e.g. a DATABASE_GUIDE.md)."""
     by_lower = {c.name.lower(): c.name for c in folder.iterdir()
                 if c.is_file() and c.suffix.lower() == ".md"}
     out: Dict[str, Optional[str]] = {}
     for role, candidates in _MD_ROLES.items():
         out[role] = next((by_lower[c] for c in candidates if c in by_lower), None)
+    # Suffix fallback for the domain guide: any *_guide.md / *_database.md not already claimed.
+    if not out.get("domain_guide"):
+        claimed = {v for v in out.values() if v}
+        for lower, actual in by_lower.items():
+            if actual in claimed:
+                continue
+            if lower.endswith(_DOMAIN_GUIDE_SUFFIXES):
+                out["domain_guide"] = actual
+                break
     return out
 
 
@@ -134,7 +148,7 @@ def _locate_schema_html(folder: Path) -> Optional[str]:
 
 def _read_governance(folder_path: str, governance_files: Dict[str, Optional[str]]) -> str:
     """Assemble the AUTHORITATIVE governance text from disk (always fresh): the enforcement RULESET,
-    then each guide doc in READING order (README → AGENTS → DATA_OVERVIEW → domain_guide),
+    then each guide doc in READING order (README → AGENTS → DATA_OVERVIEW → DOMAIN_GUIDE),
     then a distilled schema.html structural summary. Budgeted (rules-first priority) so the most
     decision-critical text survives trimming even if a doc is huge."""
     folder = Path(folder_path)
@@ -577,8 +591,8 @@ _BRIEFING_QUERY_CAP = 6
 
 def _extract_example_questions(folder_path: str, governance_files: Dict[str, Optional[str]],
                               limit: int = _BRIEFING_QUERY_CAP) -> List[str]:
-    """Pull the data owner's OWN example questions from domain_guide.md / DATA_OVERVIEW.md
-    (lines ending in '?'). These become the live briefing queries — the KPIs leaders actually
+    """Pull the data owner's OWN example questions from the domain guide / DATA_OVERVIEW.md
+    (lines ending in '?'). These become the live briefing queries — the KPIs owners actually
     ask — so a generated briefing reflects what the docs say matters."""
     folder = Path(folder_path)
     out: List[str] = []

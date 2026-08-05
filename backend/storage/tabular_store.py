@@ -411,8 +411,8 @@ def _infer_relationships(table_cols: Dict[str, List[str]], table_pks: Dict[str, 
         rels.append({"from_table": ft, "from_col": fc, "to_table": tt, "to_col": tc, "kind": kind})
 
     # Heuristic A — the SAME join-key column (id-like OR name-like) present in ≥2 tables, e.g.
-    # record_roster.owner_id ↔ person_roster.owner_id, or the record_assignments.record_key ↔
-    # record_roster.record_key hub key. A hub key in many tables → STAR to its home table (scales;
+    # orders.customer_id ↔ customers.customer_id, or a shared record_key ↔ record_key hub key
+    # across many tables. A hub key in many tables → STAR to its home table (scales;
     # no arbitrary table-count cap that would drop the real hub key).
     keycols: Dict[str, List[str]] = {}
     for t, cols in table_cols.items():

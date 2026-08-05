@@ -154,7 +154,7 @@ async def data_status(notebook_id: str):
 @router.get("/{notebook_id}/guide-file")
 async def guide_file(notebook_id: str, name: str):
     """Return the text of a Cursor Style guide file (README/AGENTS/DATA_OVERVIEW/
-    domain_guide/schema.html) so the user can READ it in-app. Read-only; `name` is
+    domain guide/schema.html) so the user can READ it in-app. Read-only; `name` is
     whitelisted to the notebook's discovered guide files, so no arbitrary path can be read."""
     nb = await notebook_store.get(notebook_id)
     if not nb or nb.get("type") != "cursor":

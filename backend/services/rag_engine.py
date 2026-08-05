@@ -827,7 +827,7 @@ JSON:"""
                 _tres = None
                 _label = "spreadsheet"
                 # Cursor Style notebook: text-to-SQL is the PRIMARY path (every data question),
-                # governed authoritatively by AGENTS.md/DATA_OVERVIEW.md/domain_guide.md, run
+                # governed authoritatively by AGENTS.md/DATA_OVERVIEW.md/the domain guide, run
                 # read-only against the external .db. A miss/doc-question falls through to vector
                 # RAG over the ingested .md ("what does the README say").
                 from services import data_notebook as _dn

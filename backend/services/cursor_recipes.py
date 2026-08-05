@@ -1,21 +1,21 @@
 """Cursor Recipe Templates (Canvas/Cursor 2.2.0) — DETERMINISTIC, validated SQL for known questions.
 
-Free-form LLM SQL over a 58-object schema is a guess: gemma flip-flops the owner key (owner_id vs
-leader_id), stuffs display names into keys, and drops the FY/active/in_scope filters — differently
-every run, and slowly (~20s generation + a gemma reload each time). For a FIXED schema + a KNOWN set
-of questions (the integration guide's recipe table), the right answer is to NOT generate: match the
+Free-form LLM SQL over a wide, many-object schema is a guess: a small model flip-flops which key is
+the owner, stuffs display names into id columns, and drops standard scope filters — differently every
+run, and slowly (~20s generation + a model reload each time). For a FIXED schema + a KNOWN set of
+questions (the notebook's documented routing rules), the right answer is to NOT generate: match the
 question to an owner-authored, pre-validated **template**, fill its parameters, and execute. Correct by
 construction, and sub-second (no model call).
 
 Templates live in the notebook's folder as `recipes.sql` (owner data, alongside `views.sql`). Format —
 a directive comment block per recipe, then the parameterized SQL:
 
-    -- recipe: accounts_owned_by_person
-    -- when: how many accounts does {person} own; {person}'s account count; accounts owned by {person}
-    SELECT COUNT(DISTINCT record_key) AS account_count
-    FROM v_records
-    WHERE owner_id = (SELECT email_id FROM employees WHERE full_name LIKE '%' || :person || '%')
-      AND fiscal_year = 2027 AND record_status = 'active' AND in_scope = 1;
+    -- recipe: orders_for_customer
+    -- when: how many orders does {customer} have; {customer}'s order count; orders for {customer}
+    SELECT COUNT(*) AS order_count
+    FROM orders
+    WHERE customer_id = (SELECT customer_id FROM customers WHERE full_name LIKE '%' || :customer || '%')
+      AND order_year = 2025 AND status = 'active';
 
 `{param}` in a `when:` phrase becomes a captured value; `:param` in the SQL is bound safely (named
 sqlite param). Matching is case-insensitive + whitespace-flexible, so lowercase questions work. If no

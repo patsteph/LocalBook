@@ -59,11 +59,11 @@ def select_relevant_tables(question: str, schema: List[Dict[str, Any]],
             return [t for _, t in scored][:max_tables]
         # RESERVE slots for relevant VIEWS. A purpose-built v_ view pre-joins exactly what a question
         # needs, but base tables have more columns so they out-score views on raw token overlap and
-        # crowded them out entirely (views=0 in the linked set → the model never sees v_records
+        # crowded them out entirely (views=0 in the linked set → the model never sees the v_ view
         # and hand-writes base-table joins). Guarantee up to 3 relevant views, then fill with tables.
         views = [t for t in signal if t.get("kind") == "view"]
         tables = [t for t in signal if t.get("kind") != "view"]
-        # Views ARE the recipes — a single question can reference 5–10 of them (per schema.html). Let
+        # Views ARE the recipes — a single question can reference several of them. Let
         # the RELEVANT views take most of the slots, reserving ≥2 for base tables (for detail a view
         # doesn't cover). No hard 3-view cap. Only views with score>0 are here, so irrelevant ones
         # never fill slots.

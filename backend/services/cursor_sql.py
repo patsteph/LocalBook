@@ -2,7 +2,7 @@
 Cursor SQL — the DEDICATED text-to-SQL engine for Cursor Style notebooks.
 
 A Cursor Style notebook points at a folder holding a monthly SQLite `.db` + governance
-markdown (AGENTS.md / DATA_OVERVIEW.md / domain_guide.md). Questions are answered by
+markdown (AGENTS.md / DATA_OVERVIEW.md / a domain guide). Questions are answered by
 generating ONE read-only SELECT against that external `.db`, governed by the markdown.
 
 WHY THIS IS A SEPARATE MODULE (isolation guarantee)
@@ -62,8 +62,8 @@ _SQL_MODEL_KEEP_ALIVE = "30m"
 # ─────────────────────────────────────────────────────────────────────────────
 # The shared `_resolve_directives` grounds LOW-cardinality values (region, status, …) that are
 # cached in the catalog. It cannot ground a HIGH-cardinality entity the user names — a person,
-# an account, an id — because those aren't in the value lists. That's the "Jordan Lee" gap: the
-# model, left to guess, invents owner_id='jlee'. Here we detect candidate entities in the
+# an account, an id — because those aren't in the value lists. That's the named-entity gap: the
+# model, left to guess, invents a fake key like owner_id='jlee'. Here we detect candidate entities in the
 # question and resolve them to the EXACT stored value via a targeted read-only lookup, then hand
 # the model the grounded fact so it never has to invent a literal.
 
@@ -73,12 +73,12 @@ _ENTITY_COL_HINT = re.compile(
     r"person|agent|seller|title|team|company|vendor|email)",
     re.IGNORECASE,
 )
-# PERSON-name columns get TOP priority — the guide resolves people via employees.full_name → email_id,
-# and on a 58-object schema there are 50+ name-ish columns, so a person-name column must be searched
-# before generic ones (account_name/record_key) or the budget runs out first.
+# PERSON-name columns get TOP priority — a person is resolved via a name column → its stable key id,
+# and a wide schema can have many name-ish columns, so a person-name column must be searched
+# before generic ones (e.g. a record/label name) or the budget runs out first.
 _PERSON_NAME_HINT = re.compile(
     r"(full_name|rep_name|employee_name|person_name|contact_name|manager_name|agent_name|"
-    r"display_name|owner_name|ae_name|se_name|rsm_name)", re.IGNORECASE)
+    r"display_name|owner_name|seller_name)", re.IGNORECASE)
 # Words that look capitalized but aren't entities (sentence starts / question words).
 _ENTITY_STOPWORDS = {
     "how", "what", "which", "who", "when", "where", "why", "show", "list", "give", "tell",
@@ -138,7 +138,7 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
         cands = _candidate_entities(question)
         if not cands:
             return hints
-        # A phrase that is itself a known LOW-cardinality value (e.g. an area/region like "Region WEST")
+        # A phrase that is itself a known LOW-cardinality value (e.g. an area/region like "Region West")
         # is a dimension filter, NOT an entity — grounding it against a name column mismatches it to a
         # placeholder ("TBH - Region West"). Skip those; _resolve_directives handles them.
         low_values: set = set()
@@ -153,7 +153,7 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
         logger.info(f"[cursor] entity candidates to resolve: {cands}")
         # Candidate (table, column) targets: HIGH-cardinality text columns, entity-named first.
         # Search the FULL schema (not just schema-linked tables) — the name column often lives in a
-        # roster/employee table the linker didn't pick, which is why "Jordan Lee" was being guessed.
+        # roster/person table the linker didn't pick, which is why a named person was being guessed.
         cols_by_table: Dict[str, List[str]] = {
             str(t.get("table_name", "")): [str(c.get("sanitized", "")) for c in t.get("columns", [])]
             for t in schema}
@@ -194,7 +194,7 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
                 val = _lookup_value(db_path, tname, col, term)
                 if val is not None:
                     # Phase 3 (integration guide): a person's DISPLAY NAME is not a join key — resolve
-                    # it to the STABLE KEY (email_id / owner_id / …) in the same table, so joins use the
+                    # it to the STABLE KEY (e.g. email_id / employee_id) in the same table, so joins use the
                     # key and never embed the display name. Falls back to the name value if no key.
                     key_col = _stable_key_col(cols_by_table.get(tname, []), col)
                     key_val = _lookup_stable_key(db_path, tname, col, val, key_col) if key_col else None
@@ -215,7 +215,7 @@ def _resolve_entities(question: str, schema: List[Dict[str, Any]],
 
 
 # Placeholder / non-entity stored values a fuzzy LIKE can latch onto ("TBH - Region West",
-# "Unassigned AE"). Grounding to one of these is worse than not grounding at all.
+# "Unassigned"). Grounding to one of these is worse than not grounding at all.
 _PLACEHOLDER_VALUE = re.compile(
     r"^\s*(tbh\b|tbd\b|n/?a\b|none\b|null\b|unknown\b|unassigned\b|-+\s*$|to be hired)",
     re.IGNORECASE)
@@ -248,13 +248,14 @@ def _lookup_value(db_path: Optional[str], table: str, col: str, term: str) -> Op
         return None
 
 
-# Stable-key columns a display name should resolve TO (integration guide Phase 3), preferred order.
-_KEY_COL_PREF = ("email_id", "employee_id", "owner_id", "eng_id", "mgr_id", "record_key")
+# Stable-key columns a display name should resolve TO (Phase 3), preferred order. Generic id-like
+# keys; any other *_id / *_key column is picked up by the suffix rule below.
+_KEY_COL_PREF = ("email_id", "employee_id", "person_id", "user_id", "record_id")
 _KEY_COL_SUFFIX = re.compile(r"(_id|_key)$", re.IGNORECASE)
 
 
 def _stable_key_col(columns: List[str], name_col: str) -> Optional[str]:
-    """The stable-key column in a table that a display name should resolve to (email_id / owner_id / …),
+    """The stable-key column in a table that a display name should resolve to (e.g. email_id),
     so joins use the key instead of the name. Never returns the name column itself."""
     others = [c for c in columns if c and c != name_col]
     lower = {c.lower(): c for c in others}
@@ -269,7 +270,7 @@ def _stable_key_col(columns: List[str], name_col: str) -> Optional[str]:
 
 def _lookup_stable_key(db_path: Optional[str], table: str, name_col: str, name_val: str,
                        key_col: str) -> Optional[str]:
-    """Resolve a matched display name → its stable key value (e.g. employees.full_name → email_id)."""
+    """Resolve a matched display name → its stable key value (e.g. a full_name → its email_id)."""
     try:
         qt = '"' + str(table).replace('"', '""') + '"'
         qn = '"' + str(name_col).replace('"', '""') + '"'
@@ -365,7 +366,7 @@ def _tokens(text: str) -> set:
 
 # A recipe table maps an intent → the canonical object/approach. Two documented shapes:
 #   | Request | Approach |          (AGENTS.md "Typical user requests")
-#   | Intent  | Primary object(s) | Notes |   (domain_guide integration guide "Phase 1 — Classify")
+#   | Intent  | Primary object(s) | Notes |   (a domain guide's "Phase 1 — Classify" routing table)
 _RECIPE_REQ_HDR = ("request", "intent", "question", "need")
 _RECIPE_APP_HDR = ("approach", "primary object", "object", "use this", "primary")
 
@@ -572,7 +573,7 @@ def _validate_sql(sql: str, linked: List[Dict[str, Any]],
                   all_tables: Optional[set] = None) -> Optional[str]:
     """Parse `sql` with sqlglot and catch hallucinated identifiers. Table existence is checked against
     the WHOLE database (`all_tables` — the model may correctly reference a real table we didn't put in
-    the prompt, e.g. a person-resolution subquery `… FROM employees`). Column checks apply only to
+    the prompt, e.g. a person-resolution subquery `… FROM a people table`). Column checks apply only to
     tables whose columns we have (the linked set). Returns a DIRECTED error or None. Never raises."""
     if not _sqlglot_ready():
         return None
@@ -605,8 +606,8 @@ def _validate_sql(sql: str, linked: List[Dict[str, Any]],
             return (f"table '{tname}' does not exist in the database. Prefer these objects: {allowed}")
 
     # Only run the (aggressive) unqualified-column hallucination check when EVERY referenced table is
-    # one we have columns for — otherwise a valid column from a non-linked real table (e.g. employees.
-    # email_id inside a subquery) would be wrongly rejected.
+    # one we have columns for — otherwise a valid column from a non-linked real table (e.g. a
+    # people-table email_id inside a subquery) would be wrongly rejected.
     all_referenced_linked = all(t in valid_cols for t in referenced)
     union_cols: set = set().union(*valid_cols.values()) if valid_cols else set()
     select_aliases = {a.alias.lower() for a in tree.find_all(exp.Alias) if a.alias}
@@ -748,7 +749,7 @@ async def answer(
 
     # Phase 1a — validate BEFORE the (~15s) execution; a directed error repairs far better than a
     # replayed prompt. Table existence is checked against the WHOLE DB (the model may correctly
-    # reference a real table we didn't put in the prompt, e.g. a `… FROM employees` resolution
+    # reference a real table we didn't put in the prompt, e.g. a `… FROM <people-table>` resolution
     # subquery — the guide's Phase 3 pattern). One validation-repair round, then execution-guided.
     all_table_names = {str(t.get("table_name", "")).lower() for t in schema}
     verr = _validate_sql(sql, linked, views, all_table_names)
