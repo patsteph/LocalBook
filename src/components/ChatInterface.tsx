@@ -177,6 +177,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
       // sessionStorage full or unavailable — silently drop
     }
   };
+  // A live ref to the current notebook, updated every render, so the persist effect below keys chat
+  // under the notebook that is active RIGHT NOW (never a stale closure value — the isolation fix).
+  const notebookIdRef = React.useRef(notebookId);
+  notebookIdRef.current = notebookId;
+
   const prevNotebookId = React.useRef(notebookId);
   useEffect(() => {
     if (notebookId && notebookId !== prevNotebookId.current) {
@@ -209,14 +214,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ notebookId, llmPro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // only on mount
 
-  // P14.CHATCACHE — continuously persist the current notebook's
-  // messages so a sudden unmount doesn't lose the in-flight chat.
+  // P14.CHATCACHE — continuously persist the current notebook's messages so a sudden unmount
+  // doesn't lose the in-flight chat.
+  //
+  // ISOLATION BUG FIX (2026-08-05): this effect must fire ONLY when `messages` change, NOT when
+  // `notebookId` changes. On a notebook switch React re-renders with the NEW notebookId while
+  // `messages` still holds the OLD notebook's chat (state updates on the next tick). With notebookId
+  // in the deps, this effect ran during that transition and wrote `cache.set(newNotebook, oldChat)` —
+  // so a question asked in one notebook leaked into another notebook's chat. The outgoing notebook's
+  // messages are saved by the switch effect above (under prevNotebookId); here we only persist
+  // ongoing edits, keyed to the CURRENT notebook via a live ref (avoids a stale closure).
   useEffect(() => {
-    if (!notebookId || messages.length === 0) return;
+    const nb = notebookIdRef.current;
+    if (!nb || messages.length === 0) return;
     const cache = loadChatCache();
-    cache.set(notebookId, messages);
+    cache.set(nb, messages);
     saveChatCache(cache);
-  }, [messages, notebookId]);
+  }, [messages]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
