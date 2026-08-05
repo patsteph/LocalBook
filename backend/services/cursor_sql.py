@@ -568,11 +568,12 @@ def _sqlglot_ready() -> bool:
 
 
 def _validate_sql(sql: str, linked: List[Dict[str, Any]],
-                  views: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
-    """Parse `sql` with sqlglot and check every referenced table + column exists in the linked
-    schema. Returns a DIRECTED error string naming the first hallucinated identifier (for a repair
-    retry), or None if the SQL is valid OR sqlglot is unavailable. Never raises, never false-rejects
-    on a packaging/import problem."""
+                  views: Optional[List[Dict[str, Any]]] = None,
+                  all_tables: Optional[set] = None) -> Optional[str]:
+    """Parse `sql` with sqlglot and catch hallucinated identifiers. Table existence is checked against
+    the WHOLE database (`all_tables` — the model may correctly reference a real table we didn't put in
+    the prompt, e.g. a person-resolution subquery `… FROM employees`). Column checks apply only to
+    tables whose columns we have (the linked set). Returns a DIRECTED error or None. Never raises."""
     if not _sqlglot_ready():
         return None
     import sqlglot
@@ -583,13 +584,14 @@ def _validate_sql(sql: str, linked: List[Dict[str, Any]],
     except ParseError:
         return "the SQL is not valid SQLite; rewrite it as ONE valid read-only SELECT"
     except Exception:
-        return None  # any non-parse failure (import/runtime) → skip, never a false rejection
+        return None
     if tree is None:
         return None
-    valid_tables, valid_cols = _schema_maps(linked, views)
-    alias_to_table: Dict[str, str] = {}   # alias → base table name (both lowercased)
+    linked_tables, valid_cols = _schema_maps(linked, views)   # linked = we HAVE columns
+    known_tables = set(all_tables) if all_tables else set(linked_tables)  # existence = whole DB
+    known_tables |= linked_tables
+    alias_to_table: Dict[str, str] = {}
 
-    # Tables referenced.
     referenced: List[str] = []
     for tbl in tree.find_all(exp.Table):
         tname = (tbl.name or "").lower()
@@ -598,12 +600,14 @@ def _validate_sql(sql: str, linked: List[Dict[str, Any]],
         if tname:
             referenced.append(tname)
     for tname in referenced:
-        if tname and tname not in valid_tables:
-            allowed = ", ".join(sorted(valid_tables))
-            return (f"table '{tname}' does not exist. Use ONLY these tables: {allowed}")
+        if tname and tname not in known_tables:
+            allowed = ", ".join(sorted(linked_tables))
+            return (f"table '{tname}' does not exist in the database. Prefer these objects: {allowed}")
 
-    # Identifiers a BARE column may legitimately be, beyond real columns: SELECT-list aliases and
-    # CTE names. Union of all real columns across the referenced tables/views is the ground truth.
+    # Only run the (aggressive) unqualified-column hallucination check when EVERY referenced table is
+    # one we have columns for — otherwise a valid column from a non-linked real table (e.g. employees.
+    # email_id inside a subquery) would be wrongly rejected.
+    all_referenced_linked = all(t in valid_cols for t in referenced)
     union_cols: set = set().union(*valid_cols.values()) if valid_cols else set()
     select_aliases = {a.alias.lower() for a in tree.find_all(exp.Alias) if a.alias}
     cte_names = {c.alias.lower() for c in tree.find_all(exp.CTE) if c.alias}
@@ -615,25 +619,23 @@ def _validate_sql(sql: str, linked: List[Dict[str, Any]],
         if not col or col == "*":
             continue
         if tbl_ref:
-            # An UNDECLARED qualifier — the model wrote `T1.col` but never `... AS T1` (a frequent
-            # gemma slip) — resolves to no table/alias/CTE. Reject with a directed fix.
-            if (tbl_ref not in alias_to_table and tbl_ref not in valid_tables
+            # Undeclared qualifier (`T1.col` with no `AS T1`, no such table/alias/CTE) → reject.
+            if (tbl_ref not in alias_to_table and tbl_ref not in known_tables
                     and tbl_ref not in cte_names):
                 return (f"'{tbl_ref}' is not a declared table or alias — you used '{tbl_ref}.{col}' "
                         f"without writing 'AS {tbl_ref}'. Either declare the alias in FROM/JOIN or "
                         f"use bare column names.")
-            base = alias_to_table.get(tbl_ref, tbl_ref)  # resolve an alias to its base table
-            if base in valid_cols and col not in valid_cols[base]:
+            base = alias_to_table.get(tbl_ref, tbl_ref)
+            if base in valid_cols and col not in valid_cols[base]:   # only where we KNOW the columns
                 allowed = ", ".join(sorted(valid_cols[base])) or "(none listed)"
                 return (f"column '{col}' does not exist on table '{base}'. "
                         f"Columns on '{base}' are: {allowed}")
-            # base not a known table (e.g. a CTE alias) → can't validate cheaply; skip.
-        else:
-            # Unqualified column — catches the classic COUNT(id) hallucination when no table has it.
-            if union_cols and col not in benign:
-                allowed = ", ".join(sorted(union_cols))
-                return (f"column '{col}' does not exist in any listed table (to count rows use "
-                        f"COUNT(*)). Available columns: {allowed}")
+        elif all_referenced_linked and union_cols and col not in benign:
+            # Unqualified column, and we have columns for every referenced table → catch COUNT(id)-type
+            # hallucinations. Skipped when a non-linked table is in play (we can't know its columns).
+            allowed = ", ".join(sorted(union_cols))
+            return (f"column '{col}' does not exist in any listed table (to count rows use "
+                    f"COUNT(*)). Available columns: {allowed}")
     return None
 
 
@@ -720,18 +722,20 @@ async def answer(
     logger.info(f"[cursor] nb={notebook_id} SQL: {sql}")
 
     # Phase 1a — validate BEFORE the (~15s) execution; a directed error repairs far better than a
-    # replayed prompt. One validation-repair round, then execution-guided repair below.
-    verr = _validate_sql(sql, linked, views)
+    # replayed prompt. Table existence is checked against the WHOLE DB (the model may correctly
+    # reference a real table we didn't put in the prompt, e.g. a `… FROM employees` resolution
+    # subquery — the guide's Phase 3 pattern). One validation-repair round, then execution-guided.
+    all_table_names = {str(t.get("table_name", "")).lower() for t in schema}
+    verr = _validate_sql(sql, linked, views, all_table_names)
     if verr:
         logger.info(f"[cursor] nb={notebook_id} sqlglot rejected SQL: {verr} — repairing")
         repair = (prompt + f"\n\nYOUR PREVIOUS SQL was invalid:\n{sql}\nProblem: {verr}\n"
-                  "Rewrite it as ONE valid SQLite SELECT using ONLY the listed tables/columns. "
-                  "Output ONLY the corrected SQL.")
+                  "Rewrite it as ONE valid SQLite SELECT. Output ONLY the corrected SQL.")
         sql2 = await _generate(repair)
         if sql2:
             if directives:
                 sql2 = _apply_directives_to_sql(sql2, directives)
-            if not _validate_sql(sql2, linked, views):
+            if not _validate_sql(sql2, linked, views, all_table_names):
                 logger.info(f"[cursor] nb={notebook_id} validation-repaired SQL: {sql2}")
                 sql = sql2
 
