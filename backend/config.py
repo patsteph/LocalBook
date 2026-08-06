@@ -91,20 +91,22 @@ class Settings(BaseSettings):
     fast_engine: str = "ollama"     # ollama | mlx — intent, follow-ups, classify
     vision_engine: str = "ollama"   # ollama | mlx — semantic image description
     image_engine: str = "ollama"    # ollama | mlx — Klein / FLUX image generation
-    embed_engine: str = "ollama"    # ollama | mlx — opt-in MLX (LOCALBOOK_EMBED_ENGINE=mlx).
-                                    # MLX runs the SAME arctic-embed-l-v2.0 at the SAME 1024
-                                    # dim → same vector space, NO re-index. fallback-safe.
+    embed_engine: str = "mlx"       # ollama | mlx — MLX-native embeddings IN-PROCESS (keeps Ollama
+                                    # out of the embedding path so it can idle/unload). MLX runs the
+                                    # SAME arctic-embed-l-v2.0 at the SAME 1024 dim → same vector
+                                    # space, NO re-index. fallback-safe (any MLX embed error → Ollama).
+                                    # Override back with LOCALBOOK_EMBED_ENGINE=ollama.
     # MLX model ids per role — used only when that role's engine == "mlx".
     mlx_main_model: str = "mlx-community/gemma-4-e4b-it-4bit"
     mlx_fast_model: str = "mlx-community/Phi-4-mini-instruct-4bit"
     mlx_vision_model: str = "mlx-community/gemma-4-e4b-it-4bit"
     mlx_image_model: str = "Runpod/FLUX.2-klein-4B-mflux-4bit"
     # arctic-embed-l-v2.0 = exactly the Ollama `snowflake-arctic-embed2` (1024-dim). With CLS
-    # pooling (see _embed_on_thread) the 8-bit build matches the stored Ollama-fp16 vectors at
-    # cosine ~0.9997 (retrieval-equivalent, no top-k reorder) — same vector space, NO re-index —
-    # while keeping the .app bundle small. The bf16 build is bit-identical (cosine 1.0000, ~2.3 GB)
-    # if you want zero drift: override via LOCALBOOK_MLX_EMBEDDING_MODEL=…-bf16.
-    mlx_embedding_model: str = "mlx-community/snowflake-arctic-embed-l-v2.0-8bit"
+    # pooling (see _embed_on_thread) the bf16 build is bit-identical to the stored Ollama-fp16
+    # vectors (cosine 1.0000) → ZERO drift, same vector space, NO re-index. ~2.3 GB weights that
+    # download from HF on first use (offline-first embed falls back to Ollama until cached). The
+    # 8-bit build (`…-8bit`) is smaller + retrieval-equivalent (cosine ~0.9997) if bundle/RAM matters.
+    mlx_embedding_model: str = "mlx-community/snowflake-arctic-embed-l-v2.0-bf16"
 
     # Embedding settings
     # snowflake-arctic-embed2: 1024 dims, frontier model, excellent retrieval quality
