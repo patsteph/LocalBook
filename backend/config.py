@@ -134,6 +134,10 @@ class Settings(BaseSettings):
     # timeout/error under load the executor automatically falls back to the fast model, so a
     # contended box still answers. Pin a specific model here to override the primary.
     tabular_sql_model: str | None = None
+    # Cursor Style notebooks: Tier-0 deterministic answering — route a question to a pre-built VIEW
+    # (from the catalog derived at connect/refresh) and assemble the SQL app-side, no LLM. Cursor-only;
+    # the spreadsheet path is untouched. Set False to force the LLM path (diagnostics).
+    cursor_tier0_enabled: bool = True
 
     # Debug mode — enables diagnostic endpoints (health portal, RAG health)
     debug_mode: bool = False  # Set LOCALBOOK_DEBUG_MODE=true to enable

@@ -219,11 +219,56 @@ def _parse_recipes_from_files(folder_path: str,
         return []
 
 
+def _read_full_governance_text(folder_path: str, governance_files: Dict[str, Optional[str]]) -> str:
+    """Concatenate the FULL guide .md files (un-budgeted) — the source text the Routing Catalog parses
+    for intent routes + scope defaults. Never raises."""
+    chunks: List[str] = []
+    for fname in (governance_files or {}).values():
+        if fname and str(fname).lower().endswith(".md"):
+            try:
+                chunks.append((Path(folder_path) / fname).read_text(encoding="utf-8", errors="ignore"))
+            except Exception:
+                continue
+    return "\n\n".join(chunks)
+
+
+def _build_and_store_catalog(notebook_id: str, folder_path: str,
+                             governance_files: Dict[str, Optional[str]], fingerprint: str = "") -> None:
+    """Derive the Routing Catalog from the folder's OWN schema.html + AGENTS.md and persist it in
+    app-data (keyed by notebook — never in the user's folder). This is what replaces the hand-authored
+    recipes.sql. Regenerated on every connect/refresh. Never raises."""
+    try:
+        from services import cursor_catalog
+        from storage import cursor_catalog_store
+        schema_name = (governance_files or {}).get("schema_html")
+        if not schema_name:
+            logger.info(f"[cursor] nb={notebook_id} no schema.html — routing catalog not built")
+            return
+        raw = (Path(folder_path) / schema_name).read_text(encoding="utf-8", errors="ignore")
+        catalog = cursor_catalog.build_routing_catalog(
+            cursor_catalog.parse_schema_catalog(raw),
+            _read_full_governance_text(folder_path, governance_files))
+        if not catalog:
+            logger.info(f"[cursor] nb={notebook_id} routing catalog empty (schema.html unparseable)")
+            return
+        cursor_catalog_store.store_catalog(notebook_id, catalog, fingerprint)
+        nd = len(catalog.get("defaults") or [])
+        logger.info(f"[cursor] nb={notebook_id} routing catalog built: {catalog.get('view_count')} views, "
+                    f"{catalog.get('route_count')} routes, {nd} defaults, "
+                    f"person={'yes' if catalog.get('person_convention') else 'no'}")
+        if nd == 0:
+            logger.info(f"[cursor] nb={notebook_id} no documented scope defaults parsed from the guide "
+                        f"(Tier 0 still works; a view's DDL may already encode its scope)")
+    except Exception as e:
+        logger.warning(f"[cursor] nb={notebook_id} routing-catalog build failed: {type(e).__name__}: {e}")
+
+
 def _read_schema_summary(folder: Path, schema_html_name: Optional[str]) -> str:
-    """Distill schema.html into a compact structural block for the prompt. Best-effort: parses the
-    embedded `SCHEMA_CATALOG` JSON when present (categories + per-object logical associations), else
-    returns a short pointer. Never raises. The actual object/column list already comes from the .db;
-    this adds the human-curated ROUTING (categories) + informal JOIN hints SQLite can't express."""
+    """Distill schema.html into a compact structural block for the prompt: the human-curated ROUTING
+    (categories) + JOIN hints SQLite can't express. Parses the embedded `SCHEMA_CATALOG` JSON via
+    `cursor_catalog` (which reads the REAL shapes — list-categories + `logical_associations_out`
+    `join_note` + `foreign_keys_out`; the previous inline parser matched none of them and emitted
+    nothing). Never raises. The object/column list itself still comes from the .db."""
     if not schema_html_name:
         return ""
     try:
@@ -232,39 +277,10 @@ def _read_schema_summary(folder: Path, schema_html_name: Optional[str]) -> str:
         return ""
     lines = ["### schema.html — structural master key (prefer a v_ VIEW that matches the question)"]
     try:
-        import re as _re
-        from utils.json_repair import robust_json_parse
-        m = _re.search(r"SCHEMA_CATALOG\s*=\s*(\{.*?\})\s*;", raw, _re.DOTALL)
-        catalog = robust_json_parse(m.group(1)) if m else None
-        if isinstance(catalog, dict):
-            cats = catalog.get("categories")
-            if isinstance(cats, dict):
-                for cat, names in list(cats.items())[:12]:
-                    if isinstance(names, list) and names:
-                        lines.append(f"- {cat}: {', '.join(str(n) for n in names[:12])}")
-            # Logical associations / join hints. The integration guide's SCHEMA_CATALOG names these
-            # `logical_associations_*` / `foreign_keys_*` (suffixed), so match any key CONTAINING
-            # 'association' or 'foreign_key' rather than a fixed name.
-            objs = catalog.get("objects")
-            assoc_lines: List[str] = []
-            if isinstance(objs, list):
-                for o in objs:
-                    if not isinstance(o, dict):
-                        continue
-                    name = o.get("name")
-                    for key, aval in o.items():
-                        kl = str(key).lower()
-                        if not ("association" in kl or "foreign_key" in kl):
-                            continue
-                        for a in (aval or []) if isinstance(aval, list) else []:
-                            txt = a if isinstance(a, str) else (
-                                a.get("hint") or a.get("note") or a.get("description")
-                                or a.get("association") if isinstance(a, dict) else None)
-                            if txt and name:
-                                assoc_lines.append(f"- {name}: {txt}")
-            if assoc_lines:
-                lines.append("Join hints (use when NO view fits and you must join base tables):")
-                lines.extend(assoc_lines[:20])
+        from services import cursor_catalog
+        summary = cursor_catalog.render_schema_summary(cursor_catalog.parse_schema_catalog(raw))
+        if summary:
+            lines.append(summary)
     except Exception as e:
         logger.debug(f"[data_notebook] schema.html parse skipped: {type(e).__name__}: {e}")
     if len(lines) == 1:
@@ -451,6 +467,10 @@ async def connect_folder(notebook_id: str, folder_path: str) -> Dict[str, Any]:
     }
     await notebook_store.update(notebook_id, {"type": "cursor", "config": config})
 
+    # Derive + persist the Routing Catalog from schema.html + the guide (app-data, not the folder) —
+    # the deterministic query layer that replaces a hand-authored recipes.sql. Fast + never-raises.
+    _build_and_store_catalog(notebook_id, str(folder), governance_files, config["schema_fingerprint"])
+
     # Don't block the connect on the slow bits: ingest the .md for RAG + warm the SQL model
     # (so the first query isn't a ~10s cold reload). Fire-and-forget.
     import asyncio
@@ -539,6 +559,8 @@ async def refresh(notebook_id: str) -> Dict[str, Any]:
         "refreshed_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
     })
     await notebook_store.update(notebook_id, {"config": config})
+    # Re-derive the Routing Catalog from the fresh schema.html + guide (monthly re-export cadence).
+    _build_and_store_catalog(notebook_id, str(folder), refreshed_md, new_fp)
     return {
         "ok": True, "schema_changed": old_fp != new_fp, "db_filename": db_file.name,
         "tables": tables, "table_count": len(tables),
@@ -574,11 +596,18 @@ async def get_cursor_context(notebook_id: str) -> Optional[Dict[str, Any]]:
         if recipes is None:
             recipes = _parse_recipes_from_files(config.get("folder_path", ""),
                                                 config.get("governance_files", {}))
+        # Deterministic SQL templates (recipes.sql) — the PRIMARY answer path. Disk fallback (mirror
+        # governance/recipes) so it loads even for notebooks connected before templates were cached, or
+        # when the owner drops recipes.sql into the folder AFTER connecting (no refresh needed).
+        templates_sql = config.get("recipe_templates_sql")
+        if not templates_sql:
+            templates_sql = _read_recipes_sql(config.get("folder_path", ""))
+        n_templates = templates_sql.count("-- recipe:") if templates_sql else 0
         logger.info(f"[cursor] nb={notebook_id} → text-to-SQL route: db={Path(db_path).name}, "
                     f"{len(schema)} tables, governance={len(governance)} chars, "
-                    f"{len(recipes)} recipes")
+                    f"{len(recipes)} recipes, {n_templates} recipe-templates")
         return {"db_path": db_path, "schema": schema, "governance": governance,
-                "recipes": recipes, "templates_sql": config.get("recipe_templates_sql") or "",
+                "recipes": recipes, "templates_sql": templates_sql or "",
                 "config": config}
     except Exception as e:
         logger.warning(f"[data_notebook] get_cursor_context failed ({notebook_id}): {e}")
@@ -679,5 +708,8 @@ def cleanup(notebook_id: str) -> None:
         # Remove the notebook's stored canonical views too (never touches the external .db/folder).
         if hasattr(tabular_store, "drop_views"):
             tabular_store.drop_views(notebook_id)
+        # Drop the derived Routing Catalog for this notebook.
+        from storage import cursor_catalog_store
+        cursor_catalog_store.drop_catalog(notebook_id)
     except Exception as e:
         logger.debug(f"[data_notebook] cleanup failed ({notebook_id}): {e}")

@@ -568,6 +568,19 @@ def _sqlglot_ready() -> bool:
     return _SQLGLOT_OK
 
 
+# An id/key column compared to a value with internal whitespace is the classic display-name-in-key
+# bug (`owner_id = 'Jordan Lee'`): an id/key never contains a space, so this is almost always a person's
+# name the model failed to resolve. High precision → safe to reject + repair.
+_ID_KEY_COL = re.compile(r"(_id|_key|_key_id)$", re.IGNORECASE)
+
+
+def _looks_like_display_name(v: str) -> bool:
+    v = (v or "").strip()
+    if not v or "@" in v:            # an email IS a valid id value
+        return False
+    return bool(re.search(r"\S\s+\S", v)) and not v.replace(" ", "").isdigit()
+
+
 def _validate_sql(sql: str, linked: List[Dict[str, Any]],
                   views: Optional[List[Dict[str, Any]]] = None,
                   all_tables: Optional[set] = None) -> Optional[str]:
@@ -637,7 +650,94 @@ def _validate_sql(sql: str, linked: List[Dict[str, Any]],
             allowed = ", ".join(sorted(union_cols))
             return (f"column '{col}' does not exist in any listed table (to count rows use "
                     f"COUNT(*)). Available columns: {allowed}")
+
+    # Display-name-in-key guard: `<something>_id = 'Two Words'` is the model stuffing a person's name
+    # into a key. Reject with a directed repair — resolve the name to its key via a subquery/JOIN.
+    for eq in tree.find_all(exp.EQ):
+        col_node = (eq.this if isinstance(eq.this, exp.Column)
+                    else eq.expression if isinstance(eq.expression, exp.Column) else None)
+        lit_node = (eq.expression if isinstance(eq.expression, exp.Literal)
+                    else eq.this if isinstance(eq.this, exp.Literal) else None)
+        if col_node is None or lit_node is None or not lit_node.is_string:
+            continue
+        cname, val = (col_node.name or ""), (lit_node.this or "")
+        if _ID_KEY_COL.search(cname) and _looks_like_display_name(val):
+            return (f"'{cname}' is an ID/key column but you compared it to the display name '{val}'. "
+                    f"An id/key never equals a person's name. Resolve the name to its key with a "
+                    f"subquery — e.g. {cname} = (SELECT <key_col> FROM <name_table> WHERE <name_col> "
+                    f"LIKE '%{val}%') — or JOIN to the table that stores that name. Never put a "
+                    f"display name in an id/key column.")
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tier 0 — deterministic assembly against a pre-built view from the derived Routing Catalog.
+# ─────────────────────────────────────────────────────────────────────────────
+def _low_card_values(schema: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """{column_name: [low-cardinality values]} from the introspected schema — the dimension value
+    lists Tier-0 matches a filter against. Keyed by the real (sanitized) column name so it lines up
+    with the catalog's view column names."""
+    out: Dict[str, List[str]] = {}
+    for t in schema or []:
+        for c in t.get("columns", []) or []:
+            if c.get("low_cardinality") and c.get("values"):
+                col = str(c.get("sanitized") or c.get("original") or c.get("name") or "")
+                if col and col not in out:
+                    out[col] = list(c["values"])
+    return out
+
+
+def _tier0_answer(notebook_id: str, question: str, schema: List[Dict[str, Any]],
+                  db_path: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Answer via the derived Routing Catalog, or None to fall through to the LLM tiers. Never the
+    source of a wrong number: declines (returns None) whenever it can't ground a named person or the
+    assembled query fails."""
+    from storage import cursor_catalog_store
+    from services import cursor_catalog, cursor_assembler
+
+    catalog = cursor_catalog_store.get_catalog(notebook_id)
+    if not catalog:
+        return None
+    view, conf, source = cursor_catalog.select_target(question, catalog)
+    if not view:
+        return None
+    vp = (catalog.get("views") or {}).get(view)
+    if not vp:
+        return None
+
+    low_card = _low_card_values(schema)
+    slots = cursor_assembler.extract_slots(question, vp, low_card)
+
+    # Ground a named person to its stable key (never the display name). Decline Tier 0 if unresolved.
+    person_key = None
+    if slots.get("person"):
+        pc = catalog.get("person_convention") or {}
+        if pc.get("name_table") and pc.get("name_col") and pc.get("key_col"):
+            exact = _lookup_value(db_path, pc["name_table"], pc["name_col"], slots["person"])
+            if exact:
+                person_key = _lookup_stable_key(db_path, pc["name_table"], pc["name_col"],
+                                                exact, pc["key_col"])
+        if person_key is None:
+            logger.info(f"[cursor] nb={notebook_id} TIER-0 declined: person '{slots['person']}' "
+                        f"not grounded → LLM tiers")
+            return None
+
+    built = cursor_assembler.assemble(vp, slots, person_key)
+    if not built:
+        return None
+    res = tabular_store.execute_readonly(built["sql"], db_path=db_path,
+                                         params=(built["params"] or None))
+    if not res.get("ok"):
+        logger.info(f"[cursor] nb={notebook_id} TIER-0 assembled SQL failed "
+                    f"({res.get('error')}) → LLM tiers")
+        return None
+    logger.info(f"[cursor] nb={notebook_id} TIER-0 route={view} ({source} {conf}) — deterministic "
+                f"(no LLM). SQL: {built['sql']}")
+    rows, cols = res.get("rows", []), res.get("columns", [])
+    ans = _render_answer(question, built["sql"], schema[0]["filename"], res) \
+        + _maybe_chart(question, cols, rows)
+    return {"ok": True, "answer": ans, "sql": built["sql"], "source_id": schema[0]["source_id"],
+            "filename": schema[0]["filename"], "columns": cols, "rows": rows}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -666,14 +766,29 @@ async def answer(
     if db_path is None:
         db_path = next((t["db_path"] for t in schema if t.get("db_path")), None)
 
-    # ── DETERMINISTIC RECIPE TEMPLATES (primary path) ─────────────────────────────────────────────
+    # ── TIER 0 — DERIVED ROUTING CATALOG (primary path) ────────────────────────────────────────────
+    # Pick the right pre-built VIEW from the catalog derived at connect/refresh (schema.html + AGENTS.md,
+    # NOT a hand-authored recipes.sql), extract slots, and ASSEMBLE the SQL — resolving a person's name
+    # to its key and injecting the standard scope defaults. Correct-by-construction, sub-second, no LLM.
+    if getattr(settings, "cursor_tier0_enabled", True):
+        try:
+            t0 = _tier0_answer(notebook_id, question, schema, db_path)
+            if t0 is not None:
+                return t0
+        except Exception as e:
+            logger.warning(f"[cursor] nb={notebook_id} tier-0 error: {type(e).__name__}: {e}")
+
+    # ── DETERMINISTIC RECIPE TEMPLATES (legacy path — removed in Phase 4) ──────────────────────────
     # Owner-authored, pre-validated SQL for known questions (recipes.sql). Match → fill params →
     # execute DIRECTLY — no LLM generation, so it's correct-by-construction and sub-second (no gemma
     # load or ~20s generation). The whole LLM pipeline below is the FALLBACK for unmatched questions.
     if templates_sql:
         try:
             from services import cursor_recipes
-            hit = cursor_recipes.match(question, cursor_recipes.parse_recipe_templates(templates_sql))
+            parsed = cursor_recipes.parse_recipe_templates(templates_sql)
+            hit = cursor_recipes.match(question, parsed)
+            logger.info(f"[cursor] nb={notebook_id} recipe-templates: {len(parsed)} loaded, "
+                        f"match={'YES' if hit else 'NO'}")
             if hit:
                 tsql, tparams, tname = hit
                 logger.info(f"[cursor] nb={notebook_id} RECIPE TEMPLATE '{tname}' params={tparams} "
@@ -689,6 +804,9 @@ async def answer(
                                f"({res.get('error')}) — falling back to LLM")
         except Exception as e:
             logger.warning(f"[cursor] recipe template path error: {type(e).__name__}: {e}")
+    else:
+        logger.info(f"[cursor] nb={notebook_id} no recipe templates loaded (recipes.sql absent from "
+                    f"the folder, or added after connect — the LLM path handles this question)")
 
     # Owner-authored canonical VIEWs (if any) are materialized as TEMP views in the read-only
     # external connection at query time — they pre-join the canonical relationships so the model
