@@ -687,31 +687,34 @@ def _low_card_values(schema: List[Dict[str, Any]]) -> Dict[str, List[str]]:
     return out
 
 
-def _tier0_answer(notebook_id: str, question: str, schema: List[Dict[str, Any]],
-                  db_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Answer via the derived Routing Catalog, or None to fall through to the LLM tiers. Never the
-    source of a wrong number: declines (returns None) whenever it can't ground a named person or the
-    assembled query fails."""
-    from storage import cursor_catalog_store
-    from services import cursor_catalog, cursor_assembler
-
-    catalog = cursor_catalog_store.get_catalog(notebook_id)
-    if not catalog:
-        logger.info(f"[cursor] nb={notebook_id} TIER-0 skipped: no routing catalog (reconnect/refresh?)")
-        return None
-    view, conf, source = cursor_catalog.select_target(question, catalog)
-    if not view:
-        logger.info(f"[cursor] nb={notebook_id} TIER-0 no confident view for the question → LLM tiers")
-        return None
+def _run_view(notebook_id: str, question: str, schema: List[Dict[str, Any]], db_path: Optional[str],
+              catalog: Dict[str, Any], view: str, tier: str, hints: Optional[Dict[str, Any]] = None
+              ) -> Optional[Dict[str, Any]]:
+    """Shared deterministic assembler for Tier 0 (keyword-selected view) and Tier 1 (LLM-picked view).
+    `hints` optionally supplements the deterministically-extracted slots with an LLM's group_by /
+    filters / person. Defaults + person→key resolution are ALWAYS app-owned. Returns the answer
+    envelope, or None to fall through — never a wrong number (declines on unresolved person / bad SQL)."""
+    from services import cursor_assembler
     vp = (catalog.get("views") or {}).get(view)
     if not vp:
         return None
-    logger.info(f"[cursor] nb={notebook_id} TIER-0 selected view={view} ({source} {conf})")
+    logger.info(f"[cursor] nb={notebook_id} {tier} view={view}")
 
-    low_card = _low_card_values(schema)
-    slots = cursor_assembler.extract_slots(question, vp, low_card)
+    slots = cursor_assembler.extract_slots(question, vp, _low_card_values(schema))
+    if hints:   # supplement (never override) the deterministic slots with the LLM's picks
+        if not slots.get("group_by") and hints.get("group_by"):
+            slots["group_by"] = hints["group_by"]
+        if not slots.get("person") and hints.get("person"):
+            slots["person"] = hints["person"]
+        if slots.get("person") and not slots.get("role_key"):
+            slots["role_key"] = cursor_assembler._pick_role_key(question, vp.get("role_keys", []))
+        merged = dict(slots.get("dim_filters") or {})
+        for f in (hints.get("filters") or []):
+            if f.get("col") and f["col"] not in merged and f.get("value") is not None:
+                merged[f["col"]] = f["value"]
+        slots["dim_filters"] = merged
 
-    # Ground a named person to its stable key (never the display name). Decline Tier 0 if unresolved.
+    # Ground a named person to its stable key (never the display name). Decline if unresolved.
     person_key = None
     if slots.get("person"):
         pc = catalog.get("person_convention") or {}
@@ -721,8 +724,8 @@ def _tier0_answer(notebook_id: str, question: str, schema: List[Dict[str, Any]],
                 person_key = _lookup_stable_key(db_path, pc["name_table"], pc["name_col"],
                                                 exact, pc["key_col"])
         if person_key is None:
-            logger.info(f"[cursor] nb={notebook_id} TIER-0 declined: person '{slots['person']}' "
-                        f"not grounded → LLM tiers")
+            logger.info(f"[cursor] nb={notebook_id} {tier} declined: person '{slots['person']}' "
+                        f"not grounded → next tier")
             return None
 
     built = cursor_assembler.assemble(vp, slots, person_key)
@@ -731,16 +734,52 @@ def _tier0_answer(notebook_id: str, question: str, schema: List[Dict[str, Any]],
     res = tabular_store.execute_readonly(built["sql"], db_path=db_path,
                                          params=(built["params"] or None))
     if not res.get("ok"):
-        logger.info(f"[cursor] nb={notebook_id} TIER-0 assembled SQL failed "
-                    f"({res.get('error')}) → LLM tiers")
+        logger.info(f"[cursor] nb={notebook_id} {tier} assembled SQL failed "
+                    f"({res.get('error')}) → next tier")
         return None
-    logger.info(f"[cursor] nb={notebook_id} TIER-0 route={view} ({source} {conf}) — deterministic "
-                f"(no LLM). SQL: {built['sql']}")
+    logger.info(f"[cursor] nb={notebook_id} {tier} route={view} — deterministic assembly. "
+                f"SQL: {built['sql']}")
     rows, cols = res.get("rows", []), res.get("columns", [])
     ans = _render_answer(question, built["sql"], schema[0]["filename"], res) \
         + _maybe_chart(question, cols, rows)
     return {"ok": True, "answer": ans, "sql": built["sql"], "source_id": schema[0]["source_id"],
             "filename": schema[0]["filename"], "columns": cols, "rows": rows}
+
+
+def _tier0_answer(notebook_id: str, question: str, schema: List[Dict[str, Any]],
+                  db_path: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Tier 0 — deterministic keyword/route view selection + assembly (no LLM)."""
+    from storage import cursor_catalog_store
+    from services import cursor_catalog
+
+    catalog = cursor_catalog_store.get_catalog(notebook_id)
+    if not catalog:
+        logger.info(f"[cursor] nb={notebook_id} TIER-0 skipped: no routing catalog (reconnect/refresh?)")
+        return None
+    view, conf, source = cursor_catalog.select_target(question, catalog)
+    if not view:
+        logger.info(f"[cursor] nb={notebook_id} TIER-0 no confident view → Tier 1")
+        return None
+    return _run_view(notebook_id, question, schema, db_path, catalog, view,
+                     f"TIER-0 ({source} {conf})")
+
+
+async def _tier1_answer(notebook_id: str, question: str, schema: List[Dict[str, Any]],
+                        db_path: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Tier 1 — a constrained LLM picks ONE view from the catalog (not SQL); the app assembles it."""
+    from storage import cursor_catalog_store
+    from services import cursor_view_pick
+
+    catalog = cursor_catalog_store.get_catalog(notebook_id)
+    if not catalog:
+        return None
+    model = settings.tabular_sql_model or settings.ollama_model
+    pick = await cursor_view_pick.pick_view(question, catalog, model)
+    if not pick or not pick.get("view"):
+        logger.info(f"[cursor] nb={notebook_id} TIER-1 no view picked → LLM SQL")
+        return None
+    return _run_view(notebook_id, question, schema, db_path, catalog, pick["view"], "TIER-1 (llm)",
+                     hints=pick)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -778,8 +817,11 @@ async def answer(
             t0 = _tier0_answer(notebook_id, question, schema, db_path)
             if t0 is not None:
                 return t0
+            t1 = await _tier1_answer(notebook_id, question, schema, db_path)   # constrained view-pick
+            if t1 is not None:
+                return t1
         except Exception as e:
-            logger.warning(f"[cursor] nb={notebook_id} tier-0 error: {type(e).__name__}: {e}")
+            logger.warning(f"[cursor] nb={notebook_id} tier-0/1 error: {type(e).__name__}: {e}")
 
     # ── DETERMINISTIC RECIPE TEMPLATES (legacy path — removed in Phase 4) ──────────────────────────
     # Owner-authored, pre-validated SQL for known questions (recipes.sql). Match → fill params →
