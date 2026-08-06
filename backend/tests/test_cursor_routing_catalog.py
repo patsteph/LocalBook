@@ -83,12 +83,19 @@ Prose note: examples often show order_year = 1999 which is NOT a default.
 |-----------|---------|
 | Planning year | `order_year = 2025` |
 | Active | `status = 'open'` |
+| Unassigned note | rows where `customer_id = 'unassigned'` are excluded |
 | Region grain | Four regions; exclude rollups |
+
+## Next section
+| Region | rollup |
+| west | `region = 'w'` |
 """
     known = {"order_year", "status", "customer_id", "region"}
     defs = cc.parse_defaults(md, known)
     cols = {d["col"] for d in defs}
-    assert cols == {"order_year", "status"}                       # NOT customer_id (intent example)
+    # order_year + status from the section; customer_id excluded (it's an *_id key); region excluded
+    # (it's in the NEXT section, past the heading boundary)
+    assert cols == {"order_year", "status"}
     assert next(d for d in defs if d["col"] == "order_year")["value"] == "2025"  # table, not prose 1999
 
 

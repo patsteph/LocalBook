@@ -257,7 +257,7 @@ def _build_and_store_catalog(notebook_id: str, folder_path: str,
         logger.info(f"[cursor] nb={notebook_id} routing catalog built: {catalog.get('view_count')} views, "
                     f"{catalog.get('route_count')} routes, defaults=[{def_cols}], "
                     f"person={'yes' if catalog.get('person_convention') else 'no'}")
-        if nd == 0:
+        if not defs:
             logger.info(f"[cursor] nb={notebook_id} no documented scope defaults parsed from the guide "
                         f"(Tier 0 still works; a view's DDL may already encode its scope)")
     except Exception as e:

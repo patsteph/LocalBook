@@ -220,35 +220,49 @@ _DEFAULT_RE = re.compile(
 
 
 def parse_defaults(governance_md: str, known_cols: set) -> List[Dict[str, str]]:
-    """Parse GLOBAL scope defaults (e.g. year=2025, status='active', a scope flag=1, …) STRICTLY from
-    the rows of the AGENTS.md 'Default' table — a markdown table whose header row has a 'Default'
-    column. Scanning only that table (not a char window) keeps example SQL / routing rules elsewhere
-    from being mistaken for defaults (e.g. an `owner_id = …` in an intent example). Grounded to REAL
-    column names; deduped by col (first wins). Empty when no such table — Tier 0 still works, minus
-    auto-scope (the caller logs it)."""
+    """Parse GLOBAL scope defaults (e.g. year=2025, status='active', a scope flag=1, …) from the
+    AGENTS.md defaults section. Anchored on the 'default' HEADING and bounded to that section (so
+    example filters in intent routes elsewhere aren't mistaken for defaults); falls back to a table
+    whose header has a 'Default' column. Grounded to REAL column names, and NEVER an `*_id`/`*_key`
+    column (a scope default is a year/status/flag, never a role key like `owner_id`). Deduped by col
+    (first wins). Empty when nothing parseable — Tier 0 still works, minus auto-scope (caller logs it)."""
     if not governance_md:
         return []
     known_lower = {c.lower() for c in known_cols}
     found: Dict[str, Dict[str, str]] = {}
     lines = governance_md.splitlines()
-    i = 0
-    while i < len(lines):
-        row = lines[i].strip()
-        # a markdown table HEADER row that has a "default" column → parse the rows beneath it
-        if row.startswith("|") and re.search(r"(?i)\bdefault", row):
-            j = i + 1
-            if j < len(lines) and re.match(r"^\|[\s:\-|]+\|?\s*$", lines[j].strip()):
-                j += 1  # skip the |---|---| separator
-            while j < len(lines) and lines[j].strip().startswith("|"):
-                for cell in lines[j].strip().strip("|").split("|"):
-                    m = _DEFAULT_RE.search(cell.strip())
-                    if m and m.group(1).lower() in known_lower and m.group(1).lower() not in found:
-                        found[m.group(1).lower()] = {"col": m.group(1), "op": m.group(2),
-                                                     "value": m.group(3).strip("'\"")}
-                j += 1
-            i = j
-        else:
-            i += 1
+
+    def _accept(m) -> None:
+        col, cl = m.group(1), m.group(1).lower()
+        if cl in known_lower and cl not in found and not re.search(r"(_id|_key)$", cl):
+            found[cl] = {"col": col, "op": m.group(2), "value": m.group(3).strip("'\"")}
+
+    # 1) a markdown HEADING mentioning "default" → scan until the next heading.
+    head = next((i for i, l in enumerate(lines)
+                 if re.match(r"(?i)^\s{0,3}#{1,6}\s+.*\bdefault", l)), None)
+    if head is not None:
+        end = next((j for j in range(head + 1, len(lines))
+                    if re.match(r"^\s{0,3}#{1,6}\s+", lines[j])), len(lines))
+        for l in lines[head + 1:end]:
+            for m in _DEFAULT_RE.finditer(l):
+                _accept(m)
+
+    # 2) fallback: rows under a table whose header row contains "default".
+    if not found:
+        i = 0
+        while i < len(lines):
+            row = lines[i].strip()
+            if row.startswith("|") and re.search(r"(?i)\bdefault", row):
+                j = i + 1
+                if j < len(lines) and re.match(r"^\|[\s:\-|]+\|?\s*$", lines[j].strip()):
+                    j += 1
+                while j < len(lines) and lines[j].strip().startswith("|"):
+                    for m in _DEFAULT_RE.finditer(lines[j]):
+                        _accept(m)
+                    j += 1
+                i = j
+            else:
+                i += 1
     return list(found.values())
 
 
