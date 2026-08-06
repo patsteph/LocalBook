@@ -73,14 +73,19 @@ def _detect_group_by(question: str, dimensions: List[str]) -> Optional[str]:
 
 def _detect_dim_filters(question: str, dimensions: List[str],
                         low_card_values: Dict[str, List[str]]) -> Dict[str, str]:
-    """A stored low-cardinality value named in the question → an equality filter on its dimension."""
+    """A stored low-cardinality value named in the question → an equality filter on its dimension. A
+    given value is assigned to only ONE dimension (so 'in West' doesn't filter both area AND a geo
+    column that happen to share the value 'West')."""
     out: Dict[str, str] = {}
+    used: set = set()
     ql = (question or "").lower()
     for d in dimensions:
         for val in (low_card_values.get(d) or []):
             sval = str(val).strip()
-            if sval and len(sval) >= 2 and sval.lower() in ql:
+            lv = sval.lower()
+            if sval and len(sval) >= 2 and lv not in used and lv in ql:
                 out[d] = sval
+                used.add(lv)
                 break
     return out
 
@@ -148,7 +153,10 @@ def assemble(view_profile: Dict[str, Any], slots: Dict[str, Any],
         where.append(f"{_q(rk)} = :person_key")
         params["person_key"] = person_key
 
+    scope_cols = {str(f.get("col", "")).lower() for f in view_profile.get("scope_filters") or []}
     for i, (col, val) in enumerate((slots.get("dim_filters") or {}).items()):
+        if str(col).lower() in scope_cols:
+            continue   # already constrained by a scope default — don't duplicate the column
         p = f"dim_{i}"
         where.append(f"{_q(col)} = :{p}")
         params[p] = val

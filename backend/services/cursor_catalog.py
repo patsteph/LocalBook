@@ -149,7 +149,7 @@ _PERSON_NAME_COL = re.compile(
     r"(full_name|employee_name|person_name|contact_name|manager_name|rep_name|agent_name|"
     r"owner_name|preferred_name|display_name)$", re.IGNORECASE)
 # Temporal / scope-ish columns — excluded from the record grain and from metrics. Generic patterns
-# (`_year` also catches a fiscal_year); a deployment's own scope defaults come from parse_defaults.
+# (`_year` catches any *_year column); a deployment's own scope defaults come from parse_defaults.
 _SCOPE_COL = re.compile(r"(_year|\byear\b|\bhalf\b|quarter|month|snapshot|as_of)", re.IGNORECASE)
 _NUMERIC_TYPE = re.compile(r"(INT|REAL|FLOA|DOUB|NUMERIC|DECIMAL)", re.IGNORECASE)
 
@@ -220,25 +220,35 @@ _DEFAULT_RE = re.compile(
 
 
 def parse_defaults(governance_md: str, known_cols: set) -> List[Dict[str, str]]:
-    """Parse GLOBAL scope defaults (e.g. year=2025, status='active', a scope flag=1, …) from the
-    AGENTS.md 'Global defaults' table. Grounded to REAL column names (so prose/example filters aren't
-    mistaken for defaults) — robust to the exact markdown format. Returns [{col, op, value}], deduped
-    by col. Empty when none documented (the caller logs it; Tier 0 still works, minus auto-scope)."""
+    """Parse GLOBAL scope defaults (e.g. year=2025, status='active', a scope flag=1, …) STRICTLY from
+    the rows of the AGENTS.md 'Default' table — a markdown table whose header row has a 'Default'
+    column. Scanning only that table (not a char window) keeps example SQL / routing rules elsewhere
+    from being mistaken for defaults (e.g. an `owner_id = …` in an intent example). Grounded to REAL
+    column names; deduped by col (first wins). Empty when no such table — Tier 0 still works, minus
+    auto-scope (the caller logs it)."""
     if not governance_md:
         return []
-    text = governance_md
-    # Prefer a "default(s)" section if present (tighter); else scan the whole doc grounded to columns.
-    m = re.search(r"(?is)^#{1,6}[^\n]*\bdefault", governance_md, re.MULTILINE)
-    if m:
-        text = governance_md[m.start(): m.start() + 2000]
+    known_lower = {c.lower() for c in known_cols}
     found: Dict[str, Dict[str, str]] = {}
-    for mm in _DEFAULT_RE.finditer(text):
-        col, op, val = mm.group(1), mm.group(2), mm.group(3)
-        if col.lower() not in {c.lower() for c in known_cols}:
-            continue
-        if col.lower() in found:
-            continue
-        found[col.lower()] = {"col": col, "op": op, "value": val.strip("'\"")}
+    lines = governance_md.splitlines()
+    i = 0
+    while i < len(lines):
+        row = lines[i].strip()
+        # a markdown table HEADER row that has a "default" column → parse the rows beneath it
+        if row.startswith("|") and re.search(r"(?i)\bdefault", row):
+            j = i + 1
+            if j < len(lines) and re.match(r"^\|[\s:\-|]+\|?\s*$", lines[j].strip()):
+                j += 1  # skip the |---|---| separator
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                for cell in lines[j].strip().strip("|").split("|"):
+                    m = _DEFAULT_RE.search(cell.strip())
+                    if m and m.group(1).lower() in known_lower and m.group(1).lower() not in found:
+                        found[m.group(1).lower()] = {"col": m.group(1), "op": m.group(2),
+                                                     "value": m.group(3).strip("'\"")}
+                j += 1
+            i = j
+        else:
+            i += 1
     return list(found.values())
 
 

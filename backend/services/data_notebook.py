@@ -252,9 +252,10 @@ def _build_and_store_catalog(notebook_id: str, folder_path: str,
             logger.info(f"[cursor] nb={notebook_id} routing catalog empty (schema.html unparseable)")
             return
         cursor_catalog_store.store_catalog(notebook_id, catalog, fingerprint)
-        nd = len(catalog.get("defaults") or [])
+        defs = catalog.get("defaults") or []
+        def_cols = ",".join(f"{d['col']}{d['op']}{d['value']}" for d in defs) or "none"
         logger.info(f"[cursor] nb={notebook_id} routing catalog built: {catalog.get('view_count')} views, "
-                    f"{catalog.get('route_count')} routes, {nd} defaults, "
+                    f"{catalog.get('route_count')} routes, defaults=[{def_cols}], "
                     f"person={'yes' if catalog.get('person_convention') else 'no'}")
         if nd == 0:
             logger.info(f"[cursor] nb={notebook_id} no documented scope defaults parsed from the guide "

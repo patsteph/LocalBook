@@ -69,6 +69,29 @@ def test_build_synthetic_routes_defaults_person():
         assert r["target_view"] == "v_orders" and r["tier0_ready"]
 
 
+def test_parse_defaults_only_from_default_table():
+    md = """
+## Typical user requests
+| Request | Approach |
+|---------|----------|
+| Unassigned orders | Use v_orders where customer_id = 'unassigned' |
+
+Prose note: examples often show order_year = 1999 which is NOT a default.
+
+## Global defaults
+| Dimension | Default |
+|-----------|---------|
+| Planning year | `order_year = 2025` |
+| Active | `status = 'open'` |
+| Region grain | Four regions; exclude rollups |
+"""
+    known = {"order_year", "status", "customer_id", "region"}
+    defs = cc.parse_defaults(md, known)
+    cols = {d["col"] for d in defs}
+    assert cols == {"order_year", "status"}                       # NOT customer_id (intent example)
+    assert next(d for d in defs if d["col"] == "order_year")["value"] == "2025"  # table, not prose 1999
+
+
 def test_view_profile_classification():
     cat = cc.build_routing_catalog(_SYN, _AGENTS)
     vp = cat["views"]["v_orders"]
