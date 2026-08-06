@@ -697,13 +697,16 @@ def _tier0_answer(notebook_id: str, question: str, schema: List[Dict[str, Any]],
 
     catalog = cursor_catalog_store.get_catalog(notebook_id)
     if not catalog:
+        logger.info(f"[cursor] nb={notebook_id} TIER-0 skipped: no routing catalog (reconnect/refresh?)")
         return None
     view, conf, source = cursor_catalog.select_target(question, catalog)
     if not view:
+        logger.info(f"[cursor] nb={notebook_id} TIER-0 no confident view for the question → LLM tiers")
         return None
     vp = (catalog.get("views") or {}).get(view)
     if not vp:
         return None
+    logger.info(f"[cursor] nb={notebook_id} TIER-0 selected view={view} ({source} {conf})")
 
     low_card = _low_card_values(schema)
     slots = cursor_assembler.extract_slots(question, vp, low_card)

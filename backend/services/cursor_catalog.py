@@ -365,47 +365,72 @@ def _content_tokens(text: str) -> set:
             if len(t) >= 3 and t not in _STOP}
 
 
-def _route_score(qtokens: set, phrases: List[str]) -> float:
-    best = 0.0
+def _route_match(qtokens: set, phrases: List[str]) -> "tuple":
+    """Best (fraction-of-intent-covered, absolute-shared-tokens) over a route's trigger phrases. The
+    absolute count gates out trivial single-token phrases ('...are there' → just {account}) that would
+    otherwise match ANY question containing that word — those fall to the view tie-break instead."""
+    best = (0.0, 0)
     for p in phrases:
         pt = _content_tokens(re.sub(r"\{[^}]*\}", " ", p))   # drop {param} placeholders
         if pt:
-            best = max(best, len(qtokens & pt) / len(pt))     # fraction of the intent's content covered
+            shared = len(qtokens & pt)
+            best = max(best, (shared / len(pt), shared))
     return best
 
 
-def _view_tokens(vp: Dict[str, Any]) -> set:
-    toks = _content_tokens(str(vp.get("name", "")))
-    toks |= _content_tokens(str(vp.get("category", "")))
+def _name_tokens(vp: Dict[str, Any]) -> set:
+    return _content_tokens(str(vp.get("name", "")))
+
+
+def _aux_tokens(vp: Dict[str, Any]) -> set:
+    toks = _content_tokens(str(vp.get("category", "")))
     for d in vp.get("dimensions", []):
         toks |= _content_tokens(d)
     return toks
 
 
+# Variant/derived views deprioritized in a tie so the CANONICAL base view wins (roster over roster_half).
+_VARIANT_NAME = re.compile(
+    r"(half|compat|insights|opening|snapshot|geo|latest|commit|opportunity|monthly|quarterly|annual|core)",
+    re.IGNORECASE)
+
+
 def select_target(question: str, catalog: Optional[Dict[str, Any]],
-                  route_thr: float = 0.6, view_thr: int = 2) -> "tuple":
+                  route_thr: float = 0.6) -> "tuple":
     """Pick the VIEW that answers `question`. Returns (view_name|None, confidence, source). Documented
-    intent routes win (trigger-phrase overlap ≥ route_thr); else the nearest view by keyword overlap
-    (≥ view_thr matched content tokens). Deterministic — the embedding refinement is Phase 3."""
+    intent routes win (trigger-phrase overlap ≥ route_thr); else the nearest view — a view NAME token
+    match (weight 2) is required, aux dimension/category tokens add 1, and ties break to the canonical
+    view (most role keys → non-variant name → shortest). Deterministic; embeddings refine this in P3."""
     if not catalog:
         return (None, 0.0, "none")
     q = _content_tokens(question)
     if not q:
         return (None, 0.0, "none")
-    best_route, best_rs = None, 0.0
+    best_route, best_key = None, (0.0, 0)
     for r in catalog.get("routes", []):
         if not r.get("tier0_ready") or not r.get("target_view"):
             continue
-        s = _route_score(q, r.get("trigger_phrases", []))
-        if s > best_rs:
-            best_rs, best_route = s, r
-    if best_route and best_rs >= route_thr:
-        return (best_route["target_view"], round(best_rs, 3), "route")
-    best_view, best_vs = None, 0
+        m = _route_match(q, r.get("trigger_phrases", []))
+        if m > best_key:
+            best_key, best_route = m, r
+    # a confident route needs both a high coverage fraction AND ≥2 shared content tokens
+    if best_route and best_key[0] >= route_thr and best_key[1] >= 2:
+        return (best_route["target_view"], round(best_key[0], 3), "route")
+
+    scored = []
     for name, vp in (catalog.get("views") or {}).items():
-        overlap = len(q & _view_tokens(vp))
-        if overlap > best_vs:
-            best_vs, best_view = overlap, name
-    if best_view and best_vs >= view_thr:
-        return (best_view, float(best_vs), "view")
-    return (None, 0.0, "none")
+        nt = _name_tokens(vp)
+        name_hit = len(q & nt)
+        if name_hit == 0:               # the view's SUBJECT must appear in the question
+            continue
+        aux_hit = len((q & _aux_tokens(vp)) - nt)   # don't recount a name token as an aux hit
+        scored.append((2 * name_hit + aux_hit, name, vp))
+    if not scored:
+        return (None, 0.0, "none")
+    top = max(s[0] for s in scored)
+    if top < 2:
+        return (None, 0.0, "none")
+    tied = [(name, vp) for sc, name, vp in scored if sc == top]
+    tied.sort(key=lambda it: (-len(it[1].get("role_keys", [])),
+                              1 if _VARIANT_NAME.search(it[0]) else 0, len(it[0]), it[0]))
+    return (tied[0][0], float(top), "view")

@@ -17,21 +17,24 @@ from typing import Any, Dict, List, Optional
 from services.cursor_catalog import _content_tokens
 
 
-# Role/person tokens that mark an id column as a PERSON key (vs a record/entity id like order_id).
-_PERSON_ROLE = re.compile(
-    r"(^|_)(ae|se|rep|owner|manager|mgr|lead|rsm|sem|rsd|agent|seller|engineer|customer|client|"
-    r"employee|user|contact|person|assignee|rep)(_|$)", re.IGNORECASE)
+# Underscore-separated PARTS that mark an id column as a PERSON key (vs a record/entity id like
+# order_id). Part-matching (not substring) so `team_leader_id` → {team, leader} matches 'leader'.
+_ROLE_TOKENS = {
+    "ae", "se", "rep", "owner", "manager", "mgr", "leader", "lead", "rsm", "sem", "rsd", "agent",
+    "seller", "engineer", "eng", "customer", "client", "employee", "emp", "user", "contact", "person",
+    "assignee", "sales", "sdr", "bdr", "csm",
+}
+
+
+def _key_parts(rk: str) -> set:
+    base = re.sub(r"(_id|_key)$", "", rk, flags=re.IGNORECASE)
+    return {p for p in re.split(r"[^a-z0-9]+", base.lower()) if p}
 
 
 def _person_role_keys(role_keys: List[str]) -> List[str]:
-    """The role keys that plausibly hold a PERSON (by the token before `_id`/`_key`), so an
-    entity/record id like `order_id` is never used as a person filter."""
-    out = []
-    for rk in role_keys:
-        prefix = re.sub(r"(_id|_key)$", "", rk, flags=re.IGNORECASE)
-        if _PERSON_ROLE.search(prefix) or _PERSON_ROLE.search(rk):
-            out.append(rk)
-    return out
+    """Role keys that plausibly hold a PERSON (a part before `_id`/`_key` is a role token), so an
+    entity/record id like `order_id` or `node_id` is never used as a person filter."""
+    return [rk for rk in role_keys if _key_parts(rk) & _ROLE_TOKENS]
 
 
 def _pick_role_key(question: str, role_keys: List[str]) -> Optional[str]:
@@ -42,18 +45,18 @@ def _pick_role_key(question: str, role_keys: List[str]) -> Optional[str]:
         return None
     ql = (question or "").lower()
 
-    def find(subs):
-        return next((rk for rk in person_keys if any(s in rk.lower() for s in subs)), None)
+    def find(tokens):
+        return next((rk for rk in person_keys if _key_parts(rk) & set(tokens)), None)
 
-    if re.search(r"\bse\b|systems?\s+engineer", ql):
-        rk = find(["se_", "_se", "eng"])
+    if re.search(r"\bse\b|systems?\s+engineer|\bsystem\b", ql):
+        rk = find(["se", "eng", "engineer"])
         if rk:
             return rk
-    if re.search(r"\blead|manager|\brsm\b|\bsem\b|\brsd\b", ql):
+    if re.search(r"\blead|manager|\brsm\b|\bsem\b|\brsd\b|\bmanage", ql):
         rk = find(["leader", "lead", "rsm", "sem", "rsd", "mgr", "manager"])
         if rk:
             return rk
-    return find(["ae_", "_ae", "owner", "customer", "client"]) or person_keys[0]
+    return find(["ae", "owner", "customer", "client", "rep"]) or person_keys[0]
 
 
 def _detect_group_by(question: str, dimensions: List[str]) -> Optional[str]:

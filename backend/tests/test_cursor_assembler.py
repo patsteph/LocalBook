@@ -88,6 +88,24 @@ def test_select_target_routes_to_view(catalog):
     assert cc.select_target("orders by region", catalog)[0] == "v_orders"
 
 
+def test_select_target_picks_canonical_view():
+    # several views share the 'order' name token; a person-count question matches none of the doc
+    # routes → view match must pick the CANONICAL base view, not a _half / _insights variant.
+    variants = [
+        {"name": "v_orders_half", "kind": "view", "category": "Views",
+         "ddl": "CREATE VIEW v_orders_half AS SELECT * FROM orders",
+         "columns": _SYN["objects"][0]["columns"], "foreign_keys_out": [], "logical_associations_out": []},
+        {"name": "v_orders_insights", "kind": "view", "category": "Views",
+         "ddl": "CREATE VIEW v_orders_insights AS SELECT * FROM orders",
+         "columns": [{"name": "order_ref", "type": "TEXT"}], "foreign_keys_out": [],
+         "logical_associations_out": []},
+    ]
+    syn = {**_SYN, "view_count": 3, "objects": _SYN["objects"] + variants}
+    cat = cc.build_routing_catalog(syn, _AGENTS)
+    view, _conf, src = cc.select_target("count of orders for Jordan Lee", cat)
+    assert view == "v_orders" and src == "view"
+
+
 def test_extract_slots_person_and_role(catalog):
     vp = catalog["views"]["v_orders"]
     s = ca.extract_slots("how many orders does Jordan Lee have", vp)
