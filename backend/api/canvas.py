@@ -67,6 +67,11 @@ class CanvasChatRequest(BaseModel):
     nodes: List[CanvasChatRef] = []
 
 
+class ElicitRequest(BaseModel):
+    """The user's answer to "what were you exploring here?" on an orphan thread (P4)."""
+    intent: str
+
+
 @router.get("/layout/{notebook_id}")
 async def get_layout(notebook_id: str):
     """Full layout for a notebook: {nodes, edges, viewport}."""
@@ -427,6 +432,87 @@ async def populate(notebook_id: str, limit: int = 50):
         raise HTTPException(status_code=500, detail="save_layout failed")
     # Return the full saved layout so the frontend applies it directly (it expects CanvasLayout).
     return cl.get_layout(notebook_id)
+
+
+@router.post("/elicit/{notebook_id}/{node_id}")
+async def elicit(notebook_id: str, node_id: str, req: ElicitRequest):
+    """P4 — orphan intent-elicitation loop. The user answers "what were you exploring here?" on an
+    orphan thread (a node with topic_id == null). We:
+      (a) store the intent on the thread;
+      (b) re-embed the thread WITH the intent and try to JOIN the nearest sub-topic card (accretive,
+          cosine ≥ threshold), returning nearest-topic suggestions either way;
+      (c) enqueue an AWAY-gated, never-raise web-research task that stashes a one-line insight on the
+          thread (and draws a `researched` edge to a sibling if one exists).
+    Returns the updated layout so a now-assigned node sheds its orphan styling immediately."""
+    intent = (req.intent or "").strip()
+    if not intent:
+        raise HTTPException(status_code=422, detail="intent is required")
+    layout = cl.get_layout(notebook_id)
+    node = next((n for n in layout.get("nodes", []) if n.get("id") == node_id), None)
+    if not node:
+        raise HTTPException(status_code=404, detail="node not found")
+
+    # (a)+(b) — re-assign against the intent, then persist intent (+ topic join) with a targeted write.
+    from services import canvas_subtopics
+
+    res = await canvas_subtopics.reassign_one(notebook_id, node, extra_text=intent)
+    assigned = res.get("topic_id")
+    cl.set_node_intent(notebook_id, node_id, intent, assign_topic=assigned)
+
+    # (c) — enqueue AWAY-gated research; coalesces by node (re-eliciting the same node is a no-op
+    # while pending). Never blocks or fails this response.
+    try:
+        from services.enrichment_worker import enrichment_worker
+        from services.enrichment_jobs import EnrichmentJob, JobTier
+
+        suggestions = res.get("suggestions") or []
+        partner = None
+        if suggestions:
+            partner = next(
+                (n.get("id") for n in layout.get("nodes", [])
+                 if n.get("topic_id") == suggestions[0]["id"] and n.get("id") != node_id),
+                None,
+            )
+        enrichment_worker.enqueue(EnrichmentJob(
+            key=f"elicit-research:{notebook_id}:{node_id}",
+            tier=JobTier.NIGHT,  # AWAY-only — never web-research while the user is plausibly active
+            factory=lambda: _elicit_research(notebook_id, node_id, intent, partner),
+            label="elicit-research",
+            notebook_id=notebook_id,
+        ))
+    except Exception:
+        pass  # research is best-effort; the assignment + suggestions already returned
+
+    return {"layout": cl.get_layout(notebook_id),
+            "suggestions": res.get("suggestions", []),
+            "assigned_topic_id": assigned}
+
+
+async def _elicit_research(notebook_id: str, node_id: str, intent: str,
+                           partner: Optional[str]) -> None:
+    """Background factory (AWAY-gated via JobTier.NIGHT): web-search the elicited intent, stash a
+    one-line insight on the thread, and — if a sibling partner exists — draw a `researched` edge.
+    Mirrors canvas_idle_research._research_top_gap. Fresh coroutine per call; never raises."""
+    try:
+        from services.research_engine import research_engine
+
+        results = await research_engine.web_search(intent, notebook_id, max_results=3)
+        if not results:
+            return
+        top = results[0]
+        insight = f"{getattr(top, 'title', '')} — {getattr(top, 'snippet', '')}".strip(" —")[:280]
+        if not insight:
+            return
+        cl.patch_node_snapshot(notebook_id, node_id, {
+            "research_insight": insight, "research_url": getattr(top, "url", "")})
+        if partner:
+            cl.upsert_edge(notebook_id, {
+                "source": node_id, "target": partner, "state": "researched", "label": "researched",
+                "meta": {"origin": "elicit", "insight": insight,
+                         "url": getattr(top, "url", ""), "query": intent}})
+    except Exception as e:  # never break the worker
+        import logging as _logging
+        _logging.getLogger(__name__).debug(f"[canvas] elicit research failed ({notebook_id}): {e}")
 
 
 @router.post("/relayout/{notebook_id}")

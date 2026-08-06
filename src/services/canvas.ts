@@ -50,6 +50,8 @@ export interface CanvasNode {
    *  INSIDE a card — its x,y are then RELATIVE to the card. null = orphan
    *  (absolute position in a lane). */
   parent_id?: string | null;
+  /** P4 — the user's elicited "what were you exploring here?" answer (null until asked). */
+  intent?: string | null;
 }
 
 export interface CanvasEdge {
@@ -310,4 +312,30 @@ export const canvasService = {
       body: JSON.stringify({ grade }),
     });
   },
+
+  // P4 — orphan intent-elicitation: the user answers "what were you exploring here?" on an orphan
+  // thread. The backend stores the intent, tries to JOIN the nearest sub-topic (accretive), and
+  // enqueues away-gated research. Returns the updated layout + nearest-topic suggestions.
+  async elicit(
+    notebookId: string, nodeId: string, intent: string,
+  ): Promise<ElicitResult> {
+    const resp = await localFetch(`${API_BASE_URL}/canvas/elicit/${notebookId}/${nodeId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent }),
+    });
+    return asJson<ElicitResult>(resp, 'elicit');
+  },
 };
+
+export interface ElicitSuggestion {
+  id: string;
+  title: string;
+  score: number;
+}
+
+export interface ElicitResult {
+  layout: CanvasLayout;
+  suggestions: ElicitSuggestion[];
+  assigned_topic_id: string | null;
+}

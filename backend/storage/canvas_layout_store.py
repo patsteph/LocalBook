@@ -72,6 +72,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         cur.execute("ALTER TABLE canvas_nodes ADD COLUMN topic_id TEXT")
     if "parent_id" not in existing_cols:
         cur.execute("ALTER TABLE canvas_nodes ADD COLUMN parent_id TEXT")
+    # P4 orphan intent-elicitation: the user's "what were you exploring here?" answer, stored on
+    # the (formerly orphan) thread so accretive re-assignment + idle research can use it.
+    if "intent" not in existing_cols:
+        cur.execute("ALTER TABLE canvas_nodes ADD COLUMN intent TEXT")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_canvas_nodes_nb ON canvas_nodes(notebook_id)")
     cur.execute(
         """
@@ -134,6 +138,7 @@ def _node_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "height": row["height"],
         "topic_id": (row["topic_id"] if "topic_id" in row.keys() else None),
         "parent_id": (row["parent_id"] if "parent_id" in row.keys() else None),
+        "intent": (row["intent"] if "intent" in row.keys() else None),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -194,8 +199,8 @@ def _save_layout(
     for n in nodes or []:
         conn.execute(
             "INSERT INTO canvas_nodes (id, notebook_id, x, y, kind, ref_type, ref_id, "
-            "snapshot_json, title, z, width, height, topic_id, parent_id, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "snapshot_json, title, z, width, height, topic_id, parent_id, intent, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 n.get("id") or str(uuid.uuid4()),
                 notebook_id,
@@ -211,6 +216,7 @@ def _save_layout(
                 _as_float_or_none(n.get("height")),
                 n.get("topic_id"),
                 n.get("parent_id"),
+                n.get("intent"),
                 n.get("created_at") or now,
                 now,
             ),
@@ -256,6 +262,46 @@ def _patch_node(conn: sqlite3.Connection, notebook_id: str, node_id: str,
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def _set_node_intent(conn: sqlite3.Connection, notebook_id: str, node_id: str, intent: str,
+                     assign_topic: Optional[str] = None) -> bool:
+    """P4 — store the elicited intent on a thread (targeted, no full-layout rewrite). When
+    `assign_topic` is given, also stamp topic_id + parent_id (the thread JOINED that sub-topic card),
+    so it loses its orphan styling on the next layout read."""
+    sets = ["intent = ?", "updated_at = ?"]
+    params: List[Any] = [intent, _now()]
+    if assign_topic:
+        sets.extend(["topic_id = ?", "parent_id = ?"])
+        params.extend([assign_topic, assign_topic])
+    params.extend([node_id, notebook_id])
+    cur = conn.execute(
+        f"UPDATE canvas_nodes SET {', '.join(sets)} WHERE id = ? AND notebook_id = ?", params)
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def _patch_node_snapshot(conn: sqlite3.Connection, notebook_id: str, node_id: str,
+                         patch: Dict[str, Any]) -> bool:
+    """Merge `patch` into a node's snapshot JSON (targeted). Used by the P4 idle-research factory to
+    stash a `research_insight` on the elicited thread without a full-layout rewrite."""
+    row = conn.execute(
+        "SELECT snapshot_json FROM canvas_nodes WHERE id = ? AND notebook_id = ?",
+        (node_id, notebook_id)).fetchone()
+    if not row:
+        return False
+    try:
+        snap = json.loads(row["snapshot_json"] or "{}")
+        if not isinstance(snap, dict):
+            snap = {}
+    except Exception:
+        snap = {}
+    snap.update(patch or {})
+    conn.execute(
+        "UPDATE canvas_nodes SET snapshot_json = ?, updated_at = ? WHERE id = ? AND notebook_id = ?",
+        (json.dumps(snap, default=str), _now(), node_id, notebook_id))
+    conn.commit()
+    return True
 
 
 def _upsert_edge(conn: sqlite3.Connection, notebook_id: str, edge: Dict[str, Any]) -> Dict[str, Any]:
@@ -333,6 +379,23 @@ def patch_node(notebook_id: str, node_id: str, x: float, y: float,
         return _patch_node(_get_conn(), notebook_id, node_id, x, y, width, height)
     except Exception as e:
         logger.warning(f"[canvas_layout] patch_node failed ({node_id}): {e}")
+        return False
+
+
+def set_node_intent(notebook_id: str, node_id: str, intent: str,
+                    assign_topic: Optional[str] = None) -> bool:
+    try:
+        return _set_node_intent(_get_conn(), notebook_id, node_id, intent, assign_topic)
+    except Exception as e:
+        logger.warning(f"[canvas_layout] set_node_intent failed ({node_id}): {e}")
+        return False
+
+
+def patch_node_snapshot(notebook_id: str, node_id: str, patch: Dict[str, Any]) -> bool:
+    try:
+        return _patch_node_snapshot(_get_conn(), notebook_id, node_id, patch)
+    except Exception as e:
+        logger.warning(f"[canvas_layout] patch_node_snapshot failed ({node_id}): {e}")
         return False
 
 

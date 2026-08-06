@@ -54,6 +54,7 @@ import {
   type RecallItem,
   type RecallGrade,
   type EdgeState,
+  type ElicitSuggestion,
 } from '../../services/canvas';
 import { synthesisService } from '../../services/synthesis';
 
@@ -123,6 +124,8 @@ type ArtifactNodeData = {
   candidates?: NodeCandidate[];
   onPromote?: (peerId: string) => void;
   onPerspectives?: (node: CanvasNode) => void;
+  /** P4 — open the "what were you exploring here?" prompt for an orphan thread. */
+  onElicit?: (node: CanvasNode) => void;
   /** A thread outside any topic card — dashed, muted, invites exploration (P4 wires the click). */
   isOrphan?: boolean;
 };
@@ -171,7 +174,8 @@ function threadChip(refType: string): { Icon: LucideIcon; label: string } {
 
 function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   const rf = useReactFlow();
-  const { node, tint, candidates, onPromote, onPerspectives, isOrphan } = data;
+  const { node, tint, candidates, onPromote, onPerspectives, onElicit, isOrphan } = data;
+  const researchInsight = (node.snapshot as { research_insight?: string } | undefined)?.research_insight;
 
   // Recency tint stays subtle for chips — clamp so threads never read as
   // "blurred/undefined"; orphans keep a slightly lower floor but stay legible.
@@ -265,18 +269,33 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
         <p className="line-clamp-3 text-[12px] font-medium leading-snug text-gray-800 dark:text-gray-100">
           {node.title || 'Untitled'}
         </p>
+        {/* P4 — a stashed idle-research finding for this (formerly orphan) thread. */}
+        {researchInsight && (
+          <p
+            className="mt-auto line-clamp-2 rounded bg-rose-50 px-1.5 py-1 text-[10px] italic leading-snug text-rose-700 dark:bg-rose-900/25 dark:text-rose-300"
+            title={researchInsight}
+          >
+            💡 {researchInsight}
+          </p>
+        )}
       </div>
 
-      {/* Orphan affordance (P3) — a thread that hasn't landed in a topic card yet.
-          Non-functional placeholder; P4 wires the click into the exploration loop. */}
+      {/* Orphan affordance (P4) — a thread that hasn't landed in a topic card yet. Click to answer
+          "what were you exploring here?" → the intent re-assigns it + kicks off idle research. */}
       {isOrphan && (
-        <div
-          className="pointer-events-none absolute bottom-1 right-1 z-10 flex items-center gap-0.5 rounded-full bg-gray-100/90 px-1.5 py-0.5 text-[9px] font-medium text-gray-400 dark:bg-gray-700/80 dark:text-gray-400"
-          title="Not yet part of a topic — explore to connect it"
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onElicit?.(node);
+          }}
+          className="nodrag nopan absolute bottom-1 right-1 z-10 flex items-center gap-0.5 rounded-full bg-violet-100/90 px-1.5 py-0.5 text-[9px] font-semibold text-violet-600 transition-colors hover:bg-violet-200 dark:bg-violet-900/40 dark:text-violet-300 dark:hover:bg-violet-800/60"
+          title="Not yet part of a topic — tell me what you were exploring"
+          aria-label="What were you exploring here?"
         >
-          <Plus className="h-2.5 w-2.5" />
+          <Compass className="h-2.5 w-2.5" />
           explore
-        </div>
+        </button>
       )}
     </div>
   );
@@ -484,6 +503,20 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
     error: string | null;
   }>({ open: false, topic: '', loading: false, html: null, error: null });
 
+  // ── P4 orphan intent-elicitation: "what were you exploring here?" → the intent re-assigns the
+  //    orphan to the nearest sub-topic (or leaves it orphan) + enqueues away-gated research. ──
+  const [elicit, setElicit] = useState<{
+    open: boolean;
+    node: CanvasNode | null;
+    intent: string;
+    busy: boolean;
+    done: boolean;
+    suggestions: ElicitSuggestion[];
+    assignedTopicId: string | null;
+    error: string | null;
+  }>({ open: false, node: null, intent: '', busy: false, done: false,
+       suggestions: [], assignedTopicId: null, error: null });
+
   // Refs mirror the latest state for the full-layout persistence path.
   const nodesRef = useRef<CanvasFlowNode[]>([]);
   const edgesRef = useRef<Edge[]>([]);
@@ -632,9 +665,32 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
     }
   }, [notebookId]);
 
+  // ── P4 — open the elicitation prompt for an orphan thread. ──
+  const openElicit = useCallback((node: CanvasNode) => {
+    setElicit({ open: true, node, intent: '', busy: false, done: false,
+                suggestions: [], assignedTopicId: null, error: null });
+  }, []);
+
+  const onSubmitElicit = useCallback(async () => {
+    const node = elicit.node;
+    const intent = elicit.intent.trim();
+    if (!node || !intent || elicit.busy) return;
+    setElicit((p) => ({ ...p, busy: true, error: null }));
+    try {
+      const res = await canvasService.elicit(notebookId, node.id, intent);
+      applyLayout(res.layout); // the (now-assigned) node sheds its orphan styling immediately
+      setElicit((p) => ({ ...p, busy: false, done: true,
+                          suggestions: res.suggestions || [], assignedTopicId: res.assigned_topic_id }));
+    } catch (e) {
+      console.warn('[JourneyCanvas] elicit', e);
+      setElicit((p) => ({ ...p, busy: false,
+                          error: e instanceof Error ? e.message : 'Could not save that.' }));
+    }
+  }, [notebookId, applyLayout, elicit.node, elicit.intent, elicit.busy]);
+
   // Project candidates onto their two endpoint nodes (skipping pairs already edged) and
-  // hand each node stable promote + perspectives callbacks — the custom node renders the
-  // amber dots and the per-node "supporting/differing view" action.
+  // hand each node stable promote + perspectives + elicit callbacks — the custom node renders
+  // the amber dots, the "supporting/differing view" action, and the orphan "explore" prompt.
   useEffect(() => {
     const connected = new Set(edges.map((e) => pairKey(e.source, e.target)));
     const byNode = new Map<string, NodeCandidate[]>();
@@ -657,10 +713,11 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
           candidates: byNode.get(n.id) ?? [],
           onPromote: (peerId: string) => promoteCandidate(n.id, peerId),
           onPerspectives: openPerspectives,
+          onElicit: openElicit,
         },
       };
     }));
-  }, [candidates, edges, promoteCandidate, openPerspectives, setNodes]);
+  }, [candidates, edges, promoteCandidate, openPerspectives, openElicit, setNodes]);
 
   // ── Delete: edges hit the DELETE endpoint; nodes persist via full-layout PUT. ──
   const onEdgesDelete = useCallback((deleted: Edge[]) => {
@@ -1241,6 +1298,87 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
                   Add to canvas
                 </button>
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* P4 — orphan intent-elicitation: "what were you exploring here?" → re-assign + research. */}
+      {elicit.open && (
+        <div className="pointer-events-auto absolute bottom-3 left-1/2 z-30 flex max-h-[70%] w-[min(520px,92%)] -translate-x-1/2 flex-col rounded-xl border border-violet-200 bg-white/97 shadow-2xl backdrop-blur dark:border-violet-800 dark:bg-gray-800/97">
+          <div className="flex items-center justify-between gap-2 border-b border-violet-100 px-3 py-2 dark:border-violet-900/50">
+            <div className="flex items-center gap-2">
+              <Compass className="h-4 w-4 text-violet-500" />
+              <p className="text-[12px] font-semibold text-gray-700 dark:text-gray-200">
+                What were you exploring here?
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setElicit((p) => ({ ...p, open: false }))}
+              className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"
+              title="Close"
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          {elicit.node && (
+            <p className="px-3 pt-2 text-[11px] text-gray-400">
+              on{' '}
+              <span className="font-medium text-gray-600 dark:text-gray-300">
+                {elicit.node.title || 'this thread'}
+              </span>
+            </p>
+          )}
+          <div className="flex items-center gap-2 px-3 py-2">
+            <input
+              type="text"
+              autoFocus
+              value={elicit.intent}
+              onChange={(e) => setElicit((p) => ({ ...p, intent: e.target.value }))}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !elicit.busy) onSubmitElicit(); }}
+              placeholder="e.g. comparing mRNA vs viral-vector vaccines…"
+              className="flex-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-violet-400 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200"
+            />
+            <button
+              type="button"
+              onClick={onSubmitElicit}
+              disabled={elicit.busy || !elicit.intent.trim()}
+              className="rounded-md bg-violet-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+            >
+              {elicit.busy ? 'Saving…' : 'Explore'}
+            </button>
+          </div>
+          {elicit.error && <p className="px-3 pb-2 text-[11px] text-red-500">{elicit.error}</p>}
+          {elicit.done && (
+            <div className="border-t border-gray-100 px-3 py-2 dark:border-gray-700">
+              {elicit.assignedTopicId ? (
+                <p className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                  Connected to “{elicit.suggestions.find((s) => s.id === elicit.assignedTopicId)?.title || 'a topic'}”.
+                  I'll research this while you're away.
+                </p>
+              ) : (
+                <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                  Kept as its own thread for now — I'll research it while you're away.
+                </p>
+              )}
+              {elicit.suggestions.length > 0 && (
+                <div className="mt-1.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Nearest topics</p>
+                  <ul className="mt-1 space-y-0.5">
+                    {elicit.suggestions.map((s) => (
+                      <li
+                        key={s.id}
+                        className="flex items-center justify-between gap-2 text-[11px] text-gray-600 dark:text-gray-300"
+                      >
+                        <span className="truncate">{s.title || 'Untitled topic'}</span>
+                        <span className="flex-shrink-0 tabular-nums text-gray-400">{Math.round(s.score * 100)}%</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </div>

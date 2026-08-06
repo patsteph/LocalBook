@@ -146,6 +146,57 @@ async def _title_synthesis(member_titles: List[str]) -> Tuple[str, str]:
         return fallback, ""
 
 
+async def reassign_one(notebook_id: str, node: Dict[str, Any],
+                       extra_text: str = "") -> Dict[str, Any]:
+    """P4 — re-embed ONE thread (its snapshot text + the user's elicited intent) and try to JOIN the
+    nearest existing sub-topic (cosine ≥ ASSIGN_THRESHOLD). On a match, fold the thread into that
+    topic's running-mean centroid + bump member_count. Returns
+    `{"topic_id": str|None, "suggestions": [{"id","title","score"}]}` (top-3 nearest topics).
+
+    A single thread cannot SEED a topic (that needs ≥ MIN_NEW_TOPIC_SIZE members), so a no-match
+    thread stays an orphan — the suggestions still guide the user. Never raises."""
+    from storage import canvas_topics_store as topics_store
+    from services.canvas_populate import snapshot_text
+    out: Dict[str, Any] = {"topic_id": None, "suggestions": []}
+    try:
+        text = f"{snapshot_text(node)}\n{extra_text}".strip()
+        if not text:
+            return out
+        from services.ollama_service import ollama_service
+        vecs = await ollama_service.embed_batch([text])
+        vec = list(vecs[0]) if vecs and vecs[0] else []
+        if not vec:
+            return out
+
+        topics = topics_store.list_topics(notebook_id)
+        ranked = sorted(
+            ({"id": t["id"], "title": t.get("title", ""), "synthesis": t.get("synthesis", ""),
+              "centroid": t.get("centroid") or [], "member_count": int(t.get("member_count") or 0),
+              "score": _cosine(vec, t.get("centroid") or [])}
+             for t in topics if t.get("centroid")),
+            key=lambda r: r["score"], reverse=True)
+        out["suggestions"] = [{"id": r["id"], "title": r["title"], "score": round(r["score"], 4)}
+                              for r in ranked[:3]]
+
+        if ranked and ranked[0]["score"] >= ASSIGN_THRESHOLD:
+            best = ranked[0]
+            n, old = best["member_count"], best["centroid"]
+            # Incremental running mean — the thread was an orphan (not a member), so adding one is
+            # exactly the new average of (n existing members + this one).
+            if old and len(old) == len(vec) and n > 0:
+                new_centroid = [(old[i] * n + vec[i]) / (n + 1) for i in range(len(vec))]
+            else:
+                new_centroid = old or vec
+            topics_store.upsert_topic(notebook_id, {
+                "id": best["id"], "title": best["title"], "synthesis": best["synthesis"],
+                "centroid": new_centroid, "member_count": n + 1})
+            out["topic_id"] = best["id"]
+        return out
+    except Exception as e:
+        logger.warning(f"[canvas_subtopics] reassign_one failed ({notebook_id}): {e}")
+        return out
+
+
 async def assign_and_persist(notebook_id: str, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Embed each node, assign to a stable sub-topic (accretive), persist topics, and stamp
     `node['topic_id']` in place (None = orphan). Returns the surviving topics (with `member_ids` +
