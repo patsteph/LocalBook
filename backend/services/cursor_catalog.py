@@ -256,13 +256,31 @@ def parse_defaults(governance_md: str, known_cols: set) -> List[Dict[str, str]]:
                 if is_default_line and col not in explicit:
                     explicit[col] = val
 
-    found: List[Dict[str, str]] = []
+    found: Dict[str, str] = {}
+
+    def _add(col: str, val: str) -> None:
+        found.setdefault(col, val)
+
+    # 1) values stated on a "default" line (e.g. "Default to <year> … a_year_col = <year>")
+    for col, val in explicit.items():
+        _add(col, val)
+    # 2) columns NAMED in an "Apply defaults (…)" declaration → explicit value else the mode
     for col in declared:
-        if col in explicit:
-            found.append({"col": canon[col], "op": "=", "value": explicit[col]})
-        elif col in counts:
-            found.append({"col": canon[col], "op": "=", "value": counts[col].most_common(1)[0][0]})
-    return found
+        if col in counts:
+            _add(col, explicit.get(col, counts[col].most_common(1)[0][0]))
+    # 3) frequency-dominant columns — a scope column always compared to the SAME constant (catches
+    #    status/flag defaults like a status='active' / a scope flag=1 even if not declared/stated).
+    for col, c in counts.items():
+        total = sum(c.values())
+        val, n = c.most_common(1)[0]
+        if total >= 3 and n / total >= 0.75:
+            _add(col, val)
+
+    result = [{"col": canon[col], "op": "=", "value": val} for col, val in found.items()]
+    if not result and (declared or counts):
+        logger.info(f"[cursor_catalog] parse_defaults: no defaults (declared={sorted(declared)}, "
+                    f"scope-cols-seen={sorted(counts)[:8]})")
+    return result
 
 
 def _is_metric(c: Dict[str, Any]) -> bool:
