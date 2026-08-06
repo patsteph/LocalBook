@@ -94,6 +94,31 @@ SELECT * FROM v_orders WHERE order_year = 2025 AND status = 'open' AND region = 
     assert defs["in_scope"] == "1"
 
 
+def test_parse_defaults_cooccurrence_numeric_flag():
+    # mirrors a guide with NO "Apply defaults" declaration: a numeric scope flag shown ONCE inside the
+    # scope filter block must be caught; a text dimension in the same block, and a numeric flag in its
+    # OWN block, must not.
+    md = """
+Default to 2025: use v_orders where `order_year = 2025`.
+
+SELECT * FROM v_orders
+WHERE order_year = 2025
+  AND status = 'open'
+  AND in_scope = 1
+  AND region = 'west';
+
+SELECT * FROM v_orders WHERE status = 'open';
+SELECT * FROM v_orders WHERE status = 'open';
+
+Separate list (its own block):
+SELECT id FROM plan WHERE flagged = 1;
+"""
+    known = {"order_year", "status", "in_scope", "region", "flagged", "id"}
+    defs = {d["col"]: d["value"] for d in cc.parse_defaults(md, known)}
+    assert set(defs) == {"order_year", "status", "in_scope"}
+    assert defs["in_scope"] == "1"      # numeric flag co-occurring with 2 defaults → promoted
+
+
 def test_view_profile_classification():
     cat = cc.build_routing_catalog(_SYN, _AGENTS)
     vp = cat["views"]["v_orders"]

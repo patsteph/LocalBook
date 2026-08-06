@@ -73,20 +73,30 @@ def _detect_group_by(question: str, dimensions: List[str]) -> Optional[str]:
 
 def _detect_dim_filters(question: str, dimensions: List[str],
                         low_card_values: Dict[str, List[str]]) -> Dict[str, str]:
-    """A stored low-cardinality value named in the question → an equality filter on its dimension. A
-    given value is assigned to only ONE dimension (so 'in West' doesn't filter both area AND a geo
-    column that happen to share the value 'West')."""
-    out: Dict[str, str] = {}
-    used: set = set()
+    """A stored low-cardinality value named in the question → an equality filter on its dimension.
+    Values must match as a WHOLE phrase (word boundaries), the LONGEST match wins, and each matched
+    span is consumed — so a short value ('North') can't also filter a second dimension inside a longer
+    value's span ('North West'), and one question value never fans out to multiple columns."""
     ql = (question or "").lower()
+    cands = []   # (dim, value, start, end)
     for d in dimensions:
         for val in (low_card_values.get(d) or []):
             sval = str(val).strip()
-            lv = sval.lower()
-            if sval and len(sval) >= 2 and lv not in used and lv in ql:
-                out[d] = sval
-                used.add(lv)
-                break
+            if len(sval) < 2:
+                continue
+            m = re.search(r"(?<![a-z0-9])" + re.escape(sval.lower()) + r"(?![a-z0-9])", ql)
+            if m:
+                cands.append((d, sval, m.start(), m.end()))
+    cands.sort(key=lambda c: c[2] - c[3])   # longest span first
+    out: Dict[str, str] = {}
+    used_spans: List = []
+    for d, sval, s, e in cands:
+        if d in out:
+            continue
+        if any(s < ue and e > us for us, ue in used_spans):   # overlaps an already-consumed value
+            continue
+        out[d] = sval
+        used_spans.append((s, e))
     return out
 
 

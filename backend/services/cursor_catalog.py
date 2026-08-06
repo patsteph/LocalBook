@@ -243,7 +243,8 @@ def parse_defaults(governance_md: str, known_cols: set) -> List[Dict[str, str]]:
     declared: set = set()
     explicit: Dict[str, str] = {}
     counts: "defaultdict[str, Counter]" = defaultdict(Counter)
-    for line in governance_md.splitlines():
+    occ: List = []   # (line_no, col, value) — for co-occurrence detection
+    for i, line in enumerate(governance_md.splitlines()):
         if _DECL_RE.search(line):   # real columns NAMED in a defaults DECLARATION → the default columns
             for tok in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", line):
                 if _scope_ok(tok.lower()):
@@ -253,6 +254,7 @@ def parse_defaults(governance_md: str, known_cols: set) -> List[Dict[str, str]]:
             col, op, val = m.group(1).lower(), m.group(2), m.group(3).strip("'\"")
             if op == "=" and _scope_ok(col):
                 counts[col][val] += 1
+                occ.append((i, col, val))
                 if is_default_line and col not in explicit:
                     explicit[col] = val
 
@@ -275,6 +277,29 @@ def parse_defaults(governance_md: str, known_cols: set) -> List[Dict[str, str]]:
         val, n = c.most_common(1)[0]
         if total >= 3 and n / total >= 0.75:
             _add(col, val)
+    # 4) co-occurrence — a single-valued scope column that sits in the SAME WHERE clause as ≥2
+    #    already-found defaults is itself a default. Catches a scope filter shown only once alongside
+    #    the standard block (e.g. `year=2025 AND status='active' AND a_scope_flag=1`) without
+    #    promoting a query-specific filter (e.g. a lone `some_flag=1`) that never sits with them.
+    blocks: List = []          # group consecutive col=value occurrences (≤2 lines apart = one clause)
+    cur: List = []
+    last = None
+    for entry in occ:
+        if last is not None and entry[0] - last > 2:
+            blocks.append(cur)
+            cur = []
+        cur.append(entry)
+        last = entry[0]
+    if cur:
+        blocks.append(cur)
+    for block in blocks:
+        block_cols = {col for (_l, col, _v) in block}
+        if len(block_cols & set(found)) >= 2:            # this block IS a scope filter block
+            for (_l, col, val) in block:
+                # only promote a NUMERIC single-valued filter (a scope flag like a_flag=1) — a text
+                # value ('west') is a query-specific dimension, not a global default.
+                if col not in found and len(counts[col]) == 1 and re.fullmatch(r"-?\d+", val):
+                    _add(col, val)
 
     result = [{"col": canon[col], "op": "=", "value": val} for col, val in found.items()]
     if not result and (declared or counts):

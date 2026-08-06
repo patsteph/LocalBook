@@ -155,6 +155,20 @@ def test_dim_filter_direct(db):
     assert res["ok"] and res["rows"][0][0] == 2   # West + 2025
 
 
+def test_detect_dim_filters_no_substring_overmatch():
+    # 'North' is a substring of the area value 'North West' → it must NOT also filter the geo column.
+    out = ca._detect_dim_filters("how many accounts in North West",
+                                 ["area", "geo"], {"area": ["North West"], "geo": ["North", "South"]})
+    assert out == {"area": "North West"}
+
+
+def test_detect_dim_filters_two_distinct_values():
+    # two genuinely different values → both apply
+    out = ca._detect_dim_filters("gold accounts in the east",
+                                 ["region", "tier"], {"region": ["East", "West"], "tier": ["Gold"]})
+    assert out == {"region": "East", "tier": "Gold"}
+
+
 def test_declines_unresolved_person(monkeypatch, catalog, db):
     assert _tier0(monkeypatch, catalog, db, "how many orders does Nobody Here have") is None
 
