@@ -220,50 +220,49 @@ _DEFAULT_RE = re.compile(
 
 
 def parse_defaults(governance_md: str, known_cols: set) -> List[Dict[str, str]]:
-    """Parse GLOBAL scope defaults (e.g. year=2025, status='active', a scope flag=1, …) from the
-    AGENTS.md defaults section. Anchored on the 'default' HEADING and bounded to that section (so
-    example filters in intent routes elsewhere aren't mistaken for defaults); falls back to a table
-    whose header has a 'Default' column. Grounded to REAL column names, and NEVER an `*_id`/`*_key`
-    column (a scope default is a year/status/flag, never a role key like `owner_id`). Deduped by col
-    (first wins). Empty when nothing parseable — Tier 0 still works, minus auto-scope (caller logs it)."""
+    """Derive GLOBAL scope defaults (e.g. year=2025, status='active', a scope flag=1) from the guide.
+    The default COLUMNS are the real columns NAMED in a defaults declaration — a line like
+    `Apply defaults (col_a, col_b, …)` or `Default to <value> … col = <value>`. Each column's VALUE is
+    taken from that default line if it states one, else the most-common constant that column is compared
+    to across the guide's example SQL. This structurally excludes query-specific filters (a region /
+    an owner key are never NAMED as defaults) and never uses an `*_id`/`*_key` column. Empty when
+    nothing parseable — Tier 0 still works, minus auto-scope (caller logs it)."""
     if not governance_md:
         return []
+    from collections import Counter, defaultdict
     known_lower = {c.lower() for c in known_cols}
-    found: Dict[str, Dict[str, str]] = {}
-    lines = governance_md.splitlines()
+    canon = {c.lower(): c for c in known_cols}
 
-    def _accept(m) -> None:
-        col, cl = m.group(1), m.group(1).lower()
-        if cl in known_lower and cl not in found and not re.search(r"(_id|_key)$", cl):
-            found[cl] = {"col": col, "op": m.group(2), "value": m.group(3).strip("'\"")}
+    def _scope_ok(col: str) -> bool:
+        return col in known_lower and not re.search(r"(_id|_key)$", col)
 
-    # 1) a markdown HEADING mentioning "default" → scan until the next heading.
-    head = next((i for i, l in enumerate(lines)
-                 if re.match(r"(?i)^\s{0,3}#{1,6}\s+.*\bdefault", l)), None)
-    if head is not None:
-        end = next((j for j in range(head + 1, len(lines))
-                    if re.match(r"^\s{0,3}#{1,6}\s+", lines[j])), len(lines))
-        for l in lines[head + 1:end]:
-            for m in _DEFAULT_RE.finditer(l):
-                _accept(m)
+    # The AUTHORITATIVE declaration of WHICH columns are defaults: an "apply defaults (…)" /
+    # "defaults: …" phrase (not merely any line containing the word "default", which pulls in
+    # query-specific columns like `area`).
+    _DECL_RE = re.compile(r"(?i)\b(apply\s+defaults?|default\s+filters?|defaults?\s*[:(])")
+    declared: set = set()
+    explicit: Dict[str, str] = {}
+    counts: "defaultdict[str, Counter]" = defaultdict(Counter)
+    for line in governance_md.splitlines():
+        if _DECL_RE.search(line):   # real columns NAMED in a defaults DECLARATION → the default columns
+            for tok in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", line):
+                if _scope_ok(tok.lower()):
+                    declared.add(tok.lower())
+        is_default_line = "default" in line.lower()
+        for m in _DEFAULT_RE.finditer(line):   # every `col = value` occurrence (for the values)
+            col, op, val = m.group(1).lower(), m.group(2), m.group(3).strip("'\"")
+            if op == "=" and _scope_ok(col):
+                counts[col][val] += 1
+                if is_default_line and col not in explicit:
+                    explicit[col] = val
 
-    # 2) fallback: rows under a table whose header row contains "default".
-    if not found:
-        i = 0
-        while i < len(lines):
-            row = lines[i].strip()
-            if row.startswith("|") and re.search(r"(?i)\bdefault", row):
-                j = i + 1
-                if j < len(lines) and re.match(r"^\|[\s:\-|]+\|?\s*$", lines[j].strip()):
-                    j += 1
-                while j < len(lines) and lines[j].strip().startswith("|"):
-                    for m in _DEFAULT_RE.finditer(lines[j]):
-                        _accept(m)
-                    j += 1
-                i = j
-            else:
-                i += 1
-    return list(found.values())
+    found: List[Dict[str, str]] = []
+    for col in declared:
+        if col in explicit:
+            found.append({"col": canon[col], "op": "=", "value": explicit[col]})
+        elif col in counts:
+            found.append({"col": canon[col], "op": "=", "value": counts[col].most_common(1)[0][0]})
+    return found
 
 
 def _is_metric(c: Dict[str, Any]) -> bool:

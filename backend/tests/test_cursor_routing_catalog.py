@@ -40,16 +40,15 @@ _SYN = {
 }
 
 _AGENTS = """
+## Query order
+Apply defaults (`order_year`).
+Default to 2025 for planning: use v_orders where `order_year = 2025`.
+
 ## Typical user requests
 | Request | Approach |
 |---------|----------|
 | How many orders does {person} have | Use v_orders filtered by customer_id |
 | Orders by region | Use v_orders grouped by region |
-
-## Global defaults
-| Dimension | Default |
-|-----------|---------|
-| Planning year | `order_year = 2025` |
 """
 
 
@@ -69,34 +68,30 @@ def test_build_synthetic_routes_defaults_person():
         assert r["target_view"] == "v_orders" and r["tier0_ready"]
 
 
-def test_parse_defaults_only_from_default_table():
+def test_parse_defaults_declaration_plus_examples():
     md = """
-## Typical user requests
-| Request | Approach |
-|---------|----------|
-| Unassigned orders | Use v_orders where customer_id = 'unassigned' |
+## Query order
+6. Apply defaults (`order_year`, `status`, `in_scope`, snapshot date)
 
-Prose note: examples often show order_year = 1999 which is NOT a default.
+Default to 2025 for planning: use v_orders where `order_year = 2025`.
 
-## Global defaults
-| Dimension | Default |
-|-----------|---------|
-| Planning year | `order_year = 2025` |
-| Active | `status = 'open'` |
-| Unassigned note | rows where `customer_id = 'unassigned'` are excluded |
-| Region grain | Four regions; exclude rollups |
+## Intent routes
+| Intent | Approach |
+|--------|----------|
+| Unassigned | v_orders where `customer_id = 'unassigned'` |
+| By region | v_orders where `region = 'west'` |
 
-## Next section
-| Region | rollup |
-| west | `region = 'w'` |
+## Examples
+SELECT * FROM v_orders WHERE order_year = 2025 AND status = 'open' AND in_scope = 1 AND region = 'west';
+SELECT * FROM v_orders WHERE order_year = 2025 AND status = 'open' AND region = 'east';
 """
-    known = {"order_year", "status", "customer_id", "region"}
-    defs = cc.parse_defaults(md, known)
-    cols = {d["col"] for d in defs}
-    # order_year + status from the section; customer_id excluded (it's an *_id key); region excluded
-    # (it's in the NEXT section, past the heading boundary)
-    assert cols == {"order_year", "status"}
-    assert next(d for d in defs if d["col"] == "order_year")["value"] == "2025"  # table, not prose 1999
+    known = {"order_year", "status", "in_scope", "customer_id", "region"}
+    defs = {d["col"]: d["value"] for d in cc.parse_defaults(md, known)}
+    # ONLY the declared columns; region + customer_id are query-specific, never declared as defaults
+    assert set(defs) == {"order_year", "status", "in_scope"}
+    assert defs["order_year"] == "2025"   # from the "Default to 2025 … order_year = 2025" line
+    assert defs["status"] == "open"       # mode across example SQL
+    assert defs["in_scope"] == "1"
 
 
 def test_view_profile_classification():

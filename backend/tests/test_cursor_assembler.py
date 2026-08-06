@@ -35,17 +35,15 @@ _SYN = {
     ],
 }
 _AGENTS = """
+## Query order
+Apply defaults (`order_year`). Default to 2025: use v_orders where `order_year = 2025`.
+
 ## Typical user requests
 | Request | Approach |
 |---------|----------|
 | How many orders does {person} have | Use v_orders filtered by customer_id |
 | Orders by region | Use v_orders grouped by region |
 | How many orders are there | Use v_orders |
-
-## Global defaults
-| Dimension | Default |
-|-----------|---------|
-| Planning year | `order_year = 2025` |
 """
 
 

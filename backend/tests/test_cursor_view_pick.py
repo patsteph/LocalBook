@@ -34,7 +34,7 @@ _SYN = {
          "foreign_keys_out": [], "logical_associations_out": []},
     ],
 }
-_AGENTS = ("## Global defaults\n| Dimension | Default |\n|--|--|\n| Year | `order_year = 2025` |\n")
+_AGENTS = "## Query order\nApply defaults (`order_year`). Default to 2025: `order_year = 2025`.\n"
 
 
 @pytest.fixture(scope="module")
