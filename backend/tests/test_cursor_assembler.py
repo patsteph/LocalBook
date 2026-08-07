@@ -162,6 +162,17 @@ def test_detect_dim_filters_no_substring_overmatch():
     assert out == {"area": "North West"}
 
 
+def test_person_not_dropped_when_name_is_low_card_elsewhere():
+    # a person name that is ALSO a low-card value of a NON-dimension column (a people table's name)
+    # must still be detected as a person, not swept into the dimension-value pool and dropped.
+    vp = {"name": "v_orders", "grain": "order_ref", "role_keys": ["customer_id"],
+          "dimensions": ["region"], "scope_filters": [], "columns": []}
+    low = {"region": ["West", "East"], "full_name": ["Jordan Lee", "Sam Rivera"]}
+    s = ca.extract_slots("how many orders does Jordan Lee have", vp, low)
+    assert s["person"] == "Jordan Lee" and s["role_key"] == "customer_id"
+    assert s["dim_filters"] == {}
+
+
 def test_detect_dim_filters_two_distinct_values():
     # two genuinely different values → both apply
     out = ca._detect_dim_filters("gold accounts in the east",

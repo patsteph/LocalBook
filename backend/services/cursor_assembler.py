@@ -110,8 +110,11 @@ def extract_slots(question: str, view_profile: Dict[str, Any],
         cands = _candidate_entities(question)
         dims = view_profile.get("dimensions", []) or []
         low = low_card_values or {}
-        # a candidate that isn't itself a low-card dimension VALUE is treated as a person mention
-        dim_vals = {str(v).lower() for vs in low.values() for v in (vs or [])}
+        # a candidate that isn't itself a DIMENSION value (area/tier/region) is a person mention.
+        # Scope to THIS view's dimensions — not every low-card column — so a person name that also
+        # happens to be a low-card value elsewhere (e.g. an `employees.full_name`) is NOT mistaken
+        # for a dimension and dropped.
+        dim_vals = {str(v).lower() for d in dims for v in (low.get(d) or [])}
         person = next((c for c in cands if c.strip().lower() not in dim_vals), None)
         if person and view_profile.get("role_keys"):
             slots["person"] = person
