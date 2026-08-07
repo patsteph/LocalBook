@@ -7,18 +7,29 @@ import sys
 if getattr(sys, 'frozen', False):
     multiprocessing.freeze_support()
 
-# ── Fix SSL certificates for fresh macOS Python installs ──
-# Python 3.12+ from Homebrew may lack CA bundle; certifi provides it.
-# Must run before any HTTPS downloads (HuggingFace, FlashRank, etc.)
-try:
-    import certifi
-    _ca = certifi.where()
-    os.environ.setdefault("SSL_CERT_FILE", _ca)
-    os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca)
-    os.environ.setdefault("CURL_CA_BUNDLE", _ca)
-except ImportError:
-    if os.path.exists("/etc/ssl/cert.pem"):
-        os.environ.setdefault("SSL_CERT_FILE", "/etc/ssl/cert.pem")
+# ── Fix SSL certificates for the bundled (PyInstaller) app + fresh macOS Python ──
+# The frozen app's Python has no usable default CA bundle, so HTTPS (HuggingFace model
+# downloads, FlashRank, etc.) fails with CERTIFICATE_VERIFY_FAILED. Point ssl/requests/httpx at a
+# CA bundle that actually EXISTS on disk. The previous version used certifi.where() unconditionally,
+# but in the frozen app certifi imports while its cacert.pem is NOT bundled → that path doesn't
+# exist, and setdefault pinned a missing file. Verify existence, fall back, and OVERRIDE a broken
+# pre-set value. Runs before any HTTPS.
+def _pick_ca_bundle():
+    candidates = []
+    try:
+        import certifi
+        candidates.append(certifi.where())
+    except Exception:
+        pass
+    candidates += ["/etc/ssl/cert.pem", "/private/etc/ssl/cert.pem"]
+    return next((c for c in candidates if c and os.path.exists(c)), None)
+
+_ca = _pick_ca_bundle()
+if _ca:
+    for _var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        _cur = os.environ.get(_var)
+        if not _cur or not os.path.exists(_cur):   # override a missing/broken pre-set value
+            os.environ[_var] = _ca
 
 # ── Rich logging: colored output + better tracebacks ──
 from utils.logging_config import setup_logging

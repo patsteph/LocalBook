@@ -320,6 +320,7 @@ python -W ignore -m PyInstaller \
     --collect-data=tld \
     --hidden-import=soundfile \
     --collect-all=loguru \
+    --collect-all=certifi \
     --collect-all=dlinfo \
     --collect-all=segments \
     --collect-all=csvw \
