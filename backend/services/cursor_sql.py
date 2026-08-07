@@ -710,6 +710,14 @@ def _validate_sql(sql: str, linked: List[Dict[str, Any]],
 # ─────────────────────────────────────────────────────────────────────────────
 # Tier 0 — deterministic assembly against a pre-built view from the derived Routing Catalog.
 # ─────────────────────────────────────────────────────────────────────────────
+def _result_preview(rows: List[Any], max_rows: int = 3) -> str:
+    """A compact one-line preview of the result rows for the log (so a wrong number is visible)."""
+    if not rows:
+        return "no rows"
+    head = "; ".join(", ".join(str(v) for v in r) for r in rows[:max_rows])
+    return head + (f"; …(+{len(rows) - max_rows} rows)" if len(rows) > max_rows else "")
+
+
 def _low_card_values(schema: List[Dict[str, Any]]) -> Dict[str, List[str]]:
     """{column_name: [low-cardinality values]} from the introspected schema — the dimension value
     lists Tier-0 matches a filter against. Keyed by the real (sanitized) column name so it lines up
@@ -774,9 +782,9 @@ def _run_view(notebook_id: str, question: str, schema: List[Dict[str, Any]], db_
         logger.info(f"[cursor] nb={notebook_id} {tier} assembled SQL failed "
                     f"({res.get('error')}) → next tier")
         return None
-    logger.info(f"[cursor] nb={notebook_id} {tier} route={view} — deterministic assembly. "
-                f"SQL: {built['sql']}")
     rows, cols = res.get("rows", []), res.get("columns", [])
+    logger.info(f"[cursor] nb={notebook_id} {tier} route={view} — deterministic assembly. "
+                f"SQL: {built['sql']} → result=[{_result_preview(rows)}]")
     ans = _render_answer(question, built["sql"], schema[0]["filename"], res) \
         + _maybe_chart(question, cols, rows)
     return {"ok": True, "answer": ans, "sql": built["sql"], "source_id": schema[0]["source_id"],
@@ -959,6 +967,12 @@ async def answer(
                 f"tables={len(linked)}/{len(schema)} fks={len(relationships)} views={len(views)} "
                 f"recipes={len(matched_recipes)} governance={len(governance)} chars "
                 f"prompt={len(prompt)} chars — generating SQL")
+    # Full prompt (the exact context Gemma gets) for diagnosis/steering. Always at DEBUG; at INFO when
+    # LOCALBOOK_CURSOR_DEBUG_SQL=1 so it's visible in the app log without changing the log level.
+    if getattr(settings, "cursor_debug_sql", False):
+        logger.info(f"[cursor] nb={notebook_id} PROMPT ↓↓↓\n{prompt}\n[cursor] PROMPT ↑↑↑")
+    else:
+        logger.debug(f"[cursor] nb={notebook_id} PROMPT ↓↓↓\n{prompt}\n[cursor] PROMPT ↑↑↑")
 
     primary = settings.tabular_sql_model or settings.ollama_model
     fast = settings.ollama_fast_model
@@ -1021,7 +1035,8 @@ async def answer(
 
     rows = exec_res.get("rows", [])
     cols = exec_res.get("columns", [])
-    logger.info(f"[cursor] nb={notebook_id} executed OK rows={len(rows)}")
+    logger.info(f"[cursor] nb={notebook_id} executed OK rows={len(rows)} "
+                f"result=[{_result_preview(rows)}]")
 
     filename = schema[0]["filename"]
     source_id = schema[0]["source_id"]
