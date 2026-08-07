@@ -50,6 +50,30 @@ def test_allows_single_token_id():
     assert _v("SELECT COUNT(*) FROM records WHERE owner_id = 'jlee'") is None
 
 
+def test_tier0_complexity_gate():
+    # simple counts stay in the deterministic fast-path
+    for q in ["how many orders does Jordan Lee have", "orders by region",
+              "how many orders in the west", "how many accounts are there this year"]:
+        assert cs._tier0_too_complex(q) is False, q
+    # analytical questions must decline to the LLM
+    for q in ["compare orders to revenue for the last 4 years",
+              "break down pipeline by product by quarter",
+              "what is the total bookings goal for the west",
+              "trend of forecast attainment over time"]:
+        assert cs._tier0_too_complex(q) is True, q
+
+
+def test_canonical_rules_block_from_catalog():
+    cat = {"defaults": [{"col": "order_year", "op": "=", "value": "2025"},
+                        {"col": "status", "op": "=", "value": "open"}],
+           "person_convention": {"name_table": "customers", "name_col": "full_name",
+                                 "key_col": "customer_id"}}
+    block = cs._canonical_rules_block(cat)
+    assert "order_year = 2025" in block and "status = 'open'" in block      # numeric bare, text quoted
+    assert "SELECT customer_id FROM customers WHERE full_name LIKE" in block  # person→key pattern
+    assert cs._canonical_rules_block(None) == "" and cs._canonical_rules_block({}) == ""
+
+
 def test_display_name_helper():
     assert cs._looks_like_display_name("Jordan Lee") is True
     assert cs._looks_like_display_name("jlee") is False

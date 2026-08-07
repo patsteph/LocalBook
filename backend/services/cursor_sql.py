@@ -435,13 +435,49 @@ def _match_recipes(question: str, recipes: List[Dict[str, str]], k: int = 3) -> 
     return [r for _s, r in scored[:k]]
 
 
+def _fmt_default(d: Dict[str, str]) -> str:
+    v = str(d.get("value", ""))
+    v = v if re.fullmatch(r"-?\d+(\.\d+)?", v) else f"'{v}'"
+    return f"{d.get('col')} {d.get('op', '=')} {v}"
+
+
+def _canonical_rules_block(catalog: Optional[Dict[str, Any]]) -> str:
+    """The high-leverage context DERIVED from the folder's guide + schema: the mandatory scope
+    defaults and the person→key resolution pattern, stated as hard rules the model must apply for ANY
+    question (not just the templated ones). This is what makes free-form LLM SQL reliable."""
+    if not catalog:
+        return ""
+    parts: List[str] = []
+    defs = catalog.get("defaults") or []
+    if defs:
+        parts.append(
+            "- DEFAULT SCOPE FILTERS — add EACH of these to your WHERE clause whenever the table/view "
+            "you query HAS that column (they scope to the current planning data): "
+            + ", ".join(_fmt_default(d) for d in defs))
+    pc = catalog.get("person_convention") or {}
+    if pc.get("name_table") and pc.get("name_col") and pc.get("key_col"):
+        parts.append(
+            "- PERSON → KEY — a person's display name is NEVER stored in an id/role column (those hold "
+            f"`{pc['key_col']}` values). To filter/join by a person, resolve the name to its key with a "
+            f"subquery: <role_id_column> = (SELECT {pc['key_col']} FROM {pc['name_table']} WHERE "
+            f"{pc['name_col']} LIKE '%<name>%'). Pick the role column that matches the question (owner/AE "
+            "vs leader vs SE).")
+    if not parts:
+        return ""
+    return ("CANONICAL RULES (derived from THIS database's guide — apply even when the question does "
+            "not restate them):\n" + "\n".join(parts) + "\n\n")
+
+
 def _build_cursor_prompt(question: str, linked: List[Dict[str, Any]],
                          directives: List[Dict[str, str]], entity_hints: List[Dict[str, str]],
                          relationships: List[Dict[str, Any]], governance: str,
                          views: Optional[List[Dict[str, Any]]] = None,
-                         recipes: Optional[List[Dict[str, str]]] = None) -> str:
-    """The Cursor Style SQL prompt: matched recipes + authoritative governance + M-Schema + FK graph
-    + grounded value/entity directives + read-only SELECT rules tuned for a wide enterprise schema."""
+                         recipes: Optional[List[Dict[str, str]]] = None,
+                         catalog: Optional[Dict[str, Any]] = None) -> str:
+    """The Cursor Style SQL prompt: CANONICAL rules (defaults + person→key from the derived catalog) +
+    matched recipes + authoritative governance + M-Schema + FK graph + grounded value/entity directives
+    + read-only SELECT rules tuned for a wide enterprise schema."""
+    canonical_block = _canonical_rules_block(catalog)
     recipe_block = ""
     if recipes:
         recipe_block = (
@@ -494,6 +530,7 @@ def _build_cursor_prompt(question: str, linked: List[Dict[str, Any]],
     )
     return (
         "Translate the user's question into ONE read-only SQLite SELECT over the schema below.\n\n"
+        f"{canonical_block}"
         f"{recipe_block}"
         f"{governance_block}"
         f"{schema_text}\n\n"
@@ -746,12 +783,36 @@ def _run_view(notebook_id: str, question: str, schema: List[Dict[str, Any]], db_
             "filename": schema[0]["filename"], "columns": cols, "rows": rows}
 
 
+# Tier 0 is a COUNT-of-records fast-path. Anything analytical — comparisons, explicit time ranges,
+# multi-dimension breakdowns, or a metric that isn't a row count (goal/pipeline/bookings/forecast/…) —
+# MUST go to the LLM; Tier 0 would return a wrong COUNT for a SUM/compare/trend question.
+_TIER0_COMPLEX = re.compile(
+    r"\b(compare|comparison|versus|vs\.?|trend|growth|yoy|year[-\s]over[-\s]year|over\s+time|"
+    r"forecast|pipeline|revenue|bookings?|quota|goals?|targets?|actuals?|attainment|tam|coverage|"
+    r"share|breakdown|break\s+down|average|\bavg\b|median|percent|ratio|\bsum\b|total\s+(goal|"
+    r"pipeline|bookings|revenue|forecast|amount|value|quota))\b", re.IGNORECASE)
+_TIER0_MULTI_BY = re.compile(r"\bby\b[\s\S]+\bby\b", re.IGNORECASE)
+_TIER0_TIME_RANGE = re.compile(
+    r"\b(last|past|previous|trailing|next)\s+\d+|\b\d+\s+(quarters?|years?|months?|halves)\b",
+    re.IGNORECASE)
+
+
+def _tier0_too_complex(question: str) -> bool:
+    q = question or ""
+    return bool(_TIER0_COMPLEX.search(q) or _TIER0_MULTI_BY.search(q) or _TIER0_TIME_RANGE.search(q))
+
+
 def _tier0_answer(notebook_id: str, question: str, schema: List[Dict[str, Any]],
                   db_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Tier 0 — deterministic keyword/route view selection + assembly (no LLM)."""
+    """Tier 0 — deterministic keyword/route view selection + assembly (no LLM). A conservative
+    COUNT fast-path: declines to the LLM tiers for anything analytical."""
     from storage import cursor_catalog_store
     from services import cursor_catalog
 
+    if _tier0_too_complex(question):
+        logger.info(f"[cursor] nb={notebook_id} TIER-0 declined: analytical/complex question "
+                    f"(not a simple count) → LLM")
+        return None
     catalog = cursor_catalog_store.get_catalog(notebook_id)
     if not catalog:
         logger.info(f"[cursor] nb={notebook_id} TIER-0 skipped: no routing catalog (reconnect/refresh?)")
@@ -766,10 +827,13 @@ def _tier0_answer(notebook_id: str, question: str, schema: List[Dict[str, Any]],
 
 async def _tier1_answer(notebook_id: str, question: str, schema: List[Dict[str, Any]],
                         db_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Tier 1 — a constrained LLM picks ONE view from the catalog (not SQL); the app assembles it."""
+    """Tier 1 — a constrained LLM picks ONE view from the catalog (not SQL); the app assembles it.
+    Same COUNT fast-path scope as Tier 0 — declines analytical questions to the free-SQL tier."""
     from storage import cursor_catalog_store
     from services import cursor_view_pick
 
+    if _tier0_too_complex(question):
+        return None
     catalog = cursor_catalog_store.get_catalog(notebook_id)
     if not catalog:
         return None
@@ -884,8 +948,13 @@ async def answer(
         logger.info(f"[cursor] nb={notebook_id} matched recipes: "
                     f"{[r['request'] for r in matched_recipes]}")
 
+    try:
+        from storage import cursor_catalog_store
+        _catalog = cursor_catalog_store.get_catalog(notebook_id)
+    except Exception:
+        _catalog = None
     prompt = _build_cursor_prompt(question, linked, directives, entity_hints,
-                                  relationships, governance, views, matched_recipes)
+                                  relationships, governance, views, matched_recipes, _catalog)
     logger.info(f"[cursor] nb={notebook_id} route=text-to-SQL db={db_path} "
                 f"tables={len(linked)}/{len(schema)} fks={len(relationships)} views={len(views)} "
                 f"recipes={len(matched_recipes)} governance={len(governance)} chars "
