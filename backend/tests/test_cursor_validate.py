@@ -50,6 +50,26 @@ def test_allows_single_token_id():
     assert _v("SELECT COUNT(*) FROM records WHERE owner_id = 'jlee'") is None
 
 
+def test_lookup_value_token_and(tmp_path):
+    import sqlite3
+    p = tmp_path / "e.db"
+    c = sqlite3.connect(str(p))
+    c.executescript(
+        "CREATE TABLE people(full_name TEXT, person_id TEXT);"
+        "INSERT INTO people VALUES ('Lee, Jordan','jlee'),('Smith, Sam','ssmith');"
+        "CREATE TABLE recs(op TEXT); INSERT INTO recs VALUES ('STR_BIG RIVER OP'),('STR_BLUE SKY OP');")
+    c.commit()
+    c.close()
+    # reordered name resolves to the stored form, then to its key
+    v = cs._lookup_value(str(p), "people", "full_name", "Jordan Lee")
+    assert v == "Lee, Jordan"
+    assert cs._lookup_stable_key(str(p), "people", "full_name", v, "person_id") == "jlee"
+    # a value embedded in a longer label
+    assert cs._lookup_value(str(p), "recs", "op", "Big River") == "STR_BIG RIVER OP"
+    # ambiguous single token → None (never guess between candidates)
+    assert cs._lookup_value(str(p), "recs", "op", "STR") is None
+
+
 def test_tier0_complexity_gate():
     # simple counts stay in the deterministic fast-path
     for q in ["how many orders does Jordan Lee have", "orders by region",

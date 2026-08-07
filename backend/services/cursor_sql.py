@@ -224,25 +224,36 @@ _PLACEHOLDER_VALUE = re.compile(
 def _lookup_value(db_path: Optional[str], table: str, col: str, term: str) -> Optional[str]:
     """Read-only DISTINCT lookup: does `term` uniquely match a stored value in table.col?
     Returns the single exact stored value (case/spacing as stored), or None if 0 or >1 matches,
-    or if the only match is a placeholder (TBH/Unassigned/…)."""
+    or if the only match is a placeholder (TBH/Unassigned/…). Tries a contiguous substring first,
+    then a TOKEN-AND match (all words present, any order) so a "First Last" query finds a stored
+    "Last, First", and a short value finds a longer stored label that contains all its words."""
     try:
         qtable = '"' + str(table).replace('"', '""') + '"'
         qcol = '"' + str(col).replace('"', '""') + '"'
-        sql = (f"SELECT DISTINCT {qcol} FROM {qtable} "
-               f"WHERE {qcol} LIKE '%' || ? || '%' COLLATE NOCASE "
-               f"AND {qcol} IS NOT NULL LIMIT 3")
-        res = tabular_store.execute_readonly(sql, db_path=db_path, params=[term])
-        if not res.get("ok"):
-            return None
-        rows = res.get("rows", [])
-        vals = [str(r[0]) for r in rows if r and r[0] is not None
-                and not _PLACEHOLDER_VALUE.match(str(r[0]))]
+
+        def _run(where: str, params: List[str]) -> List[str]:
+            sql = f"SELECT DISTINCT {qcol} FROM {qtable} WHERE {where} AND {qcol} IS NOT NULL LIMIT 4"
+            res = tabular_store.execute_readonly(sql, db_path=db_path, params=params)
+            if not res.get("ok"):
+                return []
+            return [str(r[0]) for r in res.get("rows", []) if r and r[0] is not None
+                    and not _PLACEHOLDER_VALUE.match(str(r[0]))]
+
+        # 1) contiguous substring
+        vals = _run(f"{qcol} LIKE '%' || ? || '%' COLLATE NOCASE", [term])
         if len(vals) == 1:
             return vals[0]
-        # Multiple partial matches — accept only an exact (case-insensitive) hit if present.
         exact = [v for v in vals if v.strip().lower() == term.strip().lower()]
         if len(exact) == 1:
             return exact[0]
+        # 2) token-AND — every word present (any order); resolves reordered names + values embedded in
+        #    a longer stored label. Only accept a UNIQUE match (never guess between candidates).
+        toks = [t for t in re.split(r"\s+", term.strip()) if len(t) >= 2]
+        if len(toks) >= 2:
+            where = " AND ".join(f"{qcol} LIKE '%' || ? || '%' COLLATE NOCASE" for _ in toks)
+            vals2 = _run(where, toks)
+            if len(vals2) == 1:
+                return vals2[0]
         return None
     except Exception:
         return None
