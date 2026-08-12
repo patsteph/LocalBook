@@ -140,6 +140,12 @@ class Settings(BaseSettings):
     # (from the catalog derived at connect/refresh) and assemble the SQL app-side, no LLM. Cursor-only;
     # the spreadsheet path is untouched. Set False to force the LLM path (diagnostics).
     cursor_tier0_enabled: bool = True
+    # Python hard-compute tier (P2): build Studio document charts by generating Python and running it
+    # in the py_compute sandbox, so totals/shares/growth-rates are EXECUTED rather than typed by the
+    # model — today's path asks gemma for finished ChartConfig JSON, the one place in the app where
+    # plotted numbers are model-authored. OFF until proven in the built app; the caller falls back to
+    # the LLM-JSON path whenever the sandbox yields no chart, so flipping it is safe either way.
+    py_compute_doc_charts_enabled: bool = False
     # Cursor Style: log the FULL text-to-SQL prompt Gemma receives (canonical rules + recipes + schema
     # + grounded values) at INFO, to diagnose/tweak/steer what the model is told. Off by default (the
     # prompt is large); enable with LOCALBOOK_CURSOR_DEBUG_SQL=1. The generated/repaired/executed SQL

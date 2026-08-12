@@ -1229,6 +1229,23 @@ async def _inject_doc_visuals(content: str, topic_focus: str, source_context: st
         )
 
         fences: List[str] = []
+
+        # P2 (Python hard-compute tier): try COMPUTING the charts first — the model writes Python,
+        # the sandbox runs it, so totals/shares/growth-rates are executed rather than typed. Falls
+        # through to the LLM-JSON path below whenever it yields nothing. Off by default.
+        if settings.py_compute_doc_charts_enabled:
+            try:
+                from services.doc_charts import compute_chart_fences
+                fences = await compute_chart_fences(
+                    content=content, topic_focus=topic_focus, source_context=source_context,
+                    chart_brief=chart_brief, temperature=temperature,
+                )
+            except Exception as _pce:
+                logger.debug(f"[STUDIO] py_compute chart path skipped: {_pce}")
+            if fences:
+                logger.info(f"[STUDIO] visual injection: {len(fences)} COMPUTED chart(s) via py_compute")
+                return _insert_fences_at_anchors(content, fences)
+
         feedback = ""
         for _attempt in (1, 2):
             prompt = (
