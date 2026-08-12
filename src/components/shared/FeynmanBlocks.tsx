@@ -15,6 +15,32 @@ import { emitEvent } from '../../lib/events';
 import { sanitizeSvg } from '../../lib/sanitizeSvg';
 import { Target, Headphones, ChevronRight, ChevronDown, Check, X, Loader2 } from 'lucide-react';
 import { API_BASE_URL, localFetch } from '../../services/api';
+import { quizService } from '../../services/quiz';
+
+// ── Spaced-repetition capture ─────────────────────────────────────────────
+//
+// Studio quiz answers feed the FSRS scheduler, the same way the flashcard tile does. Recorded
+// PER ANSWER rather than on completion, because this surface has no "finish" step — questions are
+// answered independently and the card can be closed at any point, so batching would silently lose
+// a partly-worked quiz.
+//
+// Requires a card_id: the backend stores one card per generated question keyed by question id, so
+// only quizzes carrying ids can be recorded. The Feynman section-quiz path (cached questions with
+// no ids) simply omits the props and is unaffected.
+const _recorded = new Set<string>();
+
+function recordStudyResult(notebookId: string | undefined, cardId: string | undefined, correct: boolean): void {
+  if (!notebookId || !cardId) return;
+  const key = `${notebookId}:${cardId}`;
+  if (_recorded.has(key)) return;   // answers are one-shot, but guard remounts anyway
+  _recorded.add(key);
+  quizService
+    .recordDeckResults(notebookId, [{ card_id: cardId, correct }])
+    .catch(err => {
+      _recorded.delete(key);        // let a later attempt retry
+      console.warn('[quiz] failed to record study result', err);
+    });
+}
 
 // ── Quiz Cache Types ──────────────────────────────────────────────────────
 
@@ -199,7 +225,13 @@ const VisualDiagram: React.FC<{ svg?: string }> = ({ svg }) =>
     />
   ) : null;
 
-const InlineQuestion: React.FC<{ index: number; question: CachedQuestion }> = ({ index, question }) => {
+const InlineQuestion: React.FC<{
+  index: number;
+  question: CachedQuestion;
+  /** Present only for Studio quizzes, whose questions have ids backed by scheduler cards. */
+  cardId?: string;
+  notebookId?: string;
+}> = ({ index, question, cardId, notebookId }) => {
   const qKey = (question.q || '').slice(0, 80);
   const prevAnswer = _answerCache[qKey];
   const [selected, setSelected] = useState<string | null>(prevAnswer?.selected ?? null);
@@ -211,6 +243,7 @@ const InlineQuestion: React.FC<{ index: number; question: CachedQuestion }> = ({
     setSelected(option);
     setRevealed(true);
     _answerCache[qKey] = { selected: option, revealed: true };
+    recordStudyResult(notebookId, cardId, option === question.a);
   };
 
   return (
@@ -273,7 +306,9 @@ const OPEN_ENDED_CANVAS = new Set(['fill_in_the_blank', 'short_answer', 'spot_th
 
 const _openEndedCache: Record<string, { value: string; revealed: boolean; correct: boolean | null }> = {};
 
-const OpenEndedQuestion: React.FC<{ index: number; q: StudioQuestion }> = ({ index, q }) => {
+const OpenEndedQuestion: React.FC<{ index: number; q: StudioQuestion; notebookId?: string }> = ({
+  index, q, notebookId,
+}) => {
   const key = q.id || q.question.slice(0, 60);
   const prev = _openEndedCache[key];
   const [value, setValue] = useState(prev?.value ?? '');
@@ -294,11 +329,14 @@ const OpenEndedQuestion: React.FC<{ index: number; q: StudioQuestion }> = ({ ind
       setCorrect(data.correct);
       setRevealed(true);
       _openEndedCache[key] = { value, revealed: true, correct: data.correct };
+      recordStudyResult(notebookId, q.id, !!data.correct);
     } catch {
+      // Server grading unavailable — the local comparison is still a real study result.
       const isCorrect = value.trim().toLowerCase() === q.answer.toLowerCase();
       setCorrect(isCorrect);
       setRevealed(true);
       _openEndedCache[key] = { value, revealed: true, correct: isCorrect };
+      recordStudyResult(notebookId, q.id, isCorrect);
     } finally {
       setChecking(false);
     }
@@ -353,7 +391,7 @@ const OpenEndedQuestion: React.FC<{ index: number; q: StudioQuestion }> = ({ ind
 
 // ── StudioQuizBlock — renders a quiz from JSON stored in canvas items ──────
 
-export const StudioQuizBlock: React.FC<{ json: string }> = ({ json }) => {
+export const StudioQuizBlock: React.FC<{ json: string; notebookId?: string }> = ({ json, notebookId }) => {
   let questions: StudioQuestion[] = [];
   try {
     questions = JSON.parse(json);
@@ -374,7 +412,7 @@ export const StudioQuizBlock: React.FC<{ json: string }> = ({ json }) => {
         const optionCount = q.options?.length ?? 0;
         const isChoice = optionCount >= 2 || q.question_type === 'true_false';
         if (OPEN_ENDED_CANVAS.has(q.question_type) || q.question_type === 'visual_diagram' || !isChoice) {
-          return <OpenEndedQuestion key={q.id || i} index={i} q={q} />;
+          return <OpenEndedQuestion key={q.id || i} index={i} q={q} notebookId={notebookId} />;
         }
         // Choice-based: adapt to CachedQuestion shape for InlineQuestion
         const adapted: CachedQuestion = {
@@ -384,7 +422,10 @@ export const StudioQuizBlock: React.FC<{ json: string }> = ({ json }) => {
           explanation: q.explanation,
           visual_svg: q.visual_svg,
         };
-        return <InlineQuestion key={q.id || i} index={i} question={adapted} />;
+        // q.id is passed separately — the CachedQuestion adapter shape has no id field.
+        return (
+          <InlineQuestion key={q.id || i} index={i} question={adapted} cardId={q.id} notebookId={notebookId} />
+        );
       })}
     </div>
   );

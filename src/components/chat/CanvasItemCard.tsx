@@ -581,7 +581,7 @@ export const CanvasItemCard: React.FC<CanvasItemCardProps> = ({ item }) => {
           )}
           {item.type === 'quiz' && item.content && (
             item.content.trimStart().startsWith('[')
-              ? <StudioQuizBlock json={item.content} />
+              ? <StudioQuizBlock json={item.content} notebookId={item.metadata?.notebookId} />
               : <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(item.content) }} />
           )}
           {item.type === 'flashcards' && (
