@@ -21,8 +21,21 @@ who already has the user's shell:
     common exfil path. Packet-level isolation on macOS needs sandbox-exec/namespaces (future
     hardening; noted, not required for the offline model).
 
-Data access (read-only DuckDB over the notebook SQLite `.db`) + richer emit helpers land in P1;
-callers land in P2+ (Studio doc charts first).
+P1 (2026-08-12) adds the data + emit contract:
+
+  • **Read-only SQLite** via `open_db` / `query` / `read_df` over the paths in `data_files`. Uses the
+    stdlib `sqlite3` URI mode (`?mode=ro`) plus pandas — both already bundled, so this needs **no new
+    dependency**. (The original plan called for DuckDB; stdlib+pandas covers every SQLite-backed
+    candidate in `READFIRST/planning/python-tier-dashboard-workflows.md` at zero bundle cost. Revisit
+    DuckDB only if we need to query the JSON stores directly or join across formats.)
+  • **Emit helpers** — `emit_chart` / `emit_table` / `emit_markdown` / `emit_html` / `emit_svg`.
+    `emit_chart` → `json:chart` is the PRIMARY verb: the sandboxed `interactive-html` renderer blocks
+    all external URLs, so charts must travel as *data* rendered outside the sandbox (recharts), never
+    as CDN markup inside it. Several charts beat one monolithic HTML blob.
+  • **Multiple artifacts per run** (`result["artifacts"]`), because the flagship dashboards are
+    multi-chart. `result["artifact"]` stays as the first one for single-artifact callers.
+
+Callers land in P2+ (Studio doc charts first).
 """
 from __future__ import annotations
 
@@ -94,28 +107,135 @@ def _block_network() -> None:
         pass
 
 
+def _build_data_helpers(data_files: Dict[str, str]) -> Dict[str, Any]:
+    """Read-only data access over the caller's `data_files` (name → path).
+
+    Read-only is enforced at the connection (`file:…?mode=ro`), so the sandbox physically cannot
+    write to a real store — which matters because on a dev venv `settings.data_dir` IS the production
+    data directory. `immutable=1` is deliberately NOT used: it promises the file never changes, and a
+    live app writing to the same SQLite would then hand us stale pages."""
+    import sqlite3
+
+    def _path(name: str) -> str:
+        if name not in data_files:
+            raise KeyError(f"unknown data file {name!r}; available: {sorted(data_files)}")
+        return data_files[name]
+
+    def open_db(name: str):
+        """Read-only sqlite3 connection, rows accessible by column name."""
+        conn = sqlite3.connect(f"file:{_path(name)}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def query(name: str, sql: str, params: Any = ()) -> list:
+        """Run SQL against `name`, return a list of plain dicts."""
+        conn = open_db(name)
+        try:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        finally:
+            conn.close()
+
+    def read_df(name: str, sql: str, params: Any = ()):
+        """Run SQL against `name`, return a pandas DataFrame."""
+        try:
+            import pandas as pd
+        except ImportError as e:  # pragma: no cover — pandas is a bundled dep
+            raise RuntimeError("pandas is unavailable in the sandbox") from e
+        conn = open_db(name)
+        try:
+            return pd.read_sql_query(sql, conn, params=params)
+        finally:
+            conn.close()
+
+    def tables(name: str) -> list:
+        """List the table/view names in `name` — lets generated code discover shape before querying."""
+        return [r["name"] for r in query(
+            name, "SELECT name FROM sqlite_master WHERE type IN ('table','view') ORDER BY name")]
+
+    return {"open_db": open_db, "query": query, "read_df": read_df, "tables": tables}
+
+
+def _build_emit_helpers(sink: list) -> Dict[str, Any]:
+    """Typed `emit_*` helpers. Each appends one Artifact-shaped dict to `sink`.
+
+    These build plain dicts rather than importing `artifact_spec` so the sandbox stays independent of
+    the parent's model layer; the parent validates shapes after the run."""
+
+    def _artifact(kind: str, payload: Any, title, id_, **extra) -> dict:
+        art = {"id": id_ or f"pyc-{len(sink) + 1}", "type": kind, "payload": payload,
+               "metadata": {"source": "py_compute", **extra.pop("metadata", {})}}
+        if title:
+            art["title"] = title
+        art.update(extra)
+        return art
+
+    def emit(artifact: Any) -> None:
+        """Escape hatch — emit a raw Artifact dict (or anything with .model_dump())."""
+        if hasattr(artifact, "model_dump"):
+            artifact = artifact.model_dump()
+        if not isinstance(artifact, dict):
+            raise TypeError("emit() expects an Artifact dict (or a pydantic Artifact)")
+        sink.append(artifact)
+
+    def emit_chart(chart_type: str, data: Any, series: Any, *, title=None, x_key=None,
+                   x_label=None, y_label=None, stacked=False, id=None) -> None:
+        """THE primary verb. `series` accepts ['col'] / [{'key','label',...}]; `data` accepts a list
+        of dicts or a pandas DataFrame. Renders via recharts OUTSIDE the sandbox."""
+        if hasattr(data, "to_dict"):           # pandas DataFrame
+            data = data.to_dict(orient="records")
+        norm = [{"key": s} if isinstance(s, str) else dict(s) for s in (series or [])]
+        cfg: Dict[str, Any] = {"chart_type": chart_type, "series": norm,
+                               "data": list(data or []), "stacked": bool(stacked)}
+        if title:
+            cfg["title"] = title
+        if x_key or x_label:
+            cfg["x_axis"] = {k: v for k, v in (("key", x_key), ("label", x_label)) if v}
+        if y_label:
+            cfg["y_axis"] = {"label": y_label}
+        sink.append(_artifact("json:chart", cfg, title, id))
+
+    def emit_table(rows: Any, *, title=None, columns=None, id=None) -> None:
+        """Emit rows as a markdown table (renders through the existing markdown renderer)."""
+        if hasattr(rows, "to_dict"):
+            rows = rows.to_dict(orient="records")
+        rows = list(rows or [])
+        cols = list(columns or (rows[0].keys() if rows else []))
+        head = "| " + " | ".join(str(c) for c in cols) + " |"
+        rule = "| " + " | ".join("---" for _ in cols) + " |"
+        body = ["| " + " | ".join(str(r.get(c, "")) for c in cols) + " |" for r in rows]
+        sink.append(_artifact("markdown", "\n".join([head, rule, *body]), title, id))
+
+    def emit_markdown(text: str, *, title=None, id=None) -> None:
+        sink.append(_artifact("markdown", str(text), title, id))
+
+    def emit_svg(svg: str, *, title=None, id=None) -> None:
+        sink.append(_artifact("svg", str(svg), title, id))
+
+    def emit_html(html: str, *, title=None, interactive=False, id=None) -> None:
+        """`interactive=True` targets the SANDBOXED iframe renderer, which blocks every external URL
+        — the HTML must be fully self-contained (no CDN scripts, fonts or images). Prefer several
+        emit_chart() calls over one big HTML dashboard."""
+        sink.append(_artifact("interactive-html" if interactive else "html", str(html), title, id))
+
+    return {"emit": emit, "emit_chart": emit_chart, "emit_table": emit_table,
+            "emit_markdown": emit_markdown, "emit_svg": emit_svg, "emit_html": emit_html}
+
+
 def _sandbox_child(code: str, data_files: Dict[str, str], limits_dict: dict, conn) -> None:
     """Runs in the spawned child: apply limits, exec the user code with an `emit()` helper, capture
     stdout, and send back `{ok, stdout, artifact, error}`. Never lets anything escape unreported."""
-    result = {"ok": False, "stdout": "", "artifact": None, "error": None}
+    result = {"ok": False, "stdout": "", "artifact": None, "artifacts": [], "error": None}
     try:
         limits = SandboxLimits(**limits_dict)
         _apply_rlimits(limits)
         _block_network()
 
-        emitted: Dict[str, Any] = {"artifact": None}
-
-        def emit(artifact: Any) -> None:
-            if hasattr(artifact, "model_dump"):
-                artifact = artifact.model_dump()  # accept a pydantic Artifact directly
-            if not isinstance(artifact, dict):
-                raise TypeError("emit() expects an Artifact dict (or a pydantic Artifact)")
-            emitted["artifact"] = artifact
-
+        sink: list = []
         ns: Dict[str, Any] = {
             "__name__": "__sandbox__",
-            "emit": emit,
             "DATA_FILES": dict(data_files or {}),
+            **_build_emit_helpers(sink),
+            **_build_data_helpers(dict(data_files or {})),
         }
 
         buf = io.StringIO()
@@ -123,14 +243,16 @@ def _sandbox_child(code: str, data_files: Dict[str, str], limits_dict: dict, con
             with contextlib.redirect_stdout(buf):
                 exec(compile(code, "<py_compute>", "exec"), ns)
             result["ok"] = True
-            art = emitted["artifact"]
-            if art is not None:
-                blob = json.dumps(art, default=str)
+            if sink:
+                blob = json.dumps(sink, default=str)  # default=str tolerates numpy/Decimal/datetime
                 if len(blob) > _MAX_ARTIFACT_BYTES:
                     result["ok"] = False
-                    result["error"] = f"emitted artifact too large ({len(blob)} bytes)"
+                    result["error"] = (f"emitted artifacts too large ({len(blob)} bytes across "
+                                       f"{len(sink)} artifact(s))")
                 else:
-                    result["artifact"] = json.loads(blob)  # ensure it is JSON-clean
+                    arts = json.loads(blob)  # ensure they are JSON-clean
+                    result["artifacts"] = arts
+                    result["artifact"] = arts[0]
         except BaseException as e:  # user exception, SIGXCPU→SystemExit, etc.
             result["error"] = f"{type(e).__name__}: {e}"
         finally:
@@ -162,20 +284,47 @@ def _terminate(proc) -> None:
         pass
 
 
+def _fail(error: str, stdout: str = "") -> Dict[str, Any]:
+    return {"ok": False, "stdout": stdout, "artifact": None, "artifacts": [], "error": error}
+
+
+def _validate_charts(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate every emitted `json:chart` payload against `ChartConfig` in the PARENT.
+
+    Done here, not in the child, so the sandbox stays free of the model layer and a schema drift
+    surfaces as a clean error instead of an unrenderable chart reaching the frontend. Mirrors what
+    `visual_resolver._resolve_chart` does for LLM-authored fences."""
+    charts = [a for a in result.get("artifacts") or [] if a.get("type") == "json:chart"]
+    if not charts:
+        return result
+    try:
+        from services.chart_spec import ChartConfig
+    except Exception:  # pydantic/schema unavailable — don't fail the run over validation
+        return result
+    for art in charts:
+        try:
+            ChartConfig(**(art.get("payload") or {}))
+        except Exception as e:
+            result["ok"] = False
+            result["error"] = f"emitted chart {art.get('id')!r} failed ChartConfig validation: {e}"
+            break
+    return result
+
+
 def run(
     code: str,
     *,
     data_files: Optional[Dict[str, str]] = None,
     limits: Optional[SandboxLimits] = None,
 ) -> Dict[str, Any]:
-    """Execute `code` in the sandbox and return `{ok, stdout, artifact, error}`. Never raises.
+    """Execute `code` in the sandbox → `{ok, stdout, artifact, artifacts, error}`. Never raises.
 
-    The code may `print(...)` (captured) and call `emit(artifact_dict)` once to return a renderable
-    Artifact. `data_files` is a name→path map exposed to the code as the `DATA_FILES` dict (read-only
-    convention; the DuckDB helper lands in P1)."""
+    The code may `print(...)` (captured) and call the emit helpers any number of times;
+    `artifacts` is everything emitted, `artifact` the first. `data_files` is a name→path map,
+    exposed as the `DATA_FILES` dict and queryable read-only via `query` / `read_df` / `tables`."""
     limits = limits or SandboxLimits()
     if not (code or "").strip():
-        return {"ok": False, "stdout": "", "artifact": None, "error": "empty code"}
+        return _fail("empty code")
 
     ctx = mp.get_context("spawn")  # thread-safe, no global set_start_method; frozen-app safe
     parent_conn, child_conn = ctx.Pipe(duplex=False)
@@ -191,21 +340,18 @@ def run(
             try:
                 result = parent_conn.recv()
             except EOFError:
-                result = {"ok": False, "stdout": "", "artifact": None,
-                          "error": "sandbox died before returning a result"}
+                result = _fail("sandbox died before returning a result")
         else:
-            result = {"ok": False, "stdout": "", "artifact": None,
-                      "error": f"timeout after {limits.timeout_s}s"}
+            result = _fail(f"timeout after {limits.timeout_s}s")
     except Exception as e:
-        result = {"ok": False, "stdout": "", "artifact": None,
-                  "error": f"sandbox launch failed: {type(e).__name__}: {e}"}
+        result = _fail(f"sandbox launch failed: {type(e).__name__}: {e}")
     finally:
         try:
             parent_conn.close()
         except Exception:
             pass
         _terminate(proc)
-    return result
+    return _validate_charts(result)
 
 
 async def run_async(

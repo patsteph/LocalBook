@@ -17,3 +17,6 @@ fastapi
 # SILENTLY DISABLES validation when it's absent, so omitting it here didn't skip
 # tests/test_cursor_validate.py, it made two of them fail (CI red 2026-08-07 → 08-12).
 sqlglot
+# Real runtime dep (requirements.in) — py_compute's `read_df` data handle returns a DataFrame,
+# and tests/test_py_compute.py exercises it.
+pandas
