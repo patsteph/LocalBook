@@ -53,12 +53,22 @@ async def test_embed_batch_single_call():
             n = len(json["input"]) if isinstance(json["input"], list) else 1
             return _Resp(n)
 
+    async def _no_mlx(_texts):
+        return None
+
     orig = ollama_service._get_client
+    # Pin the OLLAMA path: embed_batch short-circuits to in-process MLX when that engine is
+    # available (default since 653bd6f), which would bypass FakeClient entirely and make the
+    # call-shape checks below vacuous. This test is about the Ollama batching contract, so
+    # neutralize the MLX branch the same way test_encode_async_batches pins `_use_ollama`.
+    orig_mlx = ollama_service._mlx_embed_or_none
     ollama_service._get_client = lambda: FakeClient()
+    ollama_service._mlx_embed_or_none = _no_mlx
     try:
         out = await ollama_service.embed_batch([f"t{i}" for i in range(100)], max_batch=64)
     finally:
         ollama_service._get_client = orig
+        ollama_service._mlx_embed_or_none = orig_mlx
 
     check("returns one vector per input (100)", len(out) == 100)
     check("sends `input` as a list", bool(calls) and isinstance(calls[0]["input"], list))
