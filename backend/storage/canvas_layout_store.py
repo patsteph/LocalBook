@@ -167,6 +167,18 @@ def _get_layout(conn: sqlite3.Connection, notebook_id: str) -> Dict[str, Any]:
             (notebook_id,),
         ).fetchall()
     ]
+    # PARENTS MUST PRECEDE THEIR CHILDREN. React Flow v12 resolves `parentId` against the nodes it
+    # has already seen, so a child listed first renders DETACHED — its position, which is relative
+    # to the parent, gets treated as absolute and the thread lands somewhere else on the canvas
+    # while its topic card shows up empty. (Observed 2026-08-12: expanding a card showed nothing
+    # inside while its threads sat at their old pre-card coordinates.)
+    #
+    # The SQL order alone can't guarantee this: threads keep their ORIGINAL `created_at` (months
+    # old) while a topic card is minted at populate time, so `ORDER BY z, created_at` reliably puts
+    # every child ahead of its parent. Stable-partition parents first — the hierarchy is two levels
+    # (card → thread), so one pass is sufficient, and the relative order within each group (hence z
+    # and recency) is preserved.
+    nodes.sort(key=lambda n: 1 if n.get("parent_id") else 0)
     edges = [
         _edge_to_dict(r)
         for r in conn.execute(
