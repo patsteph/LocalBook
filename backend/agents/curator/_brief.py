@@ -254,6 +254,27 @@ class CuratorBriefMixin:
         except Exception as _e:
             logger.debug(f"[curator] Phase 10 dashboard skipped (non-fatal): {_e}")
 
+        # QS Phase 2 — self-report. The brief is where the curator tells the user what happened
+        # while they were away; "where I worked badly" belongs there too. Read-only over the
+        # signals ledger, `notable`+ only (an `info` cache-hit is not worth confessing), and
+        # never fatal — a brief must still render if the sink is unavailable.
+        self_report: List[Dict[str, Any]] = []
+        try:
+            from services.quality_signals import quality_signals
+
+            for g in quality_signals.get_recent(7):
+                if g.get("severity") in ("notable", "warn") and g.get("count", 0) > 1:
+                    self_report.append({
+                        "type": g.get("type"), "component": g.get("component"),
+                        "key": g.get("key", ""), "count": g.get("count", 0),
+                        "detail": g.get("detail", ""),
+                    })
+            self_report = self_report[:5]
+            if self_report:
+                logger.info(f"[curator] self-report: {len(self_report)} rough edge(s) in the brief")
+        except Exception as _e:
+            logger.debug(f"[curator] self-report skipped (non-fatal): {_e}")
+
         return MorningBrief(
             away_duration=duration_str,
             notebook_summaries=summaries,
@@ -263,6 +284,7 @@ class CuratorBriefMixin:
             narrative_html=narrative_html,
             consensus_clusters=consensus_clusters,
             deep_reads_triggered=deep_reads_triggered,
+            self_report=self_report,
         )
 
     async def generate_weekly_wrap_up(self) -> WeeklyWrapUp:
