@@ -1285,12 +1285,16 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                 if dist.get("manual", 0) > 0:
                     series.append({"label": "manual approve", "data": [b.get("manual", 0) for b in non_empty]})
                 series.append({"label": "queued", "data": [b["queued"] for b in non_empty]})
-                chart = {
-                    "kind": "bar",
-                    "title": f"Routing decisions — last {dist['window_days']}d",
-                    "labels": labels,
-                    "series": series,
-                }
+                from services.chart_spec import chart_fence
+                chart_block = chart_fence(
+                    chart_type="bar",
+                    title=f"Routing decisions — last {dist['window_days']}d",
+                    labels=labels,
+                    series=series,
+                    x_label="Confidence bucket",
+                    y_label="Decisions",
+                    stacked=True,
+                )
                 # Threshold-tuning advice
                 above_thr = sum(b["auto"] + b.get("manual", 0) + b["queued"] for b in non_empty if b["lo"] >= threshold)
                 advice = ""
@@ -1316,10 +1320,7 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                 lines.append(f"- **Queued (no approval yet):** {dist['queued']}")
                 lines.append(f"- **Threshold:** {threshold:.2f}")
                 lines.append(advice)
-                lines.append("")
-                lines.append("```json-chart")
-                lines.append(json.dumps(chart))
-                lines.append("```")
+                lines.append(chart_block)
                 yield _reply("\n".join(lines))
 
         # ─────────────────────────────────────────────────────────────
@@ -1604,16 +1605,18 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
                         for t in items:
                             arrow = "↑" if t["delta"] > 0 else "↓"
                             lines.append(f"- `{t['topic']}` — {arrow} {t['recent']} (was {t['baseline']})")
-                        chart = {
-                            "kind": "bar",
-                            "title": title,
-                            "labels": [t["topic"][:30] for t in items],
-                            "series": [
+                        from services.chart_spec import chart_fence
+                        lines.append(chart_fence(
+                            chart_type="bar",
+                            title=title,
+                            labels=[t["topic"][:30] for t in items],
+                            x_label="Topic",
+                            y_label="Mentions",
+                            series=[
                                 {"label": f"last {days}d", "data": [t["recent"] for t in items]},
                                 {"label": f"prior {days}d", "data": [t["baseline"] for t in items]},
                             ],
-                        }
-                        lines.append("\n```json-chart\n" + json.dumps(chart) + "\n```")
+                        ))
                         lines.append("\n_Tip: try `whats_hot deep=true` for article-level clusters (richer signal)._")
                         yield _reply("\n".join(lines))
 
