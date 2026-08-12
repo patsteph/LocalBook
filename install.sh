@@ -857,6 +857,53 @@ print(f'Whisper model cached at: {local_dir}')
             fi
         fi
 
+        # MLX embedding model (~2.3GB) — in-process embeddings via MLX (arctic-embed-l-v2.0 bf16).
+        # Same model + 1024 dim as the Ollama `snowflake-arctic-embed2` → same vector space, no re-index.
+        # Pre-download here (with the SSL-tolerant session below) so the frozen app never has to fetch it
+        # at first use, where OpenSSL can't verify the HF cert. Skip for Ollama-embed users
+        # (LOCALBOOK_EMBED_ENGINE=ollama) — the default is mlx.
+        if [ "${LOCALBOOK_EMBED_ENGINE:-mlx}" = "ollama" ]; then
+            info "MLX embeddings disabled (LOCALBOOK_EMBED_ENGINE=ollama) — skipping bf16 embed download"
+        else
+            local embed_hf_cache="$HOME/.cache/huggingface/hub/models--mlx-community--snowflake-arctic-embed-l-v2.0-bf16"
+            if [ -d "$embed_hf_cache" ]; then
+                success "MLX embedding model (already cached)"
+            else
+                info "Downloading MLX embedding model (~2.3GB) — in-process embeddings engine..."
+                python -c "
+import os, signal, requests
+from requests.adapters import HTTPAdapter
+def _alarm(*_): raise SystemExit('Download timed out')
+signal.signal(signal.SIGALRM, _alarm)
+signal.alarm(1200)  # 20-minute hard timeout (2.3GB)
+class _T(HTTPAdapter):
+    def send(self, *a, **kw):
+        kw.setdefault('timeout', (30, 180))
+        return super().send(*a, **kw)
+from huggingface_hub import configure_http_backend
+def _f():
+    s = requests.Session()
+    s.mount('http://', _T(max_retries=3))
+    s.mount('https://', _T(max_retries=3))
+    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
+        s.verify = False
+    return s
+configure_http_backend(backend_factory=_f)
+from huggingface_hub import snapshot_download
+local_dir = snapshot_download(
+    repo_id='mlx-community/snowflake-arctic-embed-l-v2.0-bf16',
+    allow_patterns=['config.json', '*.safetensors', '*.json', 'tokenizer*', '*.txt', '*.model', 'sentencepiece*'],
+    max_workers=1,
+)
+signal.alarm(0)
+print(f'MLX embedding model cached at: {local_dir}')
+" || warn "MLX embedding download failed (non-fatal — app falls back to Ollama embeddings until cached)"
+                if [ -d "$embed_hf_cache" ]; then
+                    success "MLX embedding model downloaded"
+                fi
+            fi
+        fi
+
         # Playwright Chromium browser — video slides, Mermaid diagrams, social features
         local pw_cache="$HOME/Library/Caches/ms-playwright"
         if [ -d "$pw_cache" ] && ls "$pw_cache"/chromium-* >/dev/null 2>&1; then
