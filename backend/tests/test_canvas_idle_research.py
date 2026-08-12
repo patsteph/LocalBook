@@ -123,7 +123,7 @@ def test_enrich_notebook_skips_when_too_few_nodes(monkeypatch, mem_layout):
     monkeypatch.setattr("services.canvas_candidates.compute_candidates", fake_candidates)
 
     res = asyncio.run(ir.enrich_notebook("nb2", allow_research=False))
-    assert res == {"edges_drawn": 0, "researched": False}
+    assert res == {"edges_drawn": 0, "researched": False, "orphan_surfaced": False}
     assert called["n"] == 0  # short-circuited before touching the candidate engine
 
 

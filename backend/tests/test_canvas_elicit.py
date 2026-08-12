@@ -112,3 +112,97 @@ def test_reassign_one_below_threshold_no_join(ctx, monkeypatch):
     assert res["topic_id"] is None
     assert res["suggestions"] and res["suggestions"][0]["id"] == "T2"
     assert ts.list_topics("nb1")[0]["member_count"] == 4  # unchanged
+
+
+# ── P4 idle orphan-surfacing (canvas_idle_research._surface_top_orphan / _research_top_orphan) ──
+from services import canvas_idle_research as cir
+
+
+def _layout(nodes):
+    return {"nodes": nodes, "edges": []}
+
+
+def _orphan(node_id, title, **kw):
+    n = {"id": node_id, "title": title, "topic_id": None, "ref_type": "source", "snapshot": {}}
+    n.update(kw)
+    return n
+
+
+def test_surface_picks_orphan_with_genuine_partner():
+    layout = _layout([
+        _orphan("orphan1", "reinforcement learning"),
+        _orphan("assigned1", "policy gradients", topic_id="T1"),  # already assigned → the partner
+    ])
+    candidates = [{"a_node": "orphan1", "b_node": "assigned1", "score": 0.8, "signal": "related"}]
+    pick = cir._surface_top_orphan(layout, candidates)
+    assert pick is not None
+    orphan, partner, query = pick
+    assert orphan["id"] == "orphan1" and partner == "assigned1"
+    assert query == "reinforcement learning"
+
+
+def test_surface_skips_assigned_topicnode_and_already_surfaced():
+    layout = _layout([
+        _orphan("assigned", "x", topic_id="T1"),                       # not an orphan (assigned)
+        _orphan("topicnode", "Group", ref_type="topic"),              # topic-group node, never an orphan
+        _orphan("surfaced", "y", snapshot={"research_insight": "old"}),  # already surfaced
+        _orphan("partner", "p", topic_id="T1"),
+    ])
+    candidates = [
+        {"a_node": "assigned", "b_node": "partner", "score": 0.9},
+        {"a_node": "topicnode", "b_node": "partner", "score": 0.9},
+        {"a_node": "surfaced", "b_node": "partner", "score": 0.9},
+    ]
+    assert cir._surface_top_orphan(layout, candidates) is None
+
+
+def test_surface_requires_genuine_partner_and_score():
+    # Both endpoints orphans (no assigned partner) → skip; and a below-threshold pair → skip.
+    layout = _layout([_orphan("o1", "t"), _orphan("o2", "u"), _orphan("a1", "p", topic_id="T1")])
+    assert cir._surface_top_orphan(
+        layout, [{"a_node": "o1", "b_node": "o2", "score": 0.9}]) is None
+    assert cir._surface_top_orphan(
+        layout, [{"a_node": "o1", "b_node": "a1", "score": 0.5}]) is None  # < IDLE_MIN_SCORE
+
+
+def test_research_top_orphan_stashes_insight_and_edge(monkeypatch):
+    import asyncio
+    layout = _layout([
+        _orphan("orphan1", "reinforcement learning"),
+        _orphan("assigned1", "policy gradients", topic_id="T1"),
+    ])
+    candidates = [{"a_node": "orphan1", "b_node": "assigned1", "score": 0.8}]
+
+    class _Result:
+        title, snippet, url = "RL explained", "a short overview", "http://x/rl"
+    async def _search(q, nb, max_results=3):
+        return [_Result()]
+    monkeypatch.setattr("services.research_engine.research_engine.web_search", _search)
+
+    patches, edges = [], []
+    monkeypatch.setattr("storage.canvas_layout_store.patch_node_snapshot",
+                        lambda nb, nid, patch: patches.append((nid, patch)) or True)
+    monkeypatch.setattr("storage.canvas_layout_store.upsert_edge",
+                        lambda nb, edge: edges.append(edge) or {"id": "e"})
+
+    ok = asyncio.run(cir._research_top_orphan("nb1", layout, candidates))
+    assert ok is True
+    # insight stashed on the ORPHAN node (drives the frontend chip)
+    assert patches and patches[0][0] == "orphan1" and "research_insight" in patches[0][1]
+    # a `researched` edge points orphan → genuine partner
+    assert edges and edges[0]["source"] == "orphan1" and edges[0]["target"] == "assigned1"
+    assert edges[0]["state"] == "researched"
+
+
+def test_research_top_orphan_no_results_is_noop(monkeypatch):
+    import asyncio
+    layout = _layout([_orphan("orphan1", "t"), _orphan("assigned1", "p", topic_id="T1")])
+    candidates = [{"a_node": "orphan1", "b_node": "assigned1", "score": 0.8}]
+    async def _empty(q, nb, max_results=3):
+        return []
+    monkeypatch.setattr("services.research_engine.research_engine.web_search", _empty)
+    wrote = []
+    monkeypatch.setattr("storage.canvas_layout_store.patch_node_snapshot",
+                        lambda *a, **k: wrote.append(1) or True)
+    assert asyncio.run(cir._research_top_orphan("nb1", layout, candidates)) is False
+    assert not wrote  # nothing stashed when research yields nothing

@@ -234,15 +234,112 @@ async def _research_top_gap(
         return False
 
 
+# Content nodes carry topic_id (NULL = orphan); topic-group nodes are `ref_type == "topic"`.
+_TOPIC_REF_TYPE = "topic"
+
+
+def _surface_top_orphan(
+    layout: Dict[str, Any], candidates: List[Dict[str, Any]]
+) -> Optional[tuple]:
+    """Pick the single best (orphan_node, partner_id, query) to proactively surface, or None.
+
+    An *orphan* is a content thread not yet assigned to a sub-topic (`topic_id is None`, not a
+    topic-group node) that hasn't already been surfaced (no `research_insight` stashed yet). We only
+    surface an orphan that has a GENUINE latent partner on the canvas — the highest-scoring candidate
+    pair with exactly one orphan endpoint — so the nudge reflects a real relation, never a fabricated
+    one. Pure/deterministic; the async web lookup + writes happen in `_research_top_orphan`."""
+    nodes = layout.get("nodes", []) or []
+    by_id = {n["id"]: n for n in nodes if n.get("id")}
+    orphan_ids = {
+        n["id"] for n in nodes
+        if n.get("id")
+        and n.get("topic_id") is None
+        and n.get("ref_type") != _TOPIC_REF_TYPE
+        and not (n.get("snapshot") or {}).get("research_insight")  # skip already-surfaced
+    }
+    if not orphan_ids:
+        return None
+    # candidates are score-desc → the first pair with exactly one orphan endpoint is the best.
+    for c in candidates or []:
+        a, b = c.get("a_node"), c.get("b_node")
+        if float(c.get("score", 0.0)) < IDLE_MIN_SCORE:
+            continue
+        if a in orphan_ids and b not in orphan_ids:
+            orphan_id, partner_id = a, b
+        elif b in orphan_ids and a not in orphan_ids:
+            orphan_id, partner_id = b, a
+        else:
+            continue
+        orphan = by_id.get(orphan_id)
+        if not orphan:
+            continue
+        from services.canvas_populate import snapshot_text
+        query = (orphan.get("title") or "").strip() or (snapshot_text(orphan) or "")[:200].strip()
+        if not query:
+            continue
+        return (orphan, partner_id, query)
+    return None
+
+
+async def _research_top_orphan(
+    notebook_id: str, layout: Dict[str, Any], candidates: List[Dict[str, Any]]
+) -> bool:
+    """Idle mirror of the user-triggered elicitation loop (api/canvas._elicit_research), but
+    unattended: pick the top orphan with a genuine partner, web-search its own text, and stash a
+    one-line `research_insight` on the node (+ a `researched` edge to the partner). This surfaces an
+    insight chip that nudges the user to engage/elicit the orphan — the map reaching toward its own
+    loose ends while you're away. At most one orphan per pass (shares the pass research budget).
+    Returns True iff an insight was stashed. Never raises."""
+    try:
+        pick = _surface_top_orphan(layout, candidates)
+        if not pick:
+            return False
+        orphan, partner_id, query = pick
+
+        from services.research_engine import research_engine
+
+        results = await research_engine.web_search(
+            query, notebook_id, max_results=RESEARCH_MAX_RESULTS
+        )
+        if not results:
+            return False
+        top = results[0]
+        insight = (
+            f"{getattr(top, 'title', '')} — {getattr(top, 'snippet', '')}"
+            .strip(" —")[:_INSIGHT_MAX_CHARS]
+        )
+        if not insight:
+            return False
+
+        from storage import canvas_layout_store as cl
+
+        cl.patch_node_snapshot(notebook_id, orphan["id"], {
+            "research_insight": insight, "research_url": getattr(top, "url", "")})
+        cl.upsert_edge(notebook_id, {
+            "source": orphan["id"], "target": partner_id,
+            "state": "researched", "label": "researched",
+            "meta": {"origin": _EDGE_ORIGIN, "insight": insight,
+                     "url": getattr(top, "url", ""), "query": query},
+        })
+        logger.info(
+            f"[canvas-idle-research] surfaced orphan in {notebook_id}: {query[:60]!r}"
+        )
+        return True
+    except Exception as e:  # never break the pass
+        logger.debug(f"[canvas-idle-research] orphan surfacing failed ({notebook_id}): {e}")
+        return False
+
+
 async def enrich_notebook(
     notebook_id: str, *, allow_research: bool
 ) -> Dict[str, Any]:
-    """One notebook's idle enrichment: draw new suggested connections, optionally research
-    the top gap. Returns `{edges_drawn, researched}`. Never raises.
+    """One notebook's idle enrichment: draw new suggested connections, optionally research the top
+    gap OR surface the top orphan. Returns `{edges_drawn, researched, orphan_surfaced}`. Never raises.
 
-    `allow_research` is decided ONCE per pass by the caller (AWAY-tier + cooldown), so a
-    single pass researches at most one gap total."""
-    result = {"edges_drawn": 0, "researched": False}
+    `allow_research` is decided ONCE per pass by the caller (AWAY-tier + cooldown). The single
+    per-pass research budget is shared: we try gap research first and, only if no gap consumed the
+    slot, surface an orphan — so a pass does at most one web lookup total."""
+    result = {"edges_drawn": 0, "researched": False, "orphan_surfaced": False}
     try:
         from storage import canvas_layout_store as cl
         from services import canvas_candidates
@@ -258,6 +355,10 @@ async def enrich_notebook(
         result["edges_drawn"] = await _draw_connections(notebook_id, layout, candidates)
         if allow_research:
             result["researched"] = await _research_top_gap(notebook_id, layout, candidates)
+            if not result["researched"]:
+                result["orphan_surfaced"] = await _research_top_orphan(
+                    notebook_id, layout, candidates
+                )
     except Exception as e:
         logger.debug(f"[canvas-idle-research] enrich_notebook failed ({notebook_id}): {e}")
     return result
@@ -296,7 +397,7 @@ async def run_idle_pass(worker: Any = None, allow_research: bool = True) -> Dict
     and trickles via `presence.background_pace_seconds()` so it never bursts. Gap research
     happens at most once per pass and only when `allow_research` (the caller's cooldown gate)
     AND the box is clearly idle (AWAY). Returns a small summary. Never raises."""
-    summary = {"notebooks": 0, "edges_drawn": 0, "researched": 0}
+    summary = {"notebooks": 0, "edges_drawn": 0, "researched": 0, "orphans_surfaced": 0}
     try:
         from services import presence
 
@@ -323,7 +424,10 @@ async def run_idle_pass(worker: Any = None, allow_research: bool = True) -> Dict
             summary["edges_drawn"] += res.get("edges_drawn", 0)
             if res.get("researched"):
                 summary["researched"] += 1
-                allow_research_remaining = False  # one gap per whole pass
+                allow_research_remaining = False  # one web lookup per whole pass
+            if res.get("orphan_surfaced"):
+                summary["orphans_surfaced"] += 1
+                allow_research_remaining = False  # shares the single per-pass research budget
 
             # Gentle inter-unit trickle (matches the inline-background-loop pattern).
             try:
@@ -333,11 +437,12 @@ async def run_idle_pass(worker: Any = None, allow_research: bool = True) -> Dict
             if pace > 0:
                 await asyncio.sleep(pace)
 
-        if summary["edges_drawn"] or summary["researched"]:
+        if summary["edges_drawn"] or summary["researched"] or summary["orphans_surfaced"]:
             logger.info(
                 f"[canvas-idle-research] pass done: {summary['notebooks']} notebook(s), "
                 f"{summary['edges_drawn']} suggested edge(s), "
-                f"{summary['researched']} gap(s) researched"
+                f"{summary['researched']} gap(s) researched, "
+                f"{summary['orphans_surfaced']} orphan(s) surfaced"
             )
     except Exception as e:
         logger.warning(f"[canvas-idle-research] pass failed: {e}")
