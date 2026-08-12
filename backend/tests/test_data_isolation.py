@@ -44,3 +44,12 @@ def test_production_ledger_is_untouched_by_this_run():
         return  # fresh machine / CI — nothing to protect
     for f in prod.glob("*.jsonl"):
         assert "isolation probe" not in f.read_text(errors="ignore")
+
+
+def test_field_edge_cases_fixture_is_isolated():
+    """The promoter appends to a REPO-COMMITTED fixture; tests must not leave cases in the tree."""
+    from services import field_edge_promoter as fep
+
+    p = fep.field_edge_cases_path()
+    assert "localbook-data" in str(p), f"promoter would write to the repo fixture: {p}"
+    assert "test_fixtures" not in str(p)

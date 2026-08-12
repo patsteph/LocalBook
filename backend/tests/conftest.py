@@ -18,6 +18,7 @@ individual tests remembering to opt in.
 
 CI is unaffected (a fresh runner has no data dir anyway) — this protects the dev machines.
 """
+import os
 from pathlib import Path
 
 import pytest
@@ -44,8 +45,22 @@ def _isolate_production_data_dir(tmp_path_factory):
     except Exception:  # sink unavailable in a slim env — nothing to isolate
         pass
 
+    # The field-edge promoter appends to a REPO-COMMITTED fixture
+    # (`evaluator/test_fixtures/field_edge_cases.json`). It is data-not-code by design, so in
+    # production it should be written — but a test run must never leave synthetic cases in the
+    # working tree. Same lesson as the signals ledger, one directory over.
+    # `field_edge_cases_path()` is already env-overridable — set the env var rather than replacing
+    # the function, so individual tests can still point it somewhere else with monkeypatch.setenv.
+    cases_env = "LOCALBOOK_FIELD_EDGE_CASES"
+    original_cases_env = os.environ.get(cases_env)
+    os.environ[cases_env] = str(Path(tmp) / "field_edge_cases.json")
+
     yield tmp
 
     settings.data_dir = original
     if signals is not None and original_signals_dir is not None:
         signals.signals_dir = original_signals_dir
+    if original_cases_env is None:
+        os.environ.pop(cases_env, None)
+    else:
+        os.environ[cases_env] = original_cases_env

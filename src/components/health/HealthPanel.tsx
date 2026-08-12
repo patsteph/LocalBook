@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   healthApi, HealthFull, LogEntry, HealthIssue, CheckStatus, Overall,
-  SignalGroup, fmtCount, sectionMeta,
+  SignalGroup, IncidentsResponse, fmtCount, sectionMeta,
 } from './healthApi';
 
 // In-app System Health panel (rendered in the App's <Modal>). React port of the
@@ -46,6 +46,10 @@ export function HealthPanel() {
   const [repairMsg, setRepairMsg] = useState<string | null>(null);
   const [lastChecked, setLastChecked] = useState<string | null>(null);
   const [signals, setSignals] = useState<SignalGroup[]>([]);
+  const [incidents, setIncidents] = useState<IncidentsResponse | null>(null);
+  const [openIncident, setOpenIncident] = useState<string | null>(null);
+  const [filing, setFiling] = useState(false);
+  const [fileMsg, setFileMsg] = useState<string | null>(null);
 
   const refreshLogs = useCallback(async () => {
     try { setLogs((await healthApi.logs(200)).logs || []); } catch { /* ignore */ }
@@ -54,6 +58,29 @@ export function HealthPanel() {
   const refreshSignals = useCallback(async () => {
     try { setSignals((await healthApi.signals(7)).groups || []); } catch { /* ignore */ }
   }, []);
+
+  const refreshIncidents = useCallback(async () => {
+    try { setIncidents(await healthApi.incidents()); } catch { /* ignore */ }
+  }, []);
+
+  // Filing is the one outbound action in this panel — it leaves the machine. Explicit click only,
+  // never on mount or refresh, and the result is reported verbatim rather than assumed.
+  const doFileIncidents = useCallback(async () => {
+    setFiling(true);
+    setFileMsg(null);
+    try {
+      const res = await healthApi.fileIncidents();
+      const parts = [`Filed ${res.sent.length}`];
+      if (res.skipped.length) parts.push(`${res.skipped.length} already filed`);
+      if (res.failed.length) parts.push(`${res.failed.length} failed`);
+      setFileMsg(parts.join(' · '));
+      await refreshIncidents();
+    } catch (err) {
+      setFileMsg(err instanceof Error ? err.message : 'Filing failed');
+    } finally {
+      setFiling(false);
+    }
+  }, [refreshIncidents]);
 
   const runCheck = useCallback(async () => {
     setChecking(true);
@@ -71,10 +98,14 @@ export function HealthPanel() {
     setChecking(false);
     refreshLogs();
     refreshSignals();
-  }, [refreshLogs, refreshSignals]);
+    refreshIncidents();
+  }, [refreshLogs, refreshSignals, refreshIncidents]);
 
-  // Auto-run on open (parity with the static page).
-  useEffect(() => { runCheck(); refreshLogs(); refreshSignals(); }, [runCheck, refreshLogs, refreshSignals]);
+  // Auto-run on open (parity with the static page). Previewing incidents is safe here — it reads
+  // the local queue only; nothing leaves the machine without an explicit click on Send.
+  useEffect(() => {
+    runCheck(); refreshLogs(); refreshSignals(); refreshIncidents();
+  }, [runCheck, refreshLogs, refreshSignals, refreshIncidents]);
 
   const toggle = (k: string) => setExpanded((prev) => {
     const next = new Set(prev);
@@ -245,6 +276,76 @@ export function HealthPanel() {
           </div>
         )}
       </div>
+
+      {/* Incidents — the manual "report this" end of the Quality-Signals pipe. Preview is local and
+          safe; filing is the only thing here that leaves the machine, so it is click-gated and the
+          button is simply absent unless the default-OFF flag and auth are both in place. */}
+      {incidents && incidents.count > 0 && (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 border-l-4 border-l-sky-500 bg-white dark:bg-gray-800 p-4">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+              📮 Incidents <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
+                ({incidents.count} queued locally, already scrubbed)
+              </span>
+            </h3>
+            <button onClick={refreshIncidents} className="px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">🔄</button>
+          </div>
+
+          {!incidents.enabled ? (
+            <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+              Filing is <span className="font-medium">off</span> — these stay on this machine. Review them below; enable filing in settings to send.
+            </div>
+          ) : !incidents.auth.available ? (
+            <div className="text-xs text-amber-600 dark:text-amber-400 mb-2">
+              Filing is on, but no GitHub auth was found (`gh` CLI or a token). Nothing can be sent until that's configured.
+            </div>
+          ) : null}
+
+          <div className="space-y-1.5">
+            {incidents.incidents.map((inc) => (
+              <div key={inc.incident_id} className="rounded-lg bg-gray-50 dark:bg-gray-900/40 px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${inc.already_filed ? 'bg-emerald-500' : 'bg-sky-500'}`} />
+                  <span className="text-sm text-gray-800 dark:text-gray-200 truncate">{inc.title}</span>
+                  <button
+                    onClick={() => setOpenIncident(openIncident === inc.incident_id ? null : inc.incident_id)}
+                    className="ml-auto flex-shrink-0 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                  >
+                    {openIncident === inc.incident_id ? 'Hide' : 'Review'}
+                  </button>
+                </div>
+                {inc.already_filed && (
+                  <div className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-0.5 pl-4">
+                    Already filed{inc.filed?.url ? ' · ' : ''}
+                    {inc.filed?.url && (
+                      <button onClick={() => openUrl(inc.filed!.url!)} className="underline hover:no-underline">
+                        view issue
+                      </button>
+                    )}
+                  </div>
+                )}
+                {openIncident === inc.incident_id && (
+                  /* Exactly what would be sent — reviewing the real payload is the whole point. */
+                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-white dark:bg-gray-950 p-2 text-[11px] leading-relaxed text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-gray-700">
+                    {inc.body}
+                  </pre>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {incidents.enabled && incidents.auth.available && incidents.incidents.some((i) => !i.already_filed) && (
+            <div className="mt-3 flex items-center gap-2 flex-wrap">
+              <button onClick={doFileIncidents} disabled={filing}
+                className="px-3 py-1.5 text-xs rounded-lg bg-sky-600 hover:bg-sky-700 text-white disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed">
+                {filing ? 'Filing…' : '📤 File to GitHub'}
+              </button>
+              <span className="text-[11px] text-gray-500 dark:text-gray-400">Sends the reviewed text above to your repo.</span>
+            </div>
+          )}
+          {fileMsg && <div className="mt-2 text-xs text-gray-600 dark:text-gray-300">{fileMsg}</div>}
+        </div>
+      )}
 
       {/* Console */}
       <div>
