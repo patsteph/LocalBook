@@ -49,7 +49,13 @@ def test_report_is_capped():
 
 
 def test_brief_model_defaults_to_empty_self_report():
-    """A clean week must not break the brief — the section is simply absent."""
+    """A clean week must not break the brief — the section is simply absent.
+
+    Importing the curator models pulls in `agents/state.py` → langchain_core, which the slim CI
+    dep set deliberately excludes (see requirements-test.txt). Skip there rather than drag the
+    heavy agent stack into the unit tier; this runs locally where the full env exists.
+    """
+    pytest.importorskip("langchain_core", reason="heavy agent stack — not in the slim CI set")
     from datetime import datetime
     from agents.curator._models import MorningBrief
 
