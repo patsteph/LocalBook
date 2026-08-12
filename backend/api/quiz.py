@@ -103,6 +103,20 @@ class FSRSRating(BaseModel):
     rating: int = Field(ge=1, le=4, description="1=Again, 2=Hard, 3=Good, 4=Easy")
 
 
+class DeckCardResult(BaseModel):
+    """One card's outcome from a completed study deck."""
+    card_id: str
+    correct: bool
+    rating: Optional[int] = Field(default=None, ge=1, le=4,
+                                  description="Explicit FSRS rating; overrides the correct→rating map")
+
+
+class DeckReviewRequest(BaseModel):
+    """A finished deck, submitted in one call so the whole run costs a single write."""
+    notebook_id: str
+    results: List[DeckCardResult]
+
+
 class MissedQuestion(BaseModel):
     question: str
     correct_answer: str
@@ -397,65 +411,101 @@ async def get_due_cards(notebook_id: str, limit: int = Query(default=20, le=100)
     return due_cards[:limit]
 
 
+def _apply_fsrs_review(cards_data: Dict[str, Any], card_id: str, rating: int) -> Optional[Dict[str, Any]]:
+    """Advance one card's FSRS state and append its review record. Mutates `cards_data` in place;
+    the CALLER saves (so a whole deck costs one write, not one per card).
+
+    Returns the review outcome, or None when the card isn't in this notebook. Single implementation
+    shared by `/review` and `/review/bulk` — the scheduling math must never fork."""
+    card = cards_data.get("cards", {}).get(card_id)
+    if card is None:
+        return None
+
+    reps = card.get("reps", 0)
+    d = card.get("difficulty", 5.0)
+    s = card.get("stability", 0.0)
+
+    if reps == 0:
+        d = fsrs_initial_difficulty(rating)
+        s = fsrs_initial_stability(rating)
+    else:
+        d = fsrs_next_difficulty(d, rating)
+        s = fsrs_next_stability(s, d, rating, reps)
+
+    interval = fsrs_next_interval(s)
+    next_due = datetime.utcnow() + timedelta(days=interval)
+
+    card.update({
+        "difficulty": d,
+        "stability": s,
+        "reps": reps + 1,
+        "due": next_due.isoformat(),
+        "last_review": datetime.utcnow().isoformat(),
+    })
+    cards_data.setdefault("reviews", []).append({
+        "card_id": card_id,
+        "rating": rating,
+        "timestamp": datetime.utcnow().isoformat(),
+    })
+    return {"card_id": card_id, "next_review": next_due.isoformat(), "interval_days": interval,
+            "new_difficulty": d, "new_stability": s}
+
+
+def _rating_from_correct(correct: bool) -> int:
+    """Map a pass/fail study result onto the FSRS 1-4 scale.
+
+    The study UIs know only whether the answer was right, so we take the conservative reading:
+    correct → 3 (Good), wrong → 1 (Again). Surfaces that capture a real self-rating can send
+    `rating` explicitly and bypass this."""
+    return 3 if correct else 1
+
+
 @router.post("/review")
 async def review_card(rating: FSRSRating):
-    """Submit a review rating for a card (FSRS algorithm)."""
-    
-    # Extract notebook_id from card_id (format: quizid_qN)
-    # We need to search all notebooks for this card
-    quiz_dir = _get_quiz_dir()
-    
-    for cards_file in quiz_dir.glob("*_cards.json"):
+    """Submit a review rating for a single card (FSRS algorithm)."""
+
+    # No notebook_id on this route — scan the per-notebook card files for the owning one.
+    for cards_file in _get_quiz_dir().glob("*_cards.json"):
         notebook_id = cards_file.stem.replace("_cards", "")
         cards_data = _load_cards(notebook_id)
-        
-        if rating.card_id in cards_data.get("cards", {}):
-            card = cards_data["cards"][rating.card_id]
-            
-            reps = card.get("reps", 0)
-            d = card.get("difficulty", 5.0)
-            s = card.get("stability", 0.0)
-            
-            if reps == 0:
-                # First review
-                d = fsrs_initial_difficulty(rating.rating)
-                s = fsrs_initial_stability(rating.rating)
-            else:
-                # Subsequent reviews
-                d = fsrs_next_difficulty(d, rating.rating)
-                s = fsrs_next_stability(s, d, rating.rating, reps)
-            
-            # Calculate next review date
-            interval = fsrs_next_interval(s)
-            next_due = datetime.utcnow() + timedelta(days=interval)
-            
-            # Update card
-            cards_data["cards"][rating.card_id].update({
-                "difficulty": d,
-                "stability": s,
-                "reps": reps + 1,
-                "due": next_due.isoformat(),
-                "last_review": datetime.utcnow().isoformat()
-            })
-            
-            # Record review
-            cards_data["reviews"].append({
-                "card_id": rating.card_id,
-                "rating": rating.rating,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-            
+        outcome = _apply_fsrs_review(cards_data, rating.card_id, rating.rating)
+        if outcome is not None:
             _save_cards(notebook_id, cards_data)
-            
-            return {
-                "success": True,
-                "next_review": next_due.isoformat(),
-                "interval_days": interval,
-                "new_difficulty": d,
-                "new_stability": s
-            }
-    
+            return {"success": True, **outcome}
+
     raise HTTPException(status_code=404, detail="Card not found")
+
+
+@router.post("/review/deck")
+async def review_deck(request: DeckReviewRequest):
+    """Record a whole completed deck's results in one call — THE capture loop.
+
+    Before this existed the FSRS engine was unreachable: the study UIs graded into component state
+    and discarded every result on unmount, so cards accumulated with `reps=0` forever and the
+    scheduler never ran (verified 2026-08-12: 58 cards, 0 reviews). The tile calls this on
+    completion, which is what makes studying actually count — and what gives the learning-analytics
+    dashboard something to analyze.
+
+    Unknown card_ids are skipped rather than fatal: decks can be regenerated or a notebook deleted
+    between study and submit, and losing the whole deck's progress over one stale id would be worse
+    than recording the rest."""
+    cards_data = _load_cards(request.notebook_id)
+    recorded, skipped = [], []
+
+    for item in request.results:
+        rating = item.rating if item.rating is not None else _rating_from_correct(item.correct)
+        outcome = _apply_fsrs_review(cards_data, item.card_id, rating)
+        (recorded if outcome is not None else skipped).append(item.card_id)
+
+    if recorded:
+        _save_cards(request.notebook_id, cards_data)
+
+    logger.info(
+        f"[quiz] deck review recorded: {len(recorded)} card(s)"
+        + (f", {len(skipped)} unknown id(s) skipped" if skipped else "")
+    )
+    return {"success": True, "recorded": len(recorded), "skipped": len(skipped),
+            "total_reviews": len(cards_data.get("reviews", []))}
 
 
 @router.get("/stats/{notebook_id}")

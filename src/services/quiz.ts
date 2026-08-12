@@ -161,6 +161,27 @@ export const quizService = {
     return response.json();
   },
 
+  /**
+   * Record a finished deck's results so they feed the spaced-repetition scheduler.
+   *
+   * This is the capture loop. Until 2026-08-12 the study UIs graded into component state and
+   * discarded every result on unmount, so the FSRS engine — fully implemented, with endpoints and
+   * these very client wrappers — was never reached, and cards sat at reps=0 indefinitely.
+   * One call per deck (not per card): a single backend write.
+   */
+  async recordDeckResults(
+    notebookId: string,
+    results: Array<{ card_id: string; correct: boolean; rating?: number }>,
+  ): Promise<{ recorded: number; skipped: number; total_reviews: number }> {
+    const response = await localFetch(`${API_BASE}/quiz/review/deck`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notebook_id: notebookId, results }),
+    });
+    if (!response.ok) throw new Error('Failed to record deck results');
+    return response.json();
+  },
+
   async getStats(notebookId: string): Promise<QuizStats> {
     const response = await localFetch(`${API_BASE}/quiz/stats/${notebookId}`);
     if (!response.ok) throw new Error('Failed to get stats');
