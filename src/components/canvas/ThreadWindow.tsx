@@ -1,45 +1,74 @@
 /**
- * ThreadFocusPanel — open a thread's REAL content without leaving the canvas.
+ * ThreadWindow — one floating window showing one thread's REAL content.
  *
- * The canvas was a map of what you'd discussed with nothing under the surface: chips
- * deliberately render a compact summary, because the full artifact squished into a
- * ~300×180 tile read as blurry. This is the other half — the "focus" action that was
- * always meant to follow.
+ * The canvas chips render a compact summary by design; this is the way down to the artifact
+ * itself. Every type opens the same way — a floating, draggable, resizable window sized to its
+ * content — after field feedback that the old full-height drawer "takes up one whole side of the
+ * screen" and still squashed infographics (2026-08-18).
  *
- * ⚠️ Why this fetches instead of rendering `node.snapshot`: the snapshot is a STABLE
- * OFFLINE summary, not the artifact. `canvas_artifacts` truncates a document to 600
- * chars and reduces audio/video/quiz to a one-line markdown placeholder. Only `visual`
- * (svg/mermaid) and `infographic` (full payload) carry real content, so those two render
- * straight from the snapshot and everything else goes and gets the real thing.
+ * ⚠️ Why this FETCHES rather than rendering `node.snapshot`: the snapshot is a STABLE OFFLINE
+ * SUMMARY, not the artifact. `canvas_artifacts` truncates a document to 600 chars and reduces
+ * audio/video/quiz to a one-line markdown placeholder. Only `visual` (svg/mermaid) and
+ * `infographic` (full payload) carry real content, so those render straight from the snapshot
+ * and everything else goes and gets the real thing.
  *
- * Handles everything EXCEPT media: podcasts and videos go to `FloatingMediaPlayer`, because
- * a full-height drawer for a podcast defeats the point of playing it from the map.
+ * Media needs no fetch at all — the players take ids — which is what lets a podcast start
+ * instantly and keep playing while you carry on exploring.
  */
-import React, { useCallback, useEffect, useState } from 'react';
-import { X, RefreshCw, ExternalLink, AlertCircle } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { RefreshCw, ExternalLink, AlertCircle } from 'lucide-react';
 
 import { ArtifactRender } from '../artifact/RendererRegistry';
+import { AudioCanvasPlayer } from '../chat/AudioCanvasPlayer';
+import { FloatingWindow } from './FloatingWindow';
+import { initialSize, initialPosition, avoidOverlap, type Point } from './journeyWindowSizing';
 import { contentService } from '../../services/content';
 import { quizService, type QuizQuestion } from '../../services/quiz';
+import { videoService } from '../../services/video';
 import type { CanvasNode } from '../../services/canvas';
 import type { Artifact } from '../../types/artifact';
 
 /** ref_types whose snapshot already holds the real, renderable artifact. */
 const SNAPSHOT_IS_REAL = new Set(['visual', 'infographic']);
 
-interface ThreadFocusPanelProps {
+export interface ThreadWindowProps {
   node: CanvasNode;
+  notebookId: string;
+  /** Where the user clicked, in screen coords — the window opens next to it. */
+  anchor?: Point | null;
+  /** Anchors of the windows already open, so a new one cascades instead of hiding under them. */
+  takenAnchors?: Point[];
+  z: number;
+  onFocus: () => void;
   onClose: () => void;
 }
 
 type Loaded =
   | { kind: 'artifact'; artifact: Artifact }
-  | { kind: 'quiz'; questions: QuizQuestion[]; topic: string; difficulty?: string };
+  | { kind: 'quiz'; questions: QuizQuestion[]; topic: string; difficulty?: string }
+  | { kind: 'audio' }
+  | { kind: 'video' };
 
-export const ThreadFocusPanel: React.FC<ThreadFocusPanelProps> = ({ node, onClose }) => {
+export const ThreadWindow: React.FC<ThreadWindowProps> = ({
+  node, notebookId, anchor, takenAnchors, z, onFocus, onClose,
+}) => {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Geometry is computed ONCE per window: the size comes from the content's own shape, and
+  // recomputing it on every render would fight the user's resize.
+  const geom = useMemo(() => {
+    const vp = { w: window.innerWidth, h: window.innerHeight };
+    const size = initialSize(node, vp);
+    // Cascade in ANCHOR space, then derive the position — position is a pure function of the
+    // anchor, so separating anchors separates windows. (Comparing an anchor against an already
+    // derived position would be comparing two different coordinate spaces.)
+    const spaced = anchor ? avoidOverlap(anchor, takenAnchors ?? [], size, vp) : null;
+    return { size, pos: initialPosition(spaced, size, vp) };
+    // Geometry is fixed at open time: recomputing it would fight the user's drag/resize.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.id]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -48,9 +77,13 @@ export const ThreadFocusPanel: React.FC<ThreadFocusPanelProps> = ({ node, onClos
     try {
       const refId = node.ref_id;
       switch (node.ref_type) {
-        // NOTE: audio + video never reach this panel — `JourneyCanvas.openThread` routes media
-        // to `FloatingMediaPlayer` so it keeps playing while you explore. One media surface, on
-        // purpose: two would drift.
+        // Media: no fetch — the players poll/stream by id themselves.
+        case 'audio':
+          setLoaded({ kind: 'audio' });
+          break;
+        case 'video':
+          setLoaded({ kind: 'video' });
+          break;
         case 'quiz': {
           const quiz = await quizService.get(refId);
           setLoaded({
@@ -85,10 +118,9 @@ export const ThreadFocusPanel: React.FC<ThreadFocusPanelProps> = ({ node, onClos
         }
       }
     } catch (e) {
-      console.warn('[ThreadFocusPanel] load failed', e);
-      // Falling back to the snapshot beats an error screen — a truncated preview is still
-      // a refresher, and this is exactly the case where the artifact was deleted from its
-      // store but the canvas node survives until the next Populate.
+      console.warn('[ThreadWindow] load failed', e);
+      // Falling back to the stored preview beats an error screen — this is exactly the case
+      // where the artifact was deleted but the canvas node survives until the next Populate.
       const snap = node.snapshot as Artifact | undefined;
       if (snap?.type && snap.payload !== undefined && !SNAPSHOT_IS_REAL.has(node.ref_type)) {
         setLoaded({ kind: 'artifact', artifact: { ...snap, title: snap.title || node.title } });
@@ -103,63 +135,60 @@ export const ThreadFocusPanel: React.FC<ThreadFocusPanelProps> = ({ node, onClos
 
   useEffect(() => { load(); }, [load]);
 
-  // Esc closes — this panel sits over a canvas that swallows most key handling.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  const isMedia = loaded?.kind === 'audio' || loaded?.kind === 'video';
 
   return (
-    <div className="absolute inset-y-0 right-0 z-30 flex w-[min(560px,94%)] flex-col border-l border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
-      <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-2 dark:border-gray-700">
-        <div className="min-w-0">
-          <p className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
-            {node.ref_type.replace(/_/g, ' ')}
-          </p>
-          <p className="truncate text-[12px] font-semibold text-gray-700 dark:text-gray-200" title={node.title}>
-            {node.title || 'Untitled'}
-          </p>
+    <FloatingWindow
+      title={node.title || 'Untitled'}
+      eyebrow={node.ref_type.replace(/_/g, ' ')}
+      initialPosition={geom.pos}
+      initialSize={geom.size}
+      z={z}
+      onFocus={onFocus}
+      onClose={onClose}
+      bare={isMedia}
+    >
+      {loading && (
+        <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-400">
+          <RefreshCw className="h-5 w-5 animate-spin" />
+          <p className="text-[11px]">Opening…</p>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"
-          title="Close (Esc)"
-          aria-label="Close"
+      )}
+
+      {error && (
+        <div className="mb-2 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-700 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {loaded?.kind === 'audio' && (
+        <div className="p-2">
+          {/* Reused unchanged — it owns its own status polling and playback. */}
+          <AudioCanvasPlayer audioId={node.ref_id} notebookId={notebookId} title={node.title || 'Podcast'} />
+        </div>
+      )}
+
+      {loaded?.kind === 'video' && (
+        <video
+          className="h-full w-full bg-black"
+          controls
+          autoPlay
+          preload="metadata"
+          src={videoService.getStreamUrl(node.ref_id)}
         >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
+          <track kind="captions" />
+        </video>
+      )}
 
-      <div className="flex-1 overflow-auto p-3">
-        {loading && (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-400">
-            <RefreshCw className="h-5 w-5 animate-spin" />
-            <p className="text-[11px]">Opening…</p>
-          </div>
-        )}
+      {loaded?.kind === 'artifact' && (
+        <ArtifactRender artifact={loaded.artifact} context="canvas-full" />
+      )}
 
-        {error && (
-          <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300">
-            <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {loaded?.kind === 'artifact' && (
-          <ArtifactRender artifact={loaded.artifact} context="canvas-full" />
-        )}
-
-        {loaded?.kind === 'quiz' && (
-          <QuizRefresher
-            questions={loaded.questions}
-            topic={loaded.topic}
-            difficulty={loaded.difficulty}
-          />
-        )}
-      </div>
-    </div>
+      {loaded?.kind === 'quiz' && (
+        <QuizRefresher questions={loaded.questions} topic={loaded.topic} difficulty={loaded.difficulty} />
+      )}
+    </FloatingWindow>
   );
 };
 

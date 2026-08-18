@@ -35,16 +35,14 @@ import {
   Sparkles, RefreshCw, X, MessagesSquare, Plus, Brain, Compass, Scale,
 } from 'lucide-react';
 import { ArtifactRender } from '../artifact/RendererRegistry';
-import { ThreadFocusPanel } from './ThreadFocusPanel';
-import { FloatingMediaPlayer, type MediaTarget } from './FloatingMediaPlayer';
+import { ThreadWindow } from './ThreadWindow';
+import type { Point } from './journeyWindowSizing';
 // Node renderers + the pure layout⇆flow math live alongside (split out 2026-08-18).
 import {
   nodeTypes,
   type ArtifactNodeData,
   type CanvasFlowNode,
   type NodeCandidate,
-  // One definition of "which threads are media" — also drives the chip's play glyph.
-  PLAYABLE_REFS as MEDIA_REFS,
 } from './journeyNodeTypes';
 import {
   pairKey,
@@ -72,6 +70,20 @@ import {
 } from '../../services/canvas';
 import { synthesisService } from '../../services/synthesis';
 
+
+// Thread windows float above the canvas and its drawers, below nothing else.
+const BASE_WINDOW_Z = 40;
+// Past a handful of open windows the map underneath is buried and the feature works against
+// itself. Opening more closes the least-recently-touched one.
+const MAX_WINDOWS = 4;
+
+interface OpenWindow {
+  key: string;
+  node: CanvasNode;
+  anchor: Point | null;
+  /** Monotonic stacking order — the window you last touched is in front. */
+  z: number;
+}
 
 // ─── Inner canvas (inside ReactFlowProvider so useReactFlow works) ────────────
 interface InnerProps {
@@ -140,23 +152,40 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
   }>({ open: false, node: null, intent: '', busy: false, done: false,
        suggestions: [], assignedTopicId: null, error: null });
 
-  // ── Thread focus: open a thread's REAL content (play the podcast, read the doc, refresh
-  //    on the quiz) without leaving the map. The chip is a summary by design; this is the
-  //    way down to the artifact itself. Read-only — never mutates the layout. ──
-  const [focusNode, setFocusNode] = useState<CanvasNode | null>(null);
+  // ── Thread windows: a thread's REAL content in a small FLOATING window (play the podcast,
+  //    read the doc, refresh on the quiz) without leaving the map. Several can be open at once
+  //    on purpose — the point of playing a podcast from the map is to keep exploring while it
+  //    runs, which a single-slot drawer made impossible. Read-only; never mutates the layout. ──
+  const [openWindows, setOpenWindows] = useState<OpenWindow[]>([]);
+  const zSeq = useRef(1);
 
-  // ── Media (podcast / video) does NOT go in the drawer. Opening a podcast full-height took a
-  //    whole side of the screen, when the point of playing it from the map is to keep exploring
-  //    while it runs — so it gets a small floating player instead (field feedback 2026-08-18). ──
-  const [media, setMedia] = useState<MediaTarget | null>(null);
+  const openThread = useCallback((n: CanvasNode, anchor?: Point | null) => {
+    setOpenWindows((prev) => {
+      // Already open → raise it rather than stacking a duplicate on top of itself.
+      const existing = prev.find((w) => w.node.id === n.id);
+      if (existing) {
+        return prev.map((w) => (w.node.id === n.id ? { ...w, z: ++zSeq.current } : w));
+      }
+      const next = [...prev, { node: n, anchor: anchor ?? null, z: ++zSeq.current, key: n.id }];
+      // Bounded: past a handful the map is buried. Drop the OLDEST — the one you touched least
+      // recently — rather than refusing to open the thing that was just clicked.
+      return next.length > MAX_WINDOWS
+        ? [...next].sort((a, b) => a.z - b.z).slice(next.length - MAX_WINDOWS)
+        : next;
+    });
+  }, []);
 
-  /** One entry point for "open this thread": media floats, everything else opens the drawer. */
-  const openThread = useCallback((n: CanvasNode, anchor?: { x: number; y: number } | null) => {
-    if (MEDIA_REFS.has(n.ref_type)) {
-      setMedia({ node: n, anchor: anchor ?? null });
-    } else {
-      setFocusNode(n);
-    }
+  const closeWindow = useCallback((key: string) => {
+    setOpenWindows((prev) => prev.filter((w) => w.key !== key));
+  }, []);
+
+  const raiseWindow = useCallback((key: string) => {
+    setOpenWindows((prev) => {
+      const top = Math.max(...prev.map((w) => w.z), 0);
+      const target = prev.find((w) => w.key === key);
+      if (!target || target.z === top) return prev;   // already in front — don't re-render
+      return prev.map((w) => (w.key === key ? { ...w, z: ++zSeq.current } : w));
+    });
   }, []);
 
   // Refs mirror the latest state for the full-layout persistence path.
@@ -833,17 +862,18 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
           HTML rendered through the canonical Artifact registry. Read-only. */}
       {/* Thread focus — the real artifact behind a chip. Highest z of the panels so opening
           one from behind the perspectives/gaps drawers still lands on top. */}
-      {media && (
-        <FloatingMediaPlayer
-          target={media}
+      {openWindows.map((w, i) => (
+        <ThreadWindow
+          key={w.key}
+          node={w.node}
           notebookId={notebookId}
-          onClose={() => setMedia(null)}
+          anchor={w.anchor}
+          takenAnchors={openWindows.slice(0, i).map((o) => o.anchor).filter(Boolean) as Point[]}
+          z={BASE_WINDOW_Z + w.z}
+          onFocus={() => raiseWindow(w.key)}
+          onClose={() => closeWindow(w.key)}
         />
-      )}
-
-      {focusNode && (
-        <ThreadFocusPanel node={focusNode} onClose={() => setFocusNode(null)} />
-      )}
+      ))}
 
       {perspective.open && (
         <div className="absolute inset-y-0 right-0 z-20 flex w-[min(440px,90%)] flex-col border-l border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
