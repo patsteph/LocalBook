@@ -40,9 +40,11 @@ import '@xyflow/react/dist/style.css';
 import {
   Trash2, Sparkles, RefreshCw, Scale, X, Compass, MessagesSquare, Plus, Brain, ChevronDown, ChevronRight,
   Mic, Video, HelpCircle, BarChart3, Image, FileText, Files, Circle, Layers3, CircleDashed,
+  PlayCircle, Maximize2,
   type LucideIcon,
 } from 'lucide-react';
 import { ArtifactRender } from '../artifact/RendererRegistry';
+import { ThreadFocusPanel } from './ThreadFocusPanel';
 import {
   canvasService,
   type CanvasLayout,
@@ -136,6 +138,8 @@ type ArtifactNodeData = {
   rank?: { index: number; total: number };
   /** An unresolved question (backend `canvas_gaps`), with the reason for the tooltip. */
   openLoop?: string;
+  /** Open this thread's REAL content in the focus panel (play the podcast, read the doc…). */
+  onOpen?: (node: CanvasNode) => void;
 };
 type ArtifactFlowNode = Node<ArtifactNodeData, 'artifact'>;
 
@@ -144,6 +148,12 @@ type TopicCardNodeData = {
   node: CanvasNode;
   collapsed: boolean;
   onToggle: (id: string) => void;
+  /**
+   * What KINDS of thing live in this card, biggest group first. Cards collapse by default,
+   * so without this a topic reads as an opaque box with a thread count — you couldn't see
+   * that it holds a podcast and two documents without opening it.
+   */
+  composition?: Array<{ refType: string; count: number }>;
 };
 type TopicFlowNode = Node<TopicCardNodeData, 'topicCard'>;
 
@@ -173,6 +183,9 @@ const THREAD_CHIP: Record<string, { Icon: LucideIcon; label: string }> = {
   canvas_answer: { Icon: MessagesSquare, label: 'Answer' },
 };
 
+/** Threads whose "open" is really a "play" — the affordance should say so. */
+const PLAYABLE_REFS = new Set(['audio', 'video']);
+
 /** Depth/output facts the backend stashes on a thread's snapshot (canvas_populate). */
 interface ThreadMeta {
   sources?: number;
@@ -190,7 +203,9 @@ function threadChip(refType: string): { Icon: LucideIcon; label: string } {
 
 function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   const rf = useReactFlow();
-  const { node, tint, candidates, onPromote, onPerspectives, onElicit, isOrphan, rank, openLoop } = data;
+  const {
+    node, tint, candidates, onPromote, onPerspectives, onElicit, isOrphan, rank, openLoop, onOpen,
+  } = data;
   const researchInsight = (node.snapshot as { research_insight?: string } | undefined)?.research_insight;
 
   // Recency tint stays subtle for chips — clamp so threads never read as
@@ -252,6 +267,24 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
           {node.title || 'Untitled'}
         </span>
         <div className="nodrag flex flex-shrink-0 items-center gap-0.5">
+          {/* OPEN — play the podcast, read the document, refresh on the quiz. The chip shows a
+              summary by design; this is the way down to the real thing. Playable media get a
+              play glyph so the affordance reads as "listen/watch" rather than "expand".
+              Double-clicking the node body does the same (onNodeDoubleClick). */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen?.(node);
+            }}
+            className="rounded p-0.5 text-gray-400 hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-900/30 dark:hover:text-violet-300"
+            title={PLAYABLE_REFS.has(node.ref_type) ? 'Play' : 'Open for a closer look'}
+            aria-label={PLAYABLE_REFS.has(node.ref_type) ? 'Play' : 'Open'}
+          >
+            {PLAYABLE_REFS.has(node.ref_type)
+              ? <PlayCircle className="h-3 w-3" />
+              : <Maximize2 className="h-3 w-3" />}
+          </button>
           {/* Supporting / differing views on demand (P6) — reuses the existing
               /synthesis/perspectives engine (consensus + contested claims). */}
           <button
@@ -368,7 +401,7 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
 // header (title + one-line synthesis + thread-count chip + collapse chevron);
 // the body area below is intentionally transparent so children sit "inside".
 function TopicCardNode({ id, data }: NodeProps<TopicFlowNode>) {
-  const { node, collapsed, onToggle } = data;
+  const { node, collapsed, onToggle, composition } = data;
   const payload = (node.snapshot?.payload ?? {}) as {
     title?: string;
     synthesis?: string;
@@ -404,6 +437,25 @@ function TopicCardNode({ id, data }: NodeProps<TopicFlowNode>) {
             <span className="flex-shrink-0 rounded-full bg-violet-100 px-1.5 py-0.5 text-[9px] font-semibold text-violet-700 dark:bg-violet-900/50 dark:text-violet-200">
               {count} thread{count === 1 ? '' : 's'}
             </span>
+            {/* WHAT'S INSIDE — the same chip icons the children use, so a collapsed topic
+                still says "2 questions, a podcast and a document" at a glance. */}
+            {!!composition?.length && (
+              <div className="flex flex-shrink-0 items-center gap-1.5">
+                {composition.map(({ refType, count: n }) => {
+                  const { Icon, label } = threadChip(refType);
+                  return (
+                    <span
+                      key={refType}
+                      className="flex items-center gap-0.5 text-violet-400 dark:text-violet-300/80"
+                      title={`${n} ${label}${n === 1 ? '' : 's'}`}
+                    >
+                      <Icon className="h-3 w-3" />
+                      {n > 1 && <span className="text-[9px] font-semibold tabular-nums">{n}</span>}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
           </div>
           {synthesis && (
             <p
@@ -423,8 +475,12 @@ const nodeTypes: NodeTypes = { artifact: ArtifactNode, topicCard: TopicCardNode 
 
 // ─── Layout ⇆ react-flow conversion ──────────────────────────────────────────
 
-/** Extra per-node facts derived from the WHOLE layout (sequence) or a side fetch (gaps). */
-type NodeExtras = { rank?: { index: number; total: number }; openLoop?: string };
+/** Extra per-node facts derived from the WHOLE layout (sequence, composition) or a side fetch (gaps). */
+type NodeExtras = {
+  rank?: { index: number; total: number };
+  openLoop?: string;
+  composition?: Array<{ refType: string; count: number }>;
+};
 
 /**
  * Rank every card's children into a 1-based reading order.
@@ -436,6 +492,32 @@ type NodeExtras = { rank?: { index: number; total: number }; openLoop?: string }
  * because chat nodes are stamped in LOCAL time while source/artifact nodes are stamped in UTC
  * (a known clock-domain split); position sidesteps that entirely.
  */
+/**
+ * What kinds of thing each topic card holds, biggest group first — the at-a-glance
+ * composition drawn in the card header. Cards collapse by default, so without this a topic
+ * is an opaque box with a thread count.
+ */
+function computeComposition(nodes: CanvasNode[]): Map<string, Array<{ refType: string; count: number }>> {
+  const perCard = new Map<string, Map<string, number>>();
+  for (const n of nodes) {
+    if (!n.parent_id || !n.ref_type) continue;
+    let counts = perCard.get(n.parent_id);
+    if (!counts) perCard.set(n.parent_id, (counts = new Map()));
+    counts.set(n.ref_type, (counts.get(n.ref_type) ?? 0) + 1);
+  }
+  const out = new Map<string, Array<{ refType: string; count: number }>>();
+  for (const [cardId, counts] of perCard) {
+    out.set(
+      cardId,
+      [...counts.entries()]
+        .map(([refType, count]) => ({ refType, count }))
+        // Biggest group first, then alphabetical so the row is stable across renders.
+        .sort((a, b) => b.count - a.count || a.refType.localeCompare(b.refType)),
+    );
+  }
+  return out;
+}
+
 function computeRanks(nodes: CanvasNode[]): Map<string, { index: number; total: number }> {
   const byParent = new Map<string, CanvasNode[]>();
   for (const n of nodes) {
@@ -461,7 +543,7 @@ function toFlowNode(n: CanvasNode, extras?: NodeExtras): CanvasFlowNode {
       id: n.id,
       type: 'topicCard',
       position: { x: n.x, y: n.y },
-      data: { node: n, collapsed: true, onToggle: () => {} },
+      data: { node: n, collapsed: true, onToggle: () => {}, composition: extras?.composition },
       zIndex: 0,
       width: n.width,
       height: n.height,
@@ -616,6 +698,11 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
   }>({ open: false, node: null, intent: '', busy: false, done: false,
        suggestions: [], assignedTopicId: null, error: null });
 
+  // ── Thread focus: open a thread's REAL content (play the podcast, read the doc, refresh
+  //    on the quiz) without leaving the map. The chip is a summary by design; this is the
+  //    way down to the artifact itself. Read-only — never mutates the layout. ──
+  const [focusNode, setFocusNode] = useState<CanvasNode | null>(null);
+
   // Refs mirror the latest state for the full-layout persistence path.
   const nodesRef = useRef<CanvasFlowNode[]>([]);
   const edgesRef = useRef<Edge[]>([]);
@@ -650,7 +737,9 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
 
   const applyLayout = useCallback((layout: CanvasLayout) => {
     const ranks = computeRanks(layout.nodes || []);
-    setNodes((layout.nodes || []).map((n) => toFlowNode(n, { rank: ranks.get(n.id) })));
+    const composition = computeComposition(layout.nodes || []);
+    setNodes((layout.nodes || []).map((n) =>
+      toFlowNode(n, { rank: ranks.get(n.id), composition: composition.get(n.id) })));
     setEdges((layout.edges || []).map(toFlowEdge));
     // Collapse ALL topic cards by default whenever a fresh layout loads.
     setCollapsedTopics(
@@ -850,6 +939,7 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
           onPromote: (peerId: string) => promoteCandidate(n.id, peerId),
           onPerspectives: openPerspectives,
           onElicit: openElicit,
+          onOpen: setFocusNode,
         },
       };
     }));
@@ -862,6 +952,14 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
       canvasService.deleteEdge(notebookId, e.id).catch((err) => console.warn('[JourneyCanvas] deleteEdge', err));
     });
   }, [notebookId]);
+
+  // Double-click a thread to open it — the discoverable gesture alongside the toolbar
+  // button. Topic cards are excluded: double-clicking a card is not "open the card".
+  const onNodeDoubleClick = useCallback((_: React.MouseEvent, n: Node) => {
+    if (n.type !== 'artifact') return;
+    const canvasNode = (n.data as ArtifactNodeData | undefined)?.node;
+    if (canvasNode) setFocusNode(canvasNode);
+  }, []);
 
   const onNodesDelete = useCallback((_: Node[]) => {
     // react-flow has already removed them from state by the time this fires;
@@ -1117,6 +1215,7 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
         onEdgesDelete={onEdgesDelete}
         onNodesDelete={onNodesDelete}
         onSelectionChange={onSelectionChange}
+        onNodeDoubleClick={onNodeDoubleClick}
         onMoveEnd={onMoveEnd}
         defaultViewport={savedViewport ?? undefined}
         fitView={!savedViewport}
@@ -1276,6 +1375,16 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
 
       {/* Supporting / differing views drawer (P6) — server-composed perspectives
           HTML rendered through the canonical Artifact registry. Read-only. */}
+      {/* Thread focus — the real artifact behind a chip. Highest z of the panels so opening
+          one from behind the perspectives/gaps drawers still lands on top. */}
+      {focusNode && (
+        <ThreadFocusPanel
+          node={focusNode}
+          notebookId={notebookId}
+          onClose={() => setFocusNode(null)}
+        />
+      )}
+
       {perspective.open && (
         <div className="absolute inset-y-0 right-0 z-20 flex w-[min(440px,90%)] flex-col border-l border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
           <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-2 dark:border-gray-700">

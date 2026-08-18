@@ -128,6 +128,23 @@ export const quizService = {
     return response.json();
   },
 
+  /**
+   * Fetch one persisted quiz by id. The Journey Canvas needs this: an artifact node's
+   * snapshot is a placeholder line ("❓ Quiz · 5 questions · medium"), so opening a quiz
+   * for a refresher has to go get the real questions.
+   */
+  async get(quizId: string): Promise<{
+    quiz_id: string;
+    topic?: string;
+    difficulty?: string;
+    num_questions?: number;
+    questions: QuizQuestion[];
+  }> {
+    const response = await localFetch(`${API_BASE}/quiz/${quizId}`);
+    if (!response.ok) throw new Error('Failed to load quiz');
+    return response.json();
+  },
+
   // Library: delete a persisted quiz (Tier 5).
   async delete(quizId: string): Promise<void> {
     const response = await localFetch(`${API_BASE}/quiz/${quizId}`, { method: 'DELETE' });
