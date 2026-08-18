@@ -39,7 +39,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   Trash2, Sparkles, RefreshCw, Scale, X, Compass, MessagesSquare, Plus, Brain, ChevronDown, ChevronRight,
-  Mic, Video, HelpCircle, BarChart3, Image, FileText, Files, Circle,
+  Mic, Video, HelpCircle, BarChart3, Image, FileText, Files, Circle, Layers3,
   type LucideIcon,
 } from 'lucide-react';
 import { ArtifactRender } from '../artifact/RendererRegistry';
@@ -165,6 +165,14 @@ const THREAD_CHIP: Record<string, { Icon: LucideIcon; label: string }> = {
   canvas_answer: { Icon: MessagesSquare, label: 'Answer' },
 };
 
+/** Depth/output facts the backend stashes on a thread's snapshot (canvas_populate). */
+interface ThreadMeta {
+  sources?: number;
+  answered?: boolean;
+  preview?: string;
+  topics?: string[];
+}
+
 function threadChip(refType: string): { Icon: LucideIcon; label: string } {
   const hit = THREAD_CHIP[refType];
   if (hit) return hit;
@@ -181,6 +189,14 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   // "blurred/undefined"; orphans keep a slightly lower floor but stay legible.
   const chipOpacity = isOrphan ? Math.max(0.8, tint) : Math.max(0.85, tint);
   const { Icon: ChipIcon, label: chipLabel } = threadChip(node.ref_type);
+
+  // DEPTH + OUTPUT for the chip. A title alone shows that a question was asked but not how far it
+  // reached or what came of it — which is most of what makes the map a *journey* rather than an
+  // index. `metadata` rides in the snapshot's Artifact envelope (backend: canvas_populate).
+  const meta = (node.snapshot as { metadata?: ThreadMeta } | undefined)?.metadata;
+  const depthBits: string[] = [];
+  if (meta?.sources) depthBits.push(`${meta.sources} source${meta.sources === 1 ? '' : 's'}`);
+  if (meta && meta.answered === false) depthBits.push('unanswered');
 
   return (
     <div
@@ -266,9 +282,25 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
           <ChipIcon className="h-4 w-4 flex-shrink-0" />
           <span className="truncate text-[10px] font-semibold uppercase tracking-wide">{chipLabel}</span>
         </div>
-        <p className="line-clamp-3 text-[12px] font-medium leading-snug text-gray-800 dark:text-gray-100">
+        <p className="line-clamp-2 text-[12px] font-medium leading-snug text-gray-800 dark:text-gray-100">
           {node.title || 'Untitled'}
         </p>
+        {/* Depth — what the question reached for. */}
+        {depthBits.length > 0 && (
+          <div className="flex items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500">
+            <Layers3 className="h-2.5 w-2.5 flex-shrink-0" />
+            <span className="truncate">{depthBits.join(' · ')}</span>
+          </div>
+        )}
+        {/* Output — the answer the question produced. */}
+        {meta?.preview && (
+          <p
+            className="line-clamp-2 text-[10.5px] leading-snug text-gray-500 dark:text-gray-400"
+            title={meta.preview}
+          >
+            {meta.preview}
+          </p>
+        )}
         {/* P4 — a stashed idle-research finding for this (formerly orphan) thread. */}
         {researchInsight && (
           <p

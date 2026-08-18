@@ -136,3 +136,57 @@ def test_build_raw_pairs_drops_all_zero_pairs():
     nodes = [{"id": "A", "ref_id": "s1"}, {"id": "B", "ref_id": "s2"}]
     # no embeddings, no concepts, no shared sources → nothing to suggest
     assert cc.build_raw_pairs(nodes, {}, {}, {}) == []
+
+
+# ── Cross-card filtering (2026-08-17) ────────────────────────────────────────────────
+#
+# The topic cards are built by clustering the SAME embeddings this engine scores, so a card *is*
+# a similarity cluster: intra-card pairs were the highest-scoring pairs by construction and ate
+# every top_k slot before a cross-card pair was considered. Auto-connect could therefore only
+# redraw the clustering it was handed — dense webs inside single boxes, and none of the
+# cross-topic ties the map exists to surface.
+
+def _pair(a, b, embed=0.9):
+    return {"a": a, "b": b, "concept": 0.0, "embed": embed, "shared": 0.0}
+
+
+def test_same_card_pairs_are_dropped():
+    """Membership in a card already says 'these are similar' — an edge would be redundant."""
+    topics = {"n1": "t1", "n2": "t1"}
+    assert cc.score_and_bound([_pair("n1", "n2")], topic_of=topics) == []
+
+
+def test_cross_card_pairs_survive():
+    topics = {"n1": "t1", "n2": "t2"}
+    out = cc.score_and_bound([_pair("n1", "n2")], topic_of=topics)
+    assert [(p["a_node"], p["b_node"]) for p in out] == [("n1", "n2")]
+
+
+def test_cross_card_link_is_no_longer_crowded_out():
+    """THE regression this fixes: strong intra-card pairs used to consume the whole per-node
+    budget, so a weaker cross-card tie never got drawn."""
+    topics = {"a1": "t1", "a2": "t1", "a3": "t1", "a4": "t1", "b1": "t2"}
+    pairs = [
+        _pair("a1", "a2", 0.99), _pair("a1", "a3", 0.98), _pair("a1", "a4", 0.97),  # same card
+        _pair("a1", "b1", 0.62),                                                     # the bridge
+    ]
+    out = cc.score_and_bound(pairs, topic_of=topics, top_k=3)
+    assert [(p["a_node"], p["b_node"]) for p in out] == [("a1", "b1")]
+
+
+def test_two_orphans_still_connect():
+    """Orphans have no card to express the relation for them, so their link is genuine."""
+    out = cc.score_and_bound([_pair("o1", "o2")], topic_of={"o1": None, "o2": None})
+    assert len(out) == 1
+
+
+def test_orphan_to_card_member_connects():
+    out = cc.score_and_bound([_pair("o1", "n1")], topic_of={"o1": None, "n1": "t1"})
+    assert len(out) == 1
+
+
+def test_no_topic_map_preserves_legacy_behaviour():
+    """Callers that don't know topics (or a notebook with no cards) behave exactly as before."""
+    pairs = [_pair("n1", "n2"), _pair("n2", "n3")]
+    assert len(cc.score_and_bound(pairs)) == 2
+    assert len(cc.score_and_bound(pairs, topic_of={})) == 2

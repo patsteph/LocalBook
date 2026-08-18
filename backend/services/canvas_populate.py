@@ -199,9 +199,17 @@ def _truncate(text: str, n: int = 60) -> str:
     return text if len(text) <= n else text[: n - 1].rstrip() + "…"
 
 
-def _markdown_snapshot(md: str) -> Dict[str, Any]:
-    """A minimal Artifact envelope the frontend <ArtifactRender> can render as-is."""
-    return {"id": str(uuid.uuid4()), "type": "markdown", "payload": md}
+def _markdown_snapshot(md: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """A minimal Artifact envelope the frontend <ArtifactRender> can render as-is.
+
+    `meta` rides in the envelope's `metadata` field (part of the Artifact spec) so the canvas chip
+    can show a thread's DEPTH and OUTPUT without re-parsing the markdown payload. Title-only chips
+    made every thread look identical — you could see that a question existed but not how far it
+    went or what it produced, which is most of what a learning journey is."""
+    env: Dict[str, Any] = {"id": str(uuid.uuid4()), "type": "markdown", "payload": md}
+    if meta:
+        env["metadata"] = meta
+    return env
 
 
 def snapshot_text(node: Dict[str, Any]) -> str:
@@ -251,7 +259,18 @@ def build_nodes(journey: Dict[str, Any], source_events: List[Dict[str, Any]],
             "ref_type": "exploration_query",
             "ref_id": str(q.get("id", "")),
             "title": _truncate(query_text, 60),
-            "snapshot": _markdown_snapshot(f"**Q:** {query_text}\n\n{preview}".strip()),
+            "snapshot": _markdown_snapshot(
+                f"**Q:** {query_text}\n\n{preview}".strip(),
+                # DEPTH = how far the question reached (sources it consumed, whether it was
+                # answered at all); OUTPUT = the answer it produced. Both already captured by
+                # exploration_store — they were simply never surfaced on the chip.
+                {
+                    "sources": len(q.get("sources_used") or []),
+                    "answered": bool(preview.strip()),
+                    "preview": _truncate(preview.strip(), 180),
+                    "topics": topics[:3],
+                },
+            ),
             "_group": topics[0] if topics else "",
             "created_at": q.get("timestamp"),
         })
