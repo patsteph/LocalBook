@@ -39,7 +39,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import {
   Trash2, Sparkles, RefreshCw, Scale, X, Compass, MessagesSquare, Plus, Brain, ChevronDown, ChevronRight,
-  Mic, Video, HelpCircle, BarChart3, Image, FileText, Files, Circle, Layers3,
+  Mic, Video, HelpCircle, BarChart3, Image, FileText, Files, Circle, Layers3, CircleDashed,
   type LucideIcon,
 } from 'lucide-react';
 import { ArtifactRender } from '../artifact/RendererRegistry';
@@ -128,6 +128,14 @@ type ArtifactNodeData = {
   onElicit?: (node: CanvasNode) => void;
   /** A thread outside any topic card — dashed, muted, invites exploration (P4 wires the click). */
   isOrphan?: boolean;
+  /**
+   * Position of this thread in its card's story, 1-based ("3/7"). The map already CONTAINS
+   * the order — the backend sorts card members by real event time and lays them out row-major
+   * — it just never drew it, so a journey read as a bag of chips with no direction of travel.
+   */
+  rank?: { index: number; total: number };
+  /** An unresolved question (backend `canvas_gaps`), with the reason for the tooltip. */
+  openLoop?: string;
 };
 type ArtifactFlowNode = Node<ArtifactNodeData, 'artifact'>;
 
@@ -182,7 +190,7 @@ function threadChip(refType: string): { Icon: LucideIcon; label: string } {
 
 function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   const rf = useReactFlow();
-  const { node, tint, candidates, onPromote, onPerspectives, onElicit, isOrphan } = data;
+  const { node, tint, candidates, onPromote, onPerspectives, onElicit, isOrphan, rank, openLoop } = data;
   const researchInsight = (node.snapshot as { research_insight?: string } | undefined)?.research_insight;
 
   // Recency tint stays subtle for chips — clamp so threads never read as
@@ -281,6 +289,16 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
         <div className="flex items-center gap-1.5 text-gray-400 dark:text-gray-500">
           <ChipIcon className="h-4 w-4 flex-shrink-0" />
           <span className="truncate text-[10px] font-semibold uppercase tracking-wide">{chipLabel}</span>
+          {/* Sequence — where this step sits in the card's story. Tabular numerals so the
+              chips line up down a column instead of jittering. */}
+          {rank && (
+            <span
+              className="ml-auto flex-shrink-0 text-[9.5px] font-semibold tabular-nums text-gray-300 dark:text-gray-600"
+              title={`Step ${rank.index} of ${rank.total} in this topic`}
+            >
+              {rank.index}/{rank.total}
+            </span>
+          )}
         </div>
         <p className="line-clamp-2 text-[12px] font-medium leading-snug text-gray-800 dark:text-gray-100">
           {node.title || 'Untitled'}
@@ -290,6 +308,18 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
           <div className="flex items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500">
             <Layers3 className="h-2.5 w-2.5 flex-shrink-0" />
             <span className="truncate">{depthBits.join(' · ')}</span>
+          </div>
+        )}
+        {/* OPEN LOOP — a question the notebook never really answered. These were only ever
+            visible in a side panel; on the node they read as part of the journey ("this
+            thread is still hanging") rather than as a separate to-do list. */}
+        {openLoop && (
+          <div
+            className="flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+            title={`Open loop — ${openLoop}`}
+          >
+            <CircleDashed className="h-2.5 w-2.5 flex-shrink-0" />
+            <span className="truncate">open loop</span>
           </div>
         )}
         {/* Output — the answer the question produced. */}
@@ -392,7 +422,38 @@ function TopicCardNode({ id, data }: NodeProps<TopicFlowNode>) {
 const nodeTypes: NodeTypes = { artifact: ArtifactNode, topicCard: TopicCardNode };
 
 // ─── Layout ⇆ react-flow conversion ──────────────────────────────────────────
-function toFlowNode(n: CanvasNode): CanvasFlowNode {
+
+/** Extra per-node facts derived from the WHOLE layout (sequence) or a side fetch (gaps). */
+type NodeExtras = { rank?: { index: number; total: number }; openLoop?: string };
+
+/**
+ * Rank every card's children into a 1-based reading order.
+ *
+ * Derived from POSITION (row-major: y, then x), not from `created_at`. The backend already
+ * sorted members by real event time before placing them (`canvas_layout_topics`), so position
+ * IS the chronological rank — and reading it back off the layout guarantees the numbers match
+ * what the eye sees. Re-sorting by timestamp here would risk disagreeing with the placement,
+ * because chat nodes are stamped in LOCAL time while source/artifact nodes are stamped in UTC
+ * (a known clock-domain split); position sidesteps that entirely.
+ */
+function computeRanks(nodes: CanvasNode[]): Map<string, { index: number; total: number }> {
+  const byParent = new Map<string, CanvasNode[]>();
+  for (const n of nodes) {
+    if (!n.parent_id) continue;
+    const sibs = byParent.get(n.parent_id);
+    if (sibs) sibs.push(n);
+    else byParent.set(n.parent_id, [n]);
+  }
+  const out = new Map<string, { index: number; total: number }>();
+  for (const sibs of byParent.values()) {
+    if (sibs.length < 2) continue; // "1/1" is noise, not a sequence
+    const ordered = [...sibs].sort((a, b) => (a.y - b.y) || (a.x - b.x));
+    ordered.forEach((n, i) => out.set(n.id, { index: i + 1, total: ordered.length }));
+  }
+  return out;
+}
+
+function toFlowNode(n: CanvasNode, extras?: NodeExtras): CanvasFlowNode {
   // Topic GROUP card — the absolute-positioned container. Its children arrive
   // AFTER it in the layout array (react-flow's parent-before-child requirement).
   if (n.kind === 'topic') {
@@ -414,7 +475,13 @@ function toFlowNode(n: CanvasNode): CanvasFlowNode {
     id: n.id,
     type: 'artifact',
     position: { x: n.x, y: n.y },
-    data: { node: n, tint: recencyOpacity(n.created_at), isOrphan },
+    data: {
+      node: n,
+      tint: recencyOpacity(n.created_at),
+      isOrphan,
+      rank: extras?.rank,
+      openLoop: extras?.openLoop,
+    },
     zIndex: n.z ?? 0,
     // Fixed compact tile so the map reads as uniform "readable tiles" — without this,
     // react-flow sizes each node to its content and the wide chat tiles overlap. A
@@ -582,7 +649,8 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
   }, []);
 
   const applyLayout = useCallback((layout: CanvasLayout) => {
-    setNodes((layout.nodes || []).map(toFlowNode));
+    const ranks = computeRanks(layout.nodes || []);
+    setNodes((layout.nodes || []).map((n) => toFlowNode(n, { rank: ranks.get(n.id) })));
     setEdges((layout.edges || []).map(toFlowEdge));
     // Collapse ALL topic cards by default whenever a fresh layout loads.
     setCollapsedTopics(
@@ -611,6 +679,42 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
   }, [notebookId, applyLayout]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Open loops are fetched alongside the layout so the badges are on the map from the start —
+  // NOT only after someone opens the gaps panel. Fire-and-forget: a gap-detection failure must
+  // never block or fail the canvas, it just means no badges. The badge itself is applied in the
+  // effect below, which also covers the panel's own refresh.
+  useEffect(() => {
+    if (!notebookId) return;
+    let cancelled = false;
+    canvasService
+      .getGaps(notebookId)
+      .then((found) => { if (!cancelled) setGaps(found); })
+      .catch((e) => console.warn('[JourneyCanvas] gaps preload failed', e));
+    return () => { cancelled = true; };
+  }, [notebookId]);
+
+  // Decorate question nodes with their open-loop state. Kept separate from `applyLayout` so it
+  // doesn't matter whether the gaps or the layout land first, and so a panel refresh re-badges
+  // without rebuilding the map. Identity-stable: nodes whose state didn't change are returned
+  // as-is, so react-flow doesn't re-render the whole canvas.
+  useEffect(() => {
+    const reasonByRef = new Map(gaps.map((g) => [g.ref_id, g.reason]));
+    setNodes((ns) => {
+      let changed = false;
+      const next = ns.map((n) => {
+        if (n.type !== 'artifact') return n;
+        const { node } = n.data;
+        const openLoop = node.ref_type === 'exploration_query'
+          ? reasonByRef.get(node.ref_id)
+          : undefined;
+        if (n.data.openLoop === openLoop) return n;
+        changed = true;
+        return { ...n, data: { ...n.data, openLoop } };
+      });
+      return changed ? next : ns;
+    });
+  }, [gaps, setNodes]);
 
   // Persist the whole layout (used after delete + resize). Rebuilds from refs.
   const saveLayout = useCallback(() => {
