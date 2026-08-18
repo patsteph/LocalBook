@@ -9,7 +9,7 @@ export interface Notebook {
   source_count: number;
   section_id?: string | null;
   sort_order?: number;
-  type?: 'standard' | 'cursor';
+  type?: string;
   config?: {
     folder_path?: string;
     db_filename?: string;

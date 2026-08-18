@@ -96,8 +96,8 @@ def test_two_label_columns_is_not_charted():
 
 
 def test_shared_render_answer_has_NO_chart():
-    # ISOLATION: the shared spreadsheet renderer is byte-identical to master — NO chart appended.
-    # (Charts are appended only on the Cursor path, in cursor_sql.answer via _maybe_chart.)
+    # The shared spreadsheet renderer appends NO chart — byte-identical to master. (The chart
+    # helper below is retained; the cursor path that called it was removed 2026-08-18.)
     result = {"columns": ["region", "total"],
               "rows": [["West", 1600], ["East", 800], ["North", 400]]}
     out = tq._render_answer("total by region", "SELECT ...", "sales.db", result)
@@ -106,7 +106,8 @@ def test_shared_render_answer_has_NO_chart():
 
 
 def test_maybe_chart_helper_still_charts_multirow():
-    # The pure chart helper (reused by cursor_sql) still produces a chart for chartable data.
+    # The pure chart helper still produces a chart for chartable data. Kept deliberately: it is
+    # the building block for charting the shared path later, if that is ever wanted.
     cols, rows = ["region", "total"], [["West", 1600], ["East", 800], ["North", 400]]
     chart = tq._maybe_chart("total by region", cols, rows)
     assert "```json-chart" in chart
@@ -118,14 +119,12 @@ def test_render_answer_scalar_has_no_chart():
     assert out == "**42**" and "json-chart" not in out
 
 
-def test_cursor_prompt_has_by_dimension_rule():
-    # The GROUP-BY / by-dimension rule lives on the Cursor prompt builder now (isolation).
-    from services import cursor_sql as cs
+def test_shared_prompt_stays_minimal():
+    # Rescued from the deleted cursor test (Cursor Style removed 2026-08-18): the half that
+    # still matters is that the SHARED spreadsheet prompt never grew the cursor-only GROUP-BY
+    # rule. Adding it here would change master behaviour for every spreadsheet notebook.
     schema = [{"table_name": "sales", "filename": "sales.db", "sheet_name": "sales",
                "row_count": 3, "columns": [
                    {"sanitized": "region", "dtype": "text"},
                    {"sanitized": "amount", "dtype": "number"}]}]
-    p = cs._build_cursor_prompt("total by region", schema, [], [], [], governance="")
-    assert "GROUP BY" in p
-    # And the shared spreadsheet prompt stays minimal (no GROUP-BY rule — master behavior).
     assert "GROUP BY" not in tq._build_prompt("total by region", schema, [])

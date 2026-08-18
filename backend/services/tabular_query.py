@@ -87,8 +87,6 @@ _FORBIDDEN = re.compile(
 )
 _SQL_FENCE = re.compile(r"```(?:sql)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 # How many low-cardinality values to show per column in the prompt (spreadsheet/CSV path).
-# The Cursor Style path uses its own tighter cap in cursor_sql — this constant governs ONLY
-# the shared tabular (xlsx/csv) engine and is kept at its original value for that path.
 _MAX_PROMPT_VALUES = 60
 # Rows rendered in a list/table answer.
 _MAX_ANSWER_ROWS = 50
@@ -479,7 +477,7 @@ async def _gen_sql(prompt: str, model: str, timeout: float,
     invalid output (so the caller can fall back to another model).
 
     `keep_alive` is opt-in: the shared spreadsheet path passes nothing (identical to the original
-    call); the Cursor Style path passes "30m" to keep the SQL model resident between questions."""
+    call)."""
     extra = {"keep_alive": keep_alive} if keep_alive else {}
     try:
         result = await ollama_service.generate(
@@ -507,11 +505,9 @@ async def answer_tabular(
     Returns {ok, answer, sql, source_id, filename, columns, rows} on success,
     or {ok: False, reason} so the caller can fall back to vector RAG.
 
-    NOTE: This is the ORIGINAL shared engine for xlsx/csv tabular sources and is intentionally
-    byte-for-byte identical to master. Cursor Style notebooks (external .db + AGENTS.md governance)
-    have their OWN dedicated path in `services/cursor_sql.py`, so every accuracy enhancement built
-    for them (schema-linking, value/entity linking, sqlglot validation, M-Schema, FK injection,
-    self-repair) is fully isolated from this daily-driver path. Do NOT add cursor logic here.
+    NOTE: This is the engine for xlsx/csv tabular sources. It was kept deliberately minimal
+    while the (now-removed) Cursor Style notebooks carried the heavier text-to-SQL machinery on
+    a separate path; that isolation is why removing them left this file untouched.
     """
     schema = tabular_store.get_schema(notebook_id, source_ids)
     if not schema:

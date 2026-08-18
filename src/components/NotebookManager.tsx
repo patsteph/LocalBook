@@ -259,27 +259,14 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
     title: string,
     color: string,
     files: File[],
-    opts?: { type: 'standard' | 'cursor'; folderPath?: string },
   ) => {
     setCreating(true);
     setError(null);
     try {
-      const newNotebook = await notebookService.create(title, undefined, color, {
-        type: opts?.type,
-        folder_path: opts?.folderPath,
-      });
+      const newNotebook = await notebookService.create(title, undefined, color);
       setNotebooks([...notebooks, newNotebook]);
       onNotebookSelect(newNotebook.id);
       setShowCreateModal(false);
-
-      // Cursor Style: the folder was connected server-side on create. Surface a connect
-      // error if any; skip the file-upload + Collector-setup flow (it's a data notebook).
-      if (opts?.type === 'cursor') {
-        if (newNotebook.connect_error) {
-          setError(`Notebook created, but connecting the folder failed: ${newNotebook.connect_error}`);
-        }
-        return;
-      }
 
       if (files.length > 0) {
         const filenames: string[] = [];

@@ -131,6 +131,16 @@ if settings.use_sqlite:
         print(f"⚠️ SQLite migration failed, falling back to JSON: {e}")
         settings.use_sqlite = False
 
+# One-shot: purge Cursor Style residue (feature removed in v2.3.0). Must run AFTER the SQLite
+# migration (it reads those tables) and BEFORE the stores cache anything. Marker-guarded and
+# never-raises — see the module docstring for why the catalog rows are actively harmful.
+if settings.use_sqlite:
+    try:
+        from storage.migrate_purge_cursor import run as _purge_cursor
+        _purge_cursor()
+    except Exception as e:
+        print(f"⚠️ cursor purge skipped: {e}")
+
 # Initialize findings store before API imports (uses deferred init pattern)
 from storage.findings_store import init_findings_store
 init_findings_store(settings.data_dir)
