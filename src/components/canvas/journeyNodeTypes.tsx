@@ -72,18 +72,31 @@ const SIGNAL_LABEL: Record<string, string> = {
 // label). Threads render as clean, legible chips — NOT the full artifact body
 // squished into a ~200×120 tile (which read as blurry/undefined). Multiple
 // ref_types collapse onto the shared 💬 chat icon.
-export const THREAD_CHIP: Record<string, { Icon: LucideIcon; label: string }> = {
-  audio: { Icon: Mic, label: 'Podcast' },
-  video: { Icon: Video, label: 'Video' },
-  quiz: { Icon: HelpCircle, label: 'Quiz' },
-  visual: { Icon: BarChart3, label: 'Visual' },
-  infographic: { Icon: Image, label: 'Infographic' },
-  document: { Icon: FileText, label: 'Document' },
-  source: { Icon: Files, label: 'Source' },
-  exploration_query: { Icon: MessagesSquare, label: 'Question' },
-  chat_turn: { Icon: MessagesSquare, label: 'Chat' },
-  canvas_answer: { Icon: MessagesSquare, label: 'Answer' },
+/**
+ * Thread presentation: icon, label, and the TYPE COLOUR.
+ *
+ * The colours mirror Studio's `TYPE_ACCENTS` (CanvasItemCard.tsx) one-for-one, so a podcast is
+ * the same green on the canvas as it is in Studio and the two surfaces read as one system. If
+ * you change a colour there, change it here.
+ */
+export const THREAD_CHIP: Record<string, { Icon: LucideIcon; label: string; color: string }> = {
+  audio:             { Icon: Mic,            label: 'Podcast',     color: 'text-green-500' },
+  video:             { Icon: Video,          label: 'Video',       color: 'text-rose-500' },
+  quiz:              { Icon: HelpCircle,     label: 'Quiz',        color: 'text-amber-500' },
+  visual:            { Icon: BarChart3,      label: 'Visual',      color: 'text-purple-500' },
+  // Studio's infographic accent is the brand coral `#e0503a`, not a Tailwind scale colour.
+  infographic:       { Icon: Image,          label: 'Infographic', color: 'text-[#e0503a]' },
+  document:          { Icon: FileText,       label: 'Document',    color: 'text-blue-500' },
+  // Sources + questions have no Studio equivalent — they are the journey, not its output.
+  // Deliberately quieter so the generated artifacts are what the colour picks out.
+  source:            { Icon: Files,          label: 'Source',      color: 'text-slate-400' },
+  exploration_query: { Icon: MessagesSquare, label: 'Question',    color: 'text-slate-400' },
+  chat_turn:         { Icon: MessagesSquare, label: 'Chat',        color: 'text-slate-400' },
+  canvas_answer:     { Icon: MessagesSquare, label: 'Answer',      color: 'text-slate-400' },
 };
+
+/** Fallback colour for a ref_type with no entry above. */
+const CHIP_FALLBACK_COLOR = 'text-gray-400';
 
 /** Threads whose "open" is really a "play" — the affordance should say so. */
 export const PLAYABLE_REFS = new Set(['audio', 'video']);
@@ -96,11 +109,11 @@ export interface ThreadMeta {
   topics?: string[];
 }
 
-export function threadChip(refType: string): { Icon: LucideIcon; label: string } {
+export function threadChip(refType: string): { Icon: LucideIcon; label: string; color: string } {
   const hit = THREAD_CHIP[refType];
   if (hit) return hit;
   const label = refType ? refType.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'Item';
-  return { Icon: Circle, label };
+  return { Icon: Circle, label, color: CHIP_FALLBACK_COLOR };
 }
 
 function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
@@ -113,7 +126,7 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   // Recency tint stays subtle for chips — clamp so threads never read as
   // "blurred/undefined"; orphans keep a slightly lower floor but stay legible.
   const chipOpacity = isOrphan ? Math.max(0.8, tint) : Math.max(0.85, tint);
-  const { Icon: ChipIcon, label: chipLabel } = threadChip(node.ref_type);
+  const { Icon: ChipIcon, label: chipLabel, color: chipColor } = threadChip(node.ref_type);
 
   // DEPTH + OUTPUT for the chip. A title alone shows that a question was asked but not how far it
   // reached or what came of it — which is most of what makes the map a *journey* rather than an
@@ -223,7 +236,7 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
           drag from its body (the bulk of the card). */}
       <div className="flex h-full w-full flex-1 flex-col gap-1.5 overflow-hidden bg-white p-2.5 dark:bg-gray-800">
         <div className="flex items-center gap-1.5 text-gray-400 dark:text-gray-500">
-          <ChipIcon className="h-4 w-4 flex-shrink-0" />
+          <ChipIcon className={`h-4 w-4 flex-shrink-0 ${chipColor}`} />
           <span className="truncate text-[10px] font-semibold uppercase tracking-wide">{chipLabel}</span>
           {/* Sequence — where this step sits in the card's story. Tabular numerals so the
               chips line up down a column instead of jittering. */}
@@ -345,11 +358,11 @@ function TopicCardNode({ id, data }: NodeProps<TopicFlowNode>) {
             {!!composition?.length && (
               <div className="flex flex-shrink-0 items-center gap-1.5">
                 {composition.map(({ refType, count: n }) => {
-                  const { Icon, label } = threadChip(refType);
+                  const { Icon, label, color } = threadChip(refType);
                   return (
                     <span
                       key={refType}
-                      className="flex items-center gap-0.5 text-violet-400 dark:text-violet-300/80"
+                      className={`flex items-center gap-0.5 ${color}`}
                       title={`${n} ${label}${n === 1 ? '' : 's'}`}
                     >
                       <Icon className="h-3 w-3" />
