@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 # Edge states (keep in sync with the frontend + the spec's five-state table).
 EDGE_STATES = ("candidate", "provenance", "user", "curator", "researched")
 
+# Fixed namespace for deriving stable derived-node ids (uuid5). Must never change: it IS the
+# identity of every derived canvas node across populates.
+_NODE_NS = uuid.UUID("6f1b1d2e-0c3a-4a6b-9f7d-2e5c8a1b4d90")
+
 _SCHEMA_READY = False
 
 
@@ -208,13 +212,33 @@ def _save_layout(
     now = _now()
     conn.execute("DELETE FROM canvas_nodes WHERE notebook_id = ?", (notebook_id,))
     conn.execute("DELETE FROM canvas_edges WHERE notebook_id = ?", (notebook_id,))
+    # Stable identity for DERIVED nodes. Populate rebuilds every derived node from capture and
+    # `canvas_populate` strips the working id before persisting (`:353`), so a fresh uuid4 used to be
+    # minted on EVERY populate. Anything keyed by node id was therefore orphaned each time — the
+    # user's `canvas_recall` review history, P4 elicited intents, and any persisted edge.
+    #
+    # A node's real identity is what it POINTS AT, so derive it: uuid5(notebook:ref_type:ref_id).
+    # Same thread → same id, populate after populate. Nodes without a ref (user-placed notes) keep
+    # a random id, and a caller-supplied id always wins.
+    seen_ids: set = set()
     for n in nodes or []:
+        node_id = n.get("id")
+        if not node_id:
+            ref_type, ref_id = n.get("ref_type"), n.get("ref_id")
+            if ref_type and ref_id:
+                node_id = str(uuid.uuid5(_NODE_NS, f"{notebook_id}:{ref_type}:{ref_id}"))
+        # `id` is the PRIMARY KEY: two nodes sharing a ref within one save would collide and abort
+        # the whole populate. Falling back to a random id keeps both rows (the old behaviour for
+        # that node) instead of losing the batch.
+        if not node_id or node_id in seen_ids:
+            node_id = str(uuid.uuid4())
+        seen_ids.add(node_id)
         conn.execute(
             "INSERT INTO canvas_nodes (id, notebook_id, x, y, kind, ref_type, ref_id, "
             "snapshot_json, title, z, width, height, topic_id, parent_id, intent, created_at, updated_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
-                n.get("id") or str(uuid.uuid4()),
+                node_id,
                 notebook_id,
                 float(n.get("x", 0.0)),
                 float(n.get("y", 0.0)),

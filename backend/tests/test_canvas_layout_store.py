@@ -188,3 +188,66 @@ def test_child_ordering_preserves_relative_order_within_a_group(conn):
     cl._save_layout(conn, "nb1", nodes, [], {"x": 0, "y": 0, "zoom": 1})
     got = [n["id"] for n in cl._get_layout(conn, "nb1")["nodes"]]
     assert got == ["p1", "p2", "a", "b"]
+
+
+# ── Derived-node identity (2026-08-17) ───────────────────────────────────────────────
+#
+# Populate rebuilds every derived node from capture, and canvas_populate strips the working id
+# before persisting — so a fresh uuid4 used to be minted on EVERY populate. Everything keyed by
+# node id was orphaned each time: canvas_recall review history, P4 elicited intents, edges.
+# A node's identity is what it POINTS AT, so it is now uuid5(notebook:ref_type:ref_id).
+
+def _derived(ref_type, ref_id, **kw):
+    return {"x": 0.0, "y": 0.0, "kind": "chat_turn", "ref_type": ref_type, "ref_id": ref_id, **kw}
+
+
+def test_derived_node_id_is_stable_across_populates(conn):
+    """THE regression: re-populating the same capture must not re-mint ids."""
+    first = [_derived("exploration_query", "q1"), _derived("source", "s1")]
+    cl._save_layout(conn, "nb1", first, [], {"x": 0, "y": 0, "zoom": 1})
+    ids_1 = [n["id"] for n in cl._get_layout(conn, "nb1")["nodes"]]
+
+    # Same capture, fresh dicts (exactly what populate does — no ids supplied).
+    second = [_derived("exploration_query", "q1"), _derived("source", "s1")]
+    cl._save_layout(conn, "nb1", second, [], {"x": 0, "y": 0, "zoom": 1})
+    ids_2 = [n["id"] for n in cl._get_layout(conn, "nb1")["nodes"]]
+
+    assert ids_1 == ids_2, "derived node ids changed across populates — id-keyed state is orphaned"
+
+
+def test_derived_ids_are_notebook_scoped(conn):
+    """The same source in two notebooks must not collide on one PRIMARY KEY."""
+    cl._save_layout(conn, "nbA", [_derived("source", "s1")], [], {"x": 0, "y": 0, "zoom": 1})
+    cl._save_layout(conn, "nbB", [_derived("source", "s1")], [], {"x": 0, "y": 0, "zoom": 1})
+    a = cl._get_layout(conn, "nbA")["nodes"][0]["id"]
+    b = cl._get_layout(conn, "nbB")["nodes"][0]["id"]
+    assert a != b
+
+
+def test_distinct_refs_get_distinct_ids(conn):
+    cl._save_layout(conn, "nb1", [_derived("source", "s1"), _derived("source", "s2")], [],
+                    {"x": 0, "y": 0, "zoom": 1})
+    ids = {n["id"] for n in cl._get_layout(conn, "nb1")["nodes"]}
+    assert len(ids) == 2
+
+
+def test_caller_supplied_id_always_wins(conn):
+    """Topic cards mint their own ids (_topic_node_id) — never override them."""
+    cl._save_layout(conn, "nb1", [_derived("topic", "t1", id="topic_t1", kind="topic")], [],
+                    {"x": 0, "y": 0, "zoom": 1})
+    assert cl._get_layout(conn, "nb1")["nodes"][0]["id"] == "topic_t1"
+
+
+def test_node_without_a_ref_still_persists(conn):
+    """A user-placed note has no ref — it keeps a random id rather than being dropped."""
+    cl._save_layout(conn, "nb1", [{"x": 1.0, "y": 2.0, "kind": "note"}], [],
+                    {"x": 0, "y": 0, "zoom": 1})
+    nodes = cl._get_layout(conn, "nb1")["nodes"]
+    assert len(nodes) == 1 and nodes[0]["id"]
+
+
+def test_duplicate_refs_do_not_abort_the_save(conn):
+    """`id` is the PRIMARY KEY — two nodes sharing a ref must not lose the whole batch."""
+    dupes = [_derived("source", "s1"), _derived("source", "s1"), _derived("source", "s2")]
+    cl._save_layout(conn, "nb1", dupes, [], {"x": 0, "y": 0, "zoom": 1})
+    assert len(cl._get_layout(conn, "nb1")["nodes"]) == 3
