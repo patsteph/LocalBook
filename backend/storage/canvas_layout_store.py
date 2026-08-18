@@ -201,25 +201,23 @@ def _get_layout(conn: sqlite3.Connection, notebook_id: str) -> Dict[str, Any]:
     return {"nodes": nodes, "edges": edges, "viewport": viewport}
 
 
-def _save_layout(
-    conn: sqlite3.Connection,
-    notebook_id: str,
-    nodes: List[Dict[str, Any]],
-    edges: List[Dict[str, Any]],
-    viewport: Optional[Dict[str, Any]] = None,
-) -> None:
-    """Full replace of a notebook's nodes + edges (bulk autosave). Viewport upserted if given."""
-    now = _now()
-    conn.execute("DELETE FROM canvas_nodes WHERE notebook_id = ?", (notebook_id,))
-    conn.execute("DELETE FROM canvas_edges WHERE notebook_id = ?", (notebook_id,))
-    # Stable identity for DERIVED nodes. Populate rebuilds every derived node from capture and
-    # `canvas_populate` strips the working id before persisting (`:353`), so a fresh uuid4 used to be
-    # minted on EVERY populate. Anything keyed by node id was therefore orphaned each time — the
-    # user's `canvas_recall` review history, P4 elicited intents, and any persisted edge.
-    #
-    # A node's real identity is what it POINTS AT, so derive it: uuid5(notebook:ref_type:ref_id).
-    # Same thread → same id, populate after populate. Nodes without a ref (user-placed notes) keep
-    # a random id, and a caller-supplied id always wins.
+def assign_node_ids(notebook_id: str, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Resolve every node's final `id` IN PLACE, and return the list.
+
+    Stable identity for DERIVED nodes. Populate rebuilds every derived node from capture and
+    `canvas_populate` strips the working id before persisting (`:353`), so a fresh uuid4 used to be
+    minted on EVERY populate. Anything keyed by node id was therefore orphaned each time — the
+    user's `canvas_recall` review history, P4 elicited intents, and any persisted edge.
+
+    A node's real identity is what it POINTS AT, so derive it: uuid5(notebook:ref_type:ref_id).
+    Same thread → same id, populate after populate. Nodes without a ref (user-placed notes) keep
+    a random id, and a caller-supplied id always wins.
+
+    Public (not `_`-prefixed) because DERIVED EDGES need the same ids: an edge builder that
+    re-derived them itself could silently disagree with what gets written. One resolver, one
+    answer — callers that need node ids before the save pass their nodes through here first, and
+    `_save_layout` is then a no-op on the `id` field.
+    """
     seen_ids: set = set()
     for n in nodes or []:
         node_id = n.get("id")
@@ -233,6 +231,23 @@ def _save_layout(
         if not node_id or node_id in seen_ids:
             node_id = str(uuid.uuid4())
         seen_ids.add(node_id)
+        n["id"] = node_id
+    return nodes or []
+
+
+def _save_layout(
+    conn: sqlite3.Connection,
+    notebook_id: str,
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    viewport: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Full replace of a notebook's nodes + edges (bulk autosave). Viewport upserted if given."""
+    now = _now()
+    conn.execute("DELETE FROM canvas_nodes WHERE notebook_id = ?", (notebook_id,))
+    conn.execute("DELETE FROM canvas_edges WHERE notebook_id = ?", (notebook_id,))
+    for n in assign_node_ids(notebook_id, nodes):
+        node_id = n["id"]
         conn.execute(
             "INSERT INTO canvas_nodes (id, notebook_id, x, y, kind, ref_type, ref_id, "
             "snapshot_json, title, z, width, height, topic_id, parent_id, intent, created_at, updated_at) "

@@ -426,9 +426,31 @@ async def populate(notebook_id: str, limit: int = 50):
     kept_ids = {n.get("id") for n in preserved}
     kept_edges = [e for e in existing.get("edges", [])
                   if e.get("source") in kept_ids and e.get("target") in kept_ids]
-    final_nodes = preserved + seeded
+    # Resolve node ids BEFORE deriving edges — an edge builder that re-derived them itself could
+    # silently disagree with what gets written (see canvas_layout_store.assign_node_ids).
+    final_nodes = cl.assign_node_ids(notebook_id, preserved + seeded)
 
-    if not cl.save_layout(notebook_id, final_nodes, kept_edges, existing["viewport"]):
+    # PROVENANCE ("made-from") edges — re-derived every populate, exactly like the derived nodes
+    # they connect. The rows have been recorded since 2026-07-31; nothing ever turned them into
+    # edges, which is why the aqua state shipped styled-but-invisible. Never blocks a populate.
+    prov_edges: List[Dict[str, Any]] = []
+    try:
+        from services.curator_brain import curator_brain
+        from services import canvas_provenance
+        artifact_ids = [n.get("ref_id") for n in final_nodes
+                        if n.get("ref_type") in _ARTIFACT_REF_TYPES and n.get("ref_id")]
+        if artifact_ids:
+            prov_edges = canvas_provenance.derive_edges(
+                final_nodes,
+                curator_brain.get_provenance_many(artifact_ids),
+                # Don't duplicate a tie the user already drew by hand.
+                skip_pairs={(e.get("source"), e.get("target")) for e in kept_edges},
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug(f"[canvas] provenance edges skipped ({notebook_id}): {e}")
+
+    if not cl.save_layout(notebook_id, final_nodes, kept_edges + prov_edges, existing["viewport"]):
         raise HTTPException(status_code=500, detail="save_layout failed")
     # Return the full saved layout so the frontend applies it directly (it expects CanvasLayout).
     return cl.get_layout(notebook_id)
