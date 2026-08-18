@@ -12,17 +12,15 @@
  * (svg/mermaid) and `infographic` (full payload) carry real content, so those two render
  * straight from the snapshot and everything else goes and gets the real thing.
  *
- * Lives in its own file: JourneyCanvas.tsx is already ~1650 lines, and per the repo's
- * file-size rule a new distinct responsibility gets split out rather than piled on.
+ * Handles everything EXCEPT media: podcasts and videos go to `FloatingMediaPlayer`, because
+ * a full-height drawer for a podcast defeats the point of playing it from the map.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { X, RefreshCw, ExternalLink, AlertCircle } from 'lucide-react';
 
 import { ArtifactRender } from '../artifact/RendererRegistry';
-import { AudioCanvasPlayer } from '../chat/AudioCanvasPlayer';
 import { contentService } from '../../services/content';
 import { quizService, type QuizQuestion } from '../../services/quiz';
-import { videoService } from '../../services/video';
 import type { CanvasNode } from '../../services/canvas';
 import type { Artifact } from '../../types/artifact';
 
@@ -31,17 +29,14 @@ const SNAPSHOT_IS_REAL = new Set(['visual', 'infographic']);
 
 interface ThreadFocusPanelProps {
   node: CanvasNode;
-  notebookId: string;
   onClose: () => void;
 }
 
 type Loaded =
   | { kind: 'artifact'; artifact: Artifact }
-  | { kind: 'quiz'; questions: QuizQuestion[]; topic: string; difficulty?: string }
-  | { kind: 'audio'; audioId: string }
-  | { kind: 'video'; videoId: string };
+  | { kind: 'quiz'; questions: QuizQuestion[]; topic: string; difficulty?: string };
 
-export const ThreadFocusPanel: React.FC<ThreadFocusPanelProps> = ({ node, notebookId, onClose }) => {
+export const ThreadFocusPanel: React.FC<ThreadFocusPanelProps> = ({ node, onClose }) => {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,13 +48,9 @@ export const ThreadFocusPanel: React.FC<ThreadFocusPanelProps> = ({ node, notebo
     try {
       const refId = node.ref_id;
       switch (node.ref_type) {
-        case 'audio':
-          // The player owns its own status polling + playback; it only needs the ids.
-          setLoaded({ kind: 'audio', audioId: refId });
-          break;
-        case 'video':
-          setLoaded({ kind: 'video', videoId: refId });
-          break;
+        // NOTE: audio + video never reach this panel — `JourneyCanvas.openThread` routes media
+        // to `FloatingMediaPlayer` so it keeps playing while you explore. One media surface, on
+        // purpose: two would drift.
         case 'quiz': {
           const quiz = await quizService.get(refId);
           setLoaded({
@@ -154,25 +145,6 @@ export const ThreadFocusPanel: React.FC<ThreadFocusPanelProps> = ({ node, notebo
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
             <span>{error}</span>
           </div>
-        )}
-
-        {loaded?.kind === 'audio' && (
-          <AudioCanvasPlayer
-            audioId={loaded.audioId}
-            notebookId={notebookId}
-            title={node.title || 'Podcast'}
-          />
-        )}
-
-        {loaded?.kind === 'video' && (
-          <video
-            className="w-full rounded-lg bg-black"
-            controls
-            preload="metadata"
-            src={videoService.getStreamUrl(loaded.videoId)}
-          >
-            <track kind="captions" />
-          </video>
         )}
 
         {loaded?.kind === 'artifact' && (

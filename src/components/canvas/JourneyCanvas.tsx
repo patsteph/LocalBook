@@ -36,12 +36,15 @@ import {
 } from 'lucide-react';
 import { ArtifactRender } from '../artifact/RendererRegistry';
 import { ThreadFocusPanel } from './ThreadFocusPanel';
+import { FloatingMediaPlayer, type MediaTarget } from './FloatingMediaPlayer';
 // Node renderers + the pure layout⇆flow math live alongside (split out 2026-08-18).
 import {
   nodeTypes,
   type ArtifactNodeData,
   type CanvasFlowNode,
   type NodeCandidate,
+  // One definition of "which threads are media" — also drives the chip's play glyph.
+  PLAYABLE_REFS as MEDIA_REFS,
 } from './journeyNodeTypes';
 import {
   pairKey,
@@ -141,6 +144,20 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
   //    on the quiz) without leaving the map. The chip is a summary by design; this is the
   //    way down to the artifact itself. Read-only — never mutates the layout. ──
   const [focusNode, setFocusNode] = useState<CanvasNode | null>(null);
+
+  // ── Media (podcast / video) does NOT go in the drawer. Opening a podcast full-height took a
+  //    whole side of the screen, when the point of playing it from the map is to keep exploring
+  //    while it runs — so it gets a small floating player instead (field feedback 2026-08-18). ──
+  const [media, setMedia] = useState<MediaTarget | null>(null);
+
+  /** One entry point for "open this thread": media floats, everything else opens the drawer. */
+  const openThread = useCallback((n: CanvasNode, anchor?: { x: number; y: number } | null) => {
+    if (MEDIA_REFS.has(n.ref_type)) {
+      setMedia({ node: n, anchor: anchor ?? null });
+    } else {
+      setFocusNode(n);
+    }
+  }, []);
 
   // Refs mirror the latest state for the full-layout persistence path.
   const nodesRef = useRef<CanvasFlowNode[]>([]);
@@ -378,7 +395,7 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
           onPromote: (peerId: string) => promoteCandidate(n.id, peerId),
           onPerspectives: openPerspectives,
           onElicit: openElicit,
-          onOpen: setFocusNode,
+          onOpen: openThread,
         },
       };
     }));
@@ -394,10 +411,10 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
 
   // Double-click a thread to open it — the discoverable gesture alongside the toolbar
   // button. Topic cards are excluded: double-clicking a card is not "open the card".
-  const onNodeDoubleClick = useCallback((_: React.MouseEvent, n: Node) => {
+  const onNodeDoubleClick = useCallback((e: React.MouseEvent, n: Node) => {
     if (n.type !== 'artifact') return;
     const canvasNode = (n.data as ArtifactNodeData | undefined)?.node;
-    if (canvasNode) setFocusNode(canvasNode);
+    if (canvasNode) openThread(canvasNode, { x: e.clientX, y: e.clientY });
   }, []);
 
   const onNodesDelete = useCallback((_: Node[]) => {
@@ -816,12 +833,16 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
           HTML rendered through the canonical Artifact registry. Read-only. */}
       {/* Thread focus — the real artifact behind a chip. Highest z of the panels so opening
           one from behind the perspectives/gaps drawers still lands on top. */}
-      {focusNode && (
-        <ThreadFocusPanel
-          node={focusNode}
+      {media && (
+        <FloatingMediaPlayer
+          target={media}
           notebookId={notebookId}
-          onClose={() => setFocusNode(null)}
+          onClose={() => setMedia(null)}
         />
+      )}
+
+      {focusNode && (
+        <ThreadFocusPanel node={focusNode} onClose={() => setFocusNode(null)} />
       )}
 
       {perspective.open && (

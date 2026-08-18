@@ -41,7 +41,7 @@ export type ArtifactNodeData = {
   /** An unresolved question (backend `canvas_gaps`), with the reason for the tooltip. */
   openLoop?: string;
   /** Open this thread's REAL content in the focus panel (play the podcast, read the doc…). */
-  onOpen?: (node: CanvasNode) => void;
+  onOpen?: (node: CanvasNode, anchor?: { x: number; y: number } | null) => void;
 };
 export type ArtifactFlowNode = Node<ArtifactNodeData, 'artifact'>;
 
@@ -86,7 +86,7 @@ export const THREAD_CHIP: Record<string, { Icon: LucideIcon; label: string }> = 
 };
 
 /** Threads whose "open" is really a "play" — the affordance should say so. */
-const PLAYABLE_REFS = new Set(['audio', 'video']);
+export const PLAYABLE_REFS = new Set(['audio', 'video']);
 
 /** Depth/output facts the backend stashes on a thread's snapshot (canvas_populate). */
 export interface ThreadMeta {
@@ -177,7 +177,8 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              onOpen?.(node);
+              // Pass the click point: media opens in a floating player anchored here.
+              onOpen?.(node, { x: e.clientX, y: e.clientY });
             }}
             className="rounded p-0.5 text-gray-400 hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-900/30 dark:hover:text-violet-300"
             title={PLAYABLE_REFS.has(node.ref_type) ? 'Play' : 'Open for a closer look'}
