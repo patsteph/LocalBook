@@ -36,12 +36,14 @@ interface Props {
   children: React.ReactNode;
   /** Suppresses the body's padding + scroll for content that manages its own box (media). */
   bare?: boolean;
+  /** Only the front-most window answers Esc — otherwise one keypress closes them all. */
+  isTop?: boolean;
 }
 
 const viewport = () => ({ w: window.innerWidth, h: window.innerHeight });
 
 export const FloatingWindow: React.FC<Props> = ({
-  title, eyebrow, initialPosition, initialSize, z, onFocus, onClose, children, bare,
+  title, eyebrow, initialPosition, initialSize, z, onFocus, onClose, children, bare, isTop,
 }) => {
   const [pos, setPos] = useState<Point>(initialPosition);
   const [size, setSize] = useState<Size>(initialSize);
@@ -53,6 +55,12 @@ export const FloatingWindow: React.FC<Props> = ({
 
   const onHeaderDown = useCallback((e: React.PointerEvent) => {
     onFocus();
+    // 🐛 Do NOT start a drag from a control inside the header. Reported from testing: the popup
+    // "wouldn't close out when I hit the x". Cause: pointerdown bubbles from the button up to
+    // this handler, which then called `setPointerCapture`. Capturing the pointer retargets the
+    // following pointerup, so the browser never synthesises a `click` on the button and its
+    // onClick never runs. The button looked dead while the window dragged perfectly.
+    if ((e.target as HTMLElement).closest('button')) return;
     dragRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }, [pos, onFocus]);
@@ -98,12 +106,14 @@ export const FloatingWindow: React.FC<Props> = ({
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // Esc closes the focused (top-most) window; the canvas only mounts this handler on that one.
+  // Esc closes the FRONT-most window only. Every window mounting this listener would mean one
+  // keypress wiping out the podcast you left playing behind the document you were reading.
   useEffect(() => {
+    if (!isTop) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, isTop]);
 
   return (
     <div
@@ -133,7 +143,8 @@ export const FloatingWindow: React.FC<Props> = ({
         </div>
         <button
           type="button"
-          onClick={onClose}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onClose(); }}
           className="flex-shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600 dark:hover:bg-gray-700"
           title="Close (Esc)"
           aria-label="Close"

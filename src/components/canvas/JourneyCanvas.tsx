@@ -870,6 +870,7 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
           anchor={w.anchor}
           takenAnchors={openWindows.slice(0, i).map((o) => o.anchor).filter(Boolean) as Point[]}
           z={BASE_WINDOW_Z + w.z}
+          isTop={w.z === Math.max(...openWindows.map((o) => o.z))}
           onFocus={() => raiseWindow(w.key)}
           onClose={() => closeWindow(w.key)}
         />

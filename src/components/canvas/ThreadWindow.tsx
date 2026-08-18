@@ -39,6 +39,8 @@ export interface ThreadWindowProps {
   /** Anchors of the windows already open, so a new one cascades instead of hiding under them. */
   takenAnchors?: Point[];
   z: number;
+  /** Front-most window — only it answers Esc. */
+  isTop?: boolean;
   onFocus: () => void;
   onClose: () => void;
 }
@@ -50,7 +52,7 @@ type Loaded =
   | { kind: 'video' };
 
 export const ThreadWindow: React.FC<ThreadWindowProps> = ({
-  node, notebookId, anchor, takenAnchors, z, onFocus, onClose,
+  node, notebookId, anchor, takenAnchors, z, isTop, onFocus, onClose,
 }) => {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loading, setLoading] = useState(false);
@@ -144,6 +146,7 @@ export const ThreadWindow: React.FC<ThreadWindowProps> = ({
       initialPosition={geom.pos}
       initialSize={geom.size}
       z={z}
+      isTop={isTop}
       onFocus={onFocus}
       onClose={onClose}
       bare={isMedia}
