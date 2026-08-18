@@ -87,7 +87,12 @@ def test_save_viewport_upsert(conn):
 
 
 def test_edge_states_constant():
-    assert cl.EDGE_STATES == ("candidate", "provenance", "user", "curator", "researched")
+    # Adding a state is fine; SILENTLY DROPPING one is not — the frontend's EdgeState union,
+    # EDGE_VISUAL and the legend are all keyed off these, and `api/canvas.py:109` rejects
+    # anything not listed.
+    assert cl.EDGE_STATES == (
+        "candidate", "provenance", "user", "curator", "researched", "tension",
+    )
 
 
 # ── width/height resize-persistence (2.2.0) ──────────────────────────────────────────

@@ -28,6 +28,9 @@ export const EDGE_VISUAL: Record<EdgeState, EdgeVisual> = {
   user: { stroke: '#8b5cf6', width: 2.75 },                                   // violet, bold
   curator: { stroke: '#c4b5fd', width: 1.5, dash: '6 4' },                    // lavender, dashed
   researched: { stroke: '#f43f5e', width: 2 },                                // rose
+  // Tension reads as a WARNING, and is dashed because a disagreement is a live question,
+  // not a settled fact like a made-from link.
+  tension: { stroke: '#ea580c', width: 2, dash: '2 3' },                      // orange, fine dash
 };
 
 export const EDGE_LEGEND: { state: EdgeState; label: string }[] = [
@@ -36,6 +39,7 @@ export const EDGE_LEGEND: { state: EdgeState; label: string }[] = [
   { state: 'user', label: 'Yours' },
   { state: 'curator', label: 'Curator' },
   { state: 'researched', label: 'Researched' },
+  { state: 'tension', label: 'Disagree' },
 ];
 
 // Recency tint: newer edges/nodes read stronger; older ones fade toward 0.4.

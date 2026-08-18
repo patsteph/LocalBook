@@ -24,7 +24,7 @@ import type { Artifact } from '../types/artifact';
 // user       = violet  (bold; drawn by the user)
 // curator    = lavender(dashed; proposed by the curator brain)
 // researched = rose     (backed by an idle-research finding; may carry an insight)
-export type EdgeState = 'candidate' | 'provenance' | 'user' | 'curator' | 'researched';
+export type EdgeState = 'candidate' | 'provenance' | 'user' | 'curator' | 'researched' | 'tension';
 
 export interface CanvasNode {
   id: string;

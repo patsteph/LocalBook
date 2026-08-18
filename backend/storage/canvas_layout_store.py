@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Edge states (keep in sync with the frontend + the spec's five-state table).
-EDGE_STATES = ("candidate", "provenance", "user", "curator", "researched")
+EDGE_STATES = ("candidate", "provenance", "user", "curator", "researched", "tension")
 
 # Fixed namespace for deriving stable derived-node ids (uuid5). Must never change: it IS the
 # identity of every derived canvas node across populates.

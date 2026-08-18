@@ -450,6 +450,22 @@ async def populate(notebook_id: str, limit: int = 50):
         import logging
         logging.getLogger(__name__).debug(f"[canvas] provenance edges skipped ({notebook_id}): {e}")
 
+    # TENSION edges — "these two sources disagree". Derived from the durable per-source stance
+    # scoring, re-derived every populate like the nodes. Never blocks a populate.
+    try:
+        from services.curator_brain import curator_brain
+        from services import canvas_tension
+        stances = curator_brain.list_stances(notebook_id)
+        if stances:
+            prov_edges += canvas_tension.derive_edges(
+                final_nodes,
+                stances,
+                skip_pairs={(e.get("source"), e.get("target")) for e in kept_edges + prov_edges},
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug(f"[canvas] tension edges skipped ({notebook_id}): {e}")
+
     if not cl.save_layout(notebook_id, final_nodes, kept_edges + prov_edges, existing["viewport"]):
         raise HTTPException(status_code=500, detail="save_layout failed")
     # Return the full saved layout so the frontend applies it directly (it expects CanvasLayout).
