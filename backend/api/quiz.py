@@ -326,24 +326,16 @@ async def generate_quiz(request: GenerateQuizRequest):
             logger.warning(f"[STUDIO] quiz_store.create failed (non-fatal): {_persist_err}")
 
         # Walk-phase provenance: record the made-from edges (quiz <- sources) so the
-        # Canvas can draw provenance + answer "what was this built from?". Resolve the
-        # filenames actually used in context to REAL source_ids (mirror of the
-        # infographic wiring). Non-fatal — never blocks generation.
+        # Canvas can draw provenance + answer "what was this built from?".
+        # `built.source_ids` carries the REAL ids of everything that went into the context.
+        # This used to match `sources_map` filenames back against source_store, which silently
+        # recorded nothing whenever two sources shared a filename, a source had been renamed,
+        # or the filename was the "Unknown" default. Non-fatal — never blocks generation.
         try:
-            if quiz_id and built.sources_map:
+            if quiz_id and built.source_ids:
                 from services.curator_brain import curator_brain
-                all_srcs = await source_store.list(request.notebook_id)
-                fn_to_id: dict = {}
-                for s in all_srcs:
-                    fn = s.get("filename") or s.get("title")
-                    if fn and fn not in fn_to_id:
-                        fn_to_id[fn] = s.get("id")
-                prov = [
-                    {"source_id": fn_to_id.get(fname), "title": fname}
-                    for fname in built.sources_map.values()
-                ]
                 curator_brain.record_provenance(
-                    "quiz", quiz_id, prov, notebook_id=request.notebook_id,
+                    "quiz", quiz_id, built.source_ids, notebook_id=request.notebook_id,
                 )
         except Exception as _prov_err:
             logger.debug(f"[STUDIO] provenance record failed (non-fatal): {_prov_err}")

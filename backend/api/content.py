@@ -2147,21 +2147,10 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
         # of the infographic wiring). Non-fatal — never blocks generation.
         try:
             content_id = saved.get("content_id") if isinstance(saved, dict) else None
-            if content_id and built.sources_map:
-                from storage.source_store import source_store
+            if content_id and built.source_ids:
                 from services.curator_brain import curator_brain
-                all_srcs = await source_store.list(request.notebook_id)
-                fn_to_id: dict[str, str] = {}
-                for s in all_srcs:
-                    fn = s.get("filename") or s.get("title")
-                    if fn and fn not in fn_to_id:
-                        fn_to_id[fn] = s.get("id")
-                prov = [
-                    {"source_id": fn_to_id.get(fname), "title": fname}
-                    for fname in built.sources_map.values()
-                ]
                 curator_brain.record_provenance(
-                    "document", content_id, prov, notebook_id=request.notebook_id,
+                    "document", content_id, built.source_ids, notebook_id=request.notebook_id,
                 )
         except Exception as e:
             logger.debug(f"[STUDIO] provenance record failed (non-fatal): {e}")

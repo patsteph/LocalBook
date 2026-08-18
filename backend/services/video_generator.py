@@ -245,6 +245,18 @@ class VideoGenerator:
                 "slide_count": scene_count,
                 "error_message": f"Storyboard ready: {scene_count} scenes. Generating narration..."
             })
+
+            # Provenance (video <- sources) — the Canvas draws these as made-from edges.
+            # Recorded here because this is the one point where BOTH `video_id` and the
+            # storyboard's real source ids are in scope. Non-fatal by design.
+            try:
+                if getattr(storyboard, "source_ids", None):
+                    from services.curator_brain import curator_brain
+                    curator_brain.record_provenance(
+                        "video", video_id, list(storyboard.source_ids), notebook_id=notebook_id,
+                    )
+            except Exception as _prov_err:
+                logger.debug(f"[video] provenance record failed (non-fatal): {_prov_err}")
             print(f"📋 Storyboard: {scene_count} scenes for {video_id}")
 
             # ── Stage 2: Generate Narration Audio ──

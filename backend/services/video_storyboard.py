@@ -62,6 +62,10 @@ class Storyboard:
     source_names: List[str]
     estimated_duration_seconds: int
     format_type: str = "explainer"  # explainer or brief
+    # Real ids of the sources this storyboard was built from, so the caller can record
+    # provenance without re-deriving identity from filenames. Defaulted for back-compat:
+    # a Storyboard rehydrated from an older persisted `storyboard_json` has no such field.
+    source_ids: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -385,6 +389,7 @@ class VideoStoryboardGenerator:
             source_names=built.source_names,
             estimated_duration_seconds=est_duration,
             format_type=format_type,
+            source_ids=list(built.source_ids),
         )
 
         logger.info(

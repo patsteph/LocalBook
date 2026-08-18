@@ -1580,21 +1580,16 @@ async def generate_infographic(request: InfographicRequest):
                         f"{request.topic}\n\nSource content:\n{built.context}"
                         if request.topic else built.context
                     )
-                    # Provenance: bind each citation index to a REAL source ID.
-                    # `sources_map` gives index -> filename; resolve filename ->
-                    # source_id from the notebook's source list (HARD RULE §2.6).
+                    # Provenance: bind each citation index to a REAL source ID (HARD RULE §2.6).
+                    # `sources_id_map` is index -> real source_id, carried straight from the
+                    # builders. This used to resolve filename -> id against the notebook's source
+                    # list, which silently yielded None for renamed sources, "Unknown" filenames,
+                    # and all-but-the-first of any duplicate filename.
                     try:
-                        from storage.source_store import source_store
-                        all_srcs = await source_store.list(request.notebook_id)
-                        fn_to_id: dict[str, str] = {}
-                        for s in all_srcs:
-                            fn = s.get("filename") or s.get("title")
-                            if fn and fn not in fn_to_id:
-                                fn_to_id[fn] = s.get("id")
                         for n, fname in sorted(built.sources_map.items()):
                             sources_prov.append({
                                 "n": n,
-                                "source_id": fn_to_id.get(fname),
+                                "source_id": built.sources_id_map.get(n),
                                 "title": fname,
                             })
                     except Exception as e:
